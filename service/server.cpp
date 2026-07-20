@@ -14,6 +14,7 @@
 #include "service/common/http.h"
 #include "service/config/schema.h"
 #include "service/modules/system/auth/auth.controller.h"
+#include "service/modules/system/dept/dept.controller.h"
 #include "service/modules/system/role/role.controller.h"
 #include "service/modules/system/user/user.controller.h"
 

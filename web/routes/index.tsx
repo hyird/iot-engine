@@ -5,7 +5,8 @@ import { useAuthStore } from '@/store/authStore';
 
 const LoginPage = lazy(() => import('@/pages/login'));
 const AdminLayout = lazy(() => import('@/layouts/AdminLayout'));
-const HomePage = lazy(() => import('@/pages/home'));
+const RolePage = lazy(() => import('@/pages/system/role'));
+const DeptPage = lazy(() => import('@/pages/system/dept'));
 const UserPage = lazy(() => import('@/pages/system/user'));
 
 function AuthGuard() {
@@ -29,8 +30,9 @@ const router = createHashRouter([
                 path: '/',
                 element: <AdminLayout />,
                 children: [
-                    { index: true, element: <Navigate to="/home" replace /> },
-                    { path: 'home', element: <HomePage /> },
+                    { index: true, element: <Navigate to="/system/role" replace /> },
+                    { path: 'system/role', element: <RolePage /> },
+                    { path: 'system/dept', element: <DeptPage /> },
                     { path: 'system/user', element: <UserPage /> },
                 ],
             },

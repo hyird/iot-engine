@@ -1,11 +1,13 @@
 import {
-    HomeOutlined,
+    ApartmentOutlined,
     LogoutOutlined,
     MenuFoldOutlined,
     MenuUnfoldOutlined,
+    SafetyCertificateOutlined,
+    SettingOutlined,
     UserOutlined,
 } from '@ant-design/icons';
-import { Button, Dropdown, Layout, Menu, Space, Spin } from 'antd';
+import { Button, Dropdown, Layout, Menu, Space, Spin, type MenuProps } from 'antd';
 import { useMemo, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { APP_NAME } from '@/config/app';
@@ -23,9 +25,32 @@ export default function AdminLayout() {
     const { has } = usePermissions();
 
     const menuItems = useMemo(() => {
-        const items = [{ key: '/home', icon: <HomeOutlined />, label: '首页' }];
+        const items: MenuProps['items'] = [];
+        const systemItems: NonNullable<MenuProps['items']> = [];
+        if (has('system:role:query')) {
+            systemItems.push({
+                key: '/system/role',
+                icon: <SafetyCertificateOutlined />,
+                label: '角色管理',
+            });
+        }
+        if (has('system:dept:query')) {
+            systemItems.push({
+                key: '/system/dept',
+                icon: <ApartmentOutlined />,
+                label: '部门管理',
+            });
+        }
         if (has('system:user:query')) {
-            items.push({ key: '/system/user', icon: <UserOutlined />, label: '用户管理' });
+            systemItems.push({ key: '/system/user', icon: <UserOutlined />, label: '用户管理' });
+        }
+        if (systemItems.length) {
+            items.push({
+                key: '/system',
+                icon: <SettingOutlined />,
+                label: '系统管理',
+                children: systemItems,
+            });
         }
         return items;
     }, [has]);
@@ -48,6 +73,7 @@ export default function AdminLayout() {
                     theme="dark"
                     mode="inline"
                     selectedKeys={[location.pathname]}
+                    defaultOpenKeys={['/system']}
                     items={menuItems}
                     onClick={({ key }) => navigate(key)}
                 />

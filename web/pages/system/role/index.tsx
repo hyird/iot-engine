@@ -1,0 +1,217 @@
+import { App, Button, Form, Input, Pagination, Result, Select, Space, Table, Tag } from 'antd';
+import type { ColumnsType } from 'antd/es/table';
+import { useState } from 'react';
+import { FormModal } from '@/components/FormModal';
+import { PageContainer } from '@/components/PageContainer';
+import { StatusTag } from '@/components/StatusTag';
+import { SUPERADMIN_ROLE_CODE } from '@/config/app';
+import { useDebounceFn } from '@/hooks/useDebounceFn';
+import { usePermissions } from '@/hooks/usePermission';
+import { useRoleDelete, useRoleList, useRoleSave } from './role.service';
+import type { Role } from './role.types';
+
+const { Search, TextArea } = Input;
+
+const permissionOptions = [
+    ['system:role:query', '查询角色'],
+    ['system:role:add', '新增角色'],
+    ['system:role:edit', '编辑角色'],
+    ['system:role:delete', '删除角色'],
+    ['system:dept:query', '查询部门'],
+    ['system:dept:add', '新增部门'],
+    ['system:dept:edit', '编辑部门'],
+    ['system:dept:delete', '删除部门'],
+    ['system:user:query', '查询用户'],
+    ['system:user:add', '新增用户'],
+    ['system:user:edit', '编辑用户'],
+    ['system:user:delete', '删除用户'],
+].map(([value, label]) => ({ value, label }));
+
+type RoleFormValues = Role.CreateDto & { id?: number };
+
+export default function SystemRolePage() {
+    const [keyword, setKeyword] = useState('');
+    const [pagination, setPagination] = useState({ page: 1, pageSize: 10 });
+    const [editing, setEditing] = useState<Role.Item | null>(null);
+    const [open, setOpen] = useState(false);
+    const [form] = Form.useForm<RoleFormValues>();
+    const { modal } = App.useApp();
+    const { has } = usePermissions();
+    const canQuery = has('system:role:query');
+    const canAdd = has('system:role:add');
+    const canEdit = has('system:role:edit');
+    const canDelete = has('system:role:delete');
+    const { run: search } = useDebounceFn((value: string) => {
+        setKeyword(value);
+        setPagination((current) => ({ ...current, page: 1 }));
+    }, 300);
+    const { data, isLoading } = useRoleList(
+        { ...pagination, keyword: keyword || undefined },
+        { enabled: canQuery }
+    );
+    const save = useRoleSave();
+    const remove = useRoleDelete();
+
+    const showCreate = () => {
+        setEditing(null);
+        form.resetFields();
+        form.setFieldsValue({ status: 'enabled', permissions: [] });
+        setOpen(true);
+    };
+    const showEdit = (role: Role.Item) => {
+        setEditing(role);
+        form.setFieldsValue({ ...role });
+        setOpen(true);
+    };
+    const submit = (values: RoleFormValues) => {
+        save.mutate(values, { onSuccess: () => setOpen(false) });
+    };
+    const confirmDelete = (role: Role.Item) => {
+        modal.confirm({
+            title: `确认删除角色「${role.name}」吗？`,
+            content: '仍有用户使用的角色不能删除。',
+            okButtonProps: { danger: true },
+            onOk: () => remove.mutate(role.id),
+        });
+    };
+
+    if (!canQuery) {
+        return (
+            <PageContainer>
+                <Result status="403" title="无权限" subTitle="您没有查询角色的权限" />
+            </PageContainer>
+        );
+    }
+
+    const columns: ColumnsType<Role.Item> = [
+        { title: '角色名称', dataIndex: 'name' },
+        { title: '角色编码', dataIndex: 'code' },
+        { title: '描述', dataIndex: 'description', render: (value) => value || '-' },
+        {
+            title: '权限',
+            dataIndex: 'permissions',
+            render: (permissions: string[]) =>
+                permissions.includes('*') ? (
+                    <Tag color="gold">全部权限</Tag>
+                ) : (
+                    <Tag>{permissions.length} 项</Tag>
+                ),
+        },
+        {
+            title: '状态',
+            dataIndex: 'status',
+            render: (value: Role.Status) => <StatusTag status={value} />,
+        },
+        {
+            title: '操作',
+            key: 'actions',
+            width: 140,
+            render: (_, role) => {
+                const builtin = role.code === SUPERADMIN_ROLE_CODE;
+                return (
+                    <Space>
+                        {canEdit && (
+                            <Button type="link" disabled={builtin} onClick={() => showEdit(role)}>
+                                编辑
+                            </Button>
+                        )}
+                        {canDelete && (
+                            <Button
+                                type="link"
+                                danger
+                                disabled={builtin}
+                                onClick={() => confirmDelete(role)}
+                            >
+                                删除
+                            </Button>
+                        )}
+                    </Space>
+                );
+            },
+        },
+    ];
+
+    return (
+        <PageContainer
+            header={
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="m-0 text-base font-medium">角色管理</h3>
+                    <Space>
+                        <Search
+                            allowClear
+                            placeholder="角色名称 / 编码"
+                            onChange={(event) => search(event.target.value)}
+                        />
+                        {canAdd && (
+                            <Button type="primary" onClick={showCreate}>
+                                新建角色
+                            </Button>
+                        )}
+                    </Space>
+                </div>
+            }
+            footer={
+                <div className="flex justify-end">
+                    <Pagination
+                        {...pagination}
+                        total={data?.total || 0}
+                        showSizeChanger
+                        onChange={(page, pageSize) => setPagination({ page, pageSize })}
+                    />
+                </div>
+            }
+        >
+            <Table
+                rowKey="id"
+                columns={columns}
+                dataSource={data?.list || []}
+                loading={isLoading}
+                pagination={false}
+            />
+            <FormModal
+                open={open}
+                title={editing ? '编辑角色' : '新建角色'}
+                onCancel={() => setOpen(false)}
+                onOk={() => form.submit()}
+                confirmLoading={save.isPending}
+                destroyOnHidden
+            >
+                <Form form={form} layout="vertical" onFinish={submit}>
+                    <Form.Item name="id" hidden>
+                        <Input />
+                    </Form.Item>
+                    <Form.Item label="角色名称" name="name" rules={[{ required: true }]}>
+                        <Input />
+                    </Form.Item>
+                    <Form.Item
+                        label="角色编码"
+                        name="code"
+                        rules={[
+                            { required: true },
+                            {
+                                pattern: /^[a-z][a-z0-9:_-]*$/,
+                                message: '请使用小写字母、数字、冒号、下划线或短横线',
+                            },
+                        ]}
+                    >
+                        <Input />
+                    </Form.Item>
+                    <Form.Item label="描述" name="description">
+                        <TextArea rows={3} maxLength={500} />
+                    </Form.Item>
+                    <Form.Item label="权限" name="permissions">
+                        <Select mode="multiple" options={permissionOptions} />
+                    </Form.Item>
+                    <Form.Item label="状态" name="status" rules={[{ required: true }]}>
+                        <Select
+                            options={[
+                                { value: 'enabled', label: '启用' },
+                                { value: 'disabled', label: '禁用' },
+                            ]}
+                        />
+                    </Form.Item>
+                </Form>
+            </FormModal>
+        </PageContainer>
+    );
+}
