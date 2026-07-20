@@ -1,7 +1,5 @@
-/build/
-/out/
+/build*
 /.cache/
 /.env
-/vcpkg_installed/
+/docs
 /node_modules/
-/dist/

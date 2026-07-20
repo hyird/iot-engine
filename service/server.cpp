@@ -73,8 +73,8 @@ void configureWeb(ruvia::App& app, const std::filesystem::path& runtime) {
 ruvia::Task<ruvia::HttpResponse> handleError(ruvia::Context& c, ruvia::HttpErrorInfo info) {
     c.status(info.status());
     const auto message = info.message().empty() ? std::string_view("请求失败") : info.message();
-    co_return c.json(
-        service::common::error(c, service::common::errorCode(info.code(), info.status()), message));
+    co_return c.json(service::common::error(
+        c, service::common::errorCode(info.code(), info.status().value()), message));
 }
 
 } // namespace

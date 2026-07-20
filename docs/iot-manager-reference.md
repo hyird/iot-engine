@@ -16,7 +16,7 @@ D:\Workspace\iot-manager
 
 - 继承已经验证的业务概念、前端交互和协议语义；
 - 对外 API 是否保持完全兼容，由 API 兼容清单逐项决定；
-- Drogon 替换为 Ruvia 0.1.3；
+- Drogon 替换为 Ruvia 0.1.4；
 - 南北向直接调用替换为 Redis Streams；
 - PostgreSQL/TimescaleDB 继续作为事实数据源，并采用 JSONB 优先设计；
 - 消除旧实现中的跨模块回调、隐式共享状态和直接数据库快速路径；

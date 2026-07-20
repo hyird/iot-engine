@@ -1,6 +1,6 @@
 # iot-engine 设计文档
 
-本文档集描述基于 Ruvia 0.1.3、CMake、vcpkg、Redis Streams 和
+本文档集描述基于 Ruvia 0.1.4、CMake、vcpkg、Redis Streams 和
 TimescaleDB 的物联网 Web Service。
 
 当前阶段只确定架构和接口约束，文档不代表相关功能已经全部实现。
