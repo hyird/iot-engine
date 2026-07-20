@@ -7,7 +7,6 @@
 #include <string>
 
 #include <ruvia/web/App.h>
-#include <ruvia/web/Controller.h>
 #include <ruvia/web/db/Db.h>
 #include <ruvia/web/db/DbMigration.h>
 #include <ruvia/web/redis/Redis.h>
@@ -32,7 +31,7 @@ ruvia::DbConfig databaseConfig(const ruvia::Env& env) {
     assign(config.password, env.get("DB_PASSWORD"));
     assign(config.database, env.get("DB_DATABASE"));
     config.port = env.get<std::uint16_t>("DB_PORT").value_or(5432);
-    config.poolSizePerWorker = env.get<std::uint32_t>("DB_POOL_SIZE_PER_WORKER").value_or(4);
+    config.poolSizePerWorker = 1;
     config.acquireTimeout = std::chrono::seconds(2);
     config.connectTimeout = std::chrono::seconds(5);
     config.queryTimeout = std::chrono::seconds(30);
@@ -78,22 +77,6 @@ ruvia::Task<ruvia::HttpResponse> handleError(ruvia::Context& c, ruvia::HttpError
 }
 
 } // namespace
-
-class HealthController final : public ruvia::Controller<HealthController> {
-  public:
-    RUVIA_ROUTES_BEGIN
-    RUVIA_GET("/api/health", health);
-    RUVIA_ROUTES_END
-
-  private:
-    ruvia::Task<ruvia::HttpResponse> health(ruvia::Context& c) {
-        service::common::HealthData data(c);
-        data.status("ok");
-        service::common::HealthResponse response(c);
-        response.code(0).message("ok").data(std::move(data));
-        co_return c.json(response);
-    }
-};
 
 int main(int argc, char* argv[]) {
     try {

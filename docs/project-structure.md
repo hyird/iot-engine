@@ -175,5 +175,9 @@ Controller/业务服务 -> Redis iot:commands -> 协议运行时
 
 ```text
 build/web/                         # Vite 产物
-build/server[.exe]                 # 后端单进程
+build/iot-engine[.exe]             # 后端单进程
 ```
+
+`build/` 是项目唯一允许使用的 CMake 配置和编译目录。开发、测试和文档中的命令均须
+使用 `cmake -S . -B build` 和 `cmake --build build`；不得创建或使用
+`build-default/`、`build-debug/`、`cmake-build-*` 等其他编译目录。
