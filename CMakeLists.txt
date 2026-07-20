@@ -19,7 +19,7 @@ endif()
 
 project(iot_engine VERSION 0.1.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -31,8 +31,11 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(ruvia
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    GIT_TAG v0.1.4)
+    GIT_TAG v0.1.5)
 FetchContent_MakeAvailable(ruvia)
+
+# Ruvia's standalone manifest features do not belong to this parent manifest.
+unset(VCPKG_MANIFEST_FEATURES CACHE)
 
 add_executable(iot-engine service/server.cpp)
 target_include_directories(iot-engine PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
