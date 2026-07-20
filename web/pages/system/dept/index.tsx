@@ -9,9 +9,11 @@ import {
     Select,
     Space,
     Table,
+    Tree,
 } from 'antd';
+import type { TreeDataNode } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { FormModal } from '@/components/FormModal';
 import { PageContainer } from '@/components/PageContainer';
 import { StatusTag } from '@/components/StatusTag';
@@ -28,6 +30,8 @@ type DeptFormValues = Dept.CreateDto & { id?: number };
 
 export default function SystemDeptPage() {
     const [keyword, setKeyword] = useState('');
+    const [selectedParentId, setSelectedParentId] = useState<number>();
+    const [expandedTreeKeys, setExpandedTreeKeys] = useState<(string | number)[]>(['all']);
     const [pagination, setPagination] = useState({ page: 1, pageSize: 10 });
     const [editing, setEditing] = useState<Dept.Item | null>(null);
     const [open, setOpen] = useState(false);
@@ -43,7 +47,11 @@ export default function SystemDeptPage() {
         setPagination((current) => ({ ...current, page: 1 }));
     }, 300);
     const { data, isLoading } = useDeptList(
-        { ...pagination, keyword: keyword || undefined },
+        {
+            ...pagination,
+            keyword: keyword || undefined,
+            parent_id: selectedParentId,
+        },
         { enabled: canQuery }
     );
     const { data: departments = [] } = useDeptOptions({ enabled: canQuery || canAdd || canEdit });
@@ -61,6 +69,44 @@ export default function SystemDeptPage() {
         () => users.map((item) => ({ value: item.id, label: item.nickname || item.username })),
         [users]
     );
+    const departmentTree = useMemo<TreeDataNode[]>(() => {
+        const childrenByParent = new Map<number, Dept.Option[]>();
+        for (const department of departments) {
+            const siblings = childrenByParent.get(department.parent_id) ?? [];
+            siblings.push(department);
+            childrenByParent.set(department.parent_id, siblings);
+        }
+
+        const buildNodes = (parentId: number, ancestors = new Set<number>()): TreeDataNode[] =>
+            (childrenByParent.get(parentId) ?? [])
+                .filter((department) => !ancestors.has(department.id))
+                .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+                .map((department) => {
+                    const nextAncestors = new Set(ancestors).add(department.id);
+                    const children = buildNodes(department.id, nextAncestors);
+                    return {
+                        key: `dept-${department.id}`,
+                        title: department.name,
+                        children: children.length ? children : undefined,
+                    };
+                });
+
+        return [
+            {
+                key: 'all',
+                title: `全部部门 (${departments.length})`,
+                children: buildNodes(0),
+            },
+        ];
+    }, [departments]);
+    const selectedDepartment = useMemo(
+        () => departments.find((department) => department.id === selectedParentId),
+        [departments, selectedParentId]
+    );
+
+    useEffect(() => {
+        setExpandedTreeKeys(['all', ...departments.map((department) => `dept-${department.id}`)]);
+    }, [departments]);
 
     const showCreate = () => {
         setEditing(null);
@@ -136,13 +182,19 @@ export default function SystemDeptPage() {
     return (
         <PageContainer
             header={
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="m-0 text-base font-medium">部门管理</h3>
-                    <Space>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                        <h2 className="m-0 text-lg font-semibold text-slate-900">部门管理</h2>
+                        <p className="m-0 mt-1 text-xs text-slate-500">
+                            左侧选择部门，右侧查看直属下级部门
+                        </p>
+                    </div>
+                    <Space wrap>
                         <Search
                             allowClear
                             placeholder="部门名称 / 编码"
                             onChange={(event) => search(event.target.value)}
+                            className="w-[240px]"
                         />
                         {canAdd && (
                             <Button type="primary" onClick={showCreate}>
@@ -158,18 +210,56 @@ export default function SystemDeptPage() {
                         {...pagination}
                         total={data?.total || 0}
                         showSizeChanger
+                        showTotal={(total) => `共 ${total} 条`}
                         onChange={(page, pageSize) => setPagination({ page, pageSize })}
                     />
                 </div>
             }
         >
-            <Table
-                rowKey="id"
-                columns={columns}
-                dataSource={data?.list || []}
-                loading={isLoading}
-                pagination={false}
-            />
+            <div className="flex h-full min-h-0 flex-col gap-4 lg:flex-row">
+                <aside className="flex max-h-56 shrink-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-slate-50/70 lg:max-h-none lg:w-60">
+                    <div className="border-b border-slate-200 bg-white px-4 py-3">
+                        <div className="font-medium text-slate-800">部门结构</div>
+                        <div className="mt-0.5 text-xs text-slate-500">选择节点筛选直属部门</div>
+                    </div>
+                    <div className="min-h-0 flex-1 overflow-auto p-2">
+                        <Tree
+                            blockNode
+                            showLine
+                            treeData={departmentTree}
+                            expandedKeys={expandedTreeKeys}
+                            selectedKeys={[
+                                selectedParentId === undefined ? 'all' : `dept-${selectedParentId}`,
+                            ]}
+                            onExpand={(keys) => setExpandedTreeKeys(keys.map(String))}
+                            onSelect={(keys) => {
+                                const key = String(keys[0] ?? 'all');
+                                setSelectedParentId(
+                                    key === 'all' ? undefined : Number(key.replace('dept-', ''))
+                                );
+                                setPagination((current) => ({ ...current, page: 1 }));
+                            }}
+                        />
+                    </div>
+                </aside>
+                <section className="min-h-0 min-w-0 flex-1 overflow-hidden">
+                    <div className="mb-2 flex h-7 items-center text-sm text-slate-500">
+                        当前：
+                        <span className="font-medium text-slate-700">
+                            {selectedDepartment?.name ?? '全部部门'}
+                        </span>
+                    </div>
+                    <Table
+                        rowKey="id"
+                        columns={columns}
+                        dataSource={data?.list || []}
+                        loading={isLoading}
+                        pagination={false}
+                        sticky
+                        scroll={{ x: 'max-content', y: 'calc(100vh - 330px)' }}
+                    />
+                </section>
+            </div>
             <FormModal
                 open={open}
                 title={editing ? '编辑部门' : '新建部门'}

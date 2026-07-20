@@ -20,7 +20,7 @@ export function PageContainer({ header, children, footer }: PageContainerProps) 
     return (
         <div className="flex h-full flex-col overflow-hidden p-4">
             {header && <div className="shrink-0 pb-4">{header}</div>}
-            <div className="flex-1 overflow-x-hidden overflow-y-auto">{children}</div>
+            <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
             {footer && <div className="shrink-0 pt-4">{footer}</div>}
         </div>
     );

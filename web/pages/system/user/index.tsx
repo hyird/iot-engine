@@ -206,8 +206,13 @@ const SystemUserPage = () => {
     return (
         <PageContainer
             header={
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="m-0 text-base font-medium">用户管理</h3>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                        <h2 className="m-0 text-lg font-semibold text-slate-900">用户管理</h2>
+                        <p className="m-0 mt-1 text-xs text-slate-500">
+                            维护用户资料、角色与账号状态
+                        </p>
+                    </div>
                     <Space wrap>
                         <Search
                             allowClear
@@ -244,7 +249,7 @@ const SystemUserPage = () => {
                 loading={loadingUsers}
                 pagination={false}
                 size="middle"
-                scroll={{ x: 'max-content' }}
+                scroll={{ x: 'max-content', y: 'calc(100vh - 280px)' }}
                 sticky
             />
 

@@ -1,5 +1,6 @@
 import {
     ApartmentOutlined,
+    ApiOutlined,
     LogoutOutlined,
     MenuFoldOutlined,
     MenuUnfoldOutlined,
@@ -7,12 +8,12 @@ import {
     SettingOutlined,
     UserOutlined,
 } from '@ant-design/icons';
-import { Button, Dropdown, Layout, Menu, Space, Spin, type MenuProps } from 'antd';
+import { Button, Dropdown, Layout, Menu, type MenuProps, Space, Spin } from 'antd';
 import { useMemo, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { APP_NAME } from '@/config/app';
-import { useCurrentUser, useLogout } from '@/pages/login';
 import { usePermissions } from '@/hooks/usePermission';
+import { useCurrentUser, useLogout } from '@/pages/login';
 
 const { Header, Sider, Content } = Layout;
 
@@ -26,6 +27,14 @@ export default function AdminLayout() {
 
     const menuItems = useMemo(() => {
         const items: MenuProps['items'] = [];
+        if (has('iot:link:query')) {
+            items.push({
+                key: '/iot',
+                icon: <ApiOutlined />,
+                label: 'IOT 管理',
+                children: [{ key: '/iot/link', label: '链路管理' }],
+            });
+        }
         const systemItems: NonNullable<MenuProps['items']> = [];
         if (has('system:role:query')) {
             systemItems.push({
@@ -73,7 +82,7 @@ export default function AdminLayout() {
                     theme="dark"
                     mode="inline"
                     selectedKeys={[location.pathname]}
-                    defaultOpenKeys={['/system']}
+                    defaultOpenKeys={['/iot', '/system']}
                     items={menuItems}
                     onClick={({ key }) => navigate(key)}
                 />
@@ -106,7 +115,7 @@ export default function AdminLayout() {
                         </Button>
                     </Dropdown>
                 </Header>
-                <Content className="m-4 min-h-0 overflow-auto rounded-lg bg-white">
+                <Content className="m-4 min-h-0 overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200/70">
                     <Outlet />
                 </Content>
             </Layout>

@@ -1,6 +1,6 @@
+import { Spin } from 'antd';
 import { lazy, Suspense } from 'react';
 import { createHashRouter, Navigate, Outlet, RouterProvider, useLocation } from 'react-router-dom';
-import { Spin } from 'antd';
 import { useAuthStore } from '@/store/authStore';
 
 const LoginPage = lazy(() => import('@/pages/login'));
@@ -8,6 +8,7 @@ const AdminLayout = lazy(() => import('@/layouts/AdminLayout'));
 const RolePage = lazy(() => import('@/pages/system/role'));
 const DeptPage = lazy(() => import('@/pages/system/dept'));
 const UserPage = lazy(() => import('@/pages/system/user'));
+const LinkPage = lazy(() => import('@/pages/iot/link'));
 
 function AuthGuard() {
     const token = useAuthStore((state) => state.token);
@@ -34,6 +35,7 @@ const router = createHashRouter([
                     { path: 'system/role', element: <RolePage /> },
                     { path: 'system/dept', element: <DeptPage /> },
                     { path: 'system/user', element: <UserPage /> },
+                    { path: 'iot/link', element: <LinkPage /> },
                 ],
             },
         ],

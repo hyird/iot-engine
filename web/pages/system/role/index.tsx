@@ -27,6 +27,10 @@ const permissionOptions = [
     ['system:user:add', '新增用户'],
     ['system:user:edit', '编辑用户'],
     ['system:user:delete', '删除用户'],
+    ['iot:link:query', '查询链路'],
+    ['iot:link:add', '新增链路'],
+    ['iot:link:edit', '编辑链路'],
+    ['iot:link:delete', '删除链路'],
 ].map(([value, label]) => ({ value, label }));
 
 type RoleFormValues = Role.CreateDto & { id?: number };
@@ -146,13 +150,17 @@ export default function SystemRolePage() {
     return (
         <PageContainer
             header={
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="m-0 text-base font-medium">角色管理</h3>
-                    <Space>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                        <h2 className="m-0 text-lg font-semibold text-slate-900">角色管理</h2>
+                        <p className="m-0 mt-1 text-xs text-slate-500">维护角色权限与可用状态</p>
+                    </div>
+                    <Space wrap>
                         <Search
                             allowClear
                             placeholder="角色名称 / 编码"
                             onChange={(event) => search(event.target.value)}
+                            className="w-[240px]"
                         />
                         {canAdd && (
                             <Button type="primary" onClick={showCreate}>
@@ -168,6 +176,7 @@ export default function SystemRolePage() {
                         {...pagination}
                         total={data?.total || 0}
                         showSizeChanger
+                        showTotal={(total) => `共 ${total} 条`}
                         onChange={(page, pageSize) => setPagination({ page, pageSize })}
                     />
                 </div>
@@ -179,6 +188,8 @@ export default function SystemRolePage() {
                 dataSource={data?.list || []}
                 loading={isLoading}
                 pagination={false}
+                sticky
+                scroll={{ x: 'max-content', y: 'calc(100vh - 280px)' }}
             />
             <FormModal
                 open={open}

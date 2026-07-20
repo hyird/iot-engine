@@ -13,6 +13,7 @@
 
 #include "service/common/http.h"
 #include "service/config/schema.h"
+#include "service/modules/iot/link/link.controller.h"
 #include "service/modules/system/auth/auth.controller.h"
 #include "service/modules/system/dept/dept.controller.h"
 #include "service/modules/system/role/role.controller.h"
@@ -32,7 +33,6 @@ ruvia::DbConfig databaseConfig(const ruvia::Env& env) {
     assign(config.password, env.get("DB_PASSWORD"));
     assign(config.database, env.get("DB_DATABASE"));
     config.port = env.get<std::uint16_t>("DB_PORT").value_or(5432);
-    config.poolSizePerWorker = 1;
     config.acquireTimeout = std::chrono::seconds(2);
     config.connectTimeout = std::chrono::seconds(5);
     config.queryTimeout = std::chrono::seconds(30);
