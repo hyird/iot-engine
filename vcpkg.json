@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "iot-engine",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "asio",
+    "brotli",
+    "hiredis",
+    "libpq",
+    "mimalloc",
+    "openssl",
+    "zlib",
+    "zstd"
+  ]
+}
