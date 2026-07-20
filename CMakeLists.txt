@@ -40,3 +40,22 @@ unset(VCPKG_MANIFEST_FEATURES CACHE)
 add_executable(iot-engine service/server.cpp)
 target_include_directories(iot-engine PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(iot-engine PRIVATE ruvia::web)
+
+find_program(BUN_EXECUTABLE NAMES bun REQUIRED)
+
+add_custom_target(iot-engine-web ALL
+    COMMAND "${BUN_EXECUTABLE}" run build:web
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "Building frontend into ${CMAKE_BINARY_DIR}/web"
+    VERBATIM)
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.env")
+    add_custom_target(iot-engine-env ALL
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/.env"
+                "${CMAKE_BINARY_DIR}/.env"
+        COMMENT "Copying .env into ${CMAKE_BINARY_DIR}"
+        VERBATIM)
+else()
+    message(WARNING ".env not found; build/.env will not be created")
+endif()

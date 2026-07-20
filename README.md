@@ -12,6 +12,9 @@ cmake -S . -B build
 cmake --build build
 ```
 
+默认构建会同时生成后端可执行文件、将前端打包到 `build/web/`，并把根目录 `.env`
+复制到 `build/.env`。如果 `.env` 不存在，CMake 会给出警告且不会生成该文件。
+
 运行后端时也应使用 `build/` 中的产物：
 
 ```bash
