@@ -1,14 +1,14 @@
 import type { PageParams } from '@/utils/types';
 import { createQueryKeys } from '@/utils/query';
 
-export const deptKeys = createQueryKeys('departments');
+const deptKeys = createQueryKeys('departments');
 export const deptQueryKeys = {
     ...deptKeys,
     list: (params?: Dept.Query) => [...deptKeys.lists(), params] as const,
 };
-export type DeptStatus = 'enabled' | 'disabled';
+type DeptStatus = 'enabled' | 'disabled';
 
-export interface DeptItem {
+interface DeptItem {
     id: number;
     name: string;
     code?: string;
@@ -19,16 +19,16 @@ export interface DeptItem {
     sort_order: number;
     status: DeptStatus;
 }
-export interface DeptOption {
+interface DeptOption {
     id: number;
     name: string;
     parent_id: number;
 }
-export interface DeptQuery extends PageParams {
+interface DeptQuery extends PageParams {
     status?: DeptStatus;
     parent_id?: number;
 }
-export interface CreateDeptDto {
+interface CreateDeptDto {
     name: string;
     code?: string;
     parent_id?: number;
@@ -36,7 +36,7 @@ export interface CreateDeptDto {
     sort_order?: number;
     status?: DeptStatus;
 }
-export interface UpdateDeptDto extends Partial<CreateDeptDto> {}
+interface UpdateDeptDto extends Partial<CreateDeptDto> {}
 export namespace Dept {
     export type Status = DeptStatus;
     export type Item = DeptItem;

@@ -19,11 +19,6 @@ export const queryClient = new QueryClient({
     },
 });
 
-export const deviceKeys = {
-    all: ['device'] as const,
-    realtime: () => ['device', 'realtime'] as const,
-};
-
 export function createQueryKeys<T extends string>(module: T) {
     return {
         all: [module] as const,

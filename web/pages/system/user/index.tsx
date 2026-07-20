@@ -2,28 +2,6 @@
  * 用户管理
  */
 
-export type {
-    User,
-    UserStatus,
-    UserRole,
-    UserOption,
-    UserItem,
-    UserQuery,
-    CreateUserDto,
-    UpdateUserDto,
-} from './user.types';
-export { userKeys, userQueryKeys } from './user.types';
-
-export {
-    useUserList,
-    useUserDetail,
-    useUserOptions,
-    useRoleOptions,
-    useUserDelete,
-    useUserSave,
-} from './user.service';
-export { getList, getDetail, getOptions, create, update, remove } from './user.api';
-
 import { App, Button, Form, Input, Pagination, Result, Select, Space, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useMemo, useState } from 'react';
@@ -32,6 +10,8 @@ import { PageContainer } from '@/components/PageContainer';
 import { StatusTag } from '@/components/StatusTag';
 import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermissions } from '@/hooks/usePermission';
+import { validateForm } from '@/utils/validation';
+import { createUserSchema, updateUserSchema } from './user.schema';
 import { useRoleOptions, useUserDelete, useUserList, useUserSave } from './user.service';
 import type { User } from './user.types';
 
@@ -124,11 +104,29 @@ const SystemUserPage = () => {
     };
 
     const onFinish = (values: UserFormValues) => {
-        saveMutation.mutate(values as User.CreateDto & { id?: number }, {
-            onSuccess: () => {
-                setModalVisible(false);
-                setEditing(null);
-            },
+        const onSuccess = () => {
+            setModalVisible(false);
+            setEditing(null);
+        };
+
+        if (editing) {
+            const validated = validateForm(form, updateUserSchema, values);
+            if (!validated) return;
+            saveMutation.mutate(
+                {
+                    ...validated,
+                    id: editing.id,
+                    username: values.username,
+                } as User.CreateDto & { id?: number },
+                { onSuccess }
+            );
+            return;
+        }
+
+        const validated = validateForm(form, createUserSchema, values);
+        if (!validated) return;
+        saveMutation.mutate(validated, {
+            onSuccess,
         });
     };
 
@@ -272,52 +270,30 @@ const SystemUserPage = () => {
                         <Input />
                     </Form.Item>
 
-                    <Form.Item
-                        label="用户名"
-                        name="username"
-                        rules={[{ required: true, message: '请输入用户名' }]}
-                    >
-                        <Input placeholder="登录用户名" disabled={!!editing} />
+                    <Form.Item label="用户名" name="username">
+                        <Input placeholder="登录用户名" disabled={!!editing} maxLength={50} />
                     </Form.Item>
 
-                    <Form.Item
-                        label="密码"
-                        name="password"
-                        rules={editing ? [] : [{ required: true, message: '请输入密码' }]}
-                    >
-                        <Input.Password placeholder={editing ? '留空则不修改密码' : '请输入密码'} />
+                    <Form.Item label="密码" name="password">
+                        <Input.Password
+                            placeholder={editing ? '留空则不修改密码' : '请输入密码'}
+                            maxLength={100}
+                        />
                     </Form.Item>
 
                     <Form.Item label="昵称" name="nickname">
-                        <Input placeholder="用户昵称" />
+                        <Input placeholder="用户昵称" maxLength={100} />
                     </Form.Item>
 
-                    <Form.Item
-                        label="手机号"
-                        name="phone"
-                        rules={[
-                            {
-                                pattern: /^1[3-9]\d{9}$/,
-                                message: '请输入正确的手机号',
-                            },
-                        ]}
-                    >
-                        <Input placeholder="11位手机号" maxLength={11} />
+                    <Form.Item label="手机号" name="phone">
+                        <Input placeholder="7–20 位数字，可包含 +、- 或空格" maxLength={20} />
                     </Form.Item>
 
-                    <Form.Item
-                        label="邮箱"
-                        name="email"
-                        rules={[{ type: 'email', message: '请输入正确的邮箱' }]}
-                    >
-                        <Input placeholder="电子邮箱" />
+                    <Form.Item label="邮箱" name="email">
+                        <Input placeholder="电子邮箱" maxLength={100} />
                     </Form.Item>
 
-                    <Form.Item
-                        label="角色"
-                        name="role_ids"
-                        rules={[{ required: true, message: '请选择至少一个角色' }]}
-                    >
+                    <Form.Item label="角色" name="role_ids">
                         <Select
                             mode="multiple"
                             allowClear={false}
@@ -327,7 +303,7 @@ const SystemUserPage = () => {
                         />
                     </Form.Item>
 
-                    <Form.Item label="状态" name="status" rules={[{ required: true }]}>
+                    <Form.Item label="状态" name="status">
                         <Select>
                             <Select.Option value="enabled">启用</Select.Option>
                             <Select.Option value="disabled">禁用</Select.Option>

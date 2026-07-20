@@ -7,6 +7,8 @@ import { StatusTag } from '@/components/StatusTag';
 import { SUPERADMIN_ROLE_CODE } from '@/config/app';
 import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermissions } from '@/hooks/usePermission';
+import { validateForm } from '@/utils/validation';
+import { createRoleSchema, updateRoleSchema } from './role.schema';
 import { useRoleDelete, useRoleList, useRoleSave } from './role.service';
 import type { Role } from './role.types';
 
@@ -64,7 +66,17 @@ export default function SystemRolePage() {
         setOpen(true);
     };
     const submit = (values: RoleFormValues) => {
-        save.mutate(values, { onSuccess: () => setOpen(false) });
+        if (editing) {
+            const validated = validateForm(form, updateRoleSchema, values);
+            if (!validated) return;
+            save.mutate({ ...validated, id: editing.id } as RoleFormValues, {
+                onSuccess: () => setOpen(false),
+            });
+            return;
+        }
+
+        const validated = validateForm(form, createRoleSchema, values);
+        if (validated) save.mutate(validated, { onSuccess: () => setOpen(false) });
     };
     const confirmDelete = (role: Role.Item) => {
         modal.confirm({
@@ -180,21 +192,11 @@ export default function SystemRolePage() {
                     <Form.Item name="id" hidden>
                         <Input />
                     </Form.Item>
-                    <Form.Item label="角色名称" name="name" rules={[{ required: true }]}>
-                        <Input />
+                    <Form.Item label="角色名称" name="name">
+                        <Input maxLength={128} />
                     </Form.Item>
-                    <Form.Item
-                        label="角色编码"
-                        name="code"
-                        rules={[
-                            { required: true },
-                            {
-                                pattern: /^[a-z][a-z0-9:_-]*$/,
-                                message: '请使用小写字母、数字、冒号、下划线或短横线',
-                            },
-                        ]}
-                    >
-                        <Input />
+                    <Form.Item label="角色编码" name="code">
+                        <Input maxLength={64} />
                     </Form.Item>
                     <Form.Item label="描述" name="description">
                         <TextArea rows={3} maxLength={500} />
@@ -202,7 +204,7 @@ export default function SystemRolePage() {
                     <Form.Item label="权限" name="permissions">
                         <Select mode="multiple" options={permissionOptions} />
                     </Form.Item>
-                    <Form.Item label="状态" name="status" rules={[{ required: true }]}>
+                    <Form.Item label="状态" name="status">
                         <Select
                             options={[
                                 { value: 'enabled', label: '启用' },

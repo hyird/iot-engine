@@ -29,23 +29,23 @@ function redirectToLogin() {
     window.location.replace(getHashRoutePath('/login'));
 }
 
-export type ApiErrorSource = 'response' | 'network' | 'timeout' | 'server' | 'auth-refresh';
+type ApiErrorSource = 'response' | 'network' | 'timeout' | 'server' | 'auth-refresh';
 
-export interface ApiResponseEnvelope<T = unknown> {
+interface ApiResponseEnvelope<T = unknown> {
     code: number;
     message: string;
     data?: T;
     status?: number;
 }
 
-export interface ApiErrorOptions {
+interface ApiErrorOptions {
     code?: number;
     status?: number;
     data?: unknown;
     source?: ApiErrorSource;
 }
 
-export class ApiError extends Error {
+class ApiError extends Error {
     code?: number;
     status?: number;
     data?: unknown;
@@ -63,21 +63,21 @@ export class ApiError extends Error {
     }
 }
 
-export function isApiResponseEnvelope(value: unknown): value is ApiResponseEnvelope {
+function isApiResponseEnvelope(value: unknown): value is ApiResponseEnvelope {
     if (typeof value !== 'object' || value === null) return false;
 
     const record = value as Record<string, unknown>;
     return typeof record.code === 'number' && typeof record.message === 'string';
 }
 
-export function getApiResponseMessage(value: unknown, fallback = '请求失败'): string {
+function getApiResponseMessage(value: unknown, fallback = '请求失败'): string {
     if (!isApiResponseEnvelope(value)) return fallback;
 
     const message = value.message.trim();
     return message || fallback;
 }
 
-export function getApiResponseCode(value: unknown): number | undefined {
+function getApiResponseCode(value: unknown): number | undefined {
     return isApiResponseEnvelope(value) ? value.code : undefined;
 }
 
@@ -338,10 +338,5 @@ request.interceptors.response.use(
         throw apiError;
     }
 );
-
-export function resetRefreshState() {
-    isRefreshing = false;
-    refreshSubscribers = [];
-}
 
 export default request;

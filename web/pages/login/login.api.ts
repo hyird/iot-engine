@@ -3,6 +3,7 @@
  */
 
 import type { Auth } from './login.types';
+import { loginSchema, refreshTokenSchema } from './login.schema';
 import request, { type RequestConfig } from '@/utils/http';
 
 /** API 端点 */
@@ -15,15 +16,16 @@ const ENDPOINTS = {
 
 /** 登录 */
 export function login(params: Auth.LoginRequest) {
-    return request.post<Auth.LoginResult>(ENDPOINTS.LOGIN, params);
+    return request.post<Auth.LoginResult>(ENDPOINTS.LOGIN, loginSchema.parse(params));
 }
 
 /** 刷新 Token */
 export function refreshToken(refreshToken: string, config?: RequestConfig) {
+    const validatedToken = refreshTokenSchema.parse(refreshToken);
     return request.post<Auth.RefreshResult>(
         ENDPOINTS.REFRESH,
         {
-            refresh_token: refreshToken,
+            refresh_token: validatedToken,
         },
         config
     );

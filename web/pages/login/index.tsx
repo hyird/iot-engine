@@ -2,9 +2,7 @@
  * 认证
  */
 
-export { login, refreshToken, fetchCurrentUser, logout } from './login.api';
-export { loginKeys, useCurrentUser, useLogin, useLogout } from './login.service';
-export type * from './login.types';
+export { useCurrentUser, useLogout } from './login.service';
 
 import { useMutation } from '@tanstack/react-query';
 import { LockOutlined, SafetyCertificateOutlined, UserOutlined } from '@ant-design/icons';
@@ -13,7 +11,9 @@ import { useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { APP_NAME, getAppTitle } from '@/config/app';
 import { login } from './login.api';
+import { loginSchema } from './login.schema';
 import { useAuthStore } from '@/store/authStore';
+import { validateForm } from '@/utils/validation';
 import type { Auth } from './login.types';
 
 interface LocationState {
@@ -157,11 +157,6 @@ const titleStyle = {
     color: '#0f172a',
 };
 
-const _subtitleStyle = {
-    marginBottom: 24,
-    color: '#64748b',
-};
-
 const formLabelStyle = {
     fontWeight: 600,
 };
@@ -189,7 +184,7 @@ const responsiveStyle = `
   }
 `;
 
-export function LoginPage() {
+function LoginPage() {
     const [form] = Form.useForm<Auth.LoginRequest>();
     const navigate = useNavigate();
     const location = useLocation();
@@ -220,7 +215,8 @@ export function LoginPage() {
 
     const onFinish = (values: Auth.LoginRequest) => {
         if (mutation.isPending) return;
-        mutation.mutate(values);
+        const validated = validateForm(form, loginSchema, values);
+        if (validated) mutation.mutate(validated);
     };
 
     return (
@@ -258,7 +254,6 @@ export function LoginPage() {
                         <Form.Item
                             label={<span style={formLabelStyle}>用户名</span>}
                             name="username"
-                            rules={[{ required: true, message: '请输入用户名' }]}
                         >
                             <Input
                                 prefix={<UserOutlined />}
@@ -267,11 +262,7 @@ export function LoginPage() {
                                 name="login-username"
                             />
                         </Form.Item>
-                        <Form.Item
-                            label={<span style={formLabelStyle}>密码</span>}
-                            name="password"
-                            rules={[{ required: true, message: '请输入密码' }]}
-                        >
+                        <Form.Item label={<span style={formLabelStyle}>密码</span>} name="password">
                             <Input.Password
                                 prefix={<LockOutlined />}
                                 placeholder="请输入密码"

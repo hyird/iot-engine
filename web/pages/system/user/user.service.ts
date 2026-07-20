@@ -7,9 +7,7 @@ import type { User } from './user.types';
 import { roleOptionQueryKey, userQueryKeys } from './user.types';
 import type { PaginatedResult } from '@/utils/types';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
-import { create, getDetail, getList, getOptions, getRoleOptions, remove, update } from './user.api';
-
-export { create, getDetail, getList, getOptions, remove, update } from './user.api';
+import { create, getList, getOptions, getRoleOptions, remove, update } from './user.api';
 
 // ============ Queries ============
 
@@ -22,18 +20,6 @@ export function useUserList(
     return useQuery({
         queryKey: userQueryKeys.list(params),
         queryFn: () => getList(params),
-        ...options,
-    });
-}
-
-export function useUserDetail(
-    id: number,
-    options?: Omit<UseQueryOptions<User.Item>, 'queryKey' | 'queryFn'>
-) {
-    return useQuery({
-        queryKey: userQueryKeys.detail(id),
-        queryFn: () => getDetail(id),
-        enabled: !!id,
         ...options,
     });
 }

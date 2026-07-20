@@ -17,7 +17,9 @@ import { PageContainer } from '@/components/PageContainer';
 import { StatusTag } from '@/components/StatusTag';
 import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermissions } from '@/hooks/usePermission';
+import { validateForm } from '@/utils/validation';
 import { useUserOptions } from '../user/user.service';
+import { createDeptSchema, updateDeptSchema } from './dept.schema';
 import { useDeptDelete, useDeptList, useDeptOptions, useDeptSave } from './dept.service';
 import type { Dept } from './dept.types';
 
@@ -71,8 +73,19 @@ export default function SystemDeptPage() {
         form.setFieldsValue({ ...dept });
         setOpen(true);
     };
-    const submit = (values: DeptFormValues) =>
-        save.mutate(values, { onSuccess: () => setOpen(false) });
+    const submit = (values: DeptFormValues) => {
+        if (editing) {
+            const validated = validateForm(form, updateDeptSchema, values);
+            if (!validated) return;
+            save.mutate({ ...validated, id: editing.id } as DeptFormValues, {
+                onSuccess: () => setOpen(false),
+            });
+            return;
+        }
+
+        const validated = validateForm(form, createDeptSchema, values);
+        if (validated) save.mutate(validated, { onSuccess: () => setOpen(false) });
+    };
     const confirmDelete = (dept: Dept.Item) =>
         modal.confirm({
             title: `确认删除部门「${dept.name}」吗？`,
@@ -169,11 +182,11 @@ export default function SystemDeptPage() {
                     <Form.Item name="id" hidden>
                         <Input />
                     </Form.Item>
-                    <Form.Item label="部门名称" name="name" rules={[{ required: true }]}>
-                        <Input />
+                    <Form.Item label="部门名称" name="name">
+                        <Input maxLength={128} />
                     </Form.Item>
                     <Form.Item label="部门编码" name="code">
-                        <Input />
+                        <Input maxLength={64} />
                     </Form.Item>
                     <Form.Item label="上级部门" name="parent_id">
                         <Select options={[{ value: 0, label: '顶级部门' }, ...parentOptions]} />
@@ -188,7 +201,7 @@ export default function SystemDeptPage() {
                     <Form.Item label="排序" name="sort_order">
                         <InputNumber min={0} className="!w-full" />
                     </Form.Item>
-                    <Form.Item label="状态" name="status" rules={[{ required: true }]}>
+                    <Form.Item label="状态" name="status">
                         <Select
                             options={[
                                 { value: 'enabled', label: '启用' },

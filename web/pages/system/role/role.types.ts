@@ -1,15 +1,15 @@
 import type { PageParams } from '@/utils/types';
 import { createQueryKeys } from '@/utils/query';
 
-export const roleKeys = createQueryKeys('roles');
+const roleKeys = createQueryKeys('roles');
 export const roleQueryKeys = {
     ...roleKeys,
     list: (params?: Role.Query) => [...roleKeys.lists(), params] as const,
 };
 
-export type RoleStatus = 'enabled' | 'disabled';
+type RoleStatus = 'enabled' | 'disabled';
 
-export interface RoleItem {
+interface RoleItem {
     id: number;
     name: string;
     code: string;
@@ -20,11 +20,11 @@ export interface RoleItem {
     updated_at?: string;
 }
 
-export interface RoleQuery extends PageParams {
+interface RoleQuery extends PageParams {
     status?: RoleStatus;
 }
 
-export interface CreateRoleDto {
+interface CreateRoleDto {
     name: string;
     code: string;
     description?: string;
@@ -32,7 +32,7 @@ export interface CreateRoleDto {
     permissions?: string[];
 }
 
-export interface UpdateRoleDto extends Partial<CreateRoleDto> {}
+interface UpdateRoleDto extends Partial<CreateRoleDto> {}
 
 export namespace Role {
     export type Status = RoleStatus;

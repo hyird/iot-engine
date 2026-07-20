@@ -7,7 +7,7 @@ import { createQueryKeys } from '@/utils/query';
 
 // ============ QueryKeys ============
 
-export const userKeys = createQueryKeys('users');
+const userKeys = createQueryKeys('users');
 
 export const userQueryKeys = {
     ...userKeys,
@@ -18,17 +18,17 @@ export const roleOptionQueryKey = ['roles', 'options'] as const;
 
 // ============ 枚举/状态类型 ============
 
-export type UserStatus = 'enabled' | 'disabled';
+type UserStatus = 'enabled' | 'disabled';
 
 // ============ 基础类型 ============
 
-export interface UserRole {
+interface UserRole {
     id: number;
     name: string;
     code: string;
 }
 
-export interface UserOption {
+interface UserOption {
     id: number;
     username: string;
     nickname?: string;
@@ -38,7 +38,7 @@ export interface UserOption {
 
 // ============ 列表项/详情类型 ============
 
-export interface UserItem {
+interface UserItem {
     id: number;
     username: string;
     nickname?: string;
@@ -52,13 +52,13 @@ export interface UserItem {
 
 // ============ 查询参数 ============
 
-export interface UserQuery extends PageParams {
+interface UserQuery extends PageParams {
     status?: UserStatus;
 }
 
 // ============ DTO 类型 ============
 
-export interface CreateUserDto {
+interface CreateUserDto {
     username: string;
     password: string;
     nickname?: string;
@@ -68,18 +68,13 @@ export interface CreateUserDto {
     role_ids?: number[];
 }
 
-export interface UpdateUserDto {
+interface UpdateUserDto {
     nickname?: string;
     phone?: string;
     email?: string;
     status?: UserStatus;
     password?: string;
     role_ids?: number[];
-}
-
-export interface UserUpdatePasswordDto {
-    old_password: string;
-    new_password: string;
 }
 
 export namespace User {
@@ -90,5 +85,4 @@ export namespace User {
     export type Query = UserQuery;
     export type CreateDto = CreateUserDto;
     export type UpdateDto = UpdateUserDto;
-    export type UpdatePasswordDto = UserUpdatePasswordDto;
 }

@@ -5,4 +5,4 @@ export const loginSchema = z.object({
     password: z.string().min(1, '密码不能为空'),
 });
 
-export type LoginInput = z.infer<typeof loginSchema>;
+export const refreshTokenSchema = z.string().min(1, '刷新令牌不能为空');

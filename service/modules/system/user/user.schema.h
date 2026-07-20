@@ -15,8 +15,10 @@ class CreateUserValidator final : public ruvia::Middleware<CreateUserValidator> 
                         RUVIA_RULE(password, RUVIA_REQUIRED("密码不能为空"),
                                    RUVIA_MIN(6, "密码长度需在 6 - 100 之间"),
                                    RUVIA_MAX(100, "密码长度需在 6 - 100 之间")),
+                        RUVIA_RULE(nickname, RUVIA_MAX(100, "昵称不能超过 100 个字符")),
                         RUVIA_RULE(phone, RUVIA_CUSTOM("手机号格式不正确", isPhoneNumber)),
-                        RUVIA_RULE(email, RUVIA_EMAIL("邮箱格式不正确")),
+                        RUVIA_RULE(email, RUVIA_EMAIL("邮箱格式不正确"),
+                                   RUVIA_MAX(100, "邮箱不能超过 100 个字符")),
                         RUVIA_RULE(status, RUVIA_ONE_OF("状态无效", "enabled", "disabled")),
                         RUVIA_RULE_NAME("role_ids", roleIds, RUVIA_REQUIRED("至少选择一个角色"),
                                         RUVIA_MIN(1, "至少选择一个角色")))
@@ -25,10 +27,12 @@ class CreateUserValidator final : public ruvia::Middleware<CreateUserValidator> 
 class UpdateUserValidator final : public ruvia::Middleware<UpdateUserValidator> {
   public:
     RUVIA_VALIDATE_JSON(UpdateUserBody,
+                        RUVIA_RULE(nickname, RUVIA_MAX(100, "昵称不能超过 100 个字符")),
                         RUVIA_RULE(password, RUVIA_MIN(6, "密码长度需在 6 - 100 之间"),
                                    RUVIA_MAX(100, "密码长度需在 6 - 100 之间")),
                         RUVIA_RULE(phone, RUVIA_CUSTOM("手机号格式不正确", isPhoneNumber)),
-                        RUVIA_RULE(email, RUVIA_EMAIL("邮箱格式不正确")),
+                        RUVIA_RULE(email, RUVIA_EMAIL("邮箱格式不正确"),
+                                   RUVIA_MAX(100, "邮箱不能超过 100 个字符")),
                         RUVIA_RULE(status, RUVIA_ONE_OF("状态无效", "enabled", "disabled")),
                         RUVIA_RULE_NAME("role_ids", roleIds, RUVIA_MIN(1, "至少选择一个角色")))
 };

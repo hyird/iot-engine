@@ -3,6 +3,13 @@
  */
 
 import type { User } from './user.types';
+import {
+    createUserSchema,
+    updateUserSchema,
+    userIdSchema,
+    userListQuerySchema,
+    userOptionsQuerySchema,
+} from './user.schema';
 import type { PaginatedResult } from '@/utils/types';
 import { appendQueryParams } from '@/utils/query';
 import request from '@/utils/http';
@@ -14,15 +21,13 @@ const ENDPOINTS = {
 } as const;
 
 export function getList(params?: User.Query) {
-    return request.get<PaginatedResult<User.Item>>(appendQueryParams(ENDPOINTS.BASE, params));
-}
-
-export function getDetail(id: number) {
-    return request.get<User.Item>(ENDPOINTS.DETAIL(id));
+    const query = userListQuerySchema.parse(params ?? {});
+    return request.get<PaginatedResult<User.Item>>(appendQueryParams(ENDPOINTS.BASE, query));
 }
 
 export function getOptions(params?: Pick<User.Query, 'keyword'>) {
-    return request.get<User.Option[]>(appendQueryParams(ENDPOINTS.OPTIONS, params));
+    const query = userOptionsQuerySchema.parse(params ?? {});
+    return request.get<User.Option[]>(appendQueryParams(ENDPOINTS.OPTIONS, query));
 }
 
 export function getRoleOptions() {
@@ -30,13 +35,14 @@ export function getRoleOptions() {
 }
 
 export function create(data: User.CreateDto) {
-    return request.post<void>(ENDPOINTS.BASE, data);
+    return request.post<void>(ENDPOINTS.BASE, createUserSchema.parse(data));
 }
 
 export function update(id: number, data: User.UpdateDto) {
-    return request.put<void>(ENDPOINTS.DETAIL(id), data);
+    const validatedId = userIdSchema.parse(id);
+    return request.put<void>(ENDPOINTS.DETAIL(validatedId), updateUserSchema.parse(data));
 }
 
 export function remove(id: number) {
-    return request.delete<void>(ENDPOINTS.DETAIL(id));
+    return request.delete<void>(ENDPOINTS.DETAIL(userIdSchema.parse(id)));
 }

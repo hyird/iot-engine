@@ -2,6 +2,8 @@
  * 前端公共类型定义
  */
 
+import { z } from 'zod';
+
 export interface PageParams {
     page?: number | string;
     pageSize?: number | string;
@@ -16,35 +18,13 @@ export interface PaginatedResult<T> {
     totalPages?: number;
 }
 
-export interface NormalizedPagination {
-    page: number;
-    pageSize: number;
-    skip: number;
-    keyword?: string;
-}
-
-export type Status = 'enabled' | 'disabled';
-
-// ============ Zod Schemas ============
-
-import { z } from 'zod';
-
 export const pageParamsSchema = z.object({
-    page: z
-        .union([z.string(), z.number()])
-        .optional()
-        .transform((val) => {
-            if (val === undefined || val === '') return 1;
-            return Number(val);
-        }),
-    pageSize: z
-        .union([z.string(), z.number()])
-        .optional()
-        .transform((val) => {
-            if (val === undefined || val === '') return 10;
-            return Number(val);
-        }),
+    page: z.coerce.number().int().min(1, 'page 必须大于 0').optional(),
+    pageSize: z.coerce
+        .number()
+        .int()
+        .min(1, 'pageSize 必须在 1 - 100 之间')
+        .max(100, 'pageSize 必须在 1 - 100 之间')
+        .optional(),
     keyword: z.string().optional(),
 });
-
-export type PageParamsInput = z.infer<typeof pageParamsSchema>;
