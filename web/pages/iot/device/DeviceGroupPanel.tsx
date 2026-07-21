@@ -17,8 +17,8 @@ import {
 import DeviceGroupFormModal from './DeviceGroupFormModal';
 
 interface DeviceGroupPanelProps {
-    selectedGroupId: number | null;
-    onSelect: (groupId: number | null) => void;
+    selectedGroupId: string | null;
+    onSelect: (groupId: string | null) => void;
     canManageGroup: boolean;
     ungroupedCount: number;
 }
@@ -35,14 +35,14 @@ const DeviceGroupPanel = ({
     const [popoverOpen, setPopoverOpen] = useState(false);
     const [formModalVisible, setFormModalVisible] = useState(false);
     const [editingGroup, setEditingGroup] = useState<DeviceGroup.TreeItem | null>(null);
-    const [parentIdForCreate, setParentIdForCreate] = useState<number | null>(null);
+    const [parentIdForCreate, setParentIdForCreate] = useState<string | null>(null);
 
     const { data: treeData = [], isLoading } = useDeviceGroupTreeWithCount();
     const saveMutation = useDeviceGroupSave();
     const deleteMutation = useDeviceGroupDelete();
 
     const groupIndex = useMemo(() => {
-        const index = new Map<number, DeviceGroup.TreeItem>();
+        const index = new Map<string, DeviceGroup.TreeItem>();
         const walk = (nodes: DeviceGroup.TreeItem[]) => {
             for (const node of nodes) {
                 index.set(node.id, node);
@@ -80,14 +80,14 @@ const DeviceGroupPanel = ({
 
     const selectedKeys = useMemo<TreeKey[]>(() => {
         if (selectedGroupId === null) return ['all'];
-        if (selectedGroupId === 0) return ['ungrouped'];
+        if (selectedGroupId === 'ungrouped') return ['ungrouped'];
         return [selectedGroupId];
     }, [selectedGroupId]);
 
     // 当前选中的分组名称（用于按钮显示）
     const selectedLabel = useMemo(() => {
         if (selectedGroupId === null) return '全部设备';
-        if (selectedGroupId === 0) return '未分组';
+        if (selectedGroupId === 'ungrouped') return '未分组';
         return groupIndex.get(selectedGroupId)?.name ?? '全部设备';
     }, [groupIndex, selectedGroupId]);
 
@@ -95,18 +95,18 @@ const DeviceGroupPanel = ({
         if (!keys.length) return;
         const key = keys[0];
         if (key === 'all') onSelect(null);
-        else if (key === 'ungrouped') onSelect(0);
-        else onSelect(Number(key));
+        else if (key === 'ungrouped') onSelect('ungrouped');
+        else onSelect(String(key));
         setPopoverOpen(false);
     };
 
-    const handleAddChild = (parentId: number) => {
+    const handleAddChild = (parentId: string) => {
         setEditingGroup(null);
         setParentIdForCreate(parentId);
         setFormModalVisible(true);
     };
 
-    const handleEdit = (id: number) => {
+    const handleEdit = (id: string) => {
         const group = groupIndex.get(id);
         if (group) {
             setEditingGroup(group);
@@ -115,7 +115,7 @@ const DeviceGroupPanel = ({
         }
     };
 
-    const handleDelete = (id: number) => {
+    const handleDelete = (id: string) => {
         const group = groupIndex.get(id);
         if (!group) return;
         modal.confirm({
@@ -167,7 +167,7 @@ const DeviceGroupPanel = ({
                                     menu={{
                                         items,
                                         onClick: ({ key }) => {
-                                            const id = Number(node.key);
+                                            const id = String(node.key);
                                             if (key === 'addChild') handleAddChild(id);
                                             else if (key === 'edit') handleEdit(id);
                                             else if (key === 'delete') handleDelete(id);

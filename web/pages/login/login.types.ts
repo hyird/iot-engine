@@ -21,7 +21,7 @@ export namespace Auth {
     }
 
     export interface UserInfo {
-        id: number;
+        id: string;
         username: string;
         nickname?: string;
         status: string;
@@ -30,7 +30,7 @@ export namespace Auth {
     }
 
     interface RoleOption {
-        id: number;
+        id: string;
         name: string;
         code: string;
     }

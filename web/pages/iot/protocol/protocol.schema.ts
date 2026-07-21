@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const protocolIdSchema = z.number().int().positive('id 必须是正整数');
+export const protocolIdSchema = z.uuid({ error: 'id 必须是 UUID' });
 export const protocolTypeSchema = z.enum(['SL651', 'Modbus', 'S7']);
 
 const configSchema = z.record(z.string(), z.unknown());

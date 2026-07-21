@@ -10,6 +10,7 @@
 #include <ruvia/web/db/Db.h>
 
 #include "service/common/http.h"
+#include "service/common/uuid.h"
 #include "service/modules/system/dept/dept.types.h"
 
 namespace service::dept {
@@ -24,7 +25,7 @@ class DeptService {
     ruvia::Task<DeptPageDataDto> list(ruvia::Context& c, std::int64_t page, std::int64_t pageSize,
                                       std::optional<std::string> keyword,
                                       std::optional<std::string> status,
-                                      std::optional<std::int64_t> parentId) {
+                                      std::optional<std::string> parentId) {
         page = std::max<std::int64_t>(1, page);
         pageSize = std::clamp<std::int64_t>(pageSize, 1, 100);
         std::string where = " WHERE d.deleted_at IS NULL";
@@ -40,11 +41,12 @@ class DeptService {
             where += " AND d.status = $" + std::to_string(params.size());
         }
         if (parentId) {
-            params.emplace_back(*parentId);
-            where += *parentId == 0 ? " AND d.parent_id IS NULL"
-                                    : " AND d.parent_id = $" + std::to_string(params.size());
-            if (*parentId == 0)
-                params.pop_back();
+            if (parentId->empty()) {
+                where += " AND d.parent_id IS NULL";
+            } else {
+                params.emplace_back(*parentId);
+                where += " AND d.parent_id = $" + std::to_string(params.size());
+            }
         }
 
         const auto countRows =
@@ -56,8 +58,9 @@ class DeptService {
         listParams.emplace_back((page - 1) * pageSize);
         const auto offsetIndex = listParams.size();
         const auto rows = co_await c.db().query(
-            "SELECT d.id, d.name, COALESCE(d.code, ''), COALESCE(d.parent_id, 0), "
-            "COALESCE(parent.name, ''), COALESCE(d.leader_id, 0), "
+            "SELECT d.id::text, d.name, COALESCE(d.code, ''), "
+            "COALESCE(d.parent_id::text, ''), COALESCE(parent.name, ''), "
+            "COALESCE(d.leader_id::text, ''), "
             "COALESCE(u.nickname, u.username, ''), d.sort_order, d.status, "
             "d.created_at::text, d.updated_at::text FROM sys_dept d "
             "LEFT JOIN sys_dept parent ON parent.id = d.parent_id "
@@ -79,10 +82,10 @@ class DeptService {
         co_return result;
     }
 
-    ruvia::Task<DeptItemDto> detail(ruvia::Context& c, std::int64_t id) {
+    ruvia::Task<DeptItemDto> detail(ruvia::Context& c, std::string_view id) {
         const auto rows = co_await c.db().query(R"sql(
-SELECT d.id, d.name, COALESCE(d.code, ''), COALESCE(d.parent_id, 0),
-       COALESCE(parent.name, ''), COALESCE(d.leader_id, 0),
+SELECT d.id::text, d.name, COALESCE(d.code, ''), COALESCE(d.parent_id::text, ''),
+       COALESCE(parent.name, ''), COALESCE(d.leader_id::text, ''),
        COALESCE(u.nickname, u.username, ''), d.sort_order, d.status,
        d.created_at::text, d.updated_at::text
 FROM sys_dept d
@@ -99,12 +102,13 @@ WHERE d.id = $1 AND d.deleted_at IS NULL LIMIT 1)sql",
 
     ruvia::Task<ruvia::List<DeptOptionDto>> options(ruvia::Context& c) {
         const auto rows = co_await c.db().query(
-            "SELECT id, name, COALESCE(parent_id, 0) FROM sys_dept WHERE deleted_at IS NULL "
+            "SELECT id::text, name, COALESCE(parent_id::text, '') FROM sys_dept "
+            "WHERE deleted_at IS NULL "
             "ORDER BY sort_order, id");
         ruvia::List<DeptOptionDto> result(c.resource());
         for (const auto& row : rows.rows()) {
             auto& item = result.emplace(c);
-            item.id(toInt(row[0].text())).name(row[1].text()).parentId(toInt(row[2].text()));
+            item.id(row[0].text()).name(row[1].text()).parentId(row[2].text());
         }
         co_return result;
     }
@@ -112,33 +116,34 @@ WHERE d.id = $1 AND d.deleted_at IS NULL LIMIT 1)sql",
     ruvia::Task<void> create(ruvia::Context& c, const CreateDeptBody& body) {
         const std::string name(body.name()->view());
         const std::string code = body.code() ? std::string(body.code()->view()) : "";
-        const auto parentId = body.parentId() ? static_cast<std::int64_t>(*body.parentId()) : 0;
-        const auto leaderId = body.leaderId() ? static_cast<std::int64_t>(*body.leaderId()) : 0;
+        const std::string parentId = body.parentId() ? std::string(body.parentId()->view()) : "";
+        const std::string leaderId = body.leaderId() ? std::string(body.leaderId()->view()) : "";
         const auto sortOrder = body.sortOrder() ? static_cast<std::int64_t>(*body.sortOrder()) : 0;
         const std::string status = body.status() ? std::string(body.status()->view()) : "enabled";
+        const auto id = service::common::nextUuidV7();
         co_await validateRelations(c, parentId, leaderId, std::nullopt);
         co_await ensureCodeAvailable(c, code, std::nullopt);
         (void)co_await c.db().execute(
             R"sql(
-INSERT INTO sys_dept(name, code, parent_id, leader_id, sort_order, status)
-VALUES ($1, NULLIF($2, ''), NULLIF($3, 0), NULLIF($4, 0), $5, $6)
+INSERT INTO sys_dept(id, name, code, parent_id, leader_id, sort_order, status)
+VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, '')::uuid, NULLIF($5, '')::uuid, $6, $7)
 )sql",
-            service::common::dbParams(name, code, parentId, leaderId, sortOrder, status));
+            service::common::dbParams(id, name, code, parentId, leaderId, sortOrder, status));
     }
 
-    ruvia::Task<void> update(ruvia::Context& c, std::int64_t id, const UpdateDeptBody& body) {
+    ruvia::Task<void> update(ruvia::Context& c, std::string_view id, const UpdateDeptBody& body) {
         const auto existing = co_await c.db().query(
             "SELECT 1 FROM sys_dept WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
             service::common::dbParams(id));
         if (existing.rows().empty())
             service::common::fail(14001, "部门不存在", 404);
 
-        const auto parentId = body.parentId() ? static_cast<std::int64_t>(*body.parentId()) : 0;
-        const auto leaderId = body.leaderId() ? static_cast<std::int64_t>(*body.leaderId()) : 0;
+        const std::string parentId = body.parentId() ? std::string(body.parentId()->view()) : "";
+        const std::string leaderId = body.leaderId() ? std::string(body.leaderId()->view()) : "";
         if (body.parentId() || body.leaderId())
-            co_await validateRelations(c, parentId, leaderId, id);
+            co_await validateRelations(c, parentId, leaderId, std::string(id));
         if (body.code())
-            co_await ensureCodeAvailable(c, std::string(body.code()->view()), id);
+            co_await ensureCodeAvailable(c, std::string(body.code()->view()), std::string(id));
 
         std::string set;
         std::vector<ruvia::DbValue> params;
@@ -153,9 +158,9 @@ VALUES ($1, NULLIF($2, ''), NULLIF($3, 0), NULLIF($4, 0), $5, $6)
         if (body.code())
             append("code = NULLIF(", ruvia::DbValue{body.code()->view()}), set += ", '')";
         if (body.parentId())
-            append("parent_id = NULLIF(", ruvia::DbValue{parentId}), set += ", 0)";
+            append("parent_id = NULLIF(", ruvia::DbValue{parentId}), set += ", '')::uuid";
         if (body.leaderId())
-            append("leader_id = NULLIF(", ruvia::DbValue{leaderId}), set += ", 0)";
+            append("leader_id = NULLIF(", ruvia::DbValue{leaderId}), set += ", '')::uuid";
         if (body.sortOrder())
             append("sort_order = ", ruvia::DbValue{static_cast<std::int64_t>(*body.sortOrder())});
         if (body.status())
@@ -169,7 +174,7 @@ VALUES ($1, NULLIF($2, ''), NULLIF($3, 0), NULLIF($4, 0), $5, $6)
                                       params);
     }
 
-    ruvia::Task<void> remove(ruvia::Context& c, std::int64_t id) {
+    ruvia::Task<void> remove(ruvia::Context& c, std::string_view id) {
         const auto existing = co_await c.db().query(
             "SELECT 1 FROM sys_dept WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
             service::common::dbParams(id));
@@ -186,30 +191,26 @@ VALUES ($1, NULLIF($2, ''), NULLIF($3, 0), NULLIF($4, 0), $5, $6)
     }
 
   private:
-    static ruvia::Int64 toInt(std::string_view value) {
-        return static_cast<ruvia::Int64>(std::stoll(std::string(value)));
-    }
-
     template <typename Row> static void fill(DeptItemDto& item, const Row& row) {
-        item.id(toInt(row[0].text()))
+        item.id(row[0].text())
             .name(row[1].text())
             .code(row[2].text())
-            .parentId(toInt(row[3].text()))
+            .parentId(row[3].text())
             .parentName(row[4].text())
-            .leaderId(toInt(row[5].text()))
+            .leaderId(row[5].text())
             .leaderName(row[6].text())
-            .sortOrder(toInt(row[7].text()))
+            .sortOrder(static_cast<ruvia::Int64>(std::stoll(std::string(row[7].text()))))
             .status(row[8].text())
             .createdAt(row[9].text())
             .updatedAt(row[10].text());
     }
 
-    ruvia::Task<void> validateRelations(ruvia::Context& c, std::int64_t parentId,
-                                        std::int64_t leaderId,
-                                        std::optional<std::int64_t> currentId) {
+    ruvia::Task<void> validateRelations(ruvia::Context& c, std::string_view parentId,
+                                        std::string_view leaderId,
+                                        std::optional<std::string> currentId) {
         if (currentId && parentId == *currentId)
             service::common::fail(14003, "上级部门不能是自身", 400);
-        if (parentId > 0) {
+        if (!parentId.empty()) {
             const auto parent = co_await c.db().query(
                 "SELECT 1 FROM sys_dept WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
                 service::common::dbParams(parentId));
@@ -230,7 +231,7 @@ SELECT 1 FROM descendants WHERE id = $2 LIMIT 1)sql",
                     service::common::fail(14003, "不能将部门移动到其子部门下", 400);
             }
         }
-        if (leaderId > 0) {
+        if (!leaderId.empty()) {
             const auto leader =
                 co_await c.db().query("SELECT 1 FROM sys_user WHERE id = $1 AND status = 'enabled' "
                                       "AND deleted_at IS NULL LIMIT 1",
@@ -241,7 +242,7 @@ SELECT 1 FROM descendants WHERE id = $2 LIMIT 1)sql",
     }
 
     ruvia::Task<void> ensureCodeAvailable(ruvia::Context& c, const std::string& code,
-                                          std::optional<std::int64_t> excludedId) {
+                                          std::optional<std::string> excludedId) {
         if (code.empty())
             co_return;
         auto sql = std::string("SELECT 1 FROM sys_dept WHERE code = $1");

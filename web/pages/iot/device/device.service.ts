@@ -12,14 +12,14 @@ const EMPTY_AGENTS: AgentOption[] = [];
 const EMPTY_ENDPOINTS: AgentEndpoint[] = [];
 
 interface AgentOption {
-    id: number;
+    id: string;
     name: string;
     code: string;
     is_online: boolean;
 }
 
 interface AgentEndpoint {
-    id: number;
+    id: string;
     name: string;
     protocol: string;
     mode: string;
@@ -39,7 +39,7 @@ export function useDeviceList(options?: { enabled?: boolean; pollingInterval?: n
 }
 
 export function useDeviceSave() {
-    return useSaveMutation<Device.CreateDto & { id?: number }, Device.CreateDto, Device.UpdateDto>({
+    return useSaveMutation<Device.CreateDto & { id?: string }, Device.CreateDto, Device.UpdateDto>({
         createFn: api.createDevice,
         updateFn: api.updateDevice,
         toUpdatePayload: ({ id: _id, ...data }) => data,
@@ -79,7 +79,7 @@ export function useDeviceGroupTreeWithCount(
 
 export function useDeviceGroupSave() {
     return useSaveMutation<
-        DeviceGroup.CreateDto & { id?: number },
+        DeviceGroup.CreateDto & { id?: string },
         DeviceGroup.CreateDto,
         DeviceGroup.UpdateDto
     >({
@@ -108,7 +108,7 @@ export function useAgentOptions(options?: { enabled?: boolean }) {
     });
 }
 
-export function useAgentEndpoints(agentId?: number, options?: { enabled?: boolean }) {
+export function useAgentEndpoints(agentId?: string, options?: { enabled?: boolean }) {
     return useQuery({
         queryKey: ['agents', agentId, 'endpoints'],
         queryFn: async () => EMPTY_ENDPOINTS,

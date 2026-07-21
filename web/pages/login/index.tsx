@@ -5,8 +5,14 @@
 export { useCurrentUser, useLogout } from './login.service';
 
 import { useMutation } from '@tanstack/react-query';
-import { LockOutlined, SafetyCertificateOutlined, UserOutlined } from '@ant-design/icons';
-import { Button, Card, Form, Input, Typography } from 'antd';
+import {
+    ClusterOutlined,
+    HddOutlined,
+    LockOutlined,
+    SafetyCertificateOutlined,
+    UserOutlined,
+} from '@ant-design/icons';
+import { Button, Form, Input } from 'antd';
 import { useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { APP_NAME, getAppTitle } from '@/config/app';
@@ -22,167 +28,19 @@ interface LocationState {
     };
 }
 
-const { Title } = Typography;
 const pageTitle = getAppTitle('登录系统');
 
-const containerStyle = {
-    minHeight: '100vh',
-    width: '100%',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 'clamp(24px, 4vw, 48px)',
-    background: 'linear-gradient(180deg, #fbfdff 0%, #eef4ff 48%, #f8fbff 100%)',
-    position: 'relative' as const,
-    overflow: 'hidden' as const,
-};
-
-const orbStyle = {
-    position: 'absolute' as const,
-    borderRadius: '999px',
-    filter: 'blur(30px)',
-    pointerEvents: 'none' as const,
-    opacity: 0.74,
-};
-
-const orbOneStyle = {
-    ...orbStyle,
-    width: 520,
-    height: 520,
-    top: -180,
-    left: -180,
+const brandPanelStyle = {
     background:
-        'radial-gradient(circle, rgba(59, 130, 246, 0.18), rgba(59, 130, 246, 0.04) 64%, transparent 76%)',
+        'linear-gradient(145deg, rgba(9, 31, 58, 0.98) 0%, rgba(17, 59, 103, 0.98) 58%, rgba(20, 73, 126, 0.96) 100%)',
 };
 
-const orbTwoStyle = {
-    ...orbStyle,
-    width: 620,
-    height: 620,
-    right: -220,
-    bottom: -240,
-    background:
-        'radial-gradient(circle, rgba(37, 99, 235, 0.12), rgba(37, 99, 235, 0.03) 66%, transparent 78%)',
+const gridPatternStyle = {
+    backgroundImage:
+        'linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)',
+    backgroundSize: '40px 40px',
+    maskImage: 'linear-gradient(to bottom right, black, transparent 78%)',
 };
-
-const haloStyle = {
-    position: 'absolute' as const,
-    inset: '10% 12% auto auto',
-    width: '38vw',
-    height: '38vw',
-    maxWidth: 460,
-    maxHeight: 460,
-    minWidth: 300,
-    minHeight: 300,
-    borderRadius: '50%',
-    background:
-        'radial-gradient(circle, rgba(255, 255, 255, 0.82) 0%, rgba(255, 255, 255, 0.26) 40%, rgba(255, 255, 255, 0) 72%)',
-    opacity: 0.84,
-    filter: 'blur(14px)',
-};
-
-const sweepStyle = {
-    position: 'absolute' as const,
-    inset: 0,
-    pointerEvents: 'none' as const,
-    opacity: 0.72,
-    background:
-        'linear-gradient(135deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.16) 42%, rgba(255, 255, 255, 0.3) 52%, rgba(255, 255, 255, 0) 68%)',
-    maskImage: 'radial-gradient(circle at center, black 0%, transparent 76%)',
-};
-
-const ribbonStyle = {
-    position: 'absolute' as const,
-    inset: '12% auto auto 9%',
-    width: '52vw',
-    height: '64vh',
-    maxWidth: 720,
-    maxHeight: 660,
-    borderRadius: '48% 52% 44% 56% / 42% 35% 65% 58%',
-    background:
-        'linear-gradient(145deg, rgba(255, 255, 255, 0.16) 0%, rgba(191, 219, 254, 0.22) 42%, rgba(191, 219, 254, 0.02) 100%)',
-    opacity: 0.52,
-    filter: 'blur(3px)',
-    transform: 'rotate(-12deg)',
-};
-
-const shellStyle = {
-    position: 'relative' as const,
-    zIndex: 1,
-    width: 'min(440px, 100%)',
-};
-
-const loginCardStyle = {
-    borderRadius: 18,
-    boxShadow: '0 18px 44px rgba(15, 23, 42, 0.08)',
-    border: '1px solid rgba(148, 163, 184, 0.14)',
-    overflow: 'hidden' as const,
-    background: 'rgba(255, 255, 255, 0.94)',
-    backdropFilter: 'blur(12px)',
-    animation: 'cardEnter 620ms cubic-bezier(0.22, 1, 0.36, 1) both',
-};
-
-const cardBodyStyle = {
-    padding: 'clamp(28px, 4vw, 36px)',
-};
-
-const brandRowStyle = {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 20,
-};
-
-const logoMarkStyle = {
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: 42,
-    height: 42,
-    borderRadius: 12,
-    background: '#eff6ff',
-    border: '1px solid rgba(96, 165, 250, 0.18)',
-    color: '#2563eb',
-};
-
-const brandMetaStyle = {
-    fontSize: 13,
-    color: '#64748b',
-    letterSpacing: '0.08em',
-    textTransform: 'uppercase' as const,
-};
-
-const titleStyle = {
-    marginBottom: 4,
-    color: '#0f172a',
-};
-
-const formLabelStyle = {
-    fontWeight: 600,
-};
-
-const responsiveStyle = `
-  @keyframes cardEnter {
-    from {
-      opacity: 0;
-      transform: translateY(16px) scale(0.985);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  @media (max-width: 640px) {
-    .login-shell {
-      width: 100%;
-    }
-
-    .login-card {
-      border-radius: 18px;
-    }
-  }
-`;
 
 function LoginPage() {
     const [form] = Form.useForm<Auth.LoginRequest>();
@@ -220,72 +78,130 @@ function LoginPage() {
     };
 
     return (
-        <div style={containerStyle}>
-            <style>{responsiveStyle}</style>
-            <div style={sweepStyle} aria-hidden="true" />
-            <div style={ribbonStyle} aria-hidden="true" />
-            <div style={haloStyle} aria-hidden="true" />
-            <div style={orbOneStyle} aria-hidden="true" />
-            <div style={orbTwoStyle} aria-hidden="true" />
-            <div style={shellStyle} className="login-shell">
-                <Card
-                    style={loginCardStyle}
-                    styles={{ body: cardBodyStyle }}
-                    className="login-card"
+        <main className="flex min-h-screen items-center justify-center overflow-hidden bg-slate-100 p-4 sm:p-8">
+            <div className="grid w-full max-w-[1120px] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_24px_64px_rgba(15,31,54,0.14)] lg:grid-cols-[1.08fr_0.92fr]">
+                <section
+                    className="relative hidden min-h-[620px] flex-col overflow-hidden p-12 text-white lg:flex"
+                    style={brandPanelStyle}
                 >
-                    <div style={brandRowStyle}>
-                        <div style={logoMarkStyle}>
+                    <div className="absolute inset-0" style={gridPatternStyle} aria-hidden="true" />
+                    <div className="absolute -right-20 top-28 size-72 rounded-full border border-blue-300/15" />
+                    <div className="absolute -right-6 top-44 size-44 rounded-full border border-blue-300/15" />
+
+                    <div className="relative flex items-center gap-3">
+                        <div className="flex size-11 items-center justify-center rounded-md bg-blue-500 text-xl shadow-lg shadow-blue-950/30">
                             <SafetyCertificateOutlined />
                         </div>
                         <div>
-                            <div style={brandMetaStyle}>{APP_NAME}</div>
-                            <Title level={3} style={titleStyle}>
-                                登录系统
-                            </Title>
+                            <div className="text-lg font-semibold tracking-wide">{APP_NAME}</div>
+                            <div className="mt-0.5 text-[10px] tracking-[0.2em] text-blue-200">
+                                INDUSTRIAL IOT PLATFORM
+                            </div>
                         </div>
                     </div>
 
-                    <Form<Auth.LoginRequest>
-                        form={form}
-                        layout="vertical"
-                        onFinish={onFinish}
-                        autoComplete="off"
-                    >
-                        <Form.Item
-                            label={<span style={formLabelStyle}>用户名</span>}
-                            name="username"
+                    <div className="relative my-auto max-w-[480px]">
+                        <div className="mb-5 inline-flex items-center rounded border border-blue-300/25 bg-blue-400/10 px-3 py-1.5 text-xs font-medium tracking-wider text-blue-100">
+                            企业级设备运营控制台
+                        </div>
+                        <h1 className="m-0 text-[38px] font-semibold leading-[1.25] tracking-tight">
+                            连接设备，沉淀数据
+                            <br />
+                            驱动生产决策
+                        </h1>
+                        <p className="mb-8 mt-5 max-w-[440px] text-[15px] leading-7 text-slate-300">
+                            统一管理工业设备、通信链路、协议配置与组织权限，为生产现场提供清晰、可靠的数字化底座。
+                        </p>
+                        <div className="grid grid-cols-3 gap-3">
+                            {[
+                                { icon: <HddOutlined />, label: '设备接入' },
+                                { icon: <ClusterOutlined />, label: '协议配置' },
+                                { icon: <SafetyCertificateOutlined />, label: '权限治理' },
+                            ].map((item) => (
+                                <div
+                                    key={item.label}
+                                    className="rounded-md border border-white/10 bg-white/[0.06] px-3 py-4"
+                                >
+                                    <div className="text-lg text-blue-300">{item.icon}</div>
+                                    <div className="mt-2 text-xs font-medium text-slate-200">
+                                        {item.label}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="relative text-xs text-slate-400">稳定 · 安全 · 可追溯</div>
+                </section>
+
+                <section className="flex min-h-[560px] items-center bg-white px-7 py-12 sm:px-14 lg:min-h-[620px] lg:px-16">
+                    <div className="mx-auto w-full max-w-[380px]">
+                        <div className="mb-8 flex items-center gap-3 lg:hidden">
+                            <div className="flex size-10 items-center justify-center rounded-md bg-blue-50 text-lg text-blue-700">
+                                <SafetyCertificateOutlined />
+                            </div>
+                            <div>
+                                <div className="font-semibold text-slate-900">{APP_NAME}</div>
+                                <div className="text-[10px] tracking-[0.16em] text-slate-400">
+                                    INDUSTRIAL IOT
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="mb-8">
+                            <div className="mb-3 h-1 w-9 rounded-full bg-blue-600" />
+                            <h2 className="m-0 text-[28px] font-semibold tracking-tight text-slate-900">
+                                欢迎登录
+                            </h2>
+                            <p className="mb-0 mt-2 text-sm text-slate-500">
+                                使用企业账号进入设备运营控制台
+                            </p>
+                        </div>
+
+                        <Form<Auth.LoginRequest>
+                            form={form}
+                            layout="vertical"
+                            onFinish={onFinish}
+                            autoComplete="off"
                         >
-                            <Input
-                                prefix={<UserOutlined />}
-                                placeholder="请输入用户名"
-                                autoComplete="off"
-                                name="login-username"
-                            />
-                        </Form.Item>
-                        <Form.Item label={<span style={formLabelStyle}>密码</span>} name="password">
-                            <Input.Password
-                                prefix={<LockOutlined />}
-                                placeholder="请输入密码"
-                                autoComplete="new-password"
-                                name="login-password"
-                            />
-                        </Form.Item>
-                        <Form.Item style={{ marginBottom: 0, marginTop: 8 }}>
-                            <Button
-                                type="primary"
-                                htmlType="submit"
-                                block
-                                size="large"
-                                loading={mutation.isPending}
-                                disabled={mutation.isPending}
-                            >
-                                登录系统
-                            </Button>
-                        </Form.Item>
-                    </Form>
-                </Card>
+                            <Form.Item label="用户名" name="username">
+                                <Input
+                                    size="large"
+                                    prefix={<UserOutlined />}
+                                    placeholder="请输入用户名"
+                                    autoComplete="off"
+                                    name="login-username"
+                                />
+                            </Form.Item>
+                            <Form.Item label="密码" name="password">
+                                <Input.Password
+                                    size="large"
+                                    prefix={<LockOutlined />}
+                                    placeholder="请输入密码"
+                                    autoComplete="new-password"
+                                    name="login-password"
+                                />
+                            </Form.Item>
+                            <Form.Item style={{ marginBottom: 0, marginTop: 12 }}>
+                                <Button
+                                    type="primary"
+                                    htmlType="submit"
+                                    block
+                                    size="large"
+                                    loading={mutation.isPending}
+                                    disabled={mutation.isPending}
+                                >
+                                    登录系统
+                                </Button>
+                            </Form.Item>
+                        </Form>
+                        <div className="mt-8 border-t border-slate-100 pt-5 text-xs leading-5 text-slate-400">
+                            为保障企业数据安全，请勿在公共设备上保存登录信息。
+                        </div>
+                    </div>
+                </section>
             </div>
-        </div>
+        </main>
     );
 }
 

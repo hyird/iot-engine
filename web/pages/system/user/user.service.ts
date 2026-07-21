@@ -55,14 +55,14 @@ export function useUserDelete() {
 }
 
 export function useUserSave() {
-    return useSaveMutation<User.CreateDto & { id?: number }, User.CreateDto, User.UpdateDto>({
+    return useSaveMutation<User.CreateDto & { id?: string }, User.CreateDto, User.UpdateDto>({
         createFn: create,
         updateFn: update,
         toUpdatePayload: ({
             id: _id,
             username: _username,
             ...data
-        }: User.CreateDto & { id?: number }) => data as User.UpdateDto,
+        }: User.CreateDto & { id?: string }) => data as User.UpdateDto,
         createMessage: '保存成功',
         updateMessage: '保存成功',
         invalidateKeys: [userQueryKeys.all],

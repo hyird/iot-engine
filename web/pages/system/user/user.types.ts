@@ -23,13 +23,13 @@ type UserStatus = 'enabled' | 'disabled';
 // ============ 基础类型 ============
 
 interface UserRole {
-    id: number;
+    id: string;
     name: string;
     code: string;
 }
 
 interface UserOption {
-    id: number;
+    id: string;
     username: string;
     nickname?: string;
     phone?: string;
@@ -39,7 +39,7 @@ interface UserOption {
 // ============ 列表项/详情类型 ============
 
 interface UserItem {
-    id: number;
+    id: string;
     username: string;
     nickname?: string;
     phone?: string;
@@ -65,7 +65,7 @@ interface CreateUserDto {
     phone?: string;
     email?: string;
     status?: UserStatus;
-    role_ids?: number[];
+    role_ids?: string[];
 }
 
 interface UpdateUserDto {
@@ -74,7 +74,7 @@ interface UpdateUserDto {
     email?: string;
     status?: UserStatus;
     password?: string;
-    role_ids?: number[];
+    role_ids?: string[];
 }
 
 export namespace User {

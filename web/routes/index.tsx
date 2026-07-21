@@ -12,7 +12,7 @@ const LinkPage = lazy(() => import('@/pages/iot/link'));
 const ModbusConfigPage = lazy(() => import('@/pages/iot/protocol/ModbusConfig'));
 const SL651ConfigPage = lazy(() => import('@/pages/iot/protocol/SL651Config'));
 const S7ConfigPage = lazy(() => import('@/pages/iot/protocol/S7Config'));
-const DevicePage = lazy(() => import('@/pages/iot/device/Device'));
+const DevicePage = lazy(() => import('@/pages/iot/device'));
 
 const routeErrorElement = (
     <div className="flex h-screen items-center justify-center p-6">

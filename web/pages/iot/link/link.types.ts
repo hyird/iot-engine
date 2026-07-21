@@ -10,7 +10,14 @@ export const linkQueryKeys = {
 type LinkMode = 'TCP Server' | 'TCP Client';
 type LinkProtocol = 'SL651' | 'Modbus' | 'S7';
 type LinkStatus = 'enabled' | 'disabled';
-type ConnectionStatus = 'stopped' | 'listening' | 'connected' | 'partial' | 'connecting' | 'error';
+type ConnectionStatus =
+    | 'stopped'
+    | 'listening'
+    | 'connected'
+    | 'partial'
+    | 'connecting'
+    | 'reconnecting'
+    | 'error';
 
 interface LinkTarget {
     id: string;
@@ -19,12 +26,13 @@ interface LinkTarget {
     port: number;
     status: LinkStatus;
     conn_status?: ConnectionStatus;
+    state_reason?: string;
     error_msg?: string;
-    last_activity?: string;
+    last_activity_at_ms?: number;
 }
 
 interface LinkItem {
-    id: number;
+    id: string;
     name: string;
     mode: LinkMode;
     protocol: LinkProtocol;
@@ -34,8 +42,10 @@ interface LinkItem {
     status: LinkStatus;
     conn_status: ConnectionStatus;
     client_count: number;
+    state_reason?: string;
     clients?: string[];
-    created_by: number;
+    error_msg?: string;
+    created_by: string;
     created_at: string;
     updated_at: string;
 }

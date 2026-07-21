@@ -25,12 +25,12 @@ RUVIA_REQUEST_MODEL(CreateUserBody, RUVIA_FIELD(username, ruvia::String),
                     RUVIA_FIELD(password, ruvia::String), RUVIA_FIELD(nickname, ruvia::String),
                     RUVIA_FIELD(phone, ruvia::String), RUVIA_FIELD(email, ruvia::String),
                     RUVIA_FIELD(status, ruvia::String),
-                    RUVIA_FIELD_NAME("role_ids", roleIds, ruvia::Array<ruvia::Int64>));
+                    RUVIA_FIELD_NAME("role_ids", roleIds, ruvia::Array<ruvia::String>));
 
 RUVIA_REQUEST_MODEL(UpdateUserBody, RUVIA_FIELD(nickname, ruvia::String),
                     RUVIA_FIELD(phone, ruvia::String), RUVIA_FIELD(email, ruvia::String),
                     RUVIA_FIELD(status, ruvia::String), RUVIA_FIELD(password, ruvia::String),
-                    RUVIA_FIELD_NAME("role_ids", roleIds, ruvia::Array<ruvia::Int64>));
+                    RUVIA_FIELD_NAME("role_ids", roleIds, ruvia::Array<ruvia::String>));
 
 RUVIA_REQUEST_MODEL(UserListQuery, RUVIA_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1)),
                     RUVIA_FIELD_NAME("pageSize", pageSize, ruvia::Int64, RUVIA_DEFAULT(10)),
@@ -38,13 +38,13 @@ RUVIA_REQUEST_MODEL(UserListQuery, RUVIA_FIELD(page, ruvia::Int64, RUVIA_DEFAULT
 
 RUVIA_REQUEST_MODEL(UserOptionsQuery, RUVIA_FIELD(keyword, ruvia::String));
 
-RUVIA_REQUEST_MODEL(UserIdParams, RUVIA_FIELD(id, ruvia::Int64));
+RUVIA_REQUEST_MODEL(UserIdParams, RUVIA_FIELD(id, ruvia::String));
 
-RUVIA_RESPONSE_MODEL(UserOptionDto, RUVIA_FIELD(id, ruvia::Int64),
+RUVIA_RESPONSE_MODEL(UserOptionDto, RUVIA_FIELD(id, ruvia::String),
                      RUVIA_FIELD(username, ruvia::String),
                      RUVIA_FIELD(nickname, ruvia::String, RUVIA_OMIT_EMPTY));
 
-RUVIA_RESPONSE_MODEL(UserItemDto, RUVIA_FIELD(id, ruvia::Int64),
+RUVIA_RESPONSE_MODEL(UserItemDto, RUVIA_FIELD(id, ruvia::String),
                      RUVIA_FIELD(username, ruvia::String),
                      RUVIA_FIELD(nickname, ruvia::String, RUVIA_OMIT_EMPTY),
                      RUVIA_FIELD(phone, ruvia::String, RUVIA_OMIT_EMPTY),

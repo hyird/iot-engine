@@ -55,7 +55,7 @@ const permissionOptions = [
     ['iot:device-group:delete', '删除设备分组'],
 ].map(([value, label]) => ({ value, label }));
 
-type RoleFormValues = Role.CreateDto & { id?: number };
+type RoleFormValues = Role.CreateDto & { id?: string };
 
 export default function SystemRolePage() {
     const [keyword, setKeyword] = useState('');

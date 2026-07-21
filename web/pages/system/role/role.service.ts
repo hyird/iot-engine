@@ -16,7 +16,7 @@ export function useRoleList(
 }
 
 export function useRoleSave() {
-    return useSaveMutation<Role.CreateDto & { id?: number }, Role.CreateDto, Role.UpdateDto>({
+    return useSaveMutation<Role.CreateDto & { id?: string }, Role.CreateDto, Role.UpdateDto>({
         createFn: create,
         updateFn: update,
         toUpdatePayload: ({ id: _id, ...data }) => data,

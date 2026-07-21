@@ -26,11 +26,11 @@ import { useDeptDelete, useDeptList, useDeptOptions, useDeptSave } from './dept.
 import type { Dept } from './dept.types';
 
 const { Search } = Input;
-type DeptFormValues = Dept.CreateDto & { id?: number };
+type DeptFormValues = Dept.CreateDto & { id?: string };
 
 export default function SystemDeptPage() {
     const [keyword, setKeyword] = useState('');
-    const [selectedParentId, setSelectedParentId] = useState<number>();
+    const [selectedParentId, setSelectedParentId] = useState<string>();
     const [expandedTreeKeys, setExpandedTreeKeys] = useState<(string | number)[]>(['all']);
     const [pagination, setPagination] = useState({ page: 1, pageSize: 10 });
     const [editing, setEditing] = useState<Dept.Item | null>(null);
@@ -71,14 +71,14 @@ export default function SystemDeptPage() {
         [users]
     );
     const departmentTree = useMemo<TreeDataNode[]>(() => {
-        const childrenByParent = new Map<number, Dept.Option[]>();
+        const childrenByParent = new Map<string, Dept.Option[]>();
         for (const department of departments) {
             const siblings = childrenByParent.get(department.parent_id) ?? [];
             siblings.push(department);
             childrenByParent.set(department.parent_id, siblings);
         }
 
-        const buildNodes = (parentId: number, ancestors = new Set<number>()): TreeDataNode[] =>
+        const buildNodes = (parentId: string, ancestors = new Set<string>()): TreeDataNode[] =>
             (childrenByParent.get(parentId) ?? [])
                 .filter((department) => !ancestors.has(department.id))
                 .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
@@ -96,7 +96,7 @@ export default function SystemDeptPage() {
             {
                 key: 'all',
                 title: `全部部门 (${departments.length})`,
-                children: buildNodes(0),
+                children: buildNodes(''),
             },
         ];
     }, [departments]);
@@ -116,7 +116,7 @@ export default function SystemDeptPage() {
     const showCreate = () => {
         setEditing(null);
         form.resetFields();
-        form.setFieldsValue({ parent_id: 0, leader_id: 0, sort_order: 0, status: 'enabled' });
+        form.setFieldsValue({ parent_id: '', leader_id: '', sort_order: 0, status: 'enabled' });
         setOpen(true);
     };
     const showEdit = (dept: Dept.Item) => {
@@ -240,7 +240,7 @@ export default function SystemDeptPage() {
                             onSelect={(keys) => {
                                 const key = String(keys[0] ?? 'all');
                                 setSelectedParentId(
-                                    key === 'all' ? undefined : Number(key.replace('dept-', ''))
+                                    key === 'all' ? undefined : key.replace('dept-', '')
                                 );
                                 setPagination((current) => ({ ...current, page: 1 }));
                             }}
@@ -284,13 +284,13 @@ export default function SystemDeptPage() {
                         <Input maxLength={64} />
                     </Form.Item>
                     <Form.Item label="上级部门" name="parent_id">
-                        <Select options={[{ value: 0, label: '顶级部门' }, ...parentOptions]} />
+                        <Select options={[{ value: '', label: '顶级部门' }, ...parentOptions]} />
                     </Form.Item>
                     <Form.Item label="负责人" name="leader_id">
                         <Select
                             showSearch
                             optionFilterProp="label"
-                            options={[{ value: 0, label: '未指定' }, ...leaderOptions]}
+                            options={[{ value: '', label: '未指定' }, ...leaderOptions]}
                         />
                     </Form.Item>
                     <Form.Item label="排序" name="sort_order">

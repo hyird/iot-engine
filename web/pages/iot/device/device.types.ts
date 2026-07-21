@@ -38,20 +38,20 @@ export interface RegistrationConfig {
 
 /** 设备列表项 */
 export interface DeviceItem {
-    id: number;
+    id: string;
     name: string;
     /** 全局唯一设备编码 */
     device_code: string;
     /** 关联链路 ID（0 表示 Agent 模式） */
-    link_id: number;
+    link_id: string;
     /** TCP Client 链路中的目标 ID */
     target_id?: string;
     /** 关联协议配置 ID */
-    protocol_config_id: number;
+    protocol_config_id: string;
     /** 启用状态 */
     status: DeviceStatus;
     /** 所属分组 ID */
-    group_id?: number | null;
+    group_id?: string | null;
     /** 在线超时时间（秒），默认 300 秒（5分钟） */
     online_timeout?: number;
     /** 是否允许远控（下发指令），默认 true */
@@ -74,7 +74,7 @@ export interface DeviceItem {
     registration?: RegistrationConfig;
     /** 备注 */
     remark?: string;
-    created_by?: number;
+    created_by?: string;
     created_at?: string;
     updated_at?: string;
 
@@ -86,8 +86,8 @@ export interface DeviceItem {
     protocol_type?: Protocol.Type;
 
     // Agent 模式字段（link_id = 0 时返回）
-    agent_id?: number;
-    agent_endpoint_id?: number;
+    agent_id?: string;
+    agent_endpoint_id?: string;
 
     // 资源权限
     can_edit?: boolean;
@@ -99,7 +99,7 @@ export interface DeviceItem {
 
 /** 设备选项（下拉列表） */
 export interface DeviceOption {
-    id: number;
+    id: string;
     name: string;
     device_code: string;
     can_edit?: boolean;
@@ -111,8 +111,8 @@ export interface DeviceOption {
 
 /** 设备查询参数 */
 export interface DeviceQuery extends PageParams {
-    link_id?: number;
-    protocol_config_id?: number;
+    link_id?: string;
+    protocol_config_id?: string;
     status?: DeviceStatus;
 }
 
@@ -120,10 +120,10 @@ export interface DeviceQuery extends PageParams {
 export interface CreateDeviceDto {
     name: string;
     device_code: string;
-    link_id: number;
+    link_id: string;
     target_id?: string;
-    protocol_config_id: number;
-    group_id?: number | null;
+    protocol_config_id: string;
+    group_id?: string | null;
     status?: DeviceStatus;
     /** 在线超时时间（秒），默认 300 秒（5分钟） */
     online_timeout?: number;
@@ -141,18 +141,18 @@ export interface CreateDeviceDto {
     registration?: RegistrationConfig;
     remark?: string;
     // Agent 模式字段（link_id = 0 时使用）
-    agent_id?: number;
-    agent_endpoint_id?: number;
+    agent_id?: string;
+    agent_endpoint_id?: string;
 }
 
 /** 更新设备 DTO */
 export interface UpdateDeviceDto {
     name?: string;
     device_code?: string;
-    link_id?: number;
+    link_id?: string;
     target_id?: string;
-    protocol_config_id?: number;
-    group_id?: number | null;
+    protocol_config_id?: string;
+    group_id?: string | null;
     status?: DeviceStatus;
     /** 在线超时时间（秒） */
     online_timeout?: number;
@@ -176,15 +176,15 @@ export interface UpdateDeviceDto {
 /** 设备静态数据（不包含实时数据，用于 ETag 缓存） */
 export interface DeviceStaticData {
     // 基本信息
-    id: number;
+    id: string;
     name: string;
     /** 全局唯一设备编码 */
     device_code: string;
-    link_id: number;
+    link_id: string;
     target_id?: string;
-    protocol_config_id: number;
+    protocol_config_id: string;
     status: DeviceStatus;
-    group_id?: number | null;
+    group_id?: string | null;
     online_timeout?: number;
     remote_control?: boolean;
     read_interval?: number;
@@ -197,7 +197,7 @@ export interface DeviceStaticData {
     heartbeat?: HeartbeatConfig;
     registration?: RegistrationConfig;
     remark?: string;
-    created_by?: number;
+    created_by?: string;
     created_at?: string;
 
     // 关联信息
@@ -211,8 +211,8 @@ export interface DeviceStaticData {
     imageOperations?: ImageOperation[];
 
     // Agent 模式字段（link_id = 0 时返回）
-    agent_id?: number;
-    agent_endpoint_id?: number;
+    agent_id?: string;
+    agent_endpoint_id?: string;
 
     // 资源权限
     can_edit?: boolean;
@@ -224,7 +224,7 @@ export interface DeviceStaticData {
 
 /** 设备实时数据（用于轮询） */
 export interface DeviceRealtimeData {
-    id: number;
+    id: string;
     reportTime?: string;
     /** 设备是否在线（基于实际 TCP 连接状态） */
     connected?: boolean;
@@ -340,11 +340,11 @@ export interface DeviceRealTimeData extends DeviceStaticData {
 /** 设备分享条目 */
 export interface DeviceShareItem {
     target_type: 'user' | 'department';
-    target_id: number;
-    user_id?: number;
+    target_id: string;
+    user_id?: string;
     username?: string;
     nickname?: string;
-    department_id?: number;
+    department_id?: string;
     department_name?: string;
     permission: DeviceSharePermission;
     created_at?: string;
@@ -353,17 +353,17 @@ export interface DeviceShareItem {
 
 /** 设备分享更新参数 */
 export interface DeviceShareUpsertDto {
-    user_id?: number;
-    user_ids?: number[];
+    user_id?: string;
+    user_ids?: string[];
     username?: string;
-    department_ids?: number[];
+    department_ids?: string[];
     permission: DeviceSharePermission;
 }
 
 /** 指令下发参数 */
 export interface CommandPayload {
     deviceCode: string;
-    deviceId?: number;
+    deviceId?: string;
     elements: Array<{ elementId: string; value: string }>;
 }
 
@@ -389,11 +389,11 @@ export interface ElementRecord {
     /** 数据方向：UP=上行（设备上报），DOWN=下行（指令下发） */
     direction?: 'UP' | 'DOWN';
     /** 应答报文 ID（仅下行指令有，关联的应答记录） */
-    responseId?: number;
+    responseId?: string;
     /** 应答报文解析的要素（仅下行指令有） */
     responseElements?: DeviceElement[];
     /** 发送用户 ID（仅下行指令有） */
-    userId?: number;
+    userId?: string;
     /** 发送用户名（仅下行指令有） */
     userName?: string;
     /** 指令状态（仅下行指令有） */
@@ -415,7 +415,7 @@ export interface HistoryDataQuery {
     pageSize?: number;
     keyword?: string;
     /** 设备 ID */
-    deviceId: number;
+    deviceId: string;
     /** 数据类型 */
     dataType: HistoryDataType;
     startTime?: Date;

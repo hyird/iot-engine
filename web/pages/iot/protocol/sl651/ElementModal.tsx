@@ -13,7 +13,7 @@ import { EncodeList, generateId, type SaveMutation } from './shared';
 export interface ElementModalRef {
     open: (
         mode: 'create' | 'edit',
-        typeId: number,
+        typeId: string,
         funcId: string,
         element?: SL651.Element
     ) => void;
@@ -29,7 +29,7 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
     ({ types, onSuccess, saveMutation }, ref) => {
         const [open, setOpen] = useState(false);
         const [mode, setMode] = useState<'create' | 'edit'>('create');
-        const [typeId, setTypeId] = useState<number>();
+        const [typeId, setTypeId] = useState<string>();
         const [funcId, setFuncId] = useState<string>();
         const [current, setCurrent] = useState<SL651.Element>();
         const [form] = Form.useForm();

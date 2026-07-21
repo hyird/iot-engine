@@ -6,9 +6,9 @@ export type DeviceGroupStatus = 'enabled' | 'disabled';
 
 /** 设备分组列表项 */
 export interface DeviceGroupItem {
-    id: number;
+    id: string;
     name: string;
-    parent_id?: number | null;
+    parent_id?: string | null;
     status: DeviceGroupStatus;
     sort_order: number;
     remark?: string;
@@ -26,7 +26,7 @@ export interface DeviceGroupTreeItem extends DeviceGroupItem {
 /** 创建设备分组 DTO */
 export interface CreateDeviceGroupDto {
     name: string;
-    parent_id?: number | null;
+    parent_id?: string | null;
     status?: DeviceGroupStatus;
     sort_order?: number;
     remark?: string;
@@ -35,7 +35,7 @@ export interface CreateDeviceGroupDto {
 /** 更新设备分组 DTO */
 export interface UpdateDeviceGroupDto {
     name?: string;
-    parent_id?: number | null;
+    parent_id?: string | null;
     status?: DeviceGroupStatus;
     sort_order?: number;
     remark?: string;

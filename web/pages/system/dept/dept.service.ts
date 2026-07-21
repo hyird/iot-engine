@@ -22,7 +22,7 @@ export function useDeptOptions(options?: { enabled?: boolean }) {
     });
 }
 export function useDeptSave() {
-    return useSaveMutation<Dept.CreateDto & { id?: number }, Dept.CreateDto, Dept.UpdateDto>({
+    return useSaveMutation<Dept.CreateDto & { id?: string }, Dept.CreateDto, Dept.UpdateDto>({
         createFn: create,
         updateFn: update,
         toUpdatePayload: ({ id: _id, ...data }) => data,

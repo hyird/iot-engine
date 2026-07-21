@@ -16,7 +16,7 @@ import request from '@/utils/http';
 
 const ENDPOINTS = {
     BASE: '/api/users',
-    DETAIL: (id: number) => `/api/users/${id}`,
+    DETAIL: (id: string) => `/api/users/${id}`,
     OPTIONS: '/api/users/options',
 } as const;
 
@@ -38,11 +38,11 @@ export function create(data: User.CreateDto) {
     return request.post<void>(ENDPOINTS.BASE, createUserSchema.parse(data));
 }
 
-export function update(id: number, data: User.UpdateDto) {
+export function update(id: string, data: User.UpdateDto) {
     const validatedId = userIdSchema.parse(id);
     return request.put<void>(ENDPOINTS.DETAIL(validatedId), updateUserSchema.parse(data));
 }
 
-export function remove(id: number) {
+export function remove(id: string) {
     return request.delete<void>(ENDPOINTS.DETAIL(userIdSchema.parse(id)));
 }

@@ -25,6 +25,12 @@ export const saveLinkSchema = z
         status: statusSchema,
     })
     .superRefine((value, context) => {
+        if (value.protocol === 'SL651' && value.mode !== 'TCP Server')
+            context.addIssue({
+                code: 'custom',
+                path: ['protocol'],
+                message: 'SL651 只支持 TCP Server 模式',
+            });
         if (value.mode === 'TCP Server') {
             const result = ipv4Schema.safeParse(value.ip);
             if (!result.success)
@@ -59,4 +65,4 @@ export const linkListQuerySchema = pageParamsSchema.extend({
     protocol: protocolSchema.optional(),
     status: statusSchema.optional(),
 });
-export const linkIdSchema = z.number().int().min(1, 'id 必须是正整数');
+export const linkIdSchema = z.uuid({ error: 'id 必须是 UUID' });

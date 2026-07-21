@@ -11,7 +11,7 @@ RUVIA_REQUEST_MODEL(LoginBody, RUVIA_FIELD(username, ruvia::String),
 
 RUVIA_REQUEST_MODEL(RefreshBody, RUVIA_FIELD_NAME("refresh_token", refreshToken, ruvia::String));
 
-RUVIA_RESPONSE_MODEL(AuthUserInfoDto, RUVIA_FIELD(id, ruvia::Int64),
+RUVIA_RESPONSE_MODEL(AuthUserInfoDto, RUVIA_FIELD(id, ruvia::String),
                      RUVIA_FIELD(username, ruvia::String),
                      RUVIA_FIELD(nickname, ruvia::String, RUVIA_OMIT_EMPTY),
                      RUVIA_FIELD(status, ruvia::String),

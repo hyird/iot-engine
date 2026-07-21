@@ -18,14 +18,14 @@ import type { User } from './user.types';
 const { Search } = Input;
 
 interface UserFormValues {
-    id?: number;
+    id?: string;
     username: string;
     password?: string;
     nickname?: string;
     phone?: string;
     email?: string;
     status: User.Status;
-    role_ids?: number[];
+    role_ids?: string[];
 }
 
 const SystemUserPage = () => {
@@ -117,7 +117,7 @@ const SystemUserPage = () => {
                     ...validated,
                     id: editing.id,
                     username: values.username,
-                } as User.CreateDto & { id?: number },
+                } as User.CreateDto & { id?: string },
                 { onSuccess }
             );
             return;

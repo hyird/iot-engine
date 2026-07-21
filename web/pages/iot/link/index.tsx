@@ -20,12 +20,17 @@ import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermissions } from '@/hooks/usePermission';
 import { validateForm } from '@/utils/validation';
 import { saveLinkSchema } from './link.schema';
-import { useLinkDelete, useLinkEnums, useLinkList, useLinkSave } from './link.service';
+import { useLinkDelete, useLinkEnums, useLinkList, useLinkSave, usePublicIp } from './link.service';
 import type { Link } from './link.types';
 
 const { Search } = Input;
 
-type LinkFormValues = Link.SaveDto & { id?: number };
+const tooltipStyles = {
+    root: { maxWidth: 'none' },
+    container: { maxWidth: 'none', whiteSpace: 'nowrap' },
+} as const;
+
+type LinkFormValues = Link.SaveDto & { id?: string };
 
 const connectionLabels: Record<Link.Item['conn_status'], { color: string; text: string }> = {
     stopped: { color: 'default', text: '已停止' },
@@ -33,6 +38,7 @@ const connectionLabels: Record<Link.Item['conn_status'], { color: string; text: 
     connected: { color: 'success', text: '已连接' },
     partial: { color: 'warning', text: '部分连接' },
     connecting: { color: 'warning', text: '连接中' },
+    reconnecting: { color: 'warning', text: '重连中' },
     error: { color: 'error', text: '错误' },
 };
 
@@ -55,6 +61,7 @@ export default function IotLinkPage() {
     const [modalVisible, setModalVisible] = useState(false);
     const [editing, setEditing] = useState<Link.Item | null>(null);
     const [form] = Form.useForm<LinkFormValues>();
+    const selectedMode = Form.useWatch('mode', form) as Link.Mode | undefined;
     const { modal } = App.useApp();
     const { has } = usePermissions();
     const canQuery = has('iot:link:query');
@@ -68,9 +75,10 @@ export default function IotLinkPage() {
     };
     const { run: debouncedSearch } = useDebounceFn(doSearch, 300);
     const { data: linkEnums } = useLinkEnums({ enabled: canQuery });
+    const { data: publicIp } = usePublicIp({ enabled: canQuery });
     const { data, isLoading } = useLinkList(
         { ...pagination, keyword: keyword || undefined },
-        { enabled: canQuery, refetchInterval: 10000 }
+        { enabled: canQuery, refetchInterval: 3000 }
     );
     const save = useLinkSave();
     const remove = useLinkDelete();
@@ -93,6 +101,8 @@ export default function IotLinkPage() {
         if (mode === 'TCP Server') {
             form.setFieldsValue({ ip: '0.0.0.0', port: 502, targets: [] });
         } else {
+            if (form.getFieldValue('protocol') === 'SL651')
+                form.setFieldValue('protocol', 'Modbus');
             form.setFieldsValue({ ip: '', port: 0, targets: [createTarget()] });
         }
     };
@@ -104,7 +114,7 @@ export default function IotLinkPage() {
             name: record.name,
             mode: record.mode,
             protocol: record.protocol,
-            ip: record.mode === 'TCP Server' ? '0.0.0.0' : '',
+            ip: record.mode === 'TCP Server' ? record.ip : '',
             port: record.port,
             targets: record.targets.map((target) => ({ ...target })),
             status: record.status,
@@ -164,6 +174,7 @@ export default function IotLinkPage() {
                     `${record.ip}:${record.port}`
                 ) : (
                     <Tooltip
+                        styles={tooltipStyles}
                         title={record.targets.map((target) => (
                             <div key={target.id}>
                                 {target.name}: {target.ip}:{target.port}
@@ -185,25 +196,63 @@ export default function IotLinkPage() {
             render: (_, record) => {
                 const display = connectionLabels[record.conn_status] ?? connectionLabels.stopped;
                 if (record.mode === 'TCP Server' && record.conn_status === 'listening') {
+                    const clientCount = (
+                        <Tag color="blue" className={record.client_count ? 'cursor-pointer' : ''}>
+                            {record.client_count} 客户端
+                        </Tag>
+                    );
                     return (
                         <Space size={4}>
                             <Tag color={display.color}>{display.text}</Tag>
-                            <Tooltip title={record.clients?.join('\n')}>
-                                <Tag color="blue">{record.client_count} 客户端</Tag>
-                            </Tooltip>
+                            {record.client_count ? (
+                                <Tooltip
+                                    styles={tooltipStyles}
+                                    title={
+                                        <div>
+                                            <div className="mb-1 font-medium">已连接客户端：</div>
+                                            {record.clients?.map((endpoint) => (
+                                                <div key={endpoint}>{endpoint}</div>
+                                            ))}
+                                        </div>
+                                    }
+                                >
+                                    {clientCount}
+                                </Tooltip>
+                            ) : (
+                                clientCount
+                            )}
                         </Space>
                     );
                 }
                 if (record.mode === 'TCP Client') {
-                    const enabled = record.targets.filter((target) => target.status === 'enabled');
-                    const connected = enabled.filter(
-                        (target) => target.conn_status === 'connected'
+                    const enabledTargetCount = record.targets.filter(
+                        (target) => target.status === 'enabled'
                     ).length;
                     return (
                         <Space size={4}>
-                            <Tag color={display.color}>{display.text}</Tag>
+                            <Tooltip
+                                styles={tooltipStyles}
+                                title={record.targets
+                                    .filter((target) => target.status === 'enabled')
+                                    .map((target) => (
+                                        <div key={target.id}>
+                                            {target.name}（{target.ip}:{target.port}）：
+                                            {connectionLabels[target.conn_status ?? 'stopped'].text}
+                                            {target.error_msg ? `（${target.error_msg}）` : ''}
+                                            {target.last_activity_at_ms
+                                                ? `，最后活动 ${formatDateTime(
+                                                      new Date(
+                                                          target.last_activity_at_ms
+                                                      ).toISOString()
+                                                  )}`
+                                                : ''}
+                                        </div>
+                                    ))}
+                            >
+                                <Tag color={display.color}>{display.text}</Tag>
+                            </Tooltip>
                             <Tag color="blue">
-                                {connected}/{enabled.length} 目标
+                                {record.client_count}/{enabledTargetCount} 服务端
                             </Tag>
                         </Space>
                     );
@@ -241,12 +290,19 @@ export default function IotLinkPage() {
 
     const modes = linkEnums?.modes ?? ['TCP Server', 'TCP Client'];
     const protocols = linkEnums?.protocols ?? ['SL651', 'Modbus', 'S7'];
+    const availableProtocols =
+        selectedMode === 'TCP Client'
+            ? protocols.filter((protocol) => protocol !== 'SL651')
+            : protocols;
 
     return (
         <PageContainer
             header={
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="m-0 text-base font-medium">链路管理</h3>
+                    <Space wrap>
+                        <h3 className="m-0 text-base font-medium">链路管理</h3>
+                        {publicIp?.ip ? <Tag color="blue">公网 IP: {publicIp.ip}</Tag> : null}
+                    </Space>
                     <Space wrap>
                         <Search
                             allowClear
@@ -327,7 +383,7 @@ export default function IotLinkPage() {
                     >
                         <Select
                             disabled={Boolean(editing)}
-                            options={protocols.map((value) => ({ value, label: value }))}
+                            options={availableProtocols.map((value) => ({ value, label: value }))}
                         />
                     </Form.Item>
                     <Form.Item

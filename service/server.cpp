@@ -3,6 +3,7 @@
 #include <exception>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -13,10 +14,10 @@
 
 #include "service/common/http.h"
 #include "service/config/schema.h"
-#include "service/modules/iot/device/device.controller.h"
-#include "service/modules/iot/device-group/device-group.controller.h"
-#include "service/modules/iot/link/link.controller.h"
-#include "service/modules/iot/protocol/protocol.controller.h"
+#include "service/modules/northbridge/device/device.controller.h"
+#include "service/modules/northbridge/link/link.controller.h"
+#include "service/modules/northbridge/protocol/protocol.controller.h"
+#include "service/modules/southbridge/southbridge.runtime.h"
 #include "service/modules/system/auth/auth.controller.h"
 #include "service/modules/system/dept/dept.controller.h"
 #include "service/modules/system/role/role.controller.h"
@@ -48,7 +49,22 @@ ruvia::RedisConfig redisConfig(const ruvia::Env& env) {
     assign(config.password, env.get("REDIS_PASSWORD"));
     config.port = env.get<std::uint16_t>("REDIS_PORT").value_or(6379);
     config.database = env.get<std::uint32_t>("REDIS_DATABASE").value_or(0);
-    config.poolSizePerWorker = env.get<std::uint32_t>("REDIS_POOL_SIZE_PER_WORKER").value_or(2);
+    config.poolSizePerWorker = 1;
+    return config;
+}
+
+service::southbridge::SouthbridgeConfig southbridgeConfig(const ruvia::Env& env) {
+    service::southbridge::SouthbridgeConfig config;
+    config.postgres.host = std::string(env.get("DB_HOST").value_or("127.0.0.1"));
+    config.postgres.port = env.get<std::uint16_t>("DB_PORT").value_or(5432);
+    config.postgres.username = std::string(env.get("DB_USERNAME").value_or(""));
+    config.postgres.password = std::string(env.get("DB_PASSWORD").value_or(""));
+    config.postgres.database = std::string(env.get("DB_DATABASE").value_or(""));
+    config.redis.host = std::string(env.get("REDIS_HOST").value_or("127.0.0.1"));
+    config.redis.port = env.get<std::uint16_t>("REDIS_PORT").value_or(6379);
+    config.redis.username = std::string(env.get("REDIS_USERNAME").value_or(""));
+    config.redis.password = std::string(env.get("REDIS_PASSWORD").value_or(""));
+    config.redis.database = env.get<std::uint32_t>("REDIS_DATABASE").value_or(0);
     return config;
 }
 
@@ -96,13 +112,17 @@ int main(int argc, char* argv[]) {
                   << ", skipped=" << report.skipped().size() << '\n';
 
         configureWeb(app, runtimeDirectory(argc > 0 ? argv[0] : nullptr));
+        auto southbridge = std::make_shared<service::southbridge::SouthbridgeRuntime>(
+            southbridgeConfig(app.env()));
         app.useDb(std::move(db))
             .useRedis(redisConfig(app.env()))
+            .onStart([southbridge] { southbridge->start(); })
+            .onStop([southbridge] { southbridge->stop(); })
             .onError(&handleError)
             .setListenAddress(app.env().get("HOST").value_or("0.0.0.0"))
             .setServerTopology(
                 ruvia::ServerTopology::http(app.env().get<std::uint16_t>("PORT").value_or(1102)))
-            .setWorkersPerListener(app.env().get<std::uint32_t>("WORKER_THREADS").value_or(2))
+            .setWorkersPerListener(1)
             .run();
         return 0;
     } catch (const std::exception& error) {

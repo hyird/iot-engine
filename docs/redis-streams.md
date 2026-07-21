@@ -1,108 +1,64 @@
-# Redis Streams 设计
+# Redis 通道与运行状态
 
-## Stream 清单
+Redis 只承担进程内模块之间的消息通道和短期运行状态，不保存业务主数据。南桥、
+北桥是同一进程中的逻辑模块，因此 key 不包含 `south` 或 `north`。
 
-| Stream | 生产者 | 消费者组 | 用途 |
-|---|---|---|---|
-| `iot:telemetry` | 接入 API、设备适配器 | `telemetry-writers` | 主动上报数据 |
-| `iot:commands` | HTTP API、定时调度器 | 按协议划分的 gateway group | 设备查询命令 |
-| `iot:responses` | 设备协议适配器 | `response-writers` | 查询成功、失败或超时结果 |
-| `iot:telemetry:dlq` | 遥测消费者 | 运维工具 | 无法处理的遥测消息 |
-| `iot:commands:dlq` | 命令消费者 | 运维工具 | 无法发送的命令 |
-| `iot:responses:dlq` | 响应消费者 | 运维工具 | 无法处理的响应 |
+## 消息通道
 
-## 通用 Envelope
+| Key | 类型 | 用途 |
+|---|---|---|
+| `iot:channel:config` | Stream | 链路、协议、设备配置变更 |
+| `iot:channel:packet:raw` | Stream | 设备原始上行报文 |
+| `iot:channel:packet:parsed` | Stream | 已解析设备消息 |
+| `iot:channel:command` | Stream | 北桥下发命令 |
+| `iot:channel:protocol:task:high` | Stream | 注册、响应等高优先级任务 |
+| `iot:channel:protocol:task:normal` | Stream | 普通查询任务 |
+| `iot:channel:link:event` | Stream | 链路状态变化通知 |
+| `iot:channel:dead-letter` | Stream | 达到重试上限的消息 |
 
-Redis Stream 使用少量可路由字段，业务内容放入 JSON `payload` 字段：
+所有 `message_id`、`causation_id` 和业务资源 ID 都使用 UUIDv7。原始报文只使用
+大写十六进制字符串字段：原始包为 `payload_hex`，解析消息保留
+`raw_payload_hex`；不保存二进制转义串，也不兼容旧 `payload` 字段。
 
-```json
-{
-  "schema_version": 1,
-  "event_id": "019f...",
-  "event_type": "telemetry.reported",
-  "device_id": "sensor-01",
-  "correlation_id": null,
-  "occurred_at": "2026-07-20T08:00:00Z",
-  "produced_at": "2026-07-20T08:00:01Z",
-  "payload": {}
-}
+消费者成功处理消息后执行 `XACK` 和 `XDEL`。配置消息消费完成后同样立即删除，
+不会把 Stream 当长期审计库。普通 Stream 默认最多 10000 条，链路事件和死信默认
+最多 1000 条。
+
+## 可读运行状态
+
+运行状态采用“一个对象一个 key”，避免一个大 Hash 混放所有连接或协议组：
+
+| Key | 类型 | 内容 |
+|---|---|---|
+| `iot:state:link:<link_uuid>` | Hash | 链路名、协议、模式、连接数、端点和精确状态 |
+| `iot:state:session:<connection_id>` | Hash | 远端 `ip:port`、链路 UUID、DTU、注册状态和时间 |
+| `iot:state:protocol:queue-depth:<group_key>` | String | 该协议组当前排队任务数 |
+| `iot:state:protocol:inflight:<group_key>` | Hash | 当前查询的 Stream、消息、连接、超时和 Modbus 匹配字段 |
+
+`group_key` 表达调度顺序域，例如一个 DTU 或
+`link:<link_uuid>:discovery`。同组任务严格串行；High Stream 总是优先读取，但一个
+查询进入 in-flight 后会立即检查上行报文，避免高优先级任务破坏查询—响应时序。
+
+in-flight Hash 使用字段名直接表达含义，例如：
+
+```text
+token                 019f...
+stream                iot:channel:protocol:task:high
+entry_id              1721...-0
+message_id            019f...
+connection_id         019f...-12
+protocol              Modbus
+deadline_at_ms        1784600000000
+transport             TCP
+transaction_id        12
+unit_id               1
+function_code         3
 ```
 
-必须携带 `schema_version`，以支持未来兼容迁移。时间使用 UTC RFC 3339。
-消费者将 `payload` 原样或标准化后写入 PostgreSQL JSONB，避免为不同设备型号
-反复修改表结构。
+## 容量与清理
 
-## 遥测消息
-
-```json
-{
-  "schema_version": 1,
-  "event_id": "019f...",
-  "event_type": "telemetry.reported",
-  "device_id": "sensor-01",
-  "occurred_at": "2026-07-20T08:00:00Z",
-  "payload": {
-    "metrics": {
-      "temperature": 24.6,
-      "humidity": 61.2
-    },
-    "attributes": {
-      "site": "taipei-1"
-    }
-  }
-}
-```
-
-## 查询命令
-
-```json
-{
-  "schema_version": 1,
-  "event_type": "device.query.requested",
-  "command_id": "019f...",
-  "correlation_id": "019f...",
-  "device_id": "meter-01",
-  "protocol": "modbus_tcp",
-  "operation": "read_metrics",
-  "timeout_ms": 3000,
-  "payload": {
-    "metrics": ["voltage", "current"]
-  }
-}
-```
-
-## 查询响应
-
-成功、设备错误和超时都必须写入 `iot:responses`：
-
-```json
-{
-  "schema_version": 1,
-  "event_id": "019f...",
-  "event_type": "device.query.responded",
-  "command_id": "019f...",
-  "correlation_id": "019f...",
-  "device_id": "meter-01",
-  "status": "success",
-  "occurred_at": "2026-07-20T08:00:02Z",
-  "payload": {
-    "metrics": {
-      "voltage": 220.4,
-      "current": 1.8
-    }
-  }
-}
-```
-
-## 确认和重试
-
-1. `XREADGROUP` 批量读取；
-2. 校验 Envelope 和业务 payload；
-3. 开启数据库事务；
-4. 幂等写入；
-5. 提交数据库事务；
-6. 执行 `XACK`；
-7. 可在确认后执行 `XDEL`，但默认依靠 `MAXLEN` 保留短期审计数据。
-
-建议初始参数：批量 100、阻塞 1 秒、Pending 超时 30 秒、最大重试 5 次。
-重试次数需要保存到消息或独立的 Redis Hash 中。
+- High 队列最多 2048 条，Normal 队列最多 10000 条。
+- 每个 `group_key` 最多排队 256 条，容量判断和入队由 Lua 原子完成。
+- 查询完成、超时转死信或任务失败时，任务、in-flight 和 queue-depth 原子清理。
+- session 在连接断开时删除，服务启动时只清理上次残留的 session。
+- Redis 不保存长期 session/event 历史；持久业务数据仍写 PostgreSQL。

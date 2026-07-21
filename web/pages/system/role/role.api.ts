@@ -17,6 +17,6 @@ export const getList = (params?: Role.Query) =>
     );
 export const create = (data: Role.CreateDto) =>
     request.post<void>(BASE, createRoleSchema.parse(data));
-export const update = (id: number, data: Role.UpdateDto) =>
+export const update = (id: string, data: Role.UpdateDto) =>
     request.put<void>(`${BASE}/${roleIdSchema.parse(id)}`, updateRoleSchema.parse(data));
-export const remove = (id: number) => request.delete<void>(`${BASE}/${roleIdSchema.parse(id)}`);
+export const remove = (id: string) => request.delete<void>(`${BASE}/${roleIdSchema.parse(id)}`);

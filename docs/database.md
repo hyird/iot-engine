@@ -1,5 +1,17 @@
 # PostgreSQL / TimescaleDB 数据模型
 
+## 当前主键与迁移规则
+
+- 所有业务表主键和外键统一使用 PostgreSQL 原生 `UUID`。
+- UUID 由应用内线程安全、单调递增的 UUIDv7 生成器创建，不依赖特定 PostgreSQL
+  版本的 `uuidv7()` 函数。
+- 不保留旧整数 ID、双写列、映射表或兼容迁移；全新部署只执行
+  `0001_initial_schema`。
+- UUIDv7 可直接用于稳定排序；需要游标分页的接口使用
+  `WHERE id < $1::uuid ORDER BY id DESC LIMIT $2`，现有页码接口仍可按 UUIDv7 排序。
+- 所有时间字段使用 `TIMESTAMPTZ`，数据库和连接会话时区固定为 UTC。
+- 初始迁移只创建运行必需的超级管理员角色、admin 用户及二者关系，不生成演示业务数据。
+
 ## JSONB 优先原则
 
 业务数据采用 JSONB 优先设计，以适应不同厂商、协议和型号的设备结构。

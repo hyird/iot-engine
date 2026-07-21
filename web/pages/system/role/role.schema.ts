@@ -18,4 +18,4 @@ export const updateRoleSchema = createRoleSchema.partial();
 export const roleListQuerySchema = pageParamsSchema.extend({
     status: statusSchema.optional(),
 });
-export const roleIdSchema = z.number().int().min(1, 'id 必须是正整数');
+export const roleIdSchema = z.uuid({ error: 'id 必须是 UUID' });

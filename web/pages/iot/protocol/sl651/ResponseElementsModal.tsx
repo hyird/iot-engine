@@ -22,7 +22,7 @@ import { useFilterableGroupOptions } from '../useFilterableGroupOptions';
 import { EncodeList, generateId, type SaveMutation } from './shared';
 
 export interface ResponseElementsModalRef {
-    open: (typeId: number, func: SL651.Func) => void;
+    open: (typeId: string, func: SL651.Func) => void;
 }
 
 interface ResponseElementsModalProps {
@@ -38,7 +38,7 @@ const RESPONSE_ELEMENT_CARD_GRID_STYLE: CSSProperties = {
 const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseElementsModalProps>(
     ({ types, onSuccess, saveMutation }, ref) => {
         const [open, setOpen] = useState(false);
-        const [typeId, setTypeId] = useState<number>();
+        const [typeId, setTypeId] = useState<string>();
         const [func, setFunc] = useState<SL651.Func>();
         const [form] = Form.useForm();
         const groupNames = useMemo(() => {

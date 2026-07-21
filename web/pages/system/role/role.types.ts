@@ -10,7 +10,7 @@ export const roleQueryKeys = {
 type RoleStatus = 'enabled' | 'disabled';
 
 interface RoleItem {
-    id: number;
+    id: string;
     name: string;
     code: string;
     description?: string;

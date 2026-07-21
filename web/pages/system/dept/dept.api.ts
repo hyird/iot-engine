@@ -17,6 +17,6 @@ export const getList = (params?: Dept.Query) =>
 export const getOptions = () => request.get<Dept.Option[]>(`${BASE}/options`);
 export const create = (data: Dept.CreateDto) =>
     request.post<void>(BASE, createDeptSchema.parse(data));
-export const update = (id: number, data: Dept.UpdateDto) =>
+export const update = (id: string, data: Dept.UpdateDto) =>
     request.put<void>(`${BASE}/${deptIdSchema.parse(id)}`, updateDeptSchema.parse(data));
-export const remove = (id: number) => request.delete<void>(`${BASE}/${deptIdSchema.parse(id)}`);
+export const remove = (id: string) => request.delete<void>(`${BASE}/${deptIdSchema.parse(id)}`);

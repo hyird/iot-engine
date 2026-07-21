@@ -6,17 +6,17 @@ import type { DeviceGroup } from './device-group.types';
 interface DeviceGroupFormModalProps {
     open: boolean;
     editing: DeviceGroup.TreeItem | null;
-    parentId: number | null;
+    parentId: string | null;
     treeData: DeviceGroup.TreeItem[];
     loading: boolean;
     onCancel: () => void;
-    onFinish: (values: DeviceGroup.CreateDto & { id?: number }) => void;
+    onFinish: (values: DeviceGroup.CreateDto & { id?: string }) => void;
 }
 
 function convertTreeForSelect(
     nodes: DeviceGroup.TreeItem[],
-    excludeId?: number
-): { value: number; title: string; children?: ReturnType<typeof convertTreeForSelect> }[] {
+    excludeId?: string
+): { value: string; title: string; children?: ReturnType<typeof convertTreeForSelect> }[] {
     return nodes
         .filter((n) => n.id !== excludeId)
         .map((n) => ({

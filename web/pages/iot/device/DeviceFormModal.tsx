@@ -10,9 +10,9 @@ import { FormModal } from '@/components/FormModal';
 import type { Link } from '../link/link.types';
 import { useProtocolConfigOptions } from '../protocol/protocol.service';
 import type { Protocol } from '../protocol/protocol.types';
-import type { DeviceGroup } from './device-group.types';
 import { useAgentEndpoints, useAgentOptions, useDeviceGroupTree } from './device.service';
 import type { Device } from './device.types';
+import type { DeviceGroup } from './device-group.types';
 
 /** HEX 内容校验规则 */
 const hexContentRules: RuleObject[] = [
@@ -45,17 +45,17 @@ const TIMEZONE_OPTIONS = Array.from({ length: 105 }, (_, index) => {
 type ConnectionMode = 'link' | 'agent';
 
 interface DeviceFormValues {
-    id?: number;
+    id?: string;
     name: string;
     device_code: string;
     connection_mode: ConnectionMode;
-    link_id?: number;
+    link_id: string;
     target_id?: string;
     // Agent 模式字段
-    agent_id?: number;
-    agent_endpoint_id?: number;
+    agent_id?: string;
+    agent_endpoint_id?: string;
 
-    protocol_config_id: number;
+    protocol_config_id: string;
     status: Device.Status;
     online_timeout?: number;
     remote_control?: boolean;
@@ -64,7 +64,7 @@ interface DeviceFormValues {
     timezone?: string;
     heartbeat?: Device.HeartbeatConfig;
     registration?: Device.RegistrationConfig;
-    group_id?: number | null;
+    group_id?: string | null;
     remark?: string;
 }
 
@@ -120,9 +120,10 @@ const DeviceFormModal = ({
     // 统一协议类型
     const protocolType = connectionMode === 'agent' ? agentProtocolType : linkProtocolType;
 
-    // 心跳包/注册包仅 TCP Server 模式需要
+    // 心跳包/注册包仅 Modbus/S7 的 TCP Server 模式使用；SL651 由报文遥测站地址识别。
     const linkMode = connectionMode === 'agent' ? endpointMode : selectedLink?.mode;
-    const showPacketConfig = connectionMode !== 'agent' && linkMode === 'TCP Server';
+    const showPacketConfig =
+        connectionMode !== 'agent' && linkMode === 'TCP Server' && protocolType !== 'SL651';
 
     const { data: protocolOptions, isLoading: protocolOptionsLoading } = useProtocolConfigOptions(
         protocolType ?? 'Modbus',
@@ -142,7 +143,7 @@ const DeviceFormModal = ({
         }
     }, [agentEndpoints, agentEndpointId, endpointProtocol]);
 
-    type GroupSelectNode = { value: number; title: string; children?: GroupSelectNode[] };
+    type GroupSelectNode = { value: string; title: string; children?: GroupSelectNode[] };
 
     const groupTreeSelectData = useMemo(() => {
         const convert = (nodes: DeviceGroup.TreeItem[]): GroupSelectNode[] =>
@@ -163,7 +164,7 @@ const DeviceFormModal = ({
             return;
         }
         if (isOpen && editing) {
-            const isAgentMode = editing.link_id === 0 && !!editing.agent_id;
+            const isAgentMode = false;
             form.setFieldsValue({
                 id: editing.id,
                 name: editing.name,
@@ -218,7 +219,7 @@ const DeviceFormModal = ({
     };
 
     /** 端点变更时同步写入协议信息并清除后续字段 */
-    const handleEndpointChange = (endpointId: number) => {
+    const handleEndpointChange = (endpointId: string) => {
         const ep = agentEndpoints.find((e) => e.id === endpointId);
         setEndpointProtocol(ep?.protocol);
         setEndpointMode(ep?.mode);
@@ -257,6 +258,10 @@ const DeviceFormModal = ({
                 form={form}
                 layout="vertical"
                 onFinish={(values) => {
+                    if (!showPacketConfig) {
+                        values.heartbeat = { mode: 'OFF' };
+                        values.registration = { mode: 'OFF' };
+                    }
                     // HEX 内容去除空格
                     if (values.heartbeat?.mode === 'HEX' && values.heartbeat?.content) {
                         values.heartbeat.content = values.heartbeat.content.replace(/\s/g, '');
@@ -266,11 +271,6 @@ const DeviceFormModal = ({
                             /\s/g,
                             ''
                         );
-                    }
-
-                    // Agent 模式：设置 link_id = 0
-                    if (values.connection_mode === 'agent') {
-                        values.link_id = 0;
                     }
 
                     onFinish(values);
@@ -470,11 +470,26 @@ const DeviceFormModal = ({
                     name="device_code"
                     rules={[
                         { required: true, message: '请输入设备编码' },
-                        { pattern: /^[A-Za-z0-9]+$/, message: '设备编码只能包含字母和数字' },
+                        protocolType === 'SL651'
+                            ? {
+                                  pattern: /^\d{1,10}$/,
+                                  message: 'SL651 设备编码必须是 1-10 位数字遥测站地址',
+                              }
+                            : {
+                                  pattern: /^[A-Za-z0-9]+$/,
+                                  message: '设备编码只能包含字母和数字',
+                              },
                     ]}
-                    extra="每台设备必填且唯一，用于跨协议统一识别"
+                    extra={
+                        protocolType === 'SL651'
+                            ? '遥测站地址，用于从 SL651 报文中识别设备'
+                            : '每台设备必填且唯一，用于跨协议统一识别'
+                    }
                 >
-                    <Input placeholder="如: DEVICE001" maxLength={100} />
+                    <Input
+                        placeholder={protocolType === 'SL651' ? '如: 12345678' : '如: DEVICE001'}
+                        maxLength={protocolType === 'SL651' ? 10 : 100}
+                    />
                 </Form.Item>
                 <Form.Item label="状态" name="status" rules={[{ required: true }]}>
                     <Select>

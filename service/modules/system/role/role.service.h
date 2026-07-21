@@ -11,6 +11,7 @@
 
 #include "service/common/http.h"
 #include "service/common/types.h"
+#include "service/common/uuid.h"
 #include "service/modules/system/role/role.types.h"
 
 namespace service::role {
@@ -51,7 +52,7 @@ class RoleService {
         const auto rows = co_await c.db().query(
             "SELECT id, name, code, COALESCE(description, ''), status, created_at::text, "
             "updated_at::text FROM sys_role" +
-                where + " ORDER BY id LIMIT $" + std::to_string(limitIndex) + " OFFSET $" +
+                where + " ORDER BY id DESC LIMIT $" + std::to_string(limitIndex) + " OFFSET $" +
                 std::to_string(offsetIndex),
             listParams);
 
@@ -59,7 +60,7 @@ class RoleService {
         for (const auto& row : rows.rows()) {
             auto& role = roles.emplace(c);
             fillBase(role, row);
-            role.permissions(co_await loadPermissions(c, static_cast<std::int64_t>(*role.id())));
+            role.permissions(co_await loadPermissions(c, role.id()->view()));
         }
         RolePageDataDto result(c);
         result.list(std::move(roles))
@@ -70,7 +71,7 @@ class RoleService {
         co_return result;
     }
 
-    ruvia::Task<RoleItemDto> detail(ruvia::Context& c, std::int64_t id) {
+    ruvia::Task<RoleItemDto> detail(ruvia::Context& c, std::string_view id) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT id, name, code, COALESCE(description, ''), status, created_at::text, updated_at::text
 FROM sys_role WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
@@ -90,9 +91,7 @@ FROM sys_role WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
         ruvia::List<RoleOptionDto> result(c.resource());
         for (const auto& row : rows.rows()) {
             auto& item = result.emplace(c);
-            item.id(static_cast<ruvia::Int64>(std::stoll(std::string(row[0].text()))))
-                .name(row[1].text())
-                .code(row[2].text());
+            item.id(row[0].text()).name(row[1].text()).code(row[2].text());
         }
         co_return result;
     }
@@ -105,18 +104,19 @@ FROM sys_role WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
             body.description() ? std::string(body.description()->view()) : "";
         const std::string status = body.status() ? std::string(body.status()->view()) : "enabled";
         const std::string permissions = permissionsText(body.permissions());
+        const auto id = service::common::nextUuidV7();
         (void)co_await c.db().execute(
             R"sql(
-INSERT INTO sys_role(name, code, description, status, permissions)
-VALUES ($1, $2, NULLIF($3, ''), $4,
+INSERT INTO sys_role(id, name, code, description, status, permissions)
+VALUES ($1, $2, $3, NULLIF($4, ''), $5,
         COALESCE((SELECT jsonb_agg(permission)
-                  FROM unnest(string_to_array(NULLIF($5, ''), ',')) AS values(permission)),
+                  FROM unnest(string_to_array(NULLIF($6, ''), ',')) AS values(permission)),
                  '[]'::jsonb))
 )sql",
-            service::common::dbParams(name, code, description, status, permissions));
+            service::common::dbParams(id, name, code, description, status, permissions));
     }
 
-    ruvia::Task<void> update(ruvia::Context& c, std::int64_t id, const UpdateRoleBody& body) {
+    ruvia::Task<void> update(ruvia::Context& c, std::string_view id, const UpdateRoleBody& body) {
         const auto existing = co_await c.db().query(
             "SELECT code FROM sys_role WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
             service::common::dbParams(id));
@@ -125,7 +125,7 @@ VALUES ($1, $2, NULLIF($3, ''), $4,
         if (existing.rows().front()[0].text() == service::common::kSuperAdminRoleCode)
             service::common::fail(13003, "内置超级管理员角色不能修改", 400);
         if (body.code())
-            co_await ensureCodeAvailable(c, std::string(body.code()->view()), id);
+            co_await ensureCodeAvailable(c, std::string(body.code()->view()), std::string(id));
 
         std::string set;
         std::vector<ruvia::DbValue> params;
@@ -163,7 +163,7 @@ VALUES ($1, $2, NULLIF($3, ''), $4,
                                       params);
     }
 
-    ruvia::Task<void> remove(ruvia::Context& c, std::int64_t id) {
+    ruvia::Task<void> remove(ruvia::Context& c, std::string_view id) {
         const auto rows = co_await c.db().query(
             "SELECT code FROM sys_role WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
             service::common::dbParams(id));
@@ -184,7 +184,7 @@ VALUES ($1, $2, NULLIF($3, ''), $4,
 
   private:
     template <typename Row> static void fillBase(RoleItemDto& item, const Row& row) {
-        item.id(static_cast<ruvia::Int64>(std::stoll(std::string(row[0].text()))))
+        item.id(row[0].text())
             .name(row[1].text())
             .code(row[2].text())
             .description(row[3].text())
@@ -209,7 +209,8 @@ VALUES ($1, $2, NULLIF($3, ''), $4,
         return result;
     }
 
-    ruvia::Task<ruvia::Array<ruvia::String>> loadPermissions(ruvia::Context& c, std::int64_t id) {
+    ruvia::Task<ruvia::Array<ruvia::String>> loadPermissions(ruvia::Context& c,
+                                                             std::string_view id) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT permission FROM sys_role,
 LATERAL jsonb_array_elements_text(permissions) AS values(permission)
@@ -222,7 +223,7 @@ WHERE id = $1 ORDER BY permission)sql",
     }
 
     ruvia::Task<void> ensureCodeAvailable(ruvia::Context& c, const std::string& code,
-                                          std::optional<std::int64_t> excludedId) {
+                                          std::optional<std::string> excludedId) {
         auto sql = std::string("SELECT 1 FROM sys_role WHERE code = $1");
         auto params = service::common::dbParams(code);
         if (excludedId) {

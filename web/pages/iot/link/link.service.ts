@@ -1,7 +1,7 @@
 import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import type { PaginatedResult } from '@/utils/types';
-import { create, getEnums, getList, remove, update } from './link.api';
+import { create, getEnums, getList, getPublicIp, remove, update } from './link.api';
 import { type Link, linkQueryKeys } from './link.types';
 
 export function useLinkList(
@@ -24,6 +24,16 @@ export function useLinkEnums(options?: { enabled?: boolean }) {
     });
 }
 
+export function usePublicIp(options?: { enabled?: boolean }) {
+    return useQuery({
+        queryKey: [...linkQueryKeys.all, 'public-ip'],
+        queryFn: getPublicIp,
+        enabled: options?.enabled ?? true,
+        staleTime: 5 * 60 * 1000,
+        retry: false,
+    });
+}
+
 export function useLinkOptions(options?: { enabled?: boolean }) {
     return useQuery({
         queryKey: [...linkQueryKeys.all, 'options'],
@@ -33,7 +43,7 @@ export function useLinkOptions(options?: { enabled?: boolean }) {
 }
 
 export function useLinkSave() {
-    return useSaveMutation<Link.SaveDto & { id?: number }, Link.SaveDto, Link.SaveDto>({
+    return useSaveMutation<Link.SaveDto & { id?: string }, Link.SaveDto, Link.SaveDto>({
         createFn: create,
         updateFn: update,
         toUpdatePayload: ({ id: _id, ...data }) => data,

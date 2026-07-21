@@ -28,16 +28,16 @@ import {
     reorderItemsWithinGroupOrder,
 } from './grouping';
 import {
-    SortableGroupItemList,
-    SortableGroupSectionFrame,
-    SortableGroupSectionList,
-} from './SortableGroup';
-import {
     useProtocolConfigDelete,
     useProtocolConfigList,
     useProtocolConfigSave,
 } from './protocol.service';
 import type { SL651 } from './protocol.types';
+import {
+    SortableGroupItemList,
+    SortableGroupSectionFrame,
+    SortableGroupSectionList,
+} from './SortableGroup';
 import {
     DeviceTypeModal,
     type DeviceTypeModalRef,
@@ -89,7 +89,7 @@ const SL651ConfigPage = () => {
     const { exportConfigs, triggerImport, importing } = useProtocolImportExport('SL651');
 
     // 当前选中的设备类型 ID（用户手动选择）
-    const [selectedTypeId, setSelectedTypeId] = useState<number>();
+    const [selectedTypeId, setSelectedTypeId] = useState<string>();
 
     // Modal refs
     const deviceTypeModalRef = useRef<DeviceTypeModalRef>(null);
@@ -578,13 +578,15 @@ const SL651ConfigPage = () => {
 
     return (
         <PageContainer title="SL651配置">
-            <div className="h-full flex">
+            <div className="flex h-full min-h-0 overflow-hidden">
                 {/* 左侧：设备类型列表 */}
-                <div className="w-[360px] shrink-0 pr-3 h-full">
+                <div className="h-full min-h-0 w-[360px] shrink-0 pr-3">
                     <Card
                         title="设备类型"
-                        className="h-full flex flex-col"
-                        styles={{ body: { flex: 1, overflow: 'auto', padding: 16 } }}
+                        className="flex h-full min-h-0 flex-col overflow-hidden"
+                        styles={{
+                            body: { flex: 1, minHeight: 0, overflow: 'auto', padding: 16 },
+                        }}
                         extra={
                             <Space size={4}>
                                 {canAdd && (
@@ -655,7 +657,7 @@ const SL651ConfigPage = () => {
                                 selectedKeys={activeTypeId ? [String(activeTypeId)] : []}
                                 onSelect={(keys) => {
                                     if (keys.length > 0) {
-                                        setSelectedTypeId(Number(keys[0]));
+                                        setSelectedTypeId(String(keys[0]));
                                     }
                                 }}
                                 treeData={types.map((t) => {
@@ -693,7 +695,7 @@ const SL651ConfigPage = () => {
                 </div>
 
                 {/* 右侧：功能码配置 */}
-                <div className="flex-1 min-w-0 h-full">
+                <div className="h-full min-h-0 min-w-0 flex-1">
                     <Card
                         title={
                             activeTypeId
@@ -702,8 +704,10 @@ const SL651ConfigPage = () => {
                                   ? '请选择设备类型'
                                   : '暂无设备类型'
                         }
-                        className="h-full flex flex-col"
-                        styles={{ body: { flex: 1, overflow: 'auto', padding: 0 } }}
+                        className="flex h-full min-h-0 flex-col overflow-hidden"
+                        styles={{
+                            body: { flex: 1, minHeight: 0, overflow: 'auto', padding: 0 },
+                        }}
                         extra={
                             activeTypeId &&
                             canAdd && (

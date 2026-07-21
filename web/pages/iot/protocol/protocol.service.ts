@@ -12,7 +12,7 @@ export const protocolQueryKeys = {
 
 export type SaveProtocolConfigParams =
     | (Protocol.CreateDto & { id?: undefined })
-    | (Protocol.UpdateDto & { id: number; protocol?: Protocol.Type });
+    | (Protocol.UpdateDto & { id: string; protocol?: Protocol.Type });
 
 export function useProtocolConfigList(
     params?: Protocol.Query,

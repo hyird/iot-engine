@@ -9,7 +9,7 @@ import type { Protocol, SL651 } from '../protocol.types';
 import type { SaveMutation } from './shared';
 
 export interface PresetValueModalRef {
-    open: (typeId: number, funcId: string, element: SL651.Element) => void;
+    open: (typeId: string, funcId: string, element: SL651.Element) => void;
 }
 
 interface PresetValueModalProps {
@@ -21,7 +21,7 @@ interface PresetValueModalProps {
 const PresetValueModal = forwardRef<PresetValueModalRef, PresetValueModalProps>(
     ({ types, onSuccess, saveMutation }, ref) => {
         const [open, setOpen] = useState(false);
-        const [typeId, setTypeId] = useState<number>();
+        const [typeId, setTypeId] = useState<string>();
         const [funcId, setFuncId] = useState<string>();
         const [element, setElement] = useState<SL651.Element>();
         const [form] = Form.useForm();

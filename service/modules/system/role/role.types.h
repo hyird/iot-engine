@@ -18,12 +18,12 @@ RUVIA_REQUEST_MODEL(RoleListQuery, RUVIA_FIELD(page, ruvia::Int64, RUVIA_DEFAULT
                     RUVIA_FIELD_NAME("pageSize", pageSize, ruvia::Int64, RUVIA_DEFAULT(10)),
                     RUVIA_FIELD(keyword, ruvia::String), RUVIA_FIELD(status, ruvia::String));
 
-RUVIA_REQUEST_MODEL(RoleIdParams, RUVIA_FIELD(id, ruvia::Int64));
+RUVIA_REQUEST_MODEL(RoleIdParams, RUVIA_FIELD(id, ruvia::String));
 
-RUVIA_RESPONSE_MODEL(RoleOptionDto, RUVIA_FIELD(id, ruvia::Int64), RUVIA_FIELD(name, ruvia::String),
-                     RUVIA_FIELD(code, ruvia::String));
+RUVIA_RESPONSE_MODEL(RoleOptionDto, RUVIA_FIELD(id, ruvia::String),
+                     RUVIA_FIELD(name, ruvia::String), RUVIA_FIELD(code, ruvia::String));
 
-RUVIA_RESPONSE_MODEL(RoleItemDto, RUVIA_FIELD(id, ruvia::Int64), RUVIA_FIELD(name, ruvia::String),
+RUVIA_RESPONSE_MODEL(RoleItemDto, RUVIA_FIELD(id, ruvia::String), RUVIA_FIELD(name, ruvia::String),
                      RUVIA_FIELD(code, ruvia::String),
                      RUVIA_FIELD(description, ruvia::String, RUVIA_OMIT_EMPTY),
                      RUVIA_FIELD(status, ruvia::String),

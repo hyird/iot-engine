@@ -8,6 +8,7 @@ const modalContainerStyle: CSSProperties = {
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
+    padding: 0,
 };
 
 const modalBodyStyle: CSSProperties = {
@@ -15,10 +16,22 @@ const modalBodyStyle: CSSProperties = {
     minHeight: 0,
     overflowX: 'hidden',
     overflowY: 'auto',
+    padding: '20px 24px',
+    background: '#fbfcfe',
 };
 
-const fixedSectionStyle: CSSProperties = {
+const modalHeaderStyle: CSSProperties = {
     flex: '0 0 auto',
+    margin: 0,
+    padding: '18px 24px 16px',
+    borderBottom: '1px solid #e8edf3',
+};
+
+const modalFooterStyle: CSSProperties = {
+    flex: '0 0 auto',
+    margin: 0,
+    padding: '14px 24px 16px',
+    borderTop: '1px solid #e8edf3',
 };
 
 const FORM_MODAL_WIDTH = 720;
@@ -41,7 +54,7 @@ export function FormModal(props: ModalProps) {
                     },
                     header: {
                         ...customStyles?.header,
-                        ...fixedSectionStyle,
+                        ...modalHeaderStyle,
                     },
                     body: {
                         ...customStyles?.body,
@@ -49,7 +62,7 @@ export function FormModal(props: ModalProps) {
                     },
                     footer: {
                         ...customStyles?.footer,
-                        ...fixedSectionStyle,
+                        ...modalFooterStyle,
                     },
                 } as ModalProps['styles']
             }

@@ -2,7 +2,8 @@
 
 #include <ruvia/web/Controller.h>
 
-#include "service/modules/iot/link/link.types.h"
+#include "service/modules/northbridge/link/link.types.h"
+#include "service/common/id.validation.h"
 
 namespace service::link {
 
@@ -52,8 +53,9 @@ class LinkListQueryValidator final : public ruvia::Middleware<LinkListQueryValid
 
 class LinkIdParamsValidator final : public ruvia::Middleware<LinkIdParamsValidator> {
   public:
-    RUVIA_VALIDATE_PARAM(LinkIdParams, RUVIA_RULE(id, RUVIA_REQUIRED("id 不能为空"),
-                                                  RUVIA_MIN(1, "id 必须是正整数")))
+    RUVIA_VALIDATE_PARAM(LinkIdParams,
+                         RUVIA_RULE(id, RUVIA_REQUIRED("id 不能为空"),
+                                    RUVIA_CUSTOM("id 必须是 UUID", service::common::isUuidField)))
 };
 
 } // namespace service::link

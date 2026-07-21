@@ -26,8 +26,8 @@ class DeptController final : public ruvia::Controller<DeptController> {
     RUVIA_ROUTES_END
 
   private:
-    static std::int64_t positiveId(ruvia::Context& c) {
-        return static_cast<std::int64_t>(*c.req().valid<DeptIdParams>().id());
+    static std::string id(ruvia::Context& c) {
+        return std::string(c.req().valid<DeptIdParams>().id()->view());
     }
 
     ruvia::Task<ruvia::HttpResponse> list(ruvia::Context& c) {
@@ -40,9 +40,8 @@ class DeptController final : public ruvia::Controller<DeptController> {
                                 ? std::optional<std::string>(std::string(query.status()->view()))
                                 : std::nullopt;
         const auto parentId =
-            query.parentId()
-                ? std::optional<std::int64_t>(static_cast<std::int64_t>(*query.parentId()))
-                : std::nullopt;
+            query.parentId() ? std::optional<std::string>(std::string(query.parentId()->view()))
+                             : std::nullopt;
         co_return c.json(service::common::ok<DeptPageResponse>(
             c, co_await deptService().list(c, static_cast<std::int64_t>(*query.page()),
                                            static_cast<std::int64_t>(*query.pageSize()), keyword,
@@ -57,8 +56,8 @@ class DeptController final : public ruvia::Controller<DeptController> {
 
     ruvia::Task<ruvia::HttpResponse> detail(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:dept:query");
-        co_return c.json(service::common::ok<DeptDetailResponse>(
-            c, co_await deptService().detail(c, positiveId(c))));
+        co_return c.json(
+            service::common::ok<DeptDetailResponse>(c, co_await deptService().detail(c, id(c))));
     }
 
     ruvia::Task<ruvia::HttpResponse> create(ruvia::Context& c) {
@@ -69,13 +68,13 @@ class DeptController final : public ruvia::Controller<DeptController> {
 
     ruvia::Task<ruvia::HttpResponse> update(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:dept:edit");
-        co_await deptService().update(c, positiveId(c), c.req().valid<UpdateDeptBody>());
+        co_await deptService().update(c, id(c), c.req().valid<UpdateDeptBody>());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 
     ruvia::Task<ruvia::HttpResponse> remove(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:dept:delete");
-        co_await deptService().remove(c, positiveId(c));
+        co_await deptService().remove(c, id(c));
         co_return c.json(service::common::operation(c, "删除成功"));
     }
 };

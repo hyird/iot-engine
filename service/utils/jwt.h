@@ -10,10 +10,12 @@
 #include <ruvia/web/Context.h>
 #include <ruvia/web/auth/Jwt.h>
 
+#include "service/common/uuid.h"
+
 namespace service::core {
 
 struct JwtPayload {
-    std::int64_t userId{};
+    std::string userId;
     std::string username;
 };
 
@@ -66,9 +68,9 @@ inline std::string sign(ruvia::Context& c, const core::JwtPayload& payload,
     options.secret.assign(secret);
     options.issuer.assign("iot-engine");
     options.audience.assign("iot-engine-web");
-    options.subject.assign(std::to_string(payload.userId));
+    options.subject.assign(payload.userId);
     options.expiresIn = duration(ruvia::app().env().get(durationName).value_or(""), fallback);
-    options.claims.emplace_back("user_id", std::to_string(payload.userId));
+    options.claims.emplace_back("user_id", payload.userId);
     options.claims.emplace_back("username", payload.username);
     options.claims.emplace_back("token_type", type);
     const auto token = ruvia::jwtSign(options, c.resource());
@@ -92,9 +94,9 @@ inline core::JwtPayload verify(ruvia::Context& c, std::string_view token,
             throw JwtInvalidError("invalid token payload");
         }
         core::JwtPayload result;
-        result.userId = std::stoll(std::string(*id));
+        result.userId = std::string(*id);
         result.username = std::string(*username);
-        if (result.userId <= 0 || result.username.empty())
+        if (!service::common::isUuid(result.userId) || result.username.empty())
             throw JwtInvalidError("invalid token payload");
         return result;
     } catch (const JwtInvalidError&) {

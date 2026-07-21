@@ -33,7 +33,7 @@ export const createUserSchema = z.object({
     phone: phoneSchema.optional(),
     email: emailSchema.optional(),
     status: statusSchema.optional(),
-    role_ids: z.array(z.number().int()).min(1, '至少选择一个角色'),
+    role_ids: z.array(z.uuid({ error: '角色 ID 必须是 UUID' })).min(1, '至少选择一个角色'),
 });
 
 export const updateUserSchema = z.object({
@@ -47,7 +47,10 @@ export const updateUserSchema = z.object({
             z.string().min(6, '密码长度需在 6 - 100 之间').max(100, '密码长度需在 6 - 100 之间'),
         ])
         .optional(),
-    role_ids: z.array(z.number().int()).min(1, '至少选择一个角色').optional(),
+    role_ids: z
+        .array(z.uuid({ error: '角色 ID 必须是 UUID' }))
+        .min(1, '至少选择一个角色')
+        .optional(),
 });
 
 export const userListQuerySchema = pageParamsSchema.extend({
@@ -58,4 +61,4 @@ export const userOptionsQuerySchema = z.object({
     keyword: z.string().max(100, '搜索关键字过长').optional(),
 });
 
-export const userIdSchema = z.number().int().min(1, 'id 必须是正整数');
+export const userIdSchema = z.uuid({ error: 'id 必须是 UUID' });

@@ -3,6 +3,7 @@
 #include <ruvia/web/Controller.h>
 
 #include "service/modules/system/user/user.types.h"
+#include "service/common/id.validation.h"
 
 namespace service::user {
 
@@ -53,8 +54,9 @@ class UserOptionsQueryValidator final : public ruvia::Middleware<UserOptionsQuer
 
 class UserIdParamsValidator final : public ruvia::Middleware<UserIdParamsValidator> {
   public:
-    RUVIA_VALIDATE_PARAM(UserIdParams, RUVIA_RULE(id, RUVIA_REQUIRED("id 不能为空"),
-                                                  RUVIA_MIN(1, "id 必须是正整数")))
+    RUVIA_VALIDATE_PARAM(UserIdParams,
+                         RUVIA_RULE(id, RUVIA_REQUIRED("id 不能为空"),
+                                    RUVIA_CUSTOM("id 必须是 UUID", service::common::isUuidField)))
 };
 
 } // namespace service::user

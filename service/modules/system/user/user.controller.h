@@ -23,8 +23,8 @@ class UserController final : public ruvia::Controller<UserController> {
     RUVIA_ROUTES_END
 
   private:
-    static std::int64_t positiveId(ruvia::Context& c) {
-        return static_cast<std::int64_t>(*c.req().valid<UserIdParams>().id());
+    static std::string id(ruvia::Context& c) {
+        return std::string(c.req().valid<UserIdParams>().id()->view());
     }
 
     ruvia::Task<ruvia::HttpResponse> list(ruvia::Context& c) {
@@ -54,8 +54,8 @@ class UserController final : public ruvia::Controller<UserController> {
 
     ruvia::Task<ruvia::HttpResponse> detail(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:user:query");
-        co_return c.json(service::common::ok<UserDetailResponse>(
-            c, co_await userService().detail(c, positiveId(c))));
+        co_return c.json(
+            service::common::ok<UserDetailResponse>(c, co_await userService().detail(c, id(c))));
     }
 
     ruvia::Task<ruvia::HttpResponse> create(ruvia::Context& c) {
@@ -66,14 +66,14 @@ class UserController final : public ruvia::Controller<UserController> {
 
     ruvia::Task<ruvia::HttpResponse> update(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:user:edit");
-        co_await userService().update(c, positiveId(c), c.req().valid<UpdateUserBody>());
+        co_await userService().update(c, id(c), c.req().valid<UpdateUserBody>());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 
     ruvia::Task<ruvia::HttpResponse> remove(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:user:delete");
         const auto principal = service::middleware::requireAuth(c);
-        co_await userService().remove(c, positiveId(c), principal.userId);
+        co_await userService().remove(c, id(c), principal.userId);
         co_return c.json(service::common::operation(c, "删除成功"));
     }
 };

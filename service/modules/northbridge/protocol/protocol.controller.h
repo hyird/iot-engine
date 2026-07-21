@@ -10,8 +10,8 @@
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/permission.h"
-#include "service/modules/iot/protocol/protocol.schema.h"
-#include "service/modules/iot/protocol/protocol.service.h"
+#include "service/modules/northbridge/protocol/protocol.schema.h"
+#include "service/modules/northbridge/protocol/protocol.service.h"
 
 namespace service::protocol {
 
@@ -28,8 +28,8 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
     RUVIA_ROUTES_END
 
   private:
-    static std::int64_t positiveId(ruvia::Context& c) {
-        return static_cast<std::int64_t>(*c.req().valid<ProtocolIdParams>().id());
+    static std::string id(ruvia::Context& c) {
+        return std::string(c.req().valid<ProtocolIdParams>().id()->view());
     }
 
     static ruvia::HttpResponse jsonData(ruvia::Context& c, std::string_view data) {
@@ -66,7 +66,7 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
 
     ruvia::Task<ruvia::HttpResponse> detail(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:protocol:query");
-        const auto data = co_await protocolService().detail(c, positiveId(c));
+        const auto data = co_await protocolService().detail(c, id(c));
         co_return jsonData(c, data);
     }
 
@@ -80,13 +80,13 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
     ruvia::Task<ruvia::HttpResponse> update(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:protocol:edit");
         const auto payload = co_await c.req().json();
-        co_await protocolService().update(c, positiveId(c), payload);
+        co_await protocolService().update(c, id(c), payload);
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 
     ruvia::Task<ruvia::HttpResponse> remove(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:protocol:delete");
-        co_await protocolService().remove(c, positiveId(c));
+        co_await protocolService().remove(c, id(c));
         co_return c.json(service::common::operation(c, "删除成功"));
     }
 };

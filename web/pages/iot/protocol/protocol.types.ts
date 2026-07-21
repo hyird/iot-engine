@@ -262,7 +262,7 @@ export interface S7Config extends DeviceTypeTimingConfig {
 
 /** 协议配置项 */
 export interface ProtocolConfigItem {
-    id: number;
+    id: string;
     protocol: ProtocolType;
     name: string;
     enabled: boolean;
@@ -274,7 +274,7 @@ export interface ProtocolConfigItem {
 
 /** 协议配置选项（下拉列表） */
 export interface ProtocolConfigOption {
-    id: number;
+    id: string;
     name: string;
 }
 

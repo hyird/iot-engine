@@ -9,7 +9,7 @@ import type { Protocol, SL651 } from '../protocol.types';
 import { generateId, type SaveMutation } from './shared';
 
 export interface FuncModalRef {
-    open: (mode: 'create' | 'edit', typeId: number, func?: SL651.Func) => void;
+    open: (mode: 'create' | 'edit', typeId: string, func?: SL651.Func) => void;
 }
 
 interface FuncModalProps {
@@ -23,7 +23,7 @@ const FuncModal = forwardRef<FuncModalRef, FuncModalProps>(
         const { message } = App.useApp();
         const [open, setOpen] = useState(false);
         const [mode, setMode] = useState<'create' | 'edit'>('create');
-        const [typeId, setTypeId] = useState<number>();
+        const [typeId, setTypeId] = useState<string>();
         const [current, setCurrent] = useState<SL651.Func>();
         const [form] = Form.useForm();
 

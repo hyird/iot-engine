@@ -33,8 +33,8 @@ import {
     useMemo,
     useState,
 } from 'react';
-import { PageContainer } from '@/components/PageContainer';
 import { FormModal } from '@/components/FormModal';
+import { PageContainer } from '@/components/PageContainer';
 import { usePermissions } from '@/hooks/usePermission';
 import {
     buildGroupSections,
@@ -44,16 +44,16 @@ import {
     reorderItemsWithinGroupOrder,
 } from './grouping';
 import {
-    SortableGroupItemList,
-    SortableGroupSectionFrame,
-    SortableGroupSectionList,
-} from './SortableGroup';
-import {
     useProtocolConfigDelete,
     useProtocolConfigList,
     useProtocolConfigSave,
 } from './protocol.service';
 import type { S7 } from './protocol.types';
+import {
+    SortableGroupItemList,
+    SortableGroupSectionFrame,
+    SortableGroupSectionList,
+} from './SortableGroup';
 import { useFilterableGroupOptions } from './useFilterableGroupOptions';
 import { useProtocolImportExport } from './useProtocolImportExport';
 
@@ -921,7 +921,7 @@ const S7ConfigPage = () => {
     const deleteMutation = useProtocolConfigDelete();
     const { exportConfigs, triggerImport, importing } = useProtocolImportExport('S7');
 
-    const [selectedTypeId, setSelectedTypeId] = useState<number>();
+    const [selectedTypeId, setSelectedTypeId] = useState<string>();
     const [deviceTypeModalOpen, setDeviceTypeModalOpen] = useState(false);
     const [editingDeviceType, setEditingDeviceType] = useState<boolean>(false);
     const [createForm] = Form.useForm<DeviceTypeFormValues>();
@@ -1260,12 +1260,14 @@ const S7ConfigPage = () => {
 
     return (
         <PageContainer title="S7配置">
-            <div className="h-full flex">
-                <div className="w-[360px] shrink-0 pr-3 h-full">
+            <div className="flex h-full min-h-0 overflow-hidden">
+                <div className="h-full min-h-0 w-[360px] shrink-0 pr-3">
                     <Card
                         title="设备类型"
-                        className="h-full flex flex-col"
-                        styles={{ body: { flex: 1, overflow: 'auto', padding: 16 } }}
+                        className="flex h-full min-h-0 flex-col overflow-hidden"
+                        styles={{
+                            body: { flex: 1, minHeight: 0, overflow: 'auto', padding: 16 },
+                        }}
                         extra={
                             <Space size={4}>
                                 {canAdd && (
@@ -1331,7 +1333,7 @@ const S7ConfigPage = () => {
                                 selectedKeys={activeTypeId ? [String(activeTypeId)] : []}
                                 onSelect={(keys) => {
                                     if (keys.length > 0) {
-                                        setSelectedTypeId(Number(keys[0]));
+                                        setSelectedTypeId(String(keys[0]));
                                     }
                                 }}
                                 treeData={types.map((t) => {
@@ -1368,7 +1370,7 @@ const S7ConfigPage = () => {
                     </Card>
                 </div>
 
-                <div className="flex-1 min-w-0 h-full">
+                <div className="h-full min-h-0 min-w-0 flex-1">
                     <Card
                         title={
                             activeType ? (
@@ -1414,8 +1416,10 @@ const S7ConfigPage = () => {
                                 '暂无设备类型'
                             )
                         }
-                        className="h-full flex flex-col"
-                        styles={{ body: { flex: 1, overflow: 'auto', padding: 0 } }}
+                        className="flex h-full min-h-0 flex-col overflow-hidden"
+                        styles={{
+                            body: { flex: 1, minHeight: 0, overflow: 'auto', padding: 0 },
+                        }}
                         extra={
                             canAdd &&
                             activeTypeId && (

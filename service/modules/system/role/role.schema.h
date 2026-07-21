@@ -3,6 +3,7 @@
 #include <ruvia/web/Controller.h>
 
 #include "service/modules/system/role/role.types.h"
+#include "service/common/id.validation.h"
 
 namespace service::role {
 
@@ -41,8 +42,9 @@ class RoleListQueryValidator final : public ruvia::Middleware<RoleListQueryValid
 
 class RoleIdParamsValidator final : public ruvia::Middleware<RoleIdParamsValidator> {
   public:
-    RUVIA_VALIDATE_PARAM(RoleIdParams, RUVIA_RULE(id, RUVIA_REQUIRED("id 不能为空"),
-                                                  RUVIA_MIN(1, "id 必须是正整数")))
+    RUVIA_VALIDATE_PARAM(RoleIdParams,
+                         RUVIA_RULE(id, RUVIA_REQUIRED("id 不能为空"),
+                                    RUVIA_CUSTOM("id 必须是 UUID", service::common::isUuidField)))
 };
 
 } // namespace service::role

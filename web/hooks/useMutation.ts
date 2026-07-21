@@ -57,7 +57,7 @@ export function useMutationWithMessage<TData = void, TVariables = void>(
 
 interface SaveMutationOptions<TData, TCreateData, TUpdateData> {
     createFn: (data: TCreateData) => Promise<TData> | Promise<void>;
-    updateFn: (id: number, data: TUpdateData) => Promise<TData> | Promise<void>;
+    updateFn: (id: string, data: TUpdateData) => Promise<TData> | Promise<void>;
     toUpdatePayload: (data: TData) => TUpdateData;
     createMessage?: string;
     updateMessage?: string;
@@ -71,15 +71,15 @@ export function useSaveMutation<TData, TCreateData, TUpdateData>(
     const { message } = App.useApp();
 
     return useReactMutation({
-        mutationFn: async (data: TData & { id?: number }): Promise<void> => {
+        mutationFn: async (data: TData & { id?: string }): Promise<void> => {
             if (data.id) {
-                await options.updateFn(data.id as number, options.toUpdatePayload(data));
+                await options.updateFn(data.id, options.toUpdatePayload(data));
             } else {
                 await options.createFn(data as unknown as TCreateData);
             }
         },
         onSuccess: (_, variables) => {
-            const isUpdate = !!(variables as TData & { id?: number }).id;
+            const isUpdate = !!(variables as TData & { id?: string }).id;
             message.success(isUpdate ? options.updateMessage : options.createMessage);
 
             options.invalidateKeys?.forEach((key) => {

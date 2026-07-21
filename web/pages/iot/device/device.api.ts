@@ -5,10 +5,10 @@ import { deviceIdSchema, saveDeviceGroupSchema, saveDeviceSchema } from './devic
 import type { Device } from './device.types';
 
 const DEVICE_BASE = '/api/device';
-const GROUP_BASE = '/api/device-groups';
+const GROUP_BASE = '/api/device/groups';
 
 const buildTree = (items: DeviceGroup.TreeItem[]) => {
-    const map = new Map<number, DeviceGroup.TreeItem>();
+    const map = new Map<string, DeviceGroup.TreeItem>();
     const roots: DeviceGroup.TreeItem[] = [];
     for (const item of items) map.set(item.id, { ...item, children: [] });
     for (const item of map.values()) {
@@ -20,13 +20,13 @@ const buildTree = (items: DeviceGroup.TreeItem[]) => {
 };
 
 export const getDeviceList = () => request.get<PaginatedResult<Device.RealTimeData>>(DEVICE_BASE);
-export const getDeviceDetail = (id: number) =>
+export const getDeviceDetail = (id: string) =>
     request.get<Device.Item>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}`);
 export const createDevice = (data: Device.CreateDto) =>
     request.post<void>(DEVICE_BASE, saveDeviceSchema.parse(data));
-export const updateDevice = (id: number, data: Device.UpdateDto) =>
+export const updateDevice = (id: string, data: Device.UpdateDto) =>
     request.put<void>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}`, saveDeviceSchema.parse(data));
-export const removeDevice = (id: number) =>
+export const removeDevice = (id: string) =>
     request.delete<void>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}`);
 
 export const getDeviceGroupTree = async (withCount = false) =>
@@ -37,10 +37,10 @@ export const getDeviceGroupTree = async (withCount = false) =>
     );
 export const createDeviceGroup = (data: DeviceGroup.CreateDto) =>
     request.post<void>(GROUP_BASE, saveDeviceGroupSchema.parse(data));
-export const updateDeviceGroup = (id: number, data: DeviceGroup.UpdateDto) =>
+export const updateDeviceGroup = (id: string, data: DeviceGroup.UpdateDto) =>
     request.put<void>(
         `${GROUP_BASE}/${deviceIdSchema.parse(id)}`,
         saveDeviceGroupSchema.parse(data)
     );
-export const removeDeviceGroup = (id: number) =>
+export const removeDeviceGroup = (id: string) =>
     request.delete<void>(`${GROUP_BASE}/${deviceIdSchema.parse(id)}`);

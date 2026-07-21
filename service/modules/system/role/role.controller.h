@@ -26,8 +26,8 @@ class RoleController final : public ruvia::Controller<RoleController> {
     RUVIA_ROUTES_END
 
   private:
-    static std::int64_t positiveId(ruvia::Context& c) {
-        return static_cast<std::int64_t>(*c.req().valid<RoleIdParams>().id());
+    static std::string id(ruvia::Context& c) {
+        return std::string(c.req().valid<RoleIdParams>().id()->view());
     }
 
     ruvia::Task<ruvia::HttpResponse> list(ruvia::Context& c) {
@@ -53,8 +53,8 @@ class RoleController final : public ruvia::Controller<RoleController> {
 
     ruvia::Task<ruvia::HttpResponse> detail(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:role:query");
-        co_return c.json(service::common::ok<RoleDetailResponse>(
-            c, co_await roleService().detail(c, positiveId(c))));
+        co_return c.json(
+            service::common::ok<RoleDetailResponse>(c, co_await roleService().detail(c, id(c))));
     }
 
     ruvia::Task<ruvia::HttpResponse> create(ruvia::Context& c) {
@@ -65,13 +65,13 @@ class RoleController final : public ruvia::Controller<RoleController> {
 
     ruvia::Task<ruvia::HttpResponse> update(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:role:edit");
-        co_await roleService().update(c, positiveId(c), c.req().valid<UpdateRoleBody>());
+        co_await roleService().update(c, id(c), c.req().valid<UpdateRoleBody>());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 
     ruvia::Task<ruvia::HttpResponse> remove(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:role:delete");
-        co_await roleService().remove(c, positiveId(c));
+        co_await roleService().remove(c, id(c));
         co_return c.json(service::common::operation(c, "删除成功"));
     }
 };

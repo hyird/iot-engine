@@ -10,7 +10,9 @@
 #include <ruvia/web/ModelObject.h>
 #include <ruvia/web/db/Db.h>
 
+#include "service/modules/northbridge/queue/config_event.publisher.h"
 #include "service/common/http.h"
+#include "service/common/uuid.h"
 #include "service/middleware/auth.h"
 
 namespace service::protocol {
@@ -41,11 +43,11 @@ class ProtocolService {
         const auto limitIndex = listParams.size();
         listParams.emplace_back((page - 1) * pageSize);
         const auto offsetIndex = listParams.size();
-        const auto rows =
-            co_await c.db().query("SELECT " + itemExpression() + "::text FROM iot_protocol_config" +
-                                      where + " ORDER BY id LIMIT $" + std::to_string(limitIndex) +
-                                      " OFFSET $" + std::to_string(offsetIndex),
-                                  listParams);
+        const auto rows = co_await c.db().query(
+            "SELECT " + itemExpression() + "::text FROM iot_protocol_config" + where +
+                " ORDER BY id DESC LIMIT $" + std::to_string(limitIndex) + " OFFSET $" +
+                std::to_string(offsetIndex),
+            listParams);
 
         std::string result = "{\"list\":[";
         bool first = true;
@@ -61,7 +63,7 @@ class ProtocolService {
         co_return result;
     }
 
-    ruvia::Task<std::string> detail(ruvia::Context& c, std::int64_t id) {
+    ruvia::Task<std::string> detail(ruvia::Context& c, std::string_view id) {
         const auto rows = co_await c.db().query(
             "SELECT " + itemExpression() +
                 "::text FROM iot_protocol_config WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
@@ -109,16 +111,21 @@ ORDER BY name LIMIT $2 OFFSET $3)sql",
         co_await validateConfig(c, payload.view(), protocol, true);
         co_await ensureNameAvailable(c, name, std::nullopt);
         const auto principal = service::middleware::requireAuth(c);
-        (void)co_await c.db().execute(R"sql(
+        const auto id = service::common::nextUuidV7();
+        (void)co_await c.db().execute(
+            R"sql(
 WITH body AS (SELECT $1::jsonb AS value)
-INSERT INTO iot_protocol_config(protocol, name, enabled, config, remark, created_by)
-SELECT value->>'protocol', value->>'name', COALESCE((value->>'enabled')::boolean, TRUE),
-       value->'config', NULLIF(value->>'remark', ''), $2
+INSERT INTO iot_protocol_config(id, protocol, name, enabled, config, remark, created_by)
+SELECT $3::uuid, value->>'protocol', value->>'name',
+       COALESCE((value->>'enabled')::boolean, TRUE), value->'config',
+       NULLIF(value->>'remark', ''), $2
 FROM body)sql",
-                                      service::common::dbParams(payload.view(), principal.userId));
+            service::common::dbParams(payload.view(), principal.userId, id));
+        co_await service::bridge::publishConfigEvent(c, "protocol", "created", id);
     }
 
-    ruvia::Task<void> update(ruvia::Context& c, std::int64_t id, const ruvia::JsonValue& payload) {
+    ruvia::Task<void> update(ruvia::Context& c, std::string_view id,
+                             const ruvia::JsonValue& payload) {
         if (!payload.isObject())
             service::common::fail(16002, "请求体必须是对象", 400);
         const auto existing = co_await c.db().query(
@@ -127,14 +134,14 @@ FROM body)sql",
             service::common::dbParams(id));
         if (existing.rows().empty())
             service::common::fail(16001, "协议配置不存在", 404);
-        co_await requireOwner(c, toInt(existing.rows().front()[1].text()));
+        co_await requireOwner(c, existing.rows().front()[1].text());
         const std::string protocol(existing.rows().front()[0].text());
         if (const auto requested = payload.get<ruvia::String>("protocol");
             requested && !requested->view().empty() && requested->view() != protocol)
             service::common::fail(16006, "协议类型不可修改", 409);
         if (const auto name = payload.get<ruvia::String>("name")) {
             validateName(name->view());
-            co_await ensureNameAvailable(c, std::string(name->view()), id);
+            co_await ensureNameAvailable(c, std::string(name->view()), std::string(id));
         }
         co_await validateConfig(c, payload.view(), protocol, false);
         (void)co_await c.db().execute(R"sql(
@@ -147,18 +154,20 @@ SET name = CASE WHEN body.value ? 'name' THEN body.value->>'name' ELSE p.name EN
     updated_at = NOW()
 FROM body WHERE p.id = $2)sql",
                                       service::common::dbParams(payload.view(), id));
+        co_await service::bridge::publishConfigEvent(c, "protocol", "updated", id);
     }
 
-    ruvia::Task<void> remove(ruvia::Context& c, std::int64_t id) {
+    ruvia::Task<void> remove(ruvia::Context& c, std::string_view id) {
         const auto existing = co_await c.db().query("SELECT created_by FROM iot_protocol_config "
                                                     "WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
                                                     service::common::dbParams(id));
         if (existing.rows().empty())
             service::common::fail(16001, "协议配置不存在", 404);
-        co_await requireOwner(c, toInt(existing.rows().front()[0].text()));
+        co_await requireOwner(c, existing.rows().front()[0].text());
         (void)co_await c.db().execute(
             "UPDATE iot_protocol_config SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1",
             service::common::dbParams(id));
+        co_await service::bridge::publishConfigEvent(c, "protocol", "deleted", id);
     }
 
   private:
@@ -278,7 +287,7 @@ SELECT COALESCE(bool_and(
     }
 
     ruvia::Task<void> ensureNameAvailable(ruvia::Context& c, const std::string& name,
-                                          std::optional<std::int64_t> excludedId) {
+                                          std::optional<std::string> excludedId) {
         std::string sql =
             "SELECT 1 FROM iot_protocol_config WHERE name = $1 AND deleted_at IS NULL";
         auto params = service::common::dbParams(name);
@@ -292,7 +301,7 @@ SELECT COALESCE(bool_and(
             service::common::fail(16005, "配置名称已存在", 409);
     }
 
-    ruvia::Task<void> requireOwner(ruvia::Context& c, std::int64_t ownerId) {
+    ruvia::Task<void> requireOwner(ruvia::Context& c, std::string_view ownerId) {
         const auto principal = service::middleware::requireAuth(c);
         if (principal.userId == ownerId)
             co_return;

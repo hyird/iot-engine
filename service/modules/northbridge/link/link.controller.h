@@ -8,8 +8,8 @@
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/permission.h"
-#include "service/modules/iot/link/link.schema.h"
-#include "service/modules/iot/link/link.service.h"
+#include "service/modules/northbridge/link/link.schema.h"
+#include "service/modules/northbridge/link/link.service.h"
 
 namespace service::link {
 
@@ -20,6 +20,7 @@ class LinkController final : public ruvia::Controller<LinkController> {
     RUVIA_GET("/", list, LinkListQueryValidator);
     RUVIA_GET("/options", options);
     RUVIA_GET("/enums", enums);
+    RUVIA_GET("/public-ip", publicIp);
     RUVIA_GET("/:id", detail, LinkIdParamsValidator);
     RUVIA_POST("/", create, SaveLinkValidator);
     RUVIA_PUT("/:id", update, LinkIdParamsValidator, SaveLinkValidator);
@@ -27,8 +28,8 @@ class LinkController final : public ruvia::Controller<LinkController> {
     RUVIA_ROUTES_END
 
   private:
-    static std::int64_t positiveId(ruvia::Context& c) {
-        return static_cast<std::int64_t>(*c.req().valid<LinkIdParams>().id());
+    static std::string id(ruvia::Context& c) {
+        return std::string(c.req().valid<LinkIdParams>().id()->view());
     }
 
     static std::optional<std::string> text(const std::optional<ruvia::String>& value) {
@@ -56,10 +57,17 @@ class LinkController final : public ruvia::Controller<LinkController> {
         co_return c.json(service::common::ok<LinkEnumsResponse>(c, linkService().enums(c)));
     }
 
+    ruvia::Task<ruvia::HttpResponse> publicIp(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:link:query");
+        PublicIpDto result(c);
+        result.ip(linkService().publicIp());
+        co_return c.json(service::common::ok<PublicIpResponse>(c, std::move(result)));
+    }
+
     ruvia::Task<ruvia::HttpResponse> detail(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:link:query");
-        co_return c.json(service::common::ok<LinkDetailResponse>(
-            c, co_await linkService().detail(c, positiveId(c))));
+        co_return c.json(
+            service::common::ok<LinkDetailResponse>(c, co_await linkService().detail(c, id(c))));
     }
 
     ruvia::Task<ruvia::HttpResponse> create(ruvia::Context& c) {
@@ -70,13 +78,13 @@ class LinkController final : public ruvia::Controller<LinkController> {
 
     ruvia::Task<ruvia::HttpResponse> update(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:link:edit");
-        co_await linkService().update(c, positiveId(c), c.req().valid<SaveLinkBody>());
+        co_await linkService().update(c, id(c), c.req().valid<SaveLinkBody>());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 
     ruvia::Task<ruvia::HttpResponse> remove(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:link:delete");
-        co_await linkService().remove(c, positiveId(c));
+        co_await linkService().remove(c, id(c));
         co_return c.json(service::common::operation(c, "删除成功"));
     }
 };

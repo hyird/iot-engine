@@ -9,30 +9,30 @@ export const deptQueryKeys = {
 type DeptStatus = 'enabled' | 'disabled';
 
 interface DeptItem {
-    id: number;
+    id: string;
     name: string;
     code?: string;
-    parent_id: number;
+    parent_id: string;
     parent_name?: string;
-    leader_id: number;
+    leader_id: string;
     leader_name?: string;
     sort_order: number;
     status: DeptStatus;
 }
 interface DeptOption {
-    id: number;
+    id: string;
     name: string;
-    parent_id: number;
+    parent_id: string;
 }
 interface DeptQuery extends PageParams {
     status?: DeptStatus;
-    parent_id?: number;
+    parent_id?: string;
 }
 interface CreateDeptDto {
     name: string;
     code?: string;
-    parent_id?: number;
-    leader_id?: number;
+    parent_id?: string;
+    leader_id?: string;
     sort_order?: number;
     status?: DeptStatus;
 }

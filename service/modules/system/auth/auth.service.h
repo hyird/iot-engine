@@ -94,7 +94,7 @@ LIMIT 1)sql",
             service::common::fail(11002, "用户已被禁用", 403);
         LoginRateLimiter::instance().clear(username);
 
-        const auto userId = std::stoll(std::string(row[0].text()));
+        const std::string userId(row[0].text());
         const std::string nickname(row[3].text());
         const std::string status(row[4].text());
         service::core::JwtPayload payload{userId, username};
@@ -122,7 +122,7 @@ FROM sys_user WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
         if (row[3].text() != "enabled")
             service::common::fail(11002, "用户已被禁用", 403);
 
-        const auto userId = std::stoll(std::string(row[0].text()));
+        const std::string userId(row[0].text());
         const std::string username(row[1].text());
         const std::string nickname(row[2].text());
         const std::string status(row[3].text());
@@ -134,7 +134,7 @@ FROM sys_user WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
         co_return result;
     }
 
-    ruvia::Task<AuthUserInfoDto> current(ruvia::Context& c, std::int64_t userId) {
+    ruvia::Task<AuthUserInfoDto> current(ruvia::Context& c, std::string_view userId) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT username, COALESCE(nickname, ''), status
 FROM sys_user WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
@@ -149,14 +149,11 @@ FROM sys_user WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
     }
 
   private:
-    ruvia::Task<AuthUserInfoDto> buildUser(ruvia::Context& c, std::int64_t userId,
+    ruvia::Task<AuthUserInfoDto> buildUser(ruvia::Context& c, std::string_view userId,
                                            const std::string& username, const std::string& nickname,
                                            const std::string& status) {
         AuthUserInfoDto user(c);
-        user.id(static_cast<ruvia::Int64>(userId))
-            .username(username)
-            .nickname(nickname)
-            .status(status);
+        user.id(userId).username(username).nickname(nickname).status(status);
 
         const auto roles = co_await c.db().query(R"sql(
 SELECT id, name, code
@@ -168,9 +165,7 @@ ORDER BY r.id)sql",
         auto& roleItems = user.rolesEnsure();
         for (const auto& row : roles.rows()) {
             auto& role = roleItems.emplace_back(c);
-            role.id(static_cast<ruvia::Int64>(std::stoll(std::string(row[0].text()))))
-                .name(row[1].text())
-                .code(row[2].text());
+            role.id(row[0].text()).name(row[1].text()).code(row[2].text());
         }
 
         const auto permissions = co_await c.db().query(R"sql(

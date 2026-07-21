@@ -231,7 +231,7 @@ interface DeviceTypeModalRef {
 
 /** 寄存器 Modal Ref */
 interface RegisterModalRef {
-    open: (mode: 'create' | 'edit', typeId: number, register?: Modbus.Register) => void;
+    open: (mode: 'create' | 'edit', typeId: string, register?: Modbus.Register) => void;
 }
 
 const ModbusConfigPage = () => {
@@ -259,7 +259,7 @@ const ModbusConfigPage = () => {
     const { exportConfigs, triggerImport, importing } = useProtocolImportExport('Modbus');
 
     // 当前选中的设备类型 ID（用户手动选择）
-    const [selectedTypeId, setSelectedTypeId] = useState<number>();
+    const [selectedTypeId, setSelectedTypeId] = useState<string>();
 
     // Modal refs
     const deviceTypeModalRef = useRef<DeviceTypeModalRef>(null);
@@ -483,13 +483,15 @@ const ModbusConfigPage = () => {
 
     return (
         <PageContainer title="Modbus配置">
-            <div className="h-full flex">
+            <div className="flex h-full min-h-0 overflow-hidden">
                 {/* 左侧：设备类型列表 */}
-                <div className="w-[360px] shrink-0 pr-3 h-full">
+                <div className="h-full min-h-0 w-[360px] shrink-0 pr-3">
                     <Card
                         title="设备类型"
-                        className="h-full flex flex-col"
-                        styles={{ body: { flex: 1, overflow: 'auto', padding: 16 } }}
+                        className="flex h-full min-h-0 flex-col overflow-hidden"
+                        styles={{
+                            body: { flex: 1, minHeight: 0, overflow: 'auto', padding: 16 },
+                        }}
                         extra={
                             <Space size={4}>
                                 {canAdd && (
@@ -557,7 +559,7 @@ const ModbusConfigPage = () => {
                                 selectedKeys={activeTypeId ? [String(activeTypeId)] : []}
                                 onSelect={(keys) => {
                                     if (keys.length > 0) {
-                                        setSelectedTypeId(Number(keys[0]));
+                                        setSelectedTypeId(String(keys[0]));
                                     }
                                 }}
                                 treeData={types.map((t) => {
@@ -595,7 +597,7 @@ const ModbusConfigPage = () => {
                 </div>
 
                 {/* 右侧：寄存器配置 */}
-                <div className="flex-1 min-w-0 h-full">
+                <div className="h-full min-h-0 min-w-0 flex-1">
                     <Card
                         title={
                             activeType ? (
@@ -640,8 +642,10 @@ const ModbusConfigPage = () => {
                                 '暂无设备类型'
                             )
                         }
-                        className="h-full flex flex-col"
-                        styles={{ body: { flex: 1, overflow: 'auto', padding: 16 } }}
+                        className="flex h-full min-h-0 flex-col overflow-hidden"
+                        styles={{
+                            body: { flex: 1, minHeight: 0, overflow: 'auto', padding: 16 },
+                        }}
                         extra={
                             activeTypeId &&
                             canAdd && (
@@ -978,7 +982,7 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
     ({ types, onSuccess, saveMutation }, ref) => {
         const [open, setOpen] = useState(false);
         const [mode, setMode] = useState<'create' | 'edit'>('create');
-        const [typeId, setTypeId] = useState<number>();
+        const [typeId, setTypeId] = useState<string>();
         const [current, setCurrent] = useState<Modbus.Register>();
         const [form] = Form.useForm();
 
