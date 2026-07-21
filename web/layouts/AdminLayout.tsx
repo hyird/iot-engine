@@ -1,6 +1,8 @@
 import {
     ApartmentOutlined,
-    ApiOutlined,
+    ClusterOutlined,
+    HddOutlined,
+    LinkOutlined,
     LogoutOutlined,
     MenuFoldOutlined,
     MenuUnfoldOutlined,
@@ -29,11 +31,25 @@ export default function AdminLayout() {
         const items: MenuProps['items'] = [];
         if (has('iot:link:query')) {
             items.push({
-                key: '/iot',
-                icon: <ApiOutlined />,
-                label: 'IOT 管理',
-                children: [{ key: '/iot/link', label: '链路管理' }],
+                key: '/iot/link',
+                icon: <LinkOutlined />,
+                label: '链路管理',
             });
+        }
+        if (has('iot:protocol:query')) {
+            items.push({
+                key: '/iot/protocol',
+                icon: <ClusterOutlined />,
+                label: '协议管理',
+                children: [
+                    { key: '/iot/sl651', label: 'SL651配置' },
+                    { key: '/iot/modbus', label: 'Modbus配置' },
+                    { key: '/iot/s7', label: 'S7配置' },
+                ],
+            });
+        }
+        if (has('iot:device:query')) {
+            items.push({ key: '/device', icon: <HddOutlined />, label: '设备管理' });
         }
         const systemItems: NonNullable<MenuProps['items']> = [];
         if (has('system:role:query')) {
@@ -82,7 +98,7 @@ export default function AdminLayout() {
                     theme="dark"
                     mode="inline"
                     selectedKeys={[location.pathname]}
-                    defaultOpenKeys={['/iot', '/system']}
+                    defaultOpenKeys={['/iot/protocol', '/system']}
                     items={menuItems}
                     onClick={({ key }) => navigate(key)}
                 />

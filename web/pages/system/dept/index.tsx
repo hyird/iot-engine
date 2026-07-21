@@ -54,7 +54,8 @@ export default function SystemDeptPage() {
         },
         { enabled: canQuery }
     );
-    const { data: departments = [] } = useDeptOptions({ enabled: canQuery || canAdd || canEdit });
+    const { data: departmentData } = useDeptOptions({ enabled: canQuery || canAdd || canEdit });
+    const departments = departmentData ?? [];
     const { data: users = [] } = useUserOptions({ enabled: canAdd || canEdit });
     const save = useDeptSave();
     const remove = useDeptDelete();
@@ -105,8 +106,12 @@ export default function SystemDeptPage() {
     );
 
     useEffect(() => {
-        setExpandedTreeKeys(['all', ...departments.map((department) => `dept-${department.id}`)]);
-    }, [departments]);
+        if (!departmentData) return;
+        setExpandedTreeKeys([
+            'all',
+            ...departmentData.map((department) => `dept-${department.id}`),
+        ]);
+    }, [departmentData]);
 
     const showCreate = () => {
         setEditing(null);

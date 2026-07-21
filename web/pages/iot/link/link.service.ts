@@ -1,7 +1,7 @@
 import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import type { PaginatedResult } from '@/utils/types';
-import { create, getList, remove, update } from './link.api';
+import { create, getEnums, getList, remove, update } from './link.api';
 import { type Link, linkQueryKeys } from './link.types';
 
 export function useLinkList(
@@ -12,6 +12,23 @@ export function useLinkList(
         queryKey: linkQueryKeys.list(params),
         queryFn: () => getList(params),
         ...options,
+    });
+}
+
+export function useLinkEnums(options?: { enabled?: boolean }) {
+    return useQuery({
+        queryKey: [...linkQueryKeys.all, 'enums'],
+        queryFn: getEnums,
+        enabled: options?.enabled ?? true,
+        staleTime: Number.POSITIVE_INFINITY,
+    });
+}
+
+export function useLinkOptions(options?: { enabled?: boolean }) {
+    return useQuery({
+        queryKey: [...linkQueryKeys.all, 'options'],
+        queryFn: async () => (await getList({ page: 1, pageSize: 100 })).list,
+        enabled: options?.enabled ?? true,
     });
 }
 

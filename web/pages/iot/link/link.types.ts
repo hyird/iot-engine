@@ -18,6 +18,9 @@ interface LinkTarget {
     ip: string;
     port: number;
     status: LinkStatus;
+    conn_status?: ConnectionStatus;
+    error_msg?: string;
+    last_activity?: string;
 }
 
 interface LinkItem {
@@ -31,6 +34,7 @@ interface LinkItem {
     status: LinkStatus;
     conn_status: ConnectionStatus;
     client_count: number;
+    clients?: string[];
     created_by: number;
     created_at: string;
     updated_at: string;
@@ -52,6 +56,14 @@ interface SaveLinkDto {
     status: LinkStatus;
 }
 
+interface LinkEnums {
+    modes: LinkMode[];
+    protocols: LinkProtocol[];
+    statuses: LinkStatus[];
+}
+
+interface LinkOption extends LinkItem {}
+
 export namespace Link {
     export type Mode = LinkMode;
     export type Protocol = LinkProtocol;
@@ -60,4 +72,6 @@ export namespace Link {
     export type Item = LinkItem;
     export type Query = LinkQuery;
     export type SaveDto = SaveLinkDto;
+    export type Enums = LinkEnums;
+    export type Option = LinkOption;
 }

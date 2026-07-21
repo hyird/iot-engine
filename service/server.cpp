@@ -13,7 +13,10 @@
 
 #include "service/common/http.h"
 #include "service/config/schema.h"
+#include "service/modules/iot/device/device.controller.h"
+#include "service/modules/iot/device-group/device-group.controller.h"
 #include "service/modules/iot/link/link.controller.h"
+#include "service/modules/iot/protocol/protocol.controller.h"
 #include "service/modules/system/auth/auth.controller.h"
 #include "service/modules/system/dept/dept.controller.h"
 #include "service/modules/system/role/role.controller.h"
@@ -66,7 +69,7 @@ void configureWeb(ruvia::App& app, const std::filesystem::path& runtime) {
     ruvia::DocumentRootConfig config;
     config.root = webRoot;
     config.staticOptions.indexFile = "index.html";
-    config.staticOptions.cacheControl = "public, max-age=3600";
+    config.staticOptions.cacheControl = "no-cache";
     app.setDocumentRoot(std::move(config));
 }
 

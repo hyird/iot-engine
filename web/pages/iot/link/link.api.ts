@@ -10,6 +10,8 @@ export const getList = (params?: Link.Query) =>
     request.get<PaginatedResult<Link.Item>>(
         appendQueryParams(BASE, linkListQuerySchema.parse(params ?? {}))
     );
+export const getEnums = () => request.get<Link.Enums>(`${BASE}/enums`);
+export const getOptions = () => request.get<Link.Option[]>(`${BASE}/options`);
 export const create = (data: Link.SaveDto) => request.post<void>(BASE, saveLinkSchema.parse(data));
 export const update = (id: number, data: Link.SaveDto) =>
     request.put<void>(`${BASE}/${linkIdSchema.parse(id)}`, saveLinkSchema.parse(data));

@@ -268,7 +268,6 @@ const SystemUserPage = () => {
                     if (!open) form.resetFields();
                 }}
                 destroyOnHidden
-                width={560}
             >
                 <Form<UserFormValues> form={form} layout="vertical" onFinish={onFinish}>
                     <Form.Item name="id" hidden>
