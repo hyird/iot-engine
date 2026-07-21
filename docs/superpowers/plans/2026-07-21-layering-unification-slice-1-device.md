@@ -14,7 +14,8 @@
 - 不改数据库 schema/迁移、不改权限码、不改错误码、不改分页语义、不改 SQL 语义与字段集合。
 - 时间字段维持 UTC（`TIMESTAMPTZ`、带 `Z` 的 ISO 8601、设备 `timezone` 解析语义）不变。
 - 前后端校验规则一致：必填、长度、取值范围、枚举、格式、数组数量、分页、ID 约束逐条对齐，并核对数据库字段限制。
-- 不新增 repository 层；不新增南北向绕过 Redis 的调用；不动 southbridge。
+- 不新增 repository 层；不新增南北向绕过 Redis 的调用；本切片不动 southbridge。
+- **全异步、禁止同步阻塞代码**：所有 I/O（HTTP、DB、Redis、socket）必须 `co_await` 异步；禁止 `std::this_thread::sleep_for`、`std::future::get()/wait_for()` 阻塞、每组件 `std::thread` 忙等、同步 libpq。本切片（device/device-group）为 HTTP+DB CRUD，已全程 `co_await`，天然满足；socket 层已用 asio `async_*`。southbridge 运行时现存的阻塞/线程/同步 libpq 违规由独立的"southbridge 异步化"切片处理，见文末。
 - 无应用级单测框架：每个后端任务的验证 = `cmake --build build` 通过 + 契约字段清单逐项核对；前端任务验证 = `bun run typecheck && bun run lint && bun run build && git diff --check`。
 - 复用现有 `FormModal`、`PageContainer`、Ant Design 组件与工具类，不新增一次性抽象。
 - 只 stage 本任务涉及的文件提交；保留工作区中他人/其他任务的在途改动，不顺手格式化无关文件。
@@ -50,7 +51,14 @@
 | `*.controller.h` | 路由 + `requirePermission` + `c.req().valid<Body>()` + `service::common::ok<Response>` 包壳 | 只做编排，无 SQL / 业务逻辑 |
 
 判定基准：`service/modules/system/user/*`、`service/modules/northbridge/link/*`。
-不新增 repository 层。`southbridge` 通信层不套用本规范。
+不新增 repository 层。`southbridge` 通信层的分层结构不套用本规范。
+
+### 全异步硬约束（跨全栈）
+
+所有 I/O（HTTP、DB、Redis、socket）必须异步 `co_await`；**禁止同步阻塞代码**：
+`std::this_thread::sleep_for`、`std::future::get()/wait_for()` 阻塞、每组件 `std::thread`
+忙等轮询、同步 libpq。socket 必须用 asio `async_*`。定时/重试用 asio `steady_timer`
+异步等待，不用阻塞 sleep。
 
 ### 前端页面模块 = 五件套
 
@@ -535,3 +543,4 @@ git commit -m "refactor(web/device): normalize module to index.tsx + five-file l
 ## 后续（另立计划）
 
 - 切片 2 = `protocol`：后端 protocol typed 化 + 前端 `iot/protocol` 巨型文件（S7 1737 / Modbus 1361 / SL651 790）拆分为 `modbus/`、`s7/`、`sl651/` 子目录 + 分段子组件，入口 `index.tsx`。落地切片 1 后新开 `docs/superpowers/plans/2026-..-layering-unification-slice-2-protocol.md`。
+- 切片 3 = `southbridge 异步化`（新约束"全异步、禁止同步阻塞"驱动）：把 `southbridge.runtime.h` 的 `std::thread` 组件线程、`std::this_thread::sleep_for` 轮询/重试、`std::future::get()/wait_for()` 阻塞等待改为 asio `io_context` 协程 + `steady_timer` 异步等待；`runtime_config.repository.h` 的同步 libpq 改为异步查询；`tcp_link.manager.h:376` 的 `std::future<bool> send()` 改为 awaitable。socket I/O 已是 asio `async_*`，无需重写。此切片独立于分层统一，规模较大，单独立 spec + plan。

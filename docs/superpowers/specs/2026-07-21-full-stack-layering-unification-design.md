@@ -52,8 +52,19 @@ ModelObject DTO 与 `Body/Query/Params`，`*.schema.h` 定义校验器，`*.serv
 
 **不新增 repository 层**：沿用 `system/*` 已确立的"service 内直连 DB"，只统一现有
 层次，不引入新层（YAGNI）。`southbridge` 属通信/消息层，另有 `runtime` / `network`
-/ `protocol` / `queue` 结构，**不套用**本规范；其现存的
-`runtime_config.repository.h` 是通信层特例，保留。
+/ `protocol` / `queue` 结构，其**分层结构**不套用本规范。
+
+### 全异步硬约束（跨全栈）
+
+所有 I/O（HTTP、DB、Redis、socket）必须异步 `co_await`，**禁止任何同步阻塞代码**：
+禁止 `std::this_thread::sleep_for`、`std::future::get()/wait_for()` 阻塞等待、每组件
+`std::thread` 忙等轮询、同步 libpq 调用。socket 必须使用 asio `async_*`（非阻塞）。
+
+现状核查：北向 `system/*`、`link`、`device`、`protocol` 均为 HTTP+DB，已全程
+`co_await`，满足约束。southbridge 的 socket I/O 已用 asio `async_*`。**违规集中在**
+`southbridge.runtime.h`（`std::thread` 组件线程、`std::this_thread::sleep_for` 轮询/
+重试、`std::future::get()/wait_for()`）与 `runtime_config.repository.h`（同步 libpq），
+以及 `tcp_link.manager.h` 的 `std::future<bool> send()` 同步桥接。这些由切片 3 处理。
 
 ### 前端 · 每个页面模块 = 五件套
 
@@ -90,6 +101,11 @@ service → DB），可独立交付与验证。
 2. **切片 1 — device(+group)**：后端 device/device-group typed 化并合并模块 → 前端
    `iot/device` 归位。一次交付、独立验证。
 3. **切片 2 — protocol**：后端 protocol typed 化 → 前端 `iot/protocol` 巨型文件拆分。
+4. **切片 3 — southbridge 异步化**（全异步硬约束驱动，独立于分层统一）：
+   `southbridge.runtime.h` 的组件线程 + `sleep_for` 轮询/重试 + `future.get()/wait_for()`
+   → asio `io_context` 协程 + `steady_timer` 异步等待；`runtime_config.repository.h`
+   同步 libpq → 异步查询；`tcp_link.manager.h` 的 `std::future<bool> send()` → awaitable。
+   socket I/O 已是 asio `async_*`，不重写。规模较大，单独 spec + plan。
 
 ## 不改行为的保证
 
@@ -117,6 +133,6 @@ service → DB），可独立交付与验证。
 ## 非目标（YAGNI）
 
 - 不引入 repository 层。
-- 不改造 `southbridge` 通信层结构。
+- 不改造 `southbridge` 通信层的**分层结构**（异步化在切片 3 单独处理，不改其目录/模块划分）。
 - 不做与统一分层无关的重构（新增功能、告警引擎、开放 API 等，见 rewrite-plan 阶段 5）。
 - 不改数据库 schema 与迁移。
