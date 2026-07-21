@@ -18,20 +18,29 @@
 - `DbHandle`：`co_await ctx.db().query(...)`（与北向 `c.db()` 同款）。
 - 定时/退避：worker 上的 asio `steady_timer`（`co_await` 异步等待），取代 `std::this_thread::sleep_for`。
 
-## 统一架构
+## 统一架构（已按 ruvia 能力修正）
+
+**核实结论**：
+- `ruvia::sleepFor(worker, duration)` 可 `co_await`，区分「到期 / 停机取消」——替换 `sleep_for`。
+- **ruvia 不暴露 worker 的 asio io_context**，无法把 tcp_link.manager 绑到 ruvia 执行器上。
+  因此网络层保留自己的 io_context，与消费者所在的 ruvia worker 之间用**异步跨执行器桥接**。
 
 ```
-ruvia App (asio io_context, N workers)
+ruvia App (workers) ── 后台协程执行器
   └─ onStart：
-       - 取一个/一组 WebWorkerHandle 作为南桥后台执行器
        - worker.post(consumeConfig 协程)   —— co_await ctx.db()/ctx.redis()
        - worker.post(consumeProtocol 协程) —— co_await ctx.redis()
-       - TcpLinkManager 绑定到**同一** worker 的 asio io_context
-            → 网络回调、producer 发布、消费者协程共享一个执行器，全部可 co_await
+
+TcpLinkManager（自有 asio io_context / 线程）── 网络 I/O
+       - 读回调解析出报文 → WebWorkerHandle::post 到 worker → co_await 异步发布遥测
+         （post 线程安全，是 tcp→worker 的桥）
+       - executeProtocolTask（worker 协程）要发送 → 通过异步桥请求 tcp io_context 执行
+         async_write，用 asio/channel awaitable 等回写完成（worker→tcp 的桥，取代 std::future）
 ```
 
-关键点：**tcp_link.manager 复用 ruvia worker 的 asio io_context**（不再自建线程/ioContext）。
-这样 socket 读回调解析出报文后可直接 `co_await producer.publish(...)`，producer 也异步化。
+关键点：**两套执行器 + 异步桥**，全链路无同步阻塞（无 `future.get`、无 `sleep_for`、无同步 hiredis/libpq）。
+桥的方向：遥测 tcp→worker 用 `post`；发送/等应答 worker→tcp 用 asio `async_compose` 或 ruvia channel 的
+awaitable，**不得**用 `future.get()`。
 
 ## 逐文件改法
 
@@ -58,11 +67,14 @@ ruvia App (asio io_context, N workers)
 - `executeProtocolTask` 及 inflight/timeout/failure 处理：全部改 `Task<...>` + `co_await`，逻辑与错误分支逐条保留。
 - `linkManager_.send(...)` future → `co_await` awaitable（见下）。
 
-### `network/tcp_link.manager.h`（future → awaitable，复用 ruvia io_context）
-- 构造时接收 ruvia worker 的 `asio::io_context&`（由 runtime 传入），不再自建。
-- `send(connectionId, bytes)` 由返回 `std::future<bool>` 改为返回 asio awaitable
-  （`asio::awaitable<bool>` 或 ruvia `Task<bool>`），内部 `async_write` 用 `co_await`（`use_awaitable`）。
-- 网络读回调 → `dispatcher_.process` → `producer_.publish` 链路改为在 io_context 上 `co_await` 异步发布。
+### `network/tcp_link.manager.h`（保留自有 io_context，跨执行器异步桥）
+- 网络层保留自己的 asio io_context/线程（ruvia 不暴露 worker io_context）。
+- **发送（worker→tcp）**：`send()` 不再返回 `std::future<bool>`。executeProtocolTask（worker 协程）
+  通过异步桥请求 tcp io_context 执行 `async_write`，用 asio `async_compose` + `co_await` 回收结果，
+  取代 `future.wait_for/get`。
+- **遥测发布（tcp→worker）**：读回调解析报文后 `WebWorkerHandle::post` 到 worker，
+  `co_await producer.publish(ctx.redis(), ...)`；producer 去 mutex、改 async。
+- `sleep_for` 退避 → `co_await ruvia::sleepFor(worker, delay)`。
 
 ### 北桥（能用就行，最小处理）
 - `LinkService::fetchPublicIp()` 的同步阻塞 socket：非本次重点，记为待办；不影响北桥可用。
