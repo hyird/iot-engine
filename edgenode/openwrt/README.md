@@ -1,0 +1,58 @@
+# iot-edge for OpenWrt
+
+This directory contains a small C daemon and an OpenWrt package recipe. It has no C++
+runtime, full protobuf runtime, or database dependency.
+
+Implemented foundations:
+
+- the node registers independently with up to four platforms using its 15-digit IMEI;
+- WSS carries one nanopb `Envelope` per binary WebSocket message;
+- certificate and hostname validation are intentionally disabled for this deployment;
+- every platform has isolated registration, config, reconnect, heartbeat, and outbox state;
+- config and outbox files are raw nanopb messages under
+  `/tmp/iot-edge/<platform_id>/`; process restarts recover them, device reboots do not;
+- before every tmpfs write, the daemon preserves 15% free space by rolling the oldest
+  outbox message across all platforms; active and staging config are never rolled;
+- the DTU runtime reads every second, processes queued writes in that same cadence, and
+  reports independently at the configured interval;
+- Modbus TCP/RTU and S7 request/response codecs implement reads and writes. A successful
+  command requires readback equality;
+- an unresponsive S7 PLC closes the TCP socket and repeats TCP, COTP, and S7 Setup
+  Communication on the next one-second cycle.
+
+The active-config-to-physical-endpoint binding is kept separate from the wire/session
+layer. The current code provides the tested protocol codecs and scheduler that binding
+uses; actual target hardware is still required before declaring a target deployable.
+
+## Configure
+
+Install the package, then edit `/etc/config/iot-edge`:
+
+```text
+config node 'node'
+        option imei '490154203237518'
+        option model 'OpenWrt Edge'
+
+config platform 'primary'
+        option enabled '1'
+        option id '018f6f5e-93d8-7d31-9f70-123456789abc'
+        option url 'wss://platform.example/edge/v1/connect'
+        option enrollment_token_file '/etc/iot-edge/credentials/primary.token'
+        option network_owner '1'
+        option outbox_max_bytes '262144'
+```
+
+The enrollment token file must be readable only by its owner (`0600`). Add another
+`platform` section with a different UUID for each additional platform. Only one enabled
+platform may set `network_owner=1`.
+
+## Build an IPK
+
+Copy or link `package/iot-edge` into the selected OpenWrt SDK's `package/` directory,
+select `Network -> iot-edge`, and run the normal package build. The recipe downloads
+nanopb `0.4.9.1`, compiles only its three C runtime files, enables `-Os`, LTO, function
+sections, and linker garbage collection, and dynamically uses OpenWrt's mbedTLS-backed
+libuwsc.
+
+The resulting package must be cross-compiled and installed on the actual target. A host
+binary is not an OpenWrt deliverable.

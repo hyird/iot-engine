@@ -17,7 +17,7 @@ if(NOT "$ENV{VCPKG_DEFAULT_HOST_TRIPLET}" STREQUAL "")
     set(VCPKG_HOST_TRIPLET "$ENV{VCPKG_DEFAULT_HOST_TRIPLET}" CACHE STRING "")
 endif()
 
-project(iot_engine VERSION 0.1.0 LANGUAGES CXX)
+project(iot_engine VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -37,6 +37,14 @@ FetchContent_Declare(ruvia
     # Follow the latest upstream main commit instead of pinning a release or SHA.
     GIT_TAG main)
 FetchContent_MakeAvailable(ruvia)
+
+FetchContent_Declare(nanopb
+    GIT_REPOSITORY https://github.com/nanopb/nanopb.git
+    GIT_TAG cad3c18ef15a663e30e3e43e3a752b66378adec1
+    # Only the three runtime C files are consumed below. Do not configure nanopb's
+    # generator or full build in the parent iot-engine project.
+    SOURCE_SUBDIR _runtime_sources_only)
+FetchContent_MakeAvailable(nanopb)
 
 # Ruvia's standalone manifest features do not belong to this parent manifest.
 unset(VCPKG_MANIFEST_FEATURES CACHE)
@@ -68,6 +76,38 @@ if(MSVC)
     target_compile_options(open-access-test PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
 endif()
 add_test(NAME open-access COMMAND open-access-test)
+
+add_executable(edge-protocol-test
+    tests/edge_protocol_test.c
+    edgenode/openwrt/src/edge_protocol.c
+    edgenode/openwrt/generated/edge.pb.c
+    ${nanopb_SOURCE_DIR}/pb_common.c
+    ${nanopb_SOURCE_DIR}/pb_encode.c
+    ${nanopb_SOURCE_DIR}/pb_decode.c)
+target_include_directories(edge-protocol-test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/edgenode/openwrt/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/edgenode/openwrt/generated"
+    "${nanopb_SOURCE_DIR}")
+if(MSVC)
+    target_compile_options(edge-protocol-test PRIVATE /utf-8)
+else()
+    target_compile_options(edge-protocol-test PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME edge-protocol COMMAND edge-protocol-test)
+
+add_executable(edge-runtime-test
+    tests/edge_runtime_test.c
+    edgenode/openwrt/src/edge_device_runtime.c
+    edgenode/openwrt/src/edge_modbus.c
+    edgenode/openwrt/src/edge_s7.c)
+target_include_directories(edge-runtime-test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/edgenode/openwrt/src")
+if(MSVC)
+    target_compile_options(edge-runtime-test PRIVATE /utf-8 /W4)
+else()
+    target_compile_options(edge-runtime-test PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME edge-runtime COMMAND edge-runtime-test)
 
 find_program(BUN_EXECUTABLE NAMES bun REQUIRED)
 
