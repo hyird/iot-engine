@@ -21,6 +21,7 @@
 #include <ruvia/web/db/Db.h>
 
 #include "service/common/bridge/message.contract.h"
+#include "service/modules/northbridge/open/open_access.event.h"
 #include "service/modules/southbridge/queue/redis_stream_async.h"
 #include "service/modules/northbridge/telemetry/device_latest.redis.h"
 
@@ -173,9 +174,18 @@ class TelemetryPersistenceRuntime final {
                     try {
                         co_await persist(context, messages);
                         co_await latest::update(redis, messages);
-                        for (const auto& message : messages)
+                        for (const auto& message : messages) {
+                            const auto parsed = bridge::parsedFrom(message);
+                            const auto eventType =
+                                parsed.valuesJson.find("\"type\":\"JPEG\"") != std::string::npos
+                                    ? "device.image.reported"
+                                    : "device.data.reported";
+                            co_await service::open_access::event::publish(
+                                redis, parsed.messageId, eventType, parsed.deviceId,
+                                parsed.deviceCode, parsed.observedAtMs, parsed.valuesJson);
                             co_await bridge::redis_async::acknowledgeAndDelete(
                                 redis, stream, kGroup, message.id);
+                        }
                     } catch (const std::exception& error) {
                         std::cerr << "telemetry persistence failed for south worker " << partition
                                   << ": " << error.what() << '\n';

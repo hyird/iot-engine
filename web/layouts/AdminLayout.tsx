@@ -1,5 +1,6 @@
 import {
     ApartmentOutlined,
+    ApiOutlined,
     AppstoreOutlined,
     ClusterOutlined,
     DownOutlined,
@@ -50,7 +51,14 @@ const breadcrumbGroups = [
     {
         title: '设备运营',
         icon: <HddOutlined />,
-        routes: [{ path: '/device', title: '设备管理', permission: 'iot:device:query' }],
+        routes: [
+            { path: '/device', title: '设备管理', permission: 'iot:device:query' },
+            {
+                path: '/iot/open-access',
+                title: '开放接入',
+                permission: 'iot:open-access:query',
+            },
+        ],
     },
     {
         title: '系统管理',
@@ -157,6 +165,9 @@ export default function AdminLayout() {
         }
         if (has('iot:device:query')) {
             items.push({ key: '/device', icon: <HddOutlined />, label: '设备管理' });
+        }
+        if (has('iot:open-access:query')) {
+            items.push({ key: '/iot/open-access', icon: <ApiOutlined />, label: '开放接入' });
         }
         const systemItems: NonNullable<MenuProps['items']> = [];
         if (has('system:role:query')) {

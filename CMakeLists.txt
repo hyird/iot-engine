@@ -52,6 +52,11 @@ target_include_directories(southbridge-protocol-test PRIVATE "${CMAKE_CURRENT_SO
 target_link_libraries(southbridge-protocol-test PRIVATE ruvia::web spdlog::spdlog)
 add_test(NAME southbridge-protocol COMMAND southbridge-protocol-test)
 
+add_executable(open-access-test tests/open_access_test.cpp)
+target_include_directories(open-access-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(open-access-test PRIVATE ruvia::web)
+add_test(NAME open-access COMMAND open-access-test)
+
 find_program(BUN_EXECUTABLE NAMES bun REQUIRED)
 
 add_custom_target(iot-engine-web ALL

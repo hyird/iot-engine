@@ -48,6 +48,10 @@ const permissionOptions = [
     ['iot:device-group:edit', '编辑设备分组'],
     ['iot:device-group:delete', '删除设备分组'],
     ['iot:device-group:share', '分享设备分组'],
+    ['iot:open-access:query', '查询开放接入'],
+    ['iot:open-access:add', '新增开放接入配置'],
+    ['iot:open-access:edit', '编辑开放接入配置'],
+    ['iot:open-access:delete', '删除开放接入配置'],
 ].map(([value, label]) => ({ value, label }));
 
 type RoleFormValues = Role.CreateDto & { id?: string };

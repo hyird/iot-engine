@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <iostream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -18,6 +19,8 @@
 #include "service/modules/northbridge/config/runtime_config.repository.h"
 #include "service/modules/northbridge/device/device.access.h"
 #include "service/modules/northbridge/device/device.types.h"
+#include "service/modules/northbridge/open/open_access.common.h"
+#include "service/modules/northbridge/open/open_access.event.h"
 #include "service/modules/southbridge/protocol/command_value.h"
 
 namespace service::northbridge::command {
@@ -44,6 +47,61 @@ class DeviceCommandService final {
             access.actor, access.level, deviceRows.rows().front()[0].text() == "t");
         if (!capabilities.canCommand)
             service::common::fail(18005, "设备未开启远程控制或当前账号无下发权限", 403);
+
+        co_return co_await enqueueDevice(context, deviceId, body, access.actor.userId);
+    }
+
+    ruvia::Task<service::device::DeviceCommandCreateDto>
+    createExternal(ruvia::Context& context, std::string_view deviceId,
+                   const service::device::DeviceCommandBody& body, std::string_view accessKeyId) {
+        const auto deviceRows = co_await context.db().query(
+            "SELECT COALESCE((protocol_params->>'remote_control')::boolean, TRUE) "
+            "FROM device WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1",
+            service::common::dbParams(deviceId));
+        if (deviceRows.rows().empty())
+            service::common::fail(18001, "设备不存在", 404);
+        if (deviceRows.rows().front()[0].text() != "t")
+            service::common::fail(18005, "设备未开启远程控制", 403);
+        co_return co_await enqueueDevice(context, deviceId, body,
+                                         "access-key:" + std::string(accessKeyId));
+    }
+
+    ruvia::Task<service::device::DeviceCommandStatusDto> status(ruvia::Context& context,
+                                                                std::string_view commandId) {
+        const auto fields =
+            co_await bridge::redis_async::hashEntries(context.redis(), stateKey(commandId));
+        if (fields.empty())
+            service::common::fail(18012, "下发记录不存在或已过期", 404);
+        const auto deviceId = field(fields, "device_id");
+        if (deviceId.empty())
+            service::common::fail(18012, "下发状态数据无效", 500);
+        (void)co_await service::device::deviceAccessService().require(
+            context, deviceId, service::device::DeviceAccessLevel::operate);
+
+        service::device::DeviceCommandStatusDto result(context);
+        result.commandId(commandId)
+            .deviceId(deviceId)
+            .deviceCode(field(fields, "device_code"))
+            .protocol(field(fields, "protocol"))
+            .status(field(fields, "status"));
+        const auto reason = field(fields, "reason");
+        if (!reason.empty())
+            result.reason(reason);
+        const auto createdAt = integer(fields, "created_at_ms");
+        if (createdAt != 0)
+            result.createdAtMs(createdAt);
+        const auto completedAt = integer(fields, "completed_at_ms");
+        if (completedAt != 0)
+            result.completedAtMs(completedAt);
+        co_return result;
+    }
+
+  private:
+    static constexpr auto kStateTtl = std::chrono::hours(24);
+
+    ruvia::Task<service::device::DeviceCommandCreateDto>
+    enqueueDevice(ruvia::Context& context, std::string_view deviceId,
+                  const service::device::DeviceCommandBody& body, std::string submittedBy) {
 
         auto requested = normalize(body);
         auto database = context.db();
@@ -90,8 +148,23 @@ class DeviceCommandService final {
             task.maxAttempts = 1;
             for (const auto& element : elements)
                 task.elements.emplace_back(element.elementId, element.value);
-            co_await setPending(context, task, access.actor.userId);
+            co_await setPending(context, task, submittedBy);
             (void)co_await enqueue(context, task, route, true);
+            std::string data = "{\"commandId\":\"" + task.messageId + "\",\"elements\":{";
+            for (std::size_t index = 0; index < task.elements.size(); ++index) {
+                if (index != 0)
+                    data.push_back(',');
+                data += "\"" + task.elements[index].first + "\":\"" +
+                        service::open_access::jsonEscape(task.elements[index].second) + "\"";
+            }
+            data += "}}";
+            try {
+                co_await service::open_access::event::publish(
+                    context.redis(), task.messageId, "device.command.dispatched", task.deviceId,
+                    task.deviceCode, bridge::utcNowMilliseconds(), data);
+            } catch (const std::exception& error) {
+                std::cerr << "open access command event publish failed: " << error.what() << '\n';
+            }
             commandIds.emplace(task.messageId, context.resource());
         }
 
@@ -99,39 +172,6 @@ class DeviceCommandService final {
         result.commandIds(std::move(commandIds)).status("PENDING");
         co_return result;
     }
-
-    ruvia::Task<service::device::DeviceCommandStatusDto> status(ruvia::Context& context,
-                                                                std::string_view commandId) {
-        const auto fields =
-            co_await bridge::redis_async::hashEntries(context.redis(), stateKey(commandId));
-        if (fields.empty())
-            service::common::fail(18012, "下发记录不存在或已过期", 404);
-        const auto deviceId = field(fields, "device_id");
-        if (deviceId.empty())
-            service::common::fail(18012, "下发状态数据无效", 500);
-        (void)co_await service::device::deviceAccessService().require(
-            context, deviceId, service::device::DeviceAccessLevel::operate);
-
-        service::device::DeviceCommandStatusDto result(context);
-        result.commandId(commandId)
-            .deviceId(deviceId)
-            .deviceCode(field(fields, "device_code"))
-            .protocol(field(fields, "protocol"))
-            .status(field(fields, "status"));
-        const auto reason = field(fields, "reason");
-        if (!reason.empty())
-            result.reason(reason);
-        const auto createdAt = integer(fields, "created_at_ms");
-        if (createdAt != 0)
-            result.createdAtMs(createdAt);
-        const auto completedAt = integer(fields, "completed_at_ms");
-        if (completedAt != 0)
-            result.completedAtMs(completedAt);
-        co_return result;
-    }
-
-  private:
-    static constexpr auto kStateTtl = std::chrono::hours(24);
 
     static std::string stateKey(std::string_view commandId) {
         return "iot:state:command:" + std::string(commandId);

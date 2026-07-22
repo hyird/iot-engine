@@ -19,6 +19,8 @@
 #include <ruvia/web/WebWorker.h>
 
 #include "service/common/bridge/message.contract.h"
+#include "service/modules/northbridge/open/open_access.common.h"
+#include "service/modules/northbridge/open/open_access.event.h"
 #include "service/modules/southbridge/queue/redis_stream_async.h"
 
 namespace service::northbridge::command {
@@ -162,6 +164,13 @@ class CommandResultRuntime final {
             redis, {"PEXPIRE", key,
                     std::to_string(
                         std::chrono::duration_cast<std::chrono::milliseconds>(kStateTtl).count())});
+        std::string data =
+            "{\"commandId\":" + service::open_access::jsonQuoted(commandId) + ",\"status\":" +
+            service::open_access::jsonQuoted(message.get("success") == "1" ? "SUCCESS" : "FAILED") +
+            ",\"reason\":" + service::open_access::jsonQuoted(message.get("reason")) + "}";
+        co_await service::open_access::event::publish(
+            redis, message.get("message_id"), "device.command.responded", message.get("device_id"),
+            message.get("device_code"), bridge::utcNowMilliseconds(), data);
     }
 
     std::vector<ruvia::WebWorkerHandle> workers_;

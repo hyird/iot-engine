@@ -20,6 +20,8 @@
 #include "service/config/schema.h"
 #include "service/modules/northbridge/device/device.controller.h"
 #include "service/modules/northbridge/link/link.controller.h"
+#include "service/modules/northbridge/open/open_access.controller.h"
+#include "service/modules/northbridge/open/open_webhook.runtime.h"
 #include "service/modules/northbridge/command/command_result.runtime.h"
 #include "service/modules/northbridge/command/protocol_command.queue.h"
 #include "service/modules/northbridge/config/runtime_config.projector.h"
@@ -136,6 +138,15 @@ int main(int argc, char* argv[]) {
                   << ", skipped=" << report.skipped().size() << '\n';
 
         configureWeb(app, runtime);
+        app.useController<service::auth::AuthController>()
+            .useController<service::dept::DeptController>()
+            .useController<service::role::RoleController>()
+            .useController<service::user::UserController>()
+            .useController<service::link::LinkController>()
+            .useController<service::protocol::ProtocolController>()
+            .useController<service::device::DeviceController>()
+            .useController<service::open_access::OpenAccessAdminController>()
+            .useController<service::open_access::OpenApiController>();
         const auto cpu = std::max(2U, std::thread::hardware_concurrency());
         const auto northWorkerCount = static_cast<std::size_t>((cpu + 1U) / 2U);
         const auto southWorkerCount = static_cast<std::size_t>(cpu / 2U);
@@ -146,11 +157,12 @@ int main(int argc, char* argv[]) {
             std::make_shared<service::northbridge::telemetry::TelemetryPersistenceRuntime>();
         auto commandResults =
             std::make_shared<service::northbridge::command::CommandResultRuntime>();
+        auto openWebhooks = std::make_shared<service::open_access::OpenWebhookRuntime>();
         auto configReconciler =
             std::make_shared<service::northbridge::config::RuntimeConfigReconciler>();
         app.useDb(std::move(db))
             .useRedis(std::move(northRedis))
-            .onStart([southbridge, telemetry, commandResults, configReconciler,
+            .onStart([southbridge, telemetry, commandResults, openWebhooks, configReconciler,
                       southRedis = std::move(southRedis), southWorkerCount, &app]() mutable {
                 auto workers = app.workers();
                 if (workers.empty())
@@ -158,6 +170,7 @@ int main(int argc, char* argv[]) {
                         "northbridge: no worker available for config projection");
                 telemetry->start(workers, southWorkerCount);
                 commandResults->start(workers, southWorkerCount);
+                openWebhooks->start(workers);
                 auto started = std::make_shared<std::promise<void>>();
                 auto ready = started->get_future();
                 const auto posted = workers.front().post(
@@ -171,11 +184,12 @@ int main(int argc, char* argv[]) {
                 ready.get();
                 configReconciler->start(workers.front(), southWorkerCount);
             })
-            .onStop([southbridge, telemetry, commandResults, configReconciler] {
+            .onStop([southbridge, telemetry, commandResults, openWebhooks, configReconciler] {
                 configReconciler->stop();
                 southbridge->stop();
                 telemetry->stop();
                 commandResults->stop();
+                openWebhooks->stop();
             })
             .onError(&handleError)
             .setListenAddress(app.env().get("HOST").value_or("0.0.0.0"))
