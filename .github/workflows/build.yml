@@ -88,6 +88,22 @@ jobs:
       - name: Test
         run: ctest --test-dir build/ci --output-on-failure --build-config "$BUILD_TYPE"
 
+      - name: Package artifact
+        run: |
+          cmake -E rm -rf build/artifact
+          cmake -E make_directory build/artifact
+          cmake -E copy build/ci/iot-engine build/artifact/iot-engine
+          cmake -E copy_directory build/ci/web build/artifact/web
+          tar -C build/artifact -czf "build/iot-engine-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iot-engine-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          path: build/iot-engine-${{ runner.os }}-${{ runner.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
   macos_build:
     name: macOS build
     runs-on: macos-15
@@ -153,6 +169,22 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build/ci --output-on-failure --build-config "$BUILD_TYPE"
+
+      - name: Package artifact
+        run: |
+          cmake -E rm -rf build/artifact
+          cmake -E make_directory build/artifact
+          cmake -E copy build/ci/iot-engine build/artifact/iot-engine
+          cmake -E copy_directory build/ci/web build/artifact/web
+          tar -C build/artifact -czf "build/iot-engine-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iot-engine-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          path: build/iot-engine-${{ runner.os }}-${{ runner.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
 
   windows_build:
     name: Windows build
@@ -235,3 +267,23 @@ jobs:
       - name: Test
         shell: msys2 {0}
         run: ctest --test-dir build/ci --output-on-failure --build-config "$BUILD_TYPE"
+
+      - name: Stage artifact
+        shell: msys2 {0}
+        run: |
+          cmake -E rm -rf build/artifact
+          cmake -E make_directory build/artifact
+          cmake -E copy build/ci/iot-engine.exe build/artifact/iot-engine.exe
+          cmake -E copy_directory build/ci/web build/artifact/web
+
+      - name: Package artifact
+        shell: pwsh
+        run: Compress-Archive -Path build/artifact/* -DestinationPath "build/iot-engine-$env:RUNNER_OS-$env:RUNNER_ARCH.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iot-engine-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          path: build/iot-engine-${{ runner.os }}-${{ runner.arch }}.zip
+          if-no-files-found: error
+          retention-days: 14
