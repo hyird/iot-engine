@@ -2,8 +2,9 @@
 
 `edgenode/` contains the protocol contract and deployable edge-node implementations.
 
-- `proto/`: the shared WebSocket + nanopb wire contract.
-- `openwrt/`: the OpenWrt daemon, UCI/procd integration, tests, and `.ipk` recipe.
+- `openwrt/proto/`: the shared WebSocket + nanopb wire contract used by both platform and node.
+- `openwrt/`: the self-contained OpenWrt daemon, UCI/procd integration, build-time
+  nanopb generation, tests, and `.ipk` recipe.
 
 The platform and the node exchange exactly one `iot.edge.v1.Envelope` in each WebSocket
 binary message. Text WebSocket messages and JSON/base64 envelopes are not part of the v1

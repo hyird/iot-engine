@@ -41,6 +41,14 @@ jobs:
           clang-18 --version
           clang++-18 --version
 
+      - name: Set up protobuf generator
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install protobuf generator dependencies
+        run: python -m pip install protobuf==6.33.5 grpcio-tools==1.78.0
+
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -123,6 +131,14 @@ jobs:
           brew install ninja
           /usr/bin/clang++ --version
 
+      - name: Set up protobuf generator
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install protobuf generator dependencies
+        run: python -m pip install protobuf==6.33.5 grpcio-tools==1.78.0
+
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -199,6 +215,14 @@ jobs:
         uses: actions/checkout@v6
         with:
           persist-credentials: false
+
+      - name: Set up protobuf generator
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install protobuf generator dependencies
+        run: python -m pip install protobuf==6.33.5 grpcio-tools==1.78.0
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2

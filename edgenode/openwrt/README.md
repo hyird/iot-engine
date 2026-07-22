@@ -58,8 +58,10 @@ make package/edgenode/compile V=s
 ```
 
 The package is self-contained apart from dependencies fetched by the OpenWrt build
-system: `Makefile`, `files/`, `src/`, and generated nanopb sources stay together. The
-recipe downloads nanopb `0.4.9.1`, compiles only its three C runtime files, enables
+system: `Makefile`, `files/`, `proto/`, and `src/` stay together.
+`proto/edge.proto` is the single wire-contract source used by the platform and node;
+the OpenWrt SDK generates nanopb C sources in its build directory before compiling.
+The recipe downloads nanopb `0.4.9.1`, compiles only its three C runtime files, enables
 `-Os`, LTO, function sections, and linker garbage collection, and dynamically uses
 OpenWrt's mbedTLS-backed libuwsc.
 

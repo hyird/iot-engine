@@ -64,6 +64,15 @@ enum NetworkAddressMode {
   NETWORK_ADDRESS_NONE = 3;
 }
 
+enum FirmwareUpdateState {
+  FIRMWARE_UPDATE_UNSPECIFIED = 0;
+  FIRMWARE_UPDATE_ACCEPTED = 1;
+  FIRMWARE_UPDATE_DOWNLOADING = 2;
+  FIRMWARE_UPDATE_VERIFYING = 3;
+  FIRMWARE_UPDATE_FLASHING = 4;
+  FIRMWARE_UPDATE_FAILED = 5;
+}
+
 message Empty {}
 
 message Hello {
@@ -81,6 +90,7 @@ message Hello {
   bool supports_network_config = 12;
   bool supports_terminal = 13;
   bool supports_l2_maintenance = 14;
+  bool supports_firmware_update = 15;
 }
 
 message HelloAck {
@@ -431,6 +441,21 @@ message NetworkConfigResult {
   string message = 4 [(nanopb).max_length = 256];
 }
 
+message FirmwareUpdateRequest {
+  bytes request_id = 1 [(nanopb).max_size = 16];
+  string download_url = 2 [(nanopb).max_length = 512];
+  bytes sha256 = 3 [(nanopb).max_size = 32];
+  uint64 size_bytes = 4;
+  string version = 5 [(nanopb).max_length = 64];
+  bool keep_settings = 6;
+}
+
+message FirmwareUpdateResult {
+  bytes request_id = 1 [(nanopb).max_size = 16];
+  FirmwareUpdateState state = 2;
+  string message = 3 [(nanopb).max_length = 256];
+}
+
 message TerminalOpen {
   bytes terminal_id = 1 [(nanopb).max_size = 16];
   bytes ticket = 2 [(nanopb).max_size = 64];
@@ -503,6 +528,8 @@ message Envelope {
     CommandResult command_result = 52;
     NetworkConfigRequest network_config_request = 60;
     NetworkConfigResult network_config_result = 61;
+    FirmwareUpdateRequest firmware_update_request = 62;
+    FirmwareUpdateResult firmware_update_result = 63;
     TerminalOpen terminal_open = 70;
     TerminalData terminal_data = 71;
     TerminalResize terminal_resize = 72;
