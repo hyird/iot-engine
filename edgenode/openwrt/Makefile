@@ -36,8 +36,8 @@ endef
 define Build/Prepare
 	$(call Build/Prepare/Default)
 	$(INSTALL_DIR) $(PKG_BUILD_DIR)/edge/src $(PKG_BUILD_DIR)/edge/generated
-	$(CP) $(CURDIR)/../../src/* $(PKG_BUILD_DIR)/edge/src/
-	$(CP) $(CURDIR)/../../generated/* $(PKG_BUILD_DIR)/edge/generated/
+	$(CP) $(CURDIR)/src/* $(PKG_BUILD_DIR)/edge/src/
+	$(CP) $(CURDIR)/generated/* $(PKG_BUILD_DIR)/edge/generated/
 endef
 
 define Build/Compile
@@ -67,12 +67,12 @@ define Package/iot-edge/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/iot-edge $(1)/usr/sbin/iot-edge
 	$(INSTALL_DIR) $(1)/etc/init.d
-	$(INSTALL_BIN) ./files/iot-edge.init $(1)/etc/init.d/iot-edge
+	$(INSTALL_BIN) $(CURDIR)/files/iot-edge.init $(1)/etc/init.d/iot-edge
 	$(INSTALL_DIR) $(1)/etc/config
-	$(INSTALL_CONF) ./files/iot-edge.config $(1)/etc/config/iot-edge
+	$(INSTALL_CONF) $(CURDIR)/files/iot-edge.config $(1)/etc/config/iot-edge
 	$(INSTALL_DIR) $(1)/etc/iot-edge/credentials
 	$(INSTALL_DIR) $(1)/usr/share/iot-edge
-	$(INSTALL_DATA) ./files/NOTICE $(1)/usr/share/iot-edge/NOTICE
+	$(INSTALL_DATA) $(CURDIR)/files/NOTICE $(1)/usr/share/iot-edge/NOTICE
 endef
 
 $(eval $(call BuildPackage,iot-edge))

@@ -48,11 +48,20 @@ platform may set `network_owner=1`.
 
 ## Build an IPK
 
-Copy or link `package/iot-edge` into the selected OpenWrt SDK's `package/` directory,
-select `Network -> iot-edge`, and run the normal package build. The recipe downloads
-nanopb `0.4.9.1`, compiles only its three C runtime files, enables `-Os`, LTO, function
-sections, and linker garbage collection, and dynamically uses OpenWrt's mbedTLS-backed
-libuwsc.
+`edgenode/openwrt` is a complete OpenWrt package directory. Copy or link this whole
+directory into the selected SDK as `package/iot-edge`; do not copy only its `Makefile`:
+
+```sh
+ln -s /path/to/iot-engine/edgenode/openwrt /path/to/openwrt/package/iot-edge
+make menuconfig
+make package/iot-edge/compile V=s
+```
+
+The package is self-contained apart from dependencies fetched by the OpenWrt build
+system: `Makefile`, `files/`, `src/`, and generated nanopb sources stay together. The
+recipe downloads nanopb `0.4.9.1`, compiles only its three C runtime files, enables
+`-Os`, LTO, function sections, and linker garbage collection, and dynamically uses
+OpenWrt's mbedTLS-backed libuwsc.
 
 The resulting package must be cross-compiled and installed on the actual target. A host
 binary is not an OpenWrt deliverable.
