@@ -122,7 +122,7 @@ startSouthbridge(ruvia::WebWorkerContext& context,
 
 int main(int argc, char* argv[]) {
     try {
-        auto& app = ruvia::app();
+        ruvia::App app;
         app.loadDotenv();
         const auto runtime = runtimeDirectory(argc > 0 ? argv[0] : nullptr);
         service::common::packet_log::initialize(packetLogConfig(app.env(), runtime));
@@ -166,7 +166,7 @@ int main(int argc, char* argv[]) {
                         return startSouthbridge(context, southbridge, std::move(southRedis),
                                                 southWorkerCount, started);
                     });
-                if (posted != ruvia::PostResult::kAccepted)
+                if (!posted.accepted())
                     throw std::runtime_error("northbridge rejected runtime config projection");
                 ready.get();
                 configReconciler->start(workers.front(), southWorkerCount);

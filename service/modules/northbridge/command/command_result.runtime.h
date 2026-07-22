@@ -49,7 +49,7 @@ class CommandResultRuntime final {
                 [this, index, ready, stopped](ruvia::WebWorkerContext& context) {
                     return run(context, index, ready, stopped);
                 });
-            if (posted != ruvia::PostResult::kAccepted) {
+            if (!posted.accepted()) {
                 running_.store(false);
                 throw std::runtime_error("north worker rejected command result consumer");
             }

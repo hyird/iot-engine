@@ -52,7 +52,7 @@ class RuntimeConfigReconciler final {
         const auto posted = worker_.post([this, ready, stopped](ruvia::WebWorkerContext& context) {
             return run(context, ready, stopped);
         });
-        if (posted != ruvia::PostResult::kAccepted) {
+        if (!posted.accepted()) {
             running_.store(false);
             throw std::runtime_error("north worker rejected runtime config reconciler");
         }

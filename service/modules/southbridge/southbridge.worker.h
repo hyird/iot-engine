@@ -65,8 +65,8 @@ class SouthbridgeWorker final {
     SouthbridgeWorker& operator=(const SouthbridgeWorker&) = delete;
 
     void start(std::shared_ptr<std::promise<void>> ready) {
-        if (loop_.post([this, ready = std::move(ready)] { scope_.spawn(initialize(ready)); }) !=
-            ruvia::PostResult::kAccepted)
+        if (!loop_.post([this, ready = std::move(ready)] { scope_.spawn(initialize(ready)); })
+                 .accepted())
             throw std::runtime_error("south worker rejected startup");
     }
 
@@ -102,7 +102,7 @@ class SouthbridgeWorker final {
             [this, linkId = std::move(linkId), handle, remote = std::move(remote)]() mutable {
                 tcp_.adoptServerSocket(std::move(linkId), handle, std::move(remote));
             });
-        if (posted != ruvia::PostResult::kAccepted)
+        if (!posted.accepted())
             WorkerTcpRuntime::closeNative(handle);
     }
 

@@ -66,6 +66,7 @@
 ## CI 与发布制品
 
 - `.github/workflows/build.yml` 是三平台构建的唯一事实来源：Ubuntu 24.04 使用 Clang 18，macOS 15 使用系统 AppleClang，Windows 2025 使用 MSYS2 UCRT64 GCC 和 `x64-mingw-static` triplet。
+- Ruvia 当前固定为 `v0.1.6` 的 tag commit `ec7688c3874c858dd7912db46200a67f167802fe`。该版本已原生修复 MinGW PostgreSQL 链接组，不得恢复 `v0.1.5` 的本地补丁；升级时同步核对显式 `ruvia::App` 所有权、`Context::env()` 和 `PostOutcome::accepted()` API。
 - vcpkg 必须固定到工作流声明的 commit。二进制缓存 key 必须区分操作系统、架构、编译器/ABI、vcpkg commit 和 manifest 输入，不能在不兼容工具链之间共享缓存。
 - CI 使用锁定的 Bun 版本和冻结锁文件；Windows CMake 配置必须显式传入 `setup-bun` 输出的 `BUN_EXECUTABLE`，不要假设 MSYS2 能从 `PATH` 找到 Bun。
 - 每个平台都必须完成配置、构建和 CTest 后再打包。Linux/macOS 制品为 `iot-engine-<OS>-<ARCH>.tar.gz`，Windows 为同名 `.zip`；包根目录只包含可执行文件和 `web/`，上传名称必须带完整 Git SHA，保留 14 天。

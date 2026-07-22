@@ -31,14 +31,8 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(ruvia
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    # v0.1.5 was retagged to this commit; pin it so populated build trees refresh reliably.
-    GIT_TAG b1125b52bc2e28a09d8438722925ba2ec6b103d8
-    # Keep MinGW's static PostgreSQL link group free of whitespace-only link items.
-    PATCH_COMMAND
-        "${CMAKE_COMMAND}"
-        "-DPATCH_WORKING_DIRECTORY=<SOURCE_DIR>"
-        "-DPATCH_FILE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/ruvia-mingw-postgresql-link-group.patch"
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ApplyGitPatch.cmake")
+    # Ruvia v0.1.6 includes the MinGW PostgreSQL link-group fix; pin the tag commit.
+    GIT_TAG ec7688c3874c858dd7912db46200a67f167802fe)
 FetchContent_MakeAvailable(ruvia)
 
 # Ruvia's standalone manifest features do not belong to this parent manifest.

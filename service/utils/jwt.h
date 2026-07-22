@@ -32,8 +32,8 @@ class JwtInvalidError : public std::runtime_error {
 
 namespace jwt_detail {
 
-inline std::string requiredSecret(std::string_view name) {
-    const auto value = ruvia::app().env().get(name);
+inline std::string requiredSecret(const ruvia::Env& env, std::string_view name) {
+    const auto value = env.get(name);
     if (!value || value->size() < 32) {
         throw std::runtime_error(std::string(name) + " must contain at least 32 characters");
     }
@@ -63,13 +63,13 @@ inline std::chrono::seconds duration(std::string_view value, std::chrono::second
 inline std::string sign(ruvia::Context& c, const core::JwtPayload& payload,
                         std::string_view secretName, std::string_view type,
                         std::string_view durationName, std::chrono::seconds fallback) {
-    const auto secret = requiredSecret(secretName);
+    const auto secret = requiredSecret(c.env(), secretName);
     ruvia::JwtSignOptions options;
     options.secret.assign(secret);
     options.issuer.assign("iot-engine");
     options.audience.assign("iot-engine-web");
     options.subject.assign(payload.userId);
-    options.expiresIn = duration(ruvia::app().env().get(durationName).value_or(""), fallback);
+    options.expiresIn = duration(c.env().get(durationName).value_or(""), fallback);
     options.claims.emplace_back("user_id", payload.userId);
     options.claims.emplace_back("username", payload.username);
     options.claims.emplace_back("token_type", type);
@@ -80,7 +80,7 @@ inline std::string sign(ruvia::Context& c, const core::JwtPayload& payload,
 inline core::JwtPayload verify(ruvia::Context& c, std::string_view token,
                                std::string_view secretName, std::string_view expectedType) {
     try {
-        const auto secret = requiredSecret(secretName);
+        const auto secret = requiredSecret(c.env(), secretName);
         ruvia::JwtVerifyOptions options;
         options.secret.assign(secret);
         options.issuer.assign("iot-engine");
