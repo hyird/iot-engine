@@ -288,7 +288,8 @@ ORDER BY configured.device_id, configured.protocol_order,
         pipeline.command(views);
         if (!row[7].text().empty()) {
             auto& lastReport = lastReports[std::string(row[1].text())];
-            lastReport = std::max(lastReport, std::stoll(std::string(row[7].text())));
+            lastReport = std::max(
+                lastReport, static_cast<std::int64_t>(std::stoll(std::string(row[7].text()))));
         }
     }
     if (!commands.empty())

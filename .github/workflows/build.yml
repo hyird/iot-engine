@@ -93,7 +93,7 @@ jobs:
           cmake -E rm -rf build/artifact
           cmake -E make_directory build/artifact
           cmake -E copy build/ci/iot-engine build/artifact/iot-engine
-          cmake -E copy_directory build/ci/web build/artifact/web
+          cmake -E copy_directory build/web build/artifact/web
           tar -C build/artifact -czf "build/iot-engine-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz" .
 
       - name: Upload artifact
@@ -175,7 +175,7 @@ jobs:
           cmake -E rm -rf build/artifact
           cmake -E make_directory build/artifact
           cmake -E copy build/ci/iot-engine build/artifact/iot-engine
-          cmake -E copy_directory build/ci/web build/artifact/web
+          cmake -E copy_directory build/web build/artifact/web
           tar -C build/artifact -czf "build/iot-engine-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz" .
 
       - name: Upload artifact
@@ -274,7 +274,7 @@ jobs:
           cmake -E rm -rf build/artifact
           cmake -E make_directory build/artifact
           cmake -E copy build/ci/iot-engine.exe build/artifact/iot-engine.exe
-          cmake -E copy_directory build/ci/web build/artifact/web
+          cmake -E copy_directory build/web build/artifact/web
 
       - name: Package artifact
         shell: pwsh
