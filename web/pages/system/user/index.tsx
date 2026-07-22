@@ -11,6 +11,7 @@ import { StatusTag } from '@/components/StatusTag';
 import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermissions } from '@/hooks/usePermission';
 import { validateForm } from '@/utils/validation';
+import { useDeptOptions } from '../dept/dept.service';
 import { createUserSchema, updateUserSchema } from './user.schema';
 import { useRoleOptions, useUserDelete, useUserList, useUserSave } from './user.service';
 import type { User } from './user.types';
@@ -25,6 +26,7 @@ interface UserFormValues {
     phone?: string;
     email?: string;
     status: User.Status;
+    department_id?: string;
     role_ids?: string[];
 }
 
@@ -41,6 +43,7 @@ const SystemUserPage = () => {
     const canAdd = has('system:user:add');
     const canEdit = has('system:user:edit');
     const canDelete = has('system:user:delete');
+    const canQueryDept = has('system:dept:query');
 
     const doSearch = (value: string) => {
         setKeyword(value);
@@ -62,10 +65,22 @@ const SystemUserPage = () => {
         enabled: canAdd || canEdit,
     });
     const roleOptions = roleOptionsData ?? [];
+    const { data: departmentOptionsData } = useDeptOptions({
+        enabled: (canAdd || canEdit) && canQueryDept,
+    });
+    const departmentOptions = departmentOptionsData ?? [];
 
     const roleSelectOptions = useMemo(
         () => roleOptions.map((role) => ({ label: role.name, value: role.id })),
         [roleOptions]
+    );
+    const departmentSelectOptions = useMemo(
+        () =>
+            departmentOptions.map((department) => ({
+                label: department.name,
+                value: department.id,
+            })),
+        [departmentOptions]
     );
 
     const saveMutation = useUserSave();
@@ -87,6 +102,7 @@ const SystemUserPage = () => {
             phone: record.phone ?? undefined,
             email: record.email ?? undefined,
             status: record.status,
+            department_id: record.department_id || undefined,
             role_ids: record.roles.map((r) => r.id),
         });
         setModalVisible(true);
@@ -110,7 +126,10 @@ const SystemUserPage = () => {
         };
 
         if (editing) {
-            const validated = validateForm(form, updateUserSchema, values);
+            const validated = validateForm(form, updateUserSchema, {
+                ...values,
+                department_id: values.department_id ?? '',
+            });
             if (!validated) return;
             saveMutation.mutate(
                 {
@@ -154,6 +173,11 @@ const SystemUserPage = () => {
         { title: '昵称', dataIndex: 'nickname', ellipsis: true },
         { title: '手机号', dataIndex: 'phone' },
         { title: '邮箱', dataIndex: 'email', ellipsis: true },
+        {
+            title: '部门',
+            dataIndex: 'department_name',
+            render: (value?: string) => value || '-',
+        },
         {
             title: '角色',
             dataIndex: 'roles',
@@ -304,6 +328,17 @@ const SystemUserPage = () => {
                             placeholder="选择角色"
                             disabled={editing?.username === 'admin'}
                             options={roleSelectOptions}
+                        />
+                    </Form.Item>
+
+                    <Form.Item label="部门" name="department_id">
+                        <Select
+                            allowClear
+                            showSearch
+                            optionFilterProp="label"
+                            placeholder={canQueryDept ? '选择部门' : '无部门查询权限'}
+                            disabled={!canQueryDept}
+                            options={departmentSelectOptions}
                         />
                     </Form.Item>
 

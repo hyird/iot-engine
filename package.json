@@ -16,7 +16,11 @@
         "lint": "biome lint .",
         "typecheck": "tsc --noEmit",
         "format": "biome format --write .",
-        "format:check": "biome format ."
+        "format:check": "biome format .",
+        "stress:setup": "bun tests/stress/setup.ts",
+        "stress:config-reload": "bun tests/stress/config-reload.ts",
+        "stress:latest-read-model": "bun tests/stress/latest-read-model.ts",
+        "stress:southbridge": "bun tests/stress/southbridge.ts"
     },
     "dependencies": {
         "@ant-design/cssinjs": "^2.1.2",
@@ -25,9 +29,9 @@
         "@dnd-kit/sortable": "^10.0.0",
         "@dnd-kit/utilities": "^3.2.2",
         "@tanstack/react-query": "^5.101.3",
+        "@tanstack/react-virtual": "^3.14.7",
         "antd": "^6.5.1",
         "axios": "^1.18.1",
-        "framer-motion": "^12.42.2",
         "react": "^19.2.7",
         "react-dom": "^19.2.7",
         "react-router-dom": "^7.18.1",

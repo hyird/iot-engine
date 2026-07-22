@@ -32,12 +32,11 @@ export const saveLinkSchema = z
                 message: 'SL651 只支持 TCP Server 模式',
             });
         if (value.mode === 'TCP Server') {
-            const result = ipv4Schema.safeParse(value.ip);
-            if (!result.success)
+            if (value.ip !== '0.0.0.0')
                 context.addIssue({
                     code: 'custom',
                     path: ['ip'],
-                    message: result.error.issues[0].message,
+                    message: 'TCP Server 监听 IP 必须是 0.0.0.0',
                 });
             if (value.port < 1)
                 context.addIssue({

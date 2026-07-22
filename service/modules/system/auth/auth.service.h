@@ -156,7 +156,7 @@ FROM sys_user WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
         user.id(userId).username(username).nickname(nickname).status(status);
 
         const auto roles = co_await c.db().query(R"sql(
-SELECT id, name, code
+SELECT r.id, r.name, r.code
 FROM sys_role r
 JOIN sys_user_role ur ON ur.role_id = r.id
 WHERE ur.user_id = $1 AND r.status = 'enabled' AND r.deleted_at IS NULL

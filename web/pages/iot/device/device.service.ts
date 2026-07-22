@@ -2,12 +2,18 @@ import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { createQueryKeys } from '@/utils/query';
 import type { PaginatedResult } from '@/utils/types';
-import type { DeviceGroup } from './device-group.types';
 import * as api from './device.api';
 import type { Device } from './device.types';
+import type { DeviceGroup } from './device-group.types';
 
 const deviceKeys = createQueryKeys('devices');
 const groupKeys = createQueryKeys('device-groups');
+const shareKeys = {
+    all: ['device-shares'] as const,
+    list: (kind: 'device' | 'group', id: string) => ['device-shares', kind, id, 'list'] as const,
+    targets: (kind: 'device' | 'group', id: string) =>
+        ['device-shares', kind, id, 'targets'] as const,
+};
 const EMPTY_AGENTS: AgentOption[] = [];
 const EMPTY_ENDPOINTS: AgentEndpoint[] = [];
 
@@ -54,6 +60,56 @@ export function useDeviceDelete() {
         mutationFn: api.removeDevice,
         successMessage: '删除成功',
         invalidateKeys: [deviceKeys.all, groupKeys.all],
+    });
+}
+
+export function useDeviceShares(deviceId?: string, options?: { enabled?: boolean }) {
+    return useQuery({
+        queryKey: shareKeys.list('device', deviceId ?? ''),
+        queryFn: () => api.getDeviceShares(deviceId as string),
+        enabled: !!deviceId && (options?.enabled ?? true),
+    });
+}
+
+export function useDeviceShareTargets(deviceId?: string, options?: { enabled?: boolean }) {
+    return useQuery({
+        queryKey: shareKeys.targets('device', deviceId ?? ''),
+        queryFn: () => api.getDeviceShareTargets(deviceId as string),
+        enabled: !!deviceId && (options?.enabled ?? true),
+    });
+}
+
+export function useReplaceDeviceShares() {
+    return useMutationWithMessage({
+        mutationFn: ({ deviceId, data }: { deviceId: string; data: Device.ReplaceSharesDto }) =>
+            api.replaceDeviceShares(deviceId, data),
+        successMessage: '设备分享已更新',
+        invalidateKeys: [shareKeys.all, deviceKeys.all],
+    });
+}
+
+export function useDeviceGroupShares(groupId?: string, options?: { enabled?: boolean }) {
+    return useQuery({
+        queryKey: shareKeys.list('group', groupId ?? ''),
+        queryFn: () => api.getDeviceGroupShares(groupId as string),
+        enabled: !!groupId && (options?.enabled ?? true),
+    });
+}
+
+export function useDeviceGroupShareTargets(groupId?: string, options?: { enabled?: boolean }) {
+    return useQuery({
+        queryKey: shareKeys.targets('group', groupId ?? ''),
+        queryFn: () => api.getDeviceGroupShareTargets(groupId as string),
+        enabled: !!groupId && (options?.enabled ?? true),
+    });
+}
+
+export function useReplaceDeviceGroupShares() {
+    return useMutationWithMessage({
+        mutationFn: ({ groupId, data }: { groupId: string; data: Device.ReplaceSharesDto }) =>
+            api.replaceDeviceGroupShares(groupId, data),
+        successMessage: '设备分组分享已更新',
+        invalidateKeys: [shareKeys.all, deviceKeys.all, groupKeys.all],
     });
 }
 

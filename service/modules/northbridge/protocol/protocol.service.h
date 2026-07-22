@@ -36,7 +36,7 @@ class ProtocolService {
         }
 
         const auto countRows =
-            co_await c.db().query("SELECT COUNT(*) FROM iot_protocol_config" + where, params);
+            co_await c.db().query("SELECT COUNT(*) FROM protocol_config" + where, params);
         const auto total = toInt(countRows.rows().front()[0].text());
         auto listParams = params;
         listParams.emplace_back(pageSize);
@@ -44,7 +44,7 @@ class ProtocolService {
         listParams.emplace_back((page - 1) * pageSize);
         const auto offsetIndex = listParams.size();
         const auto rows = co_await c.db().query(
-            "SELECT " + itemExpression() + "::text FROM iot_protocol_config" + where +
+            "SELECT " + itemExpression() + "::text FROM protocol_config" + where +
                 " ORDER BY id DESC LIMIT $" + std::to_string(limitIndex) + " OFFSET $" +
                 std::to_string(offsetIndex),
             listParams);
@@ -66,7 +66,7 @@ class ProtocolService {
     ruvia::Task<std::string> detail(ruvia::Context& c, std::string_view id) {
         const auto rows = co_await c.db().query(
             "SELECT " + itemExpression() +
-                "::text FROM iot_protocol_config WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
+                "::text FROM protocol_config WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
             service::common::dbParams(id));
         if (rows.rows().empty())
             service::common::fail(16001, "协议配置不存在", 404);
@@ -78,13 +78,13 @@ class ProtocolService {
         page = std::max<std::int64_t>(1, page);
         pageSize = std::clamp<std::int64_t>(pageSize, 1, 1000);
         const auto countRows = co_await c.db().query(
-            "SELECT COUNT(*) FROM iot_protocol_config WHERE deleted_at IS NULL AND protocol = $1",
+            "SELECT COUNT(*) FROM protocol_config WHERE deleted_at IS NULL AND protocol = $1",
             service::common::dbParams(protocol));
         const auto total = toInt(countRows.rows().front()[0].text());
         const auto rows = co_await c.db().query(
             R"sql(
 SELECT jsonb_build_object('id', id, 'name', name)::text
-FROM iot_protocol_config
+FROM protocol_config
 WHERE deleted_at IS NULL AND enabled = TRUE AND protocol = $1
 ORDER BY name LIMIT $2 OFFSET $3)sql",
             service::common::dbParams(protocol, pageSize, (page - 1) * pageSize));
@@ -115,7 +115,7 @@ ORDER BY name LIMIT $2 OFFSET $3)sql",
         (void)co_await c.db().execute(
             R"sql(
 WITH body AS (SELECT $1::jsonb AS value)
-INSERT INTO iot_protocol_config(id, protocol, name, enabled, config, remark, created_by)
+INSERT INTO protocol_config(id, protocol, name, enabled, config, remark, created_by)
 SELECT $3::uuid, value->>'protocol', value->>'name',
        COALESCE((value->>'enabled')::boolean, TRUE), value->'config',
        NULLIF(value->>'remark', ''), $2
@@ -129,7 +129,7 @@ FROM body)sql",
         if (!payload.isObject())
             service::common::fail(16002, "请求体必须是对象", 400);
         const auto existing = co_await c.db().query(
-            "SELECT protocol, created_by FROM iot_protocol_config WHERE id = $1 AND deleted_at IS "
+            "SELECT protocol, created_by FROM protocol_config WHERE id = $1 AND deleted_at IS "
             "NULL LIMIT 1",
             service::common::dbParams(id));
         if (existing.rows().empty())
@@ -146,7 +146,7 @@ FROM body)sql",
         co_await validateConfig(c, payload.view(), protocol, false);
         (void)co_await c.db().execute(R"sql(
 WITH body AS (SELECT $1::jsonb AS value)
-UPDATE iot_protocol_config p
+UPDATE protocol_config p
 SET name = CASE WHEN body.value ? 'name' THEN body.value->>'name' ELSE p.name END,
     enabled = CASE WHEN body.value ? 'enabled' THEN (body.value->>'enabled')::boolean ELSE p.enabled END,
     config = CASE WHEN body.value ? 'config' THEN p.config || (body.value->'config') ELSE p.config END,
@@ -158,14 +158,20 @@ FROM body WHERE p.id = $2)sql",
     }
 
     ruvia::Task<void> remove(ruvia::Context& c, std::string_view id) {
-        const auto existing = co_await c.db().query("SELECT created_by FROM iot_protocol_config "
+        const auto existing = co_await c.db().query("SELECT created_by FROM protocol_config "
                                                     "WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
                                                     service::common::dbParams(id));
         if (existing.rows().empty())
             service::common::fail(16001, "协议配置不存在", 404);
         co_await requireOwner(c, existing.rows().front()[0].text());
+        const auto used = co_await c.db().query(
+            "SELECT EXISTS (SELECT 1 FROM device WHERE protocol_config_id = $1::uuid "
+            "AND deleted_at IS NULL)",
+            service::common::dbParams(id));
+        if (used.rows().front()[0].text() == "t")
+            service::common::fail(16008, "协议配置已被设备使用，请先删除关联设备", 409);
         (void)co_await c.db().execute(
-            "UPDATE iot_protocol_config SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1",
+            "UPDATE protocol_config SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1",
             service::common::dbParams(id));
         co_await service::bridge::publishConfigEvent(c, "protocol", "deleted", id);
     }
@@ -289,7 +295,7 @@ SELECT COALESCE(bool_and(
     ruvia::Task<void> ensureNameAvailable(ruvia::Context& c, const std::string& name,
                                           std::optional<std::string> excludedId) {
         std::string sql =
-            "SELECT 1 FROM iot_protocol_config WHERE name = $1 AND deleted_at IS NULL";
+            "SELECT 1 FROM protocol_config WHERE name = $1 AND deleted_at IS NULL";
         auto params = service::common::dbParams(name);
         if (excludedId) {
             params.emplace_back(*excludedId);

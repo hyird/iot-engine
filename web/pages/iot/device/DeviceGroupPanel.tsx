@@ -4,23 +4,25 @@ import {
     DownOutlined,
     EditOutlined,
     PlusOutlined,
+    ShareAltOutlined,
 } from '@ant-design/icons';
 import { App, Button, Dropdown, Popover, Space, Spin, Tree } from 'antd';
 import type { DataNode, TreeProps } from 'antd/es/tree';
 import { useMemo, useState } from 'react';
-import type { DeviceGroup } from './device-group.types';
+import DeviceGroupFormModal from './DeviceGroupFormModal';
 import {
     useDeviceGroupDelete,
     useDeviceGroupSave,
     useDeviceGroupTreeWithCount,
 } from './device.service';
-import DeviceGroupFormModal from './DeviceGroupFormModal';
+import type { DeviceGroup } from './device-group.types';
 
 interface DeviceGroupPanelProps {
     selectedGroupId: string | null;
     onSelect: (groupId: string | null) => void;
     canManageGroup: boolean;
     ungroupedCount: number;
+    onShare: (group: DeviceGroup.TreeItem) => void;
 }
 
 type TreeKey = string | number;
@@ -30,6 +32,7 @@ const DeviceGroupPanel = ({
     onSelect,
     canManageGroup,
     ungroupedCount,
+    onShare,
 }: DeviceGroupPanelProps) => {
     const { modal } = App.useApp();
     const [popoverOpen, setPopoverOpen] = useState(false);
@@ -130,6 +133,10 @@ const DeviceGroupPanel = ({
     const contextMenuItems = (nodeKey: TreeKey) => {
         if (nodeKey === 'all' || nodeKey === 'ungrouped') return [];
         const items = [];
+        const group = groupIndex.get(String(nodeKey));
+        if (group?.can_share) {
+            items.push({ key: 'share', label: '分享分组', icon: <ShareAltOutlined /> });
+        }
         if (canManageGroup) {
             items.push(
                 { key: 'addChild', label: '新增子分组', icon: <PlusOutlined /> },
@@ -168,7 +175,10 @@ const DeviceGroupPanel = ({
                                         items,
                                         onClick: ({ key }) => {
                                             const id = String(node.key);
-                                            if (key === 'addChild') handleAddChild(id);
+                                            if (key === 'share') {
+                                                const group = groupIndex.get(id);
+                                                if (group) onShare(group);
+                                            } else if (key === 'addChild') handleAddChild(id);
                                             else if (key === 'edit') handleEdit(id);
                                             else if (key === 'delete') handleDelete(id);
                                         },

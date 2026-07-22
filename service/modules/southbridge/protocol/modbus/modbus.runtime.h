@@ -1,0 +1,1106 @@
+#pragma once
+
+#include <algorithm>
+#include <bit>
+#include <charconv>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <deque>
+#include <iomanip>
+#include <map>
+#include <optional>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "service/modules/southbridge/protocol/protocol_runtime.h"
+
+namespace service::southbridge::modbus {
+
+namespace detail {
+
+inline std::uint16_t readBe16(std::span<const std::uint8_t> bytes, std::size_t offset) {
+    return static_cast<std::uint16_t>((static_cast<std::uint16_t>(bytes[offset]) << 8U) |
+                                      bytes[offset + 1]);
+}
+
+inline std::uint16_t crc16(std::span<const std::uint8_t> bytes) noexcept {
+    std::uint16_t crc = 0xFFFFU;
+    for (const auto byte : bytes) {
+        crc ^= byte;
+        for (int bit = 0; bit < 8; ++bit)
+            crc = (crc & 1U) != 0 ? static_cast<std::uint16_t>((crc >> 1U) ^ 0xA001U)
+                                  : static_cast<std::uint16_t>(crc >> 1U);
+    }
+    return crc;
+}
+
+inline bool validRtu(std::span<const std::uint8_t> frame) noexcept {
+    if (frame.size() < 4)
+        return false;
+    const auto expected = crc16(frame.first(frame.size() - 2));
+    return frame[frame.size() - 2] == static_cast<std::uint8_t>(expected & 0xFFU) &&
+           frame.back() == static_cast<std::uint8_t>(expected >> 8U);
+}
+
+inline std::string jsonEscape(std::string_view value) {
+    std::string result;
+    result.reserve(value.size() + 8);
+    for (const auto character : value) {
+        if (character == '\\' || character == '"')
+            result.push_back('\\');
+        if (static_cast<unsigned char>(character) >= 0x20)
+            result.push_back(character);
+    }
+    return result;
+}
+
+inline std::vector<std::uint8_t> orderedBytes(std::span<const std::uint8_t> bytes,
+                                              std::string_view order) {
+    std::vector<std::uint8_t> result(bytes.begin(), bytes.end());
+    if (order == "LITTLE_ENDIAN")
+        std::reverse(result.begin(), result.end());
+    else if (order == "BIG_ENDIAN_BYTE_SWAP")
+        for (std::size_t index = 0; index + 1 < result.size(); index += 2)
+            std::swap(result[index], result[index + 1]);
+    else if (order == "LITTLE_ENDIAN_BYTE_SWAP")
+        for (std::size_t left = 0, right = result.size() / 2; left < right / 2; ++left) {
+            const auto other = right - 1 - left;
+            std::swap(result[left * 2], result[other * 2]);
+            std::swap(result[left * 2 + 1], result[other * 2 + 1]);
+        }
+    return result;
+}
+
+inline std::uint32_t readBe32(std::span<const std::uint8_t> bytes) {
+    return (static_cast<std::uint32_t>(bytes[0]) << 24U) |
+           (static_cast<std::uint32_t>(bytes[1]) << 16U) |
+           (static_cast<std::uint32_t>(bytes[2]) << 8U) | bytes[3];
+}
+
+inline std::uint64_t readBe64(std::span<const std::uint8_t> bytes) {
+    std::uint64_t result = 0;
+    for (std::size_t index = 0; index < 8; ++index)
+        result = (result << 8U) | bytes[index];
+    return result;
+}
+
+inline std::string decimalJson(double value, const ElementDefinition& element) {
+    value *= element.scale;
+    if (element.decimals >= 0) {
+        const auto factor = std::pow(10.0, static_cast<double>(element.decimals));
+        value = std::round(value * factor) / factor;
+    }
+    std::ostringstream output;
+    if (element.decimals >= 0)
+        output << std::fixed << std::setprecision(element.decimals) << value;
+    else
+        output << std::setprecision(17) << value;
+    return output.str();
+}
+
+inline std::optional<std::string> numericJson(std::span<const std::uint8_t> source,
+                                              const ElementDefinition& element) {
+    const auto bytes = orderedBytes(source, element.byteOrder);
+    const auto scaled = element.scale != 1.0 || element.decimals >= 0;
+    if ((element.dataType == "UINT16" || element.dataType == "WORD") && bytes.size() >= 2) {
+        const auto value = readBe16(bytes, 0);
+        return scaled ? decimalJson(static_cast<double>(value), element) : std::to_string(value);
+    }
+    if (element.dataType == "INT16" && bytes.size() >= 2) {
+        const auto value = static_cast<std::int16_t>(readBe16(bytes, 0));
+        return scaled ? decimalJson(static_cast<double>(value), element) : std::to_string(value);
+    }
+    if ((element.dataType == "UINT32" || element.dataType == "DWORD") && bytes.size() >= 4) {
+        const auto value = readBe32(bytes);
+        return scaled ? decimalJson(static_cast<double>(value), element) : std::to_string(value);
+    }
+    if (element.dataType == "INT32" && bytes.size() >= 4) {
+        const auto value = static_cast<std::int32_t>(readBe32(bytes));
+        return scaled ? decimalJson(static_cast<double>(value), element) : std::to_string(value);
+    }
+    if (element.dataType == "UINT64" && bytes.size() >= 8) {
+        const auto value = readBe64(bytes);
+        return scaled ? decimalJson(static_cast<double>(value), element) : std::to_string(value);
+    }
+    if (element.dataType == "INT64" && bytes.size() >= 8) {
+        const auto value = static_cast<std::int64_t>(readBe64(bytes));
+        return scaled ? decimalJson(static_cast<double>(value), element) : std::to_string(value);
+    }
+    if ((element.dataType == "FLOAT" || element.dataType == "FLOAT32") && bytes.size() >= 4)
+        return decimalJson(std::bit_cast<float>(readBe32(bytes)), element);
+    if (element.dataType == "DOUBLE" && bytes.size() >= 8)
+        return decimalJson(std::bit_cast<double>(readBe64(bytes)), element);
+    if (element.dataType == "BOOL" && !bytes.empty())
+        return bytes[0] != 0 ? "1" : "0";
+    return std::nullopt;
+}
+
+} // namespace detail
+
+class Session final : public ProtocolSession,
+                      public CommandCapabilitySession,
+                      public DeadlineCapabilitySession {
+  public:
+    Session(LinkDefinition link, std::string connectionId, std::string targetId,
+            std::vector<DeviceDefinition> devices)
+        : link_(std::move(link)), connectionId_(std::move(connectionId)),
+          targetId_(std::move(targetId)), devices_(std::move(devices)) {
+        for (const auto& device : devices_) {
+            devicesById_.emplace(device.id, &device);
+            devicesByCode_.emplace(device.code, &device);
+            queues_.try_emplace(device.id);
+        }
+        if (link_.mode == "TCP Client")
+            bindClientTarget();
+    }
+
+    [[nodiscard]] std::vector<ProtocolAction> connected() override {
+        std::vector<ProtocolAction> actions;
+        for (const auto* device : boundDevices_) {
+            actions.push_back(bindAction(*device));
+            schedulePoll(*device, actions);
+        }
+        return actions;
+    }
+
+    [[nodiscard]] std::vector<ProtocolAction> consume(const ProtocolInput& input) override {
+        std::vector<ProtocolAction> actions;
+        std::vector<std::uint8_t> bytes(input.bytes.begin(), input.bytes.end());
+        if (link_.mode == "TCP Server" && boundDevices_.empty()) {
+            const auto registration = matchRegistration(bytes);
+            if (registration.conflict)
+                return {{.kind = ProtocolActionKind::Close,
+                         .connectionId = connectionId_,
+                         .reason = "modbus_registration_conflict"}};
+            if (registration.device) {
+                bindRegistration(*registration.device);
+                for (const auto* device : boundDevices_) {
+                    actions.push_back(bindAction(*device));
+                    schedulePoll(*device, actions);
+                }
+                refreshOffline(actions);
+                bytes = std::move(registration.payload);
+                if (bytes.empty())
+                    return actions;
+            } else if (isHeartbeat(bytes)) {
+                refreshOffline(actions);
+                return actions;
+            }
+        } else if (isHeartbeat(bytes)) {
+            refreshOffline(actions);
+            return actions;
+        }
+
+        receiveBuffer_.insert(receiveBuffer_.end(), bytes.begin(), bytes.end());
+        if (receiveBuffer_.size() > kMaximumReceiveBuffer) {
+            receiveBuffer_.clear();
+            actions.push_back({.kind = ProtocolActionKind::Close,
+                               .connectionId = connectionId_,
+                               .reason = "modbus_receive_buffer_overflow"});
+            return actions;
+        }
+
+        for (auto& frame : extractFrames(expectedFrameMode())) {
+            if (discovery_ && matches(discovery_->request, frame)) {
+                const auto* discovered = identifyByUnit(frame.unitId, frame.tcp);
+                if (discovered) {
+                    discovery_->found = true;
+                    if (std::find(boundDevices_.begin(), boundDevices_.end(), discovered) ==
+                        boundDevices_.end()) {
+                        boundDevices_.push_back(discovered);
+                        actions.push_back(bindAction(*discovered));
+                        schedulePoll(*discovered, actions);
+                    }
+                    refreshOffline(actions);
+                    actions.push_back(parsedAction(input, *discovered, frame, discovery_->request,
+                                                   discovery_->commandId));
+                }
+                continue;
+            }
+            if (boundDevices_.empty()) {
+                const auto* identified = identifyByUnit(frame.unitId, frame.tcp);
+                if (!identified)
+                    continue;
+                bindRegistration(*identified);
+                for (const auto* device : boundDevices_) {
+                    actions.push_back(bindAction(*device));
+                    schedulePoll(*device, actions);
+                }
+                refreshOffline(actions);
+            }
+            const auto* device = boundByUnit(frame.unitId, frame.tcp);
+            if (!device)
+                continue;
+            refreshOffline(actions);
+            auto frameActions = consumeResponse(input, *device, std::move(frame));
+            actions.insert(actions.end(), std::make_move_iterator(frameActions.begin()),
+                           std::make_move_iterator(frameActions.end()));
+        }
+        return actions;
+    }
+
+    [[nodiscard]] std::vector<ProtocolAction> disconnected(std::string_view reason) override {
+        std::vector<ProtocolAction> actions;
+        if (inflight_) {
+            actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
+                               .connectionId = connectionId_,
+                               .deadlineToken = inflight_->deadlineToken});
+            actions.push_back({.kind = ProtocolActionKind::FailCommand,
+                               .connectionId = connectionId_,
+                               .deviceId = inflight_->device->id,
+                               .deviceCode = inflight_->device->code,
+                               .commandId = inflight_->command.id,
+                               .reason = std::string(reason)});
+        }
+        if (discovery_) {
+            actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
+                               .connectionId = connectionId_,
+                               .deadlineToken = discovery_->deadlineToken});
+            actions.push_back({.kind = ProtocolActionKind::FailCommand,
+                               .connectionId = connectionId_,
+                               .commandId = discovery_->commandId,
+                               .reason = std::string(reason)});
+            discovery_.reset();
+        }
+        for (auto& [deviceId, queue] : queues_) {
+            (void)deviceId;
+            appendQueueFailures(queue.highWrites, reason, actions);
+            appendQueueFailures(queue.highReads, reason, actions);
+            appendQueueFailures(queue.normalWrites, reason, actions);
+            appendQueueFailures(queue.normalReads, reason, actions);
+        }
+        for (const auto& [token, device] : pollDeadlines_) {
+            (void)device;
+            actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
+                               .connectionId = connectionId_,
+                               .deadlineToken = token});
+        }
+        pollDeadlines_.clear();
+        pollDevices_.clear();
+        if (offlineDeadlineToken_ != 0)
+            actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
+                               .connectionId = connectionId_,
+                               .deadlineToken = offlineDeadlineToken_});
+        offlineDeadlineToken_ = 0;
+        inflight_.reset();
+        receiveBuffer_.clear();
+        return actions;
+    }
+
+    [[nodiscard]] std::vector<ProtocolAction> execute(ProtocolCommand command) override {
+        if (command.kind == "discovery") {
+            if (link_.mode != "TCP Server")
+                return {{.kind = ProtocolActionKind::FailCommand,
+                         .connectionId = connectionId_,
+                         .commandId = std::move(command.id),
+                         .reason = "modbus_discovery_requires_server"}};
+            if (discovery_)
+                return {{.kind = ProtocolActionKind::FailCommand,
+                         .connectionId = connectionId_,
+                         .commandId = std::move(command.id),
+                         .reason = "modbus_discovery_busy"}};
+            if (command.transport != "TCP" && command.transport != "RTU")
+                return {{.kind = ProtocolActionKind::FailCommand,
+                         .connectionId = connectionId_,
+                         .commandId = std::move(command.id),
+                         .reason = "modbus_discovery_mode_required"}};
+            const auto request = requestDescriptor(command.payload, command.transport == "TCP");
+            if (!request || isWriteFunction(request->functionCode))
+                return {{.kind = ProtocolActionKind::FailCommand,
+                         .connectionId = connectionId_,
+                         .commandId = std::move(command.id),
+                         .reason = "modbus_discovery_frame_invalid"}};
+            const auto token = nextDeadlineToken_++;
+            const auto timeout = std::clamp(command.timeout, std::chrono::milliseconds(100),
+                                            std::chrono::milliseconds(60000));
+            discovery_ = Discovery{command.id, *request, token, false};
+            return {{.kind = ProtocolActionKind::Send,
+                     .connectionId = connectionId_,
+                     .commandId = command.id,
+                     .bytes = std::move(command.payload)},
+                    {.kind = ProtocolActionKind::ScheduleDeadline,
+                     .connectionId = connectionId_,
+                     .commandId = command.id,
+                     .deadlineToken = token,
+                     .deadlineAfter = timeout}};
+        }
+        const auto* device = findDevice(command);
+        if (!device ||
+            std::find(boundDevices_.begin(), boundDevices_.end(), device) == boundDevices_.end())
+            return {{.kind = ProtocolActionKind::FailCommand,
+                     .connectionId = connectionId_,
+                     .deviceId = std::move(command.deviceId),
+                     .deviceCode = std::move(command.deviceCode),
+                     .commandId = std::move(command.id),
+                     .reason = "modbus_device_offline"}};
+        const auto request = requestDescriptor(command.payload, device->modbusMode == "TCP");
+        if (!request)
+            return {{.kind = ProtocolActionKind::FailCommand,
+                     .connectionId = connectionId_,
+                     .deviceId = device->id,
+                     .deviceCode = device->code,
+                     .commandId = std::move(command.id),
+                     .reason = "modbus_command_frame_invalid"}};
+        if (isWriteFunction(request->functionCode) && command.readbackPayload.empty())
+            return {{.kind = ProtocolActionKind::FailCommand,
+                     .connectionId = connectionId_,
+                     .deviceId = device->id,
+                     .deviceCode = device->code,
+                     .commandId = std::move(command.id),
+                     .reason = "modbus_write_readback_required"}};
+        auto& queue = queues_.at(device->id);
+        if (queue.size() >= kMaximumDeviceQueue)
+            return {{.kind = ProtocolActionKind::FailCommand,
+                     .connectionId = connectionId_,
+                     .deviceId = device->id,
+                     .deviceCode = device->code,
+                     .commandId = std::move(command.id),
+                     .reason = "modbus_device_queue_full"}};
+        auto& target =
+            command.highPriority
+                ? (isWriteFunction(request->functionCode) ? queue.highWrites : queue.highReads)
+                : (isWriteFunction(request->functionCode) ? queue.normalWrites : queue.normalReads);
+        target.push_back(std::move(command));
+        return dispatchNext();
+    }
+
+    [[nodiscard]] std::vector<ProtocolAction> deadline(std::uint64_t token) override {
+        if (discovery_ && token == discovery_->deadlineToken) {
+            auto completed = std::move(*discovery_);
+            discovery_.reset();
+            return {
+                {.kind = ProtocolActionKind::CompleteCommand,
+                 .connectionId = connectionId_,
+                 .commandId = std::move(completed.commandId),
+                 .reason = completed.found ? "discovery_devices_found" : "discovery_window_empty"}};
+        }
+        if (token != 0 && token == offlineDeadlineToken_) {
+            offlineDeadlineToken_ = 0;
+            return {{.kind = ProtocolActionKind::Close,
+                     .connectionId = connectionId_,
+                     .reason = "modbus_offline_timeout"}};
+        }
+        const auto poll = pollDeadlines_.find(token);
+        if (poll != pollDeadlines_.end()) {
+            const auto* device = poll->second;
+            pollDeadlines_.erase(poll);
+            pollDevices_.erase(device->id);
+            std::vector<ProtocolAction> actions;
+            auto& queue = queues_.at(device->id);
+            if (queue.normalReads.empty()) {
+                for (const auto& command : pollCommands(*device)) {
+                    if (queue.size() >= kMaximumDeviceQueue)
+                        break;
+                    queue.normalReads.push_back(command);
+                }
+            }
+            schedulePoll(*device, actions);
+            auto next = dispatchNext();
+            actions.insert(actions.end(), std::make_move_iterator(next.begin()),
+                           std::make_move_iterator(next.end()));
+            return actions;
+        }
+        if (!inflight_ || inflight_->deadlineToken != token)
+            return {};
+        if (inflight_->phase == Phase::Write) {
+            inflight_->writeAckMissing = true;
+            return startReadback();
+        }
+        auto failed = std::move(*inflight_);
+        inflight_.reset();
+        std::vector<ProtocolAction> actions{{.kind = ProtocolActionKind::FailCommand,
+                                             .connectionId = connectionId_,
+                                             .deviceId = failed.device->id,
+                                             .deviceCode = failed.device->code,
+                                             .commandId = failed.command.id,
+                                             .reason = failed.phase == Phase::Readback
+                                                           ? "modbus_readback_timeout"
+                                                           : "modbus_response_timeout"}};
+        auto next = dispatchNext();
+        actions.insert(actions.end(), std::make_move_iterator(next.begin()),
+                       std::make_move_iterator(next.end()));
+        return actions;
+    }
+
+  private:
+    struct DeviceQueues {
+        std::deque<ProtocolCommand> highWrites;
+        std::deque<ProtocolCommand> highReads;
+        std::deque<ProtocolCommand> normalWrites;
+        std::deque<ProtocolCommand> normalReads;
+
+        [[nodiscard]] std::size_t size() const noexcept {
+            return highWrites.size() + highReads.size() + normalWrites.size() + normalReads.size();
+        }
+    };
+
+    struct RequestDescriptor {
+        bool tcp = false;
+        std::uint16_t transactionId = 0;
+        std::uint8_t unitId = 0;
+        std::uint8_t functionCode = 0;
+        std::uint16_t startAddress = 0;
+        std::uint16_t quantity = 0;
+    };
+
+    struct ResponseFrame {
+        bool tcp = false;
+        std::uint16_t transactionId = 0;
+        std::uint8_t unitId = 0;
+        std::uint8_t functionCode = 0;
+        bool exception = false;
+        std::vector<std::uint8_t> data;
+        std::vector<std::uint8_t> raw;
+    };
+
+    enum class Phase { Request, Write, Readback };
+
+    struct Inflight {
+        const DeviceDefinition* device = nullptr;
+        ProtocolCommand command;
+        RequestDescriptor request;
+        Phase phase = Phase::Request;
+        std::uint64_t deadlineToken = 0;
+        bool writeAckMissing = false;
+    };
+
+    struct RegistrationMatch {
+        const DeviceDefinition* device = nullptr;
+        std::vector<std::uint8_t> payload;
+        bool conflict = false;
+    };
+
+    struct Discovery {
+        std::string commandId;
+        RequestDescriptor request;
+        std::uint64_t deadlineToken = 0;
+        bool found = false;
+    };
+
+    static bool isWriteFunction(std::uint8_t functionCode) noexcept {
+        return functionCode == 5 || functionCode == 6 || functionCode == 15 || functionCode == 16;
+    }
+
+    static ProtocolAction bindAction(const DeviceDefinition& device) {
+        return {.kind = ProtocolActionKind::BindDevice,
+                .deviceId = device.id,
+                .deviceCode = device.code};
+    }
+
+    void schedulePoll(const DeviceDefinition& device, std::vector<ProtocolAction>& actions) {
+        if (device.elements.empty() || pollDevices_.contains(device.id))
+            return;
+        const auto token = nextDeadlineToken_++;
+        pollDeadlines_[token] = &device;
+        pollDevices_.insert(device.id);
+        actions.push_back({.kind = ProtocolActionKind::ScheduleDeadline,
+                           .connectionId = connectionId_,
+                           .deviceId = device.id,
+                           .deviceCode = device.code,
+                           .deadlineToken = token,
+                           .deadlineAfter = std::chrono::seconds(
+                               std::clamp<std::int64_t>(device.pollInterval, 1, 86400))});
+    }
+
+    void refreshOffline(std::vector<ProtocolAction>& actions) {
+        if (link_.mode != "TCP Server" || boundDevices_.empty())
+            return;
+        if (offlineDeadlineToken_ != 0)
+            actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
+                               .connectionId = connectionId_,
+                               .deadlineToken = offlineDeadlineToken_});
+        offlineDeadlineToken_ = nextDeadlineToken_++;
+        auto timeout = std::int64_t{86400};
+        for (const auto* device : boundDevices_)
+            timeout = std::min(timeout, std::clamp<std::int64_t>(device->onlineTimeout, 1, 86400));
+        actions.push_back({.kind = ProtocolActionKind::ScheduleDeadline,
+                           .connectionId = connectionId_,
+                           .deadlineToken = offlineDeadlineToken_,
+                           .deadlineAfter = std::chrono::seconds(timeout)});
+    }
+
+    [[nodiscard]] std::vector<ProtocolCommand> pollCommands(const DeviceDefinition& device) {
+        std::vector<ProtocolCommand> commands;
+        struct ReadGroup {
+            std::uint8_t function = 0;
+            std::uint16_t address = 0;
+            std::uint16_t quantity = 0;
+        };
+        std::map<std::string, std::vector<const ElementDefinition*>, std::less<>> byType;
+        for (const auto& element : device.elements)
+            byType[element.registerType].push_back(&element);
+        std::vector<ReadGroup> groups;
+        for (auto& [registerType, elements] : byType) {
+            const auto function = registerType == "COIL"               ? 1U
+                                  : registerType == "DISCRETE_INPUT"   ? 2U
+                                  : registerType == "HOLDING_REGISTER" ? 3U
+                                  : registerType == "INPUT_REGISTER"   ? 4U
+                                                                       : 0U;
+            if (function == 0 || elements.empty())
+                continue;
+            std::ranges::sort(elements, {}, &ElementDefinition::address);
+            const auto maximum = static_cast<std::uint16_t>(
+                function <= 2 ? 2000 : std::clamp<std::int64_t>(device.modbusMaxQuantity, 1, 125));
+            const auto mergeGap = std::clamp<std::int64_t>(device.modbusMergeGap, 0, 2000);
+            for (const auto* element : elements) {
+                const auto address = static_cast<std::uint16_t>(
+                    std::clamp<std::int64_t>(element->address, 0, 65535));
+                const auto quantity = static_cast<std::uint16_t>(
+                    std::clamp<std::int64_t>(element->quantity, 1, maximum));
+                if (!groups.empty() && groups.back().function == function) {
+                    auto& current = groups.back();
+                    const auto currentEnd =
+                        static_cast<std::uint32_t>(current.address) + current.quantity;
+                    const auto nextEnd = static_cast<std::uint32_t>(address) + quantity;
+                    const auto gap = static_cast<std::int64_t>(address) - currentEnd;
+                    const auto merged = nextEnd - current.address;
+                    if (gap <= mergeGap && merged <= maximum) {
+                        current.quantity = static_cast<std::uint16_t>(
+                            std::max<std::uint32_t>(current.quantity, merged));
+                        continue;
+                    }
+                }
+                groups.push_back({static_cast<std::uint8_t>(function), address, quantity});
+            }
+        }
+        for (const auto& group : groups) {
+            const auto function = group.function;
+            const auto address = group.address;
+            const auto quantity = group.quantity;
+            std::vector<std::uint8_t> payload;
+            if (device.modbusMode == "RTU") {
+                payload = {device.slaveId,
+                           static_cast<std::uint8_t>(function),
+                           static_cast<std::uint8_t>(address >> 8U),
+                           static_cast<std::uint8_t>(address),
+                           static_cast<std::uint8_t>(quantity >> 8U),
+                           static_cast<std::uint8_t>(quantity)};
+                const auto crc = detail::crc16(payload);
+                payload.push_back(static_cast<std::uint8_t>(crc & 0xFFU));
+                payload.push_back(static_cast<std::uint8_t>(crc >> 8U));
+            } else {
+                auto transaction = nextTransactionId_++;
+                if (nextTransactionId_ == 0)
+                    nextTransactionId_ = 1;
+                payload = {static_cast<std::uint8_t>(transaction >> 8U),
+                           static_cast<std::uint8_t>(transaction),
+                           0,
+                           0,
+                           0,
+                           6,
+                           device.slaveId,
+                           static_cast<std::uint8_t>(function),
+                           static_cast<std::uint8_t>(address >> 8U),
+                           static_cast<std::uint8_t>(address),
+                           static_cast<std::uint8_t>(quantity >> 8U),
+                           static_cast<std::uint8_t>(quantity)};
+            }
+            commands.push_back({.deviceId = device.id,
+                                .deviceCode = device.code,
+                                .kind = "poll",
+                                .payload = std::move(payload),
+                                .highPriority = false,
+                                .timeout = std::chrono::seconds(3)});
+        }
+        return commands;
+    }
+
+    void bindClientTarget() {
+        for (const auto& device : devices_)
+            if (device.targetId == targetId_)
+                boundDevices_.push_back(&device);
+    }
+
+    void bindRegistration(const DeviceDefinition& matched) {
+        boundDevices_.clear();
+        for (const auto& device : devices_) {
+            if (!matched.registrationBytes.empty() &&
+                device.registrationBytes == matched.registrationBytes)
+                boundDevices_.push_back(&device);
+        }
+        if (boundDevices_.empty())
+            boundDevices_.push_back(&matched);
+    }
+
+    [[nodiscard]] RegistrationMatch
+    matchRegistration(const std::vector<std::uint8_t>& bytes) const {
+        RegistrationMatch result;
+        std::size_t matchedLength = 0;
+        for (const auto& device : devices_) {
+            const auto& registration = device.registrationBytes;
+            if (registration.empty() || bytes.size() < registration.size() ||
+                !std::equal(registration.begin(), registration.end(), bytes.begin()))
+                continue;
+            if (result.device && registration.size() == matchedLength &&
+                registration != result.device->registrationBytes) {
+                result.conflict = true;
+                return result;
+            }
+            if (!result.device || registration.size() > matchedLength) {
+                result.device = &device;
+                matchedLength = registration.size();
+            }
+        }
+        if (result.device)
+            result.payload.assign(bytes.begin() + static_cast<std::ptrdiff_t>(matchedLength),
+                                  bytes.end());
+        return result;
+    }
+
+    [[nodiscard]] bool isHeartbeat(const std::vector<std::uint8_t>& bytes) const {
+        const auto& candidates = boundDevices_.empty() ? devices_ : devices_;
+        return std::any_of(candidates.begin(), candidates.end(), [&](const auto& device) {
+            return !device.heartbeatBytes.empty() && device.heartbeatBytes == bytes &&
+                   (boundDevices_.empty() || std::find(boundDevices_.begin(), boundDevices_.end(),
+                                                       &device) != boundDevices_.end());
+        });
+    }
+
+    [[nodiscard]] const DeviceDefinition* identifyByUnit(std::uint8_t unit,
+                                                         bool tcp) const noexcept {
+        const DeviceDefinition* matched = nullptr;
+        for (const auto& device : devices_) {
+            if (device.slaveId != unit || (device.modbusMode == "TCP") != tcp)
+                continue;
+            if (matched)
+                return nullptr;
+            matched = &device;
+        }
+        return matched;
+    }
+
+    [[nodiscard]] const DeviceDefinition* boundByUnit(std::uint8_t unit, bool tcp) const noexcept {
+        for (const auto* device : boundDevices_)
+            if (device->slaveId == unit && (device->modbusMode == "TCP") == tcp)
+                return device;
+        return nullptr;
+    }
+
+    [[nodiscard]] const DeviceDefinition*
+    findDevice(const ProtocolCommand& command) const noexcept {
+        if (!command.deviceId.empty()) {
+            const auto current = devicesById_.find(command.deviceId);
+            if (current != devicesById_.end())
+                return current->second;
+        }
+        const auto current = devicesByCode_.find(command.deviceCode);
+        return current == devicesByCode_.end() ? nullptr : current->second;
+    }
+
+    [[nodiscard]] static std::optional<RequestDescriptor>
+    requestDescriptor(std::span<const std::uint8_t> bytes, bool tcp) {
+        RequestDescriptor result;
+        std::size_t pdu = 0;
+        if (tcp) {
+            if (bytes.size() < 8 || bytes[2] != 0 || bytes[3] != 0)
+                return std::nullopt;
+            const auto length = detail::readBe16(bytes, 4);
+            if (length < 2 || length > 254 || bytes.size() != static_cast<std::size_t>(6 + length))
+                return std::nullopt;
+            result.tcp = true;
+            result.transactionId = detail::readBe16(bytes, 0);
+            result.unitId = bytes[6];
+            result.functionCode = bytes[7];
+            pdu = 8;
+        } else {
+            if (bytes.size() < 4 || !detail::validRtu(bytes))
+                return std::nullopt;
+            result.unitId = bytes[0];
+            result.functionCode = bytes[1];
+            pdu = 2;
+        }
+        if (bytes.size() >= pdu + 4) {
+            result.startAddress = detail::readBe16(bytes, pdu);
+            result.quantity = detail::readBe16(bytes, pdu + 2);
+        }
+        return result.functionCode == 0 ? std::nullopt : std::optional(result);
+    }
+
+    [[nodiscard]] std::optional<bool> expectedFrameMode() const noexcept {
+        if (inflight_)
+            return inflight_->request.tcp;
+        if (discovery_)
+            return discovery_->request.tcp;
+        if (boundDevices_.empty())
+            return std::nullopt;
+        const auto tcp = boundDevices_.front()->modbusMode == "TCP";
+        if (std::any_of(boundDevices_.begin(), boundDevices_.end(),
+                        [tcp](const auto* device) { return (device->modbusMode == "TCP") != tcp; }))
+            return std::nullopt;
+        return tcp;
+    }
+
+    [[nodiscard]] std::vector<ResponseFrame> extractFrames(std::optional<bool> expectedTcp) {
+        std::vector<ResponseFrame> frames;
+        while (!receiveBuffer_.empty()) {
+            if (expectedTcp && *expectedTcp && receiveBuffer_.size() < 6)
+                break;
+            bool tcp = expectedTcp.value_or(false);
+            if (!expectedTcp && receiveBuffer_.size() >= 6 && receiveBuffer_[2] == 0 &&
+                receiveBuffer_[3] == 0) {
+                const auto payloadLength = detail::readBe16(receiveBuffer_, 4);
+                tcp = payloadLength >= 2 && payloadLength <= 254;
+            }
+            std::size_t length = 0;
+            if (tcp) {
+                if (receiveBuffer_[2] != 0 || receiveBuffer_[3] != 0) {
+                    receiveBuffer_.erase(receiveBuffer_.begin());
+                    continue;
+                }
+                const auto payloadLength = detail::readBe16(receiveBuffer_, 4);
+                if (payloadLength < 2 || payloadLength > 254) {
+                    receiveBuffer_.erase(receiveBuffer_.begin());
+                    continue;
+                }
+                length = 6 + payloadLength;
+            } else {
+                if (receiveBuffer_.size() < 3)
+                    break;
+                const auto functionCode = receiveBuffer_[1];
+                if ((functionCode & 0x80U) != 0)
+                    length = 5;
+                else if (functionCode >= 1 && functionCode <= 4)
+                    length = static_cast<std::size_t>(receiveBuffer_[2]) + 5;
+                else if (isWriteFunction(functionCode))
+                    length = 8;
+                else {
+                    receiveBuffer_.erase(receiveBuffer_.begin());
+                    continue;
+                }
+            }
+            if (receiveBuffer_.size() < length)
+                break;
+            std::vector<std::uint8_t> raw(receiveBuffer_.begin(),
+                                          receiveBuffer_.begin() +
+                                              static_cast<std::ptrdiff_t>(length));
+            if (!tcp && !detail::validRtu(raw)) {
+                receiveBuffer_.erase(receiveBuffer_.begin());
+                continue;
+            }
+            receiveBuffer_.erase(receiveBuffer_.begin(),
+                                 receiveBuffer_.begin() + static_cast<std::ptrdiff_t>(length));
+            ResponseFrame frame;
+            frame.tcp = tcp;
+            frame.transactionId = tcp ? detail::readBe16(raw, 0) : 0;
+            frame.unitId = tcp ? raw[6] : raw[0];
+            const auto functionOffset = tcp ? 7U : 1U;
+            frame.exception = (raw[functionOffset] & 0x80U) != 0;
+            frame.functionCode = static_cast<std::uint8_t>(raw[functionOffset] & 0x7FU);
+            const auto payloadOffset = functionOffset + 1;
+            const auto payloadEnd = raw.size() - (tcp ? 0 : 2);
+            if (payloadEnd > payloadOffset)
+                frame.data.assign(raw.begin() + static_cast<std::ptrdiff_t>(payloadOffset),
+                                  raw.begin() + static_cast<std::ptrdiff_t>(payloadEnd));
+            frame.raw = std::move(raw);
+            frames.push_back(std::move(frame));
+        }
+        return frames;
+    }
+
+    [[nodiscard]] static bool matches(const Inflight& inflight,
+                                      const ResponseFrame& response) noexcept {
+        return inflight.request.tcp == response.tcp &&
+               (!response.tcp || inflight.request.transactionId == response.transactionId) &&
+               inflight.request.unitId == response.unitId &&
+               inflight.request.functionCode == response.functionCode;
+    }
+
+    [[nodiscard]] static bool matches(const RequestDescriptor& request,
+                                      const ResponseFrame& response) noexcept {
+        return request.tcp == response.tcp &&
+               (!response.tcp || request.transactionId == response.transactionId) &&
+               request.functionCode == response.functionCode;
+    }
+
+    [[nodiscard]] std::vector<ProtocolAction> consumeResponse(const ProtocolInput& input,
+                                                              const DeviceDefinition& device,
+                                                              ResponseFrame frame) {
+        std::vector<ProtocolAction> actions;
+        if (!inflight_ || inflight_->device != &device || !matches(*inflight_, frame))
+            return actions;
+        actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
+                           .connectionId = connectionId_,
+                           .deadlineToken = inflight_->deadlineToken});
+        if (frame.exception) {
+            auto failed = std::move(*inflight_);
+            inflight_.reset();
+            actions.push_back({.kind = ProtocolActionKind::FailCommand,
+                               .connectionId = connectionId_,
+                               .deviceId = device.id,
+                               .deviceCode = device.code,
+                               .commandId = failed.command.id,
+                               .reason = "modbus_exception_response"});
+            appendNext(actions);
+            return actions;
+        }
+        if (inflight_->phase == Phase::Write) {
+            auto readback = startReadback();
+            actions.insert(actions.end(), std::make_move_iterator(readback.begin()),
+                           std::make_move_iterator(readback.end()));
+            return actions;
+        }
+
+        const auto parsed =
+            parsedAction(input, device, frame, inflight_->request, inflight_->command.id);
+        actions.push_back(parsed);
+        if (inflight_->phase == Phase::Readback &&
+            !inflight_->command.expectedReadbackData.empty()) {
+            const auto values = frame.data.empty()
+                                    ? std::span<const std::uint8_t>{}
+                                    : std::span<const std::uint8_t>(frame.data).subspan(1);
+            if (!std::equal(values.begin(), values.end(),
+                            inflight_->command.expectedReadbackData.begin(),
+                            inflight_->command.expectedReadbackData.end())) {
+                auto failed = std::move(*inflight_);
+                inflight_.reset();
+                actions.push_back({.kind = ProtocolActionKind::FailCommand,
+                                   .connectionId = connectionId_,
+                                   .deviceId = device.id,
+                                   .deviceCode = device.code,
+                                   .commandId = failed.command.id,
+                                   .reason = "modbus_readback_mismatch"});
+                appendNext(actions);
+                return actions;
+            }
+        }
+        auto completed = std::move(*inflight_);
+        inflight_.reset();
+        actions.push_back({.kind = ProtocolActionKind::CompleteCommand,
+                           .connectionId = connectionId_,
+                           .deviceId = device.id,
+                           .deviceCode = device.code,
+                           .commandId = completed.command.id,
+                           .reason = completed.writeAckMissing ? "write_ack_missing" : ""});
+        appendNext(actions);
+        return actions;
+    }
+
+    [[nodiscard]] std::vector<ProtocolAction> startReadback() {
+        if (!inflight_ || inflight_->command.readbackPayload.empty())
+            return {};
+        const auto descriptor = requestDescriptor(inflight_->command.readbackPayload,
+                                                  inflight_->device->modbusMode == "TCP");
+        if (!descriptor) {
+            auto failed = std::move(*inflight_);
+            inflight_.reset();
+            std::vector<ProtocolAction> actions{{.kind = ProtocolActionKind::FailCommand,
+                                                 .connectionId = connectionId_,
+                                                 .deviceId = failed.device->id,
+                                                 .deviceCode = failed.device->code,
+                                                 .commandId = failed.command.id,
+                                                 .reason = "modbus_readback_frame_invalid"}};
+            appendNext(actions);
+            return actions;
+        }
+        inflight_->phase = Phase::Readback;
+        inflight_->request = *descriptor;
+        inflight_->deadlineToken = nextDeadlineToken_++;
+        return {{.kind = ProtocolActionKind::Send,
+                 .connectionId = connectionId_,
+                 .deviceId = inflight_->device->id,
+                 .deviceCode = inflight_->device->code,
+                 .commandId = inflight_->command.id,
+                 .bytes = inflight_->command.readbackPayload},
+                {.kind = ProtocolActionKind::ScheduleDeadline,
+                 .connectionId = connectionId_,
+                 .commandId = inflight_->command.id,
+                 .deadlineToken = inflight_->deadlineToken,
+                 .deadlineAfter = inflight_->command.timeout}};
+    }
+
+    [[nodiscard]] std::vector<ProtocolAction> dispatchNext() {
+        if (inflight_ || boundDevices_.empty())
+            return {};
+        for (const bool high : {true, false}) {
+            for (std::size_t attempt = 0; attempt < boundDevices_.size(); ++attempt) {
+                const auto index = (roundRobinIndex_ + attempt) % boundDevices_.size();
+                const auto* device = boundDevices_[index];
+                auto& queue = queues_.at(device->id);
+                auto& writes = high ? queue.highWrites : queue.normalWrites;
+                auto& reads = high ? queue.highReads : queue.normalReads;
+                ProtocolCommand command;
+                if (!writes.empty()) {
+                    command = std::move(writes.front());
+                    writes.pop_front();
+                } else if (!reads.empty()) {
+                    command = std::move(reads.front());
+                    reads.pop_front();
+                } else {
+                    continue;
+                }
+                roundRobinIndex_ = (index + 1) % boundDevices_.size();
+                const auto descriptor =
+                    requestDescriptor(command.payload, device->modbusMode == "TCP");
+                if (!descriptor)
+                    continue;
+                const auto phase =
+                    isWriteFunction(descriptor->functionCode) ? Phase::Write : Phase::Request;
+                const auto token = nextDeadlineToken_++;
+                const auto timeout = std::clamp(command.timeout, std::chrono::milliseconds(100),
+                                                std::chrono::milliseconds(60000));
+                command.timeout = timeout;
+                inflight_ = Inflight{device, std::move(command), *descriptor, phase, token, false};
+                return {{.kind = ProtocolActionKind::Send,
+                         .connectionId = connectionId_,
+                         .deviceId = device->id,
+                         .deviceCode = device->code,
+                         .commandId = inflight_->command.id,
+                         .bytes = inflight_->command.payload},
+                        {.kind = ProtocolActionKind::ScheduleDeadline,
+                         .connectionId = connectionId_,
+                         .commandId = inflight_->command.id,
+                         .deadlineToken = token,
+                         .deadlineAfter = timeout}};
+            }
+        }
+        return {};
+    }
+
+    void appendNext(std::vector<ProtocolAction>& actions) {
+        auto next = dispatchNext();
+        actions.insert(actions.end(), std::make_move_iterator(next.begin()),
+                       std::make_move_iterator(next.end()));
+    }
+
+    static void appendQueueFailures(std::deque<ProtocolCommand>& queue, std::string_view reason,
+                                    std::vector<ProtocolAction>& actions) {
+        while (!queue.empty()) {
+            auto command = std::move(queue.front());
+            queue.pop_front();
+            actions.push_back({.kind = ProtocolActionKind::FailCommand,
+                               .deviceId = std::move(command.deviceId),
+                               .deviceCode = std::move(command.deviceCode),
+                               .commandId = std::move(command.id),
+                               .reason = std::string(reason)});
+        }
+    }
+
+    [[nodiscard]] ProtocolAction parsedAction(const ProtocolInput& input,
+                                              const DeviceDefinition& device,
+                                              const ResponseFrame& frame,
+                                              const RequestDescriptor& request,
+                                              std::string_view causationId) const {
+        bridge::ParsedDeviceMessage message;
+        message.messageId = bridge::nextMessageId();
+        message.causationId =
+            causationId.empty() ? std::string(input.messageId) : std::string(causationId);
+        message.linkId = link_.id;
+        message.deviceId = device.id;
+        message.deviceCode = device.code;
+        message.protocol = "Modbus";
+        message.connectionId = connectionId_;
+        message.occurredAtMs = input.receivedAtMs;
+        message.observedAtMs = input.receivedAtMs;
+        message.storageInterval = std::clamp<std::int64_t>(device.storageInterval, 1, 86400);
+        message.onlineWindowMs = std::clamp<std::int64_t>(device.pollInterval, 1, 86400) * 3000;
+        message.source = "query";
+        message.rawPayloads = {frame.raw};
+        message.valuesJson = valuesJson(device, frame, request);
+        return {.kind = ProtocolActionKind::PublishParsed,
+                .connectionId = connectionId_,
+                .deviceId = device.id,
+                .deviceCode = device.code,
+                .parsed = std::move(message)};
+    }
+
+    [[nodiscard]] static std::string valuesJson(const DeviceDefinition& device,
+                                                const ResponseFrame& frame,
+                                                const RequestDescriptor& request) {
+        std::ostringstream json;
+        json << "{\"function_code\":" << static_cast<unsigned>(frame.functionCode)
+             << ",\"values\":{";
+        const auto data = frame.data.empty() ? std::span<const std::uint8_t>{}
+                                             : std::span<const std::uint8_t>(frame.data).subspan(1);
+        bool first = true;
+        for (const auto& element : device.elements) {
+            const bool sameType =
+                (frame.functionCode == 1 && element.registerType == "COIL") ||
+                (frame.functionCode == 2 && element.registerType == "DISCRETE_INPUT") ||
+                (frame.functionCode == 3 && element.registerType == "HOLDING_REGISTER") ||
+                (frame.functionCode == 4 && element.registerType == "INPUT_REGISTER");
+            if (!sameType)
+                continue;
+            if (element.address < request.startAddress)
+                continue;
+            std::optional<std::string> numeric;
+            if (frame.functionCode <= 2) {
+                const auto bitOffset =
+                    static_cast<std::size_t>(element.address - request.startAddress);
+                if (bitOffset / 8 >= data.size())
+                    continue;
+                numeric = (data[bitOffset / 8] & (1U << (bitOffset % 8))) != 0 ? "1" : "0";
+            } else {
+                const auto offset =
+                    static_cast<std::size_t>(element.address - request.startAddress) * 2;
+                const auto width =
+                    static_cast<std::size_t>(std::max<std::int64_t>(1, element.quantity)) * 2;
+                if (offset + width > data.size())
+                    continue;
+                numeric = detail::numericJson(data.subspan(offset, width), element);
+            }
+            if (!numeric)
+                continue;
+            if (!first)
+                json << ',';
+            first = false;
+            json << '\"' << detail::jsonEscape(element.id) << "\":{\"name\":\""
+                 << detail::jsonEscape(element.name) << "\",\"value\":" << *numeric
+                 << ",\"unit\":\"" << detail::jsonEscape(element.unit) << "\"}";
+        }
+        json << "}}";
+        return json.str();
+    }
+
+    static constexpr std::size_t kMaximumReceiveBuffer = 64 * 1024;
+    static constexpr std::size_t kMaximumDeviceQueue = 256;
+
+    LinkDefinition link_;
+    std::string connectionId_;
+    std::string targetId_;
+    std::vector<DeviceDefinition> devices_;
+    std::map<std::string, const DeviceDefinition*, std::less<>> devicesById_;
+    std::map<std::string, const DeviceDefinition*, std::less<>> devicesByCode_;
+    std::map<std::string, DeviceQueues, std::less<>> queues_;
+    std::vector<const DeviceDefinition*> boundDevices_;
+    std::vector<std::uint8_t> receiveBuffer_;
+    std::optional<Inflight> inflight_;
+    std::optional<Discovery> discovery_;
+    std::map<std::uint64_t, const DeviceDefinition*> pollDeadlines_;
+    std::set<std::string, std::less<>> pollDevices_;
+    std::size_t roundRobinIndex_ = 0;
+    std::uint64_t nextDeadlineToken_ = 1;
+    std::uint64_t offlineDeadlineToken_ = 0;
+    std::uint16_t nextTransactionId_ = 1;
+};
+
+class Runtime final : public ProtocolRuntime {
+  public:
+    [[nodiscard]] std::string_view protocol() const noexcept override { return "Modbus"; }
+
+    [[nodiscard]] ProtocolCapabilities capabilities() const noexcept override {
+        return ProtocolCapability::TcpServer | ProtocolCapability::TcpClient |
+               ProtocolCapability::Registration | ProtocolCapability::Heartbeat |
+               ProtocolCapability::Polling | ProtocolCapability::Discovery |
+               ProtocolCapability::Commands;
+    }
+
+    [[nodiscard]] std::unique_ptr<ProtocolSession>
+    createSession(const LinkDefinition& link, std::string_view connectionId,
+                  std::string_view targetId, const RuntimeSnapshot& snapshot) const override {
+        std::vector<DeviceDefinition> devices;
+        for (const auto& device : snapshot.devices)
+            if (device.linkId == link.id && device.protocol == "Modbus")
+                devices.push_back(device);
+        return std::make_unique<Session>(link, std::string(connectionId), std::string(targetId),
+                                         std::move(devices));
+    }
+};
+
+} // namespace service::southbridge::modbus

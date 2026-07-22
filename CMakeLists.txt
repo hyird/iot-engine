@@ -31,7 +31,8 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(ruvia
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    GIT_TAG v0.1.5)
+    # v0.1.5 was retagged to this commit; pin it so populated build trees refresh reliably.
+    GIT_TAG b1125b52bc2e28a09d8438722925ba2ec6b103d8)
 FetchContent_MakeAvailable(ruvia)
 
 # Ruvia's standalone manifest features do not belong to this parent manifest.
@@ -40,6 +41,12 @@ unset(VCPKG_MANIFEST_FEATURES CACHE)
 add_executable(iot-engine service/server.cpp)
 target_include_directories(iot-engine PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(iot-engine PRIVATE ruvia::web)
+
+enable_testing()
+add_executable(southbridge-protocol-test tests/southbridge_protocol_test.cpp)
+target_include_directories(southbridge-protocol-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(southbridge-protocol-test PRIVATE ruvia::web)
+add_test(NAME southbridge-protocol COMMAND southbridge-protocol-test)
 
 find_program(BUN_EXECUTABLE NAMES bun REQUIRED)
 

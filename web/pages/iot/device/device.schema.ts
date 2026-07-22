@@ -60,3 +60,29 @@ export const saveDeviceGroupSchema = z.object({
 });
 
 export const deviceIdSchema = z.uuid({ error: 'id 必须是 UUID' });
+
+const deviceShareSchema = z.object({
+    subject_type: z.enum(['user', 'department']),
+    subject_id: z.uuid({ error: '分享对象 ID 必须是 UUID' }),
+    access_level: z.enum(['view', 'operate']),
+});
+
+export const replaceDeviceSharesSchema = z
+    .object({
+        shares: z.array(deviceShareSchema).max(500, '单次最多设置 500 个分享对象'),
+    })
+    .superRefine(({ shares }, context) => {
+        const uniqueSubjects = new Set<string>();
+        shares.forEach((share, index) => {
+            const key = `${share.subject_type}:${share.subject_id}`;
+            if (!uniqueSubjects.has(key)) {
+                uniqueSubjects.add(key);
+                return;
+            }
+            context.addIssue({
+                code: 'custom',
+                path: ['shares', index, 'subject_id'],
+                message: '分享对象不能重复',
+            });
+        });
+    });

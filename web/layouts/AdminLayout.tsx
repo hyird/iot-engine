@@ -23,9 +23,8 @@ import {
     Space,
     Spin,
 } from 'antd';
-import { AnimatePresence, domAnimation, LazyMotion, m, useReducedMotion } from 'framer-motion';
 import { useMemo, useState } from 'react';
-import { useLocation, useNavigate, useOutlet } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { APP_NAME } from '@/config/app';
 import { usePermissions } from '@/hooks/usePermission';
 import { useCurrentUser, useLogout } from '@/pages/login';
@@ -62,34 +61,6 @@ const breadcrumbGroups = [
         ],
     },
 ];
-
-const pageTransition = {
-    duration: 0.2,
-    ease: [0.22, 1, 0.36, 1] as const,
-};
-
-function PageTransition() {
-    const outlet = useOutlet();
-    const location = useLocation();
-    const reduceMotion = useReducedMotion();
-
-    return (
-        <LazyMotion features={domAnimation}>
-            <AnimatePresence mode="wait" initial={false}>
-                <m.div
-                    key={location.pathname}
-                    initial={reduceMotion ? false : { opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={reduceMotion ? undefined : { opacity: 0, y: -4 }}
-                    transition={reduceMotion ? { duration: 0 } : pageTransition}
-                    className="h-full w-full"
-                >
-                    {outlet}
-                </m.div>
-            </AnimatePresence>
-        </LazyMotion>
-    );
-}
 
 export default function AdminLayout() {
     const [collapsed, setCollapsed] = useState(false);
@@ -315,7 +286,7 @@ export default function AdminLayout() {
                     </Dropdown>
                 </Header>
                 <Content className="m-3 min-h-0 overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200/80 sm:m-4">
-                    <PageTransition />
+                    <Outlet />
                 </Content>
             </Layout>
         </Layout>

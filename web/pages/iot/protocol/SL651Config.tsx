@@ -37,6 +37,7 @@ import {
     SortableGroupItemList,
     SortableGroupSectionFrame,
     SortableGroupSectionList,
+    VirtualStack,
 } from './SortableGroup';
 import {
     DeviceTypeModal,
@@ -413,6 +414,7 @@ const SL651ConfigPage = () => {
                             items={group.items}
                             className="grid gap-3"
                             style={ELEMENT_CARD_GRID_STYLE}
+                            minItemWidth={280}
                             disabled={saveMutation.isPending || !canEdit}
                             empty={<Empty description={emptyDescription} />}
                             onOrderChange={(nextOrder) =>
@@ -729,9 +731,15 @@ const SL651ConfigPage = () => {
                         ) : funcs.length === 0 ? (
                             <Empty description={emptyFuncDesc} />
                         ) : (
-                            <div className="flex flex-col gap-4 p-4">
-                                {funcs.map((record) => renderFuncCard(record))}
-                            </div>
+                            <VirtualStack
+                                items={funcs}
+                                getItemKey={(record) => record.id}
+                                className="p-4"
+                                estimateSize={520}
+                                gap={16}
+                            >
+                                {(record) => renderFuncCard(record)}
+                            </VirtualStack>
                         )}
                     </Card>
                 </div>

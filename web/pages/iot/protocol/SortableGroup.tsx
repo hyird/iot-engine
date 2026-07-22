@@ -9,6 +9,7 @@ import {
     verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { Button, Empty, Flex, Space, Table } from 'antd';
 import type { ColumnsType, TableProps } from 'antd/es/table';
 import type { CSSProperties, ForwardedRef, HTMLAttributes, ReactNode } from 'react';
@@ -19,7 +20,9 @@ import {
     useCallback,
     useContext,
     useEffect,
+    useLayoutEffect,
     useMemo,
+    useRef,
     useState,
 } from 'react';
 import { sortSectionsByOrder } from './grouping';
@@ -174,6 +177,176 @@ const reconcileOrder = (previousOrder: string[], currentKeys: string[]) => {
     return areOrdersEqual(previousOrder, nextOrder) ? previousOrder : nextOrder;
 };
 
+const findVerticalScrollParent = (element: HTMLElement) => {
+    let parent = element.parentElement;
+    while (parent) {
+        const overflowY = window.getComputedStyle(parent).overflowY;
+        if (overflowY === 'auto' || overflowY === 'scroll') return parent;
+        parent = parent.parentElement;
+    }
+    return null;
+};
+
+interface VirtualStackProps<T> {
+    items: T[];
+    getItemKey: (item: T) => string;
+    children: (item: T, index: number) => ReactNode;
+    className?: string;
+    estimateSize?: number;
+    gap?: number;
+    overscan?: number;
+}
+
+export const VirtualStack = <T,>({
+    items,
+    getItemKey,
+    children,
+    className,
+    estimateSize = 320,
+    gap = 16,
+    overscan = 4,
+}: VirtualStackProps<T>) => {
+    const rootRef = useRef<HTMLDivElement>(null);
+    const [scrollElement, setScrollElement] = useState<HTMLElement | null>(null);
+    const [scrollMargin, setScrollMargin] = useState(0);
+
+    useLayoutEffect(() => {
+        if (!rootRef.current) return;
+        setScrollElement(findVerticalScrollParent(rootRef.current));
+    }, []);
+
+    const updateScrollMargin = useCallback(() => {
+        const root = rootRef.current;
+        if (!root || !scrollElement) return;
+
+        const rootRect = root.getBoundingClientRect();
+        const scrollRect = scrollElement.getBoundingClientRect();
+        const nextMargin = rootRect.top - scrollRect.top + scrollElement.scrollTop;
+        setScrollMargin((currentMargin) =>
+            Math.abs(currentMargin - nextMargin) < 0.5 ? currentMargin : nextMargin
+        );
+    }, [scrollElement]);
+
+    useLayoutEffect(() => {
+        const root = rootRef.current;
+        if (!root || !scrollElement) return;
+
+        updateScrollMargin();
+        const observer = new ResizeObserver(updateScrollMargin);
+        observer.observe(scrollElement);
+        let ancestor = root.parentElement;
+        while (ancestor && ancestor !== scrollElement) {
+            observer.observe(ancestor);
+            ancestor = ancestor.parentElement;
+        }
+        window.addEventListener('resize', updateScrollMargin);
+
+        return () => {
+            observer.disconnect();
+            window.removeEventListener('resize', updateScrollMargin);
+        };
+    }, [scrollElement, updateScrollMargin]);
+
+    const virtualizer = useVirtualizer<HTMLElement, HTMLDivElement>({
+        count: items.length,
+        getScrollElement: () => scrollElement,
+        estimateSize: () => estimateSize,
+        getItemKey: (index) => getItemKey(items[index]),
+        overscan,
+        scrollMargin,
+    });
+
+    return (
+        <div className={className}>
+            <div
+                ref={rootRef}
+                className="relative w-full"
+                style={{ height: virtualizer.getTotalSize() }}
+            >
+                {virtualizer.getVirtualItems().map((virtualItem) => (
+                    <div
+                        key={virtualItem.key}
+                        ref={virtualizer.measureElement}
+                        data-index={virtualItem.index}
+                        className="absolute left-0 top-0 w-full"
+                        style={{
+                            transform: `translateY(${virtualItem.start - scrollMargin}px)`,
+                            paddingBottom: gap,
+                        }}
+                    >
+                        {children(items[virtualItem.index], virtualItem.index)}
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+interface VirtualGridProps<T> extends VirtualStackProps<T> {
+    gridClassName?: string;
+    gridStyle?: CSSProperties;
+    minItemWidth?: number;
+}
+
+const VirtualGrid = <T,>({
+    items,
+    getItemKey,
+    children,
+    className,
+    gridClassName,
+    gridStyle,
+    minItemWidth = 280,
+    estimateSize = 220,
+    gap = 12,
+    overscan,
+}: VirtualGridProps<T>) => {
+    const widthRef = useRef<HTMLDivElement>(null);
+    const [columnCount, setColumnCount] = useState(1);
+
+    useLayoutEffect(() => {
+        const root = widthRef.current;
+        if (!root) return;
+
+        const updateColumnCount = () => {
+            const width = root.getBoundingClientRect().width;
+            const nextCount = Math.max(1, Math.floor((width + gap) / (minItemWidth + gap)));
+            setColumnCount((currentCount) =>
+                currentCount === nextCount ? currentCount : nextCount
+            );
+        };
+        updateColumnCount();
+        const observer = new ResizeObserver(updateColumnCount);
+        observer.observe(root);
+        return () => observer.disconnect();
+    }, [gap, minItemWidth]);
+
+    const rows = useMemo(() => {
+        const nextRows: T[][] = [];
+        for (let index = 0; index < items.length; index += columnCount) {
+            nextRows.push(items.slice(index, index + columnCount));
+        }
+        return nextRows;
+    }, [columnCount, items]);
+
+    return (
+        <div ref={widthRef} className={className}>
+            <VirtualStack
+                items={rows}
+                getItemKey={(row) => row.map(getItemKey).join(':')}
+                estimateSize={estimateSize}
+                gap={gap}
+                overscan={overscan}
+            >
+                {(row) => (
+                    <div className={gridClassName} style={gridStyle}>
+                        {row.map((item) => children(item, items.indexOf(item)))}
+                    </div>
+                )}
+            </VirtualStack>
+        </div>
+    );
+};
+
 export const SortableGroupSectionList = <T extends { key: string }>({
     sections,
     children,
@@ -224,13 +397,15 @@ export const SortableGroupSectionList = <T extends { key: string }>({
                 items={orderedSections.map((section) => section.key)}
                 strategy={verticalListSortingStrategy}
             >
-                <Space
-                    direction="vertical"
-                    className={className ? className : 'w-full'}
-                    size="large"
+                <VirtualStack
+                    items={orderedSections}
+                    getItemKey={(section) => section.key}
+                    className={className ?? 'w-full'}
+                    estimateSize={420}
+                    gap={24}
                 >
-                    {orderedSections.map(children)}
-                </Space>
+                    {children}
+                </VirtualStack>
             </SortableContext>
         </DndContext>
     );
@@ -242,6 +417,7 @@ interface SortableGroupItemListProps<T extends { id: string }> {
     empty?: ReactNode;
     className?: string;
     style?: CSSProperties;
+    minItemWidth?: number;
     disabled?: boolean;
     onOrderChange?: (nextOrder: string[]) => void;
 }
@@ -265,6 +441,7 @@ export const SortableGroupItemList = <T extends { id: string }>({
     empty,
     className,
     style,
+    minItemWidth = 280,
     disabled = false,
     onOrderChange,
 }: SortableGroupItemListProps<T>) => {
@@ -327,8 +504,17 @@ export const SortableGroupItemList = <T extends { id: string }>({
                 items={orderedItems.map((item) => item.id)}
                 strategy={rectSortingStrategy}
             >
-                <div className={className} style={style}>
-                    {orderedItems.map((item) => (
+                <VirtualGrid
+                    items={orderedItems}
+                    getItemKey={(item) => item.id}
+                    className="w-full"
+                    gridClassName={className}
+                    gridStyle={style}
+                    minItemWidth={minItemWidth}
+                    estimateSize={220}
+                    gap={12}
+                >
+                    {(item) => (
                         <SortableGroupItemFrame
                             key={item.id}
                             id={item.id}
@@ -337,8 +523,8 @@ export const SortableGroupItemList = <T extends { id: string }>({
                         >
                             {(dragHandle) => children(item, dragHandle)}
                         </SortableGroupItemFrame>
-                    ))}
-                </div>
+                    )}
+                </VirtualGrid>
             </SortableContext>
         </DndContext>
     );

@@ -1,0 +1,1167 @@
+#pragma once
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <charconv>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <iomanip>
+#include <map>
+#include <optional>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "service/modules/southbridge/protocol/protocol_runtime.h"
+
+namespace service::southbridge::s7 {
+
+namespace detail {
+
+inline std::uint16_t be16(std::span<const std::uint8_t> bytes, std::size_t offset) {
+    return static_cast<std::uint16_t>((static_cast<std::uint16_t>(bytes[offset]) << 8U) |
+                                      bytes[offset + 1]);
+}
+
+inline std::uint32_t be24(std::span<const std::uint8_t> bytes, std::size_t offset) {
+    return (static_cast<std::uint32_t>(bytes[offset]) << 16U) |
+           (static_cast<std::uint32_t>(bytes[offset + 1]) << 8U) | bytes[offset + 2];
+}
+
+inline std::optional<std::uint16_t> parseHex16(std::string_view value) {
+    if (value.starts_with("0x") || value.starts_with("0X"))
+        value.remove_prefix(2);
+    std::uint16_t result = 0;
+    const auto [end, error] =
+        std::from_chars(value.data(), value.data() + value.size(), result, 16);
+    return error == std::errc{} && end == value.data() + value.size() ? std::optional(result)
+                                                                      : std::nullopt;
+}
+
+inline std::uint16_t remoteTsap(const DeviceDefinition& device) {
+    if (device.s7ConnectionMode == "TSAP")
+        return parseHex16(device.s7RemoteTsap).value_or(0x0101);
+    const std::uint16_t type = device.s7ConnectionType == "OP"         ? 2
+                               : device.s7ConnectionType == "S7_BASIC" ? 3
+                                                                       : 1;
+    return static_cast<std::uint16_t>((type << 8U) + device.s7Rack * 0x20 + device.s7Slot);
+}
+
+inline std::uint16_t localTsap(const DeviceDefinition& device) {
+    return device.s7ConnectionMode == "TSAP" ? parseHex16(device.s7LocalTsap).value_or(0x0100)
+                                             : 0x0100;
+}
+
+inline std::string jsonEscape(std::string_view value) {
+    static constexpr std::array<char, 16> digits{'0', '1', '2', '3', '4', '5', '6', '7',
+                                                 '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
+    std::string result;
+    result.reserve(value.size() + 8);
+    const auto continuation = [&value](std::size_t index) {
+        return index < value.size() && (static_cast<unsigned char>(value[index]) & 0xC0U) == 0x80U;
+    };
+    for (std::size_t index = 0; index < value.size();) {
+        const auto byte = static_cast<unsigned char>(value[index]);
+        if (byte == '\\' || byte == '"') {
+            result.push_back('\\');
+            result.push_back(static_cast<char>(byte));
+            ++index;
+            continue;
+        }
+        if (byte >= 0x20 && byte < 0x80) {
+            result.push_back(static_cast<char>(byte));
+            ++index;
+            continue;
+        }
+        std::size_t length = 0;
+        if (byte >= 0xC2 && byte <= 0xDF && continuation(index + 1))
+            length = 2;
+        else if (byte == 0xE0 && index + 2 < value.size() &&
+                 static_cast<unsigned char>(value[index + 1]) >= 0xA0 &&
+                 static_cast<unsigned char>(value[index + 1]) <= 0xBF && continuation(index + 2))
+            length = 3;
+        else if (((byte >= 0xE1 && byte <= 0xEC) || (byte >= 0xEE && byte <= 0xEF)) &&
+                 continuation(index + 1) && continuation(index + 2))
+            length = 3;
+        else if (byte == 0xED && index + 2 < value.size() &&
+                 static_cast<unsigned char>(value[index + 1]) >= 0x80 &&
+                 static_cast<unsigned char>(value[index + 1]) <= 0x9F && continuation(index + 2))
+            length = 3;
+        else if (byte == 0xF0 && index + 3 < value.size() &&
+                 static_cast<unsigned char>(value[index + 1]) >= 0x90 &&
+                 static_cast<unsigned char>(value[index + 1]) <= 0xBF && continuation(index + 2) &&
+                 continuation(index + 3))
+            length = 4;
+        else if (byte >= 0xF1 && byte <= 0xF3 && continuation(index + 1) &&
+                 continuation(index + 2) && continuation(index + 3))
+            length = 4;
+        else if (byte == 0xF4 && index + 3 < value.size() &&
+                 static_cast<unsigned char>(value[index + 1]) >= 0x80 &&
+                 static_cast<unsigned char>(value[index + 1]) <= 0x8F && continuation(index + 2) &&
+                 continuation(index + 3))
+            length = 4;
+        if (length != 0) {
+            result.append(value.substr(index, length));
+            index += length;
+            continue;
+        }
+        result += "\\u00";
+        result.push_back(digits[byte >> 4U]);
+        result.push_back(digits[byte & 0x0FU]);
+        ++index;
+    }
+    return result;
+}
+
+inline std::uint32_t be32(std::span<const std::uint8_t> bytes) {
+    return (static_cast<std::uint32_t>(bytes[0]) << 24U) |
+           (static_cast<std::uint32_t>(bytes[1]) << 16U) |
+           (static_cast<std::uint32_t>(bytes[2]) << 8U) | bytes[3];
+}
+
+inline std::uint64_t be64(std::span<const std::uint8_t> bytes) {
+    std::uint64_t result = 0;
+    for (std::size_t index = 0; index < 8; ++index)
+        result = (result << 8U) | bytes[index];
+    return result;
+}
+
+inline std::string decimalJson(double value, const ElementDefinition& element) {
+    if (element.decimals >= 0) {
+        const auto factor = std::pow(10.0, static_cast<double>(element.decimals));
+        value = std::round(value * factor) / factor;
+    }
+    std::ostringstream output;
+    if (element.decimals >= 0)
+        output << std::fixed << std::setprecision(element.decimals) << value;
+    else
+        output << std::setprecision(17) << value;
+    return output.str();
+}
+
+inline std::optional<std::string> decodeJson(std::span<const std::uint8_t> bytes,
+                                             const ElementDefinition& element) {
+    if (element.dataType == "BOOL") {
+        if (bytes.empty())
+            return std::nullopt;
+        const auto bit = static_cast<unsigned>(std::clamp<std::int64_t>(element.startBit, 0, 7));
+        return (bytes[0] & (1U << bit)) != 0 ? "1" : "0";
+    }
+    if ((element.dataType == "BYTE" || element.dataType == "UINT8") && !bytes.empty())
+        return std::to_string(bytes[0]);
+    if (element.dataType == "INT8" && !bytes.empty())
+        return std::to_string(static_cast<std::int8_t>(bytes[0]));
+    if ((element.dataType == "WORD" || element.dataType == "UINT16") && bytes.size() >= 2)
+        return std::to_string(be16(bytes, 0));
+    if (element.dataType == "INT16" && bytes.size() >= 2)
+        return std::to_string(static_cast<std::int16_t>(be16(bytes, 0)));
+    if ((element.dataType == "DWORD" || element.dataType == "UINT32") && bytes.size() >= 4)
+        return std::to_string(be32(bytes));
+    if (element.dataType == "INT32" && bytes.size() >= 4)
+        return std::to_string(static_cast<std::int32_t>(be32(bytes)));
+    if ((element.dataType == "REAL" || element.dataType == "FLOAT" ||
+         element.dataType == "FLOAT32") &&
+        bytes.size() >= 4)
+        return decimalJson(std::bit_cast<float>(be32(bytes)), element);
+    if (element.dataType == "LREAL" && bytes.size() >= 8)
+        return decimalJson(std::bit_cast<double>(be64(bytes)), element);
+    if (element.dataType == "STRING" && !bytes.empty()) {
+        std::string value(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        if (const auto zero = value.find('\0'); zero != std::string::npos)
+            value.resize(zero);
+        return "\"" + jsonEscape(value) + "\"";
+    }
+    return std::nullopt;
+}
+
+inline std::uint8_t areaCode(std::string_view area) {
+    return area == "DB" || area == "V" ? 0x84
+           : area == "MK"              ? 0x83
+           : area == "PA"              ? 0x82
+           : area == "PE"              ? 0x81
+           : area == "CT"              ? 0x1C
+           : area == "TM"              ? 0x1D
+                                       : 0;
+}
+
+inline std::uint16_t dbNumber(const ElementDefinition& element) {
+    return static_cast<std::uint16_t>(
+        std::clamp<std::int64_t>(element.area == "V" ? 1 : element.dbNumber, 0, 65535));
+}
+
+} // namespace detail
+
+class Session final : public ProtocolSession,
+                      public CommandCapabilitySession,
+                      public DeadlineCapabilitySession {
+  public:
+    Session(LinkDefinition link, std::string connectionId, std::string targetId,
+            std::vector<DeviceDefinition> devices)
+        : link_(std::move(link)), connectionId_(std::move(connectionId)),
+          targetId_(std::move(targetId)), devices_(std::move(devices)) {
+        for (const auto& device : devices_) {
+            devicesById_.emplace(device.id, &device);
+            devicesByCode_.emplace(device.code, &device);
+            queues_.try_emplace(device.id);
+        }
+        if (link_.mode == "TCP Client") {
+            for (const auto& device : devices_)
+                if (device.targetId == targetId_) {
+                    device_ = &device;
+                    break;
+                }
+        }
+    }
+
+    [[nodiscard]] std::vector<ProtocolAction> connected() override {
+        if (!device_)
+            return {};
+        std::vector<ProtocolAction> actions;
+        appendHandshake(actions);
+        return actions;
+    }
+
+    [[nodiscard]] std::vector<ProtocolAction> consume(const ProtocolInput& input) override {
+        std::vector<ProtocolAction> actions;
+        std::vector<std::uint8_t> bytes(input.bytes.begin(), input.bytes.end());
+        if (!device_ && link_.mode == "TCP Server") {
+            const auto registration = matchRegistration(bytes);
+            if (registration.conflict)
+                return {{.kind = ProtocolActionKind::Close,
+                         .connectionId = connectionId_,
+                         .reason = "s7_registration_conflict"}};
+            if (registration.device) {
+                device_ = registration.device;
+                appendHandshake(actions);
+                refreshOffline(actions);
+                bytes = std::move(registration.payload);
+                if (bytes.empty())
+                    return actions;
+            } else if (isHeartbeat(bytes)) {
+                refreshOffline(actions);
+                return actions;
+            }
+        } else if (isHeartbeat(bytes)) {
+            refreshOffline(actions);
+            return actions;
+        }
+        if (!device_)
+            return actions;
+
+        receiveBuffer_.insert(receiveBuffer_.end(), bytes.begin(), bytes.end());
+        if (receiveBuffer_.size() > kMaximumReceiveBuffer) {
+            receiveBuffer_.clear();
+            actions.push_back({.kind = ProtocolActionKind::Close,
+                               .connectionId = connectionId_,
+                               .reason = "s7_receive_buffer_overflow"});
+            return actions;
+        }
+        for (auto& frame : extractFrames()) {
+            auto next = consumeFrame(input, std::move(frame));
+            actions.insert(actions.end(), std::make_move_iterator(next.begin()),
+                           std::make_move_iterator(next.end()));
+        }
+        return actions;
+    }
+
+    [[nodiscard]] std::vector<ProtocolAction> disconnected(std::string_view reason) override {
+        std::vector<ProtocolAction> actions;
+        if (deadlineToken_ != 0)
+            actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
+                               .connectionId = connectionId_,
+                               .deadlineToken = deadlineToken_});
+        if (pollDeadlineToken_ != 0)
+            actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
+                               .connectionId = connectionId_,
+                               .deadlineToken = pollDeadlineToken_});
+        if (offlineDeadlineToken_ != 0)
+            actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
+                               .connectionId = connectionId_,
+                               .deadlineToken = offlineDeadlineToken_});
+        if (inflight_)
+            actions.push_back(failAction(*inflight_, reason));
+        if (discovery_) {
+            actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
+                               .connectionId = connectionId_,
+                               .deadlineToken = discovery_->deadlineToken});
+            actions.push_back({.kind = ProtocolActionKind::FailCommand,
+                               .connectionId = connectionId_,
+                               .commandId = discovery_->commandId,
+                               .reason = std::string(reason)});
+            discovery_.reset();
+        }
+        for (auto& [deviceId, queue] : queues_) {
+            (void)deviceId;
+            appendFailures(queue.highWrites, reason, actions);
+            appendFailures(queue.highReads, reason, actions);
+            appendFailures(queue.normalWrites, reason, actions);
+            appendFailures(queue.normalReads, reason, actions);
+        }
+        inflight_.reset();
+        receiveBuffer_.clear();
+        state_ = State::Closed;
+        pollDeadlineToken_ = 0;
+        offlineDeadlineToken_ = 0;
+        return actions;
+    }
+
+    [[nodiscard]] std::vector<ProtocolAction> execute(ProtocolCommand command) override {
+        if (command.kind == "discovery") {
+            if (link_.mode != "TCP Server")
+                return {{.kind = ProtocolActionKind::FailCommand,
+                         .connectionId = connectionId_,
+                         .commandId = std::move(command.id),
+                         .reason = "s7_discovery_requires_server"}};
+            if (device_)
+                return {{.kind = ProtocolActionKind::CompleteCommand,
+                         .connectionId = connectionId_,
+                         .deviceId = device_->id,
+                         .deviceCode = device_->code,
+                         .commandId = std::move(command.id),
+                         .reason = "discovery_already_registered"}};
+            if (discovery_)
+                return {{.kind = ProtocolActionKind::FailCommand,
+                         .connectionId = connectionId_,
+                         .commandId = std::move(command.id),
+                         .reason = "s7_discovery_busy"}};
+            if (command.payload.empty())
+                return {{.kind = ProtocolActionKind::FailCommand,
+                         .connectionId = connectionId_,
+                         .commandId = std::move(command.id),
+                         .reason = "s7_discovery_payload_empty"}};
+            const auto token = nextDeadlineToken_++;
+            const auto timeout = std::clamp(command.timeout, std::chrono::milliseconds(100),
+                                            std::chrono::milliseconds(60000));
+            discovery_ = Discovery{command.id, token};
+            return {{.kind = ProtocolActionKind::Send,
+                     .connectionId = connectionId_,
+                     .commandId = command.id,
+                     .bytes = std::move(command.payload)},
+                    {.kind = ProtocolActionKind::ScheduleDeadline,
+                     .connectionId = connectionId_,
+                     .commandId = command.id,
+                     .deadlineToken = token,
+                     .deadlineAfter = timeout}};
+        }
+        const auto* device = findDevice(command);
+        if (!device || device != device_)
+            return {{.kind = ProtocolActionKind::FailCommand,
+                     .connectionId = connectionId_,
+                     .deviceId = std::move(command.deviceId),
+                     .deviceCode = std::move(command.deviceCode),
+                     .commandId = std::move(command.id),
+                     .reason = "s7_device_offline"}};
+        const auto descriptor = requestDescriptor(command.payload);
+        if (!descriptor)
+            return {{.kind = ProtocolActionKind::FailCommand,
+                     .connectionId = connectionId_,
+                     .deviceId = device->id,
+                     .deviceCode = device->code,
+                     .commandId = std::move(command.id),
+                     .reason = "s7_command_frame_invalid"}};
+        if (descriptor->functionCode == kWriteFunction && command.readbackPayload.empty())
+            return {{.kind = ProtocolActionKind::FailCommand,
+                     .connectionId = connectionId_,
+                     .deviceId = device->id,
+                     .deviceCode = device->code,
+                     .commandId = std::move(command.id),
+                     .reason = "s7_write_readback_required"}};
+        auto& queue = queues_.at(device->id);
+        if (queue.size() >= kMaximumDeviceQueue)
+            return {{.kind = ProtocolActionKind::FailCommand,
+                     .connectionId = connectionId_,
+                     .deviceId = device->id,
+                     .deviceCode = device->code,
+                     .commandId = std::move(command.id),
+                     .reason = "s7_device_queue_full"}};
+        auto& target =
+            command.highPriority
+                ? (descriptor->functionCode == kWriteFunction ? queue.highWrites : queue.highReads)
+                : (descriptor->functionCode == kWriteFunction ? queue.normalWrites
+                                                              : queue.normalReads);
+        target.push_back(std::move(command));
+        return state_ == State::Ready ? dispatchNext() : std::vector<ProtocolAction>{};
+    }
+
+    [[nodiscard]] std::vector<ProtocolAction> deadline(std::uint64_t token) override {
+        if (discovery_ && token == discovery_->deadlineToken) {
+            auto failed = std::move(*discovery_);
+            discovery_.reset();
+            return {{.kind = ProtocolActionKind::FailCommand,
+                     .connectionId = connectionId_,
+                     .commandId = std::move(failed.commandId),
+                     .reason = "s7_discovery_window_empty"}};
+        }
+        if (token != 0 && token == offlineDeadlineToken_) {
+            offlineDeadlineToken_ = 0;
+            return {{.kind = ProtocolActionKind::Close,
+                     .connectionId = connectionId_,
+                     .reason = "s7_offline_timeout"}};
+        }
+        if (token != 0 && token == pollDeadlineToken_) {
+            pollDeadlineToken_ = 0;
+            std::vector<ProtocolAction> actions;
+            if (device_) {
+                auto& queue = queues_.at(device_->id);
+                if (queue.normalReads.empty()) {
+                    for (auto& command : pollCommands(*device_)) {
+                        if (queue.size() >= kMaximumDeviceQueue)
+                            break;
+                        queue.normalReads.push_back(std::move(command));
+                    }
+                }
+                schedulePoll(actions);
+            }
+            auto next = dispatchNext();
+            actions.insert(actions.end(), std::make_move_iterator(next.begin()),
+                           std::make_move_iterator(next.end()));
+            return actions;
+        }
+        if (token == 0 || token != deadlineToken_)
+            return {};
+        deadlineToken_ = 0;
+        if (state_ == State::WaitCotp || state_ == State::WaitSetup)
+            return {{.kind = ProtocolActionKind::Close,
+                     .connectionId = connectionId_,
+                     .reason = "s7_handshake_timeout"}};
+        if (!inflight_)
+            return {};
+        if (inflight_->phase == Phase::Write) {
+            inflight_->writeAckMissing = true;
+            return startReadback();
+        }
+        auto failed = std::move(*inflight_);
+        inflight_.reset();
+        std::vector<ProtocolAction> actions{failAction(failed, failed.phase == Phase::Readback
+                                                                   ? "s7_readback_timeout"
+                                                                   : "s7_response_timeout")};
+        appendNext(actions);
+        return actions;
+    }
+
+  private:
+    enum class State { AwaitRegistration, WaitCotp, WaitSetup, Ready, Closed };
+    enum class Phase { Read, Write, Readback };
+
+    struct DeviceQueues {
+        std::deque<ProtocolCommand> highWrites;
+        std::deque<ProtocolCommand> highReads;
+        std::deque<ProtocolCommand> normalWrites;
+        std::deque<ProtocolCommand> normalReads;
+
+        [[nodiscard]] std::size_t size() const noexcept {
+            return highWrites.size() + highReads.size() + normalWrites.size() + normalReads.size();
+        }
+    };
+
+    struct ReadItem {
+        std::uint8_t wordLength = 0;
+        std::uint16_t amount = 0;
+        std::uint16_t dbNumber = 0;
+        std::uint8_t area = 0;
+        std::uint32_t bitAddress = 0;
+    };
+
+    struct RequestDescriptor {
+        std::uint16_t pduReference = 0;
+        std::uint8_t functionCode = 0;
+        std::vector<ReadItem> items;
+    };
+
+    struct Inflight {
+        const DeviceDefinition* device = nullptr;
+        ProtocolCommand command;
+        RequestDescriptor request;
+        Phase phase = Phase::Read;
+        bool writeAckMissing = false;
+    };
+
+    struct RegistrationMatch {
+        const DeviceDefinition* device = nullptr;
+        std::vector<std::uint8_t> payload;
+        bool conflict = false;
+    };
+
+    struct Discovery {
+        std::string commandId;
+        std::uint64_t deadlineToken = 0;
+    };
+
+    static ProtocolAction bindAction(const DeviceDefinition& device) {
+        return {.kind = ProtocolActionKind::BindDevice,
+                .deviceId = device.id,
+                .deviceCode = device.code};
+    }
+
+    [[nodiscard]] RegistrationMatch
+    matchRegistration(const std::vector<std::uint8_t>& bytes) const {
+        RegistrationMatch result;
+        std::size_t length = 0;
+        for (const auto& device : devices_) {
+            if (device.registrationBytes.empty() ||
+                bytes.size() < device.registrationBytes.size() ||
+                !std::equal(device.registrationBytes.begin(), device.registrationBytes.end(),
+                            bytes.begin()))
+                continue;
+            if (result.device && device.registrationBytes.size() == length &&
+                device.id != result.device->id) {
+                result.conflict = true;
+                return result;
+            }
+            if (!result.device || device.registrationBytes.size() > length) {
+                result.device = &device;
+                length = device.registrationBytes.size();
+            }
+        }
+        if (result.device)
+            result.payload.assign(bytes.begin() + static_cast<std::ptrdiff_t>(length), bytes.end());
+        return result;
+    }
+
+    [[nodiscard]] bool isHeartbeat(const std::vector<std::uint8_t>& bytes) const {
+        if (device_)
+            return !device_->heartbeatBytes.empty() && bytes == device_->heartbeatBytes;
+        return std::any_of(devices_.begin(), devices_.end(), [&](const auto& device) {
+            return !device.heartbeatBytes.empty() && bytes == device.heartbeatBytes;
+        });
+    }
+
+    void appendHandshake(std::vector<ProtocolAction>& actions) {
+        if (!device_ || state_ == State::WaitCotp || state_ == State::WaitSetup ||
+            state_ == State::Ready)
+            return;
+        state_ = State::WaitCotp;
+        deadlineToken_ = nextDeadlineToken_++;
+        actions.push_back({.kind = ProtocolActionKind::Send,
+                           .connectionId = connectionId_,
+                           .deviceId = device_->id,
+                           .deviceCode = device_->code,
+                           .bytes = buildCotpRequest(*device_)});
+        actions.push_back({.kind = ProtocolActionKind::ScheduleDeadline,
+                           .connectionId = connectionId_,
+                           .deadlineToken = deadlineToken_,
+                           .deadlineAfter = kHandshakeTimeout});
+    }
+
+    [[nodiscard]] static std::vector<std::uint8_t>
+    buildCotpRequest(const DeviceDefinition& device) {
+        const auto local = detail::localTsap(device);
+        const auto remote = detail::remoteTsap(device);
+        return {0x03,
+                0x00,
+                0x00,
+                0x16,
+                0x11,
+                0xE0,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0x00,
+                0xC1,
+                0x02,
+                static_cast<std::uint8_t>(local >> 8U),
+                static_cast<std::uint8_t>(local),
+                0xC2,
+                0x02,
+                static_cast<std::uint8_t>(remote >> 8U),
+                static_cast<std::uint8_t>(remote),
+                0xC0,
+                0x01,
+                0x0A};
+    }
+
+    [[nodiscard]] std::vector<std::uint8_t> buildSetupRequest() {
+        const auto reference = nextPduReference_++;
+        if (nextPduReference_ == 0)
+            nextPduReference_ = 1;
+        return {0x03,
+                0x00,
+                0x00,
+                0x19,
+                0x02,
+                0xF0,
+                0x80,
+                0x32,
+                0x01,
+                0x00,
+                0x00,
+                static_cast<std::uint8_t>(reference >> 8U),
+                static_cast<std::uint8_t>(reference),
+                0x00,
+                0x08,
+                0x00,
+                0x00,
+                0xF0,
+                0x00,
+                0x00,
+                0x01,
+                0x00,
+                0x01,
+                0x01,
+                0xE0};
+    }
+
+    [[nodiscard]] std::vector<std::vector<std::uint8_t>> extractFrames() {
+        std::vector<std::vector<std::uint8_t>> frames;
+        while (receiveBuffer_.size() >= 4) {
+            if (receiveBuffer_[0] != 0x03 || receiveBuffer_[1] != 0x00) {
+                receiveBuffer_.erase(receiveBuffer_.begin());
+                continue;
+            }
+            const auto length = detail::be16(receiveBuffer_, 2);
+            if (length < 7 || length > negotiatedPduLength_ + 64) {
+                receiveBuffer_.erase(receiveBuffer_.begin());
+                continue;
+            }
+            if (receiveBuffer_.size() < length)
+                break;
+            frames.emplace_back(receiveBuffer_.begin(),
+                                receiveBuffer_.begin() + static_cast<std::ptrdiff_t>(length));
+            receiveBuffer_.erase(receiveBuffer_.begin(),
+                                 receiveBuffer_.begin() + static_cast<std::ptrdiff_t>(length));
+        }
+        return frames;
+    }
+
+    [[nodiscard]] std::vector<ProtocolAction> consumeFrame(const ProtocolInput& input,
+                                                           std::vector<std::uint8_t> frame) {
+        if (state_ == State::WaitCotp) {
+            if (frame.size() < 7 || frame[5] != 0xD0)
+                return {{.kind = ProtocolActionKind::Close,
+                         .connectionId = connectionId_,
+                         .reason = "s7_cotp_confirm_invalid"}};
+            std::vector<ProtocolAction> actions{{.kind = ProtocolActionKind::CancelDeadline,
+                                                 .connectionId = connectionId_,
+                                                 .deadlineToken = deadlineToken_}};
+            state_ = State::WaitSetup;
+            deadlineToken_ = nextDeadlineToken_++;
+            actions.push_back({.kind = ProtocolActionKind::Send,
+                               .connectionId = connectionId_,
+                               .deviceId = device_->id,
+                               .deviceCode = device_->code,
+                               .bytes = buildSetupRequest()});
+            actions.push_back({.kind = ProtocolActionKind::ScheduleDeadline,
+                               .connectionId = connectionId_,
+                               .deadlineToken = deadlineToken_,
+                               .deadlineAfter = kHandshakeTimeout});
+            refreshOffline(actions);
+            return actions;
+        }
+        if (state_ == State::WaitSetup) {
+            if (!validS7Frame(frame) || frame.size() < 27 || frame[19] != 0xF0)
+                return {{.kind = ProtocolActionKind::Close,
+                         .connectionId = connectionId_,
+                         .reason = "s7_setup_response_invalid"}};
+            negotiatedPduLength_ =
+                std::clamp<std::size_t>(detail::be16(frame, frame.size() - 2), 240, 4096);
+            std::vector<ProtocolAction> actions{{.kind = ProtocolActionKind::CancelDeadline,
+                                                 .connectionId = connectionId_,
+                                                 .deadlineToken = deadlineToken_}};
+            deadlineToken_ = 0;
+            state_ = State::Ready;
+            actions.push_back(bindAction(*device_));
+            if (discovery_) {
+                actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
+                                   .connectionId = connectionId_,
+                                   .deadlineToken = discovery_->deadlineToken});
+                actions.push_back({.kind = ProtocolActionKind::CompleteCommand,
+                                   .connectionId = connectionId_,
+                                   .deviceId = device_->id,
+                                   .deviceCode = device_->code,
+                                   .commandId = discovery_->commandId,
+                                   .reason = "discovery_device_ready"});
+                discovery_.reset();
+            }
+            schedulePoll(actions);
+            refreshOffline(actions);
+            appendNext(actions);
+            return actions;
+        }
+        if (state_ != State::Ready || !inflight_ || !validS7Frame(frame))
+            return {};
+        const auto pduReference = detail::be16(frame, 11);
+        const auto parameterLength = detail::be16(frame, 13);
+        const auto parameterOffset = frame[8] == 0x03 ? 19U : 17U;
+        if (pduReference != inflight_->request.pduReference || parameterLength == 0 ||
+            parameterOffset + parameterLength > frame.size() ||
+            frame[parameterOffset] != inflight_->request.functionCode)
+            return {};
+
+        std::vector<ProtocolAction> actions{{.kind = ProtocolActionKind::CancelDeadline,
+                                             .connectionId = connectionId_,
+                                             .deadlineToken = deadlineToken_}};
+        refreshOffline(actions);
+        deadlineToken_ = 0;
+        if (frame[17] != 0 || frame[18] != 0) {
+            auto failed = std::move(*inflight_);
+            inflight_.reset();
+            actions.push_back(failAction(failed, "s7_protocol_error"));
+            appendNext(actions);
+            return actions;
+        }
+        if (inflight_->phase == Phase::Write) {
+            auto readback = startReadback();
+            actions.insert(actions.end(), std::make_move_iterator(readback.begin()),
+                           std::make_move_iterator(readback.end()));
+            return actions;
+        }
+        const auto payloads = readResponsePayloads(frame, parameterOffset, parameterLength);
+        if (!payloads) {
+            auto failed = std::move(*inflight_);
+            inflight_.reset();
+            actions.push_back(failAction(failed, "s7_read_response_invalid"));
+            appendNext(actions);
+            return actions;
+        }
+        actions.push_back(parsedAction(input, *inflight_->device, frame, *payloads,
+                                       inflight_->request, inflight_->command.id));
+        if (inflight_->phase == Phase::Readback &&
+            !inflight_->command.expectedReadbackData.empty()) {
+            std::vector<std::uint8_t> combined;
+            for (const auto& payload : *payloads)
+                combined.insert(combined.end(), payload.begin(), payload.end());
+            if (combined != inflight_->command.expectedReadbackData) {
+                auto failed = std::move(*inflight_);
+                inflight_.reset();
+                actions.push_back(failAction(failed, "s7_readback_mismatch"));
+                appendNext(actions);
+                return actions;
+            }
+        }
+        auto completed = std::move(*inflight_);
+        inflight_.reset();
+        actions.push_back({.kind = ProtocolActionKind::CompleteCommand,
+                           .connectionId = connectionId_,
+                           .deviceId = completed.device->id,
+                           .deviceCode = completed.device->code,
+                           .commandId = completed.command.id,
+                           .reason = completed.writeAckMissing ? "write_ack_missing" : ""});
+        appendNext(actions);
+        return actions;
+    }
+
+    [[nodiscard]] static bool validS7Frame(std::span<const std::uint8_t> frame) noexcept {
+        return frame.size() >= 19 && frame[0] == 0x03 && frame[1] == 0x00 && frame[4] == 0x02 &&
+               frame[5] == 0xF0 && frame[6] == 0x80 && frame[7] == 0x32;
+    }
+
+    [[nodiscard]] static std::optional<RequestDescriptor>
+    requestDescriptor(std::span<const std::uint8_t> frame) {
+        if (!validS7Frame(frame) || frame[8] != 0x01 || frame.size() < 19)
+            return std::nullopt;
+        const auto parameterLength = detail::be16(frame, 13);
+        if (parameterLength == 0 || 17 + parameterLength > frame.size())
+            return std::nullopt;
+        RequestDescriptor result;
+        result.pduReference = detail::be16(frame, 11);
+        result.functionCode = frame[17];
+        if (result.functionCode != kReadFunction && result.functionCode != kWriteFunction)
+            return std::nullopt;
+        if (result.functionCode == kReadFunction) {
+            const auto count = frame[18];
+            if (parameterLength != static_cast<std::size_t>(2 + count * 12))
+                return std::nullopt;
+            for (std::size_t index = 0; index < count; ++index) {
+                const auto offset = 19 + index * 12;
+                if (frame[offset] != 0x12 || frame[offset + 1] != 0x0A || frame[offset + 2] != 0x10)
+                    return std::nullopt;
+                result.items.push_back({.wordLength = frame[offset + 3],
+                                        .amount = detail::be16(frame, offset + 4),
+                                        .dbNumber = detail::be16(frame, offset + 6),
+                                        .area = frame[offset + 8],
+                                        .bitAddress = detail::be24(frame, offset + 9)});
+            }
+        }
+        return result;
+    }
+
+    void schedulePoll(std::vector<ProtocolAction>& actions) {
+        if (!device_ || device_->elements.empty() || pollDeadlineToken_ != 0)
+            return;
+        pollDeadlineToken_ = nextDeadlineToken_++;
+        actions.push_back({.kind = ProtocolActionKind::ScheduleDeadline,
+                           .connectionId = connectionId_,
+                           .deviceId = device_->id,
+                           .deviceCode = device_->code,
+                           .deadlineToken = pollDeadlineToken_,
+                           .deadlineAfter = std::chrono::seconds(
+                               std::clamp<std::int64_t>(device_->pollInterval, 1, 86400))});
+    }
+
+    void refreshOffline(std::vector<ProtocolAction>& actions) {
+        if (link_.mode != "TCP Server" || !device_)
+            return;
+        if (offlineDeadlineToken_ != 0)
+            actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
+                               .connectionId = connectionId_,
+                               .deadlineToken = offlineDeadlineToken_});
+        offlineDeadlineToken_ = nextDeadlineToken_++;
+        actions.push_back({.kind = ProtocolActionKind::ScheduleDeadline,
+                           .connectionId = connectionId_,
+                           .deadlineToken = offlineDeadlineToken_,
+                           .deadlineAfter = std::chrono::seconds(
+                               std::clamp<std::int64_t>(device_->onlineTimeout, 1, 86400))});
+    }
+
+    [[nodiscard]] std::vector<ProtocolCommand> pollCommands(const DeviceDefinition& device) {
+        struct ReadSpec {
+            std::uint8_t wordLength = 0;
+            std::uint16_t amount = 0;
+            std::uint16_t db = 0;
+            std::uint8_t area = 0;
+            std::uint32_t bitAddress = 0;
+            std::size_t responseBytes = 0;
+        };
+        std::vector<ReadSpec> specs;
+        specs.reserve(device.elements.size());
+        for (const auto& element : device.elements) {
+            const auto area = detail::areaCode(element.area);
+            if (area == 0)
+                continue;
+            const auto timerOrCounter = element.area == "TM" || element.area == "CT";
+            const auto size =
+                static_cast<std::size_t>(std::clamp<std::int64_t>(element.size, 1, 65535));
+            specs.push_back({.wordLength = static_cast<std::uint8_t>(element.area == "CT"   ? 0x1C
+                                                                     : element.area == "TM" ? 0x1D
+                                                                                            : 0x02),
+                             .amount = static_cast<std::uint16_t>(
+                                 timerOrCounter ? std::max<std::size_t>(1, (size + 1) / 2) : size),
+                             .db = detail::dbNumber(element),
+                             .area = area,
+                             .bitAddress = static_cast<std::uint32_t>(std::clamp<std::int64_t>(
+                                 timerOrCounter ? element.start : element.start * 8, 0, 0xFFFFFF)),
+                             .responseBytes = size});
+        }
+
+        std::vector<ProtocolCommand> commands;
+        std::vector<ReadSpec> batch;
+        std::size_t estimatedResponse = 21;
+        const auto flush = [&]() {
+            if (batch.empty())
+                return;
+            auto reference = nextPduReference_++;
+            if (nextPduReference_ == 0)
+                nextPduReference_ = 1;
+            const auto parameterLength = static_cast<std::uint16_t>(2 + batch.size() * 12);
+            const auto totalLength = static_cast<std::uint16_t>(17 + parameterLength);
+            std::vector<std::uint8_t> payload{0x03,
+                                              0x00,
+                                              static_cast<std::uint8_t>(totalLength >> 8U),
+                                              static_cast<std::uint8_t>(totalLength),
+                                              0x02,
+                                              0xF0,
+                                              0x80,
+                                              0x32,
+                                              0x01,
+                                              0x00,
+                                              0x00,
+                                              static_cast<std::uint8_t>(reference >> 8U),
+                                              static_cast<std::uint8_t>(reference),
+                                              static_cast<std::uint8_t>(parameterLength >> 8U),
+                                              static_cast<std::uint8_t>(parameterLength),
+                                              0x00,
+                                              0x00,
+                                              kReadFunction,
+                                              static_cast<std::uint8_t>(batch.size())};
+            for (const auto& spec : batch) {
+                payload.insert(payload.end(), {0x12, 0x0A, 0x10, spec.wordLength,
+                                               static_cast<std::uint8_t>(spec.amount >> 8U),
+                                               static_cast<std::uint8_t>(spec.amount),
+                                               static_cast<std::uint8_t>(spec.db >> 8U),
+                                               static_cast<std::uint8_t>(spec.db), spec.area,
+                                               static_cast<std::uint8_t>(spec.bitAddress >> 16U),
+                                               static_cast<std::uint8_t>(spec.bitAddress >> 8U),
+                                               static_cast<std::uint8_t>(spec.bitAddress)});
+            }
+            commands.push_back({.deviceId = device.id,
+                                .deviceCode = device.code,
+                                .kind = "poll",
+                                .payload = std::move(payload),
+                                .highPriority = false,
+                                .timeout = std::chrono::seconds(3)});
+            batch.clear();
+            estimatedResponse = 21;
+        };
+        for (const auto& spec : specs) {
+            const auto nextRequest = 19 + (batch.size() + 1) * 12;
+            const auto padded = spec.responseBytes + (spec.responseBytes & 1U);
+            const auto nextResponse = estimatedResponse + 4 + padded;
+            if (!batch.empty() && (nextRequest > negotiatedPduLength_ + 7 ||
+                                   nextResponse > negotiatedPduLength_ + 7 || batch.size() >= 20))
+                flush();
+            batch.push_back(spec);
+            estimatedResponse += 4 + padded;
+        }
+        flush();
+        return commands;
+    }
+
+    [[nodiscard]] static std::optional<std::vector<std::vector<std::uint8_t>>>
+    readResponsePayloads(std::span<const std::uint8_t> frame, std::size_t parameterOffset,
+                         std::size_t parameterLength) {
+        if (frame[parameterOffset] != kReadFunction || parameterLength < 2)
+            return std::nullopt;
+        const auto count = frame[parameterOffset + 1];
+        std::size_t offset = parameterOffset + parameterLength;
+        std::vector<std::vector<std::uint8_t>> result;
+        result.reserve(count);
+        for (std::size_t index = 0; index < count; ++index) {
+            if (offset + 4 > frame.size())
+                return std::nullopt;
+            if (frame[offset] != 0xFF)
+                return std::nullopt;
+            const auto bitLength = detail::be16(frame, offset + 2);
+            const auto byteLength = static_cast<std::size_t>((bitLength + 7U) / 8U);
+            offset += 4;
+            if (offset + byteLength > frame.size())
+                return std::nullopt;
+            result.emplace_back(frame.begin() + static_cast<std::ptrdiff_t>(offset),
+                                frame.begin() + static_cast<std::ptrdiff_t>(offset + byteLength));
+            offset += byteLength;
+            if ((byteLength & 1U) != 0 && index + 1 < count)
+                ++offset;
+        }
+        return result;
+    }
+
+    [[nodiscard]] std::vector<ProtocolAction> dispatchNext() {
+        if (state_ != State::Ready || inflight_ || !device_)
+            return {};
+        auto& queue = queues_.at(device_->id);
+        ProtocolCommand command;
+        if (!queue.highWrites.empty()) {
+            command = std::move(queue.highWrites.front());
+            queue.highWrites.pop_front();
+        } else if (!queue.highReads.empty()) {
+            command = std::move(queue.highReads.front());
+            queue.highReads.pop_front();
+        } else if (!queue.normalWrites.empty()) {
+            command = std::move(queue.normalWrites.front());
+            queue.normalWrites.pop_front();
+        } else if (!queue.normalReads.empty()) {
+            command = std::move(queue.normalReads.front());
+            queue.normalReads.pop_front();
+        } else {
+            return {};
+        }
+        const auto descriptor = requestDescriptor(command.payload);
+        if (!descriptor)
+            return {};
+        const auto timeout = std::clamp(command.timeout, std::chrono::milliseconds(100),
+                                        std::chrono::milliseconds(60000));
+        command.timeout = timeout;
+        inflight_ = Inflight{
+            device_, std::move(command), *descriptor,
+            descriptor->functionCode == kWriteFunction ? Phase::Write : Phase::Read, false};
+        deadlineToken_ = nextDeadlineToken_++;
+        return {{.kind = ProtocolActionKind::Send,
+                 .connectionId = connectionId_,
+                 .deviceId = device_->id,
+                 .deviceCode = device_->code,
+                 .commandId = inflight_->command.id,
+                 .bytes = inflight_->command.payload},
+                {.kind = ProtocolActionKind::ScheduleDeadline,
+                 .connectionId = connectionId_,
+                 .commandId = inflight_->command.id,
+                 .deadlineToken = deadlineToken_,
+                 .deadlineAfter = timeout}};
+    }
+
+    [[nodiscard]] std::vector<ProtocolAction> startReadback() {
+        if (!inflight_)
+            return {};
+        const auto descriptor = requestDescriptor(inflight_->command.readbackPayload);
+        if (!descriptor || descriptor->functionCode != kReadFunction) {
+            auto failed = std::move(*inflight_);
+            inflight_.reset();
+            std::vector<ProtocolAction> actions{failAction(failed, "s7_readback_frame_invalid")};
+            appendNext(actions);
+            return actions;
+        }
+        inflight_->request = *descriptor;
+        inflight_->phase = Phase::Readback;
+        deadlineToken_ = nextDeadlineToken_++;
+        return {{.kind = ProtocolActionKind::Send,
+                 .connectionId = connectionId_,
+                 .deviceId = inflight_->device->id,
+                 .deviceCode = inflight_->device->code,
+                 .commandId = inflight_->command.id,
+                 .bytes = inflight_->command.readbackPayload},
+                {.kind = ProtocolActionKind::ScheduleDeadline,
+                 .connectionId = connectionId_,
+                 .commandId = inflight_->command.id,
+                 .deadlineToken = deadlineToken_,
+                 .deadlineAfter = inflight_->command.timeout}};
+    }
+
+    void appendNext(std::vector<ProtocolAction>& actions) {
+        auto next = dispatchNext();
+        actions.insert(actions.end(), std::make_move_iterator(next.begin()),
+                       std::make_move_iterator(next.end()));
+    }
+
+    [[nodiscard]] static ProtocolAction failAction(const Inflight& inflight,
+                                                   std::string_view reason) {
+        return {.kind = ProtocolActionKind::FailCommand,
+                .deviceId = inflight.device->id,
+                .deviceCode = inflight.device->code,
+                .commandId = inflight.command.id,
+                .reason = std::string(reason)};
+    }
+
+    static void appendFailures(std::deque<ProtocolCommand>& queue, std::string_view reason,
+                               std::vector<ProtocolAction>& actions) {
+        while (!queue.empty()) {
+            auto command = std::move(queue.front());
+            queue.pop_front();
+            actions.push_back({.kind = ProtocolActionKind::FailCommand,
+                               .deviceId = std::move(command.deviceId),
+                               .deviceCode = std::move(command.deviceCode),
+                               .commandId = std::move(command.id),
+                               .reason = std::string(reason)});
+        }
+    }
+
+    [[nodiscard]] const DeviceDefinition*
+    findDevice(const ProtocolCommand& command) const noexcept {
+        if (!command.deviceId.empty()) {
+            const auto current = devicesById_.find(command.deviceId);
+            if (current != devicesById_.end())
+                return current->second;
+        }
+        const auto current = devicesByCode_.find(command.deviceCode);
+        return current == devicesByCode_.end() ? nullptr : current->second;
+    }
+
+    [[nodiscard]] ProtocolAction
+    parsedAction(const ProtocolInput& input, const DeviceDefinition& device,
+                 const std::vector<std::uint8_t>& frame,
+                 const std::vector<std::vector<std::uint8_t>>& payloads,
+                 const RequestDescriptor& request, std::string_view causationId) const {
+        bridge::ParsedDeviceMessage message;
+        message.messageId = bridge::nextMessageId();
+        message.causationId =
+            causationId.empty() ? std::string(input.messageId) : std::string(causationId);
+        message.linkId = link_.id;
+        message.deviceId = device.id;
+        message.deviceCode = device.code;
+        message.protocol = "S7";
+        message.connectionId = connectionId_;
+        message.occurredAtMs = input.receivedAtMs;
+        message.observedAtMs = input.receivedAtMs;
+        message.storageInterval = std::clamp<std::int64_t>(device.storageInterval, 1, 86400);
+        message.onlineWindowMs = std::clamp<std::int64_t>(device.pollInterval, 1, 86400) * 3000;
+        message.source = "query";
+        message.rawPayloads = {frame};
+        message.valuesJson = valuesJson(device, payloads, request);
+        return {.kind = ProtocolActionKind::PublishParsed,
+                .connectionId = connectionId_,
+                .deviceId = device.id,
+                .deviceCode = device.code,
+                .parsed = std::move(message)};
+    }
+
+    [[nodiscard]] static std::string
+    valuesJson(const DeviceDefinition& device,
+               const std::vector<std::vector<std::uint8_t>>& payloads,
+               const RequestDescriptor& request) {
+        std::ostringstream json;
+        json << "{\"function_code\":\"READ_VAR\",\"values\":{";
+        bool first = true;
+        for (std::size_t itemIndex = 0;
+             itemIndex < request.items.size() && itemIndex < payloads.size(); ++itemIndex) {
+            const auto& item = request.items[itemIndex];
+            const auto& payload = payloads[itemIndex];
+            for (const auto& element : device.elements) {
+                const auto timerOrCounter = element.area == "TM" || element.area == "CT";
+                const auto elementAddress =
+                    static_cast<std::uint32_t>(timerOrCounter ? element.start : element.start * 8);
+                if (!matchesArea(element, item) || elementAddress < item.bitAddress)
+                    continue;
+                const auto byteOffset =
+                    timerOrCounter ? static_cast<std::size_t>(elementAddress - item.bitAddress) * 2
+                                   : static_cast<std::size_t>(elementAddress - item.bitAddress) / 8;
+                const auto width =
+                    static_cast<std::size_t>(std::max<std::int64_t>(1, element.size));
+                if (byteOffset + width > payload.size())
+                    continue;
+                const auto value = detail::decodeJson(
+                    std::span<const std::uint8_t>(payload).subspan(byteOffset, width), element);
+                if (!value)
+                    continue;
+                if (!first)
+                    json << ',';
+                first = false;
+                json << '\"' << detail::jsonEscape(element.id) << "\":{\"name\":\""
+                     << detail::jsonEscape(element.name) << "\",\"value\":" << *value
+                     << ",\"unit\":\"" << detail::jsonEscape(element.unit) << "\"}";
+            }
+        }
+        json << "}}";
+        return json.str();
+    }
+
+    [[nodiscard]] static bool matchesArea(const ElementDefinition& element,
+                                          const ReadItem& item) noexcept {
+        const auto expectedArea = detail::areaCode(element.area);
+        return expectedArea == item.area &&
+               (item.area != 0x84 || detail::dbNumber(element) == item.dbNumber);
+    }
+
+    static constexpr std::uint8_t kReadFunction = 0x04;
+    static constexpr std::uint8_t kWriteFunction = 0x05;
+    static constexpr std::size_t kMaximumReceiveBuffer = 256 * 1024;
+    static constexpr std::size_t kMaximumDeviceQueue = 256;
+    static constexpr auto kHandshakeTimeout = std::chrono::seconds(5);
+
+    LinkDefinition link_;
+    std::string connectionId_;
+    std::string targetId_;
+    std::vector<DeviceDefinition> devices_;
+    std::map<std::string, const DeviceDefinition*, std::less<>> devicesById_;
+    std::map<std::string, const DeviceDefinition*, std::less<>> devicesByCode_;
+    std::map<std::string, DeviceQueues, std::less<>> queues_;
+    const DeviceDefinition* device_ = nullptr;
+    State state_ = State::AwaitRegistration;
+    std::vector<std::uint8_t> receiveBuffer_;
+    std::optional<Inflight> inflight_;
+    std::optional<Discovery> discovery_;
+    std::size_t negotiatedPduLength_ = 480;
+    std::uint16_t nextPduReference_ = 1;
+    std::uint64_t deadlineToken_ = 0;
+    std::uint64_t pollDeadlineToken_ = 0;
+    std::uint64_t offlineDeadlineToken_ = 0;
+    std::uint64_t nextDeadlineToken_ = 1;
+};
+
+class Runtime final : public ProtocolRuntime {
+  public:
+    [[nodiscard]] std::string_view protocol() const noexcept override { return "S7"; }
+
+    [[nodiscard]] ProtocolCapabilities capabilities() const noexcept override {
+        return ProtocolCapability::TcpServer | ProtocolCapability::TcpClient |
+               ProtocolCapability::Registration | ProtocolCapability::Heartbeat |
+               ProtocolCapability::Polling | ProtocolCapability::Discovery |
+               ProtocolCapability::Commands;
+    }
+
+    [[nodiscard]] std::unique_ptr<ProtocolSession>
+    createSession(const LinkDefinition& link, std::string_view connectionId,
+                  std::string_view targetId, const RuntimeSnapshot& snapshot) const override {
+        std::vector<DeviceDefinition> devices;
+        for (const auto& device : snapshot.devices)
+            if (device.linkId == link.id && device.protocol == "S7")
+                devices.push_back(device);
+        return std::make_unique<Session>(link, std::string(connectionId), std::string(targetId),
+                                         std::move(devices));
+    }
+};
+
+} // namespace service::southbridge::s7

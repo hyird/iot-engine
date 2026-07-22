@@ -13,7 +13,10 @@
 #include <string_view>
 #include <vector>
 
+#include <thread>
+
 #include <asio.hpp>
+#include <ruvia/core/OneShot.h>
 #include <ruvia/web/db/Db.h>
 
 #include "service/modules/northbridge/queue/config_event.publisher.h"
@@ -23,6 +26,58 @@
 #include "service/modules/northbridge/link/link.types.h"
 
 namespace service::link {
+
+// 北桥自持的异步 HTTP（出站）worker：拥有自己的 io_context/线程（属于北桥，与南桥完全独立，
+// 不共享 io_context、不破坏南北向边界）。全异步 socket（sans-io，HTTP 报文自解析），worker
+// 协程经 OneShot 桥接，从不阻塞 ruvia worker。一个常驻 io 线程（全程复用，非 per-request）。
+class OutboundHttp {
+  public:
+    OutboundHttp() : work_(asio::make_work_guard(io_)), thread_([this] { io_.run(); }) {}
+    ~OutboundHttp() {
+        work_.reset();
+        io_.stop();
+        if (thread_.joinable())
+            thread_.join();
+    }
+    OutboundHttp(const OutboundHttp&) = delete;
+    OutboundHttp& operator=(const OutboundHttp&) = delete;
+
+    // 全异步 GET；完成时（在自有 io 线程上）回调 onDone(响应原文；失败为空串)。
+    void get(std::string host, std::string port, std::string request,
+             std::function<void(std::string)> onDone) {
+        asio::co_spawn(
+            io_,
+            [host = std::move(host), port = std::move(port),
+             request = std::move(request)]() -> asio::awaitable<std::string> {
+                auto executor = co_await asio::this_coro::executor;
+                asio::ip::tcp::resolver resolver(executor);
+                asio::ip::tcp::socket socket(executor);
+                const auto endpoints =
+                    co_await resolver.async_resolve(host, port, asio::use_awaitable);
+                co_await asio::async_connect(socket, endpoints, asio::use_awaitable);
+                co_await asio::async_write(socket, asio::buffer(request), asio::use_awaitable);
+                std::string response;
+                std::array<char, 4096> buffer{};
+                for (;;) {
+                    std::error_code readError;
+                    const auto size = co_await socket.async_read_some(
+                        asio::buffer(buffer), asio::redirect_error(asio::use_awaitable, readError));
+                    if (readError || size == 0)
+                        break;
+                    response.append(buffer.data(), size);
+                }
+                co_return response;
+            },
+            [onDone = std::move(onDone)](std::exception_ptr error, std::string response) {
+                onDone(error ? std::string{} : std::move(response));
+            });
+    }
+
+  private:
+    asio::io_context io_;
+    asio::executor_work_guard<asio::io_context::executor_type> work_;
+    std::thread thread_;
+};
 
 class LinkService {
   public:
@@ -51,7 +106,7 @@ class LinkService {
         appendFilter(where, params, "status", status);
 
         const auto countRows =
-            co_await c.db().query("SELECT COUNT(*) FROM iot_link" + where, params);
+            co_await c.db().query("SELECT COUNT(*) FROM link" + where, params);
         const auto total = toInt(countRows.rows().front()[0].text());
         auto listParams = params;
         listParams.emplace_back(pageSize);
@@ -60,7 +115,7 @@ class LinkService {
         const auto offsetIndex = listParams.size();
         const auto rows = co_await c.db().query(
             "SELECT id::text, name, mode, protocol, ip, port, status, created_by::text, "
-            "created_at::text, updated_at::text FROM iot_link" +
+            "created_at::text, updated_at::text FROM link" +
                 where + " ORDER BY id DESC LIMIT $" + std::to_string(limitIndex) + " OFFSET $" +
                 std::to_string(offsetIndex),
             listParams);
@@ -83,7 +138,7 @@ class LinkService {
         const auto rows = co_await c.db().query(R"sql(
 SELECT id::text, name, mode, protocol, ip, port, status, created_by::text,
        created_at::text, updated_at::text
-FROM iot_link WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
+FROM link WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
                                                 service::common::dbParams(id));
         if (rows.rows().empty())
             service::common::fail(15001, "链路不存在", 404);
@@ -94,7 +149,7 @@ FROM iot_link WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
 
     ruvia::Task<ruvia::List<LinkOptionDto>> options(ruvia::Context& c) {
         const auto rows = co_await c.db().query(
-            "SELECT id::text, name, mode, protocol FROM iot_link WHERE deleted_at IS NULL AND "
+            "SELECT id::text, name, mode, protocol FROM link WHERE deleted_at IS NULL AND "
             "status = 'enabled' ORDER BY name");
         ruvia::List<LinkOptionDto> result(c.resource());
         for (const auto& row : rows.rows()) {
@@ -122,17 +177,31 @@ FROM iot_link WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
         return result;
     }
 
-    std::string publicIp() {
+    // 全异步：公网 IP 查询走自建异步 HTTP worker（全异步 socket），OneShot 桥回，不阻塞 worker。
+    // 命中缓存直接返回（5 分钟）。
+    ruvia::Task<std::string> publicIp(ruvia::Context& c) {
+        {
+            std::lock_guard lock(publicIpMutex_);
+            const auto now = std::chrono::steady_clock::now();
+            if (!cachedPublicIp_.empty() && now - publicIpCachedAt_ < std::chrono::minutes(5))
+                co_return cachedPublicIp_;
+        }
+        auto [completion, receiver] = ruvia::makeOneShot<std::string>(c.worker());
+        auto shared = std::make_shared<ruvia::OneShotCompletion<std::string>>(std::move(completion));
+        http_.get("ip.sb", "80",
+                  "GET / HTTP/1.1\r\nHost: ip.sb\r\nUser-Agent: curl/8.0\r\n"
+                  "Accept: text/plain\r\nConnection: close\r\n\r\n",
+                  [shared](std::string response) {
+                      (void)shared->complete(parsePublicIp(response));
+                  });
+        const auto result = co_await receiver.wait();
+        const std::string resolved = result.value() != nullptr ? *result.value() : std::string{};
         std::lock_guard lock(publicIpMutex_);
-        const auto now = std::chrono::steady_clock::now();
-        if (!cachedPublicIp_.empty() && now - publicIpCachedAt_ < std::chrono::minutes(5))
-            return cachedPublicIp_;
-        const auto resolved = fetchPublicIp();
         if (!resolved.empty()) {
             cachedPublicIp_ = resolved;
-            publicIpCachedAt_ = now;
+            publicIpCachedAt_ = std::chrono::steady_clock::now();
         }
-        return cachedPublicIp_;
+        co_return cachedPublicIp_;
     }
 
     ruvia::Task<void> create(ruvia::Context& c, const SaveLinkBody& body) {
@@ -149,7 +218,7 @@ FROM iot_link WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
         const auto targetsJson = serializeTargets(targets);
         const auto id = service::common::nextUuidV7();
         (void)co_await c.db().execute(R"sql(
-INSERT INTO iot_link(id, name, mode, protocol, ip, port, targets, status, created_by)
+INSERT INTO link(id, name, mode, protocol, ip, port, targets, status, created_by)
 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8, $9))sql",
                                       service::common::dbParams(id, name, mode, protocol, ip, port,
                                                                 targetsJson, status,
@@ -159,7 +228,7 @@ VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8, $9))sql",
 
     ruvia::Task<void> update(ruvia::Context& c, std::string_view id, const SaveLinkBody& body) {
         const auto rows = co_await c.db().query(
-            "SELECT mode, protocol, created_by FROM iot_link WHERE id = $1 AND deleted_at IS "
+            "SELECT mode, protocol, created_by FROM link WHERE id = $1 AND deleted_at IS "
             "NULL LIMIT 1",
             service::common::dbParams(id));
         if (rows.rows().empty())
@@ -180,7 +249,7 @@ VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8, $9))sql",
         const auto targetsJson = serializeTargets(targets);
         (void)co_await c.db().execute(
             R"sql(
-UPDATE iot_link
+UPDATE link
 SET name = $1, ip = $2, port = $3, targets = $4::jsonb, status = $5, updated_at = NOW()
 WHERE id = $6)sql",
             service::common::dbParams(name, ip, port, targetsJson, status, id));
@@ -189,13 +258,19 @@ WHERE id = $6)sql",
 
     ruvia::Task<void> remove(ruvia::Context& c, std::string_view id) {
         const auto rows = co_await c.db().query(
-            "SELECT created_by FROM iot_link WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
+            "SELECT created_by FROM link WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
             service::common::dbParams(id));
         if (rows.rows().empty())
             service::common::fail(15001, "链路不存在", 404);
         co_await requireOwner(c, rows.rows().front()[0].text());
+        const auto used = co_await c.db().query(
+            "SELECT EXISTS (SELECT 1 FROM device WHERE link_id = $1::uuid "
+            "AND deleted_at IS NULL)",
+            service::common::dbParams(id));
+        if (used.rows().front()[0].text() == "t")
+            service::common::fail(15008, "链路已被设备使用，请先删除关联设备", 409);
         (void)co_await c.db().execute(
-            "UPDATE iot_link SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1",
+            "UPDATE link SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1",
             service::common::dbParams(id));
         co_await service::bridge::publishConfigEvent(c, "link", "deleted", id);
     }
@@ -226,23 +301,14 @@ WHERE id = $6)sql",
         return static_cast<ruvia::Int64>(std::stoll(std::string(value)));
     }
 
-    static std::string fetchPublicIp() {
-        asio::ip::tcp::iostream stream;
-        stream.expires_after(std::chrono::seconds(3));
-        stream.connect("ip.sb", "80");
-        if (!stream)
+    // sans-io：从 HTTP 响应原文解析公网 IP（校验 200、取 body、trim、字符白名单）。
+    static std::string parsePublicIp(const std::string& response) {
+        const auto statusEnd = response.find("\r\n");
+        const auto headerEnd = response.find("\r\n\r\n");
+        if (statusEnd == std::string::npos || headerEnd == std::string::npos ||
+            response.substr(0, statusEnd).find(" 200 ") == std::string::npos)
             return {};
-        stream << "GET / HTTP/1.1\r\nHost: ip.sb\r\nUser-Agent: curl/8.0\r\n"
-                  "Accept: text/plain\r\nConnection: close\r\n\r\n"
-               << std::flush;
-        std::string statusLine;
-        std::getline(stream, statusLine);
-        if (statusLine.find(" 200 ") == std::string::npos)
-            return {};
-        std::string header;
-        while (std::getline(stream, header) && header != "\r") {
-        }
-        std::string value{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+        std::string value = response.substr(headerEnd + 4);
         const auto first = value.find_first_not_of(" \t\r\n");
         if (first == std::string::npos)
             return {};
@@ -309,8 +375,8 @@ WHERE id = $6)sql",
                                                         const RuntimeStatus& runtime) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT target->>'id', target->>'name', target->>'ip', target->>'port', target->>'status'
-FROM iot_link, jsonb_array_elements(targets) WITH ORDINALITY AS value(target, position)
-WHERE iot_link.id = $1 ORDER BY position)sql",
+FROM link, jsonb_array_elements(targets) WITH ORDINALITY AS value(target, position)
+WHERE link.id = $1 ORDER BY position)sql",
                                                 service::common::dbParams(id));
         ruvia::List<LinkTargetDto> result(c.resource());
         for (const auto& row : rows.rows()) {
@@ -332,20 +398,89 @@ WHERE iot_link.id = $1 ORDER BY position)sql",
 
     static ruvia::Task<RuntimeStatus> loadRuntimeStatus(ruvia::Context& c, std::string_view id) {
         RuntimeStatus status;
-        const auto key = "iot:state:link:" + std::string(id);
-        const std::array<std::string_view, 2> args{"HGETALL", key};
         try {
-            const auto reply = co_await c.redis().command(args);
-            if (reply.kind() != ruvia::RedisValue::Kind::kArray)
-                co_return status;
-            const auto values = reply.array();
-            for (std::size_t index = 0; index + 1 < values.size(); index += 2) {
-                if (values[index].kind() != ruvia::RedisValue::Kind::kString ||
-                    values[index + 1].kind() != ruvia::RedisValue::Kind::kString)
+            const auto pattern = "iot:state:link:" + std::string(id) + ":worker:*";
+            std::string cursor = "0";
+            std::vector<std::string> keys;
+            do {
+                const std::array<std::string_view, 6> scanArgs{"SCAN", cursor, "MATCH", pattern,
+                                                               "COUNT", "100"};
+                const auto page = co_await c.redis().command(scanArgs);
+                if (page.kind() != ruvia::RedisValue::Kind::kArray || page.array().size() != 2 ||
+                    page.array()[0].kind() != ruvia::RedisValue::Kind::kString ||
+                    page.array()[1].kind() != ruvia::RedisValue::Kind::kArray)
+                    break;
+                cursor.assign(page.array()[0].string());
+                for (const auto& value : page.array()[1].array())
+                    if (value.kind() == ruvia::RedisValue::Kind::kString)
+                        keys.emplace_back(value.string());
+            } while (cursor != "0");
+
+            std::int64_t connectionCount = 0;
+            std::int64_t lastActivityAt = 0;
+            std::string clients;
+            std::string aggregateState = "stopped";
+            const auto stateRank = [](std::string_view state) {
+                if (state == "connected")
+                    return 6;
+                if (state == "listening")
+                    return 5;
+                if (state == "reconnecting")
+                    return 4;
+                if (state == "connecting")
+                    return 3;
+                if (state == "error")
+                    return 2;
+                if (state == "idle")
+                    return 1;
+                return 0;
+            };
+            for (const auto& key : keys) {
+                const std::array<std::string_view, 2> hashArgs{"HGETALL", key};
+                const auto reply = co_await c.redis().command(hashArgs);
+                if (reply.kind() != ruvia::RedisValue::Kind::kArray)
                     continue;
-                status.fields.emplace(std::string(values[index].string()),
-                                      std::string(values[index + 1].string()));
+                RuntimeStatus worker;
+                const auto values = reply.array();
+                for (std::size_t index = 0; index + 1 < values.size(); index += 2) {
+                    if (values[index].kind() != ruvia::RedisValue::Kind::kString ||
+                        values[index + 1].kind() != ruvia::RedisValue::Kind::kString)
+                        continue;
+                    worker.fields.insert_or_assign(std::string(values[index].string()),
+                                                   std::string(values[index + 1].string()));
+                }
+                connectionCount += worker.integer("connection_count");
+                lastActivityAt = std::max(lastActivityAt, worker.integer("last_activity_at_ms"));
+                const auto endpoints = worker.text("remote_endpoints");
+                std::size_t start = 0;
+                while (start < endpoints.size()) {
+                    const auto end = endpoints.find(',', start);
+                    if (!clients.empty())
+                        clients.push_back('\n');
+                    clients.append(endpoints, start,
+                                   end == std::string::npos ? std::string::npos : end - start);
+                    if (end == std::string::npos)
+                        break;
+                    start = end + 1;
+                }
+                const auto workerState = worker.text("state", "stopped");
+                if (stateRank(workerState) > stateRank(aggregateState))
+                    aggregateState = workerState;
+                if (status.text("state_reason").empty() && !worker.text("state_reason").empty())
+                    status.fields["state_reason"] = worker.text("state_reason");
+                if (status.text("error").empty() && !worker.text("error").empty())
+                    status.fields["error"] = worker.text("error");
+                for (const auto& [name, value] : worker.fields) {
+                    if (!name.starts_with("target:"))
+                        continue;
+                    if (!value.empty() || !status.fields.contains(name))
+                        status.fields[name] = value;
+                }
             }
+            status.fields["state"] = aggregateState;
+            status.fields["connection_count"] = std::to_string(connectionCount);
+            status.fields["clients"] = std::move(clients);
+            status.fields["last_activity_at_ms"] = std::to_string(lastActivityAt);
         } catch (const std::exception&) {
         }
         co_return status;
@@ -358,8 +493,10 @@ WHERE iot_link.id = $1 ORDER BY position)sql",
         if (protocol == "SL651" && mode != "TCP Server")
             service::common::fail(15003, "SL651 只支持 TCP Server 模式", 400);
         if (mode == "TCP Server") {
-            if (!isIpv4(ip) || port < 1 || port > 65535)
-                service::common::fail(15003, "TCP Server 必须配置有效的监听 IP 和端口", 400);
+            if (ip != "0.0.0.0")
+                service::common::fail(15003, "TCP Server 监听 IP 必须是 0.0.0.0", 400);
+            if (port < 1 || port > 65535)
+                service::common::fail(15003, "TCP Server 必须配置有效的监听端口", 400);
             if (!targets.empty())
                 service::common::fail(15003, "TCP Server 不能配置目标地址", 400);
             return;
@@ -471,7 +608,7 @@ WHERE iot_link.id = $1 ORDER BY position)sql",
     ruvia::Task<void> ensureAvailable(ruvia::Context& c, const std::string& name,
                                       const std::string& mode, const std::string& ip,
                                       std::int64_t port, std::optional<std::string> excludedId) {
-        std::string sql = "SELECT 1 FROM iot_link WHERE deleted_at IS NULL AND (name = $1 OR "
+        std::string sql = "SELECT 1 FROM link WHERE deleted_at IS NULL AND (name = $1 OR "
                           "($2 = 'TCP Server' AND mode = $2 AND ip = $3 AND port = $4))";
         auto params = service::common::dbParams(name, mode, ip, port);
         if (excludedId) {
@@ -499,6 +636,7 @@ SELECT EXISTS (
             service::common::fail(15007, "只能修改或删除自己创建的链路", 403);
     }
 
+    OutboundHttp http_;
     std::mutex publicIpMutex_;
     std::string cachedPublicIp_;
     std::chrono::steady_clock::time_point publicIpCachedAt_{};

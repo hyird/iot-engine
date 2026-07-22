@@ -29,22 +29,22 @@ class UserService {
                                       std::optional<std::string> status) {
         page = std::max<std::int64_t>(1, page);
         pageSize = std::clamp<std::int64_t>(pageSize, 1, 100);
-        std::string where = " WHERE deleted_at IS NULL";
+        std::string where = " WHERE u.deleted_at IS NULL";
         std::vector<ruvia::DbValue> filterParams;
         std::optional<std::string> keywordPattern;
         if (keyword && !keyword->empty()) {
             keywordPattern = "%" + *keyword + "%";
             filterParams.emplace_back(*keywordPattern);
-            where += " AND (username ILIKE $1 OR COALESCE(nickname, '') ILIKE $1 OR "
-                     "COALESCE(email, '') ILIKE $1)";
+            where += " AND (u.username ILIKE $1 OR COALESCE(u.nickname, '') ILIKE $1 OR "
+                     "COALESCE(u.email, '') ILIKE $1)";
         }
         if (status && (*status == "enabled" || *status == "disabled")) {
             filterParams.emplace_back(*status);
-            where += " AND status = $" + std::to_string(filterParams.size());
+            where += " AND u.status = $" + std::to_string(filterParams.size());
         }
 
         const auto countRows =
-            co_await c.db().query("SELECT COUNT(*) FROM sys_user" + where, filterParams);
+            co_await c.db().query("SELECT COUNT(*) FROM sys_user u" + where, filterParams);
         const auto total = std::stoll(std::string(countRows.rows().front()[0].text()));
 
         auto listParams = filterParams;
@@ -53,10 +53,11 @@ class UserService {
         listParams.emplace_back((page - 1) * pageSize);
         const auto offsetIndex = listParams.size();
         const auto rows = co_await c.db().query(
-            "SELECT id, username, COALESCE(nickname, ''), COALESCE(phone, ''), "
-            "COALESCE(email, ''), status, created_at::text, updated_at::text "
-            "FROM sys_user" +
-                where + " ORDER BY id DESC LIMIT $" + std::to_string(limitIndex) + " OFFSET $" +
+            "SELECT u.id, u.username, COALESCE(u.nickname, ''), COALESCE(u.phone, ''), "
+            "COALESCE(u.email, ''), u.status, COALESCE(u.department_id::text, ''), "
+            "COALESCE(d.name, ''), u.created_at::text, u.updated_at::text "
+            "FROM sys_user u LEFT JOIN sys_department d ON d.id = u.department_id " +
+                where + " ORDER BY u.id DESC LIMIT $" + std::to_string(limitIndex) + " OFFSET $" +
                 std::to_string(offsetIndex),
             listParams);
 
@@ -77,9 +78,12 @@ class UserService {
 
     ruvia::Task<UserItemDto> detail(ruvia::Context& c, std::string_view id) {
         const auto rows = co_await c.db().query(R"sql(
-SELECT id, username, COALESCE(nickname, ''), COALESCE(phone, ''),
-       COALESCE(email, ''), status, created_at::text, updated_at::text
-FROM sys_user WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
+SELECT u.id, u.username, COALESCE(u.nickname, ''), COALESCE(u.phone, ''),
+       COALESCE(u.email, ''), u.status, COALESCE(u.department_id::text, ''),
+       COALESCE(d.name, ''), u.created_at::text, u.updated_at::text
+FROM sys_user u
+LEFT JOIN sys_department d ON d.id = u.department_id
+WHERE u.id = $1 AND u.deleted_at IS NULL LIMIT 1)sql",
                                                 service::common::dbParams(id));
         if (rows.rows().empty())
             service::common::fail(12001, "用户不存在", 404);
@@ -118,20 +122,26 @@ FROM sys_user WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
         if (!exists.rows().empty())
             service::common::fail(12002, "用户名已存在", 409);
         co_await validateRoles(c, *body.roleIds());
+        co_await validateDepartment(c, body.departmentId());
 
         const std::string passwordHash = service::utils::hashPassword(body.password()->view());
         const std::string nickname = body.nickname() ? std::string(body.nickname()->view()) : "";
         const std::string phone = body.phone() ? std::string(body.phone()->view()) : "";
         const std::string email = body.email() ? std::string(body.email()->view()) : "";
         const std::string status = body.status() ? std::string(body.status()->view()) : "enabled";
+        const std::string departmentId =
+            body.departmentId() ? std::string(body.departmentId()->view()) : "";
         const auto id = service::common::nextUuidV7();
         auto tx = co_await c.db().beginTransaction();
         const auto inserted = co_await tx.execute(
             R"sql(
-INSERT INTO sys_user(id, username, password_hash, nickname, phone, email, status)
-VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7)
+INSERT INTO sys_user(
+    id, username, password_hash, nickname, phone, email, status, department_id)
+VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7,
+        NULLIF($8, '')::uuid)
 RETURNING id)sql",
-            service::common::dbParams(id, username, passwordHash, nickname, phone, email, status));
+            service::common::dbParams(id, username, passwordHash, nickname, phone, email, status,
+                                      departmentId));
         const std::string insertedId(inserted.rows().front()[0].text());
         co_await replaceRoles(tx, insertedId, *body.roleIds());
         co_await tx.commit();
@@ -153,6 +163,8 @@ RETURNING id)sql",
                 service::common::fail(12003, "不能移除内置管理员的超级管理员角色", 400);
             }
         }
+        if (body.departmentId())
+            co_await validateDepartment(c, body.departmentId());
 
         std::string set;
         std::vector<ruvia::DbValue> params;
@@ -174,6 +186,12 @@ RETURNING id)sql",
         if (body.password()) {
             passwordHash = service::utils::hashPassword(body.password()->view());
             append("password_hash", ruvia::DbValue{*passwordHash});
+        }
+        if (body.departmentId()) {
+            if (!set.empty())
+                set += ", ";
+            params.emplace_back(body.departmentId()->view());
+            set += "department_id = NULLIF($" + std::to_string(params.size()) + ", '')::uuid";
         }
 
         auto tx = co_await c.db().beginTransaction();
@@ -212,8 +230,10 @@ RETURNING id)sql",
             .phone(row[3].text())
             .email(row[4].text())
             .status(row[5].text())
-            .createdAt(row[6].text())
-            .updatedAt(row[7].text());
+            .departmentId(row[6].text())
+            .departmentName(row[7].text())
+            .createdAt(row[8].text())
+            .updatedAt(row[9].text());
     }
 
     ruvia::Task<ruvia::List<service::role::RoleOptionDto>> loadRoles(ruvia::Context& c,
@@ -244,6 +264,18 @@ WHERE ur.user_id = $1 AND r.deleted_at IS NULL ORDER BY r.id)sql",
         }
     }
 
+    ruvia::Task<void> validateDepartment(
+        ruvia::Context& c, const std::optional<ruvia::String>& departmentId) {
+        if (!departmentId || departmentId->view().empty())
+            co_return;
+        const auto rows = co_await c.db().query(
+            "SELECT 1 FROM sys_department WHERE id = $1 AND status = 'enabled' "
+            "AND deleted_at IS NULL LIMIT 1",
+            service::common::dbParams(departmentId->view()));
+        if (rows.rows().empty())
+            service::common::fail(12006, "部门不存在或已禁用", 400);
+    }
+
     ruvia::Task<bool> containsSuperadmin(ruvia::Context& c,
                                          const ruvia::Array<ruvia::String>& roleIds) {
         for (const auto& roleId : roleIds) {
@@ -262,10 +294,11 @@ WHERE ur.user_id = $1 AND r.deleted_at IS NULL ORDER BY r.id)sql",
         (void)co_await tx.execute("DELETE FROM sys_user_role WHERE user_id = $1",
                                   service::common::dbParams(userId));
         for (const auto& roleId : roleIds) {
-            (void)co_await tx.execute(
-                "INSERT INTO sys_user_role(user_id, role_id) VALUES ($1, $2) ON CONFLICT DO "
-                "NOTHING",
-                service::common::dbParams(userId, roleId.view()));
+            const auto id = service::common::nextUuidV7();
+            (void)co_await tx.execute("INSERT INTO sys_user_role(id, user_id, role_id) VALUES ($1, "
+                                      "$2, $3) ON CONFLICT DO "
+                                      "NOTHING",
+                                      service::common::dbParams(id, userId, roleId.view()));
         }
     }
 };

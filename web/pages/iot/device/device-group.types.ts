@@ -14,6 +14,7 @@ export interface DeviceGroupItem {
     remark?: string;
     created_at?: string;
     updated_at?: string;
+    can_share?: boolean;
 }
 
 /** 设备分组树节点 */

@@ -19,10 +19,10 @@ export type HeartbeatMode = 'OFF' | 'HEX' | 'ASCII';
 export type RegistrationMode = 'OFF' | 'HEX' | 'ASCII';
 
 /** 设备资源访问级别 */
-export type DeviceAccessLevel = 'owner' | 'control' | 'view' | 'none';
+export type DeviceAccessLevel = 'owner' | 'operate' | 'view' | 'none';
 
 /** 设备分享权限 */
-export type DeviceSharePermission = 'view' | 'control';
+export type DeviceShareAccessLevel = 'view' | 'operate';
 
 /** 心跳包配置 */
 export interface HeartbeatConfig {
@@ -244,6 +244,7 @@ export interface DeviceRealtimeData {
 
 /** 设备要素数据 */
 export interface DeviceElement {
+    id?: string;
     name: string;
     value: string | number | null;
     unit?: string;
@@ -339,25 +340,33 @@ export interface DeviceRealTimeData extends DeviceStaticData {
 
 /** 设备分享条目 */
 export interface DeviceShareItem {
-    target_type: 'user' | 'department';
-    target_id: string;
-    user_id?: string;
-    username?: string;
-    nickname?: string;
-    department_id?: string;
-    department_name?: string;
-    permission: DeviceSharePermission;
+    id: string;
+    subject_type: 'user' | 'department';
+    subject_id: string;
+    subject_name: string;
+    access_level: DeviceShareAccessLevel;
+    source_type?: 'device' | 'group';
+    source_group_id?: string;
+    source_group_name?: string;
+    inherited?: boolean;
     created_at?: string;
     updated_at?: string;
 }
 
-/** 设备分享更新参数 */
-export interface DeviceShareUpsertDto {
-    user_id?: string;
-    user_ids?: string[];
-    username?: string;
-    department_ids?: string[];
-    permission: DeviceSharePermission;
+/** 可选分享对象 */
+export interface DeviceShareTarget {
+    subject_type: 'user' | 'department';
+    subject_id: string;
+    subject_name: string;
+}
+
+/** 设备分享全量替换参数 */
+export interface ReplaceDeviceSharesDto {
+    shares: Array<{
+        subject_type: 'user' | 'department';
+        subject_id: string;
+        access_level: DeviceShareAccessLevel;
+    }>;
 }
 
 /** 指令下发参数 */
@@ -430,9 +439,10 @@ type DeviceCommandOperationElement = CommandOperationElement;
 type DeviceImageOperation = ImageOperation;
 type DeviceImageOperationElement = ImageOperationElement;
 type DeviceAccessLevelType = DeviceAccessLevel;
-type DeviceSharePermissionType = DeviceSharePermission;
+type DeviceShareAccessLevelType = DeviceShareAccessLevel;
 type DeviceShareItemType = DeviceShareItem;
-type DeviceShareUpsertDtoType = DeviceShareUpsertDto;
+type DeviceShareTargetType = DeviceShareTarget;
+type ReplaceDeviceSharesDtoType = ReplaceDeviceSharesDto;
 type DeviceCommandStatus = CommandStatus;
 
 /** 设备模块命名空间 */
@@ -462,9 +472,10 @@ export namespace Device {
     export type ImageOperation = DeviceImageOperation;
     export type ImageOperationElement = DeviceImageOperationElement;
     export type AccessLevel = DeviceAccessLevelType;
-    export type SharePermission = DeviceSharePermissionType;
+    export type ShareAccessLevel = DeviceShareAccessLevelType;
     export type ShareItem = DeviceShareItemType;
-    export type ShareUpsertDto = DeviceShareUpsertDtoType;
+    export type ShareTarget = DeviceShareTargetType;
+    export type ReplaceSharesDto = ReplaceDeviceSharesDtoType;
 
     // 历史数据
     export type HistoryDevice = HistoryDeviceItem;

@@ -21,6 +21,9 @@ class CreateUserValidator final : public ruvia::Middleware<CreateUserValidator> 
                         RUVIA_RULE(email, RUVIA_EMAIL("邮箱格式不正确"),
                                    RUVIA_MAX(100, "邮箱不能超过 100 个字符")),
                         RUVIA_RULE(status, RUVIA_ONE_OF("状态无效", "enabled", "disabled")),
+                        RUVIA_RULE_NAME(
+                            "department_id", departmentId,
+                            RUVIA_CUSTOM("部门 ID 必须是 UUID", service::common::isOptionalUuidField)),
                         RUVIA_RULE_NAME("role_ids", roleIds, RUVIA_REQUIRED("至少选择一个角色"),
                                         RUVIA_MIN(1, "至少选择一个角色")))
 };
@@ -35,6 +38,9 @@ class UpdateUserValidator final : public ruvia::Middleware<UpdateUserValidator> 
                         RUVIA_RULE(email, RUVIA_EMAIL("邮箱格式不正确"),
                                    RUVIA_MAX(100, "邮箱不能超过 100 个字符")),
                         RUVIA_RULE(status, RUVIA_ONE_OF("状态无效", "enabled", "disabled")),
+                        RUVIA_RULE_NAME(
+                            "department_id", departmentId,
+                            RUVIA_CUSTOM("部门 ID 必须是 UUID", service::common::isOptionalUuidField)),
                         RUVIA_RULE_NAME("role_ids", roleIds, RUVIA_MIN(1, "至少选择一个角色")))
 };
 

@@ -1,11 +1,14 @@
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 
 #include <ruvia/web/App.h>
 #include <ruvia/web/db/Db.h>
@@ -16,8 +19,14 @@
 #include "service/config/schema.h"
 #include "service/modules/northbridge/device/device.controller.h"
 #include "service/modules/northbridge/link/link.controller.h"
+#include "service/modules/northbridge/command/command_result.runtime.h"
+#include "service/modules/northbridge/command/protocol_command.queue.h"
+#include "service/modules/northbridge/config/runtime_config.projector.h"
+#include "service/modules/northbridge/config/runtime_config.reconciler.h"
 #include "service/modules/northbridge/protocol/protocol.controller.h"
-#include "service/modules/southbridge/southbridge.runtime.h"
+#include "service/modules/northbridge/telemetry/telemetry_persistence.runtime.h"
+#include "service/modules/northbridge/telemetry/device_latest.redis.h"
+#include "service/modules/southbridge/southbridge.pool.h"
 #include "service/modules/system/auth/auth.controller.h"
 #include "service/modules/system/dept/dept.controller.h"
 #include "service/modules/system/role/role.controller.h"
@@ -53,21 +62,6 @@ ruvia::RedisConfig redisConfig(const ruvia::Env& env) {
     return config;
 }
 
-service::southbridge::SouthbridgeConfig southbridgeConfig(const ruvia::Env& env) {
-    service::southbridge::SouthbridgeConfig config;
-    config.postgres.host = std::string(env.get("DB_HOST").value_or("127.0.0.1"));
-    config.postgres.port = env.get<std::uint16_t>("DB_PORT").value_or(5432);
-    config.postgres.username = std::string(env.get("DB_USERNAME").value_or(""));
-    config.postgres.password = std::string(env.get("DB_PASSWORD").value_or(""));
-    config.postgres.database = std::string(env.get("DB_DATABASE").value_or(""));
-    config.redis.host = std::string(env.get("REDIS_HOST").value_or("127.0.0.1"));
-    config.redis.port = env.get<std::uint16_t>("REDIS_PORT").value_or(6379);
-    config.redis.username = std::string(env.get("REDIS_USERNAME").value_or(""));
-    config.redis.password = std::string(env.get("REDIS_PASSWORD").value_or(""));
-    config.redis.database = env.get<std::uint32_t>("REDIS_DATABASE").value_or(0);
-    return config;
-}
-
 std::filesystem::path runtimeDirectory(const char* executable) {
     if (!executable || *executable == '\0')
         return std::filesystem::current_path();
@@ -96,6 +90,24 @@ ruvia::Task<ruvia::HttpResponse> handleError(ruvia::Context& c, ruvia::HttpError
         c, service::common::errorCode(info.code(), info.status().value()), message));
 }
 
+ruvia::Task<void>
+startSouthbridge(ruvia::WebWorkerContext& context,
+                 std::shared_ptr<service::southbridge::SouthbridgeRuntime> southbridge,
+                 ruvia::RedisConfig redis, std::size_t workerCount,
+                 std::shared_ptr<std::promise<void>> started) {
+    try {
+        (void)co_await service::northbridge::config::projectRuntimeConfig(context);
+        co_await service::northbridge::telemetry::latest::hydrate(context);
+        southbridge->start(std::move(redis), workerCount);
+        started->set_value();
+    } catch (...) {
+        try {
+            started->set_exception(std::current_exception());
+        } catch (...) {
+        }
+    }
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -105,24 +117,58 @@ int main(int argc, char* argv[]) {
 
         auto db = databaseConfig(app.env());
         ruvia::DbMigrationOptions migrationOptions;
-        migrationOptions.table = "iot_engine_schema_migrations";
+        migrationOptions.table = "sys_schema_migrations";
         const auto report = ruvia::DbMigrator::migrate(db, service::config::kSchemaMigrations,
                                                        std::move(migrationOptions));
         std::cout << "database migrations: applied=" << report.applied().size()
                   << ", skipped=" << report.skipped().size() << '\n';
 
         configureWeb(app, runtimeDirectory(argc > 0 ? argv[0] : nullptr));
-        auto southbridge = std::make_shared<service::southbridge::SouthbridgeRuntime>(
-            southbridgeConfig(app.env()));
+        const auto cpu = std::max(2U, std::thread::hardware_concurrency());
+        const auto northWorkerCount = static_cast<std::size_t>((cpu + 1U) / 2U);
+        const auto southWorkerCount = static_cast<std::size_t>(cpu / 2U);
+        auto northRedis = redisConfig(app.env());
+        auto southRedis = northRedis;
+        auto southbridge = std::make_shared<service::southbridge::SouthbridgeRuntime>();
+        auto telemetry =
+            std::make_shared<service::northbridge::telemetry::TelemetryPersistenceRuntime>();
+        auto commandResults =
+            std::make_shared<service::northbridge::command::CommandResultRuntime>();
+        auto configReconciler =
+            std::make_shared<service::northbridge::config::RuntimeConfigReconciler>();
         app.useDb(std::move(db))
-            .useRedis(redisConfig(app.env()))
-            .onStart([southbridge] { southbridge->start(); })
-            .onStop([southbridge] { southbridge->stop(); })
+            .useRedis(std::move(northRedis))
+            .onStart([southbridge, telemetry, commandResults, configReconciler,
+                      southRedis = std::move(southRedis), southWorkerCount, &app]() mutable {
+                auto workers = app.workers();
+                if (workers.empty())
+                    throw std::runtime_error("northbridge: no worker available for config projection");
+                telemetry->start(workers, southWorkerCount);
+                commandResults->start(workers, southWorkerCount);
+                auto started = std::make_shared<std::promise<void>>();
+                auto ready = started->get_future();
+                const auto posted = workers.front().post(
+                    [southbridge, southRedis, southWorkerCount,
+                     started](ruvia::WebWorkerContext& context) mutable -> ruvia::Task<void> {
+                        return startSouthbridge(context, southbridge, std::move(southRedis),
+                                                southWorkerCount, started);
+                    });
+                if (posted != ruvia::PostResult::kAccepted)
+                    throw std::runtime_error("northbridge rejected runtime config projection");
+                ready.get();
+                configReconciler->start(workers.front(), southWorkerCount);
+            })
+            .onStop([southbridge, telemetry, commandResults, configReconciler] {
+                configReconciler->stop();
+                southbridge->stop();
+                telemetry->stop();
+                commandResults->stop();
+            })
             .onError(&handleError)
             .setListenAddress(app.env().get("HOST").value_or("0.0.0.0"))
             .setServerTopology(
                 ruvia::ServerTopology::http(app.env().get<std::uint16_t>("PORT").value_or(1102)))
-            .setWorkersPerListener(1)
+            .setWorkersPerListener(northWorkerCount)
             .run();
         return 0;
     } catch (const std::exception& error) {

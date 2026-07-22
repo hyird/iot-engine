@@ -14,6 +14,13 @@ class DeviceIdParamsValidator final : public ruvia::Middleware<DeviceIdParamsVal
                                     RUVIA_CUSTOM("id 必须是 UUID", service::common::isUuidField)))
 };
 
+class ReplaceDeviceSharesValidator final : public ruvia::Middleware<ReplaceDeviceSharesValidator> {
+  public:
+    RUVIA_VALIDATE_JSON(ReplaceDeviceSharesBody,
+                        RUVIA_RULE(shares, RUVIA_REQUIRED("分享列表不能为空"),
+                                   RUVIA_MAX(500, "单次最多设置 500 个分享对象")))
+};
+
 // ===== 设备（写侧扁平校验；跨字段/协议相关校验在 service）=====
 
 class CreateDeviceValidator final : public ruvia::Middleware<CreateDeviceValidator> {

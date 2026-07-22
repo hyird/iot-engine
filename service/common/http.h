@@ -25,8 +25,11 @@ inline constexpr std::int64_t kTokenExpiredErrorCode{11005};
 inline constexpr std::int64_t kTokenInvalidErrorCode{11006};
 inline constexpr std::int64_t kPermissionDeniedErrorCode{11007};
 
-RUVIA_RESPONSE_MODEL(ErrorResponse, RUVIA_FIELD(code, ruvia::Int64),
-                     RUVIA_FIELD(message, ruvia::String));
+struct ErrorResponse final {
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
+    RUVIA_MODEL(ErrorResponse, code, message);
+};
 
 inline std::optional<std::int64_t> parseInt64(std::optional<std::string_view> input) {
     if (!input || input->empty())

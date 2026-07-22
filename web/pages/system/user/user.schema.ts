@@ -33,6 +33,7 @@ export const createUserSchema = z.object({
     phone: phoneSchema.optional(),
     email: emailSchema.optional(),
     status: statusSchema.optional(),
+    department_id: z.uuid({ error: '部门 ID 必须是 UUID' }).optional(),
     role_ids: z.array(z.uuid({ error: '角色 ID 必须是 UUID' })).min(1, '至少选择一个角色'),
 });
 
@@ -41,6 +42,7 @@ export const updateUserSchema = z.object({
     phone: phoneSchema.optional(),
     email: emailSchema.optional(),
     status: statusSchema.optional(),
+    department_id: z.union([z.literal(''), z.uuid({ error: '部门 ID 必须是 UUID' })]).optional(),
     password: z
         .union([
             z.literal('').transform(() => undefined),

@@ -2,8 +2,8 @@
  * 用户管理类型定义
  */
 
-import type { PageParams } from '@/utils/types';
 import { createQueryKeys } from '@/utils/query';
+import type { PageParams } from '@/utils/types';
 
 // ============ QueryKeys ============
 
@@ -45,6 +45,8 @@ interface UserItem {
     phone?: string;
     email?: string;
     status: UserStatus;
+    department_id?: string;
+    department_name?: string;
     roles: UserRole[];
     created_at?: string;
     updated_at?: string;
@@ -65,6 +67,7 @@ interface CreateUserDto {
     phone?: string;
     email?: string;
     status?: UserStatus;
+    department_id?: string;
     role_ids?: string[];
 }
 
@@ -74,6 +77,7 @@ interface UpdateUserDto {
     email?: string;
     status?: UserStatus;
     password?: string;
+    department_id?: string;
     role_ids?: string[];
 }
 

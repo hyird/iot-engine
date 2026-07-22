@@ -1,27 +1,25 @@
 #pragma once
 
-#include <array>
-#include <cstdint>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include <ruvia/web/Context.h>
-#include <ruvia/web/redis/Redis.h>
 
-#include "service/common/bridge/message.contract.h"
+#include "service/modules/northbridge/config/runtime_config.reconciler.h"
 
 namespace service::bridge {
 
 inline ruvia::Task<void> publishConfigEvent(ruvia::Context& context, std::string_view aggregate,
                                             std::string_view action, std::string_view aggregateId) {
-    const auto messageId = nextMessageId();
-    const auto occurredAt = std::to_string(utcNowMilliseconds());
-    const std::array<std::string_view, 16> args{
-        "XADD",         kConfigStream, "MAXLEN",         "~",       "10000",  "*",
-        "message_id",   messageId,     "aggregate",      aggregate, "action", action,
-        "aggregate_id", aggregateId,   "occurred_at_ms", occurredAt};
-    (void)co_await context.redis().command(args);
+    // CRUD only marks the PostgreSQL-backed projection dirty. The single reconciler publishes one
+    // notification to every worker-specific config Stream after the versioned snapshot is ready.
+    // Publishing here would race the transactionally projected active version.
+    (void)context;
+    (void)aggregate;
+    (void)action;
+    (void)aggregateId;
+    service::northbridge::config::requestRuntimeConfigProjection();
+    co_return;
 }
 
 } // namespace service::bridge

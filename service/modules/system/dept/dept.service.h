@@ -50,7 +50,7 @@ class DeptService {
         }
 
         const auto countRows =
-            co_await c.db().query("SELECT COUNT(*) FROM sys_dept d" + where, params);
+            co_await c.db().query("SELECT COUNT(*) FROM sys_department d" + where, params);
         const auto total = std::stoll(std::string(countRows.rows().front()[0].text()));
         auto listParams = params;
         listParams.emplace_back(pageSize);
@@ -62,8 +62,8 @@ class DeptService {
             "COALESCE(d.parent_id::text, ''), COALESCE(parent.name, ''), "
             "COALESCE(d.leader_id::text, ''), "
             "COALESCE(u.nickname, u.username, ''), d.sort_order, d.status, "
-            "d.created_at::text, d.updated_at::text FROM sys_dept d "
-            "LEFT JOIN sys_dept parent ON parent.id = d.parent_id "
+            "d.created_at::text, d.updated_at::text FROM sys_department d "
+            "LEFT JOIN sys_department parent ON parent.id = d.parent_id "
             "LEFT JOIN sys_user u ON u.id = d.leader_id AND u.deleted_at IS NULL" +
                 where + " ORDER BY d.sort_order, d.id LIMIT $" + std::to_string(limitIndex) +
                 " OFFSET $" + std::to_string(offsetIndex),
@@ -88,8 +88,8 @@ SELECT d.id::text, d.name, COALESCE(d.code, ''), COALESCE(d.parent_id::text, '')
        COALESCE(parent.name, ''), COALESCE(d.leader_id::text, ''),
        COALESCE(u.nickname, u.username, ''), d.sort_order, d.status,
        d.created_at::text, d.updated_at::text
-FROM sys_dept d
-LEFT JOIN sys_dept parent ON parent.id = d.parent_id
+FROM sys_department d
+LEFT JOIN sys_department parent ON parent.id = d.parent_id
 LEFT JOIN sys_user u ON u.id = d.leader_id AND u.deleted_at IS NULL
 WHERE d.id = $1 AND d.deleted_at IS NULL LIMIT 1)sql",
                                                 service::common::dbParams(id));
@@ -102,7 +102,7 @@ WHERE d.id = $1 AND d.deleted_at IS NULL LIMIT 1)sql",
 
     ruvia::Task<ruvia::List<DeptOptionDto>> options(ruvia::Context& c) {
         const auto rows = co_await c.db().query(
-            "SELECT id::text, name, COALESCE(parent_id::text, '') FROM sys_dept "
+            "SELECT id::text, name, COALESCE(parent_id::text, '') FROM sys_department "
             "WHERE deleted_at IS NULL "
             "ORDER BY sort_order, id");
         ruvia::List<DeptOptionDto> result(c.resource());
@@ -125,7 +125,7 @@ WHERE d.id = $1 AND d.deleted_at IS NULL LIMIT 1)sql",
         co_await ensureCodeAvailable(c, code, std::nullopt);
         (void)co_await c.db().execute(
             R"sql(
-INSERT INTO sys_dept(id, name, code, parent_id, leader_id, sort_order, status)
+INSERT INTO sys_department(id, name, code, parent_id, leader_id, sort_order, status)
 VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, '')::uuid, NULLIF($5, '')::uuid, $6, $7)
 )sql",
             service::common::dbParams(id, name, code, parentId, leaderId, sortOrder, status));
@@ -133,7 +133,7 @@ VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, '')::uuid, NULLIF($5, '')::uuid, $6, 
 
     ruvia::Task<void> update(ruvia::Context& c, std::string_view id, const UpdateDeptBody& body) {
         const auto existing = co_await c.db().query(
-            "SELECT 1 FROM sys_dept WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
+            "SELECT 1 FROM sys_department WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
             service::common::dbParams(id));
         if (existing.rows().empty())
             service::common::fail(14001, "部门不存在", 404);
@@ -168,7 +168,7 @@ VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, '')::uuid, NULLIF($5, '')::uuid, $6, 
         if (set.empty())
             co_return;
         params.emplace_back(id);
-        (void)co_await c.db().execute("UPDATE sys_dept SET " + set +
+        (void)co_await c.db().execute("UPDATE sys_department SET " + set +
                                           ", updated_at = NOW() WHERE id = $" +
                                           std::to_string(params.size()),
                                       params);
@@ -176,17 +176,17 @@ VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, '')::uuid, NULLIF($5, '')::uuid, $6, 
 
     ruvia::Task<void> remove(ruvia::Context& c, std::string_view id) {
         const auto existing = co_await c.db().query(
-            "SELECT 1 FROM sys_dept WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
+            "SELECT 1 FROM sys_department WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
             service::common::dbParams(id));
         if (existing.rows().empty())
             service::common::fail(14001, "部门不存在", 404);
         const auto children = co_await c.db().query(
-            "SELECT 1 FROM sys_dept WHERE parent_id = $1 AND deleted_at IS NULL LIMIT 1",
+            "SELECT 1 FROM sys_department WHERE parent_id = $1 AND deleted_at IS NULL LIMIT 1",
             service::common::dbParams(id));
         if (!children.rows().empty())
             service::common::fail(14005, "部门存在子部门，不能删除", 409);
         (void)co_await c.db().execute(
-            "UPDATE sys_dept SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1",
+            "UPDATE sys_department SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1",
             service::common::dbParams(id));
     }
 
@@ -212,7 +212,7 @@ VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, '')::uuid, NULLIF($5, '')::uuid, $6, 
             service::common::fail(14003, "上级部门不能是自身", 400);
         if (!parentId.empty()) {
             const auto parent = co_await c.db().query(
-                "SELECT 1 FROM sys_dept WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
+                "SELECT 1 FROM sys_department WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
                 service::common::dbParams(parentId));
             if (parent.rows().empty())
                 service::common::fail(14003, "上级部门不存在", 400);
@@ -220,9 +220,9 @@ VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, '')::uuid, NULLIF($5, '')::uuid, $6, 
                 const auto cycle =
                     co_await c.db().query(R"sql(
 WITH RECURSIVE descendants AS (
-    SELECT id FROM sys_dept WHERE parent_id = $1 AND deleted_at IS NULL
+    SELECT id FROM sys_department WHERE parent_id = $1 AND deleted_at IS NULL
     UNION ALL
-    SELECT d.id FROM sys_dept d JOIN descendants x ON d.parent_id = x.id
+    SELECT d.id FROM sys_department d JOIN descendants x ON d.parent_id = x.id
     WHERE d.deleted_at IS NULL
 )
 SELECT 1 FROM descendants WHERE id = $2 LIMIT 1)sql",
@@ -245,7 +245,7 @@ SELECT 1 FROM descendants WHERE id = $2 LIMIT 1)sql",
                                           std::optional<std::string> excludedId) {
         if (code.empty())
             co_return;
-        auto sql = std::string("SELECT 1 FROM sys_dept WHERE code = $1");
+        auto sql = std::string("SELECT 1 FROM sys_department WHERE code = $1");
         auto params = service::common::dbParams(code);
         if (excludedId) {
             sql += " AND id <> $2";

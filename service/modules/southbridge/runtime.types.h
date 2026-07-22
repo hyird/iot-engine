@@ -12,6 +12,7 @@ struct LinkTargetDefinition {
     std::string ip;
     std::uint16_t port = 0;
     std::string status;
+    bool operator==(const LinkTargetDefinition&) const = default;
 };
 
 struct LinkDefinition {
@@ -23,9 +24,11 @@ struct LinkDefinition {
     std::uint16_t port = 0;
     std::string status;
     std::vector<LinkTargetDefinition> targets;
+    bool operator==(const LinkDefinition&) const = default;
 };
 
 struct ElementDefinition {
+    std::string configKey;
     std::string id;
     std::string name;
     std::string unit;
@@ -47,6 +50,8 @@ struct ElementDefinition {
     std::string encoding;
     std::int64_t length = 0;
     std::int64_t digits = 0;
+    bool responseElement = false;
+    bool operator==(const ElementDefinition&) const = default;
 };
 
 struct DeviceDefinition {
@@ -65,7 +70,20 @@ struct DeviceDefinition {
     std::vector<std::uint8_t> registrationBytes;
     std::string modbusMode;
     std::uint8_t slaveId = 1;
+    std::int64_t modbusMergeGap = 100;
+    std::int64_t modbusMaxQuantity = 125;
+    std::string s7ConnectionMode = "RACK_SLOT";
+    std::string s7ConnectionType = "PG";
+    std::int64_t s7Rack = 0;
+    std::int64_t s7Slot = 1;
+    std::string s7LocalTsap = "0100";
+    std::string s7RemoteTsap = "0101";
+    std::int64_t pollInterval = 5;
+    std::int64_t storageInterval = 1;
+    std::int64_t commandFastReadDuration = 60;
+    std::int64_t commandFastReadInterval = 1;
     std::vector<ElementDefinition> elements;
+    bool operator==(const DeviceDefinition&) const = default;
 };
 
 struct DtuDefinition {

@@ -114,7 +114,7 @@ export default function IotLinkPage() {
             name: record.name,
             mode: record.mode,
             protocol: record.protocol,
-            ip: record.mode === 'TCP Server' ? record.ip : '',
+            ip: record.mode === 'TCP Server' ? '0.0.0.0' : '',
             port: record.port,
             targets: record.targets.map((target) => ({ ...target })),
             status: record.status,
@@ -134,7 +134,7 @@ export default function IotLinkPage() {
     const onFinish = (values: LinkFormValues) => {
         const payload: Link.SaveDto = {
             ...values,
-            ip: values.mode === 'TCP Server' ? values.ip : '',
+            ip: values.mode === 'TCP Server' ? '0.0.0.0' : '',
             port: values.mode === 'TCP Server' ? values.port : 0,
             targets: values.mode === 'TCP Client' ? values.targets : [],
         };

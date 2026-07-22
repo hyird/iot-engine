@@ -41,18 +41,13 @@ const permissionOptions = [
     ['iot:device:add', '新增设备'],
     ['iot:device:edit', '编辑设备'],
     ['iot:device:delete', '删除设备'],
+    ['iot:device:share', '分享设备'],
+    ['iot:device:command', '下发设备命令'],
     ['iot:device-group:query', '查询设备分组'],
     ['iot:device-group:add', '新增设备分组'],
     ['iot:device-group:edit', '编辑设备分组'],
     ['iot:device-group:delete', '删除设备分组'],
-    ['iot:device:query', '查询设备'],
-    ['iot:device:add', '新增设备'],
-    ['iot:device:edit', '编辑设备'],
-    ['iot:device:delete', '删除设备'],
-    ['iot:device-group:query', '查询设备分组'],
-    ['iot:device-group:add', '新增设备分组'],
-    ['iot:device-group:edit', '编辑设备分组'],
-    ['iot:device-group:delete', '删除设备分组'],
+    ['iot:device-group:share', '分享设备分组'],
 ].map(([value, label]) => ({ value, label }));
 
 type RoleFormValues = Role.CreateDto & { id?: string };
