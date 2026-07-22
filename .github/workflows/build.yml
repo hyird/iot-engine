@@ -264,7 +264,10 @@ jobs:
 
       - name: Build
         shell: msys2 {0}
-        run: cmake --build build/ci --config "$BUILD_TYPE"
+        run: |
+          bun_path_msys="$(cygpath -u '${{ steps.setup-bun.outputs.bun-path }}')"
+          export PATH="$(dirname "$bun_path_msys"):$PATH"
+          cmake --build build/ci --config "$BUILD_TYPE"
 
       - name: Test
         shell: msys2 {0}

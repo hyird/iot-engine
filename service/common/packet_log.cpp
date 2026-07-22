@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <version>
 
 #include <spdlog/async.h>
 #include <spdlog/pattern_formatter.h>
@@ -22,7 +23,11 @@ struct State final {
     std::shared_ptr<spdlog::async_logger> logger;
 };
 
+#if defined(__cpp_lib_atomic_shared_ptr) && __cpp_lib_atomic_shared_ptr >= 201711L
+std::atomic<std::shared_ptr<State>> state;
+#else
 std::shared_ptr<State> state;
+#endif
 inline constexpr std::size_t kQueueSize = 65536;
 inline constexpr std::size_t kHexLimitBytes = 64U * 1024U;
 inline constexpr std::uint16_t kRetentionDays = 14;
@@ -152,15 +157,23 @@ void initialize(Config config) {
 
     auto next = std::make_shared<State>();
     next->logger = std::move(logger);
+#if defined(__cpp_lib_atomic_shared_ptr) && __cpp_lib_atomic_shared_ptr >= 201711L
+    state.store(std::move(next), std::memory_order_release);
+#else
     std::atomic_store_explicit(&state, std::move(next), std::memory_order_release);
+#endif
 
     write(Level::Info, "PACKET_LOG_STARTED", {}, {}, "async_daily_14d_overrun_oldest");
 }
 
 void shutdown() noexcept {
     try {
+#if defined(__cpp_lib_atomic_shared_ptr) && __cpp_lib_atomic_shared_ptr >= 201711L
+        auto current = state.exchange({}, std::memory_order_acq_rel);
+#else
         auto current = std::atomic_exchange_explicit(&state, std::shared_ptr<State>{},
                                                      std::memory_order_acq_rel);
+#endif
         if (current && current->logger) {
             current->logger->flush();
             spdlog::drop(current->logger->name());
@@ -173,7 +186,11 @@ void shutdown() noexcept {
 void write(Level level, std::string_view event, const Context& context,
            std::span<const std::uint8_t> bytes, std::string_view reason) noexcept {
     try {
+#if defined(__cpp_lib_atomic_shared_ptr) && __cpp_lib_atomic_shared_ptr >= 201711L
+        const auto current = state.load(std::memory_order_acquire);
+#else
         const auto current = std::atomic_load_explicit(&state, std::memory_order_acquire);
+#endif
         if (!current || !current->logger || !current->logger->should_log(spdLevel(level)))
             return;
 

@@ -171,14 +171,16 @@ class DeviceCommandService final {
         const auto now = bridge::utcNowMilliseconds();
         const auto key = stateKey(task.messageId);
         co_await bridge::redis_async::eraseHash(context.redis(), key);
-        co_await bridge::redis_async::setHash(context.redis(), key,
-                                              {{"command_id", task.messageId},
-                                               {"device_id", task.deviceId},
-                                               {"device_code", task.deviceCode},
-                                               {"protocol", task.protocol},
-                                               {"status", "PENDING"},
-                                               {"submitted_by", std::string(userId)},
-                                               {"created_at_ms", std::to_string(now)}});
+        std::vector<bridge::StreamField> fields;
+        fields.reserve(7);
+        fields.push_back({"command_id", task.messageId});
+        fields.push_back({"device_id", task.deviceId});
+        fields.push_back({"device_code", task.deviceCode});
+        fields.push_back({"protocol", task.protocol});
+        fields.push_back({"status", "PENDING"});
+        fields.push_back({"submitted_by", std::string(userId)});
+        fields.push_back({"created_at_ms", std::to_string(now)});
+        co_await bridge::redis_async::setHash(context.redis(), key, fields);
         (void)co_await bridge::redis_async::command(
             context.redis(),
             {"PEXPIRE", key,

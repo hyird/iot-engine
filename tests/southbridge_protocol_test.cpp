@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -18,6 +19,7 @@
 #include <asio.hpp>
 
 #include "service/common/packet_log.h"
+#include "service/modules/southbridge/protocol/command_value.h"
 #include "service/modules/southbridge/protocol/modbus/modbus.runtime.h"
 #include "service/modules/southbridge/protocol/protocol_engine.h"
 #include "service/modules/southbridge/protocol/s7/s7.runtime.h"
@@ -1348,6 +1350,24 @@ void testRuntimeConfigWritableContract() {
     require(element.writable, "runtime config did not deserialize writable state");
 }
 
+void testCommandValueDecimalParsing() {
+    namespace commandValue = service::southbridge::command_value;
+    require(commandValue::decimal("1.5", "value") == 1.5,
+            "command decimal parser rejected a finite value");
+    require(commandValue::decimal("-1.25e2", "value") == -125.0,
+            "command decimal parser rejected scientific notation");
+
+    for (const auto value : {"1.5x", "nan", "inf"}) {
+        bool rejected = false;
+        try {
+            (void)commandValue::decimal(value, "value");
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        require(rejected, "command decimal parser accepted an invalid value");
+    }
+}
+
 void testPacketLog() {
     namespace packetLog = service::common::packet_log;
     const auto directory = std::filesystem::temp_directory_path() / "iot-engine-packet-log-test";
@@ -1409,6 +1429,7 @@ int main() {
         testS7AllDataTypes();
         testWorkerTimer();
         testRuntimeConfigWritableContract();
+        testCommandValueDecimalParsing();
         testPacketLog();
         std::cout << "southbridge protocol tests passed\n";
         return EXIT_SUCCESS;

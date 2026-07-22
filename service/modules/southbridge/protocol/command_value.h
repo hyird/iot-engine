@@ -6,8 +6,10 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <locale>
 #include <set>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -46,8 +48,11 @@ template <typename Number> inline Number integer(std::string_view value, std::st
 
 inline double decimal(std::string_view value, std::string_view name) {
     double result{};
-    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
-    if (error != std::errc{} || end != value.data() + value.size() || !std::isfinite(result))
+    std::istringstream input{std::string(value)};
+    input.imbue(std::locale::classic());
+    input >> std::noskipws >> result;
+    char trailing{};
+    if (!input || input >> trailing || !std::isfinite(result))
         throw std::invalid_argument("command_invalid: " + std::string(name) +
                                     " must be a finite number");
     return result;
