@@ -89,7 +89,7 @@ export const platformSchema = z.object({
     outboxMaxBytes: z.number().int().min(16384).max(8388608),
 });
 
-export const firmwareUploadSchema = z.object({
+export const firmwareUpgradeSchema = z.object({
     version: z.string().min(1, '固件版本不能为空').max(64),
     file: z
         .instanceof(File)
@@ -97,10 +97,6 @@ export const firmwareUploadSchema = z.object({
             (file) => file.size > 0 && file.size <= 128 * 1024 * 1024,
             '固件必须在 1 B 到 128 MiB 之间'
         ),
-});
-
-export const firmwareTaskSchema = z.object({
-    firmwareId: z.uuid('请选择固件'),
     keepSettings: z.boolean(),
 });
 

@@ -92,22 +92,9 @@ export namespace Edge {
         outboxMaxBytes: number;
     }
 
-    export interface Firmware {
-        id: string;
-        version: string;
-        fileName: string;
-        sha256: string;
-        sizeBytes: number;
-        createdAt: string;
-    }
-
-    export interface FirmwareUploadDto {
+    export interface FirmwareUpgradeDto {
         version: string;
         file: File;
-    }
-
-    export interface FirmwareTaskDto {
-        firmwareId: string;
         keepSettings: boolean;
     }
 }
@@ -116,5 +103,4 @@ export const edgeQueryKeys = {
     all: ['edge'] as const,
     list: (query?: Edge.Query) => [...edgeQueryKeys.all, 'list', query ?? {}] as const,
     detail: (id?: string) => [...edgeQueryKeys.all, 'detail', id ?? ''] as const,
-    firmware: [...(['edge'] as const), 'firmware'] as const,
 };

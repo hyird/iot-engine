@@ -210,14 +210,18 @@ SET name = EXCLUDED.name, base_url = EXCLUDED.base_url, enabled = EXCLUDED.enabl
         co_await push(c, nodeId, envelope);
     }
 
-    ruvia::Task<void> queueFirmware(ruvia::Context& c, std::string_view nodeId,
-                                    const FirmwareTaskBody& body) {
+    ruvia::Task<void> validateFirmwareTarget(ruvia::Context& c, std::string_view nodeId) {
         co_await requireNodeCapability(c, nodeId, "supports_firmware_update", "远程刷写");
-        const std::string firmwareId(body.firmwareId()->view());
+    }
+
+    ruvia::Task<void> queueFirmware(ruvia::Context& c, std::string_view nodeId,
+                                    std::string_view firmwareId, bool keepSettings) {
+        co_await validateFirmwareTarget(c, nodeId);
+        const std::string firmwareIdText(firmwareId);
         const auto rows = co_await c.db().query(R"sql(
 SELECT version, sha256, size_bytes, download_token
 FROM edge_firmware WHERE id = $1::uuid LIMIT 1)sql",
-                                                service::common::dbParams(firmwareId));
+                                                service::common::dbParams(firmwareIdText));
         if (rows.rows().empty())
             service::common::fail(17009, "固件不存在", 404);
         const auto& row = rows.rows().front();
@@ -229,7 +233,7 @@ FROM edge_firmware WHERE id = $1::uuid LIMIT 1)sql",
         protocol::uuidBytes(taskId, bytes);
         protocol::setBytes(&request.request_id, sizeof(request.request_id.bytes), bytes, 16);
         const auto download = std::string(protocol::kPublicPlatformUrl) +
-                              "/edge/v1/firmware/" + firmwareId + "/download?token=" +
+                              "/edge/v1/firmware/" + firmwareIdText + "/download?token=" +
                               std::string(row[3].text());
         copy(request.download_url, download);
         if (!hex(row[1].text(), bytes, 32))
@@ -237,8 +241,8 @@ FROM edge_firmware WHERE id = $1::uuid LIMIT 1)sql",
         protocol::setBytes(&request.sha256, sizeof(request.sha256.bytes), bytes, 32);
         request.size_bytes = static_cast<std::uint64_t>(integer(row[2].text()));
         copy(request.version, row[0].text());
-        request.keep_settings = *body.keepSettings();
-        const std::string json = "{\"firmware_id\":\"" + firmwareId +
+        request.keep_settings = keepSettings;
+        const std::string json = "{\"firmware_id\":\"" + firmwareIdText +
                                  "\",\"version\":\"" + jsonEscape(row[0].text()) + "\"}";
         co_await createTaskAndQueue(c, nodeId, taskId, "firmware", json, envelope);
     }
@@ -260,12 +264,11 @@ FROM edge_firmware ORDER BY created_at DESC LIMIT 100)sql");
         co_return result;
     }
 
-    ruvia::Task<FirmwareDto> registerFirmware(ruvia::Context& c, std::string version,
-                                              std::string fileName,
-                                              const std::filesystem::path& path,
-                                              std::string sha256, std::int64_t size) {
+    ruvia::Task<void> registerFirmware(ruvia::Context& c, std::string_view id,
+                                       std::string version, std::string fileName,
+                                       const std::filesystem::path& path,
+                                       std::string sha256, std::int64_t size) {
         const auto principal = service::middleware::requireAuth(c);
-        const auto id = service::common::nextUuidV7();
         const auto token = randomToken();
         const auto storagePath = path.string();
         (void)co_await c.db().execute(R"sql(
@@ -275,14 +278,6 @@ VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::uuid))sql",
                                       service::common::dbParams(
                                           id, version, fileName, storagePath, sha256, size,
                                           token, principal.userId));
-        FirmwareDto result(c);
-        result.id(id)
-            .version(version)
-            .fileName(fileName)
-            .sha256(sha256)
-            .sizeBytes(size)
-            .createdAt("");
-        co_return result;
     }
 
     ruvia::Task<std::pair<std::filesystem::path, std::string>> firmwareDownload(

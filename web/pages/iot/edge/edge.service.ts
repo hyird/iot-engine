@@ -1,16 +1,13 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { App } from 'antd';
+import { useQuery } from '@tanstack/react-query';
 import { useMutationWithMessage } from '@/hooks/useMutation';
 import {
     configureNetwork,
     configurePlatform,
-    flashFirmware,
     getEdgeDetail,
     getEdgeList,
-    getFirmwareList,
     removePlatform,
     setEnrollment,
-    uploadFirmware,
+    upgradeFirmware,
 } from './edge.api';
 import { type Edge, edgeQueryKeys } from './edge.types';
 
@@ -24,9 +21,6 @@ export const useEdgeDetail = (id?: string) =>
         enabled: Boolean(id),
         refetchInterval: 10_000,
     });
-
-export const useFirmwareList = (enabled = true) =>
-    useQuery({ queryKey: edgeQueryKeys.firmware, queryFn: getFirmwareList, enabled });
 
 export function useEnrollmentMutation() {
     return useMutationWithMessage({
@@ -64,23 +58,11 @@ export function usePlatformDeleteMutation() {
     });
 }
 
-export function useFirmwareUploadMutation() {
-    const queryClient = useQueryClient();
-    const { message } = App.useApp();
-    return useMutation({
-        mutationFn: uploadFirmware,
-        onSuccess: () => {
-            message.success('固件上传成功');
-            queryClient.invalidateQueries({ queryKey: edgeQueryKeys.firmware });
-        },
-    });
-}
-
-export function useFirmwareFlashMutation() {
+export function useFirmwareUpgradeMutation() {
     return useMutationWithMessage({
-        mutationFn: (value: { id: string; data: Edge.FirmwareTaskDto }) =>
-            flashFirmware(value.id, value.data),
-        successMessage: '固件刷写任务已下发',
+        mutationFn: (value: { id: string; data: Edge.FirmwareUpgradeDto }) =>
+            upgradeFirmware(value.id, value.data),
+        successMessage: '固件已上传，刷写任务已下发给当前节点',
         invalidateKeys: [edgeQueryKeys.all],
     });
 }

@@ -77,14 +77,6 @@ class PlatformValidator final : public ruvia::Middleware<PlatformValidator> {
                         RUVIA_MAX(8388608, "缓存上限必须在 16 KiB - 8 MiB 之间")));
 };
 
-class FirmwareTaskValidator final : public ruvia::Middleware<FirmwareTaskValidator> {
-  public:
-    RUVIA_VALIDATE_JSON(
-        FirmwareTaskBody,
-        RUVIA_RULE_NAME("firmwareId", firmwareId, RUVIA_REQUIRED("固件 ID 不能为空"),
-                        RUVIA_CUSTOM("固件 ID 必须是 UUID", service::common::isUuidField)));
-};
-
 class FirmwareDownloadValidator final : public ruvia::Middleware<FirmwareDownloadValidator> {
   public:
     RUVIA_VALIDATE_QUERY(FirmwareDownloadQuery,

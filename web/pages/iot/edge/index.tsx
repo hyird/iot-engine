@@ -26,19 +26,12 @@ import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermissions } from '@/hooks/usePermission';
 import { validateForm } from '@/utils/validation';
 import { getTerminalTicket } from './edge.api';
-import {
-    firmwareTaskSchema,
-    firmwareUploadSchema,
-    networkSchema,
-    platformSchema,
-} from './edge.schema';
+import { firmwareUpgradeSchema, networkSchema, platformSchema } from './edge.schema';
 import {
     useEdgeDetail,
     useEdgeList,
     useEnrollmentMutation,
-    useFirmwareFlashMutation,
-    useFirmwareList,
-    useFirmwareUploadMutation,
+    useFirmwareUpgradeMutation,
     useNetworkMutation,
     usePlatformDeleteMutation,
     usePlatformMutation,
@@ -188,12 +181,10 @@ export default function EdgeNodePage() {
     const [networkOpen, setNetworkOpen] = useState(false);
     const [platformOpen, setPlatformOpen] = useState(false);
     const [firmwareOpen, setFirmwareOpen] = useState(false);
-    const [uploadOpen, setUploadOpen] = useState(false);
     const [terminalOpen, setTerminalOpen] = useState(false);
     const [networkForm] = Form.useForm<Edge.NetworkDto>();
     const [platformForm] = Form.useForm<Edge.PlatformDto>();
-    const [firmwareForm] = Form.useForm<Edge.FirmwareTaskDto>();
-    const [uploadForm] = Form.useForm<Edge.FirmwareUploadDto>();
+    const [firmwareForm] = Form.useForm<Edge.FirmwareUpgradeDto>();
     const { modal } = App.useApp();
     const { run: search } = useDebounceFn((value: string) => {
         setKeyword(value);
@@ -206,9 +197,7 @@ export default function EdgeNodePage() {
     const network = useNetworkMutation();
     const platform = usePlatformMutation();
     const platformDelete = usePlatformDeleteMutation();
-    const { data: firmwares = [] } = useFirmwareList(canQuery);
-    const firmwareFlash = useFirmwareFlashMutation();
-    const firmwareUpload = useFirmwareUploadMutation();
+    const firmwareUpgrade = useFirmwareUpgradeMutation();
 
     useEffect(() => {
         if (!selectedId) return;
@@ -417,16 +406,6 @@ export default function EdgeNodePage() {
                                 { value: 'rejected', label: '已拒绝' },
                             ]}
                         />
-                        {canFirmware && (
-                            <Button
-                                onClick={() => {
-                                    uploadForm.resetFields();
-                                    setUploadOpen(true);
-                                }}
-                            >
-                                上传固件
-                            </Button>
-                        )}
                     </Space>
                 </div>
             }
@@ -475,11 +454,12 @@ export default function EdgeNodePage() {
                                 <Button
                                     danger
                                     onClick={() => {
+                                        firmwareForm.resetFields();
                                         firmwareForm.setFieldsValue({ keepSettings: true });
                                         setFirmwareOpen(true);
                                     }}
                                 >
-                                    远程刷写
+                                    上传固件并刷写
                                 </Button>
                             )}
                             {canTerminal && detail.ttydAvailable && (
@@ -685,67 +665,30 @@ export default function EdgeNodePage() {
 
             <FormModal
                 open={firmwareOpen}
-                title="远程刷写固件"
+                title={`上传固件并刷写${detail ? ` · ${detail.name || detail.imei}` : ''}`}
                 onCancel={() => setFirmwareOpen(false)}
                 onOk={() => firmwareForm.submit()}
                 okButtonProps={{ danger: true }}
-                confirmLoading={firmwareFlash.isPending}
+                confirmLoading={firmwareUpgrade.isPending}
                 destroyOnHidden
             >
                 <Form
                     form={firmwareForm}
                     layout="vertical"
                     onFinish={(values) => {
-                        const parsed = validateForm(firmwareForm, firmwareTaskSchema, values);
+                        const parsed = validateForm(firmwareForm, firmwareUpgradeSchema, values);
                         if (parsed && selectedId)
-                            firmwareFlash.mutate(
+                            firmwareUpgrade.mutate(
                                 { id: selectedId, data: parsed },
                                 { onSuccess: () => setFirmwareOpen(false) }
                             );
-                    }}
-                >
-                    <Form.Item label="固件" name="firmwareId">
-                        <Select
-                            options={firmwares.map((item) => ({
-                                value: item.id,
-                                label: `${item.version} · ${item.fileName} · ${formatBytes(item.sizeBytes)}`,
-                            }))}
-                        />
-                    </Form.Item>
-                    <Form.Item label="保留 UCI 配置" name="keepSettings" valuePropName="checked">
-                        <Switch />
-                    </Form.Item>
-                    <p className="text-xs text-red-500">
-                        节点将下载固件、校验大小和 SHA-256，然后调用
-                        sysupgrade；请确认固件与目标硬件完全匹配。
-                    </p>
-                </Form>
-            </FormModal>
-
-            <FormModal
-                open={uploadOpen}
-                title="上传 OpenWrt 固件"
-                onCancel={() => setUploadOpen(false)}
-                onOk={() => uploadForm.submit()}
-                confirmLoading={firmwareUpload.isPending}
-                destroyOnHidden
-            >
-                <Form
-                    form={uploadForm}
-                    layout="vertical"
-                    onFinish={(values) => {
-                        const parsed = validateForm(uploadForm, firmwareUploadSchema, values);
-                        if (parsed)
-                            firmwareUpload.mutate(parsed, {
-                                onSuccess: () => setUploadOpen(false),
-                            });
                     }}
                 >
                     <Form.Item label="版本" name="version">
                         <Input maxLength={64} placeholder="例如 23.05.5-r1" />
                     </Form.Item>
                     <Form.Item
-                        label="固件文件"
+                        label="当前节点固件文件"
                         name="file"
                         getValueFromEvent={(event) => event?.fileList?.[0]?.originFileObj}
                     >
@@ -754,7 +697,14 @@ export default function EdgeNodePage() {
                         </Upload>
                     </Form.Item>
                     <p className="text-xs text-slate-500">
-                        最大 128 MiB。服务端保存后计算 SHA-256，节点刷写前会再次校验。
+                        最大 128 MiB。上传完成后平台计算 SHA-256，并立即只向当前节点下发。
+                    </p>
+                    <Form.Item label="保留 UCI 配置" name="keepSettings" valuePropName="checked">
+                        <Switch />
+                    </Form.Item>
+                    <p className="text-xs text-red-500">
+                        节点将下载固件、校验大小和 SHA-256，然后调用
+                        sysupgrade；请确认固件与目标硬件完全匹配。
                     </p>
                 </Form>
             </FormModal>

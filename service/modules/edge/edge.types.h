@@ -53,12 +53,6 @@ struct PlatformBody final {
                 reconnectIntervalSec, outboxMaxBytes);
 };
 
-struct FirmwareTaskBody final {
-    RUVIA_OPTIONAL_FIELD_NAME("firmwareId", firmwareId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("keepSettings", keepSettings, ruvia::Bool, RUVIA_DEFAULT(true));
-    RUVIA_MODEL(FirmwareTaskBody, firmwareId, keepSettings);
-};
-
 struct FirmwareDownloadQuery final {
     RUVIA_OPTIONAL_FIELD(token, ruvia::String);
     RUVIA_MODEL(FirmwareDownloadQuery, token);
@@ -181,7 +175,6 @@ struct TerminalTicketDto final {
 EDGE_RESPONSE(EdgePageResponse, EdgePageDto);
 EDGE_RESPONSE(EdgeDetailResponse, EdgeNodeDto);
 EDGE_RESPONSE(FirmwareListResponse, ruvia::List<FirmwareDto>);
-EDGE_RESPONSE(FirmwareDetailResponse, FirmwareDto);
 EDGE_RESPONSE(TerminalTicketResponse, TerminalTicketDto);
 
 #undef EDGE_RESPONSE

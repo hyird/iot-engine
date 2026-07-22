@@ -4,8 +4,7 @@ import type { PaginatedResult } from '@/utils/types';
 import {
     edgeIdSchema,
     edgeListQuerySchema,
-    firmwareTaskSchema,
-    firmwareUploadSchema,
+    firmwareUpgradeSchema,
     networkSchema,
     platformIdSchema,
     platformSchema,
@@ -30,20 +29,15 @@ export const removePlatform = (id: string, platformId: string) =>
     request.delete<void>(
         `${BASE}/${edgeIdSchema.parse(id)}/platforms/${platformIdSchema.parse(platformId)}`
     );
-export const getFirmwareList = () => request.get<Edge.Firmware[]>(`${BASE}/firmware`);
-export const uploadFirmware = (data: Edge.FirmwareUploadDto) => {
-    const value = firmwareUploadSchema.parse(data);
+export const upgradeFirmware = (id: string, data: Edge.FirmwareUpgradeDto) => {
+    const value = firmwareUpgradeSchema.parse(data);
     const form = new FormData();
     form.append('version', value.version);
+    form.append('keepSettings', String(value.keepSettings));
     form.append('file', value.file, value.file.name);
-    return request.post<Edge.Firmware>(`${BASE}/firmware`, form, {
+    return request.post<void>(`${BASE}/${edgeIdSchema.parse(id)}/firmware`, form, {
         timeout: 5 * 60 * 1000,
     });
 };
-export const flashFirmware = (id: string, data: Edge.FirmwareTaskDto) =>
-    request.post<void>(
-        `${BASE}/${edgeIdSchema.parse(id)}/firmware`,
-        firmwareTaskSchema.parse(data)
-    );
 export const getTerminalTicket = (id: string) =>
     request.post<{ ticket: string }>(`${BASE}/${edgeIdSchema.parse(id)}/terminal-ticket`);

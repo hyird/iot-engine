@@ -25,13 +25,12 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
     RUVIA_ROUTES_BEGIN
     RUVIA_GET("/", list, EdgeListValidator);
     RUVIA_GET("/firmware", firmwares);
-    RUVIA_POST_STREAM("/firmware", uploadFirmware);
     RUVIA_PUT("/:id/enrollment", enrollment, EdgeIdValidator, EnrollmentValidator);
     RUVIA_POST("/:id/network", network, EdgeIdValidator, NetworkValidator);
     RUVIA_POST("/:id/platforms", savePlatform, EdgeIdValidator, PlatformValidator);
     RUVIA_DELETE("/:id/platforms/:platformId", removePlatform,
                  EdgePlatformParamsValidator);
-    RUVIA_POST("/:id/firmware", flashFirmware, EdgeIdValidator, FirmwareTaskValidator);
+    RUVIA_POST_STREAM("/:id/firmware", uploadFirmware, EdgeIdValidator);
     RUVIA_POST("/:id/terminal-ticket", terminalTicket, EdgeIdValidator);
     RUVIA_GET("/:id", detail, EdgeIdValidator);
     RUVIA_ROUTES_END
@@ -84,12 +83,6 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
         co_return c.json(service::common::operation(c, "平台删除配置已下发"));
     }
 
-    ruvia::Task<ruvia::HttpResponse> flashFirmware(ruvia::Context& c) {
-        co_await service::middleware::requirePermission(c, "iot:edge:firmware");
-        co_await edgeService().queueFirmware(c, id(c), c.req().valid<FirmwareTaskBody>());
-        co_return c.json(service::common::operation(c, "固件刷写任务已下发"));
-    }
-
     ruvia::Task<ruvia::HttpResponse> firmwares(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:edge:query");
         co_return c.json(service::common::ok<FirmwareListResponse>(
@@ -104,6 +97,8 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
 
     ruvia::Task<ruvia::HttpResponse> uploadFirmware(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:edge:firmware");
+        const auto nodeId = id(c);
+        co_await edgeService().validateFirmwareTarget(c, nodeId);
         const auto configured = c.env().get("EDGE_FIRMWARE_DIR").value_or("firmware");
         std::error_code error;
         auto directory = std::filesystem::absolute(std::filesystem::path(configured), error);
@@ -124,6 +119,7 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
 
         std::ofstream output;
         std::string version;
+        std::string keepSettingsText;
         std::string fileName;
         std::uint64_t bytes = 0;
         bool fileSeen = false;
@@ -152,6 +148,10 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
                 version.append(part->body());
                 if (version.size() > 64)
                     service::common::fail(17015, "固件版本不能超过 64 个字符", 400);
+            } else if (part->name() == "keepSettings") {
+                keepSettingsText.append(part->body());
+                if (keepSettingsText.size() > 5)
+                    service::common::fail(17018, "保留配置参数无效", 400);
             } else if (part->name() == "file" && fileSeen) {
                 bytes += part->body().size();
                 if (bytes > 128ULL * 1024ULL * 1024ULL)
@@ -166,6 +166,10 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
         }
         if (!fileSeen || bytes == 0 || fileName.empty() || version.empty())
             service::common::fail(17017, "固件文件和版本不能为空", 400);
+        const bool keepSettings = keepSettingsText.empty() || keepSettingsText == "true" ||
+                                  keepSettingsText == "1";
+        if (!keepSettings && keepSettingsText != "false" && keepSettingsText != "0")
+            service::common::fail(17018, "保留配置参数无效", 400);
         std::array<unsigned char, 32> hash{};
         unsigned hashSize = 0;
         if (EVP_DigestFinal_ex(digest.get(), hash.data(), &hashSize) != 1 ||
@@ -178,11 +182,12 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
             hashText.push_back(digits[value >> 4U]);
             hashText.push_back(digits[value & 0x0fU]);
         }
-        auto firmware = co_await edgeService().registerFirmware(
-            c, std::move(version), std::move(fileName), outputPath, std::move(hashText),
-            static_cast<std::int64_t>(bytes));
+        co_await edgeService().registerFirmware(
+            c, storageId, std::move(version), std::move(fileName), outputPath,
+            std::move(hashText), static_cast<std::int64_t>(bytes));
         cleanup.keep = true;
-        co_return c.json(service::common::ok<FirmwareDetailResponse>(c, std::move(firmware)));
+        co_await edgeService().queueFirmware(c, nodeId, storageId, keepSettings);
+        co_return c.json(service::common::operation(c, "固件已上传，刷写任务已下发给当前节点"));
     }
 };
 
