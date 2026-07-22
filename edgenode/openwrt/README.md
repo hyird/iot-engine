@@ -33,15 +33,14 @@ uses; actual target hardware is still required before declaring a target deploya
 
 The bootstrap platform base address is compiled as `https://i.a-z.xin` and cannot be
 overridden through UCI. The daemon derives the internal upgrade path
-`/edge/v1/connect`. Configure the IMEI and model with UCI commands:
+`/edge/v1/connect`. The default IMEI and model are empty: the init service reads IMEI
+from the modem and model from `/tmp/sysinfo/model` before starting the platform client.
+To override either value explicitly, use UCI and restart the service:
 
 ```sh
-uci set edgenode.node=node
-uci set edgenode.node.imei='490154203237518'
-uci set edgenode.node.model='OpenWrt Edge'
-uci set edgenode.node.heartbeat_interval_sec='30'
+uci set edgenode.node.imei='your-15-digit-imei'
+uci set edgenode.node.model='your-model'
 uci commit edgenode
-/etc/init.d/edgenode enable
 /etc/init.d/edgenode restart
 ```
 
@@ -79,8 +78,9 @@ from `proto/edge.proto` in `PKG_BUILD_DIR` on every relevant build.
 Hardware paths, interface names, bridge mode, modem USB ID, AT port, status path, and
 monitor interval are UCI settings rather than compiled constants. The TAS-682 package
 defaults describe its single field serial port and Ethernet port plus the LierdaComm
-modem. The service initializes IMEI and ICCID once in UCI, and keeps registration and
-signal status in tmpfs without repeatedly writing flash.
+modem. The service initializes the model from `/tmp/sysinfo/model`, initializes IMEI and
+ICCID from the modem, and keeps registration and signal status in tmpfs without
+repeatedly writing flash.
 
 The resulting package must be cross-compiled and installed on the actual target. A host
 binary is not an OpenWrt deliverable.

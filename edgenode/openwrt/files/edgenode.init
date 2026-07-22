@@ -4,6 +4,16 @@ USE_PROCD=1
 START=95
 STOP=10
 
+initialize_model() {
+	local configured detected
+
+	config_get configured node model
+	[ -r /tmp/sysinfo/model ] && detected="$(cat /tmp/sysinfo/model)"
+	[ -n "$detected" ] || return 0
+	[ "$configured" = "$detected" ] && return 0
+	uci -q set edgenode.node.model="$detected" && uci -q commit edgenode
+}
+
 bind_modem_at_port() {
 	local usb_vendor="$1"
 	local usb_product="$2"
@@ -23,9 +33,10 @@ bind_modem_at_port() {
 
 start_service() {
 	local usb_vendor usb_product at_port status_path monitor_interval
-	local imei has_platform
+	local imei
 
 	config_load edgenode
+	initialize_model
 	config_get usb_vendor modem usb_vendor
 	config_get usb_product modem usb_product
 	config_get at_port modem at_port
@@ -49,6 +60,9 @@ start_service() {
 	procd_set_param stderr 1
 	procd_close_instance
 
+	# The initializer may have persisted a newly discovered IMEI. Reload UCI so
+	# the first boot can start the platform client without restarting this service.
+	config_load edgenode
 	config_get imei node imei
 	if [ "${#imei}" -ne 15 ] || [ -z "${imei##*[!0-9]*}" ]; then
 		logger -t edgenode 'platform client not started: no valid 15-digit IMEI yet'
