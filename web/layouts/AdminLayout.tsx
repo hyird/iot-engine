@@ -3,6 +3,7 @@ import {
     ApiOutlined,
     AppstoreOutlined,
     ClusterOutlined,
+    CloudServerOutlined,
     DownOutlined,
     HddOutlined,
     LinkOutlined,
@@ -37,7 +38,10 @@ const breadcrumbGroups = [
     {
         title: '设备接入',
         icon: <LinkOutlined />,
-        routes: [{ path: '/iot/link', title: '链路管理', permission: 'iot:link:query' }],
+        routes: [
+            { path: '/iot/link', title: '链路管理', permission: 'iot:link:query' },
+            { path: '/iot/edge', title: '边缘节点', permission: 'iot:edge:query' },
+        ],
     },
     {
         title: '协议管理',
@@ -150,6 +154,9 @@ export default function AdminLayout() {
                 icon: <LinkOutlined />,
                 label: '链路管理',
             });
+        }
+        if (has('iot:edge:query')) {
+            items.push({ key: '/iot/edge', icon: <CloudServerOutlined />, label: '边缘节点' });
         }
         if (has('iot:protocol:query')) {
             items.push({

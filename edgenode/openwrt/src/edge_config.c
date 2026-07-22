@@ -115,6 +115,24 @@ static bool duplicate_platform(const edge_app_config *config, const uint8_t id[1
     return false;
 }
 
+static bool add_bootstrap_platform(edge_app_config *config) {
+    edge_platform_config *platform = &config->platforms[0];
+    if (!edge_config_parse_uuid(EDGE_BOOTSTRAP_PLATFORM_ID, platform->id))
+        return false;
+    snprintf(platform->name, sizeof(platform->name), "%s", "bootstrap");
+    snprintf(platform->url, sizeof(platform->url), "%s", EDGE_BOOTSTRAP_URL);
+    snprintf(platform->enrollment_token_file, sizeof(platform->enrollment_token_file),
+             "%s", "/etc/edgenode/credentials/bootstrap.token");
+    platform->enabled = true;
+    platform->network_owner = true;
+    platform->priority = 0U;
+    platform->reconnect_interval_sec = 5U;
+    platform->outbox_max_bytes = 256U * 1024U;
+    platform->bootstrap = true;
+    config->platform_count = 1U;
+    return true;
+}
+
 bool edge_config_load(edge_app_config *config, char *error, size_t error_size) {
     if (config == NULL) {
         set_error(error, error_size, "config output is null");
@@ -122,6 +140,10 @@ bool edge_config_load(edge_app_config *config, char *error, size_t error_size) {
     }
     memset(config, 0, sizeof(*config));
     config->heartbeat_interval_sec = 30U;
+    if (!add_bootstrap_platform(config)) {
+        set_error(error, error_size, "invalid built-in bootstrap platform id");
+        return false;
+    }
 
     struct uci_context *context = uci_alloc_context();
     struct uci_package *package = NULL;
@@ -135,7 +157,6 @@ bool edge_config_load(edge_app_config *config, char *error, size_t error_size) {
     bool have_node = false;
     bool have_hardware = false;
     bool have_modem = false;
-    bool have_network_owner = false;
     struct uci_element *element;
     uci_foreach_element(&package->sections, element) {
         struct uci_section *section = uci_to_section(element);
@@ -184,43 +205,50 @@ bool edge_config_load(edge_app_config *config, char *error, size_t error_size) {
             set_error(error, error_size, "too many enabled platform sections");
             goto fail;
         }
-        edge_platform_config *platform = &config->platforms[config->platform_count];
         char id[37];
+        uint8_t parsed_id[16];
         if (!copy_option(context, section, "id", id, sizeof(id), true, error, error_size) ||
-            !copy_option(context, section, "url", platform->url, sizeof(platform->url),
-                         true, error, error_size) ||
-            !copy_option(context, section, "enrollment_token_file",
-                         platform->enrollment_token_file,
-                         sizeof(platform->enrollment_token_file), false, error, error_size))
-            goto fail;
-        if (!edge_config_parse_uuid(id, platform->id) || duplicate_platform(config, platform->id)) {
-            set_error(error, error_size, "platform id must be a unique UUID");
+            !edge_config_parse_uuid(id, parsed_id)) {
+            set_error(error, error_size, "platform id must be a UUID");
             goto fail;
         }
-        if (strncmp(platform->url, "wss://", 6U) != 0) {
-            set_error(error, error_size, "platform url must use wss://");
+        if (memcmp(parsed_id, config->platforms[0].id, sizeof(parsed_id)) == 0)
+            continue;
+        edge_platform_config *platform = &config->platforms[config->platform_count];
+        memcpy(platform->id, parsed_id, sizeof(platform->id));
+        if (!copy_option(context, section, "url", platform->url, sizeof(platform->url),
+                         true, error, error_size) ||
+            !copy_option(context, section, "enrollment_token_file",
+                          platform->enrollment_token_file,
+                          sizeof(platform->enrollment_token_file), false, error, error_size))
+            goto fail;
+        if (duplicate_platform(config, platform->id)) {
+            set_error(error, error_size, "platform id must be unique");
+            goto fail;
+        }
+        if (strncmp(platform->url, "https://", 8U) != 0 &&
+            strncmp(platform->url, "http://", 7U) != 0) {
+            set_error(error, error_size, "platform url must use http:// or https://");
             goto fail;
         }
         snprintf(platform->name, sizeof(platform->name), "%s", section->e.name);
+        if (!copy_option(context, section, "name", platform->name,
+                         sizeof(platform->name), false, error, error_size))
+            goto fail;
         platform->enabled = true;
-        platform->network_owner = bool_option(context, section, "network_owner", false);
+        platform->network_owner = false;
+        platform->bootstrap = false;
         platform->priority = (uint16_t)number_option(context, section, "priority", 100U, 0U, 65535U);
         platform->reconnect_interval_sec = (uint16_t)number_option(
             context, section, "reconnect_interval_sec", 5U, 1U, 3600U);
         platform->outbox_max_bytes = (uint32_t)number_option(
             context, section, "outbox_max_bytes", 256U * 1024U,
             16U * 1024U, 8U * 1024U * 1024U);
-        if (platform->network_owner && have_network_owner) {
-            set_error(error, error_size, "only one enabled platform may own network configuration");
-            goto fail;
-        }
-        have_network_owner = have_network_owner || platform->network_owner;
         ++config->platform_count;
     }
 
-    if (!have_node || config->platform_count == 0U) {
-        set_error(error, error_size, !have_node ? "one node section is required"
-                                                : "at least one enabled platform is required");
+    if (!have_node) {
+        set_error(error, error_size, "one node section is required");
         goto fail;
     }
     uci_unload(context, package);

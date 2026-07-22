@@ -18,6 +18,8 @@
 #include "service/common/http.h"
 #include "service/common/packet_log.h"
 #include "service/config/schema.h"
+#include "service/modules/edge/edge.controller.h"
+#include "service/modules/edge/edge.gateway.h"
 #include "service/modules/northbridge/device/device.controller.h"
 #include "service/modules/northbridge/link/link.controller.h"
 #include "service/modules/northbridge/open/open_access.controller.h"
@@ -151,10 +153,12 @@ int main(int argc, char* argv[]) {
         auto openWebhooks = std::make_shared<service::open_access::OpenWebhookRuntime>();
         auto configReconciler =
             std::make_shared<service::northbridge::config::RuntimeConfigReconciler>();
+        auto edgeProjector = std::make_shared<service::edge::EdgeProjector>();
         app.useDb(std::move(db))
             .useRedis(std::move(northRedis))
             .onStart([southbridge, telemetry, commandResults, openWebhooks, configReconciler,
-                      southRedis = std::move(southRedis), southWorkerCount, &app]() mutable {
+                      edgeProjector, southRedis = std::move(southRedis), southWorkerCount,
+                      &app]() mutable {
                 auto workers = app.workers();
                 if (workers.empty())
                     throw std::runtime_error(
@@ -162,6 +166,7 @@ int main(int argc, char* argv[]) {
                 telemetry->start(workers, southWorkerCount);
                 commandResults->start(workers, southWorkerCount);
                 openWebhooks->start(workers);
+                edgeProjector->start(workers.front());
                 auto started = std::make_shared<std::promise<void>>();
                 auto ready = started->get_future();
                 const auto posted = workers.front().post(
@@ -175,8 +180,10 @@ int main(int argc, char* argv[]) {
                 ready.get();
                 configReconciler->start(workers.front(), southWorkerCount);
             })
-            .onStop([southbridge, telemetry, commandResults, openWebhooks, configReconciler] {
+            .onStop([southbridge, telemetry, commandResults, openWebhooks, configReconciler,
+                     edgeProjector] {
                 configReconciler->stop();
+                edgeProjector->stop();
                 southbridge->stop();
                 telemetry->stop();
                 commandResults->stop();
@@ -184,6 +191,8 @@ int main(int argc, char* argv[]) {
             })
             .onError(&handleError)
             .setListenAddress(app.env().get("HOST").value_or("0.0.0.0"))
+            .setMaxStreamBodyBytes(129U * 1024U * 1024U)
+            .setMaxWebSocketMessageBytes(16U * 1024U)
             .setServerTopology(
                 ruvia::ServerTopology::http(app.env().get<std::uint16_t>("PORT").value_or(1102)))
             .setWorkersPerListener(northWorkerCount)

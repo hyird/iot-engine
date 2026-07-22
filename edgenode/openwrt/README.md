@@ -26,25 +26,23 @@ uses; actual target hardware is still required before declaring a target deploya
 
 ## Configure
 
-Install the package, then edit `/etc/config/edgenode`:
+The bootstrap URL is compiled as `wss://i.a-z.xin/edge/v1/connect` and cannot be
+overridden through UCI. Configure the IMEI and model with UCI commands:
 
-```text
-config node 'node'
-        option imei '490154203237518'
-        option model 'OpenWrt Edge'
-
-config platform 'primary'
-        option enabled '1'
-        option id '018f6f5e-93d8-7d31-9f70-123456789abc'
-        option url 'wss://platform.example/edge/v1/connect'
-        option enrollment_token_file '/etc/edgenode/credentials/primary.token'
-        option network_owner '1'
-        option outbox_max_bytes '262144'
+```sh
+uci set edgenode.node=node
+uci set edgenode.node.imei='490154203237518'
+uci set edgenode.node.model='OpenWrt Edge'
+uci set edgenode.node.heartbeat_interval_sec='30'
+uci commit edgenode
+/etc/init.d/edgenode enable
+/etc/init.d/edgenode restart
 ```
 
-The enrollment token file must be readable only by its owner (`0600`). Add another
-`platform` section with a different UUID for each additional platform. Only one enabled
-platform may set `network_owner=1`.
+If enrollment requires a token, store it at
+`/etc/edgenode/credentials/bootstrap.token` with mode `0600`. Additional platform
+sections are created or removed only by authenticated commands from the bootstrap
+platform; the node applies those settings through `uci set/delete` and `uci commit`.
 
 ## Build an IPK
 

@@ -6,10 +6,13 @@
 
 #define EDGE_MAX_PLATFORMS 4U
 #define EDGE_URL_MAX 255U
+#define EDGE_BOOTSTRAP_PLATFORM_ID "00000000-0000-7000-8000-000000000001"
+#define EDGE_BOOTSTRAP_URL "https://i.a-z.xin"
 
 typedef struct {
     uint8_t id[16];
-    char name[33];
+    char name[49];
+    /* User-visible platform base address. Only http:// and https:// are accepted. */
     char url[EDGE_URL_MAX + 1U];
     char enrollment_token_file[129];
     bool enabled;
@@ -17,6 +20,7 @@ typedef struct {
     uint16_t priority;
     uint16_t reconnect_interval_sec;
     uint32_t outbox_max_bytes;
+    bool bootstrap;
 } edge_platform_config;
 
 typedef struct {

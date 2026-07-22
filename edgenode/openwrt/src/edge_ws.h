@@ -15,16 +15,23 @@ typedef struct {
     struct uwsc_client client;
     struct ev_timer reconnect_timer;
     struct ev_timer heartbeat_timer;
+    struct ev_timer firmware_timer;
+    struct ev_timer reload_timer;
+    struct ev_timer terminal_timer;
     edge_ws_app *app;
     const edge_platform_config *config;
+    char transport_url[EDGE_URL_MAX + 32U];
     uint8_t node_id[16];
+    uint8_t terminal_id[16];
     uint64_t session_epoch;
     uint64_t active_revision;
     edge_spool spool;
     uint64_t sequence;
+    uint16_t heartbeat_interval_sec;
     bool client_active;
     bool websocket_open;
     bool enrolled;
+    bool terminal_open;
 } edge_ws_session;
 
 struct edge_ws_app {

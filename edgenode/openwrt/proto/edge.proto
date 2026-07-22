@@ -73,6 +73,12 @@ enum FirmwareUpdateState {
   FIRMWARE_UPDATE_FAILED = 5;
 }
 
+enum PlatformConfigOperation {
+  PLATFORM_CONFIG_UNSPECIFIED = 0;
+  PLATFORM_CONFIG_UPSERT = 1;
+  PLATFORM_CONFIG_DELETE = 2;
+}
+
 message Empty {}
 
 message Hello {
@@ -97,6 +103,7 @@ message Hello {
   uint32 signal_percent = 19;
   bool mobile_registered = 20;
   int32 mobile_registration_status = 21;
+  bool supports_platform_config = 22;
 }
 
 message HelloAck {
@@ -136,6 +143,7 @@ message CapabilityReport {
   repeated InterfaceCapability interfaces = 1 [(nanopb).max_count = 8];
   repeated SerialCapability serial_ports = 2 [(nanopb).max_count = 8];
   string network_backend = 3 [(nanopb).max_length = 32];
+  bool ttyd_available = 4;
 }
 
 message Heartbeat {
@@ -468,6 +476,25 @@ message FirmwareUpdateResult {
   string message = 3 [(nanopb).max_length = 256];
 }
 
+message PlatformConfigRequest {
+  bytes request_id = 1 [(nanopb).max_size = 16];
+  PlatformConfigOperation operation = 2;
+  bytes target_platform_id = 3 [(nanopb).max_size = 16];
+  string name = 4 [(nanopb).max_length = 32];
+  string url = 5 [(nanopb).max_length = 255];
+  string enrollment_token = 6 [(nanopb).max_length = 192];
+  bool enabled = 7;
+  uint32 priority = 8;
+  uint32 reconnect_interval_sec = 9;
+  uint32 outbox_max_bytes = 10;
+}
+
+message PlatformConfigResult {
+  bytes request_id = 1 [(nanopb).max_size = 16];
+  bool success = 2;
+  string message = 3 [(nanopb).max_length = 256];
+}
+
 message TerminalOpen {
   bytes terminal_id = 1 [(nanopb).max_size = 16];
   bytes ticket = 2 [(nanopb).max_size = 64];
@@ -542,6 +569,8 @@ message Envelope {
     NetworkConfigResult network_config_result = 61;
     FirmwareUpdateRequest firmware_update_request = 62;
     FirmwareUpdateResult firmware_update_result = 63;
+    PlatformConfigRequest platform_config_request = 64;
+    PlatformConfigResult platform_config_result = 65;
     TerminalOpen terminal_open = 70;
     TerminalData terminal_data = 71;
     TerminalResize terminal_resize = 72;

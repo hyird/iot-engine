@@ -52,6 +52,11 @@ const permissionOptions = [
     ['iot:open-access:add', '新增开放接入配置'],
     ['iot:open-access:edit', '编辑开放接入配置'],
     ['iot:open-access:delete', '删除开放接入配置'],
+    ['iot:edge:query', '查询边缘节点'],
+    ['iot:edge:edit', '审批边缘节点'],
+    ['iot:edge:config', '配置边缘节点'],
+    ['iot:edge:firmware', '上传与刷写边缘固件'],
+    ['iot:edge:terminal', '访问边缘 Web 终端'],
 ].map(([value, label]) => ({ value, label }));
 
 type RoleFormValues = Role.CreateDto & { id?: string };

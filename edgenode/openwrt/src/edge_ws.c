@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -18,8 +19,13 @@
 
 #include <pb_encode.h>
 
+#include "edge_capability.h"
+#include "edge_firmware.h"
 #include "edge_modem.h"
+#include "edge_network.h"
+#include "edge_platform.h"
 #include "edge_sha256.h"
+#include "edge_terminal.h"
 
 #define EDGE_SOFTWARE_VERSION "0.1.1"
 
@@ -33,6 +39,18 @@ static edge_ws_session *session_from_reconnect(struct ev_timer *timer) {
 
 static edge_ws_session *session_from_heartbeat(struct ev_timer *timer) {
     return (edge_ws_session *)((uint8_t *)timer - offsetof(edge_ws_session, heartbeat_timer));
+}
+
+static edge_ws_session *session_from_firmware(struct ev_timer *timer) {
+    return (edge_ws_session *)((uint8_t *)timer - offsetof(edge_ws_session, firmware_timer));
+}
+
+static edge_ws_session *session_from_reload(struct ev_timer *timer) {
+    return (edge_ws_session *)((uint8_t *)timer - offsetof(edge_ws_session, reload_timer));
+}
+
+static edge_ws_session *session_from_terminal(struct ev_timer *timer) {
+    return (edge_ws_session *)((uint8_t *)timer - offsetof(edge_ws_session, terminal_timer));
 }
 
 static int64_t now_ms(void) {
@@ -150,6 +168,9 @@ static bool send_hello(edge_ws_session *session) {
     hello->supports_tcp = true;
     hello->supports_serial = true;
     hello->supports_network_config = session->config->network_owner;
+    hello->supports_terminal = edge_capability_has_ttyd();
+    hello->supports_firmware_update = session->config->bootstrap;
+    hello->supports_platform_config = session->config->bootstrap;
     edge_modem_info modem;
     bool modem_available = false;
     hello->signal_csq = 99U;
@@ -238,6 +259,11 @@ static void schedule_reconnect(edge_ws_session *session) {
     session->enrolled = false;
     session->client_active = false;
     ev_timer_stop(session->app->loop, &session->heartbeat_timer);
+    ev_timer_stop(session->app->loop, &session->terminal_timer);
+    if (session->terminal_open) {
+        edge_terminal_close(session->terminal_id);
+        session->terminal_open = false;
+    }
     ev_timer_stop(session->app->loop, &session->reconnect_timer);
     ev_timer_set(&session->reconnect_timer,
                  (ev_tstamp)session->config->reconnect_interval_sec, 0.0);
@@ -386,6 +412,145 @@ static void send_pong(edge_ws_session *session, const iot_edge_v1_Envelope *inpu
     send_envelope(session, output);
 }
 
+static void send_capability_report(edge_ws_session *session) {
+    if (!session->enrolled)
+        return;
+    iot_edge_v1_Envelope *output = &session->app->envelope;
+    if (!init_envelope(session, output))
+        return;
+    output->which_payload = iot_edge_v1_Envelope_capability_report_tag;
+    edge_capability_collect(&output->payload.capability_report);
+    send_envelope(session, output);
+}
+
+static void send_firmware_result(edge_ws_session *session, const uint8_t request_id[16],
+                                 iot_edge_v1_FirmwareUpdateState state,
+                                 const char *message) {
+    iot_edge_v1_Envelope *output = &session->app->envelope;
+    if (!init_envelope(session, output))
+        return;
+    output->which_payload = iot_edge_v1_Envelope_firmware_update_result_tag;
+    edge_protocol_set_bytes(&output->payload.firmware_update_result.request_id,
+                            sizeof(output->payload.firmware_update_result.request_id.bytes),
+                            request_id, 16U);
+    output->payload.firmware_update_result.state = state;
+    safe_copy(output->payload.firmware_update_result.message,
+              sizeof(output->payload.firmware_update_result.message), message);
+    send_envelope(session, output);
+}
+
+static void handle_network_config(edge_ws_session *session,
+                                  const iot_edge_v1_NetworkConfigRequest *request) {
+    uint8_t request_id[16] = {0};
+    if (request->request_id.size == 16U)
+        memcpy(request_id, request->request_id.bytes, sizeof(request_id));
+    char message[257] = {0};
+    bool success = edge_network_prepare_br_lan(request, message, sizeof(message));
+    if (success && !edge_network_activate(request->rollback_timeout_sec)) {
+        success = false;
+        safe_copy(message, sizeof(message), "could not activate br-lan rollback watchdog");
+    }
+    if (success)
+        safe_copy(message, sizeof(message), "br-lan accepted; reconnect confirms the change");
+    iot_edge_v1_Envelope *output = &session->app->envelope;
+    if (!init_envelope(session, output))
+        return;
+    output->which_payload = iot_edge_v1_Envelope_network_config_result_tag;
+    edge_protocol_set_bytes(&output->payload.network_config_result.request_id,
+                            sizeof(output->payload.network_config_result.request_id.bytes),
+                            request_id, sizeof(request_id));
+    output->payload.network_config_result.success = success;
+    output->payload.network_config_result.rolled_back = false;
+    safe_copy(output->payload.network_config_result.message,
+              sizeof(output->payload.network_config_result.message), message);
+    send_envelope(session, output);
+}
+
+static void handle_firmware_update(edge_ws_session *session,
+                                   const iot_edge_v1_FirmwareUpdateRequest *request) {
+    uint8_t request_id[16] = {0};
+    if (request->request_id.size == 16U)
+        memcpy(request_id, request->request_id.bytes, sizeof(request_id));
+    char message[257] = {0};
+    const bool accepted = edge_firmware_start(session->config->id, request,
+                                               message, sizeof(message));
+    send_firmware_result(
+        session, request_id,
+        accepted ? iot_edge_v1_FirmwareUpdateState_FIRMWARE_UPDATE_ACCEPTED
+                 : iot_edge_v1_FirmwareUpdateState_FIRMWARE_UPDATE_FAILED,
+        accepted ? "firmware update accepted" : message);
+    if (accepted) {
+        ev_timer_stop(session->app->loop, &session->firmware_timer);
+        ev_timer_set(&session->firmware_timer, 0.25, 0.5);
+        ev_timer_start(session->app->loop, &session->firmware_timer);
+    }
+}
+
+static void handle_platform_config(edge_ws_session *session,
+                                   const iot_edge_v1_PlatformConfigRequest *request) {
+    uint8_t request_id[16] = {0};
+    if (request->request_id.size == 16U)
+        memcpy(request_id, request->request_id.bytes, sizeof(request_id));
+    char message[257] = {0};
+    const bool success = edge_platform_apply(request, message, sizeof(message));
+    if (success)
+        safe_copy(message, sizeof(message), "platform configuration saved through UCI");
+    iot_edge_v1_Envelope *output = &session->app->envelope;
+    if (!init_envelope(session, output))
+        return;
+    output->which_payload = iot_edge_v1_Envelope_platform_config_result_tag;
+    edge_protocol_set_bytes(&output->payload.platform_config_result.request_id,
+                            sizeof(output->payload.platform_config_result.request_id.bytes),
+                            request_id, sizeof(request_id));
+    output->payload.platform_config_result.success = success;
+    safe_copy(output->payload.platform_config_result.message,
+              sizeof(output->payload.platform_config_result.message), message);
+    send_envelope(session, output);
+    if (success) {
+        ev_timer_stop(session->app->loop, &session->reload_timer);
+        ev_timer_set(&session->reload_timer, 0.5, 0.0);
+        ev_timer_start(session->app->loop, &session->reload_timer);
+    }
+}
+
+static void send_terminal_close(edge_ws_session *session, const uint8_t terminal_id[16],
+                                int32_t exit_code, const char *reason) {
+    iot_edge_v1_Envelope *output = &session->app->envelope;
+    if (!init_envelope(session, output))
+        return;
+    output->which_payload = iot_edge_v1_Envelope_terminal_close_tag;
+    edge_protocol_set_bytes(&output->payload.terminal_close.terminal_id,
+                            sizeof(output->payload.terminal_close.terminal_id.bytes),
+                            terminal_id, 16U);
+    output->payload.terminal_close.exit_code = exit_code;
+    safe_copy(output->payload.terminal_close.reason,
+              sizeof(output->payload.terminal_close.reason), reason);
+    send_envelope(session, output);
+}
+
+static void handle_terminal_open(edge_ws_session *session,
+                                 const iot_edge_v1_TerminalOpen *request) {
+    uint8_t terminal_id[16] = {0};
+    if (request->terminal_id.size == 16U)
+        memcpy(terminal_id, request->terminal_id.bytes, sizeof(terminal_id));
+    char error[129] = {0};
+    if (!edge_terminal_open(request, error, sizeof(error))) {
+        send_terminal_close(session, terminal_id, -1, error);
+        return;
+    }
+    memcpy(session->terminal_id, terminal_id, sizeof(session->terminal_id));
+    session->terminal_open = true;
+    /* The platform drains terminal input after node traffic. While a terminal
+     * is active, use a short heartbeat so interactive input is not delayed by
+     * the normal management heartbeat interval. */
+    ev_timer_stop(session->app->loop, &session->heartbeat_timer);
+    ev_timer_set(&session->heartbeat_timer, 0.25, 0.25);
+    ev_timer_start(session->app->loop, &session->heartbeat_timer);
+    ev_timer_stop(session->app->loop, &session->terminal_timer);
+    ev_timer_set(&session->terminal_timer, 0.05, 0.05);
+    ev_timer_start(session->app->loop, &session->terminal_timer);
+}
+
 static void websocket_message(struct uwsc_client *client, void *data, size_t size, bool binary) {
     edge_ws_session *session = session_from_client(client);
     iot_edge_v1_Envelope *envelope = &session->app->envelope;
@@ -410,9 +575,12 @@ static void websocket_message(struct uwsc_client *client, void *data, size_t siz
         memcpy(session->node_id, ack->assigned_node_id.bytes, 16U);
         session->session_epoch = ack->session_epoch;
         session->enrolled = true;
+        if (session->config->network_owner)
+            edge_network_confirm();
         const unsigned heartbeat = ack->heartbeat_interval_sec != 0U
                                        ? ack->heartbeat_interval_sec
                                        : session->app->config->heartbeat_interval_sec;
+        session->heartbeat_interval_sec = (uint16_t)heartbeat;
         ev_timer_stop(session->app->loop, &session->heartbeat_timer);
         ev_timer_set(&session->heartbeat_timer, (ev_tstamp)heartbeat, (ev_tstamp)heartbeat);
         ev_timer_start(session->app->loop, &session->heartbeat_timer);
@@ -449,6 +617,43 @@ static void websocket_message(struct uwsc_client *client, void *data, size_t siz
         break;
     case iot_edge_v1_Envelope_ping_tag:
         send_pong(session, envelope);
+        break;
+    case iot_edge_v1_Envelope_network_config_request_tag:
+        if (session->enrolled && session->config->network_owner)
+            handle_network_config(session, &envelope->payload.network_config_request);
+        break;
+    case iot_edge_v1_Envelope_firmware_update_request_tag:
+        if (session->enrolled && session->config->bootstrap)
+            handle_firmware_update(session, &envelope->payload.firmware_update_request);
+        break;
+    case iot_edge_v1_Envelope_platform_config_request_tag:
+        if (session->enrolled && session->config->bootstrap)
+            handle_platform_config(session, &envelope->payload.platform_config_request);
+        break;
+    case iot_edge_v1_Envelope_terminal_open_tag:
+        if (session->enrolled && session->config->bootstrap &&
+            edge_capability_has_ttyd())
+            handle_terminal_open(session, &envelope->payload.terminal_open);
+        break;
+    case iot_edge_v1_Envelope_terminal_data_tag:
+        if (session->terminal_open)
+            (void)edge_terminal_write(&envelope->payload.terminal_data);
+        break;
+    case iot_edge_v1_Envelope_terminal_resize_tag:
+        if (session->terminal_open)
+            (void)edge_terminal_resize(&envelope->payload.terminal_resize);
+        break;
+    case iot_edge_v1_Envelope_terminal_close_tag:
+        if (session->terminal_open && envelope->payload.terminal_close.terminal_id.size == 16U) {
+            edge_terminal_close(envelope->payload.terminal_close.terminal_id.bytes);
+            ev_timer_stop(session->app->loop, &session->terminal_timer);
+            session->terminal_open = false;
+            ev_timer_stop(session->app->loop, &session->heartbeat_timer);
+            ev_timer_set(&session->heartbeat_timer,
+                         (ev_tstamp)session->heartbeat_interval_sec,
+                         (ev_tstamp)session->heartbeat_interval_sec);
+            ev_timer_start(session->app->loop, &session->heartbeat_timer);
+        }
         break;
     case iot_edge_v1_Envelope_enrollment_pending_tag:
         syslog(LOG_INFO, "platform %s enrollment pending", session->config->name);
@@ -497,8 +702,93 @@ static void heartbeat_timer(struct ev_loop *loop, struct ev_timer *timer, int ev
     send_outbox_first(session);
 }
 
+static void firmware_timer(struct ev_loop *loop, struct ev_timer *timer, int events) {
+    (void)loop;
+    (void)events;
+    edge_ws_session *session = session_from_firmware(timer);
+    if (!session->enrolled)
+        return;
+    iot_edge_v1_FirmwareUpdateResult result = iot_edge_v1_FirmwareUpdateResult_init_zero;
+    if (!edge_firmware_read_status(session->config->id, &result))
+        return;
+    uint8_t request_id[16] = {0};
+    if (result.request_id.size == 16U)
+        memcpy(request_id, result.request_id.bytes, sizeof(request_id));
+    const iot_edge_v1_FirmwareUpdateState state = result.state;
+    char message[257];
+    safe_copy(message, sizeof(message), result.message);
+    send_firmware_result(session, request_id, state, message);
+    if (state == iot_edge_v1_FirmwareUpdateState_FIRMWARE_UPDATE_FLASHING ||
+        state == iot_edge_v1_FirmwareUpdateState_FIRMWARE_UPDATE_FAILED)
+        ev_timer_stop(session->app->loop, &session->firmware_timer);
+}
+
+static void reload_timer(struct ev_loop *loop, struct ev_timer *timer, int events) {
+    (void)loop;
+    (void)events;
+    edge_ws_session *session = session_from_reload(timer);
+    ev_timer_stop(session->app->loop, &session->reload_timer);
+    raise(SIGHUP);
+}
+
+static void terminal_timer(struct ev_loop *loop, struct ev_timer *timer, int events) {
+    (void)loop;
+    (void)events;
+    edge_ws_session *session = session_from_terminal(timer);
+    uint8_t terminal_id[16] = {0};
+    uint8_t data[4096];
+    bool closed = false;
+    int32_t exit_code = 0;
+    const ssize_t size = edge_terminal_read(terminal_id, data, sizeof(data), &closed, &exit_code);
+    if (size > 0) {
+        iot_edge_v1_Envelope *output = &session->app->envelope;
+        if (init_envelope(session, output)) {
+            output->which_payload = iot_edge_v1_Envelope_terminal_data_tag;
+            edge_protocol_set_bytes(&output->payload.terminal_data.terminal_id,
+                                    sizeof(output->payload.terminal_data.terminal_id.bytes),
+                                    terminal_id, sizeof(terminal_id));
+            edge_protocol_set_bytes(&output->payload.terminal_data.data,
+                                    sizeof(output->payload.terminal_data.data.bytes),
+                                    data, (size_t)size);
+            send_envelope(session, output);
+        }
+    }
+    if (closed) {
+        ev_timer_stop(session->app->loop, &session->terminal_timer);
+        session->terminal_open = false;
+        send_terminal_close(session, terminal_id, exit_code, "terminal closed");
+        ev_timer_stop(session->app->loop, &session->heartbeat_timer);
+        ev_timer_set(&session->heartbeat_timer,
+                     (ev_tstamp)session->heartbeat_interval_sec,
+                     (ev_tstamp)session->heartbeat_interval_sec);
+        ev_timer_start(session->app->loop, &session->heartbeat_timer);
+    }
+}
+
+static bool make_transport_url(const char *base, char *output, size_t capacity) {
+    const char *host = NULL;
+    const char *scheme = NULL;
+    if (strncmp(base, "https://", 8U) == 0) {
+        scheme = "wss://";
+        host = base + 8U;
+    } else if (strncmp(base, "http://", 7U) == 0) {
+        scheme = "ws://";
+        host = base + 7U;
+    } else {
+        return false;
+    }
+    size_t host_size = strlen(host);
+    while (host_size != 0U && host[host_size - 1U] == '/')
+        --host_size;
+    const int size = snprintf(output, capacity, "%s%.*s/edge/v1/connect", scheme,
+                              (int)host_size, host);
+    return host_size != 0U && size > 0 && (size_t)size < capacity;
+}
+
 static void start_connection(edge_ws_session *session) {
-    if (uwsc_init(&session->client, session->app->loop, session->config->url,
+    if (!make_transport_url(session->config->url, session->transport_url,
+                            sizeof(session->transport_url)) ||
+        uwsc_init(&session->client, session->app->loop, session->transport_url,
                   session->app->config->heartbeat_interval_sec, NULL) != 0) {
         schedule_reconnect(session);
         return;
@@ -538,6 +828,9 @@ bool edge_ws_app_init(edge_ws_app *app, struct ev_loop *loop,
         session->active_revision = session->spool.active_config.revision;
         ev_timer_init(&session->reconnect_timer, reconnect_timer, 0.0, 0.0);
         ev_timer_init(&session->heartbeat_timer, heartbeat_timer, 0.0, 0.0);
+        ev_timer_init(&session->firmware_timer, firmware_timer, 0.0, 0.0);
+        ev_timer_init(&session->reload_timer, reload_timer, 0.0, 0.0);
+        ev_timer_init(&session->terminal_timer, terminal_timer, 0.0, 0.0);
     }
     return true;
 }
@@ -556,6 +849,13 @@ void edge_ws_app_stop(edge_ws_app *app) {
         edge_ws_session *session = &app->sessions[index];
         ev_timer_stop(app->loop, &session->reconnect_timer);
         ev_timer_stop(app->loop, &session->heartbeat_timer);
+        ev_timer_stop(app->loop, &session->firmware_timer);
+        ev_timer_stop(app->loop, &session->reload_timer);
+        ev_timer_stop(app->loop, &session->terminal_timer);
+        if (session->terminal_open) {
+            edge_terminal_close(session->terminal_id);
+            session->terminal_open = false;
+        }
         if (session->client_active)
             session->client.free(&session->client);
         edge_spool_free(&session->spool);

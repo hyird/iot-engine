@@ -9,6 +9,7 @@ PKG_SOURCE:=nanopb-$(NANOPB_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/nanopb/nanopb/tar.gz/refs/tags/$(NANOPB_VERSION)?
 PKG_HASH:=4575944a468718ef25f05eb01d994364650b581563089a9841986bb1e460eac3
 PKG_BUILD_DIR:=$(BUILD_DIR)/nanopb-$(NANOPB_VERSION)
+PKG_BUILD_DEPENDS:=protobuf/host python3/host python3-protobuf/host
 PKG_LICENSE:=Zlib MIT
 PKG_LICENSE_FILES:=LICENSE
 PKG_BUILD_FLAGS:=lto
@@ -20,11 +21,11 @@ define Package/edgenode
   CATEGORY:=Network
   TITLE:=Small multi-platform IoT edge node
   URL:=https://github.com/hyird/iot-engine
-  DEPENDS:=+libev +libuci +libuwsc-mbedtls +libmbedtls
+  DEPENDS:=+libev +libuci +libuwsc-mbedtls +libmbedtls +uclient-fetch
 endef
 
 define Package/edgenode/description
- A small OpenWrt edge daemon using WSS binary frames and nanopb. The node is
+ A small OpenWrt edge daemon using HTTP/HTTPS WebSocket upgrades and nanopb. The node is
  identified by IMEI and writes raw nanopb config/outbox messages to tmpfs without a database.
 endef
 
@@ -34,15 +35,21 @@ endef
 
 define Build/Prepare
 	$(call Build/Prepare/Default)
-	$(INSTALL_DIR) $(PKG_BUILD_DIR)/edge/src $(PKG_BUILD_DIR)/edge/proto \
-		$(PKG_BUILD_DIR)/edge/generated
+	$(INSTALL_DIR) $(PKG_BUILD_DIR)/edge/src $(PKG_BUILD_DIR)/edge/proto
 	$(CP) $(CURDIR)/src/* $(PKG_BUILD_DIR)/edge/src/
 	$(CP) $(CURDIR)/proto/* $(PKG_BUILD_DIR)/edge/proto/
-	$(CP) $(CURDIR)/generated/* $(PKG_BUILD_DIR)/edge/generated/
 endef
 
 define Build/Compile
-	$(TARGET_CC) $(TARGET_CFLAGS) -std=gnu11 -Os -flto \
+	$(INSTALL_DIR) $(PKG_BUILD_DIR)/edge/generated
+	PATH="$(STAGING_DIR_HOSTPKG)/bin:$$$$PATH" \
+		$(STAGING_DIR_HOSTPKG)/bin/python3 \
+		$(PKG_BUILD_DIR)/generator/nanopb_generator.py \
+		-I $(PKG_BUILD_DIR)/edge/proto \
+		-I $(PKG_BUILD_DIR)/generator/proto \
+		-D $(PKG_BUILD_DIR)/edge/generated \
+		$(PKG_BUILD_DIR)/edge/proto/edge.proto
+	$(TARGET_CC) $(TARGET_CFLAGS) -std=gnu11 -Os -flto -D_FILE_OFFSET_BITS=64 \
 		-ffunction-sections -fdata-sections -fno-unwind-tables \
 		-I$(PKG_BUILD_DIR) -I$(PKG_BUILD_DIR)/edge/src \
 		-I$(PKG_BUILD_DIR)/edge/generated \
@@ -54,6 +61,12 @@ define Build/Compile
 		$(PKG_BUILD_DIR)/edge/src/edge_config.c \
 		$(PKG_BUILD_DIR)/edge/src/edge_memory.c \
 		$(PKG_BUILD_DIR)/edge/src/edge_spool.c \
+		$(PKG_BUILD_DIR)/edge/src/edge_process.c \
+		$(PKG_BUILD_DIR)/edge/src/edge_capability.c \
+		$(PKG_BUILD_DIR)/edge/src/edge_network.c \
+		$(PKG_BUILD_DIR)/edge/src/edge_firmware.c \
+		$(PKG_BUILD_DIR)/edge/src/edge_platform.c \
+		$(PKG_BUILD_DIR)/edge/src/edge_terminal.c \
 		$(PKG_BUILD_DIR)/edge/src/edge_ws.c \
 		$(PKG_BUILD_DIR)/edge/src/edge_device_runtime.c \
 		$(PKG_BUILD_DIR)/edge/src/edge_modbus.c \

@@ -34,8 +34,9 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(ruvia
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    # Follow the latest upstream main commit instead of pinning a release or SHA.
-    GIT_TAG main)
+    # Last commit verified by this repository's Windows/MSVC build. Newer main
+    # currently fails inside Ruvia's split database capability sources.
+    GIT_TAG 10263676ed08316b458de6e15ae29cb3ab6583f3)
 FetchContent_MakeAvailable(ruvia)
 
 FetchContent_Declare(nanopb
@@ -55,8 +56,17 @@ unset(VCPKG_MANIFEST_FEATURES CACHE)
 
 find_package(spdlog CONFIG REQUIRED)
 
-add_executable(iot-engine service/server.cpp service/common/packet_log.cpp)
-target_include_directories(iot-engine PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_executable(iot-engine
+    service/server.cpp
+    service/common/packet_log.cpp
+    "${EDGENODE_PROTO_C}"
+    ${nanopb_SOURCE_DIR}/pb_common.c
+    ${nanopb_SOURCE_DIR}/pb_encode.c
+    ${nanopb_SOURCE_DIR}/pb_decode.c)
+target_include_directories(iot-engine PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${EDGENODE_GENERATED_DIR}"
+    "${nanopb_SOURCE_DIR}")
 target_link_libraries(iot-engine PRIVATE ruvia::web spdlog::spdlog)
 if(MSVC)
     target_compile_options(iot-engine PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)

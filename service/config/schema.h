@@ -5,7 +5,7 @@
 
 namespace service::config {
 
-inline constexpr std::array<ruvia::DbMigration, 5> kSchemaMigrations{{
+inline constexpr std::array<ruvia::DbMigration, 6> kSchemaMigrations{{
     {"0001_initial_schema", R"sql(
 DO $schema$
 BEGIN
@@ -420,6 +420,112 @@ CREATE INDEX idx_open_alert_device_time
     ON open_alert_record(device_id, triggered_at DESC);
 CREATE INDEX idx_open_alert_status_time
     ON open_alert_record(status, triggered_at DESC);
+END
+$schema$;
+)sql"},
+    {"0006_edge_node_management", R"sql(
+DO $schema$
+BEGIN
+CREATE TABLE edge_node (
+    id                         UUID PRIMARY KEY,
+    platform_id                UUID NOT NULL,
+    imei                       VARCHAR(15) NOT NULL,
+    name                       VARCHAR(100),
+    model                      VARCHAR(128) NOT NULL DEFAULT '',
+    software_version           VARCHAR(32) NOT NULL DEFAULT '',
+    hostname                   VARCHAR(64) NOT NULL DEFAULT '',
+    architecture               VARCHAR(32) NOT NULL DEFAULT '',
+    openwrt_release            VARCHAR(64) NOT NULL DEFAULT '',
+    enrollment_status          VARCHAR(20) NOT NULL DEFAULT 'pending'
+                               CHECK (enrollment_status IN ('pending', 'approved', 'rejected')),
+    supports_network_config    BOOLEAN NOT NULL DEFAULT FALSE,
+    supports_firmware_update   BOOLEAN NOT NULL DEFAULT FALSE,
+    supports_platform_config   BOOLEAN NOT NULL DEFAULT FALSE,
+    ttyd_available             BOOLEAN NOT NULL DEFAULT FALSE,
+    active_config_version      BIGINT NOT NULL DEFAULT 0,
+    outbox_records             BIGINT NOT NULL DEFAULT 0,
+    outbox_bytes               BIGINT NOT NULL DEFAULT 0,
+    last_seen_at               TIMESTAMPTZ,
+    approved_by                UUID REFERENCES sys_user(id) ON DELETE SET NULL,
+    approved_at                TIMESTAMPTZ,
+    created_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT edge_node_imei_digits CHECK (imei ~ '^[0-9]{15}$')
+);
+CREATE UNIQUE INDEX idx_edge_node_platform_imei ON edge_node(platform_id, imei);
+CREATE INDEX idx_edge_node_status_seen ON edge_node(enrollment_status, last_seen_at DESC);
+
+CREATE TABLE edge_node_interface (
+    node_id       UUID NOT NULL REFERENCES edge_node(id) ON DELETE CASCADE,
+    name          VARCHAR(32) NOT NULL,
+    display_name  VARCHAR(64) NOT NULL DEFAULT '',
+    mac           VARCHAR(17),
+    is_up         BOOLEAN NOT NULL DEFAULT FALSE,
+    is_bridge     BOOLEAN NOT NULL DEFAULT FALSE,
+    ipv4          VARCHAR(15),
+    prefix_length INTEGER CHECK (prefix_length BETWEEN 0 AND 32),
+    gateway       VARCHAR(15),
+    bridge_ports  JSONB NOT NULL DEFAULT '[]'::jsonb
+                  CHECK (jsonb_typeof(bridge_ports) = 'array'),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (node_id, name)
+);
+
+CREATE TABLE edge_node_serial (
+    node_id      UUID NOT NULL REFERENCES edge_node(id) ON DELETE CASCADE,
+    path         VARCHAR(96) NOT NULL,
+    display_name VARCHAR(64) NOT NULL DEFAULT '',
+    available    BOOLEAN NOT NULL DEFAULT FALSE,
+    rs485        BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (node_id, path)
+);
+
+CREATE TABLE edge_firmware (
+    id             UUID PRIMARY KEY,
+    version        VARCHAR(64) NOT NULL,
+    file_name      VARCHAR(255) NOT NULL,
+    storage_path   TEXT NOT NULL,
+    sha256         VARCHAR(64) NOT NULL,
+    size_bytes     BIGINT NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 134217728),
+    download_token VARCHAR(64) NOT NULL,
+    created_by     UUID NOT NULL REFERENCES sys_user(id) ON DELETE RESTRICT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_edge_firmware_created ON edge_firmware(created_at DESC);
+
+CREATE TABLE edge_node_platform (
+    node_id                UUID NOT NULL REFERENCES edge_node(id) ON DELETE CASCADE,
+    platform_id            UUID NOT NULL,
+    name                   VARCHAR(32) NOT NULL,
+    base_url               VARCHAR(255) NOT NULL,
+    enabled                BOOLEAN NOT NULL DEFAULT TRUE,
+    priority               INTEGER NOT NULL DEFAULT 100 CHECK (priority BETWEEN 0 AND 65535),
+    reconnect_interval_sec INTEGER NOT NULL DEFAULT 5 CHECK (reconnect_interval_sec BETWEEN 1 AND 3600),
+    outbox_max_bytes       INTEGER NOT NULL DEFAULT 262144
+                           CHECK (outbox_max_bytes BETWEEN 16384 AND 8388608),
+    apply_status           VARCHAR(20) NOT NULL DEFAULT 'pending'
+                           CHECK (apply_status IN ('pending', 'applied', 'failed')),
+    last_message           VARCHAR(256),
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (node_id, platform_id)
+);
+
+CREATE TABLE edge_task (
+    id           UUID PRIMARY KEY,
+    node_id      UUID NOT NULL REFERENCES edge_node(id) ON DELETE CASCADE,
+    task_type    VARCHAR(30) NOT NULL
+                 CHECK (task_type IN ('network', 'firmware', 'platform_upsert', 'platform_delete')),
+    status       VARCHAR(20) NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending', 'accepted', 'running', 'succeeded', 'failed')),
+    request      JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(request) = 'object'),
+    result       JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(result) = 'object'),
+    created_by   UUID NOT NULL REFERENCES sys_user(id) ON DELETE RESTRICT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX idx_edge_task_node_created ON edge_task(node_id, created_at DESC);
 END
 $schema$;
 )sql"},
