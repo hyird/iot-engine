@@ -24,8 +24,8 @@ jobs:
     name: Ubuntu build
     runs-on: ubuntu-24.04
     env:
-      CC: gcc-14
-      CXX: g++-14
+      CC: clang-18
+      CXX: clang++-18
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.cache/vcpkg/archives
     steps:
@@ -37,9 +37,9 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-14 g++-14 ninja-build curl zip unzip tar
-          gcc-14 --version
-          g++-14 --version
+          sudo apt-get install -y clang-18 ninja-build curl zip unzip tar
+          clang-18 --version
+          clang++-18 --version
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -54,9 +54,9 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-gcc14-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'triplets/**', 'CMakeLists.txt') }}
+          key: vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-clang18-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'triplets/**', 'CMakeLists.txt') }}
           restore-keys: |
-            vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-gcc14-${{ env.VCPKG_COMMIT }}-
+            vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-clang18-${{ env.VCPKG_COMMIT }}-
 
       - name: Bootstrap vcpkg
         run: |
