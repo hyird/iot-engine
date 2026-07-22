@@ -76,7 +76,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
 
       - name: Save vcpkg binary cache
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        if: ${{ !cancelled() && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
@@ -97,7 +97,7 @@ jobs:
           tar -C build/artifact -czf "build/iot-engine-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz" .
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: iot-engine-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
           path: build/iot-engine-${{ runner.os }}-${{ runner.arch }}.tar.gz
@@ -158,7 +158,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
 
       - name: Save vcpkg binary cache
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        if: ${{ !cancelled() && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
@@ -179,7 +179,7 @@ jobs:
           tar -C build/artifact -czf "build/iot-engine-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz" .
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: iot-engine-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
           path: build/iot-engine-${{ runner.os }}-${{ runner.arch }}.tar.gz
@@ -199,6 +199,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Bun
+        id: setup-bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
@@ -249,12 +250,13 @@ jobs:
             -DCMAKE_COMPILE_WARNING_AS_ERROR=ON \
             -DCMAKE_C_COMPILER=gcc \
             -DCMAKE_CXX_COMPILER=g++ \
+            -DBUN_EXECUTABLE="${{ steps.setup-bun.outputs.bun-path }}" \
             -DVCPKG_TARGET_TRIPLET=x64-mingw-static \
             -DVCPKG_HOST_TRIPLET=x64-mingw-static \
             -DCMAKE_TOOLCHAIN_FILE="$vcpkg_root_msys/scripts/buildsystems/vcpkg.cmake"
 
       - name: Save vcpkg binary cache
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        if: ${{ !cancelled() && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
@@ -281,7 +283,7 @@ jobs:
         run: Compress-Archive -Path build/artifact/* -DestinationPath "build/iot-engine-$env:RUNNER_OS-$env:RUNNER_ARCH.zip"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: iot-engine-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
           path: build/iot-engine-${{ runner.os }}-${{ runner.arch }}.zip
