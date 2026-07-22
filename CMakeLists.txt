@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.24)
 
+if(NOT CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux" AND
+   NOT CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+    message(FATAL_ERROR "iot-engine supports only Linux and macOS")
+endif()
+
 if(NOT CMAKE_TOOLCHAIN_FILE)
     if("$ENV{VCPKG_ROOT}" STREQUAL "")
         message(FATAL_ERROR "VCPKG_ROOT is not set")
@@ -19,6 +24,11 @@ endif()
 
 project(iot_engine VERSION 0.1.0 LANGUAGES CXX)
 
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+   NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    message(FATAL_ERROR "iot-engine supports only Linux and macOS")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -31,8 +41,8 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(ruvia
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    # Ruvia v0.1.6 includes the MinGW PostgreSQL link-group fix; pin the tag commit.
-    GIT_TAG ec7688c3874c858dd7912db46200a67f167802fe)
+    # Pin the retagged v0.1.6 commit; this release supports Linux and macOS.
+    GIT_TAG aeab4cff621f5198b2b987e7ffde8e325ac293c9)
 FetchContent_MakeAvailable(ruvia)
 
 # Ruvia's standalone manifest features do not belong to this parent manifest.

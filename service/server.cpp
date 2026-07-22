@@ -124,7 +124,7 @@ startSouthbridge(ruvia::WebWorkerContext& context,
 
 int main(int argc, char* argv[]) {
     try {
-        ruvia::App app;
+        auto& app = ruvia::app();
         app.loadDotenv();
         const auto runtime = runtimeDirectory(argc > 0 ? argv[0] : nullptr);
         service::common::packet_log::initialize(packetLogConfig(app.env(), runtime));
@@ -138,15 +138,6 @@ int main(int argc, char* argv[]) {
                   << ", skipped=" << report.skipped().size() << '\n';
 
         configureWeb(app, runtime);
-        app.useController<service::auth::AuthController>()
-            .useController<service::dept::DeptController>()
-            .useController<service::role::RoleController>()
-            .useController<service::user::UserController>()
-            .useController<service::link::LinkController>()
-            .useController<service::protocol::ProtocolController>()
-            .useController<service::device::DeviceController>()
-            .useController<service::open_access::OpenAccessAdminController>()
-            .useController<service::open_access::OpenApiController>();
         const auto cpu = std::max(2U, std::thread::hardware_concurrency());
         const auto northWorkerCount = static_cast<std::size_t>((cpu + 1U) / 2U);
         const auto southWorkerCount = static_cast<std::size_t>(cpu / 2U);
