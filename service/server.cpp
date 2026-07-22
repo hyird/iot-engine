@@ -16,6 +16,7 @@
 #include <ruvia/web/redis/Redis.h>
 
 #include "service/common/http.h"
+#include "service/common/packet_log.h"
 #include "service/config/schema.h"
 #include "service/modules/northbridge/device/device.controller.h"
 #include "service/modules/northbridge/link/link.controller.h"
@@ -72,6 +73,15 @@ std::filesystem::path runtimeDirectory(const char* executable) {
     return path.parent_path();
 }
 
+service::common::packet_log::Config packetLogConfig(const ruvia::Env& env,
+                                                    const std::filesystem::path& runtime) {
+    service::common::packet_log::Config config;
+    config.directory = runtime / "logs";
+    config.level =
+        service::common::packet_log::parseLevel(env.get("PACKET_LOG_LEVEL").value_or("DEBUG"));
+    return config;
+}
+
 void configureWeb(ruvia::App& app, const std::filesystem::path& runtime) {
     const auto webRoot = runtime / "web";
     if (!std::filesystem::is_directory(webRoot))
@@ -114,6 +124,8 @@ int main(int argc, char* argv[]) {
     try {
         auto& app = ruvia::app();
         app.loadDotenv();
+        const auto runtime = runtimeDirectory(argc > 0 ? argv[0] : nullptr);
+        service::common::packet_log::initialize(packetLogConfig(app.env(), runtime));
 
         auto db = databaseConfig(app.env());
         ruvia::DbMigrationOptions migrationOptions;
@@ -123,7 +135,7 @@ int main(int argc, char* argv[]) {
         std::cout << "database migrations: applied=" << report.applied().size()
                   << ", skipped=" << report.skipped().size() << '\n';
 
-        configureWeb(app, runtimeDirectory(argc > 0 ? argv[0] : nullptr));
+        configureWeb(app, runtime);
         const auto cpu = std::max(2U, std::thread::hardware_concurrency());
         const auto northWorkerCount = static_cast<std::size_t>((cpu + 1U) / 2U);
         const auto southWorkerCount = static_cast<std::size_t>(cpu / 2U);
@@ -142,7 +154,8 @@ int main(int argc, char* argv[]) {
                       southRedis = std::move(southRedis), southWorkerCount, &app]() mutable {
                 auto workers = app.workers();
                 if (workers.empty())
-                    throw std::runtime_error("northbridge: no worker available for config projection");
+                    throw std::runtime_error(
+                        "northbridge: no worker available for config projection");
                 telemetry->start(workers, southWorkerCount);
                 commandResults->start(workers, southWorkerCount);
                 auto started = std::make_shared<std::promise<void>>();
@@ -170,8 +183,10 @@ int main(int argc, char* argv[]) {
                 ruvia::ServerTopology::http(app.env().get<std::uint16_t>("PORT").value_or(1102)))
             .setWorkersPerListener(northWorkerCount)
             .run();
+        service::common::packet_log::shutdown();
         return 0;
     } catch (const std::exception& error) {
+        service::common::packet_log::shutdown();
         std::cerr << "server failed: " << error.what() << '\n';
         return 1;
     }

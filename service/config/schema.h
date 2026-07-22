@@ -5,7 +5,7 @@
 
 namespace service::config {
 
-inline constexpr std::array<ruvia::DbMigration, 4> kSchemaMigrations{{
+inline constexpr std::array<ruvia::DbMigration, 5> kSchemaMigrations{{
     {"0001_initial_schema", R"sql(
 DO $schema$
 BEGIN
@@ -311,6 +311,115 @@ CREATE INDEX idx_device_group_access_user_scope
     ON device_group_access_grant(user_id, group_id) WHERE user_id IS NOT NULL;
 CREATE INDEX idx_device_group_access_department_scope
     ON device_group_access_grant(department_id, group_id) WHERE department_id IS NOT NULL;
+END
+$schema$;
+)sql"},
+    {"0005_open_access", R"sql(
+DO $schema$
+BEGIN
+CREATE TABLE open_access_key (
+    id                UUID PRIMARY KEY,
+    name              VARCHAR(64) NOT NULL,
+    access_key_prefix VARCHAR(16) NOT NULL,
+    access_key_hash   VARCHAR(64) NOT NULL,
+    status            status_enum NOT NULL DEFAULT 'enabled',
+    scopes            JSONB NOT NULL DEFAULT '[]'::jsonb
+                      CHECK (jsonb_typeof(scopes) = 'array'),
+    expires_at        TIMESTAMPTZ,
+    last_used_at      TIMESTAMPTZ,
+    last_used_ip      VARCHAR(64),
+    remark            VARCHAR(200),
+    created_by        UUID NOT NULL REFERENCES sys_user(id) ON DELETE RESTRICT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at        TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX idx_open_access_key_hash ON open_access_key(access_key_hash);
+CREATE UNIQUE INDEX idx_open_access_key_name_active
+    ON open_access_key(name) WHERE deleted_at IS NULL;
+CREATE INDEX idx_open_access_key_active
+    ON open_access_key(status, expires_at) WHERE deleted_at IS NULL;
+
+CREATE TABLE open_access_key_device (
+    access_key_id UUID NOT NULL REFERENCES open_access_key(id) ON DELETE CASCADE,
+    device_id     UUID NOT NULL REFERENCES device(id) ON DELETE CASCADE,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (access_key_id, device_id)
+);
+CREATE INDEX idx_open_access_key_device_device ON open_access_key_device(device_id);
+
+CREATE TABLE open_webhook (
+    id                UUID PRIMARY KEY,
+    access_key_id     UUID NOT NULL REFERENCES open_access_key(id) ON DELETE CASCADE,
+    name              VARCHAR(64) NOT NULL,
+    url               TEXT NOT NULL,
+    status            status_enum NOT NULL DEFAULT 'enabled',
+    secret            VARCHAR(255),
+    headers           JSONB NOT NULL DEFAULT '{}'::jsonb
+                      CHECK (jsonb_typeof(headers) = 'object'),
+    event_types       JSONB NOT NULL DEFAULT '["device.data.reported"]'::jsonb
+                      CHECK (jsonb_typeof(event_types) = 'array'),
+    timeout_seconds   INTEGER NOT NULL DEFAULT 5 CHECK (timeout_seconds BETWEEN 1 AND 30),
+    last_triggered_at TIMESTAMPTZ,
+    last_success_at   TIMESTAMPTZ,
+    last_failure_at   TIMESTAMPTZ,
+    last_http_status  INTEGER,
+    last_error        TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at        TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX idx_open_webhook_name_active
+    ON open_webhook(access_key_id, name) WHERE deleted_at IS NULL;
+CREATE INDEX idx_open_webhook_active
+    ON open_webhook(access_key_id, status) WHERE deleted_at IS NULL;
+
+CREATE TABLE open_access_log (
+    id               UUID PRIMARY KEY,
+    access_key_id    UUID REFERENCES open_access_key(id) ON DELETE SET NULL,
+    webhook_id       UUID REFERENCES open_webhook(id) ON DELETE SET NULL,
+    direction        VARCHAR(20) NOT NULL CHECK (direction IN ('pull', 'push')),
+    action           VARCHAR(50) NOT NULL,
+    event_type       VARCHAR(100),
+    status           VARCHAR(20) NOT NULL CHECK (status IN ('success', 'failed')),
+    http_method      VARCHAR(10),
+    target           TEXT,
+    request_ip       VARCHAR(64),
+    http_status      INTEGER,
+    device_id        UUID REFERENCES device(id) ON DELETE SET NULL,
+    device_code      VARCHAR(100),
+    message          TEXT,
+    request_payload  JSONB NOT NULL DEFAULT '{}'::jsonb
+                     CHECK (jsonb_typeof(request_payload) = 'object'),
+    response_payload JSONB NOT NULL DEFAULT '{}'::jsonb
+                     CHECK (jsonb_typeof(response_payload) = 'object'),
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_open_access_log_key_time
+    ON open_access_log(access_key_id, created_at DESC);
+CREATE INDEX idx_open_access_log_webhook_time
+    ON open_access_log(webhook_id, created_at DESC);
+CREATE INDEX idx_open_access_log_device_time
+    ON open_access_log(device_id, created_at DESC);
+
+-- 告警引擎尚未迁入 iot-engine；开放接入拥有独立、稳定的读模型，供后续告警投影写入。
+CREATE TABLE open_alert_record (
+    id           UUID PRIMARY KEY,
+    rule_id      UUID,
+    device_id    UUID NOT NULL REFERENCES device(id) ON DELETE CASCADE,
+    severity     VARCHAR(20) NOT NULL,
+    status       VARCHAR(20) NOT NULL,
+    message      TEXT NOT NULL,
+    detail       JSONB NOT NULL DEFAULT '{}'::jsonb
+                 CHECK (jsonb_typeof(detail) = 'object'),
+    triggered_at TIMESTAMPTZ NOT NULL,
+    resolved_at  TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_open_alert_device_time
+    ON open_alert_record(device_id, triggered_at DESC);
+CREATE INDEX idx_open_alert_status_time
+    ON open_alert_record(status, triggered_at DESC);
 END
 $schema$;
 )sql"},

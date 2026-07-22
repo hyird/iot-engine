@@ -16,11 +16,11 @@ export type SaveProtocolConfigParams =
 
 export function useProtocolConfigList(
     params?: Protocol.Query,
-    options?: Omit<UseQueryOptions<PaginatedResult<Protocol.Item>>, 'queryKey' | 'queryFn'>
+    options?: Omit<UseQueryOptions<Protocol.Item[]>, 'queryKey' | 'queryFn'>
 ) {
     return useQuery({
         queryKey: protocolQueryKeys.list(params),
-        queryFn: () => api.getList(params),
+        queryFn: () => api.getAll(params),
         ...options,
     });
 }

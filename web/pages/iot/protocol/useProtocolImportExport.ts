@@ -7,8 +7,11 @@ import { useQueryClient } from '@tanstack/react-query';
 import { App } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as protocolApi from './protocol.api';
+import { protocolCreateSchema } from './protocol.schema';
 import { protocolQueryKeys } from './protocol.service';
 import type { Protocol } from './protocol.types';
+
+const MAX_NAME_LENGTH = 64;
 
 /** 导出配置项（不含 id/时间戳） */
 interface ExportItem {
@@ -31,24 +34,28 @@ interface ImportResult {
 function resolveNameConflict(name: string, existingNames: Set<string>): string {
     if (!existingNames.has(name)) return name;
 
-    const suffix = ' (导入)';
-    const candidate = name + suffix;
-    if (!existingNames.has(candidate)) return candidate;
-
-    let i = 2;
-    while (existingNames.has(`${name}${suffix} ${i}`)) i++;
-    return `${name}${suffix} ${i}`;
+    let index = 1;
+    while (true) {
+        const suffix = index === 1 ? ' (导入)' : ` (导入) ${index}`;
+        const baseName = name.slice(0, Math.max(0, MAX_NAME_LENGTH - suffix.length)).trimEnd();
+        const candidate = `${baseName}${suffix}`;
+        if (!existingNames.has(candidate)) return candidate;
+        index++;
+    }
 }
 
 export function useProtocolImportExport(protocol: Protocol.Type) {
     const { message } = App.useApp();
     const queryClient = useQueryClient();
     const fileInputRef = useRef<HTMLInputElement | null>(null);
+    const [exporting, setExporting] = useState(false);
     const [importing, setImporting] = useState(false);
 
     /** 导出当前协议的所有配置 */
-    const exportConfigs = useCallback(
-        (configs: Protocol.Item[]) => {
+    const exportConfigs = useCallback(async () => {
+        setExporting(true);
+        try {
+            const configs = await protocolApi.getAll({ protocol }, { _silent: true });
             if (!configs.length) {
                 message.warning('没有可导出的配置');
                 return;
@@ -66,13 +73,20 @@ export function useProtocolImportExport(protocol: Protocol.Type) {
             const a = document.createElement('a');
             a.href = url;
             a.download = `${protocol}_configs_${date}.json`;
+            a.style.display = 'none';
+            document.body.appendChild(a);
             a.click();
-            URL.revokeObjectURL(url);
+            a.remove();
+            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 
             message.success(`已导出 ${exportData.length} 条配置`);
-        },
-        [protocol, message]
-    );
+        } catch (error) {
+            const reason = error instanceof Error ? error.message : '未知错误';
+            message.error(`导出失败：${reason}`);
+        } finally {
+            setExporting(false);
+        }
+    }, [protocol, message]);
 
     /** 处理导入文件 */
     const processImport = useCallback(
@@ -80,54 +94,54 @@ export function useProtocolImportExport(protocol: Protocol.Type) {
             setImporting(true);
             try {
                 const text = await file.text();
-                let items: ExportItem[];
+                let rawItems: unknown;
 
                 try {
-                    items = JSON.parse(text);
+                    rawItems = JSON.parse(text);
                 } catch {
                     message.error('JSON 格式错误');
                     return;
                 }
 
-                if (!Array.isArray(items) || items.length === 0) {
+                if (!Array.isArray(rawItems) || rawItems.length === 0) {
                     message.error('文件内容为空或格式不正确');
                     return;
                 }
 
-                // 校验每项必要字段和 config 结构
-                for (let i = 0; i < items.length; i++) {
-                    const item = items[i];
-                    if (!item.name || !item.config) {
-                        message.error(`第 ${i + 1} 项缺少 name 或 config 字段`);
+                const items: Protocol.CreateDto[] = [];
+                for (let i = 0; i < rawItems.length; i++) {
+                    const rawItem = rawItems[i];
+                    if (typeof rawItem !== 'object' || rawItem === null || Array.isArray(rawItem)) {
+                        message.error(`第 ${i + 1} 项必须是对象`);
                         return;
                     }
-                    if (typeof item.config !== 'object' || Array.isArray(item.config)) {
-                        message.error(`第 ${i + 1} 项 config 必须是对象`);
+
+                    const itemProtocol = (rawItem as Record<string, unknown>).protocol;
+                    if (itemProtocol !== protocol) {
+                        const actualProtocol =
+                            typeof itemProtocol === 'string' ? itemProtocol : '未指定';
+                        message.error(
+                            `第 ${i + 1} 项协议类型为 ${actualProtocol}，不能导入到 ${protocol} 页面`
+                        );
                         return;
                     }
-                    // 协议特定结构校验
-                    const cfg = item.config as Record<string, unknown>;
-                    if (protocol === 'SL651' && !Array.isArray(cfg.funcs)) {
-                        message.error(`第 ${i + 1} 项缺少 config.funcs 数组（SL651 必需）`);
+
+                    const parsedItem = protocolCreateSchema.safeParse(rawItem);
+                    if (!parsedItem.success) {
+                        const issue = parsedItem.error.issues[0];
+                        const path = issue.path.length
+                            ? `${issue.path.map(String).join('.')}：`
+                            : '';
+                        message.error(`第 ${i + 1} 项 ${path}${issue.message}`);
                         return;
                     }
-                    if (
-                        protocol === 'Modbus' &&
-                        cfg.registers !== undefined &&
-                        !Array.isArray(cfg.registers)
-                    ) {
-                        message.error(`第 ${i + 1} 项 config.registers 必须是数组`);
-                        return;
-                    }
-                    if (protocol === 'S7' && cfg.areas !== undefined && !Array.isArray(cfg.areas)) {
-                        message.error(`第 ${i + 1} 项 config.areas 必须是数组`);
-                        return;
-                    }
+
+                    items.push(parsedItem.data);
                 }
 
-                // 获取当前已有配置的名称
-                const existingList = await protocolApi.getList({ protocol, pageSize: 999 });
-                const existingNames = new Set(existingList.list.map((c) => c.name));
+                // 数据库按全协议范围约束名称唯一，必须加载全部协议名称后再处理冲突。
+                const existingList = await protocolApi.getAll(undefined, { _silent: true });
+                const existingNames = new Set(existingList.map((config) => config.name));
 
                 const result: ImportResult = {
                     total: items.length,
@@ -143,13 +157,14 @@ export function useProtocolImportExport(protocol: Protocol.Type) {
                     }
 
                     try {
-                        await protocolApi.create({
-                            protocol, // 强制使用当前页面协议类型，忽略文件中的 protocol
-                            name: finalName,
-                            enabled: item.enabled ?? true,
-                            config: item.config,
-                            remark: item.remark,
-                        });
+                        await protocolApi.create(
+                            {
+                                ...item,
+                                protocol,
+                                name: finalName,
+                            },
+                            { _silent: true }
+                        );
                         existingNames.add(finalName);
                         result.success++;
                     } catch (e) {
@@ -174,8 +189,9 @@ export function useProtocolImportExport(protocol: Protocol.Type) {
                         `导入完成：${result.success}/${result.total} 成功${failInfo ? `，失败：${failInfo}` : ''}`
                     );
                 }
-            } catch {
-                message.error('导入失败，请检查文件格式');
+            } catch (error) {
+                const reason = error instanceof Error ? error.message : '未知错误';
+                message.error(`导入失败：${reason}`);
             } finally {
                 setImporting(false);
                 // 重置文件输入，允许再次选择同一文件
@@ -192,13 +208,13 @@ export function useProtocolImportExport(protocol: Protocol.Type) {
             input.type = 'file';
             input.accept = '.json';
             input.style.display = 'none';
-            input.addEventListener('change', (e) => {
-                const file = (e.target as HTMLInputElement).files?.[0];
-                if (file) processImport(file);
-            });
             document.body.appendChild(input);
             fileInputRef.current = input;
         }
+        fileInputRef.current.onchange = (event) => {
+            const file = (event.target as HTMLInputElement).files?.[0];
+            if (file) processImport(file);
+        };
         fileInputRef.current.click();
     }, [processImport]);
 
@@ -212,5 +228,5 @@ export function useProtocolImportExport(protocol: Protocol.Type) {
         };
     }, []);
 
-    return { exportConfigs, triggerImport, importing };
+    return { exportConfigs, triggerImport, exporting, importing };
 }

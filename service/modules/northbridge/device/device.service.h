@@ -47,6 +47,7 @@ class DeviceService {
             itemsById.emplace(std::string(row[0].text()), &item);
         }
         co_await fillElements(c, itemsById, std::nullopt);
+        co_await fillCommandOperations(c, itemsById, std::nullopt);
         DevicePageDataDto result(c);
         result.list(std::move(items)).total(static_cast<std::int64_t>(rows.rows().size()));
         co_return result;
@@ -95,6 +96,7 @@ class DeviceService {
         fillItem(c, item, rows.rows().front(), actor);
         std::map<std::string, DeviceItemDto*, std::less<>> itemById{{std::string(id), &item}};
         co_await fillElements(c, itemById, id);
+        co_await fillCommandOperations(c, itemById, id);
         co_return item;
     }
 
@@ -643,6 +645,189 @@ ORDER BY configured.device_id, configured.protocol_order,
             item->reportTime(std::to_string(observedAt));
     }
 
+    static ruvia::Task<void>
+    fillCommandOperations(ruvia::Context& c,
+                          const std::map<std::string, DeviceItemDto*, std::less<>>& items,
+                          std::optional<std::string_view> onlyDevice) {
+        if (items.empty())
+            co_return;
+        std::string filter;
+        std::vector<ruvia::DbValue> params;
+        if (onlyDevice) {
+            filter = " AND d.id = $1::uuid";
+            params.emplace_back(*onlyDevice);
+        }
+        const std::string sql = R"sql(
+WITH command_element AS (
+  SELECT d.id AS device_id, 'MODBUS_WRITE' AS operation_key, '写寄存器' AS operation_name,
+         element, 1::bigint AS operation_position, element_position,
+         preset, preset_position
+  FROM device d
+  JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'Modbus'
+  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]'::jsonb))
+    WITH ORDINALITY AS elements(element, element_position)
+  LEFT JOIN LATERAL jsonb_array_elements(
+    CASE WHEN element->>'registerType' = 'COIL' THEN jsonb_build_array(
+      jsonb_build_object(
+        'label', COALESCE((SELECT mapping->>'label'
+                           FROM jsonb_array_elements(
+                             COALESCE(element->'dictConfig'->'items', '[]'::jsonb)) mapping
+                           WHERE mapping->>'key' = '1' LIMIT 1), '1'),
+        'value', '1'),
+      jsonb_build_object(
+        'label', COALESCE((SELECT mapping->>'label'
+                           FROM jsonb_array_elements(
+                             COALESCE(element->'dictConfig'->'items', '[]'::jsonb)) mapping
+                           WHERE mapping->>'key' = '0' LIMIT 1), '0'),
+        'value', '0'))
+    ELSE '[]'::jsonb END)
+    WITH ORDINALITY AS presets(preset, preset_position) ON TRUE
+  WHERE d.deleted_at IS NULL AND p.deleted_at IS NULL AND p.enabled = TRUE
+    AND COALESCE((element->>'writable')::boolean, FALSE))sql" +
+                                filter + R"sql(
+  UNION ALL
+  SELECT d.id, 'S7_WRITE', '写寄存器', element, 2, element_position,
+         preset, preset_position
+  FROM device d
+  JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'S7'
+  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]'::jsonb))
+    WITH ORDINALITY AS elements(element, element_position)
+  LEFT JOIN LATERAL jsonb_array_elements(
+    CASE WHEN element->>'dataType' = 'BOOL'
+         THEN '[{"label":"1","value":"1"},{"label":"0","value":"0"}]'::jsonb
+         ELSE '[]'::jsonb END)
+    WITH ORDINALITY AS presets(preset, preset_position) ON TRUE
+  WHERE d.deleted_at IS NULL AND p.deleted_at IS NULL AND p.enabled = TRUE
+    AND COALESCE((element->>'writable')::boolean, FALSE))sql" +
+                                filter + R"sql(
+  UNION ALL
+  SELECT d.id, function->>'funcCode',
+         COALESCE(NULLIF(function->>'name', ''), function->>'funcCode'),
+         element, function_position + 2, element_position,
+         preset, preset_position
+  FROM device d
+  JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'SL651'
+  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]'::jsonb))
+    WITH ORDINALITY AS functions(function, function_position)
+  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(function->'elements', '[]'::jsonb))
+    WITH ORDINALITY AS elements(element, element_position)
+  LEFT JOIN LATERAL jsonb_array_elements(COALESCE(element->'options', '[]'::jsonb))
+    WITH ORDINALITY AS presets(preset, preset_position) ON TRUE
+  WHERE d.deleted_at IS NULL AND p.deleted_at IS NULL AND p.enabled = TRUE
+    AND function->>'dir' = 'DOWN' AND COALESCE(element->>'encode', '') <> 'JPEG')sql" +
+                                filter + R"sql(
+)
+SELECT device_id::text, operation_key, operation_name,
+       element->>'id', element->>'name', COALESCE(element->>'unit', ''),
+       COALESCE(element->>'registerType', ''), COALESCE(element->>'dataType', ''),
+       element->>'size', COALESCE(element->>'encode', ''),
+       element->>'length', element->>'digits',
+       preset->>'label', preset->>'value',
+       operation_position, element_position, preset_position
+FROM command_element
+ORDER BY device_id, operation_position, operation_key, element_position,
+         preset_position NULLS LAST)sql";
+        const auto rows = co_await c.db().query(sql, params);
+
+        struct OptionData {
+            std::string label;
+            std::string value;
+        };
+        struct ElementData {
+            std::string id;
+            std::string name;
+            std::string unit;
+            std::string registerType;
+            std::string dataType;
+            std::optional<std::int64_t> size;
+            std::string encode;
+            std::optional<std::int64_t> length;
+            std::optional<std::int64_t> digits;
+            std::vector<OptionData> options;
+        };
+        struct OperationData {
+            std::string key;
+            std::string name;
+            std::vector<ElementData> elements;
+        };
+        std::map<std::string, std::vector<OperationData>, std::less<>> configured;
+        for (const auto& row : rows.rows()) {
+            const auto deviceId = std::string(row[0].text());
+            if (!items.contains(deviceId))
+                continue;
+            auto& operations = configured[deviceId];
+            const auto operationKey = std::string(row[1].text());
+            auto operation =
+                std::find_if(operations.begin(), operations.end(),
+                             [&](const auto& value) { return value.key == operationKey; });
+            if (operation == operations.end()) {
+                operations.push_back({operationKey, std::string(row[2].text()), {}});
+                operation = std::prev(operations.end());
+            }
+            const auto elementId = std::string(row[3].text());
+            auto element = std::find_if(operation->elements.begin(), operation->elements.end(),
+                                        [&](const auto& value) { return value.id == elementId; });
+            if (element == operation->elements.end()) {
+                ElementData data;
+                data.id = elementId;
+                data.name = std::string(row[4].text());
+                data.unit = std::string(row[5].text());
+                data.registerType = std::string(row[6].text());
+                data.dataType = std::string(row[7].text());
+                if (!row[8].isNull())
+                    data.size = toInt(row[8].text());
+                data.encode = std::string(row[9].text());
+                if (!row[10].isNull())
+                    data.length = toInt(row[10].text());
+                if (!row[11].isNull())
+                    data.digits = toInt(row[11].text());
+                operation->elements.push_back(std::move(data));
+                element = std::prev(operation->elements.end());
+            }
+            if (!row[12].isNull() && !row[13].isNull())
+                element->options.push_back(
+                    {std::string(row[12].text()), std::string(row[13].text())});
+        }
+
+        for (auto& [deviceId, operations] : configured) {
+            const auto item = items.find(deviceId);
+            if (item == items.end())
+                continue;
+            ruvia::List<DeviceCommandOperationDto> operationDtos(c.resource());
+            for (const auto& operation : operations) {
+                auto& operationDto = operationDtos.emplace(c);
+                operationDto.name(operation.name);
+                ruvia::List<DeviceCommandOperationElementDto> elementDtos(c.resource());
+                for (const auto& element : operation.elements) {
+                    auto& elementDto = elementDtos.emplace(c);
+                    elementDto.elementId(element.id).name(element.name).value("");
+                    if (!element.unit.empty())
+                        elementDto.unit(element.unit);
+                    if (!element.registerType.empty())
+                        elementDto.registerType(element.registerType);
+                    if (!element.dataType.empty())
+                        elementDto.dataType(element.dataType);
+                    if (element.size)
+                        elementDto.size(*element.size);
+                    if (!element.encode.empty())
+                        elementDto.encode(element.encode);
+                    if (element.length)
+                        elementDto.length(*element.length);
+                    if (element.digits)
+                        elementDto.digits(*element.digits);
+                    if (!element.options.empty()) {
+                        ruvia::List<DeviceCommandOptionDto> optionDtos(c.resource());
+                        for (const auto& option : element.options)
+                            optionDtos.emplace(c).label(option.label).value(option.value);
+                        elementDto.options(std::move(optionDtos));
+                    }
+                }
+                operationDto.elements(std::move(elementDtos));
+            }
+            item->second->commandOperations(std::move(operationDtos));
+        }
+    }
+
     static std::string redisHashField(const ruvia::RedisValue& value, std::string_view field) {
         if (value.kind() != ruvia::RedisValue::Kind::kArray)
             return {};
@@ -946,8 +1131,7 @@ WHERE deleted_at IS NULL AND id <> $1::uuid
             .deviceCount(toInt(row[6].text()))
             .createdAt(row[7].text())
             .updatedAt(row[8].text())
-            .canShare(actor.canGroupShare &&
-                      (actor.superadmin || row[9].text() == actor.userId));
+            .canShare(actor.canGroupShare && (actor.superadmin || row[9].text() == actor.userId));
     }
 
     ruvia::Task<void> validateParent(ruvia::Context& c, const SaveDeviceGroupBody& body,

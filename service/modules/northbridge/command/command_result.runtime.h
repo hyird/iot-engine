@@ -96,8 +96,8 @@ class CommandResultRuntime final {
                     const auto stream = bridge::commandResultStream(partition);
                     auto& partitionRecovering = recovering.at(partition);
                     const auto messages = co_await bridge::redis_async::readGroup(
-                        redis, stream, kGroup, consumer,
-                        partitionRecovering ? "0" : ">", std::chrono::milliseconds(0), 100);
+                        redis, stream, kGroup, consumer, partitionRecovering ? "0" : ">",
+                        std::chrono::milliseconds(0), 100);
                     if (partitionRecovering && messages.empty())
                         partitionRecovering = false;
                     if (messages.empty())
@@ -106,8 +106,8 @@ class CommandResultRuntime final {
                     try {
                         for (const auto& message : messages) {
                             co_await project(redis, partition, message);
-                            co_await bridge::redis_async::acknowledgeAndDelete(
-                                redis, stream, kGroup, message.id);
+                            co_await bridge::redis_async::acknowledgeAndDelete(redis, stream,
+                                                                               kGroup, message.id);
                         }
                     } catch (const std::exception& error) {
                         std::cerr << "command result projection failed for south worker "
@@ -117,9 +117,9 @@ class CommandResultRuntime final {
                     }
                 }
                 if (!handled || failed)
-                    (void)co_await ruvia::sleepFor(
-                        context.worker(), failed ? std::chrono::milliseconds(250)
-                                                 : std::chrono::milliseconds(10));
+                    (void)co_await ruvia::sleepFor(context.worker(),
+                                                   failed ? std::chrono::milliseconds(250)
+                                                          : std::chrono::milliseconds(10));
             }
         } catch (...) {
             try {
@@ -142,8 +142,8 @@ class CommandResultRuntime final {
             fields.push_back({"source_entry_id", message.id});
             fields.push_back({"failure_reason", "command_result_invalid"});
             fields.push_back({"failed_at_ms", std::to_string(bridge::utcNowMilliseconds())});
-            (void)co_await bridge::redis_async::publish(
-                redis, bridge::deadLetterStream(partition), fields, 1000);
+            (void)co_await bridge::redis_async::publish(redis, bridge::deadLetterStream(partition),
+                                                        fields, 1000);
             co_return;
         }
         std::vector<bridge::StreamField> fields;
@@ -157,12 +157,11 @@ class CommandResultRuntime final {
         fields.push_back({"command_id", std::string(commandId)});
         fields.push_back({"status", message.get("success") == "1" ? "SUCCESS" : "FAILED"});
         const auto key = "iot:state:command:" + std::string(commandId);
-        co_await bridge::redis_async::eraseHash(redis, key);
         co_await bridge::redis_async::setHash(redis, key, fields);
         (void)co_await bridge::redis_async::command(
             redis, {"PEXPIRE", key,
-                    std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(kStateTtl)
-                                       .count())});
+                    std::to_string(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(kStateTtl).count())});
     }
 
     std::vector<ruvia::WebWorkerHandle> workers_;

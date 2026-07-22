@@ -13,16 +13,19 @@ import {
     ShareAltOutlined,
 } from '@ant-design/icons';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import type { MenuProps } from 'antd';
 import {
     App,
     Button,
     Card,
     Drawer,
+    Dropdown,
     Empty,
     Flex,
     Form,
     Input,
     Popconfirm,
+    Popover,
     Result,
     Select,
     Skeleton,
@@ -51,6 +54,7 @@ import { PageContainer } from '@/components/PageContainer';
 import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermissions } from '@/hooks/usePermission';
 import { useLinkOptions } from '../link/link.service';
+import CommandPopover from './CommandPopover';
 import DeviceFormModal, { type DeviceFormValues } from './DeviceFormModal';
 import DeviceGroupPanel from './DeviceGroupPanel';
 import {
@@ -70,6 +74,7 @@ import type { DeviceGroup } from './device-group.types';
 
 const { Search } = Input;
 const EMPTY_DEVICE_LIST: Device.RealTimeData[] = [];
+const EMPTY_COMMAND_OPERATIONS: Device.CommandOperation[] = [];
 const DEVICE_CARD_GRID_CLASS = 'grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-4';
 const DEVICE_CARD_ACTION_BUTTON_CLASS =
     '!flex !h-8 !w-8 items-center justify-center !rounded-md text-slate-500 hover:!bg-slate-100 hover:!text-slate-900';
@@ -478,12 +483,40 @@ interface DeviceGridItemProps {
     onShare: (device: Device.RealTimeData) => void;
     onEdit: (device: Device.RealTimeData) => void;
     onRemove: (device: Device.RealTimeData) => void;
+    commandPopoverOpen: boolean;
+    commandDeviceId?: string;
+    commandFunc: Device.CommandOperation | null;
+    onOpenCommandPopover: (device: Device.RealTimeData, operation: Device.CommandOperation) => void;
+    onCloseCommandPopover: () => void;
 }
 
 const DeviceGridItem = memo(
-    ({ device, online, onUnavailable, onShare, onEdit, onRemove }: DeviceGridItemProps) => {
+    ({
+        device,
+        online,
+        onUnavailable,
+        onShare,
+        onEdit,
+        onRemove,
+        commandPopoverOpen,
+        commandDeviceId,
+        commandFunc,
+        onOpenCommandPopover,
+        onCloseCommandPopover,
+    }: DeviceGridItemProps) => {
         const items = useMemo(() => buildCardItems(device), [device]);
         const wide = getDeviceDisplayElementCount(device) >= WIDE_DEVICE_CARD_ITEM_COUNT;
+        const commandOperations = device.commandOperations ?? EMPTY_COMMAND_OPERATIONS;
+        const commandMenuItems = useMemo<MenuProps['items']>(
+            () =>
+                commandOperations.map((operation, index) => ({
+                    key: String(index),
+                    label: operation.name,
+                })),
+            [commandOperations]
+        );
+        const canRemoteControl = device.remote_control !== false;
+        const isCommandPopoverOpen = commandPopoverOpen && commandDeviceId === device.id;
 
         return (
             <div className={`flex flex-col ${wide ? 'xl:col-span-2' : ''}`}>
@@ -528,15 +561,65 @@ const DeviceGridItem = memo(
                     column={wide ? 8 : 4}
                     extra={
                         <Flex align="center" justify="center" gap={10} wrap className="w-full">
-                            <Tooltip title="南桥接入后可下发指令">
-                                <Button
-                                    type="text"
-                                    size="small"
-                                    className={DEVICE_CARD_ACTION_BUTTON_CLASS}
-                                    icon={<SendOutlined />}
-                                    disabled
-                                />
-                            </Tooltip>
+                            <Popover
+                                open={isCommandPopoverOpen}
+                                trigger="click"
+                                placement="bottomRight"
+                                content={
+                                    isCommandPopoverOpen && commandFunc ? (
+                                        <CommandPopover
+                                            device={device}
+                                            func={commandFunc}
+                                            onClose={onCloseCommandPopover}
+                                        />
+                                    ) : null
+                                }
+                                onOpenChange={(open) => {
+                                    if (!open) onCloseCommandPopover();
+                                }}
+                            >
+                                <Dropdown
+                                    disabled={
+                                        !device.can_command ||
+                                        !commandOperations.length ||
+                                        !canRemoteControl
+                                    }
+                                    menu={{
+                                        items: commandMenuItems,
+                                        onClick: ({ key }) => {
+                                            const operation = commandOperations[Number(key)];
+                                            if (operation && device.can_command)
+                                                onOpenCommandPopover(device, operation);
+                                        },
+                                    }}
+                                >
+                                    <Tooltip
+                                        title={
+                                            !device.can_command
+                                                ? '当前账号没有设备下发权限'
+                                                : !canRemoteControl
+                                                  ? '该设备已禁止远控'
+                                                  : !commandOperations.length
+                                                    ? '当前协议没有可下发要素'
+                                                    : online
+                                                      ? '下发指令'
+                                                      : '设备离线（点击后将提示）'
+                                        }
+                                    >
+                                        <Button
+                                            type="text"
+                                            size="small"
+                                            className={DEVICE_CARD_ACTION_BUTTON_CLASS}
+                                            icon={<SendOutlined />}
+                                            disabled={
+                                                !device.can_command ||
+                                                !commandOperations.length ||
+                                                !canRemoteControl
+                                            }
+                                        />
+                                    </Tooltip>
+                                </Dropdown>
+                            </Popover>
                             <Tooltip title="历史数据">
                                 <Button
                                     type="text"
@@ -747,6 +830,9 @@ const DevicePage = () => {
         id: string;
         name: string;
     } | null>(null);
+    const [commandPopoverOpen, setCommandPopoverOpen] = useState(false);
+    const [commandDevice, setCommandDevice] = useState<Device.RealTimeData | null>(null);
+    const [commandFunc, setCommandFunc] = useState<Device.CommandOperation | null>(null);
     const [statusNow, setStatusNow] = useState(() => Date.now());
     const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -878,6 +964,19 @@ const DevicePage = () => {
         () => message.info('该功能将在南桥运行模块接入后启用'),
         [message]
     );
+    const openCommandPopover = useCallback(
+        (device: Device.RealTimeData, operation: Device.CommandOperation) => {
+            setCommandDevice(device);
+            setCommandFunc(operation);
+            setCommandPopoverOpen(true);
+        },
+        []
+    );
+    const closeCommandPopover = useCallback(() => {
+        setCommandPopoverOpen(false);
+        setCommandDevice(null);
+        setCommandFunc(null);
+    }, []);
 
     const renderDeviceCards = (devices: Device.RealTimeData[]) => (
         <DeviceGrid
@@ -888,6 +987,11 @@ const DevicePage = () => {
             onShare={openShare}
             onEdit={openEdit}
             onRemove={remove}
+            commandPopoverOpen={commandPopoverOpen}
+            commandDeviceId={commandDevice?.id}
+            commandFunc={commandFunc}
+            onOpenCommandPopover={openCommandPopover}
+            onCloseCommandPopover={closeCommandPopover}
         />
     );
 

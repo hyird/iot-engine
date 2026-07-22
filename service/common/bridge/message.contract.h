@@ -20,8 +20,7 @@ inline constexpr std::string_view kIngressStreamPrefix = "iot:channel:packet:raw
 inline constexpr std::string_view kParsedStreamPrefix = "iot:channel:packet:parsed:worker:";
 inline constexpr std::string_view kEgressStreamPrefix = "iot:channel:socket:egress:worker:";
 inline constexpr std::string_view kCommandStreamPrefix = "iot:channel:command:worker:";
-inline constexpr std::string_view kCommandResultStreamPrefix =
-    "iot:channel:command:result:worker:";
+inline constexpr std::string_view kCommandResultStreamPrefix = "iot:channel:command:result:worker:";
 inline constexpr std::string_view kLinkEventStreamPrefix = "iot:channel:link:event:worker:";
 inline constexpr std::string_view kControlStreamPrefix = "iot:channel:control:worker:";
 inline constexpr std::string_view kDeadLetterStreamPrefix = "iot:channel:dead-letter:worker:";
@@ -51,8 +50,7 @@ inline std::string egressStream(std::size_t workerIndex) {
 }
 
 inline std::string commandStream(std::size_t workerIndex, bool highPriority) {
-    return workerStream(kCommandStreamPrefix, workerIndex,
-                        highPriority ? ":high" : ":normal");
+    return workerStream(kCommandStreamPrefix, workerIndex, highPriority ? ":high" : ":normal");
 }
 
 inline std::string commandResultStream(std::size_t workerIndex) {
@@ -158,6 +156,7 @@ struct ProtocolTask {
     std::string readbackPayload;
     std::string expectedReadbackData;
     std::string expectedValue;
+    std::vector<std::pair<std::string, std::string>> elements;
     bool expectsResponse = true;
     std::int64_t responseTimeoutMs = 3000;
     std::int64_t createdAtMs = 0;
@@ -481,26 +480,30 @@ inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
 }
 
 inline std::vector<StreamField> protocolTaskFields(const ProtocolTask& task) {
-    return {{"message_id", task.messageId},
-            {"causation_id", task.causationId},
-            {"group_key", task.groupKey},
-            {"protocol", task.protocol},
-            {"transport", task.transport},
-            {"kind", task.kind},
-            {"link_id", task.linkId},
-            {"device_id", task.deviceId},
-            {"device_code", task.deviceCode},
-            {"connection_id", task.connectionId},
-            {"payload_hex", task.payload},
-            {"readback_payload_hex", task.readbackPayload},
-            {"expected_readback_hex", task.expectedReadbackData},
-            {"expected_value", task.expectedValue},
-            {"expects_response", task.expectsResponse ? "1" : "0"},
-            {"response_timeout_ms", std::to_string(task.responseTimeoutMs)},
-            {"created_at_ms", std::to_string(task.createdAtMs)},
-            {"attempt", std::to_string(task.attempt)},
-            {"max_attempts", std::to_string(task.maxAttempts)},
-            {"session_epoch", std::to_string(task.sessionEpoch)}};
+    std::vector<StreamField> fields{{"message_id", task.messageId},
+                                    {"causation_id", task.causationId},
+                                    {"group_key", task.groupKey},
+                                    {"protocol", task.protocol},
+                                    {"transport", task.transport},
+                                    {"kind", task.kind},
+                                    {"link_id", task.linkId},
+                                    {"device_id", task.deviceId},
+                                    {"device_code", task.deviceCode},
+                                    {"connection_id", task.connectionId},
+                                    {"payload_hex", task.payload},
+                                    {"readback_payload_hex", task.readbackPayload},
+                                    {"expected_readback_hex", task.expectedReadbackData},
+                                    {"expected_value", task.expectedValue},
+                                    {"expects_response", task.expectsResponse ? "1" : "0"},
+                                    {"response_timeout_ms", std::to_string(task.responseTimeoutMs)},
+                                    {"created_at_ms", std::to_string(task.createdAtMs)},
+                                    {"attempt", std::to_string(task.attempt)},
+                                    {"max_attempts", std::to_string(task.maxAttempts)},
+                                    {"session_epoch", std::to_string(task.sessionEpoch)}};
+    fields.reserve(fields.size() + task.elements.size());
+    for (const auto& [elementId, value] : task.elements)
+        fields.push_back({"element:" + elementId, value});
+    return fields;
 }
 
 inline ProtocolTask protocolTaskFrom(const StreamMessage& message) {
@@ -537,10 +540,20 @@ inline ProtocolTask protocolTaskFrom(const StreamMessage& message) {
     task.deviceId = std::string(message.get("device_id"));
     task.deviceCode = std::string(message.get("device_code"));
     task.connectionId = std::string(message.get("connection_id"));
-    task.payload = std::string(require("payload_hex"));
+    task.payload = std::string(message.get("payload_hex"));
     task.readbackPayload = std::string(message.get("readback_payload_hex"));
     task.expectedReadbackData = std::string(message.get("expected_readback_hex"));
     task.expectedValue = std::string(message.get("expected_value"));
+    for (const auto& current : message.fields) {
+        if (!current.name.starts_with("element:"))
+            continue;
+        const auto elementId = std::string_view(current.name).substr(8);
+        if (elementId.empty())
+            throw std::runtime_error("Invalid protocol task element field");
+        task.elements.emplace_back(elementId, current.value);
+    }
+    if (task.payload.empty() && task.elements.empty())
+        throw std::runtime_error("Protocol task requires payload_hex or elements");
     const auto expectsResponse = message.get("expects_response");
     task.expectsResponse = expectsResponse.empty() || expectsResponse == "1";
     task.responseTimeoutMs = integer("response_timeout_ms", false);

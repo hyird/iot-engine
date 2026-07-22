@@ -3,20 +3,26 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <asio.hpp>
 
+#include "service/common/packet_log.h"
 #include "service/modules/southbridge/protocol/modbus/modbus.runtime.h"
 #include "service/modules/southbridge/protocol/protocol_engine.h"
 #include "service/modules/southbridge/protocol/s7/s7.runtime.h"
 #include "service/modules/southbridge/protocol/sl651/sl651.runtime.h"
+#include "service/modules/southbridge/runtime_config.redis.h"
 #include "service/modules/southbridge/worker_timer.scheduler.h"
 
 namespace sb = service::southbridge;
@@ -408,6 +414,8 @@ void testSl651() {
 
     auto commandFrame = slFrame(0x4C, {});
     // Downlink direction occupies the high nibble of the length field; refresh the CRC.
+    commandFrame[2] = 0x00;
+    commandFrame[6] = 0x01;
     commandFrame[11] = 0x80;
     const auto commandCrc =
         crc16(std::span<const std::uint8_t>(commandFrame).first(commandFrame.size() - 2));
@@ -427,6 +435,25 @@ void testSl651() {
     commandActions = engine.consume(packet);
     require(has(commandActions, sb::ProtocolActionKind::CompleteCommand),
             "SL651 ACK did not complete command");
+
+    commandActions = engine.execute(
+        "sl-connection", {.id = "sl-element-command",
+                          .deviceId = "sl-device",
+                          .deviceCode = "0000000001",
+                          .kind = "command",
+                          .elements = {{.elementId = "request-value", .value = "12.34"}}});
+    const auto& generatedSl651 = first(commandActions, sb::ProtocolActionKind::Send).bytes;
+    require(generatedSl651[2] == 0x00 && generatedSl651[6] == 0x01 && generatedSl651[7] == 0x01 &&
+                generatedSl651[10] == 0x4C,
+            "SL651 element command did not reuse the observed address header");
+    const std::array<std::uint8_t, 4> encodedSl651Value{0x39, 0x00, 0x12, 0x34};
+    require(std::search(generatedSl651.begin(), generatedSl651.end(), encodedSl651Value.begin(),
+                        encodedSl651Value.end()) != generatedSl651.end(),
+            "SL651 element command did not encode its guide and BCD value");
+    packet.payload = slFrame(0xE1, {});
+    commandActions = engine.consume(packet);
+    require(has(commandActions, sb::ProtocolActionKind::CompleteCommand),
+            "generated SL651 command did not complete on ACK");
 
     commandActions = engine.execute("sl-connection", {.id = "sl-negative-command",
                                                       .deviceId = "sl-device",
@@ -625,7 +652,8 @@ void testModbus() {
                                .byteOrder = "BIG_ENDIAN",
                                .registerType = "HOLDING_REGISTER",
                                .address = 0,
-                               .quantity = 1});
+                               .quantity = 1,
+                               .writable = true});
     device.elements.push_back({.id = "holding-2",
                                .name = "Holding 2",
                                .dataType = "UINT16",
@@ -688,6 +716,23 @@ void testModbus() {
     actions = engine.consume(packet);
     require(has(actions, sb::ProtocolActionKind::CompleteCommand),
             "Modbus verified write did not complete");
+
+    actions = engine.execute("modbus-connection",
+                             {.id = "element-write",
+                              .deviceId = "modbus-device",
+                              .deviceCode = "MODBUS-1",
+                              .kind = "command",
+                              .elements = {{.elementId = "holding-0", .value = "4660"}}});
+    require(first(actions, sb::ProtocolActionKind::Send).bytes == modbusWrite(1),
+            "Modbus element command did not compile FC06");
+    packet.payload = modbusWrite(1);
+    actions = engine.consume(packet);
+    require(first(actions, sb::ProtocolActionKind::Send).bytes == modbusRead(2),
+            "Modbus element command did not compile FC03 readback");
+    packet.payload = modbusReadResponse(2);
+    actions = engine.consume(packet);
+    require(has(actions, sb::ProtocolActionKind::CompleteCommand),
+            "Modbus element command did not complete after readback");
 
     actions = engine.deadline("modbus-connection", pollToken);
     require(has(actions, sb::ProtocolActionKind::Send),
@@ -1084,7 +1129,8 @@ void testS7() {
                                .area = "DB",
                                .dbNumber = 1,
                                .start = 0,
-                               .size = 2});
+                               .size = 2,
+                               .writable = true});
     device.elements.push_back({.id = "v-lreal",
                                .name = "V LREAL",
                                .dataType = "LREAL",
@@ -1184,6 +1230,30 @@ void testS7() {
     require(has(actions, sb::ProtocolActionKind::CompleteCommand),
             "S7 Write Var readback did not complete");
 
+    actions =
+        engine.execute("s7-connection", {.id = "s7-element-write",
+                                         .deviceId = "s7-device",
+                                         .deviceCode = "S7-1",
+                                         .kind = "command",
+                                         .elements = {{.elementId = "db1-word", .value = "4660"}}});
+    const auto generatedWrite = first(actions, sb::ProtocolActionKind::Send).bytes;
+    require(generatedWrite.size() == 37 && generatedWrite[17] == 0x05 &&
+                generatedWrite[35] == 0x12 && generatedWrite[36] == 0x34,
+            "S7 element command did not compile Write Var");
+    const auto writeReference =
+        static_cast<std::uint16_t>(generatedWrite[11] << 8U) | generatedWrite[12];
+    packet.payload = s7WriteResponse(writeReference);
+    actions = engine.consume(packet);
+    const auto generatedReadback = first(actions, sb::ProtocolActionKind::Send).bytes;
+    require(generatedReadback[17] == 0x04,
+            "S7 element command did not compile Read Var verification");
+    const auto readReference =
+        static_cast<std::uint16_t>(generatedReadback[11] << 8U) | generatedReadback[12];
+    packet.payload = s7ReadResponse(readReference);
+    actions = engine.consume(packet);
+    require(has(actions, sb::ProtocolActionKind::CompleteCommand),
+            "S7 element command did not complete after readback");
+
     actions = engine.deadline("s7-connection", pollToken);
     require(has(actions, sb::ProtocolActionKind::Send),
             "S7 periodic poll was not generated by its session");
@@ -1260,6 +1330,66 @@ void testWorkerTimer() {
     require(completed == 2, "worker timer cancellation or execution failed");
 }
 
+void testRuntimeConfigWritableContract() {
+    sb::RuntimeSnapshot readOnly;
+    sb::DeviceDefinition device;
+    device.id = "runtime-config-device";
+    device.elements.push_back({.id = "runtime-config-element", .writable = false});
+    readOnly.devices.push_back(device);
+
+    auto writable = readOnly;
+    writable.devices.front().elements.front().writable = true;
+    require(service::southbridge::config_redis::signature(readOnly) !=
+                service::southbridge::config_redis::signature(writable),
+            "runtime config signature ignored writable changes");
+
+    const auto element = service::southbridge::config_redis::detail::element(
+        {{"id", "runtime-config-element"}, {"writable", "1"}});
+    require(element.writable, "runtime config did not deserialize writable state");
+}
+
+void testPacketLog() {
+    namespace packetLog = service::common::packet_log;
+    const auto directory = std::filesystem::temp_directory_path() / "iot-engine-packet-log-test";
+    std::error_code ignored;
+    std::filesystem::remove_all(directory, ignored);
+
+    packetLog::Config config;
+    config.directory = directory;
+    config.level = packetLog::Level::Debug;
+    packetLog::initialize(std::move(config));
+
+    packetLog::Context context;
+    context.workerIndex = 2;
+    context.direction = "RX";
+    context.operation = "transport";
+    context.protocol = "Modbus";
+    context.linkId = "link-test";
+    context.connectionId = "connection-test";
+    context.messageId = "message-test";
+    context.sessionEpoch = 7;
+    const std::array<std::uint8_t, 4> invalidBytes{0x00, 0xFF, 0x7E, 0x01};
+    packetLog::write(packetLog::Level::Debug, "RX_BYTES", context, invalidBytes);
+    packetLog::write(packetLog::Level::Warn, "TIMEOUT", context, {}, "modbus_response_timeout");
+    packetLog::write(packetLog::Level::Info, "BROADCAST_START", context, {}, "targets=2");
+    packetLog::shutdown();
+
+    std::string content;
+    for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+        if (!entry.is_regular_file())
+            continue;
+        std::ifstream input(entry.path());
+        content.append(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }
+    require(content.find("event=\"RX_BYTES\"") != std::string::npos &&
+                content.find("hex=\"00 FF 7E 01\"") != std::string::npos,
+            "packet log did not preserve unparsed binary bytes");
+    require(content.find("event=\"TIMEOUT\"") != std::string::npos &&
+                content.find("event=\"BROADCAST_START\"") != std::string::npos,
+            "packet log did not persist timeout and broadcast events");
+    std::filesystem::remove_all(directory, ignored);
+}
+
 } // namespace
 
 int main() {
@@ -1278,6 +1408,8 @@ int main() {
         testS7();
         testS7AllDataTypes();
         testWorkerTimer();
+        testRuntimeConfigWritableContract();
+        testPacketLog();
         std::cout << "southbridge protocol tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

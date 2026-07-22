@@ -212,7 +212,8 @@ SELECT d.id::text, element->>'id', element->>'name', COALESCE(element->>'unit', 
        element->>'dataType', COALESCE(element->>'byteOrder', p.config->>'byteOrder', 'BIG_ENDIAN'),
        element->>'registerType',
        element->>'address', element->>'quantity',
-       COALESCE(element->>'scale', '1'), COALESCE(element->>'decimals', '-1')
+       COALESCE(element->>'scale', '1'), COALESCE(element->>'decimals', '-1'),
+       COALESCE((element->>'writable')::boolean, FALSE)
 FROM device d
 JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'Modbus'
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]'::jsonb)) element
@@ -234,6 +235,7 @@ ORDER BY d.id, (element->>'address')::integer)sql");
         element.quantity = cellInt(row, 8);
         element.scale = std::stod(cell(row, 9));
         element.decimals = cellInt(row, 10);
+        element.writable = cellBool(row, 11);
         device->elements.push_back(std::move(element));
     }
 
@@ -242,7 +244,8 @@ SELECT d.id::text, element->>'id', element->>'name', COALESCE(element->>'unit', 
        COALESCE(element->>'dataType', 'UINT8'), element->>'area',
        COALESCE(element->>'dbNumber', '0'), element->>'start',
        COALESCE(element->>'startBit', '0'), element->>'size',
-       COALESCE(element->>'decimals', '-1')
+       COALESCE(element->>'decimals', '-1'),
+       COALESCE((element->>'writable')::boolean, FALSE)
 FROM device d
 JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'S7'
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]'::jsonb)) element
@@ -264,6 +267,7 @@ ORDER BY d.id, (element->>'start')::integer)sql");
         element.startBit = cellInt(row, 8);
         element.size = cellInt(row, 9);
         element.decimals = cellInt(row, 10);
+        element.writable = cellBool(row, 11);
         device->elements.push_back(std::move(element));
     }
 

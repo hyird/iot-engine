@@ -58,12 +58,12 @@ const ModbusConfigPage = () => {
     const canAdd = has('iot:protocol:add');
     const canEdit = has('iot:protocol:edit');
     const canDelete = has('iot:protocol:delete');
-    const canImport = has('iot:protocol:import');
+    const canImport = has('iot:protocol:import') && canAdd;
     const canExport = has('iot:protocol:export');
 
     // 设备类型列表查询
     const {
-        data: configPage,
+        data: configList,
         isLoading: loadingTypes,
         refetch: refetchTypes,
     } = useProtocolConfigList({ protocol: 'Modbus' }, { enabled: canQuery });
@@ -73,7 +73,8 @@ const ModbusConfigPage = () => {
     const deleteMutation = useProtocolConfigDelete();
 
     // 导入导出
-    const { exportConfigs, triggerImport, importing } = useProtocolImportExport('Modbus');
+    const { exportConfigs, triggerImport, exporting, importing } =
+        useProtocolImportExport('Modbus');
 
     // 当前选中的设备类型 ID（用户手动选择）
     const [selectedTypeId, setSelectedTypeId] = useState<string>();
@@ -83,7 +84,7 @@ const ModbusConfigPage = () => {
     const registerModalRef = useRef<RegisterModalRef>(null);
 
     // 设备类型列表（使用 useMemo 保持引用稳定）
-    const types = useMemo(() => configPage?.list || [], [configPage?.list]);
+    const types = useMemo(() => configList ?? [], [configList]);
     const emptyTypeDesc = types.length ? '未选择设备类型' : '暂无设备类型';
 
     // 计算当前激活的类型 ID：优先用户选择，否则默认第一个
@@ -347,8 +348,9 @@ const ModbusConfigPage = () => {
                                         <Button
                                             size="small"
                                             icon={<DownloadOutlined />}
-                                            disabled={!types.length}
-                                            onClick={() => exportConfigs(types)}
+                                            disabled={loadingTypes || importing}
+                                            loading={exporting}
+                                            onClick={exportConfigs}
                                         />
                                     </Tooltip>
                                 )}
@@ -357,6 +359,7 @@ const ModbusConfigPage = () => {
                                         <Button
                                             size="small"
                                             icon={<UploadOutlined />}
+                                            disabled={exporting}
                                             loading={importing}
                                             onClick={triggerImport}
                                         />

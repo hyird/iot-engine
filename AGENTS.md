@@ -8,11 +8,20 @@
 - 只修改当前需求涉及的文件。遇到并行新增的模块时，除非当前需求明确覆盖该模块，否则不要扩大修改范围。
 - 清理“未使用”代码前必须确认它不是尚未接入但有明确用途的契约、Schema、API 或功能；能接入的校验代码应接入，不能仅因静态扫描未引用就删除。
 
+## 仓库结构与构建目录
+
+- `service/` 是 C++20 单进程后端，`web/` 是 React 19 管理端，`tests/` 包含 C++ 测试和 Bun 压测脚本；完整运行时分层以 `docs/architecture.md` 为准。
+- 本地 CMake 配置和编译只使用根目录 `build/`，不要创建 `build-debug/`、`build-default/` 或 `cmake-build-*`。GitHub Actions 的隔离构建目录 `build/ci/` 是唯一例外。
+- 默认构建同时生成 `build/iot-engine` 和 `build/web/`。可执行文件按自身所在目录查找同级 `web/`，发布时两者必须作为同一个不可拆分版本交付。
+- `.env` 只属于具体运行环境。不得把 `.env`、数据库口令、JWT 密钥、SSH 私钥或其他凭据加入 CI 制品、提交、日志和文档。
+
 ## 前端依赖与工具
 
-- 使用 Bun，保持 `package.json` 与 `bun.lock` 一致。
+- 使用 `packageManager` 指定版本的 Bun，保持 `package.json` 与 `bun.lock` 一致；安装依赖使用 `bun install --frozen-lockfile`。
 - 用户要求升级依赖时，直接升级到最新稳定版本；升级后运行冻结锁文件安装、类型检查、lint 和生产构建。
 - 删除依赖前必须确认源码、构建配置和运行时均无使用。
+- 长列表和可变高度列表统一使用 `@tanstack/react-virtual`，排序交互使用现有 `@dnd-kit`；不要再实现一套手写虚拟滚动、滚动位置估算或拖拽引擎。
+- 服务端状态使用 TanStack Query，跨页面客户端状态使用 Zustand，表单和接口边界使用 Zod；不要用重复的本地状态绕开既有数据流。
 
 ## 前后端校验
 
@@ -38,6 +47,8 @@
 - 管理表单弹窗统一宽度和高度规则：默认宽度 720px，高度使用 `min(720px, 90dvh)`，任何情况下不得超过可视区域高度的 90%。
 - 弹窗标题区和底部操作区固定，表单内容区独立滚动；内容再多也不能让整个弹窗超出可视区域。
 - 表单统一使用纵向标签布局。并排字段必须使用一致的列宽、间距和顶部对齐，输入控件应占满各自字段宽度。
+- 设备卡片内部的指标项允许根据内容宽度自动跨一列或多列，但必须放在同一个 CSS Grid 坐标系中；所有卡片边界、列起点和间距要对齐，不能用互相独立的双列容器造成后续行错位或空洞。
+- 虚拟列表切换筛选、分组或页面时必须使用稳定 `key`，在数据集合变化后重算测量并恢复到确定的滚动位置；不要复用上一数据集的测量缓存造成闪烁或跳动。
 
 ## 样式与主题
 
@@ -52,10 +63,30 @@
 - `useEffect` 内调用 `setState` 时必须确认依赖不会因该状态更新而持续变化，避免 React 最大更新深度错误。
 - React Router 页面必须提供用户友好的错误兜底，不暴露默认的开发者错误页面。
 
+## CI 与发布制品
+
+- `.github/workflows/build.yml` 是三平台构建的唯一事实来源：Ubuntu 24.04 使用 Clang 18，macOS 15 使用系统 AppleClang，Windows 2025 使用 MSYS2 UCRT64 GCC 和 `x64-mingw-static` triplet。
+- vcpkg 必须固定到工作流声明的 commit。二进制缓存 key 必须区分操作系统、架构、编译器/ABI、vcpkg commit 和 manifest 输入，不能在不兼容工具链之间共享缓存。
+- CI 使用锁定的 Bun 版本和冻结锁文件；Windows CMake 配置必须显式传入 `setup-bun` 输出的 `BUN_EXECUTABLE`，不要假设 MSYS2 能从 `PATH` 找到 Bun。
+- 每个平台都必须完成配置、构建和 CTest 后再打包。Linux/macOS 制品为 `iot-engine-<OS>-<ARCH>.tar.gz`，Windows 为同名 `.zip`；包根目录只包含可执行文件和 `web/`，上传名称必须带完整 Git SHA，保留 14 天。
+- 默认发布结论必须等待三个平台全部成功。只有用户明确接受某个平台未完成或失败时，才可使用已成功平台的同一 commit 制品继续部署，并必须保留未覆盖平台的状态说明。
+- Linux CI 当前使用 Clang 18 是为了避开 GCC 13/14 在该协程代码上的编译器 ICE；不要在没有隔离复现和三平台验证的情况下改回 GCC。
+
+## 生产部署
+
+- 当前生产目标为 `103.236.69.112`，外部域名为 `i.a-z.xin`。Nginx 终止 TLS 并反向代理到 `127.0.0.1:3000`，后端不得直接监听公网地址。
+- systemd 单元是 `iot.service`，工作目录是 `/opt/iot`，入口是 `/opt/iot/server`，静态资源是 `/opt/iot/web/`。CI 产物中的 `iot-engine` 部署时重命名为 `server`。
+- 每次部署先把制品放入 `/opt/iot/releases/<短 SHA>/` 并校验归档和二进制哈希、架构、动态库与 `web/index.html`，再切换线上文件。旧 `server`、`web/` 和 Nginx 配置放入 `/opt/iot/backups/<UTC 时间>-pre-<短 SHA>/`，验证完成前不得删除。
+- 切换后必须验证 `iot.service` 为 active、`127.0.0.1:3000` 首页为 200、入口 HTML 引用本次 bundle、数据库迁移完成、Redis 可读写、Nginx 配置测试成功以及 `https://i.a-z.xin` 证书和页面均正常；任一关键检查失败立即恢复旧文件并重启旧服务。
+- 生产配置数据库为独立的 `iot_engine` 数据库和同名登录角色，不复用或改写旧 `iot-manager` 数据库。TimescaleDB 扩展、数据库、角色和连接会话时区都必须是 UTC。
+- Redis 只监听 `127.0.0.1:6379`，启用 AOF，宿主机持久化目录为 `/opt/redis/data`。容器只使用官方镜像，并通过 `docker.a-z.xin` 拉取；Docker Hub 官方镜像使用 `docker.a-z.xin/library/<image>:<tag>` 形式。
+- 生产 `.env` 位于 `/opt/iot/.env`、权限为 `600`，密钥在服务器本地生成。部署和排障输出不得回显数据库密码、JWT 密钥、私钥或现有配置中的敏感字段。
+
 ## 验证要求
 
 - 前端改动至少运行：`bun run typecheck`、`bun run lint`、`bun run build` 和 `git diff --check`。
 - 修改过的前端文件必须通过 Biome 格式检查；不要为了通过全仓格式检查而改写无关的并行文件。
 - 后端头文件、服务配置或静态资源策略有改动时，运行 `cmake --build build`。
+- 后端或 CI 构建逻辑有改动时，同时运行 `ctest --test-dir build --output-on-failure`；CI 修改还要校验工作流 YAML，并核对各平台缓存 key 与制品路径。
 - 涉及静态资源发布时，确认当前服务实际返回新 bundle；入口 HTML 不得使用会长期指向旧哈希资源的缓存策略。
 - 布局改动应尽可能在本地运行页面中验证控制台错误、表格滚动和响应式表现；如果认证阻止页面检查，应明确说明未覆盖的验证范围。

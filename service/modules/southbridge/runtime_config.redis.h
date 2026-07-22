@@ -126,6 +126,7 @@ inline std::string signature(const RuntimeSnapshot& snapshot) {
             integer(element.quantity);
             number(std::bit_cast<std::uint64_t>(element.scale));
             integer(element.decimals);
+            number(element.writable ? 1 : 0);
             text(element.area);
             integer(element.dbNumber);
             integer(element.start);
@@ -137,6 +138,7 @@ inline std::string signature(const RuntimeSnapshot& snapshot) {
             text(element.encoding);
             integer(element.length);
             integer(element.digits);
+            number(element.responseElement ? 1 : 0);
         }
     }
     std::array<char, 16> output{};
@@ -337,6 +339,7 @@ inline ElementDefinition element(const std::vector<bridge::StreamField>& fields)
     result.quantity = integer(fields, "quantity");
     result.scale = decimal(fields, "scale", 1);
     result.decimals = integer(fields, "decimals", -1);
+    result.writable = integer(fields, "writable") != 0;
     result.area = field(fields, "area");
     result.dbNumber = integer(fields, "db_number");
     result.start = integer(fields, "start");
@@ -479,6 +482,7 @@ ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
                                 {"quantity", std::to_string(element.quantity)},
                                 {"scale", std::to_string(element.scale)},
                                 {"decimals", std::to_string(element.decimals)},
+                                {"writable", element.writable ? "1" : "0"},
                                 {"area", element.area},
                                 {"db_number", std::to_string(element.dbNumber)},
                                 {"start", std::to_string(element.start)},

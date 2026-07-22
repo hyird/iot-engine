@@ -262,7 +262,10 @@ function sl651Frame(index: number, fn = 0x30, downstream = false) {
                 : [];
     const body = functionIndex >= 0 ? [0x39, functionIndex, ...value] : [];
     const length = body.length | (downstream ? 0x8000 : 0);
-    const frame = Buffer.from([0x7e, 0x7e, 1, ...codeBytes, 0, 0, fn, length >> 8, length & 0xff, 2, ...body, 3]);
+    const address = downstream ? [...codeBytes, 1] : [1, ...codeBytes];
+    const frame = Buffer.from([
+        0x7e, 0x7e, ...address, 0, 0, fn, length >> 8, length & 0xff, 2, ...body, 3,
+    ]);
     const crc = crc16(frame);
     return Buffer.concat([frame, Buffer.from([crc >> 8, crc & 0xff])]);
 }

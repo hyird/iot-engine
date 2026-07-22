@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "service/modules/southbridge/protocol/protocol_runtime.h"
+#include "service/modules/southbridge/protocol/command_value.h"
 
 namespace service::southbridge::s7 {
 
@@ -195,6 +196,54 @@ inline std::uint16_t dbNumber(const ElementDefinition& element) {
         std::clamp<std::int64_t>(element.area == "V" ? 1 : element.dbNumber, 0, 65535));
 }
 
+inline void appendBe(std::vector<std::uint8_t>& bytes, std::uint64_t value, std::size_t width) {
+    for (auto offset = width; offset > 0; --offset)
+        bytes.push_back(static_cast<std::uint8_t>(value >> ((offset - 1) * 8U)));
+}
+
+inline std::vector<std::uint8_t> encodeValue(const ElementDefinition& element,
+                                             std::string_view value) {
+    std::vector<std::uint8_t> bytes;
+    if (element.dataType == "BOOL")
+        bytes.push_back(value == "1" ? 1 : 0);
+    else if (element.dataType == "INT8")
+        bytes.push_back(
+            static_cast<std::uint8_t>(command_value::integer<std::int64_t>(value, element.name)));
+    else if (element.dataType == "UINT8" || element.dataType == "BYTE")
+        bytes.push_back(
+            static_cast<std::uint8_t>(command_value::integer<std::uint64_t>(value, element.name)));
+    else if (element.dataType == "INT16")
+        appendBe(
+            bytes,
+            static_cast<std::uint16_t>(command_value::integer<std::int64_t>(value, element.name)),
+            2);
+    else if (element.dataType == "UINT16" || element.dataType == "WORD")
+        appendBe(bytes, command_value::integer<std::uint64_t>(value, element.name), 2);
+    else if (element.dataType == "INT32")
+        appendBe(
+            bytes,
+            static_cast<std::uint32_t>(command_value::integer<std::int64_t>(value, element.name)),
+            4);
+    else if (element.dataType == "UINT32" || element.dataType == "DWORD")
+        appendBe(bytes, command_value::integer<std::uint64_t>(value, element.name), 4);
+    else if (element.dataType == "FLOAT" || element.dataType == "FLOAT32" ||
+             element.dataType == "REAL")
+        appendBe(bytes,
+                 std::bit_cast<std::uint32_t>(
+                     static_cast<float>(command_value::decimal(value, element.name))),
+                 4);
+    else if (element.dataType == "LREAL" || element.dataType == "DOUBLE")
+        appendBe(bytes, std::bit_cast<std::uint64_t>(command_value::decimal(value, element.name)),
+                 8);
+    else if (element.dataType == "STRING") {
+        bytes.assign(value.begin(), value.end());
+        bytes.resize(static_cast<std::size_t>(element.size), 0);
+    }
+    if (bytes.empty())
+        throw std::invalid_argument("command_invalid: unsupported S7 data type");
+    return bytes;
+}
+
 } // namespace detail
 
 class Session final : public ProtocolSession,
@@ -357,6 +406,18 @@ class Session final : public ProtocolSession,
                      .deviceCode = std::move(command.deviceCode),
                      .commandId = std::move(command.id),
                      .reason = "s7_device_offline"}};
+        if (command.payload.empty() && !command.elements.empty()) {
+            try {
+                compileElementCommand(*device, command);
+            } catch (const std::exception& error) {
+                return {{.kind = ProtocolActionKind::FailCommand,
+                         .connectionId = connectionId_,
+                         .deviceId = device->id,
+                         .deviceCode = device->code,
+                         .commandId = std::move(command.id),
+                         .reason = error.what()}};
+            }
+        }
         const auto descriptor = requestDescriptor(command.payload);
         if (!descriptor)
             return {{.kind = ProtocolActionKind::FailCommand,
@@ -492,6 +553,101 @@ class Session final : public ProtocolSession,
         std::string commandId;
         std::uint64_t deadlineToken = 0;
     };
+
+    [[nodiscard]] std::uint16_t nextReference() {
+        const auto reference = nextPduReference_++;
+        if (nextPduReference_ == 0)
+            nextPduReference_ = 1;
+        return reference;
+    }
+
+    [[nodiscard]] static std::vector<std::uint8_t> requestHeader(std::uint16_t reference,
+                                                                 std::uint16_t parameterLength,
+                                                                 std::uint16_t dataLength) {
+        const auto totalLength = static_cast<std::uint16_t>(17 + parameterLength + dataLength);
+        return {0x03,
+                0x00,
+                static_cast<std::uint8_t>(totalLength >> 8U),
+                static_cast<std::uint8_t>(totalLength),
+                0x02,
+                0xF0,
+                0x80,
+                0x32,
+                0x01,
+                0x00,
+                0x00,
+                static_cast<std::uint8_t>(reference >> 8U),
+                static_cast<std::uint8_t>(reference),
+                static_cast<std::uint8_t>(parameterLength >> 8U),
+                static_cast<std::uint8_t>(parameterLength),
+                static_cast<std::uint8_t>(dataLength >> 8U),
+                static_cast<std::uint8_t>(dataLength)};
+    }
+
+    [[nodiscard]] static std::vector<std::uint8_t> itemParameter(const ElementDefinition& element) {
+        const auto wordLength = static_cast<std::uint8_t>(element.dataType == "BOOL" ? 0x01 : 0x02);
+        const auto amount = static_cast<std::uint16_t>(
+            element.dataType == "BOOL" ? 1 : std::clamp<std::int64_t>(element.size, 1, 65535));
+        const auto area = detail::areaCode(element.area);
+        if (area == 0)
+            throw std::invalid_argument("command_invalid: unsupported S7 area");
+        const auto bitAddress = static_cast<std::uint32_t>(std::clamp<std::int64_t>(
+            element.dataType == "BOOL" ? element.start * 8 + element.startBit : element.start * 8,
+            0, 0xFFFFFF));
+        return {0x12,
+                0x0A,
+                0x10,
+                wordLength,
+                static_cast<std::uint8_t>(amount >> 8U),
+                static_cast<std::uint8_t>(amount),
+                static_cast<std::uint8_t>(detail::dbNumber(element) >> 8U),
+                static_cast<std::uint8_t>(detail::dbNumber(element)),
+                area,
+                static_cast<std::uint8_t>(bitAddress >> 16U),
+                static_cast<std::uint8_t>(bitAddress >> 8U),
+                static_cast<std::uint8_t>(bitAddress)};
+    }
+
+    [[nodiscard]] std::vector<std::uint8_t> buildElementRead(const ElementDefinition& element) {
+        auto frame = requestHeader(nextReference(), 14, 0);
+        frame.push_back(kReadFunction);
+        frame.push_back(1);
+        const auto item = itemParameter(element);
+        frame.insert(frame.end(), item.begin(), item.end());
+        return frame;
+    }
+
+    [[nodiscard]] std::vector<std::uint8_t> buildElementWrite(const ElementDefinition& element,
+                                                              std::span<const std::uint8_t> value) {
+        const auto dataLength = static_cast<std::uint16_t>(4 + value.size());
+        auto frame = requestHeader(nextReference(), 14, dataLength);
+        frame.push_back(kWriteFunction);
+        frame.push_back(1);
+        const auto item = itemParameter(element);
+        frame.insert(frame.end(), item.begin(), item.end());
+        frame.push_back(0);
+        frame.push_back(element.dataType == "BOOL" ? 0x03 : 0x04);
+        const auto encodedLength = static_cast<std::uint16_t>(
+            element.dataType == "BOOL" ? value.size() : value.size() * 8);
+        frame.push_back(static_cast<std::uint8_t>(encodedLength >> 8U));
+        frame.push_back(static_cast<std::uint8_t>(encodedLength));
+        frame.insert(frame.end(), value.begin(), value.end());
+        return frame;
+    }
+
+    void compileElementCommand(const DeviceDefinition& device, ProtocolCommand& command) {
+        const auto resolved = command_value::resolve(device, command.elements);
+        if (resolved.elements.size() != 1)
+            throw std::invalid_argument(
+                "command_invalid: one S7 task must contain exactly one element");
+        const auto& element = *resolved.elements.front().definition;
+        const auto& value = resolved.elements.front().value;
+        auto encoded = detail::encodeValue(element, value);
+        command.payload = buildElementWrite(element, encoded);
+        command.readbackPayload = buildElementRead(element);
+        command.expectedReadbackData = std::move(encoded);
+        command.expectedValue = value;
+    }
 
     static ProtocolAction bindAction(const DeviceDefinition& device) {
         return {.kind = ProtocolActionKind::BindDevice,

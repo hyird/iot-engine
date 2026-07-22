@@ -84,6 +84,11 @@ struct ProtocolInput {
     std::span<const std::uint8_t> bytes;
 };
 
+struct CommandElementValue {
+    std::string elementId;
+    std::string value;
+};
+
 struct ProtocolCommand {
     std::string id;
     std::string deviceId;
@@ -95,6 +100,7 @@ struct ProtocolCommand {
     std::vector<std::uint8_t> readbackPayload;
     std::vector<std::uint8_t> expectedReadbackData;
     std::string expectedValue;
+    std::vector<CommandElementValue> elements;
     bool highPriority = true;
     bool expectsResponse = true;
     std::chrono::milliseconds timeout{3000};

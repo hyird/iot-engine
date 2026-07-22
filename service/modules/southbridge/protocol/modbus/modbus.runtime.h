@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "service/modules/southbridge/protocol/protocol_runtime.h"
+#include "service/modules/southbridge/protocol/command_value.h"
 
 namespace service::southbridge::modbus {
 
@@ -140,6 +141,52 @@ inline std::optional<std::string> numericJson(std::span<const std::uint8_t> sour
     if (element.dataType == "BOOL" && !bytes.empty())
         return bytes[0] != 0 ? "1" : "0";
     return std::nullopt;
+}
+
+inline void appendBe(std::vector<std::uint8_t>& bytes, std::uint64_t value, std::size_t width) {
+    for (auto offset = width; offset > 0; --offset)
+        bytes.push_back(static_cast<std::uint8_t>(value >> ((offset - 1) * 8U)));
+}
+
+inline std::vector<std::uint8_t> encodeValue(const ElementDefinition& element,
+                                             std::string_view value) {
+    std::vector<std::uint8_t> bytes;
+    if (element.dataType == "BOOL") {
+        bytes.push_back(value == "1" ? 1 : 0);
+        return bytes;
+    }
+    if (element.dataType == "INT16")
+        appendBe(
+            bytes,
+            static_cast<std::uint16_t>(command_value::integer<std::int64_t>(value, element.name)),
+            2);
+    else if (element.dataType == "UINT16" || element.dataType == "WORD")
+        appendBe(bytes, command_value::integer<std::uint64_t>(value, element.name), 2);
+    else if (element.dataType == "INT32")
+        appendBe(
+            bytes,
+            static_cast<std::uint32_t>(command_value::integer<std::int64_t>(value, element.name)),
+            4);
+    else if (element.dataType == "UINT32" || element.dataType == "DWORD")
+        appendBe(bytes, command_value::integer<std::uint64_t>(value, element.name), 4);
+    else if (element.dataType == "INT64")
+        appendBe(
+            bytes,
+            static_cast<std::uint64_t>(command_value::integer<std::int64_t>(value, element.name)),
+            8);
+    else if (element.dataType == "UINT64")
+        appendBe(bytes, command_value::integer<std::uint64_t>(value, element.name), 8);
+    else if (element.dataType == "FLOAT" || element.dataType == "FLOAT32")
+        appendBe(bytes,
+                 std::bit_cast<std::uint32_t>(
+                     static_cast<float>(command_value::decimal(value, element.name))),
+                 4);
+    else if (element.dataType == "DOUBLE")
+        appendBe(bytes, std::bit_cast<std::uint64_t>(command_value::decimal(value, element.name)),
+                 8);
+    if (bytes.empty())
+        throw std::invalid_argument("command_invalid: unsupported Modbus data type");
+    return orderedBytes(bytes, element.byteOrder);
 }
 
 } // namespace detail
@@ -340,6 +387,18 @@ class Session final : public ProtocolSession,
                      .deviceCode = std::move(command.deviceCode),
                      .commandId = std::move(command.id),
                      .reason = "modbus_device_offline"}};
+        if (command.payload.empty() && !command.elements.empty()) {
+            try {
+                compileElementCommand(*device, command);
+            } catch (const std::exception& error) {
+                return {{.kind = ProtocolActionKind::FailCommand,
+                         .connectionId = connectionId_,
+                         .deviceId = device->id,
+                         .deviceCode = device->code,
+                         .commandId = std::move(command.id),
+                         .reason = error.what()}};
+            }
+        }
         const auto request = requestDescriptor(command.payload, device->modbusMode == "TCP");
         if (!request)
             return {{.kind = ProtocolActionKind::FailCommand,
@@ -486,6 +545,79 @@ class Session final : public ProtocolSession,
 
     static bool isWriteFunction(std::uint8_t functionCode) noexcept {
         return functionCode == 5 || functionCode == 6 || functionCode == 15 || functionCode == 16;
+    }
+
+    [[nodiscard]] std::vector<std::uint8_t> buildFrame(const DeviceDefinition& device,
+                                                       std::span<const std::uint8_t> pdu) {
+        std::vector<std::uint8_t> frame;
+        if (device.modbusMode == "RTU") {
+            frame.reserve(pdu.size() + 3);
+            frame.push_back(device.slaveId);
+            frame.insert(frame.end(), pdu.begin(), pdu.end());
+            const auto crc = detail::crc16(frame);
+            frame.push_back(static_cast<std::uint8_t>(crc));
+            frame.push_back(static_cast<std::uint8_t>(crc >> 8U));
+            return frame;
+        }
+        auto transaction = nextTransactionId_++;
+        if (nextTransactionId_ == 0)
+            nextTransactionId_ = 1;
+        const auto length = static_cast<std::uint16_t>(pdu.size() + 1);
+        frame = {static_cast<std::uint8_t>(transaction >> 8U),
+                 static_cast<std::uint8_t>(transaction),
+                 0,
+                 0,
+                 static_cast<std::uint8_t>(length >> 8U),
+                 static_cast<std::uint8_t>(length),
+                 device.slaveId};
+        frame.insert(frame.end(), pdu.begin(), pdu.end());
+        return frame;
+    }
+
+    void compileElementCommand(const DeviceDefinition& device, ProtocolCommand& command) {
+        const auto resolved = command_value::resolve(device, command.elements);
+        if (resolved.elements.size() != 1)
+            throw std::invalid_argument(
+                "command_invalid: one Modbus task must contain exactly one element");
+        const auto& element = *resolved.elements.front().definition;
+        const auto& value = resolved.elements.front().value;
+        const auto address = static_cast<std::uint16_t>(element.address);
+        std::vector<std::uint8_t> writePdu;
+        std::vector<std::uint8_t> readPdu;
+        if (element.registerType == "COIL") {
+            writePdu = {5, static_cast<std::uint8_t>(address >> 8U),
+                        static_cast<std::uint8_t>(address),
+                        static_cast<std::uint8_t>(value == "1" ? 0xFF : 0x00), 0};
+            readPdu = {1, static_cast<std::uint8_t>(address >> 8U),
+                       static_cast<std::uint8_t>(address), 0, 1};
+            command.expectedReadbackData = {static_cast<std::uint8_t>(value == "1" ? 1 : 0)};
+        } else if (element.registerType == "HOLDING_REGISTER") {
+            auto encoded = detail::encodeValue(element, value);
+            const auto quantity = static_cast<std::uint16_t>(element.quantity);
+            if (quantity == 0 || encoded.size() != static_cast<std::size_t>(quantity) * 2)
+                throw std::invalid_argument("command_invalid: Modbus register size mismatch");
+            if (quantity == 1) {
+                writePdu = {6, static_cast<std::uint8_t>(address >> 8U),
+                            static_cast<std::uint8_t>(address), encoded[0], encoded[1]};
+            } else {
+                writePdu = {16,
+                            static_cast<std::uint8_t>(address >> 8U),
+                            static_cast<std::uint8_t>(address),
+                            static_cast<std::uint8_t>(quantity >> 8U),
+                            static_cast<std::uint8_t>(quantity),
+                            static_cast<std::uint8_t>(encoded.size())};
+                writePdu.insert(writePdu.end(), encoded.begin(), encoded.end());
+            }
+            readPdu = {
+                3, static_cast<std::uint8_t>(address >> 8U), static_cast<std::uint8_t>(address),
+                static_cast<std::uint8_t>(quantity >> 8U), static_cast<std::uint8_t>(quantity)};
+            command.expectedReadbackData = std::move(encoded);
+        } else {
+            throw std::invalid_argument("command_invalid: Modbus register is read-only");
+        }
+        command.payload = buildFrame(device, writePdu);
+        command.readbackPayload = buildFrame(device, readPdu);
+        command.expectedValue = value;
     }
 
     static ProtocolAction bindAction(const DeviceDefinition& device) {

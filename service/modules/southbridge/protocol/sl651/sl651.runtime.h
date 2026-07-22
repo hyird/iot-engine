@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
 #include <iomanip>
 #include <map>
 #include <optional>
@@ -16,6 +17,7 @@
 #include <vector>
 
 #include "service/modules/southbridge/protocol/protocol_runtime.h"
+#include "service/modules/southbridge/protocol/command_value.h"
 
 namespace service::southbridge::sl651 {
 
@@ -119,6 +121,70 @@ inline std::string jsonEscape(std::string_view value) {
 }
 
 inline std::vector<std::uint8_t> hexBytes(std::string_view value) { return bridge::fromHex(value); }
+
+inline std::uint8_t bcdByte(unsigned value) {
+    return static_cast<std::uint8_t>(((value / 10U) << 4U) | (value % 10U));
+}
+
+inline std::vector<std::uint8_t> bcdAddress(std::string_view value, std::size_t bytes) {
+    if (value.size() > bytes * 2 || !std::ranges::all_of(value, [](unsigned char character) {
+            return std::isdigit(character);
+        }))
+        throw std::invalid_argument("command_invalid: SL651 device code is invalid");
+    std::string padded(bytes * 2 - value.size(), '0');
+    padded.append(value);
+    std::vector<std::uint8_t> result;
+    result.reserve(bytes);
+    for (std::size_t index = 0; index < padded.size(); index += 2)
+        result.push_back(
+            static_cast<std::uint8_t>(((padded[index] - '0') << 4U) | (padded[index + 1] - '0')));
+    return result;
+}
+
+inline std::vector<std::uint8_t> encodeValue(const ElementDefinition& element,
+                                             std::string_view value) {
+    const auto length = static_cast<std::size_t>(std::max<std::int64_t>(1, element.length));
+    if (element.encoding == "BCD") {
+        const auto parsed = command_value::decimal(value, element.name);
+        const auto digits = std::clamp<std::int64_t>(element.digits, 0, 8);
+        const auto scaled = static_cast<std::uint64_t>(
+            std::llround(std::abs(parsed) * std::pow(10.0, static_cast<double>(digits))));
+        auto decimalValue = std::to_string(scaled);
+        if (decimalValue.size() > length * 2)
+            throw std::invalid_argument("command_invalid: SL651 BCD is too long");
+        decimalValue.insert(decimalValue.begin(), length * 2 - decimalValue.size(), '0');
+        return bcdAddress(decimalValue, length);
+    }
+    std::string hex(value);
+    hex.insert(hex.begin(), length * 2 - hex.size(), '0');
+    auto result = bridge::fromHex(hex);
+    if (result.size() != length)
+        throw std::invalid_argument("command_invalid: SL651 HEX is invalid");
+    return result;
+}
+
+inline std::chrono::seconds timezoneOffset(std::string_view timezone) {
+    if (timezone.size() != 6 || (timezone[0] != '+' && timezone[0] != '-') || timezone[3] != ':')
+        return std::chrono::hours(8);
+    const auto hours = (timezone[1] - '0') * 10 + timezone[2] - '0';
+    const auto minutes = (timezone[4] - '0') * 10 + timezone[5] - '0';
+    const auto seconds = std::chrono::hours(hours) + std::chrono::minutes(minutes);
+    return timezone[0] == '-' ? -seconds : seconds;
+}
+
+inline std::array<std::uint8_t, 6> reportTime(std::string_view timezone) {
+    using namespace std::chrono;
+    const auto local = floor<seconds>(system_clock::now()) + timezoneOffset(timezone);
+    const auto day = floor<days>(local);
+    const year_month_day date{day};
+    const hh_mm_ss time{local - day};
+    return {bcdByte(static_cast<unsigned>(static_cast<int>(date.year()) % 100)),
+            bcdByte(static_cast<unsigned>(date.month())),
+            bcdByte(static_cast<unsigned>(date.day())),
+            bcdByte(static_cast<unsigned>(time.hours().count())),
+            bcdByte(static_cast<unsigned>(time.minutes().count())),
+            bcdByte(static_cast<unsigned>(time.seconds().count()))};
+}
 
 inline std::string elementValue(std::span<const std::uint8_t> bytes,
                                 const ElementDefinition& element) {
@@ -287,6 +353,24 @@ class Session final : public ProtocolSession,
                      .connectionId = connectionId_,
                      .commandId = std::move(command.id),
                      .reason = "sl651_command_busy"}};
+        const auto* device = findDevice(command);
+        if (!device)
+            return {{.kind = ProtocolActionKind::FailCommand,
+                     .connectionId = connectionId_,
+                     .commandId = std::move(command.id),
+                     .reason = "sl651_device_offline"}};
+        if (command.payload.empty() && !command.elements.empty()) {
+            try {
+                compileElementCommand(*device, command);
+            } catch (const std::exception& error) {
+                return {{.kind = ProtocolActionKind::FailCommand,
+                         .connectionId = connectionId_,
+                         .deviceId = device->id,
+                         .deviceCode = device->code,
+                         .commandId = std::move(command.id),
+                         .reason = error.what()}};
+            }
+        }
         if (command.payload.size() < kHeaderLength || command.payload[0] != 0x7E ||
             command.payload[1] != 0x7E)
             return {{.kind = ProtocolActionKind::FailCommand,
@@ -294,7 +378,7 @@ class Session final : public ProtocolSession,
                      .commandId = std::move(command.id),
                      .reason = "sl651_command_frame_invalid"}};
         const auto remoteCode =
-            detail::bcd(std::span<const std::uint8_t>(command.payload).subspan(3, 5));
+            detail::bcd(std::span<const std::uint8_t>(command.payload).subspan(2, 5));
         if (!remoteCode || normalizeCode(command.deviceCode) != *remoteCode)
             return {{.kind = ProtocolActionKind::FailCommand,
                      .connectionId = connectionId_,
@@ -337,6 +421,8 @@ class Session final : public ProtocolSession,
   private:
     struct ParsedFrame {
         std::string deviceCode;
+        std::uint8_t centerCode = 0;
+        std::array<std::uint8_t, 2> password{};
         std::uint8_t functionCode = 0;
         bool upstream = false;
         bool multiPacket = false;
@@ -360,6 +446,68 @@ class Session final : public ProtocolSession,
         std::uint64_t deadlineToken = 0;
     };
 
+    struct AddressContext {
+        std::uint8_t centerCode = 0;
+        std::array<std::uint8_t, 2> password{};
+    };
+
+    [[nodiscard]] const DeviceDefinition*
+    findDevice(const ProtocolCommand& command) const noexcept {
+        if (!command.deviceId.empty()) {
+            const auto current =
+                std::find_if(devices_.begin(), devices_.end(),
+                             [&](const auto& item) { return item.id == command.deviceId; });
+            if (current != devices_.end())
+                return &*current;
+        }
+        const auto current = devicesByCode_.find(normalizeCode(command.deviceCode));
+        return current == devicesByCode_.end() ? nullptr : current->second;
+    }
+
+    void compileElementCommand(const DeviceDefinition& device, ProtocolCommand& command) {
+        const auto resolved = command_value::resolve(device, command.elements);
+        const auto address = addresses_.find(normalizeCode(device.code));
+        if (address == addresses_.end())
+            throw std::invalid_argument("command_invalid: SL651 address context is missing");
+        const auto function = detail::hexBytes(resolved.functionCode);
+        if (function.size() != 1)
+            throw std::invalid_argument("command_invalid: SL651 function code is invalid");
+
+        std::vector<std::uint8_t> body{static_cast<std::uint8_t>(nextSerial_ >> 8U),
+                                       static_cast<std::uint8_t>(nextSerial_)};
+        if (++nextSerial_ == 0)
+            nextSerial_ = 1;
+        const auto time = detail::reportTime(device.timezone);
+        body.insert(body.end(), time.begin(), time.end());
+        for (const auto& input : resolved.elements) {
+            const auto guide = detail::hexBytes(input.definition->guideHex);
+            if (guide.empty())
+                throw std::invalid_argument("command_invalid: SL651 guide is invalid");
+            body.insert(body.end(), guide.begin(), guide.end());
+            auto value = detail::encodeValue(*input.definition, input.value);
+            body.insert(body.end(), value.begin(), value.end());
+        }
+        if (body.size() > kMaximumBodyLength)
+            throw std::invalid_argument("command_invalid: SL651 command body is too large");
+
+        command.payload = {0x7E, 0x7E};
+        const auto remote = detail::bcdAddress(normalizeCode(device.code), 5);
+        command.payload.insert(command.payload.end(), remote.begin(), remote.end());
+        command.payload.push_back(address->second.centerCode);
+        command.payload.insert(command.payload.end(), address->second.password.begin(),
+                               address->second.password.end());
+        command.payload.push_back(function.front());
+        const auto length = static_cast<std::uint16_t>(0x8000U | body.size());
+        command.payload.push_back(static_cast<std::uint8_t>(length >> 8U));
+        command.payload.push_back(static_cast<std::uint8_t>(length));
+        command.payload.push_back(0x02);
+        command.payload.insert(command.payload.end(), body.begin(), body.end());
+        command.payload.push_back(0x05);
+        const auto crc = detail::crc16Modbus(command.payload);
+        command.payload.push_back(static_cast<std::uint8_t>(crc >> 8U));
+        command.payload.push_back(static_cast<std::uint8_t>(crc));
+    }
+
     [[nodiscard]] std::vector<ProtocolAction> consumeFrame(const ProtocolInput& input,
                                                            std::vector<std::uint8_t> frame) {
         const auto parsed = parseFrame(std::move(frame));
@@ -368,6 +516,7 @@ class Session final : public ProtocolSession,
         const auto device = devicesByCode_.find(parsed->deviceCode);
         if (device == devicesByCode_.end())
             return {};
+        addresses_[parsed->deviceCode] = {parsed->centerCode, parsed->password};
 
         std::vector<ProtocolAction> actions;
         actions.push_back({.kind = ProtocolActionKind::BindDevice,
@@ -419,9 +568,6 @@ class Session final : public ProtocolSession,
         if (detail::crc16Modbus(std::span<const std::uint8_t>(frame).first(frame.size() - 2)) !=
             receivedCrc)
             return std::nullopt;
-        const auto code = detail::bcd(std::span<const std::uint8_t>(frame).subspan(3, 5));
-        if (!code)
-            return std::nullopt;
         const auto lengthField = detail::readBe16(frame, 11);
         const auto bodyLength = static_cast<std::size_t>(lengthField & 0x0FFFU);
         const auto stx = frame[13];
@@ -432,9 +578,16 @@ class Session final : public ProtocolSession,
             return std::nullopt;
 
         ParsedFrame parsed;
-        parsed.deviceCode = *code;
-        parsed.functionCode = frame[10];
         parsed.upstream = (lengthField & 0xF000U) == 0;
+        const auto remoteOffset = parsed.upstream ? 3U : 2U;
+        const auto code =
+            detail::bcd(std::span<const std::uint8_t>(frame).subspan(remoteOffset, 5));
+        if (!code)
+            return std::nullopt;
+        parsed.deviceCode = *code;
+        parsed.centerCode = frame[parsed.upstream ? 2U : 7U];
+        parsed.password = {frame[8], frame[9]};
+        parsed.functionCode = frame[10];
         parsed.multiPacket = stx == 0x16;
         std::size_t bodyOffset = 14;
         auto actualBodyLength = bodyLength;
@@ -619,10 +772,12 @@ class Session final : public ProtocolSession,
     std::string connectionId_;
     std::vector<DeviceDefinition> devices_;
     std::map<std::string, const DeviceDefinition*, std::less<>> devicesByCode_;
+    std::map<std::string, AddressContext, std::less<>> addresses_;
     std::vector<std::uint8_t> receiveBuffer_;
     std::optional<PendingCommand> pendingCommand_;
     std::map<std::string, MultiPacket, std::less<>> multiPackets_;
     std::uint64_t nextDeadlineToken_ = 1;
+    std::uint16_t nextSerial_ = 1;
 };
 
 class Runtime final : public ProtocolRuntime {

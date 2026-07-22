@@ -50,6 +50,7 @@ struct ElementDefinition {
     std::string encoding;
     std::int64_t length = 0;
     std::int64_t digits = 0;
+    bool writable = false;
     bool responseElement = false;
     bool operator==(const ElementDefinition&) const = default;
 };

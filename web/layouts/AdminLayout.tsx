@@ -22,6 +22,7 @@ import {
     type MenuProps,
     Space,
     Spin,
+    theme,
 } from 'antd';
 import { useMemo, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
@@ -69,6 +70,7 @@ export default function AdminLayout() {
     const { data: user, isLoading } = useCurrentUser();
     const logout = useLogout();
     const { has } = usePermissions();
+    const { token } = theme.useToken();
     const currentBreadcrumbGroup = breadcrumbGroups.find((group) =>
         group.routes.some((route) => route.path === location.pathname)
     );
@@ -94,7 +96,10 @@ export default function AdminLayout() {
                                   })),
                               }}
                           >
-                              <span className="inline-flex cursor-pointer items-center gap-1 hover:text-blue-600">
+                              <span
+                                  className="inline-flex cursor-pointer items-center gap-1 hover:opacity-75"
+                                  style={{ color: token.colorTextSecondary }}
+                              >
                                   {currentBreadcrumbGroup.icon}
                                   {currentBreadcrumbGroup.title}
                                   <DownOutlined className="text-[10px]" />
@@ -109,7 +114,10 @@ export default function AdminLayout() {
               },
               {
                   title: (
-                      <span className="inline-flex items-center gap-1 font-medium text-slate-700">
+                      <span
+                          className="inline-flex items-center gap-1 font-medium"
+                          style={{ color: token.colorText }}
+                      >
                           {currentBreadcrumbRoute?.title}
                       </span>
                   ),
@@ -188,8 +196,9 @@ export default function AdminLayout() {
     }
 
     return (
-        <Layout className="h-screen overflow-hidden bg-slate-100">
+        <Layout className="h-screen overflow-hidden" style={{ background: token.colorBgLayout }}>
             <Sider
+                theme="light"
                 width={236}
                 collapsedWidth={72}
                 collapsible
@@ -197,35 +206,52 @@ export default function AdminLayout() {
                 trigger={null}
                 breakpoint="lg"
                 onBreakpoint={(broken) => setCollapsed(broken)}
-                className="border-r border-white/10"
+                style={{ borderInlineEnd: `1px solid ${token.colorBorderSecondary}` }}
             >
                 <div className="flex h-full flex-col overflow-hidden">
                     <div
-                        className={`flex h-[60px] shrink-0 items-center border-b border-white/10 ${
+                        className={`flex h-[60px] shrink-0 items-center ${
                             collapsed ? 'justify-center px-2' : 'px-5'
                         }`}
+                        style={{ borderBlockEnd: `1px solid ${token.colorBorderSecondary}` }}
                     >
-                        <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-blue-500 text-lg text-white shadow-lg shadow-blue-950/30">
+                        <div
+                            className="flex size-9 shrink-0 items-center justify-center rounded-md text-lg"
+                            style={{
+                                background: token.colorPrimary,
+                                color: token.colorTextLightSolid,
+                                boxShadow: token.boxShadowTertiary,
+                            }}
+                        >
                             <AppstoreOutlined />
                         </div>
                         {!collapsed && (
                             <div className="ml-3 min-w-0">
-                                <div className="truncate text-[15px] font-semibold tracking-wide text-white">
+                                <div
+                                    className="truncate text-[15px] font-semibold tracking-wide"
+                                    style={{ color: token.colorText }}
+                                >
                                     {APP_NAME}
                                 </div>
-                                <div className="mt-0.5 text-[10px] tracking-[0.16em] text-slate-400">
+                                <div
+                                    className="mt-0.5 text-[10px] tracking-[0.16em]"
+                                    style={{ color: token.colorTextDescription }}
+                                >
                                     INDUSTRIAL IOT
                                 </div>
                             </div>
                         )}
                     </div>
                     {!collapsed && (
-                        <div className="px-5 pb-2 pt-5 text-[11px] font-medium tracking-[0.14em] text-slate-500">
+                        <div
+                            className="px-5 pb-2 pt-5 text-[11px] font-medium tracking-[0.14em]"
+                            style={{ color: token.colorTextDescription }}
+                        >
                             运营控制台
                         </div>
                     )}
                     <Menu
-                        theme="dark"
+                        theme="light"
                         mode="inline"
                         selectedKeys={[location.pathname]}
                         defaultOpenKeys={['/iot/protocol', '/system']}
@@ -234,11 +260,23 @@ export default function AdminLayout() {
                         className="min-h-0 flex-1 overflow-y-auto border-none py-1"
                     />
                     {!collapsed && (
-                        <div className="m-4 rounded-md border border-white/10 bg-white/5 px-3 py-3">
-                            <div className="text-xs font-medium text-slate-300">
+                        <div
+                            className="m-4 rounded-md px-3 py-3"
+                            style={{
+                                background: token.colorFillQuaternary,
+                                border: `1px solid ${token.colorBorderSecondary}`,
+                            }}
+                        >
+                            <div
+                                className="text-xs font-medium"
+                                style={{ color: token.colorTextSecondary }}
+                            >
                                 工业物联管理中台
                             </div>
-                            <div className="mt-1 text-[11px] leading-4 text-slate-500">
+                            <div
+                                className="mt-1 text-[11px] leading-4"
+                                style={{ color: token.colorTextDescription }}
+                            >
                                 设备、协议与组织权限统一管理
                             </div>
                         </div>
@@ -246,7 +284,13 @@ export default function AdminLayout() {
                 </div>
             </Sider>
             <Layout className="min-w-0">
-                <Header className="z-10 flex h-[60px] shrink-0 items-center justify-between border-b border-slate-200 bg-white px-3 sm:px-5">
+                <Header
+                    className="z-10 flex h-[60px] shrink-0 items-center justify-between px-3 sm:px-5"
+                    style={{
+                        background: token.colorBgContainer,
+                        borderBlockEnd: `1px solid ${token.colorBorderSecondary}`,
+                    }}
+                >
                     <div className="flex min-w-0 flex-1 items-center gap-2">
                         <Button
                             type="text"
@@ -276,16 +320,29 @@ export default function AdminLayout() {
                                 <Avatar
                                     size={30}
                                     icon={<UserOutlined />}
-                                    className="bg-blue-50 text-blue-700"
+                                    style={{
+                                        background: token.colorPrimaryBg,
+                                        color: token.colorPrimary,
+                                    }}
                                 />
-                                <span className="hidden text-sm font-medium text-slate-700 sm:inline">
+                                <span
+                                    className="hidden text-sm font-medium sm:inline"
+                                    style={{ color: token.colorText }}
+                                >
                                     {user?.nickname || user?.username}
                                 </span>
                             </Space>
                         </Button>
                     </Dropdown>
                 </Header>
-                <Content className="m-3 min-h-0 overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200/80 sm:m-4">
+                <Content
+                    className="m-3 min-h-0 overflow-hidden rounded-lg sm:m-4"
+                    style={{
+                        background: token.colorBgContainer,
+                        border: `1px solid ${token.colorBorderSecondary}`,
+                        boxShadow: token.boxShadowTertiary,
+                    }}
+                >
                     <Outlet />
                 </Content>
             </Layout>

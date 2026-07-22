@@ -55,8 +55,8 @@ struct DeviceShareItemDto final {
     RUVIA_OPTIONAL_FIELD(inherited, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("created_at", createdAt, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("updated_at", updatedAt, ruvia::String);
-    RUVIA_MODEL(DeviceShareItemDto, id, subjectType, subjectId, subjectName, accessLevel, sourceType,
-                sourceGroupId, sourceGroupName, inherited, createdAt, updatedAt);
+    RUVIA_MODEL(DeviceShareItemDto, id, subjectType, subjectId, subjectName, accessLevel,
+                sourceType, sourceGroupId, sourceGroupName, inherited, createdAt, updatedAt);
 };
 
 struct DeviceShareTargetDto final {
@@ -118,6 +118,36 @@ struct DevicePacketDto final {
     RUVIA_MODEL(DevicePacketDto, mode, content);
 };
 
+struct DeviceCommandElementBody final {
+    RUVIA_OPTIONAL_FIELD_NAME("elementId", elementId, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(value, ruvia::String);
+    RUVIA_MODEL(DeviceCommandElementBody, elementId, value);
+};
+
+struct DeviceCommandBody final {
+    RUVIA_OPTIONAL_FIELD(elements, ruvia::Array<DeviceCommandElementBody>);
+    RUVIA_MODEL(DeviceCommandBody, elements);
+};
+
+struct DeviceCommandCreateDto final {
+    RUVIA_OPTIONAL_FIELD_NAME("command_ids", commandIds, ruvia::List<ruvia::String>);
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
+    RUVIA_MODEL(DeviceCommandCreateDto, commandIds, status);
+};
+
+struct DeviceCommandStatusDto final {
+    RUVIA_OPTIONAL_FIELD_NAME("command_id", commandId, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("device_code", deviceCode, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(reason, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("created_at_ms", createdAtMs, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("completed_at_ms", completedAtMs, ruvia::Int64);
+    RUVIA_MODEL(DeviceCommandStatusDto, commandId, deviceId, deviceCode, protocol, status, reason,
+                createdAtMs, completedAtMs);
+};
+
 struct DeviceElementDto final {
     RUVIA_OPTIONAL_FIELD(id, ruvia::String);
     RUVIA_OPTIONAL_FIELD(name, ruvia::String);
@@ -128,6 +158,34 @@ struct DeviceElementDto final {
     RUVIA_OPTIONAL_FIELD(group, ruvia::String);
     RUVIA_OPTIONAL_FIELD(encode, ruvia::String);
     RUVIA_MODEL(DeviceElementDto, id, name, value, unit, scale, decimals, group, encode);
+};
+
+struct DeviceCommandOptionDto final {
+    RUVIA_OPTIONAL_FIELD(label, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(value, ruvia::String);
+    RUVIA_MODEL(DeviceCommandOptionDto, label, value);
+};
+
+struct DeviceCommandOperationElementDto final {
+    RUVIA_OPTIONAL_FIELD_NAME("elementId", elementId, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(value, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(unit, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(options, ruvia::List<DeviceCommandOptionDto>);
+    RUVIA_OPTIONAL_FIELD_NAME("registerType", registerType, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("dataType", dataType, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(size, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD(encode, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(length, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD(digits, ruvia::Int64);
+    RUVIA_MODEL(DeviceCommandOperationElementDto, elementId, name, value, unit, options,
+                registerType, dataType, size, encode, length, digits);
+};
+
+struct DeviceCommandOperationDto final {
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(elements, ruvia::List<DeviceCommandOperationElementDto>);
+    RUVIA_MODEL(DeviceCommandOperationDto, name, elements);
 };
 
 struct DeviceItemDto final {
@@ -162,6 +220,8 @@ struct DeviceItemDto final {
     RUVIA_OPTIONAL_FIELD_NAME("connectionState", connectionState, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("reportTime", reportTime, ruvia::String);
     RUVIA_OPTIONAL_FIELD(elements, ruvia::List<DeviceElementDto>);
+    RUVIA_OPTIONAL_FIELD_NAME("commandOperations", commandOperations,
+                              ruvia::List<DeviceCommandOperationDto>);
     RUVIA_OPTIONAL_FIELD_NAME("can_edit", canEdit, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("can_delete", canDelete, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("can_share", canShare, ruvia::Bool);
@@ -171,8 +231,8 @@ struct DeviceItemDto final {
                 status, onlineTimeout, remoteControl, modbusMode, slaveId, timezone, heartbeat,
                 registration, remark, createdBy, createdAt, updatedAt, linkName, linkMode,
                 linkProtocol, protocolName, protocolType, readInterval, storageInterval,
-                elementCount, connected, connectionState, reportTime, elements, canEdit,
-                canDelete, canShare, canCommand, accessLevel);
+                elementCount, connected, connectionState, reportTime, elements, commandOperations,
+                canEdit, canDelete, canShare, canCommand, accessLevel);
 };
 
 struct DeviceOptionDto final {
@@ -184,7 +244,8 @@ struct DeviceOptionDto final {
     RUVIA_OPTIONAL_FIELD_NAME("can_share", canShare, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("can_command", canCommand, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("access_level", accessLevel, ruvia::String);
-    RUVIA_MODEL(DeviceOptionDto, id, name, deviceCode, canEdit, canDelete, canShare, canCommand, accessLevel);
+    RUVIA_MODEL(DeviceOptionDto, id, name, deviceCode, canEdit, canDelete, canShare, canCommand,
+                accessLevel);
 };
 
 struct DeviceRealtimeDto final {
@@ -223,6 +284,18 @@ struct DeviceDetailResponse final {
     RUVIA_OPTIONAL_FIELD(message, ruvia::String);
     RUVIA_OPTIONAL_FIELD(data, DeviceItemDto);
     RUVIA_MODEL(DeviceDetailResponse, code, message, data);
+};
+struct DeviceCommandCreateResponse final {
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(data, DeviceCommandCreateDto);
+    RUVIA_MODEL(DeviceCommandCreateResponse, code, message, data);
+};
+struct DeviceCommandStatusResponse final {
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(data, DeviceCommandStatusDto);
+    RUVIA_MODEL(DeviceCommandStatusResponse, code, message, data);
 };
 struct DeviceOptionsResponse final {
     RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);

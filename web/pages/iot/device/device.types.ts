@@ -371,9 +371,23 @@ export interface ReplaceDeviceSharesDto {
 
 /** 指令下发参数 */
 export interface CommandPayload {
-    deviceCode: string;
-    deviceId?: string;
     elements: Array<{ elementId: string; value: string }>;
+}
+
+export interface CommandCreateResult {
+    command_ids: string[];
+    status: 'PENDING';
+}
+
+export interface CommandStatusResult {
+    command_id: string;
+    device_id: string;
+    device_code: string;
+    protocol: Protocol.Type;
+    status: 'PENDING' | 'SUCCESS' | 'FAILED';
+    reason?: string;
+    created_at_ms?: number;
+    completed_at_ms?: number;
 }
 
 // ========== 历史数据相关类型 ==========
@@ -389,7 +403,7 @@ export interface HistoryDeviceItem {
 }
 
 /** 指令状态 */
-export type CommandStatus = 'PENDING' | 'SUCCESS' | 'TIMEOUT' | 'SEND_FAILED';
+export type CommandStatus = 'PENDING' | 'SUCCESS' | 'FAILED';
 
 /** 要素历史记录 */
 export interface ElementRecord {
@@ -444,6 +458,8 @@ type DeviceShareItemType = DeviceShareItem;
 type DeviceShareTargetType = DeviceShareTarget;
 type ReplaceDeviceSharesDtoType = ReplaceDeviceSharesDto;
 type DeviceCommandStatus = CommandStatus;
+type DeviceCommandCreateResult = CommandCreateResult;
+type DeviceCommandStatusResult = CommandStatusResult;
 
 /** 设备模块命名空间 */
 export namespace Device {
@@ -467,6 +483,8 @@ export namespace Device {
     export type Element = DeviceElement;
     export type RealTimeData = DeviceRealTimeData;
     export type Command = CommandPayload;
+    export type CommandCreateResult = DeviceCommandCreateResult;
+    export type CommandStatusResult = DeviceCommandStatusResult;
     export type CommandOperation = DeviceCommandOperation;
     export type CommandOperationElement = DeviceCommandOperationElement;
     export type ImageOperation = DeviceImageOperation;

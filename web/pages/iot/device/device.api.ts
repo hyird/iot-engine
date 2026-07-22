@@ -1,6 +1,7 @@
 import request from '@/utils/http';
 import type { PaginatedResult } from '@/utils/types';
 import {
+    deviceCommandSchema,
     deviceIdSchema,
     replaceDeviceSharesSchema,
     saveDeviceGroupSchema,
@@ -33,6 +34,15 @@ export const updateDevice = (id: string, data: Device.UpdateDto) =>
     request.put<void>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}`, saveDeviceSchema.parse(data));
 export const removeDevice = (id: string) =>
     request.delete<void>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}`);
+export const createDeviceCommand = (id: string, data: Device.Command) =>
+    request.post<Device.CommandCreateResult>(
+        `${DEVICE_BASE}/${deviceIdSchema.parse(id)}/commands`,
+        deviceCommandSchema.parse(data)
+    );
+export const getDeviceCommandStatus = (id: string) =>
+    request.get<Device.CommandStatusResult>(`${DEVICE_BASE}/commands/${deviceIdSchema.parse(id)}`, {
+        _silent: true,
+    });
 export const getDeviceShares = (id: string) =>
     request.get<Device.ShareItem[]>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}/shares`);
 export const getDeviceShareTargets = (id: string) =>

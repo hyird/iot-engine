@@ -9,6 +9,7 @@
     "libpq",
     "mimalloc",
     "openssl",
+    "spdlog",
     "zlib",
     "zstd"
   ]

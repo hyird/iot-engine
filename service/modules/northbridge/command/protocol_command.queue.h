@@ -21,6 +21,11 @@ struct DeviceRoute {
     std::uint64_t sessionEpoch = 0;
 };
 
+class DeviceRouteError final : public std::runtime_error {
+  public:
+    using std::runtime_error::runtime_error;
+};
+
 inline std::string_view field(const std::vector<bridge::StreamField>& fields,
                               std::string_view name) noexcept {
     for (const auto& current : fields)
@@ -37,7 +42,7 @@ ruvia::Task<DeviceRoute> deviceRoute(const Redis& redis, std::string_view device
     const auto connection = field(fields, "connection_id");
     const auto epoch = field(fields, "session_epoch");
     if (worker.empty() || connection.empty() || epoch.empty())
-        throw std::runtime_error("device is offline or has no southbridge route");
+        throw DeviceRouteError("device is offline or has no southbridge route");
 
     DeviceRoute route;
     const auto [workerEnd, workerError] =
@@ -47,7 +52,7 @@ ruvia::Task<DeviceRoute> deviceRoute(const Redis& redis, std::string_view device
     if (workerError != std::errc{} || workerEnd != worker.data() + worker.size() ||
         epochError != std::errc{} || epochEnd != epoch.data() + epoch.size() ||
         route.sessionEpoch == 0)
-        throw std::runtime_error("device southbridge route is invalid");
+        throw DeviceRouteError("device southbridge route is invalid");
     route.connectionId = connection;
     co_return route;
 }
@@ -56,11 +61,10 @@ ruvia::Task<DeviceRoute> deviceRoute(const Redis& redis, std::string_view device
 // producer owns only worker-affine routing and the Redis task contract.
 template <typename Context>
 ruvia::Task<std::string> enqueue(Context& context, bridge::ProtocolTask task,
-                                 bool highPriority = true) {
+                                 const DeviceRoute& route, bool highPriority = true) {
     if (task.deviceCode.empty() || task.protocol.empty() || task.linkId.empty() ||
-        task.payload.empty())
+        (task.payload.empty() && task.elements.empty()))
         throw std::invalid_argument("protocol command task is incomplete");
-    const auto route = co_await deviceRoute(context.redis(), task.deviceCode);
     task.messageId = task.messageId.empty() ? bridge::nextMessageId() : task.messageId;
     task.groupKey = task.groupKey.empty() ? "device:" + task.deviceCode : task.groupKey;
     task.connectionId = route.connectionId;
@@ -72,6 +76,13 @@ ruvia::Task<std::string> enqueue(Context& context, bridge::ProtocolTask task,
         context.redis(), bridge::commandStream(route.workerIndex, highPriority),
         bridge::protocolTaskFields(task), 10000);
     co_return task.messageId;
+}
+
+template <typename Context>
+ruvia::Task<std::string> enqueue(Context& context, bridge::ProtocolTask task,
+                                 bool highPriority = true) {
+    const auto route = co_await deviceRoute(context.redis(), task.deviceCode);
+    co_return co_await enqueue(context, std::move(task), route, highPriority);
 }
 
 } // namespace service::northbridge::command

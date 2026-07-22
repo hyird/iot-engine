@@ -8,6 +8,7 @@
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/permission.h"
+#include "service/modules/northbridge/command/device_command.service.h"
 #include "service/modules/northbridge/device/device.schema.h"
 #include "service/modules/northbridge/device/device.share.service.h"
 #include "service/modules/northbridge/device/device.service.h"
@@ -21,6 +22,7 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
     // 设备
     RUVIA_GET("/options", options);
     RUVIA_GET("/realtime", realtime);
+    RUVIA_GET("/commands/:id", commandStatus, DeviceIdParamsValidator);
     // 设备分组（统一收编到 /api/device/groups）
     RUVIA_GET("/groups/tree-count", groupTreeCount);
     RUVIA_GET("/groups/tree", groupTree);
@@ -34,8 +36,8 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
     RUVIA_DELETE("/groups/:id", groupRemove, DeviceIdParamsValidator);
     RUVIA_GET("/:id/shares", shares, DeviceIdParamsValidator);
     RUVIA_GET("/:id/share-targets", shareTargets, DeviceIdParamsValidator);
-    RUVIA_PUT("/:id/shares", replaceShares, DeviceIdParamsValidator,
-              ReplaceDeviceSharesValidator);
+    RUVIA_PUT("/:id/shares", replaceShares, DeviceIdParamsValidator, ReplaceDeviceSharesValidator);
+    RUVIA_POST("/:id/commands", command, DeviceIdParamsValidator, DeviceCommandValidator);
     // 设备（带参数的通配路由放在静态路由之后）
     RUVIA_GET("/:id", detail, DeviceIdParamsValidator);
     RUVIA_GET("/", list);
@@ -67,8 +69,8 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
     }
     ruvia::Task<ruvia::HttpResponse> detail(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:device:query");
-        co_return c.json(
-            service::common::ok<DeviceDetailResponse>(c, co_await deviceService().detail(c, id(c))));
+        co_return c.json(service::common::ok<DeviceDetailResponse>(
+            c, co_await deviceService().detail(c, id(c))));
     }
     ruvia::Task<ruvia::HttpResponse> create(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:device:add");
@@ -84,6 +86,19 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
         co_await service::middleware::requirePermission(c, "iot:device:delete");
         co_await deviceService().remove(c, id(c));
         co_return c.json(service::common::operation(c, "删除成功"));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> command(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:device:command");
+        co_return c.json(service::common::ok<DeviceCommandCreateResponse>(
+            c, co_await service::northbridge::command::deviceCommandService().create(
+                   c, id(c), c.req().valid<DeviceCommandBody>())));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> commandStatus(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:device:command");
+        co_return c.json(service::common::ok<DeviceCommandStatusResponse>(
+            c, co_await service::northbridge::command::deviceCommandService().status(c, id(c))));
     }
 
     ruvia::Task<ruvia::HttpResponse> shares(ruvia::Context& c) {
@@ -127,8 +142,8 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
     }
     ruvia::Task<ruvia::HttpResponse> replaceGroupShares(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:device-group:share");
-        co_await deviceShareService().replaceGroup(
-            c, id(c), c.req().valid<ReplaceDeviceSharesBody>());
+        co_await deviceShareService().replaceGroup(c, id(c),
+                                                   c.req().valid<ReplaceDeviceSharesBody>());
         co_return c.json(service::common::operation(c, "设备分组分享已更新"));
     }
     ruvia::Task<ruvia::HttpResponse> groupDetail(ruvia::Context& c) {

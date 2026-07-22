@@ -24,6 +24,7 @@
 #include <ruvia/core/TaskScope.h>
 
 #include "service/common/bridge/message.contract.h"
+#include "service/common/packet_log.h"
 #include "service/modules/southbridge/network/worker_tcp.runtime.h"
 #include "service/modules/southbridge/protocol/modbus/modbus.runtime.h"
 #include "service/modules/southbridge/protocol/protocol_engine.h"
@@ -118,6 +119,19 @@ class SouthbridgeWorker final {
         std::string reason;
     };
 
+    struct EgressLogContext {
+        std::string operation;
+        std::string protocol;
+        std::string linkId;
+        std::string deviceId;
+        std::string deviceCode;
+        std::string connectionId;
+        std::string remoteAddress;
+        std::string messageId;
+        std::string causationId;
+        std::uint64_t sessionEpoch = 0;
+    };
+
     struct IngressWork {
         std::optional<bridge::IngressPacket> packet;
         std::optional<bridge::ConnectionEvent> connectionEvent;
@@ -140,9 +154,7 @@ class SouthbridgeWorker final {
 
     [[nodiscard]] std::string linkEventGroup() const { return "iot-engine:link-state"; }
 
-    [[nodiscard]] std::string configStream() const {
-        return bridge::configStream(workerIndex_);
-    }
+    [[nodiscard]] std::string configStream() const { return bridge::configStream(workerIndex_); }
 
     [[nodiscard]] std::string commandStream(bool high) const {
         return bridge::commandStream(workerIndex_, high);
@@ -150,21 +162,13 @@ class SouthbridgeWorker final {
 
     [[nodiscard]] std::string commandGroup() const { return "iot-engine:command"; }
 
-    [[nodiscard]] std::string controlStream() const {
-        return bridge::controlStream(workerIndex_);
-    }
+    [[nodiscard]] std::string controlStream() const { return bridge::controlStream(workerIndex_); }
 
-    [[nodiscard]] std::string ingressStream() const {
-        return bridge::ingressStream(workerIndex_);
-    }
+    [[nodiscard]] std::string ingressStream() const { return bridge::ingressStream(workerIndex_); }
 
-    [[nodiscard]] std::string parsedStream() const {
-        return bridge::parsedStream(workerIndex_);
-    }
+    [[nodiscard]] std::string parsedStream() const { return bridge::parsedStream(workerIndex_); }
 
-    [[nodiscard]] std::string egressStream() const {
-        return bridge::egressStream(workerIndex_);
-    }
+    [[nodiscard]] std::string egressStream() const { return bridge::egressStream(workerIndex_); }
 
     [[nodiscard]] std::string linkEventStream() const {
         return bridge::linkEventStream(workerIndex_);
@@ -176,6 +180,152 @@ class SouthbridgeWorker final {
 
     [[nodiscard]] std::string deadLetterStream() const {
         return bridge::deadLetterStream(workerIndex_);
+    }
+
+    [[nodiscard]] std::string_view protocolForLink(std::string_view linkId) const noexcept {
+        const auto current = std::find_if(
+            loadedSnapshot_.links.begin(), loadedSnapshot_.links.end(),
+            [linkId](const auto& link) { return link.id == linkId; });
+        return current == loadedSnapshot_.links.end() ? std::string_view{} : current->protocol;
+    }
+
+    [[nodiscard]] std::string deviceCodesForConnection(std::string_view connectionId) const {
+        const auto current = routes_.find(connectionId);
+        if (current == routes_.end())
+            return {};
+        std::string result;
+        for (const auto& deviceCode : current->second) {
+            if (!result.empty())
+                result.push_back(',');
+            result += deviceCode;
+        }
+        return result;
+    }
+
+    [[nodiscard]] const bridge::ProtocolTask*
+    taskForCausation(std::string_view causationId) const noexcept {
+        auto current = pendingCommands_.find(causationId);
+        if (current != pendingCommands_.end())
+            return &current->second.task;
+        const auto child = broadcastParents_.find(causationId);
+        if (child == broadcastParents_.end())
+            return nullptr;
+        current = pendingCommands_.find(child->second);
+        return current == pendingCommands_.end() ? nullptr : &current->second.task;
+    }
+
+    [[nodiscard]] service::common::packet_log::Context
+    ingressLogContext(const bridge::IngressPacket& packet,
+                      std::string_view deviceCodes = {}) const noexcept {
+        service::common::packet_log::Context context;
+        context.workerIndex = workerIndex_;
+        context.direction = "RX";
+        context.operation = "transport";
+        context.protocol = protocolForLink(packet.linkId);
+        context.linkId = packet.linkId;
+        context.deviceCode = deviceCodes;
+        context.connectionId = packet.connectionId;
+        context.remoteAddress = packet.remoteAddress;
+        context.messageId = packet.messageId;
+        context.sessionEpoch = packet.sessionEpoch;
+        return context;
+    }
+
+    [[nodiscard]] service::common::packet_log::Context
+    connectionLogContext(const bridge::ConnectionEvent& event) const noexcept {
+        service::common::packet_log::Context context;
+        context.workerIndex = workerIndex_;
+        context.operation = "connection";
+        context.protocol = protocolForLink(event.linkId);
+        context.linkId = event.linkId;
+        context.connectionId = event.connectionId;
+        context.remoteAddress = event.remoteAddress;
+        context.messageId = event.messageId;
+        context.sessionEpoch = event.sessionEpoch;
+        return context;
+    }
+
+    [[nodiscard]] service::common::packet_log::Context
+    taskLogContext(const bridge::ProtocolTask& task,
+                   std::string_view connectionId = {}) const noexcept {
+        service::common::packet_log::Context context;
+        context.workerIndex = workerIndex_;
+        context.operation = task.kind;
+        context.protocol = task.protocol;
+        context.linkId = task.linkId;
+        context.deviceId = task.deviceId;
+        context.deviceCode = task.deviceCode;
+        context.connectionId = connectionId.empty() ? task.connectionId : connectionId;
+        context.messageId = task.messageId;
+        context.causationId = task.causationId;
+        context.sessionEpoch = task.sessionEpoch;
+        const auto network = networkConnections_.find(context.connectionId);
+        if (network != networkConnections_.end())
+            context.remoteAddress = network->second.remoteAddress;
+        return context;
+    }
+
+    [[nodiscard]] service::common::packet_log::Context
+    actionLogContext(const ProtocolAction& action, std::string_view operation = {}) const noexcept {
+        service::common::packet_log::Context context;
+        context.workerIndex = workerIndex_;
+        context.operation = operation;
+        context.deviceId = action.deviceId;
+        context.deviceCode = action.deviceCode;
+        context.connectionId = action.connectionId;
+        context.causationId = action.commandId;
+        const auto network = networkConnections_.find(action.connectionId);
+        if (network != networkConnections_.end()) {
+            context.linkId = network->second.linkId;
+            context.remoteAddress = network->second.remoteAddress;
+            context.sessionEpoch = network->second.sessionEpoch;
+            context.protocol = protocolForLink(network->second.linkId);
+        }
+        return context;
+    }
+
+    [[nodiscard]] service::common::packet_log::Context
+    parsedLogContext(const bridge::ParsedDeviceMessage& parsed) const noexcept {
+        service::common::packet_log::Context context;
+        context.workerIndex = workerIndex_;
+        context.direction = "RX";
+        context.operation = "parse";
+        context.protocol = parsed.protocol;
+        context.linkId = parsed.linkId;
+        context.deviceId = parsed.deviceId;
+        context.deviceCode = parsed.deviceCode;
+        context.connectionId = parsed.connectionId;
+        context.messageId = parsed.messageId;
+        context.causationId = parsed.causationId;
+        const auto network = networkConnections_.find(parsed.connectionId);
+        if (network != networkConnections_.end()) {
+            context.remoteAddress = network->second.remoteAddress;
+            context.sessionEpoch = network->second.sessionEpoch;
+        }
+        return context;
+    }
+
+    [[nodiscard]] service::common::packet_log::Context
+    egressLogContext(const EgressLogContext& egress) const noexcept {
+        service::common::packet_log::Context context;
+        context.workerIndex = workerIndex_;
+        context.direction = "TX";
+        context.operation = egress.operation;
+        context.protocol = egress.protocol;
+        context.linkId = egress.linkId;
+        context.deviceId = egress.deviceId;
+        context.deviceCode = egress.deviceCode;
+        context.connectionId = egress.connectionId;
+        context.remoteAddress = egress.remoteAddress;
+        context.messageId = egress.messageId;
+        context.causationId = egress.causationId;
+        context.sessionEpoch = egress.sessionEpoch;
+        return context;
+    }
+
+    [[nodiscard]] static bool hasMarker(std::string_view value,
+                                        std::string_view marker) noexcept {
+        return value.find(marker) != std::string_view::npos;
     }
 
     ruvia::Task<void> initialize(std::shared_ptr<std::promise<void>> ready) {
@@ -303,8 +453,8 @@ class SouthbridgeWorker final {
             }
             if (!parseError.empty()) {
                 co_await deadLetterMessage(message, "protocol_task_invalid", parseError);
-                co_await bridge::redis_async::acknowledgeAndDelete(
-                    redis_, stream, commandGroup(), message.id);
+                co_await bridge::redis_async::acknowledgeAndDelete(redis_, stream, commandGroup(),
+                                                                   message.id);
                 continue;
             }
             const auto makeCommand = [&](std::string id) {
@@ -319,14 +469,31 @@ class SouthbridgeWorker final {
                     .readbackPayload = bridge::fromHex(task.readbackPayload),
                     .expectedReadbackData = bridge::fromHex(task.expectedReadbackData),
                     .expectedValue = task.expectedValue,
+                    .elements =
+                        [&task] {
+                            std::vector<CommandElementValue> elements;
+                            elements.reserve(task.elements.size());
+                            for (const auto& [elementId, value] : task.elements)
+                                elements.push_back({elementId, value});
+                            return elements;
+                        }(),
                     .highPriority = high,
                     .expectsResponse = task.expectsResponse,
                     .timeout = std::chrono::milliseconds(
                         std::clamp<std::int64_t>(task.responseTimeoutMs, 100, 60000))};
             };
+            if (task.kind == "discovery") {
+                const auto payload = bridge::fromHex(task.payload);
+                service::common::packet_log::write(
+                    service::common::packet_log::Level::Info, "DISCOVERY_REQUEST",
+                    taskLogContext(task), payload);
+            }
             if (task.kind == "discovery" && task.connectionId.empty()) {
                 const auto connections = tcp_.connectionIds(task.linkId);
                 if (connections.empty()) {
+                    service::common::packet_log::write(
+                        service::common::packet_log::Level::Warn, "DISCOVERY_FAILED",
+                        taskLogContext(task), {}, "discovery_no_connections");
                     co_await failUndeliverable(stream, message.id, task.messageId, task,
                                                "discovery_no_connections");
                     continue;
@@ -334,9 +501,18 @@ class SouthbridgeWorker final {
                 pendingCommands_.insert_or_assign(task.messageId,
                                                   PendingCommand{stream, message.id, task});
                 broadcasts_[task.messageId] = BroadcastCommand{.remaining = connections.size()};
+                const auto targetCount = "targets=" + std::to_string(connections.size());
+                service::common::packet_log::write(
+                    service::common::packet_log::Level::Info, "BROADCAST_START",
+                    taskLogContext(task), {}, targetCount);
                 for (const auto& connectionId : connections) {
                     const auto childId = bridge::nextMessageId();
                     broadcastParents_[childId] = task.messageId;
+                    auto context = taskLogContext(task, connectionId);
+                    context.causationId = task.messageId;
+                    context.messageId = childId;
+                    service::common::packet_log::write(
+                        service::common::packet_log::Level::Debug, "BROADCAST_TARGET", context);
                     co_await applyActions(connectionId,
                                           engine_.execute(connectionId, makeCommand(childId)));
                 }
@@ -357,6 +533,10 @@ class SouthbridgeWorker final {
             pendingCommands_.insert_or_assign(task.messageId,
                                               PendingCommand{stream, message.id, task});
             auto command = makeCommand(task.messageId);
+            if (task.kind == "discovery")
+                service::common::packet_log::write(
+                    service::common::packet_log::Level::Info, "DISCOVERY_START",
+                    taskLogContext(task, task.connectionId));
             co_await applyActions(task.connectionId,
                                   engine_.execute(task.connectionId, std::move(command)));
         }
@@ -424,11 +604,18 @@ class SouthbridgeWorker final {
     void enqueueIngress(bridge::IngressPacket packet) {
         if (stopping_)
             return;
+        packet.workerInstanceId = workerInstanceId_;
+        const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
+        const auto logContext = ingressLogContext(packet, deviceCodes);
+        service::common::packet_log::write(service::common::packet_log::Level::Debug, "RX_BYTES",
+                                           logContext, packet.payload);
         if (ingressWork_.size() >= kRawIngressCapacity) {
+            service::common::packet_log::write(service::common::packet_log::Level::Error,
+                                               "RX_DROPPED", logContext, packet.payload,
+                                               "raw_ingress_backpressure");
             tcp_.close(packet.connectionId, "raw_ingress_backpressure");
             return;
         }
-        packet.workerInstanceId = workerInstanceId_;
         const auto connectionId = packet.connectionId;
         ingressWork_.push_back({.packet = std::move(packet),
                                 .connectionEvent = std::nullopt,
@@ -441,20 +628,21 @@ class SouthbridgeWorker final {
             return;
         const auto connectionId = info.connectionId;
         networkConnections_.insert_or_assign(connectionId, info);
-        ingressWork_.push_back(
-            {.packet = std::nullopt,
-             .connectionEvent = bridge::ConnectionEvent{
-                 .messageId = bridge::nextMessageId(),
-                 .workerInstanceId = workerInstanceId_,
-                 .eventType = "connected",
-                 .linkId = info.linkId,
-                 .connectionId = info.connectionId,
-                 .remoteAddress = info.remoteAddress,
-                 .targetId = info.targetId,
-                 .reason = {},
-                 .sessionEpoch = info.sessionEpoch,
-                 .occurredAtMs = bridge::utcNowMilliseconds()},
-             .connectionId = connectionId});
+        bridge::ConnectionEvent event{.messageId = bridge::nextMessageId(),
+                                      .workerInstanceId = workerInstanceId_,
+                                      .eventType = "connected",
+                                      .linkId = info.linkId,
+                                      .connectionId = info.connectionId,
+                                      .remoteAddress = info.remoteAddress,
+                                      .targetId = info.targetId,
+                                      .reason = {},
+                                      .sessionEpoch = info.sessionEpoch,
+                                      .occurredAtMs = bridge::utcNowMilliseconds()};
+        service::common::packet_log::write(service::common::packet_log::Level::Info,
+                                           "CONNECTED", connectionLogContext(event));
+        ingressWork_.push_back({.packet = std::nullopt,
+                                .connectionEvent = std::move(event),
+                                .connectionId = connectionId});
         startIngressDrain();
     }
 
@@ -466,20 +654,22 @@ class SouthbridgeWorker final {
             return;
         const auto info = current->second;
         networkConnections_.erase(current);
-        ingressWork_.push_back(
-            {.packet = std::nullopt,
-             .connectionEvent = bridge::ConnectionEvent{
-                 .messageId = bridge::nextMessageId(),
-                 .workerInstanceId = workerInstanceId_,
-                 .eventType = "disconnected",
-                 .linkId = info.linkId,
-                 .connectionId = info.connectionId,
-                 .remoteAddress = info.remoteAddress,
-                 .targetId = info.targetId,
-                 .reason = std::move(reason),
-                 .sessionEpoch = info.sessionEpoch,
-                 .occurredAtMs = bridge::utcNowMilliseconds()},
-             .connectionId = std::move(connectionId)});
+        bridge::ConnectionEvent event{.messageId = bridge::nextMessageId(),
+                                      .workerInstanceId = workerInstanceId_,
+                                      .eventType = "disconnected",
+                                      .linkId = info.linkId,
+                                      .connectionId = info.connectionId,
+                                      .remoteAddress = info.remoteAddress,
+                                      .targetId = info.targetId,
+                                      .reason = std::move(reason),
+                                      .sessionEpoch = info.sessionEpoch,
+                                      .occurredAtMs = bridge::utcNowMilliseconds()};
+        service::common::packet_log::write(service::common::packet_log::Level::Warn,
+                                           "DISCONNECTED", connectionLogContext(event), {},
+                                           event.reason);
+        ingressWork_.push_back({.packet = std::nullopt,
+                                .connectionEvent = std::move(event),
+                                .connectionId = std::move(connectionId)});
         startIngressDrain();
     }
 
@@ -502,6 +692,13 @@ class SouthbridgeWorker final {
                                                         kRawIngressCapacity);
             } catch (const std::exception& error) {
                 lastCoordinatorError_ = std::string("raw_ingress_publish_failed: ") + error.what();
+                if (work.packet) {
+                    const auto deviceCodes = deviceCodesForConnection(work.packet->connectionId);
+                    service::common::packet_log::write(
+                        service::common::packet_log::Level::Error, "RX_PUBLISH_FAILED",
+                        ingressLogContext(*work.packet, deviceCodes), work.packet->payload,
+                        error.what());
+                }
                 tcp_.close(work.connectionId, "raw_ingress_publish_failed");
             }
         }
@@ -579,12 +776,30 @@ class SouthbridgeWorker final {
                     parseError = error.what();
                 }
                 if (!parseError.empty()) {
+                    service::common::packet_log::Context logContext;
+                    logContext.workerIndex = workerIndex_;
+                    logContext.direction = "RX";
+                    logContext.operation = "decode_ingress";
+                    logContext.protocol = protocolForLink(message.get("link_id"));
+                    logContext.linkId = message.get("link_id");
+                    logContext.connectionId = message.get("connection_id");
+                    logContext.remoteAddress = message.get("remote_address");
+                    logContext.messageId = message.get("message_id");
+                    const auto raw = bridge::fromHex(message.get("payload_hex"));
+                    service::common::packet_log::write(
+                        service::common::packet_log::Level::Error, "PARSE_ERROR", logContext, raw,
+                        parseError);
                     co_await deadLetterMessage(message, "raw_ingress_invalid", parseError);
                     co_await bridge::redis_async::acknowledgeAndDelete(redis_, stream, group,
                                                                        message.id);
                     continue;
                 }
                 if (packet.workerInstanceId != workerInstanceId_) {
+                    const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
+                    service::common::packet_log::write(
+                        service::common::packet_log::Level::Warn, "RX_REJECTED",
+                        ingressLogContext(packet, deviceCodes), packet.payload,
+                        "stale_worker_instance");
                     co_await deadLetterMessage(message, "stale_worker_instance");
                     co_await bridge::redis_async::acknowledgeAndDelete(redis_, stream, group,
                                                                        message.id);
@@ -593,18 +808,37 @@ class SouthbridgeWorker final {
                 const auto epoch = connectionEpochs_.find(packet.connectionId);
                 if (epoch == connectionEpochs_.end() || epoch->second != packet.sessionEpoch ||
                     !engine_.contains(packet.connectionId)) {
+                    const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
+                    service::common::packet_log::write(
+                        service::common::packet_log::Level::Warn, "RX_REJECTED",
+                        ingressLogContext(packet, deviceCodes), packet.payload,
+                        "stale_session_epoch");
                     co_await deadLetterMessage(message, "stale_session_epoch");
                     co_await bridge::redis_async::acknowledgeAndDelete(redis_, stream, group,
                                                                        message.id);
                     continue;
                 }
                 try {
-                    co_await applyActions(packet.connectionId, engine_.consume(packet));
+                    auto actions = engine_.consume(packet);
+                    co_await applyActions(packet.connectionId, std::move(actions));
+                } catch (const std::exception& error) {
+                    const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
+                    service::common::packet_log::write(
+                        service::common::packet_log::Level::Error, "PARSE_ERROR",
+                        ingressLogContext(packet, deviceCodes), packet.payload, error.what());
+                    ingressConsuming_ = false;
+                    throw;
                 } catch (...) {
+                    const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
+                    service::common::packet_log::write(
+                        service::common::packet_log::Level::Error, "PARSE_ERROR",
+                        ingressLogContext(packet, deviceCodes), packet.payload,
+                        "unknown_protocol_exception");
                     ingressConsuming_ = false;
                     throw;
                 }
-                co_await bridge::redis_async::acknowledgeAndDelete(redis_, stream, group, message.id);
+                co_await bridge::redis_async::acknowledgeAndDelete(redis_, stream, group,
+                                                                   message.id);
             }
             ingressConsuming_ = false;
             co_return !messages.empty();
@@ -635,40 +869,106 @@ class SouthbridgeWorker final {
             parseError = error.what();
         }
         if (!parseError.empty()) {
+            service::common::packet_log::Context logContext;
+            logContext.workerIndex = workerIndex_;
+            logContext.direction = "TX";
+            logContext.operation = "decode_egress";
+            logContext.connectionId = message.get("connection_id");
+            logContext.messageId = message.get("message_id");
+            logContext.causationId = message.get("causation_id");
+            const auto raw = bridge::fromHex(message.get("payload_hex"));
+            service::common::packet_log::write(
+                service::common::packet_log::Level::Error, "TX_REJECTED", logContext, raw,
+                parseError);
             co_await deadLetterMessage(message, "socket_egress_invalid", parseError);
             co_await bridge::redis_async::acknowledgeAndDelete(redis_, stream, group, message.id);
             co_return true;
         }
         if (packet.workerInstanceId != workerInstanceId_) {
+            service::common::packet_log::Context logContext;
+            logContext.workerIndex = workerIndex_;
+            logContext.direction = "TX";
+            logContext.operation = "transport";
+            logContext.connectionId = packet.connectionId;
+            logContext.messageId = packet.messageId;
+            logContext.causationId = packet.causationId;
+            logContext.sessionEpoch = packet.sessionEpoch;
+            service::common::packet_log::write(
+                service::common::packet_log::Level::Warn, "TX_REJECTED", logContext,
+                packet.payload, "stale_worker_instance");
             co_await deadLetterMessage(message, "stale_worker_instance");
             co_await bridge::redis_async::acknowledgeAndDelete(redis_, stream, group, message.id);
             co_return true;
         }
         const auto epoch = connectionEpochs_.find(packet.connectionId);
         if (epoch == connectionEpochs_.end() || epoch->second != packet.sessionEpoch) {
+            service::common::packet_log::Context logContext;
+            logContext.workerIndex = workerIndex_;
+            logContext.direction = "TX";
+            logContext.operation = "transport";
+            logContext.connectionId = packet.connectionId;
+            logContext.messageId = packet.messageId;
+            logContext.causationId = packet.causationId;
+            logContext.sessionEpoch = packet.sessionEpoch;
+            service::common::packet_log::write(
+                service::common::packet_log::Level::Warn, "TX_REJECTED", logContext,
+                packet.payload, "stale_session_epoch");
             co_await deadLetterMessage(message, "stale_session_epoch");
             co_await bridge::redis_async::acknowledgeAndDelete(redis_, stream, group, message.id);
             co_return true;
         }
         egressWritePending_ = true;
         const auto entryId = message.id;
+        EgressLogContext egressLog;
+        egressLog.connectionId = packet.connectionId;
+        egressLog.messageId = packet.messageId;
+        egressLog.causationId = packet.causationId;
+        egressLog.sessionEpoch = packet.sessionEpoch;
+        if (const auto* task = taskForCausation(packet.causationId)) {
+            egressLog.operation = task->kind;
+            egressLog.protocol = task->protocol;
+            egressLog.linkId = task->linkId;
+            egressLog.deviceId = task->deviceId;
+            egressLog.deviceCode = task->deviceCode;
+        } else {
+            egressLog.operation = "protocol";
+            egressLog.deviceCode = deviceCodesForConnection(packet.connectionId);
+        }
+        const auto network = networkConnections_.find(packet.connectionId);
+        if (network != networkConnections_.end()) {
+            if (egressLog.linkId.empty())
+                egressLog.linkId = network->second.linkId;
+            if (egressLog.protocol.empty())
+                egressLog.protocol = protocolForLink(network->second.linkId);
+            egressLog.remoteAddress = network->second.remoteAddress;
+        }
+        service::common::packet_log::write(service::common::packet_log::Level::Debug,
+                                           "TX_BYTES", egressLogContext(egressLog),
+                                           packet.payload);
         tcp_.send(packet.connectionId, std::move(packet.payload),
-                  [this, entryId](bool success) {
+                  [this, entryId, egressLog = std::move(egressLog)](bool success) mutable {
                       if (!stopping_)
-                          scope_.spawn(completeEgress(entryId, success));
+                          scope_.spawn(
+                              completeEgress(entryId, success, std::move(egressLog)));
                   });
         co_return true;
     }
 
-    ruvia::Task<void> completeEgress(std::string entryId, bool success) {
+    ruvia::Task<void> completeEgress(std::string entryId, bool success,
+                                     EgressLogContext egressLog) {
+        service::common::packet_log::write(
+            success ? service::common::packet_log::Level::Debug
+                    : service::common::packet_log::Level::Error,
+            success ? "TX_SUCCESS" : "TX_FAILED", egressLogContext(egressLog), {},
+            success ? std::string_view{} : std::string_view("socket_write_failed"));
         try {
             if (!success) {
                 bridge::StreamMessage message;
                 message.id = entryId;
                 co_await deadLetterMessage(message, "socket_write_failed");
             }
-            co_await bridge::redis_async::acknowledgeAndDelete(
-                redis_, egressStream(), egressGroup(), entryId);
+            co_await bridge::redis_async::acknowledgeAndDelete(redis_, egressStream(),
+                                                               egressGroup(), entryId);
         } catch (const std::exception& error) {
             lastCoordinatorError_ = std::string("socket_egress_complete_failed: ") + error.what();
             egressRecovering_ = true;
@@ -698,37 +998,70 @@ class SouthbridgeWorker final {
             case ProtocolActionKind::Send:
                 if (const auto epoch = connectionEpochs_.find(action.connectionId);
                     epoch != connectionEpochs_.end()) {
-                    bridge::EgressPacket packet{
-                        .messageId = bridge::nextMessageId(),
-                        .workerInstanceId = workerInstanceId_,
-                        .causationId = action.commandId,
-                        .connectionId = action.connectionId,
-                        .sessionEpoch = epoch->second,
-                        .createdAtMs = bridge::utcNowMilliseconds(),
-                        .payload = std::move(action.bytes)};
-                    (void)co_await bridge::redis_async::publish(
-                        redis_, egressStream(), bridge::egressFields(packet), kEgressStreamCapacity);
+                    bridge::EgressPacket packet{.messageId = bridge::nextMessageId(),
+                                                .workerInstanceId = workerInstanceId_,
+                                                .causationId = action.commandId,
+                                                .connectionId = action.connectionId,
+                                                .sessionEpoch = epoch->second,
+                                                .createdAtMs = bridge::utcNowMilliseconds(),
+                                                .payload = std::move(action.bytes)};
+                    (void)co_await bridge::redis_async::publish(redis_, egressStream(),
+                                                                bridge::egressFields(packet),
+                                                                kEgressStreamCapacity);
                 } else if (!action.commandId.empty()) {
                     co_await finishCommand(action.commandId, false, "stale_session_epoch");
                 }
                 break;
-            case ProtocolActionKind::Close:
+            case ProtocolActionKind::Close: {
+                const auto event = hasMarker(action.reason, "timeout") ? "TIMEOUT"
+                                                                       : "PROTOCOL_CLOSE";
+                service::common::packet_log::write(
+                    service::common::packet_log::Level::Warn, event,
+                    actionLogContext(action, "protocol"), {}, action.reason);
                 tcp_.close(action.connectionId,
                            action.reason.empty() ? "protocol_closed" : action.reason);
                 break;
+            }
             case ProtocolActionKind::BindDevice:
+                service::common::packet_log::write(
+                    service::common::packet_log::Level::Info, "DEVICE_BOUND",
+                    actionLogContext(action, "bind"));
                 co_await bindRouteIfConnected(action);
                 break;
             case ProtocolActionKind::PublishParsed:
+                service::common::packet_log::write(
+                    service::common::packet_log::Level::Debug, "PARSE_SUCCESS",
+                    parsedLogContext(action.parsed), {}, action.parsed.source);
                 (void)co_await bridge::redis_async::publish(redis_, parsedStream(),
                                                             bridge::parsedFields(action.parsed));
                 break;
-            case ProtocolActionKind::CompleteCommand:
+            case ProtocolActionKind::CompleteCommand: {
+                const auto* task = taskForCausation(action.commandId);
+                auto context = task ? taskLogContext(*task, action.connectionId)
+                                    : actionLogContext(action, "command");
+                context.causationId = action.commandId;
+                service::common::packet_log::write(
+                    service::common::packet_log::Level::Info,
+                    task && task->kind == "discovery" ? "DISCOVERY_COMPLETED"
+                                                       : "COMMAND_COMPLETED",
+                    context, {}, action.reason);
                 co_await finishCommand(action.commandId, true, action.reason);
                 break;
-            case ProtocolActionKind::FailCommand:
+            }
+            case ProtocolActionKind::FailCommand: {
+                const auto* task = taskForCausation(action.commandId);
+                auto context = task ? taskLogContext(*task, action.connectionId)
+                                    : actionLogContext(action, "command");
+                context.causationId = action.commandId;
+                const auto event = hasMarker(action.reason, "timeout")
+                                       ? "TIMEOUT"
+                                       : (task && task->kind == "discovery" ? "DISCOVERY_FAILED"
+                                                                            : "COMMAND_FAILED");
+                service::common::packet_log::write(
+                    service::common::packet_log::Level::Warn, event, context, {}, action.reason);
                 co_await finishCommand(action.commandId, false, action.reason);
                 break;
+            }
             case ProtocolActionKind::ScheduleDeadline:
                 scheduleProtocolDeadline(action.connectionId, action.deadlineToken,
                                          action.deadlineAfter);
@@ -749,8 +1082,21 @@ class SouthbridgeWorker final {
         protocolDeadlines_[key] = scheduler_.scheduleAfter(
             delay, [this, connectionId = std::move(connectionId), protocolToken, key] {
                 protocolDeadlines_.erase(key);
-                if (!stopping_)
-                    spawnActions(connectionId, engine_.deadline(connectionId, protocolToken));
+                if (stopping_)
+                    return;
+                ProtocolAction diagnostic;
+                diagnostic.connectionId = connectionId;
+                const auto context = actionLogContext(diagnostic, "deadline");
+                const auto token = std::to_string(protocolToken);
+                service::common::packet_log::write(
+                    service::common::packet_log::Level::Debug, "DEADLINE_FIRED", context, {},
+                    token);
+                auto actions = engine_.deadline(connectionId, protocolToken);
+                if (actions.empty())
+                    service::common::packet_log::write(
+                        service::common::packet_log::Level::Warn, "TIMEOUT", context, {},
+                        "deadline_expired_without_protocol_action");
+                spawnActions(connectionId, std::move(actions));
             });
     }
 
@@ -881,6 +1227,16 @@ return 1
             const auto broadcast = broadcasts_.find(parentId);
             if (broadcast == broadcasts_.end())
                 co_return;
+            service::common::packet_log::Context childContext;
+            childContext.workerIndex = workerIndex_;
+            childContext.operation = "broadcast";
+            childContext.messageId = commandId;
+            childContext.causationId = parentId;
+            service::common::packet_log::write(
+                success ? service::common::packet_log::Level::Debug
+                        : service::common::packet_log::Level::Warn,
+                success ? "BROADCAST_TARGET_SUCCESS" : "BROADCAST_TARGET_FAILED", childContext,
+                {}, reason);
             broadcast->second.anySuccess = broadcast->second.anySuccess || success;
             if (!reason.empty())
                 broadcast->second.reason = reason;
@@ -891,6 +1247,15 @@ return 1
                                              ? std::string("discovery_window_closed")
                                              : broadcast->second.reason;
             broadcasts_.erase(broadcast);
+            service::common::packet_log::Context aggregateContext;
+            aggregateContext.workerIndex = workerIndex_;
+            aggregateContext.operation = "broadcast";
+            aggregateContext.messageId = parentId;
+            service::common::packet_log::write(
+                aggregateSuccess ? service::common::packet_log::Level::Info
+                                 : service::common::packet_log::Level::Warn,
+                aggregateSuccess ? "BROADCAST_COMPLETED" : "BROADCAST_FAILED", aggregateContext,
+                {}, aggregateReason);
             co_await finishCommand(parentId, aggregateSuccess, aggregateReason);
             co_return;
         }
@@ -902,6 +1267,13 @@ return 1
         if (!success &&
             co_await retryOrDeadLetter(pending.stream, pending.entryId, pending.task, reason))
             co_return;
+        service::common::packet_log::write(
+            success ? service::common::packet_log::Level::Info
+                    : service::common::packet_log::Level::Warn,
+            pending.task.kind == "discovery"
+                ? (success ? "DISCOVERY_RESULT" : "DISCOVERY_FAILED")
+                : (success ? "COMMAND_RESULT" : "COMMAND_FAILED"),
+            taskLogContext(pending.task), {}, reason);
         (void)co_await bridge::redis_async::publish(
             redis_, commandResultStream(),
             {{"message_id", bridge::nextMessageId()},
@@ -945,6 +1317,12 @@ return 1
                                         bridge::ProtocolTask task, std::string_view reason) {
         if (retryableFailure(reason) && task.attempt < task.maxAttempts) {
             ++task.attempt;
+            const auto retryReason = "attempt=" + std::to_string(task.attempt) + " reason=" +
+                                     std::string(reason);
+            service::common::packet_log::write(
+                service::common::packet_log::Level::Warn,
+                task.kind == "discovery" ? "DISCOVERY_RETRY" : "COMMAND_RETRY",
+                taskLogContext(task), {}, retryReason);
             (void)co_await bridge::redis_async::publish(
                 redis_, stream, bridge::protocolTaskFields(task), kCommandStreamCapacity);
             co_await bridge::redis_async::acknowledgeAndDelete(redis_, stream, commandGroup(),
@@ -956,6 +1334,9 @@ return 1
         fields.push_back({"source_entry_id", std::string(entryId)});
         fields.push_back({"worker_id", std::to_string(workerIndex_)});
         fields.push_back({"failed_at_ms", std::to_string(bridge::utcNowMilliseconds())});
+        service::common::packet_log::write(
+            service::common::packet_log::Level::Error, "DEAD_LETTER", taskLogContext(task), {},
+            reason);
         (void)co_await bridge::redis_async::publish(redis_, deadLetterStream(), fields,
                                                     kDeadLetterCapacity);
         co_return false;
@@ -984,8 +1365,7 @@ return 1
         co_await bridge::redis_async::acknowledgeAndDelete(redis_, stream, commandGroup(), entryId);
     }
 
-    [[nodiscard]] std::vector<bridge::StreamField>
-    linkStateFields(const WorkerLinkState& state) {
+    [[nodiscard]] std::vector<bridge::StreamField> linkStateFields(const WorkerLinkState& state) {
         std::string endpoints;
         for (const auto& endpoint : state.remoteEndpoints) {
             if (!endpoints.empty())
@@ -1047,8 +1427,8 @@ return 1
                 fields.push_back(field);
             }
             fields.push_back({"updated_at_ms", std::to_string(bridge::utcNowMilliseconds())});
-            const auto key = "iot:state:link:" + std::string(linkId) +
-                             ":worker:" + std::to_string(workerIndex_);
+            const auto key =
+                "iot:state:link:" + std::string(linkId) + ":worker:" + std::to_string(workerIndex_);
             co_await bridge::redis_async::eraseHash(redis_, key);
             co_await bridge::redis_async::setHash(redis_, key, fields);
             co_await bridge::redis_async::acknowledgeAndDelete(redis_, stream, group, message.id);
@@ -1057,8 +1437,7 @@ return 1
     }
 
     ruvia::Task<void> deadLetterMessage(const bridge::StreamMessage& message,
-                                        std::string_view reason,
-                                        std::string_view detail = {}) {
+                                        std::string_view reason, std::string_view detail = {}) {
         auto fields = message.fields;
         fields.push_back({"source_entry_id", message.id});
         fields.push_back({"failure_reason", std::string(reason)});

@@ -4,6 +4,29 @@ export const protocolIdSchema = z.uuid({ error: 'id 必须是 UUID' });
 export const protocolTypeSchema = z.enum(['SL651', 'Modbus', 'S7']);
 
 const configSchema = z.record(z.string(), z.unknown());
+const modbusRegisterSchema = z.object({
+    id: z.string().min(1, '寄存器 ID 不能为空'),
+    name: z.string().min(1, '寄存器名称不能为空'),
+    registerType: z.enum(['COIL', 'DISCRETE_INPUT', 'HOLDING_REGISTER', 'INPUT_REGISTER']),
+    dataType: z.enum([
+        'BOOL',
+        'INT16',
+        'UINT16',
+        'INT32',
+        'UINT32',
+        'FLOAT32',
+        'INT64',
+        'UINT64',
+        'DOUBLE',
+    ]),
+    address: z.number().min(0, '寄存器地址不能小于 0').max(65535, '寄存器地址不能大于 65535'),
+    quantity: z.number().min(1, '寄存器数量不能小于 1').max(4, '寄存器数量不能大于 4'),
+});
+
+function isObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 const baseSchema = z.object({
     name: z.string().trim().min(1, '请输入配置名称').max(64, '配置名称最多64个字符'),
     enabled: z.boolean().optional(),
@@ -29,11 +52,18 @@ export const protocolCreateSchema = baseSchema
                     path: ['config', 'byteOrder'],
                     message: '字节序无效',
                 });
-            if (!Array.isArray(config.registers))
+            const registersResult = z.array(modbusRegisterSchema).safeParse(config.registers);
+            if (!registersResult.success)
                 context.addIssue({
                     code: 'custom',
                     path: ['config', 'registers'],
-                    message: '寄存器必须是数组',
+                    message: registersResult.error.issues[0]?.message ?? '寄存器配置无效',
+                });
+            if (config.packet !== undefined && !isObject(config.packet))
+                context.addIssue({
+                    code: 'custom',
+                    path: ['config', 'packet'],
+                    message: '组包配置必须是对象',
                 });
         } else if (value.protocol === 'SL651') {
             if (!['M1', 'M2', 'M3', 'M4'].includes(String(config.responseMode ?? '')))
@@ -64,6 +94,12 @@ export const protocolCreateSchema = baseSchema
                     code: 'custom',
                     path: ['config', 'areas'],
                     message: '寄存器必须是数组',
+                });
+            if (!isObject(config.connection))
+                context.addIssue({
+                    code: 'custom',
+                    path: ['config', 'connection'],
+                    message: '连接配置必须是对象',
                 });
         }
     });

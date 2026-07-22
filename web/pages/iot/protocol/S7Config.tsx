@@ -80,17 +80,17 @@ const S7ConfigPage = () => {
     const canAdd = has('iot:protocol:add');
     const canEdit = has('iot:protocol:edit');
     const canDelete = has('iot:protocol:delete');
-    const canImport = has('iot:protocol:import');
+    const canImport = has('iot:protocol:import') && canAdd;
     const canExport = has('iot:protocol:export');
 
     const {
-        data: configPage,
+        data: configList,
         isLoading: loadingTypes,
         refetch,
     } = useProtocolConfigList({ protocol: 'S7' }, { enabled: canQuery });
     const saveMutation = useProtocolConfigSave();
     const deleteMutation = useProtocolConfigDelete();
-    const { exportConfigs, triggerImport, importing } = useProtocolImportExport('S7');
+    const { exportConfigs, triggerImport, exporting, importing } = useProtocolImportExport('S7');
 
     const [selectedTypeId, setSelectedTypeId] = useState<string>();
     const [deviceTypeModalOpen, setDeviceTypeModalOpen] = useState(false);
@@ -99,7 +99,7 @@ const S7ConfigPage = () => {
     const [areaModalOpen, setAreaModalOpen] = useState(false);
     const [editingAreaId, setEditingAreaId] = useState<string | null>(null);
 
-    const types = useMemo(() => configPage?.list || [], [configPage?.list]);
+    const types = useMemo(() => configList ?? [], [configList]);
     const emptyTypeDesc = types.length ? '未选择设备类型' : '暂无设备类型';
     const selectedPlcModel = Form.useWatch('plcModel', createForm) as S7.PlcModel | undefined;
     const selectedConnectionType = Form.useWatch('connectionType', createForm) as
@@ -475,8 +475,9 @@ const S7ConfigPage = () => {
                                         <Button
                                             size="small"
                                             icon={<DownloadOutlined />}
-                                            disabled={!types.length}
-                                            onClick={() => exportConfigs(types)}
+                                            disabled={loadingTypes || importing}
+                                            loading={exporting}
+                                            onClick={exportConfigs}
                                         />
                                     </Tooltip>
                                 )}
@@ -485,6 +486,7 @@ const S7ConfigPage = () => {
                                         <Button
                                             size="small"
                                             icon={<UploadOutlined />}
+                                            disabled={exporting}
                                             loading={importing}
                                             onClick={triggerImport}
                                         />

@@ -61,6 +61,33 @@ export const saveDeviceGroupSchema = z.object({
 
 export const deviceIdSchema = z.uuid({ error: 'id 必须是 UUID' });
 
+const commandElementSchema = z.object({
+    elementId: z.uuid({ error: '下发要素 ID 必须是 UUID' }),
+    value: z.string().trim().min(1, '下发要素值不能为空').max(4096, '下发要素值最多 4096 个字符'),
+});
+
+export const deviceCommandSchema = z
+    .object({
+        elements: z
+            .array(commandElementSchema)
+            .min(1, '请至少选择一个下发要素')
+            .max(256, '单次最多下发 256 个要素'),
+    })
+    .superRefine(({ elements }, context) => {
+        const ids = new Set<string>();
+        elements.forEach((element, index) => {
+            if (!ids.has(element.elementId)) {
+                ids.add(element.elementId);
+                return;
+            }
+            context.addIssue({
+                code: 'custom',
+                path: ['elements', index, 'elementId'],
+                message: '一次下发不能包含重复要素',
+            });
+        });
+    });
+
 const deviceShareSchema = z.object({
     subject_type: z.enum(['user', 'department']),
     subject_id: z.uuid({ error: '分享对象 ID 必须是 UUID' }),

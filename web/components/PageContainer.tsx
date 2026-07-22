@@ -1,3 +1,4 @@
+import { theme } from 'antd';
 import type { ReactNode } from 'react';
 
 interface PageContainerProps {
@@ -17,16 +18,30 @@ interface PageContainerProps {
  * - children: 可滚动的主体内容
  */
 export function PageContainer({ title, header, children, footer }: PageContainerProps) {
+    const { token } = theme.useToken();
+
     return (
-        <section className="flex h-full flex-col overflow-hidden bg-white">
+        <section
+            className="flex h-full flex-col overflow-hidden"
+            style={{ background: token.colorBgContainer }}
+        >
             {(title || header) && (
-                <div className="shrink-0 border-b border-slate-200/80 px-4 py-4 sm:px-5">
+                <div
+                    className="shrink-0 border-b px-4 py-4 sm:px-5"
+                    style={{ borderColor: token.colorBorderSecondary }}
+                >
                     {title && (
                         <div>
-                            <h1 className="m-0 text-lg font-semibold tracking-tight text-slate-900">
+                            <h1
+                                className="m-0 text-lg font-semibold tracking-tight"
+                                style={{ color: token.colorTextHeading }}
+                            >
                                 {title}
                             </h1>
-                            <div className="mt-2 h-0.5 w-8 rounded-full bg-blue-600" />
+                            <div
+                                className="mt-2 h-0.5 w-8 rounded-full"
+                                style={{ background: token.colorPrimary }}
+                            />
                         </div>
                     )}
                     {header && <div className={title ? 'mt-4' : ''}>{header}</div>}
@@ -34,7 +49,10 @@ export function PageContainer({ title, header, children, footer }: PageContainer
             )}
             <div className="min-h-0 flex-1 overflow-hidden px-4 py-4 sm:px-5">{children}</div>
             {footer && (
-                <div className="shrink-0 border-t border-slate-200/80 px-4 py-3 sm:px-5">
+                <div
+                    className="shrink-0 border-t px-4 py-3 sm:px-5"
+                    style={{ borderColor: token.colorBorderSecondary }}
+                >
                     {footer}
                 </div>
             )}
