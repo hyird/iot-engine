@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <mbedtls/sha256.h>
+#include "edge_sha256.h"
 
 void edge_memory_config_free(edge_memory_config_set *set) {
     if (set == NULL)
@@ -64,12 +64,12 @@ bool edge_memory_config_commit(edge_memory_config_set *active,
         return false;
     mbedtls_sha256_context sha;
     mbedtls_sha256_init(&sha);
-    bool ok = mbedtls_sha256_starts(&sha, 0) == 0;
+    bool ok = edge_sha256_starts(&sha, 0) == 0;
     for (uint32_t index = 0; ok && index < staging->item_count; ++index)
         ok = staging->items[index].present &&
-             mbedtls_sha256_update(&sha, staging->items[index].digest, 32U) == 0;
+             edge_sha256_update(&sha, staging->items[index].digest, 32U) == 0;
     uint8_t actual[32];
-    ok = ok && mbedtls_sha256_finish(&sha, actual) == 0 &&
+    ok = ok && edge_sha256_finish(&sha, actual) == 0 &&
          memcmp(actual, digest, 32U) == 0;
     mbedtls_sha256_free(&sha);
     if (!ok)

@@ -22,6 +22,12 @@ typedef struct {
 typedef struct {
     char imei[16];
     char model[129];
+    char serial_port[97];
+    char lan_interface[33];
+    char wan_interface[33];
+    char modem_status_path[129];
+    bool bridge;
+    bool serial_rs485;
     uint16_t heartbeat_interval_sec;
     uint8_t platform_count;
     edge_platform_config platforms[EDGE_MAX_PLATFORMS];

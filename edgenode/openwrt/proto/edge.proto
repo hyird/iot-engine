@@ -91,6 +91,12 @@ message Hello {
   bool supports_terminal = 13;
   bool supports_l2_maintenance = 14;
   bool supports_firmware_update = 15;
+  string iccid = 16 [(nanopb).max_length = 22];
+  uint32 signal_csq = 17;
+  int32 signal_rssi_dbm = 18;
+  uint32 signal_percent = 19;
+  bool mobile_registered = 20;
+  int32 mobile_registration_status = 21;
 }
 
 message HelloAck {
@@ -142,6 +148,12 @@ message Heartbeat {
   uint64 free_storage_bytes = 7;
   uint32 cpu_load_milli = 8;
   uint64 memory_used_bytes = 9;
+  string iccid = 10 [(nanopb).max_length = 22];
+  uint32 signal_csq = 11;
+  int32 signal_rssi_dbm = 12;
+  uint32 signal_percent = 13;
+  bool mobile_registered = 14;
+  int32 mobile_registration_status = 15;
 }
 
 message HeartbeatAck {

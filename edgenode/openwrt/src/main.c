@@ -8,6 +8,7 @@
 #include <ev.h>
 
 #include "edge_config.h"
+#include "edge_modem.h"
 #include "edge_ws.h"
 
 static bool reload_requested;
@@ -18,7 +19,24 @@ static void signal_received(struct ev_loop *loop, ev_signal *watcher, int events
     ev_break(loop, EVBREAK_ALL);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc == 4 && strcmp(argv[1], "--initialize-modem") == 0)
+        return edge_modem_initialize(argv[2], argv[3]);
+    if (argc == 5 && strcmp(argv[1], "--monitor-modem") == 0) {
+        char *end = NULL;
+        const unsigned long interval = strtoul(argv[4], &end, 10);
+        if (end == argv[4] || *end != '\0' || interval == 0U || interval > 3600U)
+            return EXIT_FAILURE;
+        return edge_modem_monitor(argv[2], argv[3], (unsigned)interval);
+    }
+    if (argc != 1) {
+        fprintf(stderr,
+                "usage: %s [--initialize-modem PORT STATUS | "
+                "--monitor-modem PORT STATUS INTERVAL]\n",
+                argv[0]);
+        return EXIT_FAILURE;
+    }
+
     openlog("edgenode", LOG_PID, LOG_DAEMON);
     struct ev_loop *loop = EV_DEFAULT;
     if (loop == NULL) {

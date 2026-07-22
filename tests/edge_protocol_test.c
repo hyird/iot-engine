@@ -30,6 +30,12 @@ static void test_hello_round_trip(void) {
     strcpy(envelope.payload.hello.imei, "490154203237518");
     strcpy(envelope.payload.hello.model, "openwrt-test");
     strcpy(envelope.payload.hello.software_version, "0.1.0");
+    strcpy(envelope.payload.hello.iccid, "89860012345678901234");
+    envelope.payload.hello.signal_csq = 23U;
+    envelope.payload.hello.signal_rssi_dbm = -67;
+    envelope.payload.hello.signal_percent = 74U;
+    envelope.payload.hello.mobile_registered = true;
+    envelope.payload.hello.mobile_registration_status = 1;
     envelope.payload.hello.supported_protocol_versions_count = 1U;
     envelope.payload.hello.supported_protocol_versions[0] = EDGENODE_PROTOCOL_VERSION;
 
@@ -46,9 +52,55 @@ static void test_hello_round_trip(void) {
     require(decoded.which_payload == iot_edge_v1_Envelope_hello_tag, "wrong payload tag");
     require(strcmp(decoded.payload.hello.imei, "490154203237518") == 0,
             "IMEI changed during round trip");
+    require(strcmp(decoded.payload.hello.iccid, "89860012345678901234") == 0,
+            "ICCID changed during round trip");
+    require(decoded.payload.hello.signal_csq == 23U &&
+                decoded.payload.hello.signal_rssi_dbm == -67 &&
+                decoded.payload.hello.signal_percent == 74U,
+            "signal state changed during round trip");
+    require(decoded.payload.hello.mobile_registered &&
+                decoded.payload.hello.mobile_registration_status == 1,
+            "mobile registration changed during round trip");
     require(decoded.message_id.size == 16U && (decoded.message_id.bytes[6] >> 4U) == 7U,
             "message id is not UUIDv7");
     require((decoded.message_id.bytes[8] & 0xc0U) == 0x80U, "bad UUID variant");
+}
+
+static void test_heartbeat_mobile_state_round_trip(void) {
+    const uint8_t platform_id[16] = {0x01};
+    const uint8_t random_bytes[10] = {0x20};
+    iot_edge_v1_Envelope envelope;
+    require(edge_protocol_init_envelope(&envelope, platform_id, NULL, 0U, 2U,
+                                        1784688030123LL, random_bytes),
+            "heartbeat envelope initialization failed");
+    envelope.which_payload = iot_edge_v1_Envelope_heartbeat_tag;
+    iot_edge_v1_Heartbeat *heartbeat = &envelope.payload.heartbeat;
+    heartbeat->uptime_sec = 300U;
+    strcpy(heartbeat->iccid, "89860012345678901234");
+    heartbeat->signal_csq = 23U;
+    heartbeat->signal_rssi_dbm = -67;
+    heartbeat->signal_percent = 74U;
+    heartbeat->mobile_registered = true;
+    heartbeat->mobile_registration_status = 1;
+
+    uint8_t encoded[EDGENODE_MAX_WS_MESSAGE];
+    size_t encoded_size = 0U;
+    const char *error = NULL;
+    require(edge_protocol_encode(&envelope, encoded, sizeof(encoded), &encoded_size, &error),
+            error != NULL ? error : "heartbeat encode failed");
+
+    iot_edge_v1_Envelope decoded;
+    require(edge_protocol_decode(encoded, encoded_size, &decoded, &error),
+            error != NULL ? error : "heartbeat decode failed");
+    require(decoded.which_payload == iot_edge_v1_Envelope_heartbeat_tag,
+            "wrong heartbeat payload tag");
+    const iot_edge_v1_Heartbeat *round_trip = &decoded.payload.heartbeat;
+    require(strcmp(round_trip->iccid, "89860012345678901234") == 0,
+            "heartbeat ICCID changed during round trip");
+    require(round_trip->signal_csq == 23U && round_trip->signal_rssi_dbm == -67 &&
+                round_trip->signal_percent == 74U && round_trip->mobile_registered &&
+                round_trip->mobile_registration_status == 1,
+            "heartbeat mobile state changed during round trip");
 }
 
 static void test_reject_text_or_oversized_input(void) {
@@ -64,6 +116,7 @@ static void test_reject_text_or_oversized_input(void) {
 int main(void) {
     test_imei();
     test_hello_round_trip();
+    test_heartbeat_mobile_state_round_trip();
     test_reject_text_or_oversized_input();
     puts("edge protocol tests passed");
     return 0;

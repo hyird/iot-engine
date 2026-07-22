@@ -1,9 +1,14 @@
 #include "edge_ws.h"
 
+#include <arpa/inet.h>
 #include <errno.h>
+#include <net/if.h>
+#include <netinet/in.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/sysinfo.h>
 #include <sys/utsname.h>
@@ -11,10 +16,12 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <mbedtls/sha256.h>
 #include <pb_encode.h>
 
-#define EDGE_SOFTWARE_VERSION "0.1.0"
+#include "edge_modem.h"
+#include "edge_sha256.h"
+
+#define EDGE_SOFTWARE_VERSION "0.1.1"
 
 static edge_ws_session *session_from_client(struct uwsc_client *client) {
     return (edge_ws_session *)((uint8_t *)client - offsetof(edge_ws_session, client));
@@ -143,9 +150,87 @@ static bool send_hello(edge_ws_session *session) {
     hello->supports_tcp = true;
     hello->supports_serial = true;
     hello->supports_network_config = session->config->network_owner;
+    edge_modem_info modem;
+    bool modem_available = false;
+    hello->signal_csq = 99U;
+    hello->signal_rssi_dbm = -1;
+    hello->mobile_registration_status = -1;
+    if (edge_modem_read_status(session->app->config->modem_status_path,
+                               &modem, &modem_available) && modem_available) {
+        safe_copy(hello->iccid, sizeof(hello->iccid), modem.iccid);
+        hello->signal_csq = (uint32_t)modem.csq;
+        hello->signal_rssi_dbm = modem.rssi_dbm;
+        hello->signal_percent = modem.signal_percent;
+        hello->mobile_registered = modem.registered;
+        hello->mobile_registration_status = modem.registration_status;
+    }
     const bool sent = send_envelope(session, envelope);
     memset(hello->enrollment_token, 0, sizeof(hello->enrollment_token));
     return sent;
+}
+
+static uint32_t ipv4_prefix_length(struct in_addr mask) {
+    uint32_t value = ntohl(mask.s_addr);
+    uint32_t prefix = 0U;
+    while ((value & 0x80000000U) != 0U) {
+        ++prefix;
+        value <<= 1U;
+    }
+    return prefix;
+}
+
+static void read_interface_capability(const char *name,
+                                      iot_edge_v1_InterfaceCapability *capability) {
+    safe_copy(capability->name, sizeof(capability->name), name);
+    safe_copy(capability->display_name, sizeof(capability->display_name), name);
+    const int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (fd < 0)
+        return;
+    struct ifreq request;
+    memset(&request, 0, sizeof(request));
+    safe_copy(request.ifr_name, sizeof(request.ifr_name), name);
+    if (ioctl(fd, SIOCGIFFLAGS, &request) == 0)
+        capability->up = (request.ifr_flags & IFF_UP) != 0;
+#ifdef SIOCGIFHWADDR
+    if (ioctl(fd, SIOCGIFHWADDR, &request) == 0)
+        edge_protocol_set_bytes(&capability->mac, sizeof(capability->mac.bytes),
+                                (const uint8_t *)request.ifr_hwaddr.sa_data, 6U);
+#endif
+    if (ioctl(fd, SIOCGIFADDR, &request) == 0) {
+        const struct sockaddr_in *address = (const struct sockaddr_in *)&request.ifr_addr;
+        inet_ntop(AF_INET, &address->sin_addr, capability->ipv4, sizeof(capability->ipv4));
+    }
+    if (ioctl(fd, SIOCGIFNETMASK, &request) == 0) {
+        const struct sockaddr_in *mask = (const struct sockaddr_in *)&request.ifr_netmask;
+        capability->prefix_length = ipv4_prefix_length(mask->sin_addr);
+    }
+    close(fd);
+}
+
+static bool send_capability_report(edge_ws_session *session) {
+    iot_edge_v1_Envelope *envelope = &session->app->envelope;
+    if (!init_envelope(session, envelope))
+        return false;
+    envelope->which_payload = iot_edge_v1_Envelope_capability_report_tag;
+    iot_edge_v1_CapabilityReport *report = &envelope->payload.capability_report;
+    safe_copy(report->network_backend, sizeof(report->network_backend), "netifd");
+
+    if (session->app->config->lan_interface[0] != '\0') {
+        report->interfaces_count = 1U;
+        read_interface_capability(session->app->config->lan_interface,
+                                  &report->interfaces[0]);
+        report->interfaces[0].bridge = session->app->config->bridge;
+    }
+    if (session->app->config->serial_port[0] != '\0') {
+        report->serial_ports_count = 1U;
+        iot_edge_v1_SerialCapability *serial = &report->serial_ports[0];
+        safe_copy(serial->path, sizeof(serial->path), session->app->config->serial_port);
+        safe_copy(serial->display_name, sizeof(serial->display_name),
+                  session->app->config->serial_port);
+        serial->available = access(session->app->config->serial_port, R_OK | W_OK) == 0;
+        serial->rs485 = session->app->config->serial_rs485;
+    }
+    return send_envelope(session, envelope);
 }
 
 static void schedule_reconnect(edge_ws_session *session) {
@@ -219,7 +304,7 @@ static bool verify_config_item(iot_edge_v1_ConfigItem *item, uint8_t *encoded,
         return false;
     }
     uint8_t actual[32];
-    if (mbedtls_sha256(encoded, canonical_size, actual, 0) != 0 ||
+    if (edge_sha256(encoded, canonical_size, actual, 0) != 0 ||
         memcmp(expected, actual, sizeof(actual)) != 0) {
         memcpy(item->sha256.bytes, expected, sizeof(expected));
         item->sha256.size = sizeof(expected);
@@ -331,9 +416,14 @@ static void websocket_message(struct uwsc_client *client, void *data, size_t siz
         ev_timer_stop(session->app->loop, &session->heartbeat_timer);
         ev_timer_set(&session->heartbeat_timer, (ev_tstamp)heartbeat, (ev_tstamp)heartbeat);
         ev_timer_start(session->app->loop, &session->heartbeat_timer);
+        send_capability_report(session);
         send_outbox_first(session);
         break;
     }
+    case iot_edge_v1_Envelope_heartbeat_ack_tag:
+        if (session->enrolled && envelope->payload.heartbeat_ack.request_capability_report)
+            send_capability_report(session);
+        break;
     case iot_edge_v1_Envelope_config_begin_tag:
     case iot_edge_v1_Envelope_config_item_tag:
     case iot_edge_v1_Envelope_config_commit_tag:
@@ -381,13 +471,28 @@ static void heartbeat_timer(struct ev_loop *loop, struct ev_timer *timer, int ev
     if (!init_envelope(session, envelope))
         return;
     envelope->which_payload = iot_edge_v1_Envelope_heartbeat_tag;
+    iot_edge_v1_Heartbeat *heartbeat = &envelope->payload.heartbeat;
+    heartbeat->signal_csq = 99U;
+    heartbeat->signal_rssi_dbm = -1;
+    heartbeat->mobile_registration_status = -1;
+    edge_modem_info modem;
+    bool modem_available = false;
+    if (edge_modem_read_status(session->app->config->modem_status_path,
+                               &modem, &modem_available) && modem_available) {
+        safe_copy(heartbeat->iccid, sizeof(heartbeat->iccid), modem.iccid);
+        heartbeat->signal_csq = (uint32_t)modem.csq;
+        heartbeat->signal_rssi_dbm = modem.rssi_dbm;
+        heartbeat->signal_percent = modem.signal_percent;
+        heartbeat->mobile_registered = modem.registered;
+        heartbeat->mobile_registration_status = modem.registration_status;
+    }
     struct sysinfo info;
     if (sysinfo(&info) == 0)
-        envelope->payload.heartbeat.uptime_sec = (uint64_t)info.uptime;
-    envelope->payload.heartbeat.active_config_version = session->active_revision;
+        heartbeat->uptime_sec = (uint64_t)info.uptime;
+    heartbeat->active_config_version = session->active_revision;
     edge_spool_maintain(&session->spool);
-    envelope->payload.heartbeat.outbox_records = session->spool.outbox.count;
-    envelope->payload.heartbeat.outbox_bytes = session->spool.outbox.bytes;
+    heartbeat->outbox_records = session->spool.outbox.count;
+    heartbeat->outbox_bytes = session->spool.outbox.bytes;
     send_envelope(session, envelope);
     send_outbox_first(session);
 }

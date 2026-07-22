@@ -12,13 +12,13 @@
 #include <syslog.h>
 #include <unistd.h>
 
-#include <mbedtls/sha256.h>
 #include <pb_decode.h>
 #include <pb_encode.h>
 
 #include "edge.pb.h"
 #include "edge_config.h"
 #include "edge_protocol.h"
+#include "edge_sha256.h"
 
 #define EDGE_TMPFS_MIN_FREE_PERCENT 15U
 
@@ -241,7 +241,7 @@ static bool verify_item_blob(const uint8_t *payload, size_t payload_size,
                         sizeof(canonical), &canonical_size))
         return false;
     uint8_t actual[32];
-    const bool ok = mbedtls_sha256(canonical, canonical_size, actual, 0) == 0 &&
+    const bool ok = edge_sha256(canonical, canonical_size, actual, 0) == 0 &&
                     memcmp(actual, expected, 32U) == 0;
     memcpy(item->sha256.bytes, expected, 32U);
     item->sha256.size = 32U;
@@ -452,12 +452,12 @@ bool edge_spool_config_commit(edge_spool *spool, uint64_t revision,
     /* Validate on a shallow digest pass before changing filesystem state. */
     mbedtls_sha256_context sha;
     mbedtls_sha256_init(&sha);
-    bool valid = mbedtls_sha256_starts(&sha, 0) == 0;
+    bool valid = edge_sha256_starts(&sha, 0) == 0;
     for (uint32_t index = 0; valid && index < spool->staging_config.item_count; ++index)
         valid = spool->staging_config.items[index].present &&
-                mbedtls_sha256_update(&sha, spool->staging_config.items[index].digest, 32U) == 0;
+                edge_sha256_update(&sha, spool->staging_config.items[index].digest, 32U) == 0;
     uint8_t actual[32];
-    valid = valid && mbedtls_sha256_finish(&sha, actual) == 0 &&
+    valid = valid && edge_sha256_finish(&sha, actual) == 0 &&
             memcmp(actual, digest, 32U) == 0 &&
             memcmp(spool->staging_config.digest, digest, 32U) == 0;
     mbedtls_sha256_free(&sha);

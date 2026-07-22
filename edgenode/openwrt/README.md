@@ -68,5 +68,16 @@ OpenWrt's mbedTLS-backed libuwsc.
 The package, daemon, init service, UCI configuration, and runtime paths are all named
 `edgenode`.
 
+The generated nanopb C files are committed under `generated/`. OpenWrt 18.06 therefore
+does not need a host Python, protobuf, or `protoc` package to build `edgenode`; changes to
+`proto/edge.proto` must regenerate and commit `generated/edge.pb.c` and `edge.pb.h` with
+nanopb 0.4.9.1.
+
+Hardware paths, interface names, bridge mode, modem USB ID, AT port, status path, and
+monitor interval are UCI settings rather than compiled constants. The TAS-682 package
+defaults describe its single field serial port and Ethernet port plus the LierdaComm
+modem. The service initializes IMEI and ICCID once in UCI, and keeps registration and
+signal status in tmpfs without repeatedly writing flash.
+
 The resulting package must be cross-compiled and installed on the actual target. A host
 binary is not an OpenWrt deliverable.

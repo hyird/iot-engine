@@ -133,6 +133,8 @@ bool edge_config_load(edge_app_config *config, char *error, size_t error_size) {
     }
 
     bool have_node = false;
+    bool have_hardware = false;
+    bool have_modem = false;
     bool have_network_owner = false;
     struct uci_element *element;
     uci_foreach_element(&package->sections, element) {
@@ -151,6 +153,28 @@ bool edge_config_load(edge_app_config *config, char *error, size_t error_size) {
             config->heartbeat_interval_sec = (uint16_t)number_option(
                 context, section, "heartbeat_interval_sec", 30U, 5U, 3600U);
             have_node = true;
+            continue;
+        }
+        if (strcmp(section->type, "hardware") == 0) {
+            if (have_hardware ||
+                !copy_option(context, section, "serial_port", config->serial_port,
+                             sizeof(config->serial_port), true, error, error_size) ||
+                !copy_option(context, section, "lan_interface", config->lan_interface,
+                             sizeof(config->lan_interface), true, error, error_size) ||
+                !copy_option(context, section, "wan_interface", config->wan_interface,
+                             sizeof(config->wan_interface), true, error, error_size))
+                goto fail;
+            config->bridge = bool_option(context, section, "bridge", false);
+            config->serial_rs485 = bool_option(context, section, "serial_rs485", false);
+            have_hardware = true;
+            continue;
+        }
+        if (strcmp(section->type, "modem") == 0) {
+            if (have_modem ||
+                !copy_option(context, section, "status_path", config->modem_status_path,
+                             sizeof(config->modem_status_path), true, error, error_size))
+                goto fail;
+            have_modem = true;
             continue;
         }
         if (strcmp(section->type, "platform") != 0 ||
