@@ -242,13 +242,22 @@ SELECT
       ('S7-200', 'S7-300', 'S7-400', 'S7-1200', 'S7-1500')),
   (NOT (value ? 'connection') OR jsonb_typeof(value->'connection') = 'object'),
   (NOT (value ? 'areas') OR jsonb_typeof(value->'areas') = 'array'),
+  (NOT COALESCE(value->'connection' ? 'probeMode', FALSE) OR
+       value->'connection'->>'probeMode' IN ('STANDARD', 'COMPATIBLE', 'AUTO')),
+  CASE WHEN NOT COALESCE(value->'connection' ? 'handshakeTimeout', FALSE) THEN TRUE
+       WHEN jsonb_typeof(value->'connection'->'handshakeTimeout') <> 'number' THEN FALSE
+       ELSE (value->'connection'->>'handshakeTimeout')::numeric BETWEEN 1000 AND 30000 END,
+  CASE WHEN NOT COALESCE(value->'connection' ? 'directProbeTimeout', FALSE) THEN TRUE
+       WHEN jsonb_typeof(value->'connection'->'directProbeTimeout') <> 'number' THEN FALSE
+       ELSE (value->'connection'->>'directProbeTimeout')::numeric BETWEEN 1000 AND 30000 END,
   value ? 'plcModel', value ? 'connection', value ? 'areas'
 FROM cfg)sql",
                                                     service::common::dbParams(body));
             const auto& row = rows.rows().front();
             if (row[0].text() != "t" || row[1].text() != "t" || row[2].text() != "t" ||
+                row[3].text() != "t" || row[4].text() != "t" || row[5].text() != "t" ||
                 (required &&
-                 (row[3].text() != "t" || row[4].text() != "t" || row[5].text() != "t")))
+                 (row[6].text() != "t" || row[7].text() != "t" || row[8].text() != "t")))
                 service::common::fail(16004, "S7 配置无效", 400);
             co_return;
         }

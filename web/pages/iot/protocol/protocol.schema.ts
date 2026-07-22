@@ -95,12 +95,37 @@ export const protocolCreateSchema = baseSchema
                     path: ['config', 'areas'],
                     message: '寄存器必须是数组',
                 });
-            if (!isObject(config.connection))
+            if (!isObject(config.connection)) {
                 context.addIssue({
                     code: 'custom',
                     path: ['config', 'connection'],
                     message: '连接配置必须是对象',
                 });
+            } else {
+                const connection = config.connection;
+                if (
+                    !['STANDARD', 'COMPATIBLE', 'AUTO'].includes(
+                        String(connection.probeMode ?? 'STANDARD')
+                    )
+                )
+                    context.addIssue({
+                        code: 'custom',
+                        path: ['config', 'connection', 'probeMode'],
+                        message: '连接探测模式无效',
+                    });
+                for (const [field, label] of [
+                    ['handshakeTimeout', '握手超时'],
+                    ['directProbeTimeout', '兼容探测超时'],
+                ] as const) {
+                    const value = connection[field] ?? 5000;
+                    if (!Number.isInteger(value) || Number(value) < 1000 || Number(value) > 30000)
+                        context.addIssue({
+                            code: 'custom',
+                            path: ['config', 'connection', field],
+                            message: `${label}必须在 1000 - 30000 ms 之间`,
+                        });
+                }
+            }
         }
     });
 

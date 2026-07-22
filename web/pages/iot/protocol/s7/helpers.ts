@@ -14,6 +14,9 @@ export type DeviceTypeFormValues = {
     slot: number;
     localTSAP: string;
     remoteTSAP: string;
+    probeMode: S7.ProbeMode;
+    handshakeTimeout: number;
+    directProbeTimeout: number;
     pollInterval: number;
     storageInterval: number;
     commandFastReadDuration: number;
@@ -46,6 +49,9 @@ export const defaultConfig = (): S7.Config => ({
         rack: 0,
         slot: 1,
         connectionType: 'PG',
+        probeMode: 'STANDARD',
+        handshakeTimeout: 5000,
+        directProbeTimeout: 5000,
     },
     pollInterval: 5,
     storageInterval: 1,
@@ -178,6 +184,9 @@ export const getConnectionFormValues = (plcModel: S7.PlcModel, connection?: S7.C
         slot,
         localTSAP,
         remoteTSAP,
+        probeMode: connection?.probeMode ?? 'STANDARD',
+        handshakeTimeout: connection?.handshakeTimeout ?? 5000,
+        directProbeTimeout: connection?.directProbeTimeout ?? 5000,
     };
 };
 
@@ -193,6 +202,9 @@ export const buildConnectionConfig = (values: DeviceTypeFormValues): S7.Connecti
             slot: undefined,
             localTSAP: formatTsapValue(values.localTSAP) ?? preset.localTSAP,
             remoteTSAP: formatTsapValue(values.remoteTSAP) ?? preset.remoteTSAP,
+            probeMode: values.probeMode,
+            handshakeTimeout: values.handshakeTimeout,
+            directProbeTimeout: values.directProbeTimeout,
         };
     }
 
@@ -203,6 +215,9 @@ export const buildConnectionConfig = (values: DeviceTypeFormValues): S7.Connecti
         slot: values.slot,
         localTSAP: undefined,
         remoteTSAP: undefined,
+        probeMode: values.probeMode,
+        handshakeTimeout: values.handshakeTimeout,
+        directProbeTimeout: values.directProbeTimeout,
     };
 };
 

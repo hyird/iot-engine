@@ -149,6 +149,9 @@ SELECT d.id::text, d.protocol_params->>'device_code', d.name, d.link_id::text, l
        COALESCE(p.config->'connection'->>'slot', '1'),
        COALESCE(p.config->'connection'->>'localTSAP', '0100'),
        COALESCE(p.config->'connection'->>'remoteTSAP', '0101'),
+       COALESCE(p.config->'connection'->>'handshakeTimeout', p.config->>'handshakeTimeout', '5000'),
+       COALESCE(p.config->'connection'->>'directProbeTimeout', p.config->>'directProbeTimeout', '5000'),
+       COALESCE(p.config->'connection'->>'probeMode', p.config->>'probeMode', 'STANDARD'),
        COALESCE(CASE WHEN p.protocol = 'Modbus' THEN p.config->>'readInterval'
                      ELSE p.config->>'pollInterval' END, '5'),
        COALESCE(p.config->>'storageInterval', '1'),
@@ -191,12 +194,15 @@ ORDER BY d.link_id, d.id)sql");
         device.s7Slot = cellInt(row, 18);
         device.s7LocalTsap = cell(row, 19);
         device.s7RemoteTsap = cell(row, 20);
-        device.pollInterval = cellInt(row, 21);
-        device.storageInterval = cellInt(row, 22);
-        device.commandFastReadDuration = cellInt(row, 23);
-        device.commandFastReadInterval = cellInt(row, 24);
-        device.modbusMergeGap = cellInt(row, 25);
-        device.modbusMaxQuantity = cellInt(row, 26);
+        device.s7HandshakeTimeoutMs = cellInt(row, 21);
+        device.s7DirectProbeTimeoutMs = cellInt(row, 22);
+        device.s7ProbeMode = cell(row, 23);
+        device.pollInterval = cellInt(row, 24);
+        device.storageInterval = cellInt(row, 25);
+        device.commandFastReadDuration = cellInt(row, 26);
+        device.commandFastReadInterval = cellInt(row, 27);
+        device.modbusMergeGap = cellInt(row, 28);
+        device.modbusMaxQuantity = cellInt(row, 29);
         snapshot.devices.push_back(std::move(device));
     }
 

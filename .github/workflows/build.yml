@@ -185,3 +185,84 @@ jobs:
           path: build/iot-engine-${{ runner.os }}-${{ runner.arch }}.tar.gz
           if-no-files-found: error
           retention-days: 14
+
+  windows_build:
+    name: Windows MSVC build
+    runs-on: windows-2025
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.cache\vcpkg\archives
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static
+      VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
+    steps:
+      - name: Checkout iot-engine
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Restore vcpkg binary cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'triplets/**', 'CMakeLists.txt') }}
+          restore-keys: |
+            vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ env.VCPKG_COMMIT }}-
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          git init $env:VCPKG_ROOT
+          git -C $env:VCPKG_ROOT remote add origin https://github.com/microsoft/vcpkg.git
+          git -C $env:VCPKG_ROOT fetch --depth 1 origin $env:VCPKG_COMMIT
+          git -C $env:VCPKG_ROOT checkout --detach FETCH_HEAD
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build/ci `
+            -DCMAKE_COMPILE_WARNING_AS_ERROR=ON `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+
+      - name: Save vcpkg binary cache
+        if: ${{ !cancelled() && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
+
+      - name: Build
+        run: cmake --build build/ci --config ${{ env.BUILD_TYPE }}
+
+      - name: Test
+        run: ctest --test-dir build/ci --output-on-failure --build-config ${{ env.BUILD_TYPE }}
+
+      - name: Stage artifact
+        shell: pwsh
+        run: |
+          cmake -E rm -rf build/artifact
+          cmake -E make_directory build/artifact
+          cmake -E copy "build/ci/$env:BUILD_TYPE/iot-engine.exe" build/artifact/iot-engine.exe
+          cmake -E copy_directory build/web build/artifact/web
+
+      - name: Package artifact
+        shell: pwsh
+        run: Compress-Archive -Path build/artifact/* -DestinationPath "build/iot-engine-$env:RUNNER_OS-$env:RUNNER_ARCH.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: iot-engine-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          path: build/iot-engine-${{ runner.os }}-${{ runner.arch }}.zip
+          if-no-files-found: error
+          retention-days: 14

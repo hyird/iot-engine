@@ -212,36 +212,43 @@ class Session final : public ProtocolSession,
         std::vector<ProtocolAction> actions;
         for (const auto* device : boundDevices_) {
             actions.push_back(bindAction(*device));
-            schedulePoll(*device, actions);
+            enqueuePollNow(*device);
         }
+        appendNext(actions);
         return actions;
     }
 
     [[nodiscard]] std::vector<ProtocolAction> consume(const ProtocolInput& input) override {
         std::vector<ProtocolAction> actions;
         std::vector<std::uint8_t> bytes(input.bytes.begin(), input.bytes.end());
-        if (link_.mode == "TCP Server" && boundDevices_.empty()) {
+        if (link_.mode == "TCP Server") {
             const auto registration = matchRegistration(bytes);
             if (registration.conflict)
                 return {{.kind = ProtocolActionKind::Close,
                          .connectionId = connectionId_,
                          .reason = "modbus_registration_conflict"}};
             if (registration.device) {
-                bindRegistration(*registration.device);
-                for (const auto* device : boundDevices_) {
-                    actions.push_back(bindAction(*device));
-                    schedulePoll(*device, actions);
+                if (!boundDevices_.empty()) {
+                    if (boundDevices_.front()->registrationBytes !=
+                        registration.device->registrationBytes)
+                        return {{.kind = ProtocolActionKind::Close,
+                                 .connectionId = connectionId_,
+                                 .reason = "modbus_registration_conflict"}};
+                } else {
+                    bindRegistration(*registration.device);
+                    for (const auto* device : boundDevices_) {
+                        actions.push_back(bindAction(*device));
+                        enqueuePollNow(*device);
+                    }
+                    appendNext(actions);
                 }
-                refreshOffline(actions);
                 bytes = std::move(registration.payload);
                 if (bytes.empty())
                     return actions;
             } else if (isHeartbeat(bytes)) {
-                refreshOffline(actions);
                 return actions;
             }
         } else if (isHeartbeat(bytes)) {
-            refreshOffline(actions);
             return actions;
         }
 
@@ -261,11 +268,13 @@ class Session final : public ProtocolSession,
                     discovery_->found = true;
                     if (std::find(boundDevices_.begin(), boundDevices_.end(), discovered) ==
                         boundDevices_.end()) {
-                        boundDevices_.push_back(discovered);
-                        actions.push_back(bindAction(*discovered));
-                        schedulePoll(*discovered, actions);
+                        bindRegistration(*discovered);
+                        for (const auto* bound : boundDevices_) {
+                            actions.push_back(bindAction(*bound));
+                            enqueuePollNow(*bound);
+                        }
+                        appendNext(actions);
                     }
-                    refreshOffline(actions);
                     actions.push_back(parsedAction(input, *discovered, frame, discovery_->request,
                                                    discovery_->commandId));
                 }
@@ -278,14 +287,13 @@ class Session final : public ProtocolSession,
                 bindRegistration(*identified);
                 for (const auto* device : boundDevices_) {
                     actions.push_back(bindAction(*device));
-                    schedulePoll(*device, actions);
+                    enqueuePollNow(*device);
                 }
-                refreshOffline(actions);
+                appendNext(actions);
             }
             const auto* device = boundByUnit(frame.unitId, frame.tcp);
             if (!device)
                 continue;
-            refreshOffline(actions);
             auto frameActions = consumeResponse(input, *device, std::move(frame));
             actions.insert(actions.end(), std::make_move_iterator(frameActions.begin()),
                            std::make_move_iterator(frameActions.end()));
@@ -331,11 +339,6 @@ class Session final : public ProtocolSession,
         }
         pollDeadlines_.clear();
         pollDevices_.clear();
-        if (offlineDeadlineToken_ != 0)
-            actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
-                               .connectionId = connectionId_,
-                               .deadlineToken = offlineDeadlineToken_});
-        offlineDeadlineToken_ = 0;
         inflight_.reset();
         receiveBuffer_.clear();
         return actions;
@@ -440,30 +443,14 @@ class Session final : public ProtocolSession,
                  .commandId = std::move(completed.commandId),
                  .reason = completed.found ? "discovery_devices_found" : "discovery_window_empty"}};
         }
-        if (token != 0 && token == offlineDeadlineToken_) {
-            offlineDeadlineToken_ = 0;
-            return {{.kind = ProtocolActionKind::Close,
-                     .connectionId = connectionId_,
-                     .reason = "modbus_offline_timeout"}};
-        }
         const auto poll = pollDeadlines_.find(token);
         if (poll != pollDeadlines_.end()) {
             const auto* device = poll->second;
             pollDeadlines_.erase(poll);
             pollDevices_.erase(device->id);
             std::vector<ProtocolAction> actions;
-            auto& queue = queues_.at(device->id);
-            if (queue.normalReads.empty()) {
-                for (const auto& command : pollCommands(*device)) {
-                    if (queue.size() >= kMaximumDeviceQueue)
-                        break;
-                    queue.normalReads.push_back(command);
-                }
-            }
-            schedulePoll(*device, actions);
-            auto next = dispatchNext();
-            actions.insert(actions.end(), std::make_move_iterator(next.begin()),
-                           std::make_move_iterator(next.end()));
+            enqueuePollNow(*device);
+            appendNext(actions);
             return actions;
         }
         if (!inflight_ || inflight_->deadlineToken != token)
@@ -482,9 +469,7 @@ class Session final : public ProtocolSession,
                                              .reason = failed.phase == Phase::Readback
                                                            ? "modbus_readback_timeout"
                                                            : "modbus_response_timeout"}};
-        auto next = dispatchNext();
-        actions.insert(actions.end(), std::make_move_iterator(next.begin()),
-                       std::make_move_iterator(next.end()));
+        finishCompletedOperation(failed.command, *failed.device, actions);
         return actions;
     }
 
@@ -641,21 +626,21 @@ class Session final : public ProtocolSession,
                                std::clamp<std::int64_t>(device.pollInterval, 1, 86400))});
     }
 
-    void refreshOffline(std::vector<ProtocolAction>& actions) {
-        if (link_.mode != "TCP Server" || boundDevices_.empty())
+    void enqueuePollNow(const DeviceDefinition& device) {
+        if (device.elements.empty())
             return;
-        if (offlineDeadlineToken_ != 0)
-            actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
-                               .connectionId = connectionId_,
-                               .deadlineToken = offlineDeadlineToken_});
-        offlineDeadlineToken_ = nextDeadlineToken_++;
-        auto timeout = std::int64_t{86400};
-        for (const auto* device : boundDevices_)
-            timeout = std::min(timeout, std::clamp<std::int64_t>(device->onlineTimeout, 1, 86400));
-        actions.push_back({.kind = ProtocolActionKind::ScheduleDeadline,
-                           .connectionId = connectionId_,
-                           .deadlineToken = offlineDeadlineToken_,
-                           .deadlineAfter = std::chrono::seconds(timeout)});
+        auto& queue = queues_.at(device.id);
+        const auto alreadyQueued = std::any_of(queue.normalReads.begin(), queue.normalReads.end(),
+                                               [](const auto& command) {
+                                                   return command.kind == "poll";
+                                               });
+        if (alreadyQueued)
+            return;
+        for (auto& command : pollCommands(device)) {
+            if (queue.size() >= kMaximumDeviceQueue)
+                break;
+            queue.normalReads.push_back(std::move(command));
+        }
     }
 
     [[nodiscard]] std::vector<ProtocolCommand> pollCommands(const DeviceDefinition& device) {
@@ -969,7 +954,7 @@ class Session final : public ProtocolSession,
                                .deviceCode = device.code,
                                .commandId = failed.command.id,
                                .reason = "modbus_exception_response"});
-            appendNext(actions);
+            finishCompletedOperation(failed.command, *failed.device, actions);
             return actions;
         }
         if (inflight_->phase == Phase::Write) {
@@ -998,7 +983,7 @@ class Session final : public ProtocolSession,
                                    .deviceCode = device.code,
                                    .commandId = failed.command.id,
                                    .reason = "modbus_readback_mismatch"});
-                appendNext(actions);
+                finishCompletedOperation(failed.command, *failed.device, actions);
                 return actions;
             }
         }
@@ -1010,7 +995,7 @@ class Session final : public ProtocolSession,
                            .deviceCode = device.code,
                            .commandId = completed.command.id,
                            .reason = completed.writeAckMissing ? "write_ack_missing" : ""});
-        appendNext(actions);
+        finishCompletedOperation(completed.command, *completed.device, actions);
         return actions;
     }
 
@@ -1025,10 +1010,10 @@ class Session final : public ProtocolSession,
             std::vector<ProtocolAction> actions{{.kind = ProtocolActionKind::FailCommand,
                                                  .connectionId = connectionId_,
                                                  .deviceId = failed.device->id,
-                                                 .deviceCode = failed.device->code,
-                                                 .commandId = failed.command.id,
-                                                 .reason = "modbus_readback_frame_invalid"}};
-            appendNext(actions);
+                                                  .deviceCode = failed.device->code,
+                                                  .commandId = failed.command.id,
+                                                  .reason = "modbus_readback_frame_invalid"}};
+            finishCompletedOperation(failed.command, *failed.device, actions);
             return actions;
         }
         inflight_->phase = Phase::Readback;
@@ -1099,6 +1084,22 @@ class Session final : public ProtocolSession,
         auto next = dispatchNext();
         actions.insert(actions.end(), std::make_move_iterator(next.begin()),
                        std::make_move_iterator(next.end()));
+    }
+
+    void finishCompletedOperation(const ProtocolCommand& completed,
+                                  const DeviceDefinition& device,
+                                  std::vector<ProtocolAction>& actions) {
+        if (completed.kind == "poll") {
+            const auto& queue = queues_.at(device.id);
+            const auto pollRemaining = std::any_of(queue.normalReads.begin(),
+                                                   queue.normalReads.end(),
+                                                   [](const auto& command) {
+                                                       return command.kind == "poll";
+                                                   });
+            if (!pollRemaining)
+                schedulePoll(device, actions);
+        }
+        appendNext(actions);
     }
 
     static void appendQueueFailures(std::deque<ProtocolCommand>& queue, std::string_view reason,
@@ -1208,7 +1209,6 @@ class Session final : public ProtocolSession,
     std::set<std::string, std::less<>> pollDevices_;
     std::size_t roundRobinIndex_ = 0;
     std::uint64_t nextDeadlineToken_ = 1;
-    std::uint64_t offlineDeadlineToken_ = 0;
     std::uint16_t nextTransactionId_ = 1;
 };
 

@@ -1,7 +1,7 @@
 # iot-engine
 
-当前支持 Linux 和 macOS。由于固定使用的 Ruvia `v0.1.6` 仅支持这两个平台，
-Windows 构建暂不受支持，CMake 配置会直接拒绝其他宿主机或目标平台。
+当前支持 Linux、macOS 和 Windows。Windows 使用系统已安装的默认 MSVC，Ruvia 跟随上游
+`main` 分支的最新提交；vcpkg 目标 triplet 为 `x64-windows-static`。
 
 ## 编译目录约束
 
@@ -15,6 +15,16 @@ cmake -S . -B build
 cmake --build build
 ```
 
+Windows（MSVC）使用：
+
+```powershell
+$env:VCPKG_DEFAULT_TRIPLET = "x64-windows-static"
+$env:VCPKG_DEFAULT_HOST_TRIPLET = "x64-windows-static"
+cmake -S . -B build
+cmake --build build --config Debug
+ctest --test-dir build --output-on-failure --build-config Debug
+```
+
 默认构建会同时生成后端可执行文件、将前端打包到 `build/web/`，并把根目录 `.env`
 复制到 `build/.env`。如果 `.env` 不存在，CMake 会给出警告且不会生成该文件。
 
@@ -23,3 +33,5 @@ cmake --build build
 ```bash
 ./build/iot-engine
 ```
+
+Visual Studio 多配置生成器的 Windows 可执行文件位于 `build/Debug/iot-engine.exe`。

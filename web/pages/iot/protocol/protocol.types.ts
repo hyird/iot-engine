@@ -202,6 +202,9 @@ export type S7ConnectionType = 'PG' | 'OP' | 'S7_BASIC';
 /** S7 连接模式 */
 export type S7ConnectionMode = 'RACK_SLOT' | 'TSAP';
 
+/** S7 连接探测模式 */
+export type S7ProbeMode = 'STANDARD' | 'COMPATIBLE' | 'AUTO';
+
 /** S7 PLC 型号 */
 export type S7PlcModel = 'S7-200' | 'S7-300' | 'S7-400' | 'S7-1200' | 'S7-1500';
 
@@ -249,6 +252,9 @@ export interface S7Connection {
     localTSAP?: string;
     remoteTSAP?: string;
     connectionType?: S7ConnectionType;
+    probeMode?: S7ProbeMode;
+    handshakeTimeout?: number;
+    directProbeTimeout?: number;
 }
 
 /** S7 配置结构 */
@@ -340,6 +346,7 @@ export namespace Modbus {
 export namespace S7 {
     export type ConnectionMode = S7ConnectionMode;
     export type ConnectionType = S7ConnectionType;
+    export type ProbeMode = S7ProbeMode;
     export type PlcModel = S7PlcModel;
     export type AreaType = S7AreaType;
     export type AreaDataType = S7AreaDataType;

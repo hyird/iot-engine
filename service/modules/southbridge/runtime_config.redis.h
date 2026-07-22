@@ -113,6 +113,9 @@ inline std::string signature(const RuntimeSnapshot& snapshot) {
         integer(device.s7Slot);
         text(device.s7LocalTsap);
         text(device.s7RemoteTsap);
+        integer(device.s7HandshakeTimeoutMs);
+        integer(device.s7DirectProbeTimeoutMs);
+        text(device.s7ProbeMode);
         integer(device.pollInterval);
         number(device.elements.size());
         for (const auto& element : device.elements) {
@@ -319,6 +322,11 @@ inline DeviceDefinition device(const std::vector<bridge::StreamField>& fields) {
     result.s7Slot = integer(fields, "s7_slot", 1);
     result.s7LocalTsap = field(fields, "s7_local_tsap");
     result.s7RemoteTsap = field(fields, "s7_remote_tsap");
+    result.s7HandshakeTimeoutMs = integer(fields, "s7_handshake_timeout_ms", 5000);
+    result.s7DirectProbeTimeoutMs = integer(fields, "s7_direct_probe_timeout_ms", 5000);
+    result.s7ProbeMode = field(fields, "s7_probe_mode");
+    if (result.s7ProbeMode.empty())
+        result.s7ProbeMode = "STANDARD";
     result.pollInterval = integer(fields, "poll_interval", 5);
     result.storageInterval = integer(fields, "storage_interval", 1);
     result.commandFastReadDuration = integer(fields, "command_fast_read_duration", 60);
@@ -462,6 +470,9 @@ ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
              {"s7_slot", std::to_string(device.s7Slot)},
              {"s7_local_tsap", device.s7LocalTsap},
              {"s7_remote_tsap", device.s7RemoteTsap},
+             {"s7_handshake_timeout_ms", std::to_string(device.s7HandshakeTimeoutMs)},
+             {"s7_direct_probe_timeout_ms", std::to_string(device.s7DirectProbeTimeoutMs)},
+             {"s7_probe_mode", device.s7ProbeMode},
              {"poll_interval", std::to_string(device.pollInterval)},
              {"storage_interval", std::to_string(device.storageInterval)},
              {"command_fast_read_duration", std::to_string(device.commandFastReadDuration)},

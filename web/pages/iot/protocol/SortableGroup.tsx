@@ -694,6 +694,11 @@ export const SortableGroupTableList = <T extends { id: string }>({
         ...(tableProps?.locale ?? {}),
         emptyText: empty ?? tableProps?.locale?.emptyText ?? <Empty description="暂无数据" />,
     };
+    const scroll = {
+        x: 'max-content' as const,
+        y: 320,
+        ...(tableProps?.scroll ?? {}),
+    };
 
     return (
         <SortableGroupTableDisabledContext.Provider value={disabled}>
@@ -715,6 +720,8 @@ export const SortableGroupTableList = <T extends { id: string }>({
                             columns={columnsWithHandle}
                             components={{ body: { row: SortableGroupTableRow } }}
                             locale={locale}
+                            sticky={tableProps?.sticky ?? true}
+                            scroll={scroll}
                         />
                     </div>
                 </SortableContext>

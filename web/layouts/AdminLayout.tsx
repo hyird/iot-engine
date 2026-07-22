@@ -207,9 +207,9 @@ export default function AdminLayout() {
     }
 
     return (
-        <Layout className="h-screen overflow-hidden" style={{ background: token.colorBgLayout }}>
+        <Layout className="h-screen overflow-hidden" style={{ background: '#f5f5f5' }}>
             <Sider
-                theme="light"
+                theme="dark"
                 width={236}
                 collapsedWidth={72}
                 collapsible
@@ -217,21 +217,24 @@ export default function AdminLayout() {
                 trigger={null}
                 breakpoint="lg"
                 onBreakpoint={(broken) => setCollapsed(broken)}
-                style={{ borderInlineEnd: `1px solid ${token.colorBorderSecondary}` }}
+                style={{
+                    background: '#001529',
+                    borderInlineEnd: '1px solid rgba(255, 255, 255, 0.1)',
+                }}
             >
                 <div className="flex h-full flex-col overflow-hidden">
                     <div
                         className={`flex h-[60px] shrink-0 items-center ${
                             collapsed ? 'justify-center px-2' : 'px-5'
                         }`}
-                        style={{ borderBlockEnd: `1px solid ${token.colorBorderSecondary}` }}
+                        style={{ borderBlockEnd: '1px solid rgba(255, 255, 255, 0.1)' }}
                     >
                         <div
                             className="flex size-9 shrink-0 items-center justify-center rounded-md text-lg"
                             style={{
-                                background: token.colorPrimary,
-                                color: token.colorTextLightSolid,
-                                boxShadow: token.boxShadowTertiary,
+                                background: 'rgba(255, 255, 255, 0.12)',
+                                color: '#fff',
+                                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.18)',
                             }}
                         >
                             <AppstoreOutlined />
@@ -240,13 +243,13 @@ export default function AdminLayout() {
                             <div className="ml-3 min-w-0">
                                 <div
                                     className="truncate text-[15px] font-semibold tracking-wide"
-                                    style={{ color: token.colorText }}
+                                    style={{ color: '#fff' }}
                                 >
                                     {APP_NAME}
                                 </div>
                                 <div
                                     className="mt-0.5 text-[10px] tracking-[0.16em]"
-                                    style={{ color: token.colorTextDescription }}
+                                    style={{ color: 'rgba(255, 255, 255, 0.45)' }}
                                 >
                                     INDUSTRIAL IOT
                                 </div>
@@ -256,37 +259,38 @@ export default function AdminLayout() {
                     {!collapsed && (
                         <div
                             className="px-5 pb-2 pt-5 text-[11px] font-medium tracking-[0.14em]"
-                            style={{ color: token.colorTextDescription }}
+                            style={{ color: 'rgba(255, 255, 255, 0.45)' }}
                         >
                             运营控制台
                         </div>
                     )}
                     <Menu
-                        theme="light"
+                        theme="dark"
                         mode="inline"
                         selectedKeys={[location.pathname]}
                         defaultOpenKeys={['/iot/protocol', '/system']}
                         items={menuItems}
                         onClick={({ key }) => navigate(key)}
                         className="min-h-0 flex-1 overflow-y-auto border-none py-1"
+                        style={{ background: '#001529' }}
                     />
                     {!collapsed && (
                         <div
                             className="m-4 rounded-md px-3 py-3"
                             style={{
-                                background: token.colorFillQuaternary,
-                                border: `1px solid ${token.colorBorderSecondary}`,
+                                background: 'rgba(255, 255, 255, 0.06)',
+                                border: '1px solid rgba(255, 255, 255, 0.1)',
                             }}
                         >
                             <div
                                 className="text-xs font-medium"
-                                style={{ color: token.colorTextSecondary }}
+                                style={{ color: 'rgba(255, 255, 255, 0.78)' }}
                             >
                                 工业物联管理中台
                             </div>
                             <div
                                 className="mt-1 text-[11px] leading-4"
-                                style={{ color: token.colorTextDescription }}
+                                style={{ color: 'rgba(255, 255, 255, 0.45)' }}
                             >
                                 设备、协议与组织权限统一管理
                             </div>
@@ -294,11 +298,11 @@ export default function AdminLayout() {
                     )}
                 </div>
             </Sider>
-            <Layout className="min-w-0">
+            <Layout className="min-w-0" style={{ background: '#f5f5f5' }}>
                 <Header
                     className="z-10 flex h-[60px] shrink-0 items-center justify-between px-3 sm:px-5"
                     style={{
-                        background: token.colorBgContainer,
+                        background: '#fff',
                         borderBlockEnd: `1px solid ${token.colorBorderSecondary}`,
                     }}
                 >
@@ -349,7 +353,7 @@ export default function AdminLayout() {
                 <Content
                     className="m-3 min-h-0 overflow-hidden rounded-lg sm:m-4"
                     style={{
-                        background: token.colorBgContainer,
+                        background: '#fff',
                         border: `1px solid ${token.colorBorderSecondary}`,
                         boxShadow: token.boxShadowTertiary,
                     }}

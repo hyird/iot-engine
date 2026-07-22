@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <map>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -270,20 +271,46 @@ class Session final : public ProtocolSession,
     Session(LinkDefinition link, std::string connectionId, std::vector<DeviceDefinition> devices)
         : link_(std::move(link)), connectionId_(std::move(connectionId)),
           devices_(std::move(devices)) {
-        for (const auto& device : devices_)
+        for (const auto& device : devices_) {
             devicesByCode_.emplace(normalizeCode(device.code), &device);
+            requiresRegistration_ =
+                requiresRegistration_ ||
+                (device.registrationMode != "OFF" && !device.registrationBytes.empty());
+        }
     }
 
     [[nodiscard]] std::vector<ProtocolAction> consume(const ProtocolInput& input) override {
-        receiveBuffer_.insert(receiveBuffer_.end(), input.bytes.begin(), input.bytes.end());
+        std::vector<ProtocolAction> actions;
+        std::vector<std::uint8_t> bytes(input.bytes.begin(), input.bytes.end());
+        if (const auto registration = matchRegistration(bytes); registration.device) {
+            for (const auto& device : devices_) {
+                if (device.registrationMode == "OFF" ||
+                    device.registrationBytes != registration.device->registrationBytes)
+                    continue;
+                boundDeviceIds_.insert(device.id);
+                actions.push_back({.kind = ProtocolActionKind::BindDevice,
+                                   .connectionId = connectionId_,
+                                   .deviceId = device.id,
+                                   .deviceCode = device.code});
+            }
+            bytes = registration.payload;
+            if (bytes.empty())
+                return actions;
+        }
+        if (isHeartbeat(bytes))
+            return actions;
+        if (requiresRegistration_ && boundDeviceIds_.empty())
+            return actions;
+
+        receiveBuffer_.insert(receiveBuffer_.end(), bytes.begin(), bytes.end());
         if (receiveBuffer_.size() > kMaximumReceiveBuffer) {
             receiveBuffer_.clear();
-            return {{.kind = ProtocolActionKind::Close,
-                     .connectionId = connectionId_,
-                     .reason = "sl651_receive_buffer_overflow"}};
+            actions.push_back({.kind = ProtocolActionKind::Close,
+                               .connectionId = connectionId_,
+                               .reason = "sl651_receive_buffer_overflow"});
+            return actions;
         }
 
-        std::vector<ProtocolAction> actions;
         while (true) {
             const auto header = std::search(receiveBuffer_.begin(), receiveBuffer_.end(),
                                             kHeader.begin(), kHeader.end());
@@ -321,14 +348,15 @@ class Session final : public ProtocolSession,
 
     [[nodiscard]] std::vector<ProtocolAction> disconnected(std::string_view reason) override {
         std::vector<ProtocolAction> actions;
-        if (pendingCommand_) {
+        for (const auto& [deviceCode, pending] : pendingCommands_) {
+            (void)deviceCode;
             actions.push_back({.kind = ProtocolActionKind::FailCommand,
                                .connectionId = connectionId_,
-                               .commandId = pendingCommand_->id,
+                               .commandId = pending.id,
                                .reason = std::string(reason)});
             actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
                                .connectionId = connectionId_,
-                               .deadlineToken = pendingCommand_->deadlineToken});
+                               .deadlineToken = pending.deadlineToken});
         }
         for (const auto& [key, packet] : multiPackets_) {
             (void)key;
@@ -336,7 +364,8 @@ class Session final : public ProtocolSession,
                                .connectionId = connectionId_,
                                .deadlineToken = packet.deadlineToken});
         }
-        pendingCommand_.reset();
+        pendingCommands_.clear();
+        boundDeviceIds_.clear();
         multiPackets_.clear();
         receiveBuffer_.clear();
         return actions;
@@ -348,17 +377,20 @@ class Session final : public ProtocolSession,
                      .connectionId = connectionId_,
                      .commandId = std::move(command.id),
                      .reason = "sl651_discovery_not_supported"}};
-        if (pendingCommand_)
-            return {{.kind = ProtocolActionKind::FailCommand,
-                     .connectionId = connectionId_,
-                     .commandId = std::move(command.id),
-                     .reason = "sl651_command_busy"}};
         const auto* device = findDevice(command);
-        if (!device)
+        if (!device || !boundDeviceIds_.contains(device->id))
             return {{.kind = ProtocolActionKind::FailCommand,
                      .connectionId = connectionId_,
                      .commandId = std::move(command.id),
                      .reason = "sl651_device_offline"}};
+        const auto normalizedCode = normalizeCode(device->code);
+        if (pendingCommands_.contains(normalizedCode))
+            return {{.kind = ProtocolActionKind::FailCommand,
+                     .connectionId = connectionId_,
+                     .commandId = std::move(command.id),
+                     .reason = "sl651_command_busy"}};
+        if (command.deviceCode.empty())
+            command.deviceCode = device->code;
         if (command.payload.empty() && !command.elements.empty()) {
             try {
                 compileElementCommand(*device, command);
@@ -388,7 +420,8 @@ class Session final : public ProtocolSession,
         const auto token = nextDeadlineToken_++;
         const auto timeout = std::clamp(command.timeout, std::chrono::milliseconds(100),
                                         std::chrono::milliseconds(60000));
-        pendingCommand_ = PendingCommand{command.id, *remoteCode, command.payload[10], token};
+        pendingCommands_[*remoteCode] =
+            PendingCommand{command.id, *remoteCode, command.payload[10], token};
         return {{.kind = ProtocolActionKind::Send,
                  .connectionId = connectionId_,
                  .commandId = command.id,
@@ -401,9 +434,11 @@ class Session final : public ProtocolSession,
     }
 
     [[nodiscard]] std::vector<ProtocolAction> deadline(std::uint64_t token) override {
-        if (pendingCommand_ && pendingCommand_->deadlineToken == token) {
-            auto command = std::move(*pendingCommand_);
-            pendingCommand_.reset();
+        for (auto current = pendingCommands_.begin(); current != pendingCommands_.end(); ++current) {
+            if (current->second.deadlineToken != token)
+                continue;
+            auto command = std::move(current->second);
+            pendingCommands_.erase(current);
             return {{.kind = ProtocolActionKind::FailCommand,
                      .connectionId = connectionId_,
                      .commandId = std::move(command.id),
@@ -446,9 +481,9 @@ class Session final : public ProtocolSession,
         std::uint64_t deadlineToken = 0;
     };
 
-    struct AddressContext {
-        std::uint8_t centerCode = 0;
-        std::array<std::uint8_t, 2> password{};
+    struct RegistrationMatch {
+        const DeviceDefinition* device = nullptr;
+        std::vector<std::uint8_t> payload;
     };
 
     [[nodiscard]] const DeviceDefinition*
@@ -464,11 +499,40 @@ class Session final : public ProtocolSession,
         return current == devicesByCode_.end() ? nullptr : current->second;
     }
 
+    [[nodiscard]] RegistrationMatch
+    matchRegistration(const std::vector<std::uint8_t>& bytes) const {
+        RegistrationMatch result;
+        const DeviceDefinition* prefix = nullptr;
+        for (const auto& device : devices_) {
+            if (device.registrationMode == "OFF" || device.registrationBytes.empty())
+                continue;
+            if (bytes == device.registrationBytes) {
+                result.device = &device;
+                return result;
+            }
+            if (!prefix && bytes.size() > device.registrationBytes.size() &&
+                std::equal(device.registrationBytes.begin(), device.registrationBytes.end(),
+                           bytes.begin()))
+                prefix = &device;
+        }
+        if (prefix) {
+            result.device = prefix;
+            result.payload.assign(
+                bytes.begin() + static_cast<std::ptrdiff_t>(prefix->registrationBytes.size()),
+                bytes.end());
+        }
+        return result;
+    }
+
+    [[nodiscard]] bool isHeartbeat(const std::vector<std::uint8_t>& bytes) const {
+        return std::any_of(devices_.begin(), devices_.end(), [&](const auto& device) {
+            return device.heartbeatMode != "OFF" && !device.heartbeatBytes.empty() &&
+                   device.heartbeatBytes == bytes;
+        });
+    }
+
     void compileElementCommand(const DeviceDefinition& device, ProtocolCommand& command) {
         const auto resolved = command_value::resolve(device, command.elements);
-        const auto address = addresses_.find(normalizeCode(device.code));
-        if (address == addresses_.end())
-            throw std::invalid_argument("command_invalid: SL651 address context is missing");
         const auto function = detail::hexBytes(resolved.functionCode);
         if (function.size() != 1)
             throw std::invalid_argument("command_invalid: SL651 function code is invalid");
@@ -493,9 +557,8 @@ class Session final : public ProtocolSession,
         command.payload = {0x7E, 0x7E};
         const auto remote = detail::bcdAddress(normalizeCode(device.code), 5);
         command.payload.insert(command.payload.end(), remote.begin(), remote.end());
-        command.payload.push_back(address->second.centerCode);
-        command.payload.insert(command.payload.end(), address->second.password.begin(),
-                               address->second.password.end());
+        command.payload.push_back(0x01);
+        command.payload.insert(command.payload.end(), {0x00, 0x00});
         command.payload.push_back(function.front());
         const auto length = static_cast<std::uint16_t>(0x8000U | body.size());
         command.payload.push_back(static_cast<std::uint8_t>(length >> 8U));
@@ -516,13 +579,17 @@ class Session final : public ProtocolSession,
         const auto device = devicesByCode_.find(parsed->deviceCode);
         if (device == devicesByCode_.end())
             return {};
-        addresses_[parsed->deviceCode] = {parsed->centerCode, parsed->password};
+        if (requiresRegistration_ && !boundDeviceIds_.contains(device->second->id))
+            return {};
 
         std::vector<ProtocolAction> actions;
-        actions.push_back({.kind = ProtocolActionKind::BindDevice,
-                           .connectionId = connectionId_,
-                           .deviceId = device->second->id,
-                           .deviceCode = device->second->code});
+        if (!requiresRegistration_ || boundDeviceIds_.contains(device->second->id)) {
+            boundDeviceIds_.insert(device->second->id);
+            actions.push_back({.kind = ProtocolActionKind::BindDevice,
+                               .connectionId = connectionId_,
+                               .deviceId = device->second->id,
+                               .deviceCode = device->second->code});
+        }
 
         if (parsed->multiPacket) {
             auto more = consumeMulti(input, *device->second, std::move(*parsed));
@@ -540,12 +607,12 @@ class Session final : public ProtocolSession,
             actions.push_back(parsedAction(input, *device->second, *parsed));
         }
 
-        if (pendingCommand_ && parsed->upstream &&
-            pendingCommand_->deviceCode == parsed->deviceCode &&
-            (pendingCommand_->functionCode == parsed->functionCode ||
+        const auto pendingCommand = pendingCommands_.find(parsed->deviceCode);
+        if (pendingCommand != pendingCommands_.end() && parsed->upstream &&
+            (pendingCommand->second.functionCode == parsed->functionCode ||
              parsed->functionCode == 0xE1 || parsed->functionCode == 0xE2)) {
-            const auto pending = std::move(*pendingCommand_);
-            pendingCommand_.reset();
+            auto pending = std::move(pendingCommand->second);
+            pendingCommands_.erase(pendingCommand);
             actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
                                .connectionId = connectionId_,
                                .deadlineToken = pending.deadlineToken});
@@ -772,10 +839,11 @@ class Session final : public ProtocolSession,
     std::string connectionId_;
     std::vector<DeviceDefinition> devices_;
     std::map<std::string, const DeviceDefinition*, std::less<>> devicesByCode_;
-    std::map<std::string, AddressContext, std::less<>> addresses_;
+    std::set<std::string, std::less<>> boundDeviceIds_;
     std::vector<std::uint8_t> receiveBuffer_;
-    std::optional<PendingCommand> pendingCommand_;
+    std::map<std::string, PendingCommand, std::less<>> pendingCommands_;
     std::map<std::string, MultiPacket, std::less<>> multiPackets_;
+    bool requiresRegistration_ = false;
     std::uint64_t nextDeadlineToken_ = 1;
     std::uint16_t nextSerial_ = 1;
 };
@@ -785,7 +853,8 @@ class Runtime final : public ProtocolRuntime {
     [[nodiscard]] std::string_view protocol() const noexcept override { return "SL651"; }
 
     [[nodiscard]] ProtocolCapabilities capabilities() const noexcept override {
-        return ProtocolCapability::TcpServer | ProtocolCapability::Commands |
+        return ProtocolCapability::TcpServer | ProtocolCapability::Registration |
+               ProtocolCapability::Heartbeat | ProtocolCapability::Commands |
                ProtocolCapability::UnsolicitedReports;
     }
 

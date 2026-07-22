@@ -65,12 +65,12 @@
 
 ## CI 与发布制品
 
-- `.github/workflows/build.yml` 是双平台构建的唯一事实来源：Ubuntu 24.04 使用 Clang 18，macOS 15 使用系统 AppleClang。当前不支持 Windows。
-- Ruvia 当前固定为重新标记的 `v0.1.6` tag commit `aeab4cff621f5198b2b987e7ffde8e325ac293c9`；该版本仅支持 Linux 和 macOS。升级时同步核对控制器注册、显式 `ruvia::App` 所有权、`Context::env()` 和 `PostOutcome::accepted()` API。
+- `.github/workflows/build.yml` 是三平台构建的唯一事实来源：Ubuntu 24.04 使用 Clang 18，macOS 15 使用系统 AppleClang，Windows 2025 使用 CMake 选择的系统默认 MSVC x64。
+- Ruvia 跟随上游 `main` 分支的最新提交，不固定 tag 或 commit。每次构建和升级时都要同步核对三平台支持、显式 `ruvia::App` 所有权、控制器注册、`Context::env()` 和 `PostOutcome::accepted()` API。
 - vcpkg 必须固定到工作流声明的 commit。二进制缓存 key 必须区分操作系统、架构、编译器/ABI、vcpkg commit 和 manifest 输入，不能在不兼容工具链之间共享缓存。
 - CI 使用锁定的 Bun 版本和冻结锁文件。
-- Linux 和 macOS 都必须完成配置、构建和 CTest 后再打包。制品为 `iot-engine-<OS>-<ARCH>.tar.gz`；包根目录只包含可执行文件和 `web/`，上传名称必须带完整 Git SHA，保留 14 天。
-- 默认发布结论必须等待 Linux 和 macOS 全部成功。只有用户明确接受某个平台未完成或失败时，才可使用已成功平台的同一 commit 制品继续部署，并必须保留未覆盖平台的状态说明。
+- Linux、macOS 和 Windows 都必须完成配置、构建和 CTest 后再打包。Unix 制品为 `iot-engine-<OS>-<ARCH>.tar.gz`，Windows 制品为 `iot-engine-Windows-<ARCH>.zip`；包根目录只包含可执行文件和 `web/`，上传名称必须带完整 Git SHA，保留 14 天。
+- 默认发布结论必须等待 Linux、macOS 和 Windows 全部成功。只有用户明确接受某个平台未完成或失败时，才可使用已成功平台的同一 commit 制品继续部署，并必须保留未覆盖平台的状态说明。
 - Linux CI 当前使用 Clang 18 是为了避开 GCC 13/14 在该协程代码上的编译器 ICE；不要在没有隔离复现和双平台验证的情况下改回 GCC。
 
 ## 生产部署

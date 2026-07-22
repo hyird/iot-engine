@@ -206,6 +206,51 @@ std::vector<std::uint8_t> modbusRtuReadResponse() { return withModbusCrc({1, 3, 
 
 std::vector<std::uint8_t> modbusRtuWrite() { return withModbusCrc({1, 6, 0, 0, 0x12, 0x34}); }
 
+std::vector<std::uint8_t> modbusReadResponseForRequest(std::span<const std::uint8_t> request,
+                                                       bool tcp) {
+    const auto functionOffset = tcp ? 7U : 1U;
+    const auto quantityOffset = tcp ? 10U : 4U;
+    require(request.size() >= quantityOffset + 2 && request[functionOffset] >= 1 &&
+                request[functionOffset] <= 4,
+            "Modbus poll response helper received an invalid read request");
+    const auto function = request[functionOffset];
+    const auto quantity = static_cast<std::size_t>(request[quantityOffset] << 8U) |
+                          request[quantityOffset + 1];
+    const auto byteCount = function <= 2 ? (quantity + 7U) / 8U : quantity * 2U;
+    if (!tcp) {
+        std::vector<std::uint8_t> response{request[0], function,
+                                           static_cast<std::uint8_t>(byteCount)};
+        response.resize(response.size() + byteCount, 0);
+        return withModbusCrc(std::move(response));
+    }
+    const auto length = static_cast<std::uint16_t>(3 + byteCount);
+    std::vector<std::uint8_t> response{request[0],
+                                       request[1],
+                                       0,
+                                       0,
+                                       static_cast<std::uint8_t>(length >> 8U),
+                                       static_cast<std::uint8_t>(length),
+                                       request[6],
+                                       function,
+                                       static_cast<std::uint8_t>(byteCount)};
+    response.resize(response.size() + byteCount, 0);
+    return response;
+}
+
+std::vector<sb::ProtocolAction>
+drainInitialModbusPoll(sb::ProtocolEngine& engine, std::vector<sb::ProtocolAction> actions,
+                       service::bridge::IngressPacket& packet, bool tcp) {
+    while (true) {
+        const auto outbound = std::find_if(actions.begin(), actions.end(), [](const auto& action) {
+            return action.kind == sb::ProtocolActionKind::Send;
+        });
+        if (outbound == actions.end())
+            return actions;
+        packet.payload = modbusReadResponseForRequest(outbound->bytes, tcp);
+        actions = engine.consume(packet);
+    }
+}
+
 std::vector<std::uint8_t> s7ReadRequest(std::uint16_t reference) {
     return {0x03,
             0x00,
@@ -316,6 +361,93 @@ std::vector<std::uint8_t> s7WriteResponse(std::uint16_t reference) {
             0x01};
 }
 
+std::uint16_t s7Reference(std::span<const std::uint8_t> frame) {
+    require(frame.size() >= 13, "S7 frame does not contain a PDU reference");
+    return static_cast<std::uint16_t>(static_cast<std::uint16_t>(frame[11]) << 8U) | frame[12];
+}
+
+std::vector<std::uint8_t> s7CotpConfirm() {
+    return {0x03, 0x00, 0x00, 0x0B, 0x06, 0xD0, 0x00, 0x01, 0x00, 0x06, 0x00};
+}
+
+std::vector<std::uint8_t> s7SetupResponse(std::uint16_t reference = 0) {
+    return {0x03,
+            0x00,
+            0x00,
+            0x1B,
+            0x02,
+            0xF0,
+            0x80,
+            0x32,
+            0x03,
+            0x00,
+            0x00,
+            static_cast<std::uint8_t>(reference >> 8U),
+            static_cast<std::uint8_t>(reference),
+            0x00,
+            0x08,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0xF0,
+            0x00,
+            0x00,
+            0x01,
+            0x00,
+            0x01,
+            0x01,
+            0xE0};
+}
+
+std::vector<std::uint8_t> s7ReadResponseForRequest(std::span<const std::uint8_t> request) {
+    require(request.size() >= 31 && request[17] == 0x04,
+            "S7 read response helper received an invalid request");
+    const auto count = request[18];
+    std::vector<std::uint8_t> data;
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto offset = 19 + index * 12;
+        require(offset + 12 <= request.size(), "S7 read request item is truncated");
+        const auto amount = static_cast<std::size_t>(request[offset + 4] << 8U) |
+                            request[offset + 5];
+        const auto wordLength = request[offset + 3];
+        const auto byteLength =
+            amount * (wordLength == 0x1C || wordLength == 0x1D ? 2U : 1U);
+        data.insert(data.end(), {0xFF, 0x04,
+                                 static_cast<std::uint8_t>((byteLength * 8U) >> 8U),
+                                 static_cast<std::uint8_t>(byteLength * 8U)});
+        for (std::size_t byte = 0; byte < byteLength; ++byte)
+            data.push_back(index == 0 && byte == 0 ? 0x12 : index == 0 && byte == 1 ? 0x34 : 0);
+        if ((byteLength & 1U) != 0 && index + 1 < count)
+            data.push_back(0);
+    }
+    const auto totalLength = static_cast<std::uint16_t>(21 + data.size());
+    const auto dataLength = static_cast<std::uint16_t>(data.size());
+    std::vector<std::uint8_t> response{0x03,
+                                       0x00,
+                                       static_cast<std::uint8_t>(totalLength >> 8U),
+                                       static_cast<std::uint8_t>(totalLength),
+                                       0x02,
+                                       0xF0,
+                                       0x80,
+                                       0x32,
+                                       0x03,
+                                       0x00,
+                                       0x00,
+                                       request[11],
+                                       request[12],
+                                       0x00,
+                                       0x02,
+                                       static_cast<std::uint8_t>(dataLength >> 8U),
+                                       static_cast<std::uint8_t>(dataLength),
+                                       0x00,
+                                       0x00,
+                                       0x04,
+                                       count};
+    response.insert(response.end(), data.begin(), data.end());
+    return response;
+}
+
 sb::ProtocolRuntimeRegistry runtimes() {
     sb::ProtocolRuntimeRegistry result;
     result.add(std::make_unique<sb::modbus::Runtime>());
@@ -333,6 +465,9 @@ void testCapabilities() {
             "SL651 must reject TCP Client");
     require(!registry.require("SL651").capabilities().has(sb::ProtocolCapability::Polling),
             "SL651 must not expose polling");
+    require(registry.require("SL651").capabilities().has(sb::ProtocolCapability::Registration) &&
+                registry.require("SL651").capabilities().has(sb::ProtocolCapability::Heartbeat),
+            "SL651 registration or heartbeat capability missing");
     require(registry.require("Modbus").capabilities().has(sb::ProtocolCapability::Discovery),
             "Modbus discovery capability missing");
     require(registry.require("S7").capabilities().has(sb::ProtocolCapability::Polling),
@@ -447,7 +582,7 @@ void testSl651() {
     const auto& generatedSl651 = first(commandActions, sb::ProtocolActionKind::Send).bytes;
     require(generatedSl651[2] == 0x00 && generatedSl651[6] == 0x01 && generatedSl651[7] == 0x01 &&
                 generatedSl651[10] == 0x4C,
-            "SL651 element command did not reuse the observed address header");
+            "SL651 element command did not use the iot-manager default address header");
     const std::array<std::uint8_t, 4> encodedSl651Value{0x39, 0x00, 0x12, 0x34};
     require(std::search(generatedSl651.begin(), generatedSl651.end(), encodedSl651Value.begin(),
                         encodedSl651Value.end()) != generatedSl651.end(),
@@ -469,6 +604,74 @@ void testSl651() {
     require(first(commandActions, sb::ProtocolActionKind::FailCommand).reason ==
                 "sl651_negative_ack",
             "SL651 negative ACK did not fail with a precise reason");
+}
+
+void testSl651Registration() {
+    sb::RuntimeSnapshot snapshot;
+    snapshot.links.push_back({.id = "sl-registration-link",
+                              .name = "SL registration",
+                              .mode = "TCP Server",
+                              .protocol = "SL651",
+                              .status = "enabled"});
+    for (std::uint8_t index = 1; index <= 2; ++index) {
+        sb::DeviceDefinition device;
+        device.id = "sl-registration-device-" + std::to_string(index);
+        device.code = index == 1 ? "0000000001" : "0000000002";
+        device.linkId = "sl-registration-link";
+        device.linkMode = "TCP Server";
+        device.protocol = "SL651";
+        device.registrationMode = "ASCII";
+        device.registrationBytes = {'R', 'E', 'G'};
+        device.heartbeatMode = "ASCII";
+        device.heartbeatBytes = {'H', 'B'};
+        snapshot.devices.push_back(std::move(device));
+    }
+
+    sb::ProtocolEngine engine(runtimes());
+    engine.reload(snapshot);
+    (void)engine.connected({.connectionId = "sl-registration-connection",
+                            .linkId = "sl-registration-link",
+                            .sessionEpoch = 1});
+    service::bridge::IngressPacket packet{.messageId = "sl-registration",
+                                          .linkId = "sl-registration-link",
+                                          .connectionId = "sl-registration-connection",
+                                          .occurredAtMs = 1500,
+                                          .payload = slFrame(0x32)};
+    auto commandActions = engine.execute(
+        "sl-registration-connection",
+        {.id = "sl-before-registration",
+         .deviceId = "sl-registration-device-1",
+         .deviceCode = "0000000001",
+         .kind = "command"});
+    require(first(commandActions, sb::ProtocolActionKind::FailCommand).reason ==
+                "sl651_device_offline",
+            "SL651 accepted a command before the registration bound the device");
+    auto actions = engine.consume(packet);
+    require(actions.empty(), "SL651 parsed a frame before required registration");
+
+    packet.payload = {'R', 'E', 'G'};
+    actions = engine.consume(packet);
+    require(std::count_if(actions.begin(), actions.end(), [](const auto& action) {
+                return action.kind == sb::ProtocolActionKind::BindDevice;
+            }) == 2,
+            "SL651 standalone registration did not bind every device in the DTU group");
+    actions = engine.consume(packet);
+    require(!has(actions, sb::ProtocolActionKind::Close),
+            "SL651 repeated registration closed its own DTU connection");
+    packet.payload = {'H', 'B'};
+    require(engine.consume(packet).empty(), "SL651 heartbeat leaked into frame parsing");
+
+    (void)engine.connected({.connectionId = "sl-prefixed-registration",
+                            .linkId = "sl-registration-link",
+                            .sessionEpoch = 2});
+    packet.connectionId = "sl-prefixed-registration";
+    packet.payload = {'R', 'E', 'G'};
+    const auto report = slFrame(0x32);
+    packet.payload.insert(packet.payload.end(), report.begin(), report.end());
+    actions = engine.consume(packet);
+    require(has(actions, sb::ProtocolActionKind::BindDevice) &&
+                has(actions, sb::ProtocolActionKind::PublishParsed),
+            "SL651 registration prefix did not preserve the report payload");
 }
 
 void testSl651AllEncodingsAndFunctionCodes() {
@@ -667,27 +870,30 @@ void testModbus() {
 
     sb::ProtocolEngine engine(runtimes());
     engine.reload(snapshot);
-    const auto connected = engine.connected({.connectionId = "modbus-connection",
-                                             .linkId = "modbus-link",
-                                             .remoteAddress = "127.0.0.1:15002",
-                                             .targetId = "target-1",
-                                             .sessionEpoch = 1});
+    auto connected = engine.connected({.connectionId = "modbus-connection",
+                                       .linkId = "modbus-link",
+                                       .remoteAddress = "127.0.0.1:15002",
+                                       .targetId = "target-1",
+                                       .sessionEpoch = 1});
     require(has(connected, sb::ProtocolActionKind::BindDevice),
             "Modbus client target was not bound");
-    const auto pollToken = first(connected, sb::ProtocolActionKind::ScheduleDeadline).deadlineToken;
-
-    auto actions = engine.execute("modbus-connection", {.id = "modbus-read",
-                                                        .deviceId = "modbus-device",
-                                                        .deviceCode = "MODBUS-1",
-                                                        .kind = "read",
-                                                        .payload = modbusRead(1)});
-    require(has(actions, sb::ProtocolActionKind::Send), "Modbus read was not dispatched");
+    require(has(connected, sb::ProtocolActionKind::Send),
+            "Modbus did not trigger the first poll immediately after binding");
     service::bridge::IngressPacket packet{.messageId = "modbus-ingress",
                                           .linkId = "modbus-link",
                                           .connectionId = "modbus-connection",
                                           .remoteAddress = "127.0.0.1:15002",
-                                          .occurredAtMs = 2000,
-                                          .payload = modbusReadResponse(1)};
+                                          .occurredAtMs = 2000};
+    connected = drainInitialModbusPoll(engine, std::move(connected), packet, true);
+    const auto pollToken = first(connected, sb::ProtocolActionKind::ScheduleDeadline).deadlineToken;
+
+    auto actions = engine.execute("modbus-connection", {.id = "modbus-read",
+                                                        .deviceId = "modbus-device",
+                                                         .deviceCode = "MODBUS-1",
+                                                         .kind = "read",
+                                                         .payload = modbusRead(1)});
+    require(has(actions, sb::ProtocolActionKind::Send), "Modbus read was not dispatched");
+    packet.payload = modbusReadResponse(1);
     actions = engine.consume(packet);
     require(has(actions, sb::ProtocolActionKind::PublishParsed), "Modbus response was not parsed");
     require(has(actions, sb::ProtocolActionKind::CompleteCommand), "Modbus read did not complete");
@@ -725,13 +931,18 @@ void testModbus() {
                               .deviceCode = "MODBUS-1",
                               .kind = "command",
                               .elements = {{.elementId = "holding-0", .value = "4660"}}});
-    require(first(actions, sb::ProtocolActionKind::Send).bytes == modbusWrite(1),
+    const auto generatedWrite = first(actions, sb::ProtocolActionKind::Send).bytes;
+    require(generatedWrite.size() == 12 && generatedWrite[7] == 6 &&
+                generatedWrite[10] == 0x12 && generatedWrite[11] == 0x34,
             "Modbus element command did not compile FC06");
-    packet.payload = modbusWrite(1);
+    packet.payload = generatedWrite;
     actions = engine.consume(packet);
-    require(first(actions, sb::ProtocolActionKind::Send).bytes == modbusRead(2),
+    const auto generatedReadback = first(actions, sb::ProtocolActionKind::Send).bytes;
+    require(generatedReadback.size() == 12 && generatedReadback[7] == 3,
             "Modbus element command did not compile FC03 readback");
-    packet.payload = modbusReadResponse(2);
+    const auto readbackTransaction = static_cast<std::uint16_t>(generatedReadback[0] << 8U) |
+                                     generatedReadback[1];
+    packet.payload = modbusReadResponse(readbackTransaction);
     actions = engine.consume(packet);
     require(has(actions, sb::ProtocolActionKind::CompleteCommand),
             "Modbus element command did not complete after readback");
@@ -791,10 +1002,15 @@ void testModbusTypesAndPriority() {
 
     sb::ProtocolEngine engine(runtimes());
     engine.reload(snapshot);
-    (void)engine.connected({.connectionId = "priority-connection",
-                            .linkId = link.id,
-                            .targetId = "priority-target",
-                            .sessionEpoch = 1});
+    auto connected = engine.connected({.connectionId = "priority-connection",
+                                       .linkId = link.id,
+                                       .targetId = "priority-target",
+                                       .sessionEpoch = 1});
+    service::bridge::IngressPacket packet{.messageId = "initial-poll-response",
+                                          .linkId = link.id,
+                                          .connectionId = "priority-connection",
+                                          .occurredAtMs = 4999};
+    (void)drainInitialModbusPoll(engine, std::move(connected), packet, true);
     auto actions = engine.execute("priority-connection", {.id = "active-read",
                                                           .deviceId = device.id,
                                                           .deviceCode = device.code,
@@ -818,11 +1034,9 @@ void testModbusTypesAndPriority() {
                                                      .expectedReadbackData = {0x12, 0x34},
                                                      .highPriority = true});
     require(actions.empty(), "Modbus high write bypassed the in-flight request");
-    service::bridge::IngressPacket packet{.messageId = "active-response",
-                                          .linkId = link.id,
-                                          .connectionId = "priority-connection",
-                                          .occurredAtMs = 5000,
-                                          .payload = modbusReadResponse(10, 1, {0x01})};
+    packet.messageId = "active-response";
+    packet.occurredAtMs = 5000;
+    packet.payload = modbusReadResponse(10, 1, {0x01});
     actions = engine.consume(packet);
     require(first(actions, sb::ProtocolActionKind::PublishParsed)
                     .parsed.valuesJson.find("\"value\":1") != std::string::npos,
@@ -924,14 +1138,15 @@ void testModbusAllFunctionCodes(bool tcp) {
 
     sb::ProtocolEngine engine(runtimes());
     engine.reload(snapshot);
-    (void)engine.connected({.connectionId = "modbus-matrix-connection",
-                            .linkId = link.id,
-                            .targetId = "matrix-target",
-                            .sessionEpoch = 1});
     service::bridge::IngressPacket packet{.messageId = "modbus-matrix-response",
                                           .linkId = link.id,
                                           .connectionId = "modbus-matrix-connection",
                                           .occurredAtMs = 6000};
+    auto connected = engine.connected({.connectionId = "modbus-matrix-connection",
+                                       .linkId = link.id,
+                                       .targetId = "matrix-target",
+                                       .sessionEpoch = 1});
+    (void)drainInitialModbusPoll(engine, std::move(connected), packet, tcp);
     std::uint16_t transaction = 100;
     for (const auto function : std::array<std::uint8_t, 8>{1, 2, 3, 4, 5, 6, 15, 16}) {
         const auto request = modbusRequest(tcp, transaction, function);
@@ -1003,10 +1218,15 @@ void testModbusRtuZeroAddress() {
 
     sb::ProtocolEngine engine(runtimes());
     engine.reload(snapshot);
-    (void)engine.connected({.connectionId = "modbus-rtu-connection",
-                            .linkId = link.id,
-                            .targetId = "rtu-target",
-                            .sessionEpoch = 1});
+    auto connected = engine.connected({.connectionId = "modbus-rtu-connection",
+                                       .linkId = link.id,
+                                       .targetId = "rtu-target",
+                                       .sessionEpoch = 1});
+    service::bridge::IngressPacket packet{.messageId = "rtu-initial-poll-response",
+                                          .linkId = link.id,
+                                          .connectionId = "modbus-rtu-connection",
+                                          .occurredAtMs = 2999};
+    (void)drainInitialModbusPoll(engine, std::move(connected), packet, false);
     auto actions = engine.execute("modbus-rtu-connection", {.id = "rtu-read",
                                                             .deviceId = device.id,
                                                             .deviceCode = device.code,
@@ -1014,11 +1234,9 @@ void testModbusRtuZeroAddress() {
                                                             .payload = modbusRtuRead()});
     require(first(actions, sb::ProtocolActionKind::Send).bytes == modbusRtuRead(),
             "zero-address Modbus RTU read was mistaken for TCP");
-    service::bridge::IngressPacket packet{.messageId = "rtu-read-response",
-                                          .linkId = link.id,
-                                          .connectionId = "modbus-rtu-connection",
-                                          .occurredAtMs = 3000,
-                                          .payload = modbusRtuReadResponse()};
+    packet.messageId = "rtu-read-response";
+    packet.occurredAtMs = 3000;
+    packet.payload = modbusRtuReadResponse();
     actions = engine.consume(packet);
     require(has(actions, sb::ProtocolActionKind::CompleteCommand),
             "zero-address Modbus RTU response did not complete");
@@ -1092,22 +1310,47 @@ void testModbusDiscoveryAndOffline() {
     require(has(actions, sb::ProtocolActionKind::CompleteCommand),
             "Modbus discovery window did not complete");
 
-    sb::RuntimeSnapshot offlineSnapshot;
-    offlineSnapshot.links = snapshot.links;
-    auto offlineDevice = snapshot.devices.front();
-    offlineDevice.registrationBytes = {'R', 'E', 'G'};
-    offlineSnapshot.devices.push_back(offlineDevice);
-    engine.reload(offlineSnapshot);
+    sb::RuntimeSnapshot registrationSnapshot;
+    registrationSnapshot.links = snapshot.links;
+    auto registeredDevice = snapshot.devices.front();
+    registeredDevice.registrationMode = "ASCII";
+    registeredDevice.registrationBytes = {'R', 'E', 'G'};
+    registrationSnapshot.devices.push_back(registeredDevice);
+    auto conflictingDevice = registeredDevice;
+    conflictingDevice.id = "registration-conflict";
+    conflictingDevice.code = "REGISTRATION-CONFLICT";
+    conflictingDevice.slaveId = 2;
+    conflictingDevice.registrationBytes = {'B', 'A', 'D'};
+    registrationSnapshot.devices.push_back(conflictingDevice);
+    engine.reload(registrationSnapshot);
     (void)engine.connected(
-        {.connectionId = "offline-connection", .linkId = "modbus-server", .sessionEpoch = 2});
-    packet.connectionId = "offline-connection";
+        {.connectionId = "registration-connection", .linkId = "modbus-server", .sessionEpoch = 2});
+    packet.connectionId = "registration-connection";
     packet.payload = {'R', 'E', 'G'};
     actions = engine.consume(packet);
-    const auto offlineToken =
-        first(actions, sb::ProtocolActionKind::ScheduleDeadline).deadlineToken;
-    actions = engine.deadline("offline-connection", offlineToken);
-    require(first(actions, sb::ProtocolActionKind::Close).reason == "modbus_offline_timeout",
-            "Modbus offline timeout did not close the socket with a precise reason");
+    require(has(actions, sb::ProtocolActionKind::BindDevice),
+            "Modbus standalone registration packet did not bind the device");
+    require(!has(actions, sb::ProtocolActionKind::ScheduleDeadline),
+            "Modbus incorrectly applied a device-online timeout to the persistent DTU socket");
+    actions = engine.consume(packet);
+    require(!has(actions, sb::ProtocolActionKind::Close),
+            "Modbus repeated registration packet closed its own DTU connection");
+    packet.payload = {'B', 'A', 'D'};
+    actions = engine.consume(packet);
+    require(first(actions, sb::ProtocolActionKind::Close).reason ==
+                "modbus_registration_conflict",
+            "Modbus conflicting registration was not rejected");
+
+    (void)engine.connected(
+        {.connectionId = "prefixed-registration", .linkId = "modbus-server", .sessionEpoch = 3});
+    packet.connectionId = "prefixed-registration";
+    packet.payload = {'R', 'E', 'G'};
+    const auto prefixedResponse = modbusReadResponse(11);
+    packet.payload.insert(packet.payload.end(), prefixedResponse.begin(), prefixedResponse.end());
+    actions = engine.consume(packet);
+    require(has(actions, sb::ProtocolActionKind::BindDevice) &&
+                !has(actions, sb::ProtocolActionKind::Close),
+            "Modbus registration prefix did not preserve the payload after binding");
 }
 
 void testS7() {
@@ -1158,7 +1401,8 @@ void testS7() {
                                .area = "PA",
                                .start = 3,
                                .startBit = 2,
-                               .size = 1});
+                               .size = 1,
+                               .writable = true});
     device.elements.push_back({.id = "counter",
                                .name = "Counter",
                                .dataType = "UINT16",
@@ -1173,64 +1417,106 @@ void testS7() {
                                .size = 2});
     snapshot.devices.push_back(device);
 
+    const std::vector<std::uint8_t> expectedCotp{0x03, 0x00, 0x00, 0x16, 0x11, 0xE0,
+                                                 0x00, 0x00, 0x00, 0x01, 0x00, 0xC0,
+                                                 0x01, 0x0A, 0xC1, 0x02, 0x01, 0x00,
+                                                 0xC2, 0x02, 0x01, 0x01};
+    const std::vector<std::uint8_t> expectedSetup{0x03, 0x00, 0x00, 0x19, 0x02, 0xF0, 0x80,
+                                                  0x32, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                                  0x08, 0x00, 0x00, 0xF0, 0x00, 0x00, 0x01,
+                                                  0x00, 0x01, 0x01, 0xE0};
+    const std::vector<std::uint8_t> expectedDisconnect{0x03, 0x00, 0x00, 0x0B, 0x06, 0x80,
+                                                       0x00, 0x06, 0x00, 0x01, 0x00};
+
     sb::ProtocolEngine engine(runtimes());
     engine.reload(snapshot);
+    service::bridge::IngressPacket packet{.messageId = "s7-ingress",
+                                          .linkId = "s7-link",
+                                          .connectionId = "s7-connection",
+                                          .remoteAddress = "127.0.0.1:102",
+                                          .occurredAtMs = 3000};
+    const auto finishHandshake = [&]() {
+        packet.payload = s7CotpConfirm();
+        auto handshake = engine.consume(packet);
+        require(first(handshake, sb::ProtocolActionKind::Send).bytes == expectedSetup,
+                "S7 Setup Communication packet does not match iot-manager");
+        require(!has(handshake, sb::ProtocolActionKind::ScheduleDeadline),
+                "S7 handshake timeout was incorrectly restarted after ISO-CC");
+        packet.payload = s7SetupResponse();
+        return engine.consume(packet);
+    };
+
     auto actions = engine.connected({.connectionId = "s7-connection",
                                      .linkId = "s7-link",
                                      .remoteAddress = "127.0.0.1:102",
                                      .targetId = "target-1",
                                      .sessionEpoch = 1});
-    require(has(actions, sb::ProtocolActionKind::Send), "S7 COTP request was not emitted");
+    require(first(actions, sb::ProtocolActionKind::Send).bytes == expectedCotp,
+            "S7 ISO-CR packet does not match iot-manager");
+    require(first(actions, sb::ProtocolActionKind::ScheduleDeadline).deadlineAfter ==
+                std::chrono::seconds(5),
+            "S7 handshake timeout does not match iot-manager");
     require(!has(actions, sb::ProtocolActionKind::BindDevice),
             "S7 device became online before protocol negotiation");
-    service::bridge::IngressPacket packet{.messageId = "s7-ingress",
-                                          .linkId = "s7-link",
-                                          .connectionId = "s7-connection",
-                                          .remoteAddress = "127.0.0.1:102",
-                                          .occurredAtMs = 3000,
-                                          .payload = {0x03, 0x00, 0x00, 0x07, 0x02, 0xD0, 0x00}};
-    actions = engine.consume(packet);
-    require(has(actions, sb::ProtocolActionKind::Send), "S7 setup request was not emitted");
-    packet.payload = {0x03, 0x00, 0x00, 0x1B, 0x02, 0xF0, 0x80, 0x32, 0x03,
-                      0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00, 0x00, 0x00,
-                      0x00, 0xF0, 0x00, 0x00, 0x01, 0x00, 0x01, 0x01, 0xE0};
-    actions = engine.consume(packet);
-    require(!has(actions, sb::ProtocolActionKind::Close), "S7 setup response was rejected");
+
+    actions = finishHandshake();
     require(has(actions, sb::ProtocolActionKind::BindDevice),
             "S7 device was not bound after protocol negotiation");
+    const auto immediatePoll = first(actions, sb::ProtocolActionKind::Send).bytes;
+    require(immediatePoll[17] == 0x04,
+            "S7 did not trigger the first poll immediately after registration");
+    require(immediatePoll.size() == 19 + 7 * 12 && immediatePoll[18] == 7,
+            "S7 initial poll did not batch elements within the negotiated PDU");
+    packet.payload = s7ReadResponseForRequest(immediatePoll);
+    actions = engine.consume(packet);
+    require(has(actions, sb::ProtocolActionKind::PublishParsed),
+            "S7 immediate poll response was not parsed");
+    require(first(actions, sb::ProtocolActionKind::Send).bytes == expectedDisconnect,
+            "S7 did not send the iot-manager ISO-DR packet after polling");
     const auto pollToken = first(actions, sb::ProtocolActionKind::ScheduleDeadline).deadlineToken;
 
     actions = engine.execute("s7-connection", {.id = "s7-read",
                                                .deviceId = "s7-device",
                                                .deviceCode = "S7-1",
                                                .kind = "read",
-                                               .payload = s7ReadRequest(2)});
-    require(has(actions, sb::ProtocolActionKind::Send), "S7 read was not dispatched");
-    packet.payload = s7ReadResponse(2);
+                                               .payload = s7ReadRequest(99)});
+    require(first(actions, sb::ProtocolActionKind::Send).bytes == expectedCotp,
+            "S7 active read did not open a fresh PLC session");
+    actions = finishHandshake();
+    require(first(actions, sb::ProtocolActionKind::Send).bytes == s7ReadRequest(1),
+            "S7 active read PDU sequence does not match iot-manager");
+    packet.payload = s7ReadResponse(1);
     actions = engine.consume(packet);
     require(has(actions, sb::ProtocolActionKind::PublishParsed), "S7 response was not parsed");
     require(has(actions, sb::ProtocolActionKind::CompleteCommand), "S7 read did not complete");
     require(first(actions, sb::ProtocolActionKind::PublishParsed).parsed.valuesJson.find("4660") !=
                 std::string::npos,
             "S7 DB value was not decoded");
+    require(first(actions, sb::ProtocolActionKind::Send).bytes == expectedDisconnect,
+            "S7 read did not close only the PLC session");
 
     actions = engine.execute("s7-connection", {.id = "s7-write",
                                                .deviceId = "s7-device",
                                                .deviceCode = "S7-1",
                                                .kind = "write",
-                                               .payload = s7WriteRequest(3),
-                                               .readbackPayload = s7ReadRequest(4),
+                                               .payload = s7WriteRequest(77),
+                                               .readbackPayload = s7ReadRequest(78),
                                                .expectedReadbackData = {0x12, 0x34}});
-    require(first(actions, sb::ProtocolActionKind::Send).bytes == s7WriteRequest(3),
-            "S7 Write Var was not dispatched");
-    packet.payload = s7WriteResponse(3);
+    require(first(actions, sb::ProtocolActionKind::Send).bytes == expectedCotp,
+            "S7 write did not open a fresh PLC session");
+    actions = finishHandshake();
+    require(first(actions, sb::ProtocolActionKind::Send).bytes == s7WriteRequest(1),
+            "S7 Write Var PDU sequence does not match iot-manager");
+    packet.payload = s7WriteResponse(1);
     actions = engine.consume(packet);
-    require(first(actions, sb::ProtocolActionKind::Send).bytes == s7ReadRequest(4),
-            "S7 Write Var did not trigger Read Var verification");
-    packet.payload = s7ReadResponse(4);
+    require(first(actions, sb::ProtocolActionKind::Send).bytes == s7ReadRequest(2),
+            "S7 Write Var did not trigger same-session Read Var verification");
+    packet.payload = s7ReadResponse(2);
     actions = engine.consume(packet);
     require(has(actions, sb::ProtocolActionKind::CompleteCommand),
             "S7 Write Var readback did not complete");
+    require(first(actions, sb::ProtocolActionKind::Send).bytes == expectedDisconnect,
+            "S7 write verification did not finish with ISO-DR");
 
     actions =
         engine.execute("s7-connection", {.id = "s7-element-write",
@@ -1238,30 +1524,62 @@ void testS7() {
                                          .deviceCode = "S7-1",
                                          .kind = "command",
                                          .elements = {{.elementId = "db1-word", .value = "4660"}}});
+    require(first(actions, sb::ProtocolActionKind::Send).bytes == expectedCotp,
+            "S7 element write did not open a fresh PLC session");
+    actions = finishHandshake();
     const auto generatedWrite = first(actions, sb::ProtocolActionKind::Send).bytes;
     require(generatedWrite.size() == 37 && generatedWrite[17] == 0x05 &&
-                generatedWrite[35] == 0x12 && generatedWrite[36] == 0x34,
+                generatedWrite[35] == 0x12 && generatedWrite[36] == 0x34 &&
+                s7Reference(generatedWrite) == 1,
             "S7 element command did not compile Write Var");
-    const auto writeReference =
-        static_cast<std::uint16_t>(generatedWrite[11] << 8U) | generatedWrite[12];
-    packet.payload = s7WriteResponse(writeReference);
+    packet.payload = s7WriteResponse(1);
     actions = engine.consume(packet);
     const auto generatedReadback = first(actions, sb::ProtocolActionKind::Send).bytes;
-    require(generatedReadback[17] == 0x04,
+    require(generatedReadback[17] == 0x04 && s7Reference(generatedReadback) == 2,
             "S7 element command did not compile Read Var verification");
-    const auto readReference =
-        static_cast<std::uint16_t>(generatedReadback[11] << 8U) | generatedReadback[12];
-    packet.payload = s7ReadResponse(readReference);
+    packet.payload = s7ReadResponse(2);
     actions = engine.consume(packet);
     require(has(actions, sb::ProtocolActionKind::CompleteCommand),
             "S7 element command did not complete after readback");
 
+    actions = engine.execute(
+        "s7-connection", {.id = "s7-bool-write",
+                          .deviceId = "s7-device",
+                          .deviceCode = "S7-1",
+                          .kind = "command",
+                          .elements = {{.elementId = "output-bit", .value = "1"}}});
+    require(first(actions, sb::ProtocolActionKind::Send).bytes == expectedCotp,
+            "S7 BOOL write did not open a fresh PLC session");
+    actions = finishHandshake();
+    const auto prepareRead = first(actions, sb::ProtocolActionKind::Send).bytes;
+    require(prepareRead[17] == 0x04 && prepareRead[22] == 0x02 &&
+                s7Reference(prepareRead) == 1,
+            "S7 BOOL write did not read the containing byte first");
+    packet.payload = s7ReadResponseForRequest(prepareRead);
+    actions = engine.consume(packet);
+    const auto boolWrite = first(actions, sb::ProtocolActionKind::Send).bytes;
+    require(boolWrite[17] == 0x05 && boolWrite[22] == 0x02 && boolWrite.back() == 0x16 &&
+                s7Reference(boolWrite) == 2,
+            "S7 BOOL write did not preserve adjacent bits during read-modify-write");
+    packet.payload = s7WriteResponse(2);
+    actions = engine.consume(packet);
+    const auto boolReadback = first(actions, sb::ProtocolActionKind::Send).bytes;
+    require(boolReadback[17] == 0x04 && boolReadback[22] == 0x02 &&
+                s7Reference(boolReadback) == 3,
+            "S7 BOOL write did not start same-session byte readback");
+    packet.payload = s7ReadResponseForRequest(boolReadback);
+    packet.payload.back() = 0x16;
+    actions = engine.consume(packet);
+    require(has(actions, sb::ProtocolActionKind::CompleteCommand),
+            "S7 BOOL write did not complete after bit-level readback verification");
+
     actions = engine.deadline("s7-connection", pollToken);
-    require(has(actions, sb::ProtocolActionKind::Send),
-            "S7 periodic poll was not generated by its session");
+    require(first(actions, sb::ProtocolActionKind::Send).bytes == expectedCotp,
+            "S7 periodic poll did not open a fresh PLC session");
+    actions = finishHandshake();
     const auto& batched = first(actions, sb::ProtocolActionKind::Send).bytes;
     require(batched.size() == 19 + 7 * 12 && batched[18] == 7,
-            "S7 poll did not batch elements within the negotiated PDU");
+            "S7 periodic poll did not batch elements within the negotiated PDU");
     std::map<std::uint8_t, std::size_t> areaCounts;
     std::map<std::uint8_t, std::uint8_t> wordLengths;
     for (std::size_t index = 0; index < batched[18]; ++index) {
@@ -1282,6 +1600,75 @@ void testS7() {
     decoded.dataType = "STRING";
     const std::array<std::uint8_t, 4> text{'A', 'B', 'C', 0x00};
     require(sb::s7::detail::decodeJson(text, decoded) == "\"ABC\"", "S7 STRING was not decoded");
+
+    sb::RuntimeSnapshot serverSnapshot;
+    serverSnapshot.links.push_back({.id = "s7-server",
+                                    .name = "S7 Server",
+                                    .mode = "TCP Server",
+                                    .protocol = "S7",
+                                    .status = "enabled"});
+    auto serverDevice = device;
+    serverDevice.id = "s7-server-device";
+    serverDevice.code = "860406088591522";
+    serverDevice.linkId = "s7-server";
+    serverDevice.linkMode = "TCP Server";
+    serverDevice.targetId.clear();
+    serverDevice.registrationMode = "HEX";
+    serverDevice.registrationBytes = {0x08, 0x60, 0x40, 0x60, 0x88, 0x59, 0x15, 0x22};
+    serverSnapshot.devices.push_back(serverDevice);
+    auto conflictingDevice = serverDevice;
+    conflictingDevice.id = "s7-server-device-2";
+    conflictingDevice.code = "860406088591523";
+    conflictingDevice.registrationBytes.back() = 0x23;
+    serverSnapshot.devices.push_back(conflictingDevice);
+
+    sb::ProtocolEngine serverEngine(runtimes());
+    serverEngine.reload(serverSnapshot);
+    (void)serverEngine.connected({.connectionId = "s7-server-connection",
+                                  .linkId = "s7-server",
+                                  .sessionEpoch = 1});
+    service::bridge::IngressPacket serverPacket{.messageId = "s7-registration",
+                                                .linkId = "s7-server",
+                                                .connectionId = "s7-server-connection",
+                                                .occurredAtMs = 4000,
+                                                .payload = serverDevice.registrationBytes};
+    actions = serverEngine.consume(serverPacket);
+    require(has(actions, sb::ProtocolActionKind::BindDevice),
+            "S7 standalone registration packet did not bind the device");
+    require(first(actions, sb::ProtocolActionKind::Send).bytes == expectedCotp,
+            "S7 registration did not start the PLC session");
+    const auto handshakeDeadline = std::find_if(
+        actions.begin(), actions.end(), [](const auto& action) {
+            return action.kind == sb::ProtocolActionKind::ScheduleDeadline &&
+                   action.deadlineAfter == std::chrono::seconds(5);
+        });
+    require(handshakeDeadline != actions.end(), "S7 registration omitted handshake timeout");
+    const auto handshakeDeadlineToken = handshakeDeadline->deadlineToken;
+    actions = serverEngine.consume(serverPacket);
+    require(!has(actions, sb::ProtocolActionKind::Close),
+            "S7 repeated registration packet closed its own DTU connection");
+    serverPacket.payload = conflictingDevice.registrationBytes;
+    actions = serverEngine.consume(serverPacket);
+    require(first(actions, sb::ProtocolActionKind::Close).reason == "s7_registration_conflict",
+            "S7 conflicting registration was not rejected");
+    actions = serverEngine.deadline("s7-server-connection", handshakeDeadlineToken);
+    require(!has(actions, sb::ProtocolActionKind::Close),
+            "S7 handshake failure incorrectly closed the persistent DTU socket");
+
+    (void)serverEngine.connected({.connectionId = "s7-prefixed-registration",
+                                  .linkId = "s7-server",
+                                  .sessionEpoch = 2});
+    serverPacket.connectionId = "s7-prefixed-registration";
+    serverPacket.payload = serverDevice.registrationBytes;
+    const auto cotpConfirm = s7CotpConfirm();
+    serverPacket.payload.insert(serverPacket.payload.end(), cotpConfirm.begin(), cotpConfirm.end());
+    actions = serverEngine.consume(serverPacket);
+    require(has(actions, sb::ProtocolActionKind::BindDevice),
+            "S7 registration prefix did not bind the device");
+    require(std::count_if(actions.begin(), actions.end(), [](const auto& action) {
+                return action.kind == sb::ProtocolActionKind::Send;
+            }) == 2,
+            "S7 registration prefix payload was not preserved for protocol parsing");
 }
 
 void testS7AllDataTypes() {
@@ -1414,23 +1801,28 @@ void testPacketLog() {
 
 int main() {
     try {
-        testCapabilities();
-        testSl651();
-        testSl651AllEncodingsAndFunctionCodes();
-        testSl651MultiPacketImages();
-        testModbus();
-        testModbusTypesAndPriority();
-        testModbusAllDataTypesAndByteOrders();
-        testModbusAllFunctionCodes(true);
-        testModbusAllFunctionCodes(false);
-        testModbusRtuZeroAddress();
-        testModbusDiscoveryAndOffline();
-        testS7();
-        testS7AllDataTypes();
-        testWorkerTimer();
-        testRuntimeConfigWritableContract();
-        testCommandValueDecimalParsing();
-        testPacketLog();
+        const auto run = [](std::string_view name, auto&& test) {
+            std::cerr << "[ RUN      ] " << name << '\n';
+            test();
+        };
+        run("capabilities", testCapabilities);
+        run("sl651", testSl651);
+        run("sl651 registration", testSl651Registration);
+        run("sl651 encodings", testSl651AllEncodingsAndFunctionCodes);
+        run("sl651 multi-packet images", testSl651MultiPacketImages);
+        run("modbus", testModbus);
+        run("modbus types and priority", testModbusTypesAndPriority);
+        run("modbus data types", testModbusAllDataTypesAndByteOrders);
+        run("modbus TCP functions", [] { testModbusAllFunctionCodes(true); });
+        run("modbus RTU functions", [] { testModbusAllFunctionCodes(false); });
+        run("modbus RTU zero address", testModbusRtuZeroAddress);
+        run("modbus discovery and registration", testModbusDiscoveryAndOffline);
+        run("s7", testS7);
+        run("s7 data types", testS7AllDataTypes);
+        run("worker timer", testWorkerTimer);
+        run("runtime config writable contract", testRuntimeConfigWritableContract);
+        run("command value decimal parsing", testCommandValueDecimalParsing);
+        run("packet log", testPacketLog);
         std::cout << "southbridge protocol tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

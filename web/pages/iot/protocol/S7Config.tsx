@@ -695,6 +695,9 @@ const S7ConfigPage = () => {
                         slot: 1,
                         localTSAP: '0100',
                         remoteTSAP: '0101',
+                        probeMode: 'STANDARD',
+                        handshakeTimeout: 5000,
+                        directProbeTimeout: 5000,
                         pollInterval: 5,
                         storageInterval: 1,
                         commandFastReadDuration: 60,
@@ -798,6 +801,52 @@ const S7ConfigPage = () => {
                             </Row>
                         </>
                     )}
+                    <Form.Item
+                        name="probeMode"
+                        label="连接探测模式"
+                        rules={[{ required: true, message: '请选择探测模式' }]}
+                        extra="标准模式完成 ISO-CC 和通信协商后才读数据；兼容模式直接读；自动模式仅在标准握手超时后降级"
+                    >
+                        <Select
+                            options={[
+                                { value: 'STANDARD', label: '标准模式（推荐）' },
+                                { value: 'COMPATIBLE', label: '兼容模式（直接读）' },
+                                { value: 'AUTO', label: '自动降级' },
+                            ]}
+                        />
+                    </Form.Item>
+                    <Row gutter={12}>
+                        <Col xs={24} sm={12}>
+                            <Form.Item
+                                name="handshakeTimeout"
+                                label="握手超时"
+                                rules={[{ required: true, message: '请输入握手超时' }]}
+                            >
+                                <InputNumber
+                                    min={1000}
+                                    max={30000}
+                                    step={1000}
+                                    className="w-full"
+                                    addonAfter="ms"
+                                />
+                            </Form.Item>
+                        </Col>
+                        <Col xs={24} sm={12}>
+                            <Form.Item
+                                name="directProbeTimeout"
+                                label="兼容探测超时"
+                                rules={[{ required: true, message: '请输入兼容探测超时' }]}
+                            >
+                                <InputNumber
+                                    min={1000}
+                                    max={30000}
+                                    step={1000}
+                                    className="w-full"
+                                    addonAfter="ms"
+                                />
+                            </Form.Item>
+                        </Col>
+                    </Row>
                     <Form.Item
                         name="pollInterval"
                         label="轮询间隔（秒）"
