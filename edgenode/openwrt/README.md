@@ -6,7 +6,8 @@ runtime, full protobuf runtime, or database dependency.
 Implemented foundations:
 
 - the node registers independently with up to four platforms using its 15-digit IMEI;
-- WSS carries one nanopb `Envelope` per binary WebSocket message;
+- an HTTP/HTTPS platform base address is upgraded internally to a binary WebSocket
+  session carrying one nanopb `Envelope` per message;
 - certificate and hostname validation are intentionally disabled for this deployment;
 - every platform has isolated registration, config, reconnect, heartbeat, and outbox state;
 - config and outbox files are raw nanopb messages under
@@ -19,6 +20,10 @@ Implemented foundations:
   command requires readback equality;
 - an unresponsive S7 PLC closes the TCP socket and repeats TCP, COTP, and S7 Setup
   Communication on the next one-second cycle.
+- network and serial capabilities are reported automatically; when `ttyd` is installed,
+  the platform exposes an authenticated remote terminal;
+- bootstrap-authorized commands can update `br-lan` through UCI, manage additional
+  HTTP/HTTPS platforms, download verified firmware, and invoke `sysupgrade`.
 
 The active-config-to-physical-endpoint binding is kept separate from the wire/session
 layer. The current code provides the tested protocol codecs and scheduler that binding
@@ -26,8 +31,9 @@ uses; actual target hardware is still required before declaring a target deploya
 
 ## Configure
 
-The bootstrap URL is compiled as `wss://i.a-z.xin/edge/v1/connect` and cannot be
-overridden through UCI. Configure the IMEI and model with UCI commands:
+The bootstrap platform base address is compiled as `https://i.a-z.xin` and cannot be
+overridden through UCI. The daemon derives the internal upgrade path
+`/edge/v1/connect`. Configure the IMEI and model with UCI commands:
 
 ```sh
 uci set edgenode.node=node
@@ -66,10 +72,9 @@ OpenWrt's mbedTLS-backed libuwsc.
 The package, daemon, init service, UCI configuration, and runtime paths are all named
 `edgenode`.
 
-The generated nanopb C files are committed under `generated/`. OpenWrt 18.06 therefore
-does not need a host Python, protobuf, or `protoc` package to build `edgenode`; changes to
-`proto/edge.proto` must regenerate and commit `generated/edge.pb.c` and `edge.pb.h` with
-nanopb 0.4.9.1.
+Generated nanopb C files are deliberately not committed. The OpenWrt build host needs
+the recipe's Python/protobuf host dependencies and generates `edge.pb.c` and `edge.pb.h`
+from `proto/edge.proto` in `PKG_BUILD_DIR` on every relevant build.
 
 Hardware paths, interface names, bridge mode, modem USB ID, AT port, status path, and
 monitor interval are UCI settings rather than compiled constants. The TAS-682 package

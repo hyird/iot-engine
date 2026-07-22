@@ -1,7 +1,9 @@
 # iot-engine
 
-当前支持 Linux、macOS 和 Windows。Windows 使用系统已安装的默认 MSVC，Ruvia 跟随上游
-`main` 分支的最新提交；vcpkg 目标 triplet 为 `x64-windows-static`。
+当前支持 Linux、macOS 和 Windows。Windows 使用系统已安装的默认 MSVC。Ruvia 固定为
+已通过本仓库 Windows/MSVC 编译的提交
+`10263676ed08316b458de6e15ae29cb3ab6583f3`；vcpkg 目标 triplet 为
+`x64-windows-static`。
 
 ## 编译目录约束
 

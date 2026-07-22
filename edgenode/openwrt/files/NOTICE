@@ -4,5 +4,5 @@ https://github.com/nanopb/nanopb
 The OpenWrt libuwsc dependency is provided under the MIT license.
 https://github.com/zhaojh329/libuwsc
 
-This build uses WSS encryption without validating the server certificate or hostname,
+This build derives an encrypted upgrade connection from HTTPS without validating the server certificate or hostname,
 as required by the deployment configuration.

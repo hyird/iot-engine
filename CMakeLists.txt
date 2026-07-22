@@ -47,9 +47,36 @@ FetchContent_Declare(nanopb
     SOURCE_SUBDIR _runtime_sources_only)
 FetchContent_MakeAvailable(nanopb)
 
-set(EDGENODE_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/edgenode/openwrt/generated")
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+execute_process(
+    COMMAND "${Python3_EXECUTABLE}" -c "import google.protobuf, grpc_tools"
+    RESULT_VARIABLE EDGENODE_PROTOBUF_PYTHON_RESULT
+    OUTPUT_QUIET
+    ERROR_QUIET)
+if(NOT EDGENODE_PROTOBUF_PYTHON_RESULT EQUAL 0)
+    message(FATAL_ERROR
+        "edgenode protobuf generation requires Python packages protobuf and grpcio-tools")
+endif()
+
+set(EDGENODE_PROTO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/edgenode/openwrt/proto")
+set(EDGENODE_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/edgenode")
+set(EDGENODE_PROTO_SOURCE "${EDGENODE_PROTO_DIR}/edge.proto")
 set(EDGENODE_PROTO_C "${EDGENODE_GENERATED_DIR}/edge.pb.c")
 set(EDGENODE_PROTO_H "${EDGENODE_GENERATED_DIR}/edge.pb.h")
+add_custom_command(
+    OUTPUT "${EDGENODE_PROTO_C}" "${EDGENODE_PROTO_H}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${EDGENODE_GENERATED_DIR}"
+    COMMAND "${Python3_EXECUTABLE}"
+            "${nanopb_SOURCE_DIR}/generator/nanopb_generator.py"
+            -I "${EDGENODE_PROTO_DIR}"
+            -I "${nanopb_SOURCE_DIR}/generator/proto"
+            -D "${EDGENODE_GENERATED_DIR}"
+            "${EDGENODE_PROTO_SOURCE}"
+    DEPENDS
+        "${EDGENODE_PROTO_SOURCE}"
+        "${nanopb_SOURCE_DIR}/generator/nanopb_generator.py"
+    COMMENT "Generating edgenode nanopb protocol"
+    VERBATIM)
 
 # Ruvia's standalone manifest features do not belong to this parent manifest.
 unset(VCPKG_MANIFEST_FEATURES CACHE)
