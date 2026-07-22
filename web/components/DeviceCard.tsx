@@ -55,14 +55,49 @@ const compactGroupedItemLabel = (groupLabel: string, item: DeviceCardItem): Devi
     };
 };
 
-const getSpan = (item: DeviceCardItem, wide: boolean) => {
-    if (item.span !== undefined) return item.span;
+const getAlignedSpan = (item: DeviceCardItem, wide: boolean, columnCount: number) => {
+    if (item.span !== undefined) return Math.min(columnCount, Math.max(1, item.span));
+
     const value =
         typeof item.children === 'string' || typeof item.children === 'number'
             ? String(item.children)
             : '';
     const visualLength = Math.max(weightedLength(item.label), weightedLength(value) + 2) + 2.5;
-    return Math.min(AUTO_LAYOUT_COLUMNS, Math.max(2, Math.ceil(visualLength / (wide ? 8 : 4))));
+    const rawSpan = Math.min(
+        AUTO_LAYOUT_COLUMNS,
+        Math.max(2, Math.ceil(visualLength / (wide ? 8 : 4)))
+    );
+    const alignedTrackSize = AUTO_LAYOUT_COLUMNS / columnCount;
+    return Math.min(columnCount, Math.max(1, Math.ceil(rawSpan / alignedTrackSize)));
+};
+
+const buildAlignedLayout = (items: DeviceCardItem[], wide: boolean, columnCount: number) => {
+    if (columnCount === 1) return items.map((item) => ({ item, span: 1 }));
+
+    const layout: Array<{ item: DeviceCardItem; span: number }> = [];
+    let pendingItem: DeviceCardItem | undefined;
+
+    for (const item of items) {
+        const span = getAlignedSpan(item, wide, columnCount);
+        if (span >= columnCount) {
+            if (pendingItem) {
+                layout.push({ item: pendingItem, span: columnCount });
+                pendingItem = undefined;
+            }
+            layout.push({ item, span: columnCount });
+            continue;
+        }
+
+        if (pendingItem) {
+            layout.push({ item: pendingItem, span: 1 }, { item, span: 1 });
+            pendingItem = undefined;
+        } else {
+            pendingItem = item;
+        }
+    }
+
+    if (pendingItem) layout.push({ item: pendingItem, span: columnCount });
+    return layout;
 };
 
 const DeviceValues = ({
@@ -73,37 +108,42 @@ const DeviceValues = ({
     items: DeviceCardItem[];
     wide?: boolean;
     compact?: boolean;
-}) => (
-    <div
-        className="grid gap-1.5"
-        style={{ gridTemplateColumns: `repeat(${AUTO_LAYOUT_COLUMNS}, minmax(0, 1fr))` }}
-    >
-        {items.map((item) => (
-            <div
-                key={item.key}
-                className={`min-w-0 max-w-full rounded-md bg-white/80 px-1 py-1 leading-[18px] shadow-[inset_0_0_0_1px_rgba(148,163,184,0.12)] ${compact ? 'text-[12px]' : 'text-[13px]'}`}
-                style={{ gridColumn: `span ${getSpan(item, wide)}` }}
-            >
-                <Tooltip title={item.tooltipLabel ?? item.label}>
-                    <div className="min-w-0 whitespace-nowrap text-center text-[10px] font-medium text-slate-500">
-                        {item.label}
-                    </div>
-                </Tooltip>
-                {typeof item.children === 'string' || typeof item.children === 'number' ? (
-                    <Tooltip title={item.children}>
-                        <div className="min-w-0 whitespace-nowrap text-center font-semibold tabular-nums text-slate-950">
-                            {String(item.children)}
+}) => {
+    const columnCount = wide ? 2 : 1;
+    const layoutItems = buildAlignedLayout(items, wide, columnCount);
+
+    return (
+        <div
+            className="grid items-stretch gap-1.5"
+            style={{ gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))` }}
+        >
+            {layoutItems.map(({ item, span }) => (
+                <div
+                    key={item.key}
+                    className={`h-full min-w-0 rounded-md bg-white/80 px-1 py-1 leading-[18px] shadow-[inset_0_0_0_1px_rgba(148,163,184,0.12)] ${compact ? 'text-[12px]' : 'text-[13px]'}`}
+                    style={{ gridColumn: `span ${span}` }}
+                >
+                    <Tooltip title={item.tooltipLabel ?? item.label}>
+                        <div className="min-w-0 truncate text-center text-[10px] font-medium text-slate-500">
+                            {item.label}
                         </div>
                     </Tooltip>
-                ) : (
-                    <div className="min-w-0 text-center font-semibold text-slate-950">
-                        {item.children}
-                    </div>
-                )}
-            </div>
-        ))}
-    </div>
-);
+                    {typeof item.children === 'string' || typeof item.children === 'number' ? (
+                        <Tooltip title={item.children}>
+                            <div className="min-w-0 truncate whitespace-nowrap text-center font-semibold tabular-nums text-slate-950">
+                                {String(item.children)}
+                            </div>
+                        </Tooltip>
+                    ) : (
+                        <div className="min-w-0 text-center font-semibold text-slate-950">
+                            {item.children}
+                        </div>
+                    )}
+                </div>
+            ))}
+        </div>
+    );
+};
 
 const DeviceCard = ({ title, subtitle, items, column = 4, extra }: DeviceCardProps) => {
     const sections = useMemo(() => buildSections(items), [items]);
