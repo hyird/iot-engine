@@ -139,7 +139,7 @@ static bool send_hello(edge_ws_session *session) {
         return false;
     hello->last_applied_config_version = session->active_revision;
     hello->supported_protocol_versions_count = 1U;
-    hello->supported_protocol_versions[0] = IOT_EDGE_PROTOCOL_VERSION;
+    hello->supported_protocol_versions[0] = EDGENODE_PROTOCOL_VERSION;
     hello->supports_tcp = true;
     hello->supports_serial = true;
     hello->supports_network_config = session->config->network_owner;
@@ -317,7 +317,7 @@ static void websocket_message(struct uwsc_client *client, void *data, size_t siz
     case iot_edge_v1_Envelope_hello_ack_tag: {
         iot_edge_v1_HelloAck *ack = &envelope->payload.hello_ack;
         if (ack->assigned_node_id.size != 16U ||
-            ack->negotiated_protocol_version != IOT_EDGE_PROTOCOL_VERSION ||
+            ack->negotiated_protocol_version != EDGENODE_PROTOCOL_VERSION ||
             ack->session_epoch == 0U) {
             client->send_close(client, UWSC_CLOSE_STATUS_PROTOCOL_ERR, "invalid hello ack");
             return;

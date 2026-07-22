@@ -32,7 +32,7 @@ struct edge_ws_app {
     const edge_app_config *config;
     edge_ws_session sessions[EDGE_MAX_PLATFORMS];
     iot_edge_v1_Envelope envelope;
-    uint8_t wire[IOT_EDGE_MAX_WS_MESSAGE];
+    uint8_t wire[EDGENODE_MAX_WS_MESSAGE];
 };
 
 bool edge_ws_app_init(edge_ws_app *app, struct ev_loop *loop,

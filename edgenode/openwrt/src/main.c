@@ -19,7 +19,7 @@ static void signal_received(struct ev_loop *loop, ev_signal *watcher, int events
 }
 
 int main(void) {
-    openlog("iot-edge", LOG_PID, LOG_DAEMON);
+    openlog("edgenode", LOG_PID, LOG_DAEMON);
     struct ev_loop *loop = EV_DEFAULT;
     if (loop == NULL) {
         syslog(LOG_ERR, "cannot create event loop");

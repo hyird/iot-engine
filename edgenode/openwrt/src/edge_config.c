@@ -125,10 +125,10 @@ bool edge_config_load(edge_app_config *config, char *error, size_t error_size) {
 
     struct uci_context *context = uci_alloc_context();
     struct uci_package *package = NULL;
-    if (context == NULL || uci_load(context, "iot-edge", &package) != UCI_OK) {
+    if (context == NULL || uci_load(context, "edgenode", &package) != UCI_OK) {
         if (context != NULL)
             uci_free_context(context);
-        set_error(error, error_size, "cannot load /etc/config/iot-edge");
+        set_error(error, error_size, "cannot load /etc/config/edgenode");
         return false;
     }
 

@@ -313,7 +313,7 @@ static bool load_outbox(edge_spool *spool) {
         if (!path_join(path, sizeof(path), directory, entry->d_name)) {
             continue;
         }
-        uint8_t *data = read_file(path, IOT_EDGE_MAX_WS_MESSAGE, &size);
+        uint8_t *data = read_file(path, EDGENODE_MAX_WS_MESSAGE, &size);
         iot_edge_v1_Envelope envelope;
         const char *error = NULL;
         bool entry_ok = true;
@@ -497,7 +497,7 @@ bool edge_spool_config_commit(edge_spool *spool, uint64_t revision,
 bool edge_spool_outbox_put(edge_spool *spool, const uint8_t message_id[16],
                            const uint8_t *envelope, size_t envelope_size) {
     if (spool == NULL || message_id == NULL || envelope == NULL ||
-        envelope_size == 0U || envelope_size > IOT_EDGE_MAX_WS_MESSAGE ||
+        envelope_size == 0U || envelope_size > EDGENODE_MAX_WS_MESSAGE ||
         envelope_size > spool->outbox.maximum_bytes)
         return false;
     (void)edge_spool_outbox_first(spool);

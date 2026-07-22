@@ -30,5 +30,5 @@ typedef struct {
 bool edge_config_parse_uuid(const char *text, uint8_t output[16]);
 void edge_config_format_uuid(const uint8_t value[16], char output[37]);
 
-/* Loads /etc/config/iot-edge through libuci. error never contains credentials. */
+/* Loads /etc/config/edgenode through libuci. error never contains credentials. */
 bool edge_config_load(edge_app_config *config, char *error, size_t error_size);

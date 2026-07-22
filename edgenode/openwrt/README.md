@@ -1,4 +1,4 @@
-# iot-edge for OpenWrt
+# edgenode for OpenWrt
 
 This directory contains a small C daemon and an OpenWrt package recipe. It has no C++
 runtime, full protobuf runtime, or database dependency.
@@ -10,7 +10,7 @@ Implemented foundations:
 - certificate and hostname validation are intentionally disabled for this deployment;
 - every platform has isolated registration, config, reconnect, heartbeat, and outbox state;
 - config and outbox files are raw nanopb messages under
-  `/tmp/iot-edge/<platform_id>/`; process restarts recover them, device reboots do not;
+  `/tmp/edgenode/<platform_id>/`; process restarts recover them, device reboots do not;
 - before every tmpfs write, the daemon preserves 15% free space by rolling the oldest
   outbox message across all platforms; active and staging config are never rolled;
 - the DTU runtime reads every second, processes queued writes in that same cadence, and
@@ -26,7 +26,7 @@ uses; actual target hardware is still required before declaring a target deploya
 
 ## Configure
 
-Install the package, then edit `/etc/config/iot-edge`:
+Install the package, then edit `/etc/config/edgenode`:
 
 ```text
 config node 'node'
@@ -37,7 +37,7 @@ config platform 'primary'
         option enabled '1'
         option id '018f6f5e-93d8-7d31-9f70-123456789abc'
         option url 'wss://platform.example/edge/v1/connect'
-        option enrollment_token_file '/etc/iot-edge/credentials/primary.token'
+        option enrollment_token_file '/etc/edgenode/credentials/primary.token'
         option network_owner '1'
         option outbox_max_bytes '262144'
 ```
@@ -49,12 +49,12 @@ platform may set `network_owner=1`.
 ## Build an IPK
 
 `edgenode/openwrt` is a complete OpenWrt package directory. Copy or link this whole
-directory into the selected SDK as `package/iot-edge`; do not copy only its `Makefile`:
+directory into the selected SDK as `package/edgenode`; do not copy only its `Makefile`:
 
 ```sh
-ln -s /path/to/iot-engine/edgenode/openwrt /path/to/openwrt/package/iot-edge
+ln -s /path/to/iot-engine/edgenode/openwrt /path/to/openwrt/package/edgenode
 make menuconfig
-make package/iot-edge/compile V=s
+make package/edgenode/compile V=s
 ```
 
 The package is self-contained apart from dependencies fetched by the OpenWrt build
@@ -62,6 +62,9 @@ system: `Makefile`, `files/`, `src/`, and generated nanopb sources stay together
 recipe downloads nanopb `0.4.9.1`, compiles only its three C runtime files, enables
 `-Os`, LTO, function sections, and linker garbage collection, and dynamically uses
 OpenWrt's mbedTLS-backed libuwsc.
+
+The package, daemon, init service, UCI configuration, and runtime paths are all named
+`edgenode`.
 
 The resulting package must be cross-compiled and installed on the actual target. A host
 binary is not an OpenWrt deliverable.

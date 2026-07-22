@@ -31,9 +31,9 @@ static void test_hello_round_trip(void) {
     strcpy(envelope.payload.hello.model, "openwrt-test");
     strcpy(envelope.payload.hello.software_version, "0.1.0");
     envelope.payload.hello.supported_protocol_versions_count = 1U;
-    envelope.payload.hello.supported_protocol_versions[0] = IOT_EDGE_PROTOCOL_VERSION;
+    envelope.payload.hello.supported_protocol_versions[0] = EDGENODE_PROTOCOL_VERSION;
 
-    uint8_t encoded[IOT_EDGE_MAX_WS_MESSAGE];
+    uint8_t encoded[EDGENODE_MAX_WS_MESSAGE];
     size_t encoded_size = 0U;
     const char *error = NULL;
     require(edge_protocol_encode(&envelope, encoded, sizeof(encoded), &encoded_size, &error),
@@ -57,7 +57,7 @@ static void test_reject_text_or_oversized_input(void) {
     const uint8_t json[] = "{\"type\":\"hello\"}";
     require(!edge_protocol_decode(json, sizeof(json) - 1U, &decoded, &error),
             "JSON WebSocket body was accepted as protobuf");
-    require(!edge_protocol_decode(json, IOT_EDGE_MAX_WS_MESSAGE + 1U, &decoded, &error),
+    require(!edge_protocol_decode(json, EDGENODE_MAX_WS_MESSAGE + 1U, &decoded, &error),
             "oversized WebSocket body was accepted");
 }
 

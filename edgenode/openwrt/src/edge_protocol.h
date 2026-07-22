@@ -6,8 +6,8 @@
 
 #include "edge.pb.h"
 
-#define IOT_EDGE_PROTOCOL_VERSION 1U
-#define IOT_EDGE_MAX_WS_MESSAGE 16384U
+#define EDGENODE_PROTOCOL_VERSION 1U
+#define EDGENODE_MAX_WS_MESSAGE 16384U
 
 bool edge_protocol_validate_imei(const char *imei);
 

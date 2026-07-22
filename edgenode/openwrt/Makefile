@@ -1,6 +1,6 @@
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=iot-edge
+PKG_NAME:=edgenode
 PKG_VERSION:=0.1.0
 PKG_RELEASE:=1
 
@@ -16,7 +16,7 @@ PKG_BUILD_FLAGS:=lto
 
 include $(INCLUDE_DIR)/package.mk
 
-define Package/iot-edge
+define Package/edgenode
   SECTION:=net
   CATEGORY:=Network
   TITLE:=Small multi-platform IoT edge node
@@ -24,13 +24,13 @@ define Package/iot-edge
   DEPENDS:=+libev +libuci +libuwsc-mbedtls +libmbedtls
 endef
 
-define Package/iot-edge/description
+define Package/edgenode/description
  A small OpenWrt edge daemon using WSS binary frames and nanopb. The node is
  identified by IMEI and writes raw nanopb config/outbox messages to tmpfs without a database.
 endef
 
-define Package/iot-edge/conffiles
-/etc/config/iot-edge
+define Package/edgenode/conffiles
+/etc/config/edgenode
 endef
 
 define Build/Prepare
@@ -60,19 +60,19 @@ define Build/Compile
 		$(PKG_BUILD_DIR)/edge/src/main.c \
 		$(TARGET_LDFLAGS) -Wl,--gc-sections -flto \
 		-lev -luwsc -luci -lmbedcrypto \
-		-o $(PKG_BUILD_DIR)/iot-edge
+		-o $(PKG_BUILD_DIR)/edgenode
 endef
 
-define Package/iot-edge/install
+define Package/edgenode/install
 	$(INSTALL_DIR) $(1)/usr/sbin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/iot-edge $(1)/usr/sbin/iot-edge
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/edgenode $(1)/usr/sbin/edgenode
 	$(INSTALL_DIR) $(1)/etc/init.d
-	$(INSTALL_BIN) $(CURDIR)/files/iot-edge.init $(1)/etc/init.d/iot-edge
+	$(INSTALL_BIN) $(CURDIR)/files/edgenode.init $(1)/etc/init.d/edgenode
 	$(INSTALL_DIR) $(1)/etc/config
-	$(INSTALL_CONF) $(CURDIR)/files/iot-edge.config $(1)/etc/config/iot-edge
-	$(INSTALL_DIR) $(1)/etc/iot-edge/credentials
-	$(INSTALL_DIR) $(1)/usr/share/iot-edge
-	$(INSTALL_DATA) $(CURDIR)/files/NOTICE $(1)/usr/share/iot-edge/NOTICE
+	$(INSTALL_CONF) $(CURDIR)/files/edgenode.config $(1)/etc/config/edgenode
+	$(INSTALL_DIR) $(1)/etc/edgenode/credentials
+	$(INSTALL_DIR) $(1)/usr/share/edgenode
+	$(INSTALL_DATA) $(CURDIR)/files/NOTICE $(1)/usr/share/edgenode/NOTICE
 endef
 
-$(eval $(call BuildPackage,iot-edge))
+$(eval $(call BuildPackage,edgenode))

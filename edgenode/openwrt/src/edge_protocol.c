@@ -62,7 +62,7 @@ bool edge_protocol_init_envelope(iot_edge_v1_Envelope *envelope,
         return false;
 
     *envelope = (iot_edge_v1_Envelope)iot_edge_v1_Envelope_init_zero;
-    envelope->protocol_version = IOT_EDGE_PROTOCOL_VERSION;
+    envelope->protocol_version = EDGENODE_PROTOCOL_VERSION;
     envelope->session_epoch = session_epoch;
     envelope->created_at_ms = now_ms;
     envelope->sequence = sequence;
@@ -89,7 +89,7 @@ bool edge_protocol_encode(const iot_edge_v1_Envelope *envelope, uint8_t *output,
     if (error != NULL)
         *error = NULL;
     if (envelope == NULL || output == NULL || output_size == NULL ||
-        output_capacity > IOT_EDGE_MAX_WS_MESSAGE) {
+        output_capacity > EDGENODE_MAX_WS_MESSAGE) {
         if (error != NULL)
             *error = "invalid encode arguments";
         return false;
@@ -110,7 +110,7 @@ bool edge_protocol_decode(const uint8_t *input, size_t input_size,
     if (error != NULL)
         *error = NULL;
     if (input == NULL || envelope == NULL || input_size == 0U ||
-        input_size > IOT_EDGE_MAX_WS_MESSAGE) {
+        input_size > EDGENODE_MAX_WS_MESSAGE) {
         if (error != NULL)
             *error = "invalid or oversized WebSocket message";
         return false;
@@ -123,7 +123,7 @@ bool edge_protocol_decode(const uint8_t *input, size_t input_size,
             *error = PB_GET_ERROR(&stream);
         return false;
     }
-    if (envelope->protocol_version != IOT_EDGE_PROTOCOL_VERSION ||
+    if (envelope->protocol_version != EDGENODE_PROTOCOL_VERSION ||
         envelope->message_id.size != 16U || envelope->platform_id.size != 16U) {
         if (error != NULL)
             *error = "invalid envelope identity or protocol version";

@@ -6,7 +6,7 @@
 
 #include "edge_memory.h"
 
-#define EDGE_SPOOL_ROOT "/tmp/iot-edge"
+#define EDGE_SPOOL_ROOT "/tmp/edgenode"
 
 typedef struct {
     char directory[160];
