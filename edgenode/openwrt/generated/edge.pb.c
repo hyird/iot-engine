@@ -114,6 +114,9 @@ PB_BIND(iot_edge_v1_CommandProgress, iot_edge_v1_CommandProgress, AUTO)
 PB_BIND(iot_edge_v1_CommandResult, iot_edge_v1_CommandResult, 2)
 
 
+PB_BIND(iot_edge_v1_CommandResultAck, iot_edge_v1_CommandResultAck, AUTO)
+
+
 PB_BIND(iot_edge_v1_NetworkInterfaceConfig, iot_edge_v1_NetworkInterfaceConfig, 2)
 
 
