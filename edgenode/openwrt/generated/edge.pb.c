@@ -188,3 +188,4 @@ PB_BIND(iot_edge_v1_Envelope, iot_edge_v1_Envelope, 4)
  */
 PB_STATIC_ASSERT(sizeof(double) == 8, DOUBLE_MUST_BE_8_BYTES)
 #endif
+

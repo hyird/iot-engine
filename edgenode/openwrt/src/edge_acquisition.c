@@ -975,8 +975,12 @@ static void device_report(void *context, const uint8_t platform_id[16],
         uint8_t id[16];
         record_id((uint64_t)device->observed_at_ms, id);
         edge_protocol_set_bytes(&record.record_id, sizeof(record.record_id.bytes), id, 16U);
-        record.device_id = device->config->device_id;
-        record.endpoint_id = device->config->endpoint_id;
+        edge_protocol_set_bytes(&record.device_id, sizeof(record.device_id.bytes),
+                                device->config->device_id.bytes,
+                                device->config->device_id.size);
+        edge_protocol_set_bytes(&record.endpoint_id, sizeof(record.endpoint_id.bytes),
+                                device->config->endpoint_id.bytes,
+                                device->config->endpoint_id.size);
         record.protocol = device->config->protocol;
         copy_text(record.function_code, sizeof(record.function_code),
                   device->config->protocol == iot_edge_v1_Protocol_PROTOCOL_MODBUS
@@ -1020,7 +1024,9 @@ static void device_command_complete(void *context, const uint8_t platform_id[16]
     iot_edge_v1_CommandResult output = iot_edge_v1_CommandResult_init_zero;
     edge_protocol_set_bytes(&output.command_id, sizeof(output.command_id.bytes),
                             command_id, 16U);
-    output.device_id = device->config->device_id;
+    edge_protocol_set_bytes(&output.device_id, sizeof(output.device_id.bytes),
+                            device->config->device_id.bytes,
+                            device->config->device_id.size);
     output.state = command_state(result);
     output.completed_at_ms = current_ms();
     copy_text(output.message, sizeof(output.message),
