@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "service/modules/edge/edge.protocol.h"
+#include <web_terminal.pb.h>
 
 namespace {
 
@@ -117,6 +118,28 @@ void testNanopbBounds() {
             "failed decode retained an invalid payload");
 }
 
+void testWebTerminalProtobuf() {
+    ::iot::edge::terminal::v1::WebTerminalFrame frame;
+    frame.mutable_resize()->set_columns(120);
+    frame.mutable_resize()->set_rows(30);
+
+    std::string wire;
+    require(frame.SerializeToString(&wire), "web terminal frame serialization failed");
+    const std::array<std::uint8_t, 6> expected{
+        0x1a, 0x04, 0x08, 0x78, 0x10, 0x1e,
+    };
+    require(wire == std::string_view(reinterpret_cast<const char*>(expected.data()),
+                                     expected.size()),
+            "web terminal frame differs from the browser golden vector");
+
+    ::iot::edge::terminal::v1::WebTerminalFrame decoded;
+    require(decoded.ParseFromString(wire), "web terminal frame parse failed");
+    require(decoded.payload_case() ==
+                ::iot::edge::terminal::v1::WebTerminalFrame::kResize &&
+                decoded.resize().columns() == 120 && decoded.resize().rows() == 30,
+            "web terminal resize payload changed");
+}
+
 } // namespace
 
 int main() {
@@ -126,5 +149,6 @@ int main() {
     testConfigItemNanopbWireContract();
     testEnvelopeRoundTrip();
     testNanopbBounds();
+    testWebTerminalProtobuf();
     std::cout << "edge protocol tests passed\n";
 }

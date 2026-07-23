@@ -651,6 +651,11 @@ const DeviceGridItem = memo(
         );
         const canRemoteControl = device.remote_control !== false;
         const isCommandPopoverOpen = commandPopoverOpen && commandDeviceId === device.id;
+        const connectionLabel = device.edge_node_id
+            ? `边缘：${device.edge_node_name || device.edge_node_imei || device.edge_node_id}${
+                  device.edge_interface ? ` · ${device.edge_interface}` : ''
+              }`
+            : device.link_name || '未绑定连接';
 
         return (
             <div className={`flex flex-col ${wide ? 'xl:col-span-2' : ''}`}>
@@ -683,7 +688,7 @@ const DeviceGridItem = memo(
                         <div className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
                             <span className="flex min-w-0 shrink-0 items-center">
                                 <Tag color="blue" className="!mr-0 !rounded-md">
-                                    {device.link_name || '未绑定链路'}
+                                    {connectionLabel}
                                 </Tag>
                                 <Tag color="purple" className="!mr-0 !rounded-md">
                                     {device.protocol_name || device.protocol_type || '未配置协议'}

@@ -52,27 +52,34 @@ find_package(Protobuf CONFIG REQUIRED)
 set(EDGENODE_PROTO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/service/modules/edge")
 set(EDGENODE_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/edgenode")
 set(EDGENODE_PROTO_SOURCE "${EDGENODE_PROTO_DIR}/edge.proto")
+set(WEB_TERMINAL_PROTO_SOURCE "${EDGENODE_PROTO_DIR}/web_terminal.proto")
 set(EDGENODE_NANOPB_PROTO_SOURCE
     "${nanopb_SOURCE_DIR}/generator/proto/nanopb.proto")
 set(EDGENODE_PROTO_CPP "${EDGENODE_GENERATED_DIR}/edge.pb.cc")
 set(EDGENODE_PROTO_H "${EDGENODE_GENERATED_DIR}/edge.pb.h")
 set(EDGENODE_NANOPB_PROTO_CPP "${EDGENODE_GENERATED_DIR}/nanopb.pb.cc")
 set(EDGENODE_NANOPB_PROTO_H "${EDGENODE_GENERATED_DIR}/nanopb.pb.h")
+set(WEB_TERMINAL_PROTO_CPP "${EDGENODE_GENERATED_DIR}/web_terminal.pb.cc")
+set(WEB_TERMINAL_PROTO_H "${EDGENODE_GENERATED_DIR}/web_terminal.pb.h")
 add_custom_command(
     OUTPUT
         "${EDGENODE_PROTO_CPP}"
         "${EDGENODE_PROTO_H}"
         "${EDGENODE_NANOPB_PROTO_CPP}"
         "${EDGENODE_NANOPB_PROTO_H}"
+        "${WEB_TERMINAL_PROTO_CPP}"
+        "${WEB_TERMINAL_PROTO_H}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${EDGENODE_GENERATED_DIR}"
     COMMAND protobuf::protoc
             "--cpp_out=${EDGENODE_GENERATED_DIR}"
             "--proto_path=${EDGENODE_PROTO_DIR}"
             "--proto_path=${nanopb_SOURCE_DIR}/generator/proto"
             "${EDGENODE_PROTO_SOURCE}"
+            "${WEB_TERMINAL_PROTO_SOURCE}"
             "${EDGENODE_NANOPB_PROTO_SOURCE}"
     DEPENDS
         "${EDGENODE_PROTO_SOURCE}"
+        "${WEB_TERMINAL_PROTO_SOURCE}"
         "${EDGENODE_NANOPB_PROTO_SOURCE}"
         protobuf::protoc
     COMMENT "Generating edgenode C++ Protobuf protocol"
@@ -87,7 +94,8 @@ add_executable(iot-engine
     service/server.cpp
     service/common/packet_log.cpp
     "${EDGENODE_PROTO_CPP}"
-    "${EDGENODE_NANOPB_PROTO_CPP}")
+    "${EDGENODE_NANOPB_PROTO_CPP}"
+    "${WEB_TERMINAL_PROTO_CPP}")
 target_include_directories(iot-engine PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${EDGENODE_GENERATED_DIR}")
@@ -121,7 +129,8 @@ add_test(NAME open-access COMMAND open-access-test)
 add_executable(edge-protocol-test
     tests/edge_protocol_test.cpp
     "${EDGENODE_PROTO_CPP}"
-    "${EDGENODE_NANOPB_PROTO_CPP}")
+    "${EDGENODE_NANOPB_PROTO_CPP}"
+    "${WEB_TERMINAL_PROTO_CPP}")
 target_include_directories(edge-protocol-test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${EDGENODE_GENERATED_DIR}")

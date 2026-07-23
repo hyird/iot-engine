@@ -17,6 +17,7 @@
         "typecheck": "tsc --noEmit",
         "format": "biome format --write .",
         "format:check": "biome format .",
+        "test:web-terminal": "bun test tests/web_terminal_protocol_test.ts",
         "stress:setup": "bun tests/stress/setup.ts",
         "stress:config-reload": "bun tests/stress/config-reload.ts",
         "stress:latest-read-model": "bun tests/stress/latest-read-model.ts",
@@ -25,6 +26,7 @@
     "dependencies": {
         "@ant-design/cssinjs": "^2.1.2",
         "@ant-design/icons": "^6.3.2",
+        "@bufbuild/protobuf": "2.12.0",
         "@dnd-kit/core": "^6.3.1",
         "@dnd-kit/sortable": "^10.0.0",
         "@dnd-kit/utilities": "^3.2.2",
@@ -44,6 +46,7 @@
     },
     "devDependencies": {
         "@biomejs/biome": "^2.5.4",
+        "@bufbuild/protoc-gen-es": "2.12.0",
         "@tailwindcss/vite": "^4.3.3",
         "@types/node": "^26.1.1",
         "@types/react": "^19.2.17",

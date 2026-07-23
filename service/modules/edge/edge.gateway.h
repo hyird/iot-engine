@@ -2,15 +2,17 @@
 
 #include <algorithm>
 #include <array>
-#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <random>
 #include <string>
 #include <string_view>
 
+#include <ruvia/core/TaskScope.h>
 #include <ruvia/web/Controller.h>
+#include <web_terminal.pb.h>
 
 #include "service/common/http.h"
 #include "service/common/uuid.h"
@@ -20,6 +22,8 @@
 #include "service/modules/edge/edge.schema.h"
 
 namespace service::edge {
+
+namespace webpb = ::iot::edge::terminal::v1;
 
 class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayController> {
   public:
@@ -179,66 +183,90 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
         terminalOpen->set_columns(120);
         terminalOpen->set_rows(30);
         co_await queue(c, nodeId, open);
-        co_await socket.text("ready");
+        webpb::WebTerminalFrame ready;
+        ready.mutable_ready();
+        co_await sendWebTerminal(socket, ready);
 
-        while (auto message = co_await socket.read()) {
-            if (!message->binary()) {
-                std::uint32_t columns{};
-                std::uint32_t rows{};
-                if (!parseTerminalResize(message->payload(), columns, rows)) {
-                    co_await socket.close(1002, "invalid terminal control");
-                    co_return;
+        bool terminalClosed = false;
+        ruvia::TaskScope outputScope(c.worker(), c.resource());
+        outputScope.spawn(
+            pumpTerminal(c, socket, terminalId, outputScope.stopToken(), terminalClosed));
+        std::exception_ptr failure;
+        std::uint16_t closeCode = 1000;
+        std::string closeReason;
+        try {
+            while (auto message = co_await socket.read()) {
+                if (!message->binary()) {
+                    closeCode = 1003;
+                    closeReason = "terminal frames must use protobuf";
+                    break;
                 }
-                auto resize = protocol::outbound(nodeId);
-                auto* terminalResize = resize.mutable_terminal_resize();
-                terminalResize->set_terminal_id(
-                    protocol::bytes(terminalBytes.data(), terminalBytes.size()));
-                terminalResize->set_columns(columns);
-                terminalResize->set_rows(rows);
-                co_await queue(c, nodeId, resize);
-            } else if (!message->payload().empty()) {
-                std::string_view remaining = message->payload();
-                while (!remaining.empty()) {
-                    const auto size = std::min<std::size_t>(remaining.size(), 4096);
-                    auto data = protocol::outbound(nodeId);
-                    auto* terminalData = data.mutable_terminal_data();
-                    terminalData->set_terminal_id(
+                webpb::WebTerminalFrame frame;
+                if (!frame.ParseFromArray(message->payload().data(),
+                                          static_cast<int>(message->payload().size()))) {
+                    closeCode = 1002;
+                    closeReason = "invalid terminal protobuf";
+                    break;
+                }
+                if (frame.payload_case() == webpb::WebTerminalFrame::kResize) {
+                    const auto& size = frame.resize();
+                    if (size.columns() < 20 || size.columns() > 300 || size.rows() < 5 ||
+                        size.rows() > 100) {
+                        closeCode = 1002;
+                        closeReason = "invalid terminal size";
+                        break;
+                    }
+                    auto resize = protocol::outbound(nodeId);
+                    auto* terminalResize = resize.mutable_terminal_resize();
+                    terminalResize->set_terminal_id(
                         protocol::bytes(terminalBytes.data(), terminalBytes.size()));
-                    terminalData->set_data(remaining.data(), size);
-                    co_await queue(c, nodeId, data);
-                    remaining.remove_prefix(size);
+                    terminalResize->set_columns(size.columns());
+                    terminalResize->set_rows(size.rows());
+                    co_await queue(c, nodeId, resize);
+                } else if (frame.payload_case() == webpb::WebTerminalFrame::kData) {
+                    std::string_view remaining = frame.data().data();
+                    while (!remaining.empty()) {
+                        const auto size = std::min<std::size_t>(remaining.size(), 4096);
+                        auto data = protocol::outbound(nodeId);
+                        auto* terminalData = data.mutable_terminal_data();
+                        terminalData->set_terminal_id(
+                            protocol::bytes(terminalBytes.data(), terminalBytes.size()));
+                        terminalData->set_data(remaining.data(), size);
+                        co_await queue(c, nodeId, data);
+                        remaining.remove_prefix(size);
+                    }
+                } else if (frame.payload_case() == webpb::WebTerminalFrame::kClose) {
+                    closeReason = "browser closed";
+                    break;
+                } else {
+                    closeCode = 1002;
+                    closeReason = "invalid terminal payload";
+                    break;
                 }
             }
-            if (co_await drainTerminal(c, socket, terminalId))
-                co_return;
+        } catch (...) {
+            failure = std::current_exception();
         }
-        auto close = protocol::outbound(nodeId);
-        auto* terminalClose = close.mutable_terminal_close();
-        terminalClose->set_terminal_id(
-            protocol::bytes(terminalBytes.data(), terminalBytes.size()));
-        terminalClose->set_reason("browser closed");
-        co_await queue(c, nodeId, close);
-    }
-
-    static bool parseTerminalResize(std::string_view payload, std::uint32_t& columns,
-                                    std::uint32_t& rows) {
-        constexpr std::string_view prefix = "resize:";
-        if (!payload.starts_with(prefix))
-            return false;
-        payload.remove_prefix(prefix.size());
-        const auto separator = payload.find(':');
-        if (separator == std::string_view::npos)
-            return false;
-        const auto columnText = payload.substr(0, separator);
-        const auto rowText = payload.substr(separator + 1);
-        const auto [columnEnd, columnError] =
-            std::from_chars(columnText.data(), columnText.data() + columnText.size(), columns);
-        const auto [rowEnd, rowError] =
-            std::from_chars(rowText.data(), rowText.data() + rowText.size(), rows);
-        return columnError == std::errc{} && rowError == std::errc{} &&
-               columnEnd == columnText.data() + columnText.size() &&
-               rowEnd == rowText.data() + rowText.size() && columns >= 20 && columns <= 300 &&
-               rows >= 5 && rows <= 100;
+        outputScope.requestStop();
+        try {
+            co_await outputScope.join();
+        } catch (...) {
+            if (!failure)
+                failure = std::current_exception();
+        }
+        if (!terminalClosed) {
+            auto close = protocol::outbound(nodeId);
+            auto* terminalClose = close.mutable_terminal_close();
+            terminalClose->set_terminal_id(
+                protocol::bytes(terminalBytes.data(), terminalBytes.size()));
+            terminalClose->set_reason("browser closed");
+            co_await queue(c, nodeId, close);
+        }
+        (void)co_await c.redis().del("iot:edge:terminal:out:" + terminalId);
+        if (!terminalClosed && !closeReason.empty())
+            co_await socket.close(closeCode, closeReason);
+        if (failure)
+            std::rethrow_exception(failure);
     }
 
     static Session makeSession(std::string nodeId) {
@@ -348,25 +376,41 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
         co_await c.redis().ltrim(key, -100, -1);
     }
 
-    static ruvia::Task<bool> drainTerminal(ruvia::Context& c, ruvia::WebSocket& socket,
-                                           std::string_view terminalId) {
-        const auto key = "iot:edge:terminal:out:" + std::string(terminalId);
-        for (int count = 0; count < 32; ++count) {
-            auto item = co_await c.redis().lpop(key);
+    static ruvia::Task<void> sendWebTerminal(ruvia::WebSocket& socket,
+                                              const webpb::WebTerminalFrame& frame) {
+        std::string wire;
+        if (!frame.SerializeToString(&wire))
+            throw std::runtime_error("web terminal protobuf encode failed");
+        co_await socket.binary(wire);
+    }
+
+    static ruvia::Task<void> pumpTerminal(ruvia::Context& c, ruvia::WebSocket& socket,
+                                          std::string terminalId, ruvia::StopToken stopToken,
+                                          bool& terminalClosed) {
+        const std::string key = "iot:edge:terminal:out:" + terminalId;
+        const std::array<std::string_view, 1> keys{key};
+        const auto redis = c.redis();
+        while (!stopToken.stopRequested()) {
+            auto item = co_await redis.blpop(keys, std::chrono::seconds(1));
             if (!item)
-                break;
-            if (item->empty())
                 continue;
-            const auto type = static_cast<unsigned char>((*item)[0]);
-            if (type == 0U) {
-                co_await socket.binary(std::string_view(item->data() + 1, item->size() - 1));
-            } else {
-                co_await socket.text(std::string_view(item->data() + 1, item->size() - 1));
+            webpb::WebTerminalFrame frame;
+            if (!frame.ParseFromArray(item->value().data(),
+                                      static_cast<int>(item->value().size()))) {
+                webpb::WebTerminalFrame close;
+                close.mutable_close()->set_reason("terminal stream protocol error");
+                co_await sendWebTerminal(socket, close);
+                terminalClosed = true;
+                co_await socket.close(1011, "terminal stream protocol error");
+                co_return;
+            }
+            co_await socket.binary(item->value());
+            if (frame.payload_case() == webpb::WebTerminalFrame::kClose) {
+                terminalClosed = true;
                 co_await socket.close(1000, "terminal closed");
-                co_return true;
+                co_return;
             }
         }
-        co_return false;
     }
 
     static ruvia::Task<void> handle(ruvia::Context& c, ruvia::WebSocket& socket,
@@ -441,9 +485,12 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
             co_return;
         const auto id = protocol::uuidText(data.terminal_id());
         const auto key = "iot:edge:terminal:out:" + id;
-        std::string value(1, '\0');
-        value.append(data.data());
-        (void)co_await c.redis().rpush(key, value);
+        webpb::WebTerminalFrame frame;
+        frame.mutable_data()->set_data(data.data());
+        std::string wire;
+        if (!frame.SerializeToString(&wire))
+            co_return;
+        (void)co_await c.redis().rpush(key, wire);
         (void)co_await c.redis().expire(key, std::chrono::seconds(120));
     }
 
@@ -453,9 +500,14 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
             co_return;
         const auto id = protocol::uuidText(close.terminal_id());
         const auto key = "iot:edge:terminal:out:" + id;
-        std::string value(1, '\1');
-        value += close.reason();
-        (void)co_await c.redis().rpush(key, value);
+        webpb::WebTerminalFrame frame;
+        auto* terminalClose = frame.mutable_close();
+        terminalClose->set_exit_code(close.exit_code());
+        terminalClose->set_reason(close.reason());
+        std::string wire;
+        if (!frame.SerializeToString(&wire))
+            co_return;
+        (void)co_await c.redis().rpush(key, wire);
         (void)co_await c.redis().expire(key, std::chrono::seconds(120));
     }
 };

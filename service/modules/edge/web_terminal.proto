@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package iot.edge.terminal.v1;
+
+message WebTerminalReady {}
+
+message WebTerminalData {
+  bytes data = 1;
+}
+
+message WebTerminalResize {
+  uint32 columns = 1;
+  uint32 rows = 2;
+}
+
+message WebTerminalClose {
+  int32 exit_code = 1;
+  string reason = 2;
+}
+
+message WebTerminalFrame {
+  oneof payload {
+    WebTerminalReady ready = 1;
+    WebTerminalData data = 2;
+    WebTerminalResize resize = 3;
+    WebTerminalClose close = 4;
+  }
+}

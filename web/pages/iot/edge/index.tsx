@@ -37,10 +37,16 @@ import {
     Upload,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import '@xterm/xterm/css/xterm.css';
 import { useEffect, useRef, useState } from 'react';
 import DeviceCard, { type DeviceCardItem } from '@/components/DeviceCard';
 import { FormModal } from '@/components/FormModal';
+import {
+    WebTerminalDataSchema,
+    WebTerminalFrameSchema,
+    WebTerminalResizeSchema,
+} from '@/generated/edge/web_terminal_pb';
 import { PageContainer } from '@/components/PageContainer';
 import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermissions } from '@/hooks/usePermission';
@@ -117,6 +123,14 @@ function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
             label: '待传缓存',
             children: `${node.outboxRecords ?? 0} 条 / ${formatBytes(node.outboxBytes ?? 0)}`,
         },
+        {
+            key: 'networkManager',
+            label: '网络管理',
+            children:
+                node.supportsNetworkConfig && node.networkConfigVersion >= 2
+                    ? '可用'
+                    : '需升级代理',
+        },
     ];
 }
 
@@ -138,9 +152,13 @@ function TerminalModal({
         if (!open || !nodeId || !host) return;
 
         let disposed = false;
-        let poll: number | undefined;
         let fitFrame: number | undefined;
+        let inputTimer: number | undefined;
+        let outputFrame: number | undefined;
         let lastSentSize = '';
+        const encoder = new TextEncoder();
+        const pendingInput: Uint8Array[] = [];
+        const pendingOutput: Uint8Array[] = [];
         const terminal = new Terminal({
             cursorBlink: true,
             fontFamily: "'Cascadia Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace",
@@ -164,23 +182,74 @@ function TerminalModal({
         terminal.open(host);
 
         const fitTerminal = () => {
+            fitFrame = undefined;
             if (host.clientWidth === 0 || host.clientHeight === 0) return;
             fitAddon.fit();
             const socket = socketRef.current;
-            const size = `resize:${terminal.cols}:${terminal.rows}`;
-            if (socket?.readyState === WebSocket.OPEN && size !== lastSentSize) {
-                socket.send(size);
-                lastSentSize = size;
+            const sizeKey = `${terminal.cols}:${terminal.rows}`;
+            if (socket?.readyState === WebSocket.OPEN && sizeKey !== lastSentSize) {
+                const resize = create(WebTerminalResizeSchema, {
+                    columns: terminal.cols,
+                    rows: terminal.rows,
+                });
+                socket.send(
+                    toBinary(
+                        WebTerminalFrameSchema,
+                        create(WebTerminalFrameSchema, {
+                            payload: { case: 'resize', value: resize },
+                        })
+                    )
+                );
+                lastSentSize = sizeKey;
             }
         };
-        const resizeObserver = new ResizeObserver(fitTerminal);
-        resizeObserver.observe(host);
-        fitFrame = window.requestAnimationFrame(fitTerminal);
-        const input = terminal.onData((data) => {
+        const scheduleFit = () => {
+            if (fitFrame !== undefined) return;
+            fitFrame = window.requestAnimationFrame(fitTerminal);
+        };
+        const flushInput = () => {
+            inputTimer = undefined;
             const socket = socketRef.current;
-            if (socket?.readyState === WebSocket.OPEN) {
-                socket.send(new TextEncoder().encode(data));
+            if (pendingInput.length === 0) return;
+            if (socket?.readyState !== WebSocket.OPEN) {
+                pendingInput.length = 0;
+                return;
             }
+            const size = pendingInput.reduce((total, chunk) => total + chunk.byteLength, 0);
+            const payload = new Uint8Array(size);
+            let offset = 0;
+            for (const chunk of pendingInput.splice(0)) {
+                payload.set(chunk, offset);
+                offset += chunk.byteLength;
+            }
+            const data = create(WebTerminalDataSchema, { data: payload });
+            socket.send(
+                toBinary(
+                    WebTerminalFrameSchema,
+                    create(WebTerminalFrameSchema, {
+                        payload: { case: 'data', value: data },
+                    })
+                )
+            );
+        };
+        const flushOutput = () => {
+            outputFrame = undefined;
+            if (pendingOutput.length === 0) return;
+            const size = pendingOutput.reduce((total, chunk) => total + chunk.byteLength, 0);
+            const payload = new Uint8Array(size);
+            let offset = 0;
+            for (const chunk of pendingOutput.splice(0)) {
+                payload.set(chunk, offset);
+                offset += chunk.byteLength;
+            }
+            terminal.write(payload);
+        };
+        const resizeObserver = new ResizeObserver(scheduleFit);
+        resizeObserver.observe(host);
+        scheduleFit();
+        const input = terminal.onData((data) => {
+            pendingInput.push(encoder.encode(data));
+            if (inputTimer === undefined) inputTimer = window.setTimeout(flushInput, 8);
         });
 
         setState('正在申请终端票据…');
@@ -194,19 +263,40 @@ function TerminalModal({
                 socket.binaryType = 'arraybuffer';
                 socketRef.current = socket;
                 socket.onopen = () => {
-                    setState('已连接');
-                    fitTerminal();
-                    poll = window.setInterval(() => {
-                        if (socket.readyState === WebSocket.OPEN) socket.send(new Uint8Array(0));
-                    }, 100);
+                    setState('已连接，正在启动终端…');
+                    scheduleFit();
                     terminal.focus();
                 };
                 socket.onmessage = (event) => {
-                    if (typeof event.data === 'string') {
-                        if (event.data !== 'ready') setState(event.data || '终端已关闭');
+                    if (!(event.data instanceof ArrayBuffer)) {
+                        setState('终端协议错误');
+                        socket.close(1003, 'terminal frames must use protobuf');
                         return;
                     }
-                    terminal.write(new Uint8Array(event.data as ArrayBuffer));
+                    try {
+                        const frame = fromBinary(
+                            WebTerminalFrameSchema,
+                            new Uint8Array(event.data)
+                        );
+                        if (frame.payload.case === 'ready') {
+                            setState('已连接');
+                            terminal.focus();
+                        } else if (frame.payload.case === 'data') {
+                            pendingOutput.push(frame.payload.value.data);
+                            if (outputFrame === undefined) {
+                                outputFrame = window.requestAnimationFrame(flushOutput);
+                            }
+                        } else if (frame.payload.case === 'close') {
+                            setState(frame.payload.value.reason || '终端已关闭');
+                            socket.close(1000, 'terminal closed');
+                        } else {
+                            setState('终端协议错误');
+                            socket.close(1002, 'invalid terminal protobuf');
+                        }
+                    } catch {
+                        setState('终端协议错误');
+                        socket.close(1002, 'invalid terminal protobuf');
+                    }
                 };
                 socket.onerror = () => setState('终端连接失败');
                 socket.onclose = () => setState('终端已关闭');
@@ -214,8 +304,9 @@ function TerminalModal({
             .catch(() => setState('无法建立终端连接'));
         return () => {
             disposed = true;
-            if (poll !== undefined) window.clearInterval(poll);
             if (fitFrame !== undefined) window.cancelAnimationFrame(fitFrame);
+            if (inputTimer !== undefined) window.clearTimeout(inputTimer);
+            if (outputFrame !== undefined) window.cancelAnimationFrame(outputFrame);
             resizeObserver.disconnect();
             input.dispose();
             socketRef.current?.close();
@@ -694,14 +785,23 @@ export default function EdgeNodePage() {
                                                         />
                                                     </Tooltip>
                                                 )}
-                                            {node.enrollmentStatus === 'approved' &&
-                                                canConfig &&
-                                                node.supportsNetworkConfig &&
-                                                node.networkConfigVersion >= 2 && (
-                                                    <Tooltip title="管理网络接口">
+                                            {node.enrollmentStatus === 'approved' && canConfig && (
+                                                <Tooltip
+                                                    title={
+                                                        node.supportsNetworkConfig &&
+                                                        node.networkConfigVersion >= 2
+                                                            ? '管理网络接口'
+                                                            : `节点代理 ${node.softwareVersion || '当前版本'} 过旧，请升级至 0.2.0`
+                                                    }
+                                                >
+                                                    <span>
                                                         <Button
                                                             type="text"
                                                             size="small"
+                                                            disabled={
+                                                                !node.supportsNetworkConfig ||
+                                                                node.networkConfigVersion < 2
+                                                            }
                                                             className={
                                                                 EDGE_CARD_ACTION_BUTTON_CLASS
                                                             }
@@ -710,8 +810,9 @@ export default function EdgeNodePage() {
                                                                 void showNetworkManager(node)
                                                             }
                                                         />
-                                                    </Tooltip>
-                                                )}
+                                                    </span>
+                                                </Tooltip>
+                                            )}
                                             {node.enrollmentStatus === 'approved' &&
                                                 canConfig &&
                                                 node.supportsPlatformConfig && (
