@@ -71,9 +71,9 @@ OpenWrt's mbedTLS-backed libuwsc.
 The package, daemon, init service, UCI configuration, and runtime paths are all named
 `edgenode`.
 
-Generated nanopb C files are deliberately not committed. The OpenWrt build host needs
-the recipe's Python/protobuf host dependencies and generates `edge.pb.c` and `edge.pb.h`
-from `proto/edge.proto` in `PKG_BUILD_DIR` on every relevant build.
+The nanopb C files generated from `proto/edge.proto` are committed under `generated/`.
+This keeps the OpenWrt 18.06 build independent of host Python and protobuf packages.
+Regenerate both files with nanopb 0.4.9.1 whenever the protocol changes.
 
 Hardware paths, interface names, bridge mode, modem USB ID, AT port, status path, and
 monitor interval are UCI settings rather than compiled constants. The TAS-682 package

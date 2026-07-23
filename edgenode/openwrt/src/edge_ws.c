@@ -271,6 +271,7 @@ static bool send_capability_report(edge_ws_session *session) {
     envelope->which_payload = iot_edge_v1_Envelope_capability_report_tag;
     iot_edge_v1_CapabilityReport *report = &envelope->payload.capability_report;
     safe_copy(report->network_backend, sizeof(report->network_backend), "netifd");
+    report->ttyd_available = edge_capability_has_ttyd();
 
     if (session->app->config->lan_interface[0] != '\0') {
         report->interfaces_count = 1U;
@@ -497,17 +498,6 @@ static void send_pong(edge_ws_session *session, const iot_edge_v1_Envelope *inpu
     output->payload.pong.nonce = nonce;
     edge_protocol_set_bytes(&output->causation_id, sizeof(output->causation_id.bytes),
                             message_id, sizeof(message_id));
-    send_envelope(session, output);
-}
-
-static void send_capability_report(edge_ws_session *session) {
-    if (!session->enrolled)
-        return;
-    iot_edge_v1_Envelope *output = &session->app->envelope;
-    if (!init_envelope(session, output))
-        return;
-    output->which_payload = iot_edge_v1_Envelope_capability_report_tag;
-    edge_capability_collect(&output->payload.capability_report);
     send_envelope(session, output);
 }
 
