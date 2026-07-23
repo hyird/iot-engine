@@ -150,6 +150,44 @@ else()
 endif()
 add_test(NAME edge-runtime COMMAND edge-runtime-test)
 
+add_executable(edge-config-test
+    tests/edge_config_test.c
+    edgenode/openwrt/src/edge_runtime_config.c
+    "${EDGENODE_PROTO_C}"
+    ${nanopb_SOURCE_DIR}/pb_common.c
+    ${nanopb_SOURCE_DIR}/pb_encode.c
+    ${nanopb_SOURCE_DIR}/pb_decode.c)
+target_include_directories(edge-config-test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/edgenode/openwrt/src"
+    "${EDGENODE_GENERATED_DIR}"
+    "${nanopb_SOURCE_DIR}")
+if(MSVC)
+    target_compile_options(edge-config-test PRIVATE /utf-8 /W4)
+else()
+    target_compile_options(edge-config-test PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME edge-config COMMAND edge-config-test)
+
+if(UNIX)
+    add_library(edge-acquisition-compile STATIC
+        edgenode/openwrt/src/edge_acquisition.c
+        edgenode/openwrt/src/edge_runtime_config.c
+        edgenode/openwrt/src/edge_device_runtime.c
+        edgenode/openwrt/src/edge_modbus.c
+        edgenode/openwrt/src/edge_s7.c
+        edgenode/openwrt/src/edge_protocol.c
+        "${EDGENODE_PROTO_C}"
+        ${nanopb_SOURCE_DIR}/pb_common.c
+        ${nanopb_SOURCE_DIR}/pb_encode.c
+        ${nanopb_SOURCE_DIR}/pb_decode.c)
+    target_include_directories(edge-acquisition-compile PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/edgenode/openwrt/src"
+        "${EDGENODE_GENERATED_DIR}"
+        "${nanopb_SOURCE_DIR}")
+    target_compile_options(edge-acquisition-compile PRIVATE -Wall -Wextra -Wpedantic)
+    target_link_libraries(edge-acquisition-compile PRIVATE m)
+endif()
+
 find_program(BUN_EXECUTABLE NAMES bun REQUIRED)
 
 add_custom_target(iot-engine-web ALL

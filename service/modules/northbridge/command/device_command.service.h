@@ -4,6 +4,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <iostream>
 #include <string>
@@ -15,6 +16,7 @@
 
 #include "service/common/http.h"
 #include "service/common/uuid.h"
+#include "service/modules/edge/edge.protocol.h"
 #include "service/modules/northbridge/command/protocol_command.queue.h"
 #include "service/modules/northbridge/config/runtime_config.repository.h"
 #include "service/modules/northbridge/device/device.access.h"
@@ -103,6 +105,27 @@ class DeviceCommandService final {
     enqueueDevice(ruvia::Context& context, std::string_view deviceId,
                   const service::device::DeviceCommandBody& body, std::string submittedBy) {
 
+        const auto edge = co_await context.db().query(R"sql(
+SELECT COALESCE(d.edge_node_id::text, ''), d.protocol_params->>'device_code', p.protocol,
+       COALESCE((d.protocol_params->>'remote_control')::boolean, true),
+       COALESCE(n.enrollment_status = 'approved' AND n.supports_device_config AND
+                n.config_status = 'applied' AND
+                n.active_config_version = n.desired_config_version, false)
+FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id
+             AND p.deleted_at IS NULL AND p.enabled
+LEFT JOIN edge_node n ON n.id = d.edge_node_id
+WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)sql",
+                                                      service::common::dbParams(deviceId));
+        if (!edge.rows().empty() && !edge.rows().front()[0].text().empty()) {
+            if (edge.rows().front()[4].text() != "t")
+                service::common::fail(18013, "边缘节点设备配置尚未生效", 409);
+            co_return co_await enqueueEdgeDevice(context, deviceId, body, std::move(submittedBy),
+                                                 edge.rows().front()[0].text(),
+                                                 edge.rows().front()[1].text(),
+                                                 edge.rows().front()[2].text(),
+                                                 edge.rows().front()[3].text() == "t");
+        }
+
         auto requested = normalize(body);
         auto database = context.db();
         const auto snapshot =
@@ -171,6 +194,193 @@ class DeviceCommandService final {
         service::device::DeviceCommandCreateDto result(context);
         result.commandIds(std::move(commandIds)).status("PENDING");
         co_return result;
+    }
+
+    ruvia::Task<service::device::DeviceCommandCreateDto>
+    enqueueEdgeDevice(ruvia::Context& context, std::string_view deviceId,
+                      const service::device::DeviceCommandBody& body, std::string submittedBy,
+                      std::string_view nodeId, std::string_view deviceCode,
+                      std::string_view protocol, bool remoteControl) {
+        if (!remoteControl)
+            service::common::fail(18005, "设备未开启远程控制", 403);
+        if (!co_await context.redis().get("iot:edge:session:" + std::string(nodeId)))
+            service::common::fail(18013, "边缘节点离线，无法下发设备命令", 409);
+
+        auto requested = normalize(body);
+        service::southbridge::DeviceDefinition device;
+        device.id = std::string(deviceId);
+        device.code = std::string(deviceCode);
+        device.protocol = std::string(protocol);
+        co_await loadEdgeElements(context, device);
+        service::southbridge::command_value::ResolvedCommand resolved;
+        try {
+            resolved = service::southbridge::command_value::resolve(device, requested);
+        } catch (const std::invalid_argument& error) {
+            service::common::fail(18010, error.what(), 400);
+        }
+        if (device.protocol == "SL651" && resolved.elements.size() > 8)
+            service::common::fail(18010, "SL651 边缘命令最多包含 8 个要素", 400);
+
+        std::vector<std::vector<service::southbridge::CommandElementValue>> tasks;
+        if (device.protocol == "SL651") {
+            tasks.push_back(std::move(requested));
+        } else {
+            tasks.reserve(requested.size());
+            for (auto& element : requested)
+                tasks.push_back({std::move(element)});
+        }
+
+        ruvia::List<ruvia::String> commandIds(context.resource());
+        for (const auto& elements : tasks) {
+            bridge::ProtocolTask task;
+            task.messageId = service::common::nextUuidV7();
+            task.groupKey = "edge-device:" + device.code;
+            task.protocol = device.protocol;
+            task.transport = "EDGE";
+            task.kind = "command";
+            task.deviceId = device.id;
+            task.deviceCode = device.code;
+            task.responseTimeoutMs = 5000;
+            task.maxAttempts = 1;
+            for (const auto& element : elements)
+                task.elements.emplace_back(element.elementId, element.value);
+            co_await setPending(context, task, submittedBy);
+
+            auto envelope = service::edge::protocol::outbound(nodeId);
+            envelope.which_payload = iot_edge_v1_Envelope_command_request_tag;
+            auto& command = envelope.payload.command_request;
+            if (!setUuid(command.command_id, task.messageId) ||
+                !setUuid(command.device_id, task.deviceId))
+                service::common::fail(18010, "边缘命令标识无效", 500);
+            command.timeout_ms = 5000;
+            command.readback_count = 1;
+            command.fast_read_duration_sec = 10;
+            command.fast_read_interval_sec = 1;
+            command.values_count = static_cast<pb_size_t>(elements.size());
+            for (std::size_t index = 0; index < elements.size(); ++index) {
+                const auto& element = elements[index];
+                if (element.elementId.size() > 64 || element.value.size() > 128)
+                    service::common::fail(
+                        18010, "边缘命令要素 ID 最长 64 字符、值最长 128 字符", 400);
+                copy(command.values[index].element_id, element.elementId);
+                command.values[index].has_expected = true;
+                command.values[index].expected.kind =
+                    iot_edge_v1_ValueKind_VALUE_STRING;
+                command.values[index].expected.which_value =
+                    iot_edge_v1_ScalarValue_string_value_tag;
+                copy(command.values[index].expected.value.string_value, element.value);
+            }
+            co_await pushEdgeCommand(context, nodeId, envelope);
+
+            std::string data = "{\"commandId\":\"" + task.messageId + "\",\"elements\":{";
+            for (std::size_t index = 0; index < task.elements.size(); ++index) {
+                if (index != 0)
+                    data.push_back(',');
+                data += "\"" + task.elements[index].first + "\":\"" +
+                        service::open_access::jsonEscape(task.elements[index].second) + "\"";
+            }
+            data += "}}";
+            try {
+                co_await service::open_access::event::publish(
+                    context.redis(), task.messageId, "device.command.dispatched", task.deviceId,
+                    task.deviceCode, bridge::utcNowMilliseconds(), data);
+            } catch (const std::exception& error) {
+                std::cerr << "open access edge command event publish failed: " << error.what()
+                          << '\n';
+            }
+            commandIds.emplace(task.messageId, context.resource());
+        }
+
+        service::device::DeviceCommandCreateDto result(context);
+        result.commandIds(std::move(commandIds)).status("PENDING");
+        co_return result;
+    }
+
+    static ruvia::Task<void> loadEdgeElements(ruvia::Context& context,
+                                               service::southbridge::DeviceDefinition& device) {
+        std::string sql;
+        if (device.protocol == "Modbus") {
+            sql = R"sql(
+SELECT item->>'id', item->>'name', COALESCE(item->>'unit', ''), item->>'dataType',
+       '', 0, 0, COALESCE((item->>'writable')::boolean, false), false, '', ''
+FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id
+CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]')) item
+WHERE d.id = $1::uuid AND d.edge_node_id IS NOT NULL AND p.protocol = 'Modbus')sql";
+        } else if (device.protocol == "S7") {
+            sql = R"sql(
+SELECT item->>'id', item->>'name', COALESCE(item->>'unit', ''),
+       COALESCE(item->>'dataType', 'BOOL'), '', COALESCE((item->>'size')::integer, 1), 0,
+       COALESCE((item->>'writable')::boolean, false), false, '', ''
+FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id
+CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]')) item
+WHERE d.id = $1::uuid AND d.edge_node_id IS NOT NULL AND p.protocol = 'S7')sql";
+        } else if (device.protocol == "SL651") {
+            sql = R"sql(
+SELECT item->>'id', item->>'name', COALESCE(item->>'unit', ''), '',
+       func->>'dir', COALESCE((item->>'length')::integer, 1),
+       COALESCE((item->>'digits')::integer, 0), func->>'dir' = 'DOWN', response_element,
+       func->>'funcCode', item->>'encode'
+FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id
+CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]')) func
+CROSS JOIN LATERAL (
+  SELECT value AS item, false AS response_element
+  FROM jsonb_array_elements(COALESCE(func->'elements', '[]'))
+  UNION ALL
+  SELECT value AS item, true AS response_element
+  FROM jsonb_array_elements(COALESCE(func->'responseElements', '[]'))
+) configured
+WHERE d.id = $1::uuid AND d.edge_node_id IS NOT NULL AND p.protocol = 'SL651')sql";
+        } else {
+            service::common::fail(18010, "边缘节点不支持该设备协议", 400);
+        }
+        const auto rows = co_await context.db().query(sql, service::common::dbParams(device.id));
+        for (const auto& row : rows.rows()) {
+            service::southbridge::ElementDefinition element;
+            element.id = std::string(row[0].text());
+            element.name = std::string(row[1].text());
+            element.unit = std::string(row[2].text());
+            element.dataType = std::string(row[3].text());
+            element.direction = std::string(row[4].text());
+            element.size = parseInteger(row[5].text());
+            element.length = parseInteger(row[5].text());
+            element.digits = parseInteger(row[6].text());
+            element.writable = row[7].text() == "t";
+            element.responseElement = row[8].text() == "t";
+            element.functionCode = std::string(row[9].text());
+            element.encoding = std::string(row[10].text());
+            device.elements.push_back(std::move(element));
+        }
+    }
+
+    static std::int64_t parseInteger(std::string_view value) {
+        std::int64_t output{};
+        const auto [end, error] =
+            std::from_chars(value.data(), value.data() + value.size(), output);
+        return error == std::errc{} && end == value.data() + value.size() ? output : 0;
+    }
+
+    template <typename Bytes> static bool setUuid(Bytes& output, std::string_view text) {
+        std::uint8_t value[16]{};
+        if (!service::edge::protocol::uuidBytes(text, value))
+            return false;
+        service::edge::protocol::setBytes(&output, sizeof(output.bytes), value, sizeof(value));
+        return true;
+    }
+
+    template <std::size_t Size> static void copy(char (&output)[Size], std::string_view input) {
+        const auto length = std::min(input.size(), Size - 1);
+        std::memcpy(output, input.data(), length);
+        output[length] = '\0';
+    }
+
+    static ruvia::Task<void> pushEdgeCommand(ruvia::Context& context, std::string_view nodeId,
+                                              const iot_edge_v1_Envelope& envelope) {
+        const auto wire = service::edge::protocol::encode(envelope);
+        if (wire.empty())
+            service::common::fail(18010, "边缘命令编码失败", 500);
+        const auto key = "iot:edge:egress:" + std::string(nodeId);
+        (void)co_await context.redis().rpush(key, wire);
+        co_await context.redis().ltrim(key, -1024, -1);
     }
 
     static std::string stateKey(std::string_view commandId) {

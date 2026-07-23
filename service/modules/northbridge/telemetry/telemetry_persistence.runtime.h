@@ -256,8 +256,8 @@ occurred_at, data, raw_payload_hex, storage_interval) AS (VALUES )sql";
                 sql.push_back(',');
             const auto base = index * 11;
             sql += "(to_timestamp($" + std::to_string(base + 1) + "::double precision / 1000.0),$" +
-                   std::to_string(base + 2) + "::uuid,$" + std::to_string(base + 3) + "::uuid,$" +
-                   std::to_string(base + 4) + "::uuid,$" + std::to_string(base + 5) + "::uuid,$" +
+                   std::to_string(base + 2) + "::uuid,$" + std::to_string(base + 3) + "::uuid,NULLIF($" +
+                   std::to_string(base + 4) + ",'')::uuid,$" + std::to_string(base + 5) + "::uuid,$" +
                    std::to_string(base + 6) + ",$" + std::to_string(base + 7) + ",to_timestamp($" +
                    std::to_string(base + 8) + "::double precision / 1000.0),$" +
                    std::to_string(base + 9) + "::jsonb,$" + std::to_string(base + 10) +
@@ -287,17 +287,21 @@ occurred_at, data, raw_payload_hex, storage_interval) AS (VALUES )sql";
 ), filtered AS (
   SELECT ordered.*,
          (storage_interval <= 1 OR last_stored IS NULL OR
+          (source = 'edge' AND report_time = last_stored) OR
           report_time >= last_stored + storage_interval * interval '1 second') AS accepted,
          CASE WHEN storage_interval <= 1 OR last_stored IS NULL OR
+                   (source = 'edge' AND report_time = last_stored) OR
                    report_time >= last_stored + storage_interval * interval '1 second'
               THEN report_time ELSE last_stored END AS last_accepted
   FROM ordered WHERE sequence = 1
   UNION ALL
   SELECT next.*,
          (next.storage_interval <= 1 OR previous.last_accepted IS NULL OR
+          (next.source = 'edge' AND next.report_time = previous.last_accepted) OR
           next.report_time >= previous.last_accepted +
                               next.storage_interval * interval '1 second') AS accepted,
          CASE WHEN next.storage_interval <= 1 OR previous.last_accepted IS NULL OR
+                   (next.source = 'edge' AND next.report_time = previous.last_accepted) OR
                    next.report_time >= previous.last_accepted +
                                        next.storage_interval * interval '1 second'
               THEN next.report_time ELSE previous.last_accepted END AS last_accepted

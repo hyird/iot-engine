@@ -13,6 +13,7 @@
 
 #include "service/common/http.h"
 #include "service/common/uuid.h"
+#include "service/modules/edge/edge.config.service.h"
 #include "service/modules/edge/edge.protocol.h"
 #include "service/modules/edge/edge.projector.h"
 #include "service/modules/edge/edge.schema.h"
@@ -42,6 +43,7 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
         std::uint64_t epoch{};
         std::uint64_t inboundSequence{};
         std::uint64_t outboundSequence{};
+        std::uint64_t configSentAtMs{};
         bool capabilitySeen{};
     };
 
@@ -239,8 +241,17 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
 
     static ruvia::Task<void> drain(ruvia::Context& c, ruvia::WebSocket& socket,
                                    Session& session) {
-        const auto key = "iot:edge:egress:" + session.nodeId;
-        for (int count = 0; count < 16; ++count) {
+        const auto configCount =
+            co_await drainKey(c, socket, session, "iot:edge:config:" + session.nodeId, 64);
+        if (configCount != 0)
+            session.configSentAtMs = protocol::nowMs();
+        (void)co_await drainKey(c, socket, session, "iot:edge:egress:" + session.nodeId, 16);
+    }
+
+    static ruvia::Task<int> drainKey(ruvia::Context& c, ruvia::WebSocket& socket,
+                                     Session& session, const std::string& key, int limit) {
+        int sent = 0;
+        for (int count = 0; count < limit; ++count) {
             auto item = co_await c.redis().lpop(key);
             if (!item)
                 break;
@@ -254,7 +265,9 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
             protocol::setBytes(&envelope.node_id, sizeof(envelope.node_id.bytes),
                                session.nodeBytes.data(), 16);
             co_await send(socket, envelope);
+            ++sent;
         }
+        co_return sent;
     }
 
     static ruvia::Task<void> queue(ruvia::Context& c, std::string_view nodeId,
@@ -292,6 +305,12 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
                                     Session& session, const iot_edge_v1_Envelope& input) {
         switch (input.which_payload) {
         case iot_edge_v1_Envelope_heartbeat_tag: {
+            constexpr std::uint64_t retryIntervalMs = 30000;
+            const auto now = protocol::nowMs();
+            if (session.configSentAtMs == 0 || now - session.configSentAtMs >= retryIntervalMs) {
+                (void)co_await edgeConfigService().requeueIfStale(
+                    c, session.nodeId, input.payload.heartbeat.active_config_version);
+            }
             auto reply = makeEnvelope(session);
             reply.which_payload = iot_edge_v1_Envelope_heartbeat_ack_tag;
             reply.payload.heartbeat_ack.platform_time_ms = protocol::nowMs();
@@ -302,6 +321,48 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
         case iot_edge_v1_Envelope_capability_report_tag:
             session.capabilitySeen = true;
             break;
+        case iot_edge_v1_Envelope_telemetry_batch_tag: {
+            auto reply = makeEnvelope(session);
+            reply.which_payload = iot_edge_v1_Envelope_telemetry_ack_tag;
+            const auto& batch = input.payload.telemetry_batch;
+            for (pb_size_t index = 0;
+                 index < batch.records_count &&
+                 reply.payload.telemetry_ack.accepted_record_ids_count < 1;
+                 ++index) {
+                const auto& record = batch.records[index];
+                if (record.record_id.size != 16)
+                    continue;
+                auto& accepted = reply.payload.telemetry_ack.accepted_record_ids
+                    [reply.payload.telemetry_ack.accepted_record_ids_count++];
+                protocol::setBytes(&accepted, sizeof(accepted.bytes), record.record_id.bytes, 16);
+            }
+            co_await send(socket, reply);
+            break;
+        }
+        case iot_edge_v1_Envelope_raw_packet_tag: {
+            const auto& packet = input.payload.raw_packet;
+            if (packet.packet_id.size != 16)
+                break;
+            auto reply = makeEnvelope(session);
+            reply.which_payload = iot_edge_v1_Envelope_raw_packet_ack_tag;
+            protocol::setBytes(&reply.payload.raw_packet_ack.packet_id,
+                               sizeof(reply.payload.raw_packet_ack.packet_id.bytes),
+                               packet.packet_id.bytes, 16);
+            co_await send(socket, reply);
+            break;
+        }
+        case iot_edge_v1_Envelope_command_result_tag: {
+            const auto& result = input.payload.command_result;
+            if (result.command_id.size != 16)
+                break;
+            auto reply = makeEnvelope(session);
+            reply.which_payload = iot_edge_v1_Envelope_command_result_ack_tag;
+            protocol::setBytes(&reply.payload.command_result_ack.command_id,
+                               sizeof(reply.payload.command_result_ack.command_id.bytes),
+                               result.command_id.bytes, 16);
+            co_await send(socket, reply);
+            break;
+        }
         case iot_edge_v1_Envelope_ping_tag: {
             auto reply = makeEnvelope(session);
             reply.which_payload = iot_edge_v1_Envelope_pong_tag;

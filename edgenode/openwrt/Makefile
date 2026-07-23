@@ -61,6 +61,7 @@ define Build/Compile
 		$(PKG_BUILD_DIR)/edge/src/edge_config.c \
 		$(PKG_BUILD_DIR)/edge/src/edge_memory.c \
 		$(PKG_BUILD_DIR)/edge/src/edge_spool.c \
+		$(PKG_BUILD_DIR)/edge/src/edge_runtime_config.c \
 		$(PKG_BUILD_DIR)/edge/src/edge_process.c \
 		$(PKG_BUILD_DIR)/edge/src/edge_capability.c \
 		$(PKG_BUILD_DIR)/edge/src/edge_network.c \
@@ -68,13 +69,14 @@ define Build/Compile
 		$(PKG_BUILD_DIR)/edge/src/edge_platform.c \
 		$(PKG_BUILD_DIR)/edge/src/edge_terminal.c \
 		$(PKG_BUILD_DIR)/edge/src/edge_ws.c \
+		$(PKG_BUILD_DIR)/edge/src/edge_acquisition.c \
 		$(PKG_BUILD_DIR)/edge/src/edge_device_runtime.c \
 		$(PKG_BUILD_DIR)/edge/src/edge_modbus.c \
 		$(PKG_BUILD_DIR)/edge/src/edge_s7.c \
 		$(PKG_BUILD_DIR)/edge/src/edge_modem.c \
 		$(PKG_BUILD_DIR)/edge/src/main.c \
 		$(TARGET_LDFLAGS) -Wl,--gc-sections -flto \
-		-lev -luwsc -luci -lmbedcrypto \
+		-lev -luwsc -luci -lmbedcrypto -lm \
 		-o $(PKG_BUILD_DIR)/edgenode
 endef
 

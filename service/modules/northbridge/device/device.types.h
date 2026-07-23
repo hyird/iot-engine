@@ -92,6 +92,17 @@ struct SaveDeviceBody final {
     RUVIA_OPTIONAL_FIELD(name, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("device_code", deviceCode, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("link_id", linkId, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("edge_node_id", edgeNodeId, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("edge_transport", edgeTransport, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("edge_interface", edgeInterface, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("edge_mode", edgeMode, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("edge_ip", edgeIp, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("edge_port", edgePort, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("serial_baud_rate", serialBaudRate, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("serial_data_bits", serialDataBits, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("serial_stop_bits", serialStopBits, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("serial_parity", serialParity, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("serial_rs485", serialRs485, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("target_id", targetId, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("protocol_config_id", protocolConfigId, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("group_id", groupId, ruvia::String);
@@ -104,7 +115,9 @@ struct SaveDeviceBody final {
     RUVIA_OPTIONAL_FIELD(heartbeat, DevicePacketBody);
     RUVIA_OPTIONAL_FIELD(registration, DevicePacketBody);
     RUVIA_OPTIONAL_FIELD(remark, ruvia::String);
-    RUVIA_MODEL(SaveDeviceBody, name, deviceCode, linkId, targetId, protocolConfigId, groupId,
+    RUVIA_MODEL(SaveDeviceBody, name, deviceCode, linkId, edgeNodeId, edgeTransport,
+                edgeInterface, edgeMode, edgeIp, edgePort, serialBaudRate, serialDataBits,
+                serialStopBits, serialParity, serialRs485, targetId, protocolConfigId, groupId,
                 status, onlineTimeout, remoteControl, modbusMode, slaveId, timezone, heartbeat,
                 registration, remark);
 };
@@ -193,6 +206,19 @@ struct DeviceItemDto final {
     RUVIA_OPTIONAL_FIELD(name, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("device_code", deviceCode, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("link_id", linkId, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("edge_node_id", edgeNodeId, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("edge_node_name", edgeNodeName, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("edge_node_imei", edgeNodeImei, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("edge_transport", edgeTransport, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("edge_interface", edgeInterface, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("edge_mode", edgeMode, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("edge_ip", edgeIp, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("edge_port", edgePort, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("serial_baud_rate", serialBaudRate, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("serial_data_bits", serialDataBits, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("serial_stop_bits", serialStopBits, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("serial_parity", serialParity, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("serial_rs485", serialRs485, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("target_id", targetId, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("protocol_config_id", protocolConfigId, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("group_id", groupId, ruvia::String);
@@ -227,12 +253,15 @@ struct DeviceItemDto final {
     RUVIA_OPTIONAL_FIELD_NAME("can_share", canShare, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("can_command", canCommand, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("access_level", accessLevel, ruvia::String);
-    RUVIA_MODEL(DeviceItemDto, id, name, deviceCode, linkId, targetId, protocolConfigId, groupId,
-                status, onlineTimeout, remoteControl, modbusMode, slaveId, timezone, heartbeat,
-                registration, remark, createdBy, createdAt, updatedAt, linkName, linkMode,
-                linkProtocol, protocolName, protocolType, readInterval, storageInterval,
-                elementCount, connected, connectionState, reportTime, elements, commandOperations,
-                canEdit, canDelete, canShare, canCommand, accessLevel);
+    RUVIA_MODEL(DeviceItemDto, id, name, deviceCode, linkId, edgeNodeId, edgeNodeName,
+                edgeNodeImei, edgeTransport, edgeInterface, edgeMode, edgeIp, edgePort,
+                serialBaudRate, serialDataBits, serialStopBits, serialParity, serialRs485,
+                targetId, protocolConfigId, groupId, status, onlineTimeout, remoteControl,
+                modbusMode, slaveId, timezone, heartbeat, registration, remark, createdBy,
+                createdAt, updatedAt, linkName, linkMode, linkProtocol, protocolName,
+                protocolType, readInterval, storageInterval, elementCount, connected,
+                connectionState, reportTime, elements, commandOperations, canEdit, canDelete,
+                canShare, canCommand, accessLevel);
 };
 
 struct DeviceOptionDto final {

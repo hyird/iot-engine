@@ -123,8 +123,12 @@ struct EdgeNodeDto final {
     RUVIA_OPTIONAL_FIELD_NAME("supportsNetworkConfig", supportsNetworkConfig, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("supportsFirmwareUpdate", supportsFirmwareUpdate, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("supportsPlatformConfig", supportsPlatformConfig, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("supportsDeviceConfig", supportsDeviceConfig, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("ttydAvailable", ttydAvailable, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("activeConfigVersion", activeConfigVersion, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("desiredConfigVersion", desiredConfigVersion, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("configStatus", configStatus, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("configMessage", configMessage, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("outboxRecords", outboxRecords, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD_NAME("outboxBytes", outboxBytes, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD_NAME("lastSeenAt", lastSeenAt, ruvia::String);
@@ -135,9 +139,10 @@ struct EdgeNodeDto final {
     RUVIA_OPTIONAL_FIELD(tasks, ruvia::List<TaskDto>);
     RUVIA_MODEL(EdgeNodeDto, id, imei, name, model, softwareVersion, hostname, architecture,
                 openwrtRelease, enrollmentStatus, online, supportsNetworkConfig,
-                supportsFirmwareUpdate, supportsPlatformConfig, ttydAvailable,
-                activeConfigVersion, outboxRecords, outboxBytes, lastSeenAt, createdAt,
-                interfaces, serialPorts, platforms, tasks);
+                supportsFirmwareUpdate, supportsPlatformConfig, supportsDeviceConfig,
+                ttydAvailable, activeConfigVersion, desiredConfigVersion, configStatus,
+                configMessage, outboxRecords, outboxBytes, lastSeenAt, createdAt, interfaces,
+                serialPorts, platforms, tasks);
 };
 
 struct EdgePageDto final {

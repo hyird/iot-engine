@@ -7,6 +7,7 @@ import {
     getEdgeList,
     removePlatform,
     setEnrollment,
+    syncDeviceConfig,
     upgradeFirmware,
 } from './edge.api';
 import { type Edge, edgeQueryKeys } from './edge.types';
@@ -36,6 +37,14 @@ export function useNetworkMutation() {
         mutationFn: (value: { id: string; data: Edge.NetworkDto }) =>
             configureNetwork(value.id, value.data),
         successMessage: 'br-lan 配置已下发',
+        invalidateKeys: [edgeQueryKeys.all],
+    });
+}
+
+export function useDeviceConfigSyncMutation() {
+    return useMutationWithMessage({
+        mutationFn: syncDeviceConfig,
+        successMessage: '设备配置已生成并下发',
         invalidateKeys: [edgeQueryKeys.all],
     });
 }

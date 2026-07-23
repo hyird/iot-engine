@@ -940,12 +940,7 @@ const DevicePage = () => {
         setEditing(null);
     };
     const save = (values: DeviceFormValues) => {
-        const {
-            connection_mode: _connectionMode,
-            agent_id: _agentId,
-            agent_endpoint_id: _agentEndpointId,
-            ...dto
-        } = values;
+        const { connection_mode: _connectionMode, edge_protocol: _edgeProtocol, ...dto } = values;
         saveMutation.mutate({ ...dto, id: editing?.id }, { onSuccess: closeForm });
     };
     const remove = useCallback(

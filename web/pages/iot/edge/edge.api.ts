@@ -23,6 +23,8 @@ export const setEnrollment = (id: string, status: 'approved' | 'rejected', name?
     request.put<void>(`${BASE}/${edgeIdSchema.parse(id)}/enrollment`, { status, name });
 export const configureNetwork = (id: string, data: Edge.NetworkDto) =>
     request.post<void>(`${BASE}/${edgeIdSchema.parse(id)}/network`, networkSchema.parse(data));
+export const syncDeviceConfig = (id: string) =>
+    request.post<void>(`${BASE}/${edgeIdSchema.parse(id)}/sync`);
 export const configurePlatform = (id: string, data: Edge.PlatformDto) =>
     request.post<void>(`${BASE}/${edgeIdSchema.parse(id)}/platforms`, platformSchema.parse(data));
 export const removePlatform = (id: string, platformId: string) =>

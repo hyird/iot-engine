@@ -5,7 +5,7 @@
 
 namespace service::config {
 
-inline constexpr std::array<ruvia::DbMigration, 6> kSchemaMigrations{{
+inline constexpr std::array<ruvia::DbMigration, 7> kSchemaMigrations{{
     {"0001_initial_schema", R"sql(
 DO $schema$
 BEGIN
@@ -526,6 +526,47 @@ CREATE TABLE edge_task (
     completed_at TIMESTAMPTZ
 );
 CREATE INDEX idx_edge_task_node_created ON edge_task(node_id, created_at DESC);
+END
+$schema$;
+)sql"},
+    {"0007_edge_device_assignment", R"sql(
+DO $schema$
+BEGIN
+ALTER TABLE device ALTER COLUMN link_id DROP NOT NULL;
+ALTER TABLE device_data ALTER COLUMN link_id DROP NOT NULL;
+ALTER TABLE device
+    ADD COLUMN edge_node_id UUID REFERENCES edge_node(id) ON DELETE RESTRICT,
+    ADD COLUMN edge_endpoint JSONB NOT NULL DEFAULT '{}'::jsonb
+        CHECK (jsonb_typeof(edge_endpoint) = 'object');
+ALTER TABLE device ADD CONSTRAINT ck_device_connection_source CHECK (
+    (edge_node_id IS NULL AND link_id IS NOT NULL AND edge_endpoint = '{}'::jsonb)
+    OR
+    (edge_node_id IS NOT NULL AND link_id IS NULL AND edge_endpoint <> '{}'::jsonb)
+);
+CREATE INDEX idx_device_edge_node ON device(edge_node_id) WHERE deleted_at IS NULL;
+
+ALTER TABLE edge_node
+    ADD COLUMN desired_config_version BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN supports_device_config BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN config_status VARCHAR(20) NOT NULL DEFAULT 'idle'
+        CHECK (config_status IN ('idle', 'pending', 'applied', 'rejected')),
+    ADD COLUMN config_message VARCHAR(256) NOT NULL DEFAULT '';
+
+CREATE TABLE edge_config_revision (
+    node_id      UUID NOT NULL REFERENCES edge_node(id) ON DELETE CASCADE,
+    revision     BIGINT NOT NULL CHECK (revision > 0),
+    sha256       VARCHAR(64) NOT NULL CHECK (sha256 ~ '^[0-9a-f]{64}$'),
+    item_count   INTEGER NOT NULL CHECK (item_count BETWEEN 0 AND 512),
+    status       VARCHAR(20) NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending', 'applied', 'rejected')),
+    message      VARCHAR(256) NOT NULL DEFAULT '',
+    created_by   UUID REFERENCES sys_user(id) ON DELETE SET NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ,
+    PRIMARY KEY (node_id, revision)
+);
+CREATE INDEX idx_edge_config_revision_created
+    ON edge_config_revision(node_id, created_at DESC);
 END
 $schema$;
 )sql"},

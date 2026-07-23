@@ -6,7 +6,9 @@
 #include <uwsc/uwsc.h>
 
 #include "edge_config.h"
+#include "edge_acquisition.h"
 #include "edge_protocol.h"
+#include "edge_runtime_config.h"
 #include "edge_spool.h"
 
 typedef struct edge_ws_app edge_ws_app;
@@ -18,6 +20,7 @@ typedef struct {
     struct ev_timer firmware_timer;
     struct ev_timer reload_timer;
     struct ev_timer terminal_timer;
+    struct ev_timer acquisition_timer;
     edge_ws_app *app;
     const edge_platform_config *config;
     char transport_url[EDGE_URL_MAX + 32U];
@@ -26,6 +29,8 @@ typedef struct {
     uint64_t session_epoch;
     uint64_t active_revision;
     edge_spool spool;
+    edge_runtime_config runtime_config;
+    edge_acquisition *acquisition;
     uint64_t sequence;
     uint16_t heartbeat_interval_sec;
     bool client_active;

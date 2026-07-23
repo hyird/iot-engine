@@ -4,13 +4,14 @@
 
 import { Collapse, Form, Input, InputNumber, Radio, Select, Switch, TreeSelect } from 'antd';
 import type { RuleObject } from 'antd/es/form';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { FormModal } from '@/components/FormModal';
 
+import { useEdgeDetail, useEdgeList } from '../edge/edge.service';
 import type { Link } from '../link/link.types';
 import { useProtocolConfigOptions } from '../protocol/protocol.service';
 import type { Protocol } from '../protocol/protocol.types';
-import { useAgentEndpoints, useAgentOptions, useDeviceGroupTree } from './device.service';
+import { useDeviceGroupTree } from './device.service';
 import type { Device } from './device.types';
 import type { DeviceGroup } from './device-group.types';
 
@@ -42,18 +43,27 @@ const TIMEZONE_OPTIONS = Array.from({ length: 105 }, (_, index) => {
 });
 
 /** 连接方式 */
-type ConnectionMode = 'link' | 'agent';
+type ConnectionMode = 'link' | 'edge';
 
 interface DeviceFormValues {
     id?: string;
     name: string;
     device_code: string;
     connection_mode: ConnectionMode;
-    link_id: string;
+    link_id?: string;
     target_id?: string;
-    // Agent 模式字段
-    agent_id?: string;
-    agent_endpoint_id?: string;
+    edge_node_id?: string;
+    edge_protocol?: Protocol.Type;
+    edge_transport?: Device.EdgeTransport;
+    edge_interface?: string;
+    edge_mode?: Device.EdgeMode;
+    edge_ip?: string;
+    edge_port?: number;
+    serial_baud_rate?: number;
+    serial_data_bits?: number;
+    serial_stop_bits?: number;
+    serial_parity?: Device.SerialParity;
+    serial_rs485?: boolean;
 
     protocol_config_id: string;
     status: Device.Status;
@@ -95,35 +105,31 @@ const DeviceFormModal = ({
 }: DeviceFormModalProps) => {
     const [form] = Form.useForm<DeviceFormValues>();
     const { data: groupTree = [] } = useDeviceGroupTree();
-    const { data: agentListData } = useAgentOptions({ enabled: open });
-
-    const agentOptions = useMemo(() => agentListData ?? [], [agentListData]);
+    const { data: edgeListData, isLoading: edgeListLoading } = useEdgeList(
+        { page: 1, pageSize: 100, status: 'approved' },
+        open
+    );
 
     const connectionMode = Form.useWatch('connection_mode', form);
     const linkId = Form.useWatch('link_id', form);
-    const agentId = Form.useWatch('agent_id', form);
+    const edgeNodeId = Form.useWatch('edge_node_id', form);
+    const edgeProtocol = Form.useWatch('edge_protocol', form);
+    const edgeTransport = Form.useWatch('edge_transport', form);
+    const edgeMode = Form.useWatch('edge_mode', form);
+    const { data: edgeNode, isLoading: edgeNodeLoading } = useEdgeDetail(
+        connectionMode === 'edge' ? edgeNodeId : undefined
+    );
 
     // 本地链路模式：协议类型从选中链路推导
     const selectedLink = linkOptions.find((opt) => opt.id === linkId);
     const linkProtocolType = toProtocolType(selectedLink?.protocol);
 
-    // Agent 端点列表
-    const { data: agentEndpoints = [] } = useAgentEndpoints(agentId, {
-        enabled: !!agentId && connectionMode === 'agent',
-    });
-
-    // Agent 模式：用 React state 管理端点协议和模式（Form.useWatch 对辅助字段不可靠）
-    const [endpointProtocol, setEndpointProtocol] = useState<string>();
-    const [endpointMode, setEndpointMode] = useState<string>();
-    const agentProtocolType = toProtocolType(endpointProtocol);
-
     // 统一协议类型
-    const protocolType = connectionMode === 'agent' ? agentProtocolType : linkProtocolType;
+    const protocolType = connectionMode === 'edge' ? edgeProtocol : linkProtocolType;
 
-    // 心跳包/注册包仅 Modbus/S7 的 TCP Server 模式使用；SL651 由报文遥测站地址识别。
-    const linkMode = connectionMode === 'agent' ? endpointMode : selectedLink?.mode;
-    const showPacketConfig =
-        connectionMode !== 'agent' && linkMode === 'TCP Server' && protocolType !== 'SL651';
+    // 心跳包/注册包仅 Modbus/S7 的 TCP Server 模式使用。
+    const linkMode = connectionMode === 'edge' ? edgeMode : selectedLink?.mode;
+    const showPacketConfig = linkMode === 'TCP Server' && protocolType !== 'SL651';
 
     const { data: protocolOptions, isLoading: protocolOptionsLoading } = useProtocolConfigOptions(
         protocolType ?? 'Modbus',
@@ -131,17 +137,6 @@ const DeviceFormModal = ({
             enabled: !!protocolType,
         }
     );
-
-    // 编辑模式：端点数据异步加载后，同步协议信息到 state
-    const agentEndpointId = Form.useWatch('agent_endpoint_id', form);
-    useEffect(() => {
-        if (!agentEndpointId || !agentEndpoints.length) return;
-        const ep = agentEndpoints.find((e) => e.id === agentEndpointId);
-        if (ep && !endpointProtocol) {
-            setEndpointProtocol(ep.protocol);
-            setEndpointMode(ep.mode);
-        }
-    }, [agentEndpoints, agentEndpointId, endpointProtocol]);
 
     type GroupSelectNode = { value: string; title: string; children?: GroupSelectNode[] };
 
@@ -159,21 +154,29 @@ const DeviceFormModal = ({
         // 关闭动画结束后再清理表单，避免视觉闪烁
         if (!isOpen) {
             form.resetFields();
-            setEndpointProtocol(undefined);
-            setEndpointMode(undefined);
             return;
         }
         if (isOpen && editing) {
-            const isAgentMode = false;
+            const isEdgeMode = Boolean(editing.edge_node_id);
             form.setFieldsValue({
                 id: editing.id,
                 name: editing.name,
                 device_code: editing.device_code,
-                connection_mode: isAgentMode ? 'agent' : 'link',
-                link_id: isAgentMode ? undefined : editing.link_id,
+                connection_mode: isEdgeMode ? 'edge' : 'link',
+                link_id: isEdgeMode ? undefined : editing.link_id,
                 target_id: editing.target_id,
-                agent_id: editing.agent_id,
-                agent_endpoint_id: editing.agent_endpoint_id,
+                edge_node_id: editing.edge_node_id,
+                edge_protocol: editing.protocol_type,
+                edge_transport: editing.edge_transport,
+                edge_interface: editing.edge_interface,
+                edge_mode: editing.edge_mode,
+                edge_ip: editing.edge_ip,
+                edge_port: editing.edge_port,
+                serial_baud_rate: editing.serial_baud_rate,
+                serial_data_bits: editing.serial_data_bits,
+                serial_stop_bits: editing.serial_stop_bits,
+                serial_parity: editing.serial_parity,
+                serial_rs485: editing.serial_rs485,
                 protocol_config_id: editing.protocol_config_id,
                 status: editing.status,
                 online_timeout: editing.online_timeout,
@@ -186,7 +189,6 @@ const DeviceFormModal = ({
                 group_id: editing.group_id || undefined,
                 remark: editing.remark,
             });
-            // 编辑模式：协议信息会在 useEffect 中从 agentEndpoints 异步同步
         } else if (isOpen) {
             form.resetFields();
             form.setFieldsValue({
@@ -197,8 +199,6 @@ const DeviceFormModal = ({
                 heartbeat: { mode: 'OFF' },
                 registration: { mode: 'OFF' },
             });
-            setEndpointProtocol(undefined);
-            setEndpointMode(undefined);
         }
     };
 
@@ -207,26 +207,51 @@ const DeviceFormModal = ({
         form.setFieldsValue({ target_id: undefined, protocol_config_id: undefined });
     };
 
-    /** Agent 变更时清除端点和后续字段 */
-    const handleAgentChange = () => {
+    /** 边缘节点变更时清除其接口和后续字段。 */
+    const handleEdgeNodeChange = () => {
         form.setFieldsValue({
-            agent_endpoint_id: undefined,
+            edge_interface: undefined,
             protocol_config_id: undefined,
             modbus_mode: undefined,
         });
-        setEndpointProtocol(undefined);
-        setEndpointMode(undefined);
     };
 
-    /** 端点变更时同步写入协议信息并清除后续字段 */
-    const handleEndpointChange = (endpointId: string) => {
-        const ep = agentEndpoints.find((e) => e.id === endpointId);
-        setEndpointProtocol(ep?.protocol);
-        setEndpointMode(ep?.mode);
+    /** 边缘协议变更时清除端点约束和设备类型。 */
+    const handleEdgeProtocolChange = (protocol: Protocol.Type) => {
         form.setFieldsValue({
             protocol_config_id: undefined,
             modbus_mode: undefined,
+            edge_transport: protocol === 'S7' ? 'tcp' : undefined,
+            edge_mode: protocol === 'S7' ? 'TCP Client' : undefined,
+            edge_interface: undefined,
         });
+    };
+
+    const handleEdgeTransportChange = (transport: Device.EdgeTransport) => {
+        form.setFieldsValue({
+            edge_interface: undefined,
+            edge_mode: transport === 'tcp' ? form.getFieldValue('edge_mode') : undefined,
+            edge_ip: transport === 'tcp' ? form.getFieldValue('edge_ip') : undefined,
+            edge_port: transport === 'tcp' ? form.getFieldValue('edge_port') : undefined,
+            serial_baud_rate: transport === 'serial' ? 9600 : undefined,
+            serial_data_bits: transport === 'serial' ? 8 : undefined,
+            serial_stop_bits: transport === 'serial' ? 1 : undefined,
+            serial_parity: transport === 'serial' ? 'none' : undefined,
+            serial_rs485: transport === 'serial',
+        });
+    };
+
+    const handleEdgeInterfaceChange = (interfaceName: string) => {
+        if (edgeTransport !== 'tcp' || edgeMode !== 'TCP Server') return;
+        const item = edgeNode?.interfaces?.find((candidate) => candidate.name === interfaceName);
+        if (item?.ipv4) form.setFieldValue('edge_ip', item.ipv4);
+    };
+
+    const handleEdgeModeChange = (mode: Device.EdgeMode) => {
+        if (mode !== 'TCP Server') return;
+        const interfaceName = form.getFieldValue('edge_interface');
+        const item = edgeNode?.interfaces?.find((candidate) => candidate.name === interfaceName);
+        if (item?.ipv4) form.setFieldValue('edge_ip', item.ipv4);
     };
 
     /** 连接方式变更时清除相关字段 */
@@ -234,13 +259,16 @@ const DeviceFormModal = ({
         form.setFieldsValue({
             link_id: undefined,
             target_id: undefined,
-            agent_id: undefined,
-            agent_endpoint_id: undefined,
+            edge_node_id: undefined,
+            edge_protocol: undefined,
+            edge_transport: undefined,
+            edge_interface: undefined,
+            edge_mode: undefined,
+            edge_ip: undefined,
+            edge_port: undefined,
             protocol_config_id: undefined,
             modbus_mode: undefined,
         });
-        setEndpointProtocol(undefined);
-        setEndpointMode(undefined);
     };
 
     return (
@@ -251,13 +279,16 @@ const DeviceFormModal = ({
             onOk={() => form.submit()}
             confirmLoading={loading}
             destroyOnHidden
-            width={520}
+            width={720}
             afterOpenChange={handleOpen}
         >
             <Form<DeviceFormValues>
                 form={form}
                 layout="vertical"
                 onFinish={(values) => {
+                    if (connectionMode === 'edge' && protocolType === 'Modbus') {
+                        values.modbus_mode = edgeTransport === 'serial' ? 'RTU' : 'TCP';
+                    }
                     if (!showPacketConfig) {
                         values.heartbeat = { mode: 'OFF' };
                         values.registration = { mode: 'OFF' };
@@ -298,20 +329,20 @@ const DeviceFormModal = ({
                     />
                 </Form.Item>
 
-                {/* 当前北桥 CRUD 仅绑定本地链路；Agent 在对应管理模块接入后启用。 */}
                 <Form.Item
                     label="连接方式"
                     name="connection_mode"
                     rules={[{ required: true }]}
-                    extra="当前阶段仅配置本地链路"
+                    extra="边缘节点模式会把设备和要素配置下发到选定 OpenWrt 节点"
                 >
                     <Radio.Group onChange={handleConnectionModeChange} disabled={!!editing}>
                         <Radio.Button value="link">本地链路</Radio.Button>
+                        <Radio.Button value="edge">边缘节点</Radio.Button>
                     </Radio.Group>
                 </Form.Item>
 
                 {/* ===== 本地链路模式 ===== */}
-                {connectionMode !== 'agent' && (
+                {connectionMode === 'link' && (
                     <Form.Item
                         label="关联链路"
                         name="link_id"
@@ -335,7 +366,7 @@ const DeviceFormModal = ({
                     </Form.Item>
                 )}
 
-                {connectionMode !== 'agent' && selectedLink?.mode === 'TCP Client' && (
+                {connectionMode === 'link' && selectedLink?.mode === 'TCP Client' && (
                     <Form.Item
                         label="目标地址"
                         name="target_id"
@@ -359,53 +390,176 @@ const DeviceFormModal = ({
                     </Form.Item>
                 )}
 
-                {/* ===== 采集 Agent 模式 ===== */}
-                {connectionMode === 'agent' && (
+                {/* ===== 边缘节点采集模式 ===== */}
+                {connectionMode === 'edge' && (
                     <>
                         <Form.Item
-                            label="采集 Agent"
-                            name="agent_id"
-                            rules={[{ required: true, message: '请选择采集 Agent' }]}
+                            label="所属边缘节点"
+                            name="edge_node_id"
+                            rules={[{ required: true, message: '请选择已批准的边缘节点' }]}
                         >
                             <Select
-                                placeholder="选择 Agent"
-                                onChange={handleAgentChange}
+                                placeholder="选择边缘节点（IMEI）"
+                                onChange={handleEdgeNodeChange}
                                 disabled={!!editing}
+                                loading={edgeListLoading}
+                                showSearch
+                                optionFilterProp="label"
                             >
-                                {agentOptions.map((agent) => (
-                                    <Select.Option key={agent.id} value={agent.id}>
-                                        {agent.name} ({agent.code})
-                                        {agent.is_online ? '' : ' [离线]'}
+                                {(edgeListData?.list ?? []).map((node) => (
+                                    <Select.Option
+                                        key={node.id}
+                                        value={node.id}
+                                        label={`${node.name || node.hostname || node.imei} ${node.imei}`}
+                                        disabled={!node.supportsDeviceConfig}
+                                    >
+                                        {node.name || node.hostname || '未命名节点'} ({node.imei})
+                                        {!node.supportsDeviceConfig
+                                            ? ' [需升级 edgenode]'
+                                            : node.online
+                                              ? ''
+                                              : ' [离线]'}
                                     </Select.Option>
                                 ))}
                             </Select>
                         </Form.Item>
 
-                        {agentId && (
+                        <div className="grid grid-cols-1 gap-x-4 md:grid-cols-2">
                             <Form.Item
-                                label="接入端点"
-                                name="agent_endpoint_id"
-                                rules={[{ required: true, message: '请选择接入端点' }]}
+                                label="协议"
+                                name="edge_protocol"
+                                rules={[{ required: true, message: '请选择设备协议' }]}
+                            >
+                                <Select
+                                    placeholder="选择协议"
+                                    onChange={handleEdgeProtocolChange}
+                                    disabled={!!editing}
+                                >
+                                    <Select.Option value="Modbus">Modbus</Select.Option>
+                                    <Select.Option value="S7">S7</Select.Option>
+                                </Select>
+                            </Form.Item>
+                            <Form.Item
+                                label="传输方式"
+                                name="edge_transport"
+                                rules={[{ required: true, message: '请选择传输方式' }]}
+                            >
+                                <Select
+                                    placeholder="选择串口或 TCP"
+                                    onChange={handleEdgeTransportChange}
+                                    disabled={!edgeNodeId || edgeProtocol === 'S7'}
+                                >
+                                    {edgeProtocol !== 'S7' && (
+                                        <Select.Option value="serial">串口</Select.Option>
+                                    )}
+                                    <Select.Option value="tcp">TCP</Select.Option>
+                                </Select>
+                            </Form.Item>
+                        </div>
+
+                        {edgeTransport && (
+                            <Form.Item
+                                label={edgeTransport === 'serial' ? '节点串口' : '节点网口'}
+                                name="edge_interface"
+                                rules={[{ required: true, message: '请选择节点已上报的接口' }]}
                             >
                                 <Select
                                     placeholder={
-                                        agentEndpoints.length
-                                            ? '选择端点'
-                                            : '该 Agent 暂无端点，请先在 Agent 页面创建'
+                                        edgeNodeLoading
+                                            ? '正在读取节点接口'
+                                            : '选择节点已上报的接口'
                                     }
-                                    onChange={handleEndpointChange}
-                                    disabled={!!editing}
+                                    loading={edgeNodeLoading}
+                                    onChange={handleEdgeInterfaceChange}
                                 >
-                                    {agentEndpoints.map((ep) => (
-                                        <Select.Option key={ep.id} value={ep.id}>
-                                            {ep.name}
-                                            {ep.transport === 'serial'
-                                                ? ` (${ep.channel} · ${ep.baud_rate || ''} bps)`
-                                                : ` (${ep.mode} · ${[ep.ip, ep.port].filter(Boolean).join(':')})`}
-                                        </Select.Option>
-                                    ))}
+                                    {edgeTransport === 'serial'
+                                        ? (edgeNode?.serialPorts ?? []).map((serial) => (
+                                              <Select.Option
+                                                  key={serial.path}
+                                                  value={serial.path}
+                                                  disabled={!serial.available}
+                                              >
+                                                  {serial.displayName || serial.path} ({serial.path}
+                                                  ){serial.rs485 ? ' · RS485' : ''}
+                                                  {serial.available ? '' : ' [不可用]'}
+                                              </Select.Option>
+                                          ))
+                                        : (edgeNode?.interfaces ?? []).map((network) => (
+                                              <Select.Option
+                                                  key={network.name}
+                                                  value={network.name}
+                                              >
+                                                  {network.displayName || network.name}
+                                                  {network.ipv4 ? ` · ${network.ipv4}` : ''}
+                                                  {network.up ? '' : ' [未连接]'}
+                                              </Select.Option>
+                                          ))}
                                 </Select>
                             </Form.Item>
+                        )}
+
+                        {edgeTransport === 'tcp' && (
+                            <div className="grid grid-cols-1 gap-x-4 md:grid-cols-3">
+                                <Form.Item
+                                    label="TCP 模式"
+                                    name="edge_mode"
+                                    rules={[{ required: true, message: '请选择 TCP 模式' }]}
+                                >
+                                    <Select onChange={handleEdgeModeChange}>
+                                        <Select.Option value="TCP Client">TCP Client</Select.Option>
+                                        {edgeProtocol !== 'S7' && (
+                                            <Select.Option value="TCP Server">
+                                                TCP Server
+                                            </Select.Option>
+                                        )}
+                                    </Select>
+                                </Form.Item>
+                                <Form.Item
+                                    className="md:col-span-1"
+                                    label={edgeMode === 'TCP Server' ? '监听 IPv4' : '目标 IPv4'}
+                                    name="edge_ip"
+                                    rules={[{ required: true, message: '请输入 IPv4 地址' }]}
+                                >
+                                    <Input placeholder="192.168.1.10" />
+                                </Form.Item>
+                                <Form.Item
+                                    label={edgeMode === 'TCP Server' ? '监听端口' : '目标端口'}
+                                    name="edge_port"
+                                    rules={[{ required: true, message: '请输入端口' }]}
+                                >
+                                    <InputNumber className="w-full" min={1} max={65535} />
+                                </Form.Item>
+                            </div>
+                        )}
+
+                        {edgeTransport === 'serial' && (
+                            <div className="grid grid-cols-1 gap-x-4 md:grid-cols-3">
+                                <Form.Item label="波特率" name="serial_baud_rate">
+                                    <InputNumber className="w-full" min={300} max={4_000_000} />
+                                </Form.Item>
+                                <Form.Item label="数据位" name="serial_data_bits">
+                                    <Select options={[5, 6, 7, 8].map((value) => ({ value }))} />
+                                </Form.Item>
+                                <Form.Item label="停止位" name="serial_stop_bits">
+                                    <Select options={[1, 2].map((value) => ({ value }))} />
+                                </Form.Item>
+                                <Form.Item label="校验位" name="serial_parity">
+                                    <Select
+                                        options={[
+                                            { value: 'none', label: '无' },
+                                            { value: 'even', label: '偶校验' },
+                                            { value: 'odd', label: '奇校验' },
+                                        ]}
+                                    />
+                                </Form.Item>
+                                <Form.Item
+                                    label="RS485"
+                                    name="serial_rs485"
+                                    valuePropName="checked"
+                                >
+                                    <Switch />
+                                </Form.Item>
+                            </div>
                         )}
                     </>
                 )}
@@ -420,8 +574,8 @@ const DeviceFormModal = ({
                         placeholder={
                             protocolType
                                 ? '选择设备类型'
-                                : connectionMode === 'agent'
-                                  ? '请先选择端点'
+                                : connectionMode === 'edge'
+                                  ? '请先选择边缘协议'
                                   : '请先选择链路'
                         }
                         disabled={!!editing || !protocolType}
@@ -436,8 +590,8 @@ const DeviceFormModal = ({
                     </Select>
                 </Form.Item>
 
-                {/* Modbus 模式选择（Agent 模式下由端点 transport 自动决定，无需选择） */}
-                {protocolType === 'Modbus' && connectionMode !== 'agent' && (
+                {/* 边缘 Modbus 模式由串口/TCP 自动决定。 */}
+                {protocolType === 'Modbus' && connectionMode === 'link' && (
                     <Form.Item
                         label="Modbus 模式"
                         name="modbus_mode"

@@ -62,8 +62,12 @@ export namespace Edge {
         supportsNetworkConfig: boolean;
         supportsFirmwareUpdate: boolean;
         supportsPlatformConfig: boolean;
+        supportsDeviceConfig: boolean;
         ttydAvailable: boolean;
         activeConfigVersion: number;
+        desiredConfigVersion: number;
+        configStatus: 'idle' | 'pending' | 'applied' | 'rejected';
+        configMessage: string;
         outboxRecords: number;
         outboxBytes: number;
         lastSeenAt: string;

@@ -325,7 +325,8 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
        hostname, architecture, openwrt_release, enrollment_status,
        (last_seen_at IS NOT NULL AND last_seen_at > NOW() - INTERVAL '90 seconds'),
        supports_network_config, supports_firmware_update, supports_platform_config,
-       ttyd_available, active_config_version, outbox_records, outbox_bytes,
+       supports_device_config, ttyd_available, active_config_version, desired_config_version,
+       config_status, config_message, outbox_records, outbox_bytes,
        COALESCE(last_seen_at::text, ''), created_at::text
 FROM edge_node)sql";
     }
@@ -356,12 +357,16 @@ FROM edge_node)sql";
             .supportsNetworkConfig(row[10].text() == "t")
             .supportsFirmwareUpdate(row[11].text() == "t")
             .supportsPlatformConfig(row[12].text() == "t")
-            .ttydAvailable(row[13].text() == "t")
-            .activeConfigVersion(integer(row[14].text()))
-            .outboxRecords(integer(row[15].text()))
-            .outboxBytes(integer(row[16].text()))
-            .lastSeenAt(row[17].text())
-            .createdAt(row[18].text());
+            .supportsDeviceConfig(row[13].text() == "t")
+            .ttydAvailable(row[14].text() == "t")
+            .activeConfigVersion(integer(row[15].text()))
+            .desiredConfigVersion(integer(row[16].text()))
+            .configStatus(row[17].text())
+            .configMessage(row[18].text())
+            .outboxRecords(integer(row[19].text()))
+            .outboxBytes(integer(row[20].text()))
+            .lastSeenAt(row[21].text())
+            .createdAt(row[22].text());
     }
 
     static std::vector<std::string> split(std::string_view value) {

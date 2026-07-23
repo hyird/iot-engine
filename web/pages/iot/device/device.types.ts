@@ -36,14 +36,34 @@ export interface RegistrationConfig {
     content?: string;
 }
 
+export type EdgeTransport = 'serial' | 'tcp';
+export type EdgeMode = 'TCP Client' | 'TCP Server';
+export type SerialParity = 'none' | 'even' | 'odd';
+
+export interface EdgeConnection {
+    edge_node_id?: string;
+    edge_node_name?: string;
+    edge_node_imei?: string;
+    edge_transport?: EdgeTransport;
+    edge_interface?: string;
+    edge_mode?: EdgeMode;
+    edge_ip?: string;
+    edge_port?: number;
+    serial_baud_rate?: number;
+    serial_data_bits?: number;
+    serial_stop_bits?: number;
+    serial_parity?: SerialParity;
+    serial_rs485?: boolean;
+}
+
 /** 设备列表项 */
-export interface DeviceItem {
+export interface DeviceItem extends EdgeConnection {
     id: string;
     name: string;
     /** 全局唯一设备编码 */
     device_code: string;
-    /** 关联链路 ID（0 表示 Agent 模式） */
-    link_id: string;
+    /** 本地采集时关联的链路 ID；边缘采集设备为空 */
+    link_id?: string;
     /** TCP Client 链路中的目标 ID */
     target_id?: string;
     /** 关联协议配置 ID */
@@ -85,10 +105,6 @@ export interface DeviceItem {
     protocol_name?: string;
     protocol_type?: Protocol.Type;
 
-    // Agent 模式字段（link_id = 0 时返回）
-    agent_id?: string;
-    agent_endpoint_id?: string;
-
     // 资源权限
     can_edit?: boolean;
     can_delete?: boolean;
@@ -117,10 +133,10 @@ export interface DeviceQuery extends PageParams {
 }
 
 /** 创建设备 DTO */
-export interface CreateDeviceDto {
+export interface CreateDeviceDto extends EdgeConnection {
     name: string;
     device_code: string;
-    link_id: string;
+    link_id?: string;
     target_id?: string;
     protocol_config_id: string;
     group_id?: string | null;
@@ -140,13 +156,10 @@ export interface CreateDeviceDto {
     /** 注册包配置 */
     registration?: RegistrationConfig;
     remark?: string;
-    // Agent 模式字段（link_id = 0 时使用）
-    agent_id?: string;
-    agent_endpoint_id?: string;
 }
 
 /** 更新设备 DTO */
-export interface UpdateDeviceDto {
+export interface UpdateDeviceDto extends EdgeConnection {
     name?: string;
     device_code?: string;
     link_id?: string;
@@ -174,13 +187,13 @@ export interface UpdateDeviceDto {
 // ========== 设备静态数据类型（支持 ETag 缓存）==========
 
 /** 设备静态数据（不包含实时数据，用于 ETag 缓存） */
-export interface DeviceStaticData {
+export interface DeviceStaticData extends EdgeConnection {
     // 基本信息
     id: string;
     name: string;
     /** 全局唯一设备编码 */
     device_code: string;
-    link_id: string;
+    link_id?: string;
     target_id?: string;
     protocol_config_id: string;
     status: DeviceStatus;
@@ -209,10 +222,6 @@ export interface DeviceStaticData {
     // 协议配置（按协议类型有条件返回）
     commandOperations?: CommandOperation[];
     imageOperations?: ImageOperation[];
-
-    // Agent 模式字段（link_id = 0 时返回）
-    agent_id?: string;
-    agent_endpoint_id?: string;
 
     // 资源权限
     can_edit?: boolean;
@@ -460,6 +469,9 @@ type ReplaceDeviceSharesDtoType = ReplaceDeviceSharesDto;
 type DeviceCommandStatus = CommandStatus;
 type DeviceCommandCreateResult = CommandCreateResult;
 type DeviceCommandStatusResult = CommandStatusResult;
+type DeviceEdgeTransport = EdgeTransport;
+type DeviceEdgeMode = EdgeMode;
+type DeviceSerialParity = SerialParity;
 
 /** 设备模块命名空间 */
 export namespace Device {
@@ -473,6 +485,9 @@ export namespace Device {
     export type UpdateDto = UpdateDeviceDto;
     export type HeartbeatConfig = DeviceHeartbeatConfig;
     export type RegistrationConfig = DeviceRegistrationConfig;
+    export type EdgeTransport = DeviceEdgeTransport;
+    export type EdgeMode = DeviceEdgeMode;
+    export type SerialParity = DeviceSerialParity;
 
     // 静态数据（ETag 缓存）
     export type StaticData = DeviceStaticData;

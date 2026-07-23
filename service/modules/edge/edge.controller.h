@@ -14,6 +14,7 @@
 #include "service/common/uuid.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/permission.h"
+#include "service/modules/edge/edge.config.service.h"
 #include "service/modules/edge/edge.schema.h"
 #include "service/modules/edge/edge.service.h"
 
@@ -27,6 +28,7 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
     RUVIA_GET("/firmware", firmwares);
     RUVIA_PUT("/:id/enrollment", enrollment, EdgeIdValidator, EnrollmentValidator);
     RUVIA_POST("/:id/network", network, EdgeIdValidator, NetworkValidator);
+    RUVIA_POST("/:id/sync", sync, EdgeIdValidator);
     RUVIA_POST("/:id/platforms", savePlatform, EdgeIdValidator, PlatformValidator);
     RUVIA_DELETE("/:id/platforms/:platformId", removePlatform,
                  EdgePlatformParamsValidator);
@@ -68,6 +70,12 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
         co_await service::middleware::requirePermission(c, "iot:edge:config");
         co_await edgeService().queueNetwork(c, id(c), c.req().valid<NetworkBody>());
         co_return c.json(service::common::operation(c, "br-lan 配置已下发"));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> sync(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:edge:config");
+        (void)co_await edgeConfigService().queueSnapshot(c, id(c));
+        co_return c.json(service::common::operation(c, "设备配置已生成并下发"));
     }
 
     ruvia::Task<ruvia::HttpResponse> savePlatform(ruvia::Context& c) {

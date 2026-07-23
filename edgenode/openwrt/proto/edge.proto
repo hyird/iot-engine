@@ -104,6 +104,7 @@ message Hello {
   bool mobile_registered = 20;
   int32 mobile_registration_status = 21;
   bool supports_platform_config = 22;
+  bool supports_device_config = 23;
 }
 
 message HelloAck {
@@ -219,6 +220,9 @@ message EndpointConfig {
   uint32 port = 7;
   SerialSettings serial = 8;
   bool enabled = 9;
+  // The exact interface name reported by the node. TCP sockets bind to this
+  // interface; serial endpoints use SerialSettings.channel as the device path.
+  string interface_name = 10 [(nanopb).max_length = 32];
 }
 
 message DeviceConfig {
@@ -260,7 +264,7 @@ message ModbusRegisterConfig {
   string unit = 4 [(nanopb).max_length = 32];
   string register_type = 5 [(nanopb).max_length = 24];
   string data_type = 6 [(nanopb).max_length = 24];
-  string byte_order = 7 [(nanopb).max_length = 8];
+  string byte_order = 7 [(nanopb).max_length = 24];
   uint32 address = 8;
   uint32 quantity = 9;
   double scale = 10;
@@ -435,6 +439,11 @@ message CommandResult {
   repeated TelemetryValue actual_values = 4 [(nanopb).max_count = 8];
   bool write_ack_missing = 5;
   int64 completed_at_ms = 6;
+  bytes device_id = 7 [(nanopb).max_size = 16];
+}
+
+message CommandResultAck {
+  bytes command_id = 1 [(nanopb).max_size = 16];
 }
 
 message NetworkInterfaceConfig {
@@ -565,6 +574,7 @@ message Envelope {
     CommandRequest command_request = 50;
     CommandProgress command_progress = 51;
     CommandResult command_result = 52;
+    CommandResultAck command_result_ack = 53;
     NetworkConfigRequest network_config_request = 60;
     NetworkConfigResult network_config_result = 61;
     FirmwareUpdateRequest firmware_update_request = 62;

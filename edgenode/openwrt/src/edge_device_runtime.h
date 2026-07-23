@@ -30,7 +30,7 @@ typedef enum {
 
 typedef struct {
     uint8_t command_id[16];
-    uint8_t element_id[16];
+    char element_id[65];
     uint8_t value[EDGE_DEVICE_VALUE_MAX];
     size_t value_size;
 } edge_write_command;

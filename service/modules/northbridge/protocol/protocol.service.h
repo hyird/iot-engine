@@ -10,6 +10,7 @@
 #include <ruvia/web/ModelObject.h>
 #include <ruvia/web/db/Db.h>
 
+#include "service/modules/edge/edge.config.service.h"
 #include "service/modules/northbridge/queue/config_event.publisher.h"
 #include "service/common/http.h"
 #include "service/common/uuid.h"
@@ -155,6 +156,7 @@ SET name = CASE WHEN body.value ? 'name' THEN body.value->>'name' ELSE p.name EN
 FROM body WHERE p.id = $2)sql",
                                       service::common::dbParams(payload.view(), id));
         co_await service::bridge::publishConfigEvent(c, "protocol", "updated", id);
+        co_await syncEdgeNodes(c, id);
     }
 
     ruvia::Task<void> remove(ruvia::Context& c, std::string_view id) {
@@ -177,6 +179,17 @@ FROM body WHERE p.id = $2)sql",
     }
 
   private:
+    static ruvia::Task<void> syncEdgeNodes(ruvia::Context& c, std::string_view configId) {
+        const auto rows = co_await c.db().query(R"sql(
+SELECT DISTINCT edge_node_id::text
+FROM device
+WHERE protocol_config_id = $1::uuid AND edge_node_id IS NOT NULL AND deleted_at IS NULL
+ORDER BY edge_node_id::text)sql",
+                                                service::common::dbParams(configId));
+        for (const auto& row : rows.rows())
+            (void)co_await service::edge::edgeConfigService().queueSnapshot(c, row[0].text());
+    }
+
     static std::int64_t toInt(std::string_view value) { return std::stoll(std::string(value)); }
 
     static std::string itemExpression() {

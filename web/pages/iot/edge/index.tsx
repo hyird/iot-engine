@@ -30,6 +30,7 @@ import { firmwareUpgradeSchema, networkSchema, platformSchema } from './edge.sch
 import {
     useEdgeDetail,
     useEdgeList,
+    useDeviceConfigSyncMutation,
     useEnrollmentMutation,
     useFirmwareUpgradeMutation,
     useNetworkMutation,
@@ -50,6 +51,7 @@ function statusTag(status: string) {
         accepted: { color: 'processing', text: '已接收' },
         running: { color: 'processing', text: '执行中' },
         failed: { color: 'error', text: '失败' },
+        idle: { color: 'default', text: '未下发' },
     };
     const item = map[status] ?? { color: 'default', text: status || '-' };
     return <Tag color={item.color}>{item.text}</Tag>;
@@ -195,6 +197,7 @@ export default function EdgeNodePage() {
     const { data: detail, isLoading: detailLoading } = useEdgeDetail(selectedId);
     const enrollment = useEnrollmentMutation();
     const network = useNetworkMutation();
+    const deviceConfigSync = useDeviceConfigSyncMutation();
     const platform = usePlatformMutation();
     const platformDelete = usePlatformDeleteMutation();
     const firmwareUpgrade = useFirmwareUpgradeMutation();
@@ -444,6 +447,15 @@ export default function EdgeNodePage() {
                 extra={
                     detail && detail.enrollmentStatus === 'approved' ? (
                         <Space wrap>
+                            {canConfig && detail.supportsDeviceConfig && (
+                                <Button
+                                    type="primary"
+                                    loading={deviceConfigSync.isPending}
+                                    onClick={() => deviceConfigSync.mutate(detail.id)}
+                                >
+                                    同步设备配置
+                                </Button>
+                            )}
                             {canConfig && detail.supportsNetworkConfig && (
                                 <Button onClick={showNetwork}>配置 br-lan</Button>
                             )}
@@ -491,6 +503,11 @@ export default function EdgeNodePage() {
                             </Descriptions.Item>
                             <Descriptions.Item label="缓存">
                                 {detail.outboxRecords} 条 / {formatBytes(detail.outboxBytes)}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="设备配置">
+                                {statusTag(detail.configStatus)} V{detail.activeConfigVersion} / V
+                                {detail.desiredConfigVersion}
+                                {detail.configMessage ? ` · ${detail.configMessage}` : ''}
                             </Descriptions.Item>
                             <Descriptions.Item label="ttyd">
                                 {detail.ttydAvailable ? (

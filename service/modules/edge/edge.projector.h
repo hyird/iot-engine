@@ -6,6 +6,7 @@
 #include <future>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -149,6 +150,18 @@ class EdgeProjector final {
             co_await savePlatformResult(context, nodeId,
                                         envelope.payload.platform_config_result);
             break;
+        case iot_edge_v1_Envelope_config_applied_tag:
+            co_await saveConfigApplied(context, nodeId, envelope.payload.config_applied);
+            break;
+        case iot_edge_v1_Envelope_config_rejected_tag:
+            co_await saveConfigRejected(context, nodeId, envelope.payload.config_rejected);
+            break;
+        case iot_edge_v1_Envelope_telemetry_batch_tag:
+            co_await saveTelemetry(context, nodeId, envelope.payload.telemetry_batch);
+            break;
+        case iot_edge_v1_Envelope_command_result_tag:
+            co_await saveCommandResult(context, nodeId, envelope.payload.command_result);
+            break;
         default:
             break;
         }
@@ -162,8 +175,8 @@ class EdgeProjector final {
         const auto rows = co_await context.db().query(R"sql(
 INSERT INTO edge_node(id, platform_id, imei, model, software_version, hostname, architecture,
                       openwrt_release, supports_network_config, supports_firmware_update,
-                      supports_platform_config, updated_at)
-VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+                      supports_platform_config, supports_device_config, updated_at)
+VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
 ON CONFLICT (platform_id, imei) DO UPDATE
 SET model = EXCLUDED.model, software_version = EXCLUDED.software_version,
     hostname = EXCLUDED.hostname, architecture = EXCLUDED.architecture,
@@ -171,6 +184,7 @@ SET model = EXCLUDED.model, software_version = EXCLUDED.software_version,
     supports_network_config = EXCLUDED.supports_network_config,
     supports_firmware_update = EXCLUDED.supports_firmware_update,
     supports_platform_config = EXCLUDED.supports_platform_config,
+    supports_device_config = EXCLUDED.supports_device_config,
     updated_at = NOW()
 RETURNING id::text, enrollment_status)sql",
                                                      service::common::dbParams(
@@ -180,7 +194,8 @@ RETURNING id::text, enrollment_status)sql",
                                                          hello.architecture, hello.openwrt_release,
                                                          hello.supports_network_config,
                                                          hello.supports_firmware_update,
-                                                         hello.supports_platform_config));
+                                                         hello.supports_platform_config,
+                                                         hello.supports_device_config));
         const auto key = protocol::authKey(hello.imei);
         const auto value = std::string(rows.rows().front()[0].text()) + "|" +
                            std::string(rows.rows().front()[1].text());
@@ -192,12 +207,29 @@ RETURNING id::text, enrollment_status)sql",
                                            const iot_edge_v1_Heartbeat& heartbeat) {
         (void)co_await context.db().execute(R"sql(
 UPDATE edge_node SET active_config_version = $1, outbox_records = $2, outbox_bytes = $3,
+                     config_status = CASE
+                         WHEN desired_config_version = $1 AND $1 > 0 THEN 'applied'
+                         ELSE config_status END,
+                     config_message = CASE
+                         WHEN desired_config_version = $1 AND $1 > 0 THEN ''
+                         ELSE config_message END,
                      last_seen_at = NOW(), updated_at = NOW()
 WHERE id = $4::uuid)sql",
                                             service::common::dbParams(
                                                 heartbeat.active_config_version,
                                                 heartbeat.outbox_records, heartbeat.outbox_bytes,
                                                 nodeId));
+        if (heartbeat.active_config_version != 0) {
+            (void)co_await context.db().execute(R"sql(
+UPDATE edge_config_revision revision
+SET status = 'applied', message = '', completed_at = COALESCE(completed_at, NOW())
+FROM edge_node node
+WHERE revision.node_id = node.id AND node.id = $1::uuid
+  AND revision.revision = $2 AND node.desired_config_version = $2)sql",
+                                                service::common::dbParams(
+                                                    nodeId,
+                                                    heartbeat.active_config_version));
+        }
     }
 
     static std::string mac(const iot_edge_v1_InterfaceCapability& item) {
@@ -331,6 +363,196 @@ WHERE node_id = $1::uuid
                      WHERE id = $2::uuid AND task_type = 'platform_delete'))sql",
                                                 service::common::dbParams(nodeId, id));
         }
+    }
+
+    static std::string hex(const std::uint8_t* value, std::size_t size) {
+        constexpr char digits[] = "0123456789abcdef";
+        std::string output;
+        output.reserve(size * 2);
+        for (std::size_t index = 0; index < size; ++index) {
+            output.push_back(digits[value[index] >> 4U]);
+            output.push_back(digits[value[index] & 0x0fU]);
+        }
+        return output;
+    }
+
+    static ruvia::Task<void> saveConfigApplied(ruvia::WebWorkerContext& context,
+                                                std::string_view nodeId,
+                                                const iot_edge_v1_ConfigApplied& result) {
+        if (result.revision == 0 || result.sha256.size != 32)
+            co_return;
+        const auto digest = hex(result.sha256.bytes, 32);
+        (void)co_await context.db().execute(R"sql(
+UPDATE edge_config_revision
+SET status = 'applied', message = '', completed_at = NOW()
+WHERE node_id = $1::uuid AND revision = $2 AND sha256 = $3)sql",
+                                            service::common::dbParams(
+                                                nodeId, static_cast<std::int64_t>(result.revision),
+                                                digest));
+        (void)co_await context.db().execute(R"sql(
+UPDATE edge_node
+SET active_config_version = GREATEST(active_config_version, $1),
+    config_status = CASE WHEN desired_config_version = $1 THEN 'applied' ELSE config_status END,
+    config_message = CASE WHEN desired_config_version = $1 THEN '' ELSE config_message END,
+    updated_at = NOW()
+WHERE id = $2::uuid)sql",
+                                            service::common::dbParams(
+                                                static_cast<std::int64_t>(result.revision),
+                                                nodeId));
+    }
+
+    static ruvia::Task<void> saveConfigRejected(ruvia::WebWorkerContext& context,
+                                                 std::string_view nodeId,
+                                                 const iot_edge_v1_ConfigRejected& result) {
+        if (result.revision == 0)
+            co_return;
+        const std::string message = std::string(result.code) + ": " + result.message;
+        (void)co_await context.db().execute(R"sql(
+UPDATE edge_config_revision
+SET status = 'rejected', message = $1, completed_at = NOW()
+WHERE node_id = $2::uuid AND revision = $3)sql",
+                                            service::common::dbParams(
+                                                message, nodeId,
+                                                static_cast<std::int64_t>(result.revision)));
+        (void)co_await context.db().execute(R"sql(
+UPDATE edge_node
+SET config_status = CASE WHEN desired_config_version = $1 THEN 'rejected' ELSE config_status END,
+    config_message = CASE WHEN desired_config_version = $1 THEN $2 ELSE config_message END,
+    updated_at = NOW()
+WHERE id = $3::uuid)sql",
+                                            service::common::dbParams(
+                                                static_cast<std::int64_t>(result.revision), message,
+                                                nodeId));
+    }
+
+    static std::string protocolName(iot_edge_v1_Protocol value) {
+        if (value == iot_edge_v1_Protocol_PROTOCOL_MODBUS)
+            return "Modbus";
+        if (value == iot_edge_v1_Protocol_PROTOCOL_S7)
+            return "S7";
+        if (value == iot_edge_v1_Protocol_PROTOCOL_SL651)
+            return "SL651";
+        return {};
+    }
+
+    static std::string scalarJson(const iot_edge_v1_ScalarValue& value) {
+        switch (value.which_value) {
+        case iot_edge_v1_ScalarValue_bool_value_tag:
+            return value.value.bool_value ? "true" : "false";
+        case iot_edge_v1_ScalarValue_signed_value_tag:
+            return std::to_string(value.value.signed_value);
+        case iot_edge_v1_ScalarValue_unsigned_value_tag:
+            return std::to_string(value.value.unsigned_value);
+        case iot_edge_v1_ScalarValue_double_value_tag: {
+            std::ostringstream output;
+            output.precision(15);
+            output << value.value.double_value;
+            return output.str();
+        }
+        case iot_edge_v1_ScalarValue_string_value_tag:
+            return "\"" + jsonEscape(value.value.string_value) + "\"";
+        case iot_edge_v1_ScalarValue_bytes_value_tag:
+            return "\"" + hex(value.value.bytes_value.bytes, value.value.bytes_value.size) +
+                   "\"";
+        default:
+            return "null";
+        }
+    }
+
+    static std::string telemetryJson(const iot_edge_v1_TelemetryRecord& record) {
+        std::string output = "{\"function_code\":\"" +
+                             jsonEscape(record.function_code) + "\",\"function_name\":\"" +
+                             jsonEscape(record.function_name) + "\",\"direction\":\"" +
+                             jsonEscape(record.direction) + "\",\"values\":{";
+        for (pb_size_t index = 0; index < record.values_count; ++index) {
+            if (index != 0)
+                output.push_back(',');
+            const auto& item = record.values[index];
+            output += "\"" + jsonEscape(item.element_id) + "\":{\"name\":\"" +
+                      jsonEscape(item.name) + "\",\"value\":" +
+                      (item.has_value ? scalarJson(item.value) : "null") +
+                      ",\"unit\":\"" + jsonEscape(item.unit) + "\"}";
+        }
+        output += "}}";
+        return output;
+    }
+
+    static ruvia::Task<void> saveTelemetry(ruvia::WebWorkerContext& context,
+                                            std::string_view nodeId,
+                                            const iot_edge_v1_TelemetryBatch& batch) {
+        for (pb_size_t index = 0; index < batch.records_count; ++index) {
+            const auto& record = batch.records[index];
+            if (record.record_id.size != 16 || record.device_id.size != 16)
+                continue;
+            const auto deviceId = protocol::uuidText(record.device_id.bytes);
+            const auto metadata = co_await context.db().query(R"sql(
+SELECT d.protocol_params->>'device_code',
+       GREATEST(1, CEIL(COALESCE((p.config->>'storageInterval')::numeric, 1)))::bigint,
+       COALESCE((d.protocol_params->>'online_timeout')::integer, 300), p.protocol
+FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id
+WHERE d.id = $1::uuid AND d.edge_node_id = $2::uuid AND d.deleted_at IS NULL LIMIT 1)sql",
+                                                              service::common::dbParams(deviceId,
+                                                                                        nodeId));
+            if (metadata.rows().empty())
+                continue;
+            const auto& row = metadata.rows().front();
+            bridge::ParsedDeviceMessage parsed;
+            parsed.messageId = protocol::uuidText(record.record_id.bytes);
+            parsed.causationId = parsed.messageId;
+            parsed.linkId = "";
+            parsed.deviceId = deviceId;
+            parsed.deviceCode = std::string(row[0].text());
+            parsed.protocol = protocolName(record.protocol);
+            if (parsed.protocol.empty())
+                parsed.protocol = std::string(row[3].text());
+            parsed.connectionId = std::string(nodeId);
+            parsed.occurredAtMs = record.observed_at_ms;
+            parsed.observedAtMs = record.observed_at_ms;
+            parsed.storageInterval = std::stoll(std::string(row[1].text()));
+            parsed.onlineWindowMs = std::stoll(std::string(row[2].text())) * 1000;
+            parsed.source = "edge";
+            parsed.valuesJson = telemetryJson(record);
+            if (record.raw_payload.size != 0)
+                parsed.rawPayloads.emplace_back(record.raw_payload.bytes,
+                                                record.raw_payload.bytes +
+                                                    record.raw_payload.size);
+            (void)co_await bridge::redis_async::publish(context.redis(), bridge::parsedStream(0),
+                                                        bridge::parsedFields(parsed), 100000);
+        }
+    }
+
+    static ruvia::Task<void> saveCommandResult(ruvia::WebWorkerContext& context,
+                                                std::string_view nodeId,
+                                                const iot_edge_v1_CommandResult& result) {
+        if (result.command_id.size != 16 || result.device_id.size != 16)
+            co_return;
+        const auto commandId = protocol::uuidText(result.command_id.bytes);
+        const auto deviceId = protocol::uuidText(result.device_id.bytes);
+        const auto device = co_await context.db().query(R"sql(
+SELECT d.protocol_params->>'device_code', p.protocol
+FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id
+WHERE d.id = $1::uuid AND d.edge_node_id = $2::uuid AND d.deleted_at IS NULL LIMIT 1)sql",
+                                                        service::common::dbParams(deviceId,
+                                                                                  nodeId));
+        if (device.rows().empty())
+            co_return;
+        const bool success =
+            result.state == iot_edge_v1_CommandState_COMMAND_STATE_SUCCEEDED;
+        (void)co_await bridge::redis_async::publish(
+            context.redis(), bridge::commandResultStream(0),
+            {{"message_id", bridge::nextMessageId()},
+             {"causation_id", commandId},
+             {"command_id", commandId},
+             {"device_id", deviceId},
+             {"device_code", std::string(device.rows().front()[0].text())},
+             {"protocol", std::string(device.rows().front()[1].text())},
+             {"attempt", "1"},
+             {"success", success ? "1" : "0"},
+             {"reason", std::string(result.message)},
+             {"worker_id", "0"},
+             {"created_at_ms", std::to_string(bridge::utcNowMilliseconds())},
+             {"completed_at_ms", std::to_string(result.completed_at_ms)}},
+            10000);
     }
 
     static std::string jsonEscape(std::string_view value) {
