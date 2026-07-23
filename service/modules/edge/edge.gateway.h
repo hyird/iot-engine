@@ -13,7 +13,6 @@
 #include <ruvia/core/TaskScope.h>
 #include <ruvia/web/Controller.h>
 #include <web_terminal.pb.h>
-#include <zlib.h>
 
 #include "service/common/http.h"
 #include "service/common/uuid.h"
@@ -516,20 +515,8 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
             co_return;
         const auto id = protocol::uuidText(data.terminal_id());
         const auto key = "iot:edge:terminal:out:" + id;
-        std::string output;
-        if (data.compressed()) {
-            std::array<Bytef, 4096> inflated{};
-            uLongf inflatedSize = inflated.size();
-            if (uncompress(inflated.data(), &inflatedSize,
-                           reinterpret_cast<const Bytef*>(data.data().data()),
-                           data.data().size()) != Z_OK)
-                co_return;
-            output.assign(reinterpret_cast<const char*>(inflated.data()), inflatedSize);
-        } else {
-            output = data.data();
-        }
         webpb::WebTerminalFrame frame;
-        frame.mutable_data()->set_data(output);
+        frame.mutable_data()->set_data(data.data());
         std::string wire;
         if (!frame.SerializeToString(&wire))
             co_return;

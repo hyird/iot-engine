@@ -592,7 +592,6 @@ message TerminalOpen {
 message TerminalData {
   bytes terminal_id = 1 [(nanopb).max_size = 16];
   bytes data = 2 [(nanopb).max_size = 4096];
-  bool compressed = 3;
 }
 
 message TerminalResize {

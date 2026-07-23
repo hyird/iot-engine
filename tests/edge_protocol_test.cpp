@@ -119,24 +119,6 @@ void testNanopbBounds() {
             "failed decode retained an invalid payload");
 }
 
-void testCompressedTerminalWireContract() {
-    service::edge::pb::TerminalData data;
-    data.set_terminal_id(std::string(16, '\1'));
-    data.set_data("abc");
-    data.set_compressed(true);
-
-    std::string wire;
-    require(data.SerializeToString(&wire), "compressed terminal serialization failed");
-    const std::array<std::uint8_t, 25> nanopbWire{
-        0x0a, 0x10, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
-        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
-        0x12, 0x03, 0x61, 0x62, 0x63, 0x18, 0x01,
-    };
-    require(wire == std::string_view(reinterpret_cast<const char*>(nanopbWire.data()),
-                                     nanopbWire.size()),
-            "compressed terminal wire differs from the nanopb contract");
-}
-
 void testWebTerminalProtobuf() {
     ::iot::edge::terminal::v1::WebTerminalFrame frame;
     frame.mutable_resize()->set_columns(120);
@@ -168,7 +150,6 @@ int main() {
     testConfigItemNanopbWireContract();
     testEnvelopeRoundTrip();
     testNanopbBounds();
-    testCompressedTerminalWireContract();
     testWebTerminalProtobuf();
     std::cout << "edge protocol tests passed\n";
 }
