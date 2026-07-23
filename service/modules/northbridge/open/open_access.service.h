@@ -536,7 +536,8 @@ VALUES ($1::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, $4, $5,
                                       deviceCode, safeMessage, requestPayload, responsePayload));
     }
 
-    ruvia::Task<std::string> realtimeData(ruvia::Context& c, std::string_view deviceId) {
+    template <typename Context>
+    ruvia::Task<std::string> realtimeData(Context& c, std::string_view deviceId) {
         const auto deviceRows = co_await c.db().query(R"sql(
 SELECT device.name, device.protocol_params->>'device_code'
 FROM device WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
@@ -911,7 +912,8 @@ FROM open_webhook WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
         return {};
     }
 
-    static ruvia::Task<std::vector<Point>> configuredPoints(ruvia::Context& c,
+    template <typename Context>
+    static ruvia::Task<std::vector<Point>> configuredPoints(Context& c,
                                                             std::string_view deviceId) {
         const auto rows = co_await c.db().query(R"sql(
 WITH configured AS (

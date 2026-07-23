@@ -20,6 +20,11 @@ int main() {
                     "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8",
                 "HMAC-SHA256 contract changed");
         require(open::jsonQuoted("a\n\"b") == "\"a\\n\\\"b\"", "JSON escaping contract changed");
+        require(open::webhookEnvelope("device.data.reported", "1970-01-01T00:00:00.000Z",
+                                      "delivery-1",
+                                      R"({"device":{"id":"device-1"},"points":[]})") ==
+                    R"({"event":"device.data.reported","time":"1970-01-01T00:00:00.000Z","deliveryId":"delivery-1","data":{"device":{"id":"device-1"},"points":[]}})",
+                "Webhook envelope contract changed");
         require(open::iso8601(0) == "1970-01-01T00:00:00.000Z", "UTC timestamp contract changed");
         const auto key = open::generateAccessKey();
         require(key.starts_with("ak_") && key.size() == 51, "AccessKey format contract changed");

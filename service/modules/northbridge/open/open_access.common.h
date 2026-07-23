@@ -106,6 +106,13 @@ inline std::string jsonEscape(std::string_view value) {
 
 inline std::string jsonQuoted(std::string_view value) { return "\"" + jsonEscape(value) + "\""; }
 
+inline std::string webhookEnvelope(std::string_view eventType, std::string_view occurredAt,
+                                   std::string_view deliveryId, std::string_view dataJson) {
+    return "{\"event\":" + jsonQuoted(eventType) + ",\"time\":" + jsonQuoted(occurredAt) +
+           ",\"deliveryId\":" + jsonQuoted(deliveryId) + ",\"data\":" +
+           std::string(dataJson) + "}";
+}
+
 inline std::optional<ruvia::JsonValue> jsonField(const ruvia::JsonValue& object,
                                                  std::string_view field) {
     if (!object.isObject())
