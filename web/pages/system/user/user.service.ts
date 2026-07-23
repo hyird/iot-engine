@@ -7,7 +7,7 @@ import type { User } from './user.types';
 import { roleOptionQueryKey, userQueryKeys } from './user.types';
 import type { PaginatedResult } from '@/utils/types';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
-import { create, getList, getOptions, getRoleOptions, remove, update } from './user.api';
+import { create, getList, getOptions, getRoleOptions, remove, update } from './user.client';
 
 // ============ Queries ============
 

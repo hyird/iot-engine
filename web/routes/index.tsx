@@ -13,8 +13,8 @@ const ModbusConfigPage = lazy(() => import('@/pages/iot/protocol/ModbusConfig'))
 const SL651ConfigPage = lazy(() => import('@/pages/iot/protocol/SL651Config'));
 const S7ConfigPage = lazy(() => import('@/pages/iot/protocol/S7Config'));
 const DevicePage = lazy(() => import('@/pages/iot/device'));
-const OpenAccessPage = lazy(() => import('@/pages/iot/open-access'));
-const EdgeNodePage = lazy(() => import('@/pages/iot/edge'));
+const AccessPage = lazy(() => import('@/pages/iot/open-access'));
+const EdgeNodePage = lazy(() => import('@/pages/iot/edge-node'));
 
 const routeErrorElement = (
     <div className="flex h-screen items-center justify-center p-6">
@@ -63,7 +63,7 @@ const router = createHashRouter([
                     { path: 'iot/sl651', element: <SL651ConfigPage /> },
                     { path: 'iot/s7', element: <S7ConfigPage /> },
                     { path: 'device', element: <DevicePage /> },
-                    { path: 'iot/open-access', element: <OpenAccessPage /> },
+                    { path: 'iot/open-access', element: <AccessPage /> },
                     { path: 'iot/edge', element: <EdgeNodePage /> },
                 ],
             },

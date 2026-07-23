@@ -2,7 +2,7 @@ import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { createQueryKeys } from '@/utils/query';
 import type { PaginatedResult } from '@/utils/types';
-import * as api from './device.api';
+import * as api from './device.client';
 import type { Device } from './device.types';
 import type { DeviceGroup } from './device-group.types';
 

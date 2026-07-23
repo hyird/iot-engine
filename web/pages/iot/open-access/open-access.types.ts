@@ -2,15 +2,15 @@ import { createQueryKeys } from '@/utils/query';
 import type { PageParams, PaginatedResult } from '@/utils/types';
 
 const keys = createQueryKeys('open-access');
-export const openAccessQueryKeys = {
+export const accessQueryKeys = {
     ...keys,
     devices: () => [...keys.all, 'devices'] as const,
     keys: () => [...keys.all, 'keys'] as const,
     webhooks: (accessKeyId?: string) => [...keys.all, 'webhooks', accessKeyId] as const,
-    logs: (query: OpenAccess.LogQuery) => [...keys.all, 'logs', query] as const,
+    logs: (query: Access.LogQuery) => [...keys.all, 'logs', query] as const,
 };
 
-export namespace OpenAccess {
+export namespace Access {
     export type Status = 'enabled' | 'disabled';
     export type Scope = 'device:realtime' | 'device:history' | 'device:command' | 'alert:read';
     export type EventType =

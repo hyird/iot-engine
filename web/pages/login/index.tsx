@@ -18,7 +18,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { APP_NAME, getAppTitle } from '@/config/app';
 import { useAuthStore } from '@/store/authStore';
 import { validateForm } from '@/utils/validation';
-import { login } from './login.api';
+import { login } from './login.client';
 import { loginSchema } from './login.schema';
 import type { Auth } from './login.types';
 

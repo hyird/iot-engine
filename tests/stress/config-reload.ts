@@ -119,13 +119,13 @@ async function activeVersion(previous = '') {
 
 async function waitForWorkers(version: string) {
     const initialKeys = (await waitFor(
-        'South Worker runtime config states',
+        'Collector Worker runtime states',
         async () =>
             (await redis.send('KEYS', ['iot:state:runtime-config:worker:*'])) as string[],
         (keys) => keys.length > 0,
     )) as string[];
     await waitFor(
-        `all ${initialKeys.length} South Workers to apply ${version}`,
+        `all ${initialKeys.length} Collector Workers to apply ${version}`,
         async () => Promise.all(initialKeys.map(async (key) => (await hash(key)).version ?? '')),
         (versions) => versions.length === initialKeys.length && versions.every((value) => value === version),
     );

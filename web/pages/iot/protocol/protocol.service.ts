@@ -2,7 +2,7 @@ import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { createQueryKeys } from '@/utils/query';
 import type { PaginatedResult } from '@/utils/types';
-import * as api from './protocol.api';
+import * as api from './protocol.client';
 import type { Protocol } from './protocol.types';
 
 export const protocolQueryKeys = {

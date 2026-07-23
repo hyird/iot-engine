@@ -1,7 +1,7 @@
 import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import type { PaginatedResult } from '@/utils/types';
-import { create, getEnums, getList, getPublicIp, remove, update } from './link.api';
+import { create, getEnums, getList, getPublicIp, remove, update } from './link.client';
 import { type Link, linkQueryKeys } from './link.types';
 
 export function useLinkList(

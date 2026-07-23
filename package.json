@@ -17,11 +17,11 @@
         "typecheck": "tsc --noEmit",
         "format": "biome format --write .",
         "format:check": "biome format .",
-        "test:web-terminal": "bun test tests/web_terminal_protocol_test.ts",
+        "test:web-terminal": "bun test tests/terminal-protocol-test.ts",
         "stress:setup": "bun tests/stress/setup.ts",
         "stress:config-reload": "bun tests/stress/config-reload.ts",
         "stress:latest-read-model": "bun tests/stress/latest-read-model.ts",
-        "stress:southbridge": "bun tests/stress/southbridge.ts"
+        "stress:collector": "bun tests/stress/collector.ts"
     },
     "dependencies": {
         "@ant-design/cssinjs": "^2.1.2",

@@ -7,7 +7,7 @@ import type { RuleObject } from 'antd/es/form';
 import { useMemo } from 'react';
 import { FormModal } from '@/components/FormModal';
 
-import { useEdgeDetail, useEdgeList } from '../edge/edge.service';
+import { useEdgeDetail, useEdgeList } from '../edge-node/edge-node.service';
 import type { Link } from '../link/link.types';
 import { useProtocolConfigOptions } from '../protocol/protocol.service';
 import type { Protocol } from '../protocol/protocol.types';

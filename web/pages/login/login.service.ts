@@ -5,7 +5,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
-import { fetchCurrentUser, logout } from './login.api';
+import { fetchCurrentUser, logout } from './login.client';
 
 const loginKeys = {
     currentUser: ['auth', 'currentUser'] as const,

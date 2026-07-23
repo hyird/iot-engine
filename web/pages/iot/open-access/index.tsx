@@ -50,7 +50,7 @@ import {
     useWebhookDelete,
     useWebhookUpdate,
 } from './open-access.service';
-import type { OpenAccess } from './open-access.types';
+import type { Access } from './open-access.types';
 
 const { Search, TextArea } = Input;
 const TAB_WEBHOOK = 'webhook';
@@ -59,7 +59,7 @@ const TAB_LOG = 'access-log';
 const SCOPE_OPTIONS: Array<{
     label: string;
     shortLabel: string;
-    value: OpenAccess.Scope;
+    value: Access.Scope;
     color: string;
 }> = [
     { label: '读取实时数据', shortLabel: '实时', value: 'device:realtime', color: 'blue' },
@@ -70,7 +70,7 @@ const SCOPE_OPTIONS: Array<{
 
 const EVENT_TYPE_OPTIONS: Array<{
     label: string;
-    value: OpenAccess.EventType;
+    value: Access.EventType;
     color: string;
 }> = [
     { label: '数据上报', value: 'device.data.reported', color: 'blue' },
@@ -81,7 +81,7 @@ const EVENT_TYPE_OPTIONS: Array<{
     { label: '告警恢复', value: 'device.alert.resolved', color: 'green' },
 ];
 
-const STATUS_OPTIONS: Array<{ label: string; value: OpenAccess.Status }> = [
+const STATUS_OPTIONS: Array<{ label: string; value: Access.Status }> = [
     { label: '启用', value: 'enabled' },
     { label: '禁用', value: 'disabled' },
 ];
@@ -171,7 +171,7 @@ const WEBHOOK_PAYLOAD_EXAMPLE = JSON.stringify(
 
 interface AccessKeyFormValues {
     name: string;
-    status: OpenAccess.Status;
+    status: Access.Status;
     allowRealtime: boolean;
     allowHistory: boolean;
     allowCommand: boolean;
@@ -190,9 +190,9 @@ interface WebhookFormValues {
     accessKeyId: string;
     name: string;
     url: string;
-    status: OpenAccess.Status;
+    status: Access.Status;
     timeoutSeconds: number;
-    eventTypes: OpenAccess.EventType[];
+    eventTypes: Access.EventType[];
     secret?: string;
     headers?: WebhookHeaderFormItem[];
 }
@@ -210,7 +210,7 @@ function formatPayload(payload?: Record<string, unknown>) {
     return JSON.stringify(payload, null, 2);
 }
 
-function renderEventTypes(eventTypes: OpenAccess.EventType[]) {
+function renderEventTypes(eventTypes: Access.EventType[]) {
     return (
         <Space size={[4, 4]} wrap>
             {eventTypes.map((eventType) => {
@@ -286,12 +286,12 @@ function AccessKeyFormModal({
     onFinish,
 }: {
     open: boolean;
-    editing: OpenAccess.KeyItem | null;
+    editing: Access.KeyItem | null;
     loading: boolean;
-    devices: OpenAccess.DeviceOption[];
+    devices: Access.DeviceOption[];
     devicesLoading: boolean;
     onCancel: () => void;
-    onFinish: (values: OpenAccess.KeySaveDto) => void;
+    onFinish: (values: Access.KeySaveDto) => void;
 }) {
     const [form] = Form.useForm<AccessKeyFormValues>();
     const selectedDeviceIds = Form.useWatch('deviceIds', form) ?? [];
@@ -352,7 +352,7 @@ function AccessKeyFormModal({
                 form={form}
                 layout="vertical"
                 onFinish={(values) => {
-                    const scopes: OpenAccess.Scope[] = [];
+                    const scopes: Access.Scope[] = [];
                     if (values.allowRealtime) scopes.push('device:realtime');
                     if (values.allowHistory) scopes.push('device:history');
                     if (values.allowCommand) scopes.push('device:command');
@@ -477,11 +477,11 @@ function WebhookFormModal({
     onFinish,
 }: {
     open: boolean;
-    editing: OpenAccess.WebhookItem | null;
+    editing: Access.WebhookItem | null;
     loading: boolean;
-    accessKeys: OpenAccess.KeyItem[];
+    accessKeys: Access.KeyItem[];
     onCancel: () => void;
-    onFinish: (values: OpenAccess.WebhookSaveDto) => void;
+    onFinish: (values: Access.WebhookSaveDto) => void;
 }) {
     const [form] = Form.useForm<WebhookFormValues>();
     const selectedAccessKeyId = Form.useWatch('accessKeyId', form);
@@ -536,7 +536,7 @@ function WebhookFormModal({
                             .map((item) => [item.key, item.value])
                     );
                     const secret = values.secret?.trim();
-                    const payload: OpenAccess.WebhookSaveDto = {
+                    const payload: Access.WebhookSaveDto = {
                         accessKeyId: values.accessKeyId,
                         name: values.name,
                         url: values.url,
@@ -669,19 +669,19 @@ function WebhookFormModal({
     );
 }
 
-function OpenAccessContent() {
+function AccessContent() {
     const { modal } = App.useApp();
     const { has } = usePermissions();
     const [activeTab, setActiveTab] = useState(TAB_WEBHOOK);
     const [webhookKeyword, setWebhookKeyword] = useState('');
     const [logKeyword, setLogKeyword] = useState('');
-    const [logQuery, setLogQuery] = useState<OpenAccess.LogQuery>({ page: 1, pageSize: 20 });
+    const [logQuery, setLogQuery] = useState<Access.LogQuery>({ page: 1, pageSize: 20 });
     const [accessKeyModalOpen, setAccessKeyModalOpen] = useState(false);
     const [webhookModalOpen, setWebhookModalOpen] = useState(false);
     const [usageModalOpen, setUsageModalOpen] = useState(false);
-    const [editingAccessKey, setEditingAccessKey] = useState<OpenAccess.KeyItem | null>(null);
-    const [editingWebhook, setEditingWebhook] = useState<OpenAccess.WebhookItem | null>(null);
-    const [selectedLog, setSelectedLog] = useState<OpenAccess.LogItem | null>(null);
+    const [editingAccessKey, setEditingAccessKey] = useState<Access.KeyItem | null>(null);
+    const [editingWebhook, setEditingWebhook] = useState<Access.WebhookItem | null>(null);
+    const [selectedLog, setSelectedLog] = useState<Access.LogItem | null>(null);
 
     const { data: accessKeys = [], isLoading: loadingAccessKeys } = useOpenKeys();
     const { data: webhooks = [], isLoading: loadingWebhooks } = useOpenWebhooks();
@@ -762,7 +762,7 @@ function OpenAccessContent() {
         );
     };
 
-    const renderScopes = (scopes: OpenAccess.Scope[]) => (
+    const renderScopes = (scopes: Access.Scope[]) => (
         <Space size={[4, 4]} wrap>
             {SCOPE_OPTIONS.filter((item) => scopes.includes(item.value)).map((item) => (
                 <Tag key={item.value} color={item.color}>
@@ -809,7 +809,7 @@ function OpenAccessContent() {
         );
     })();
 
-    const showSecret = (secret: OpenAccess.KeySecret, title: string) => {
+    const showSecret = (secret: Access.KeySecret, title: string) => {
         modal.info({
             title,
             width: 640,
@@ -836,7 +836,7 @@ function OpenAccessContent() {
         });
     };
 
-    const accessKeyColumns: ColumnsType<OpenAccess.KeyItem> = [
+    const accessKeyColumns: ColumnsType<Access.KeyItem> = [
         { title: '名称', dataIndex: 'name', width: 180 },
         {
             title: '认证 Key 前缀',
@@ -852,13 +852,13 @@ function OpenAccessContent() {
             title: '状态',
             dataIndex: 'status',
             width: 90,
-            render: (value: OpenAccess.Status) => <StatusTag status={value} />,
+            render: (value: Access.Status) => <StatusTag status={value} />,
         },
         {
             title: '访问权限',
             dataIndex: 'scopes',
             width: 240,
-            render: (value: OpenAccess.Scope[]) => renderScopes(value),
+            render: (value: Access.Scope[]) => renderScopes(value),
         },
         {
             title: '设备范围',
@@ -951,7 +951,7 @@ function OpenAccessContent() {
         },
     ];
 
-    const webhookColumns: ColumnsType<OpenAccess.WebhookItem> = [
+    const webhookColumns: ColumnsType<Access.WebhookItem> = [
         { title: '名称', dataIndex: 'name', width: 180 },
         { title: '绑定调用配置', dataIndex: 'accessKeyName', width: 180 },
         {
@@ -968,7 +968,7 @@ function OpenAccessContent() {
             title: '事件',
             dataIndex: 'eventTypes',
             width: 260,
-            render: (value: OpenAccess.EventType[]) => renderEventTypes(value),
+            render: (value: Access.EventType[]) => renderEventTypes(value),
         },
         {
             title: '继承设备',
@@ -986,7 +986,7 @@ function OpenAccessContent() {
             title: '状态',
             dataIndex: 'status',
             width: 90,
-            render: (value: OpenAccess.Status) => <StatusTag status={value} />,
+            render: (value: Access.Status) => <StatusTag status={value} />,
         },
         {
             title: '最近触发',
@@ -1099,7 +1099,7 @@ function OpenAccessContent() {
         );
     };
 
-    const logColumns: ColumnsType<OpenAccess.LogItem> = [
+    const logColumns: ColumnsType<Access.LogItem> = [
         { title: '时间', dataIndex: 'createdAt', width: 180, render: formatDateTime },
         {
             title: '调用配置',
@@ -1230,7 +1230,7 @@ function OpenAccessContent() {
         },
     ];
 
-    const updateLogQuery = (patch: Partial<OpenAccess.LogQuery>) => {
+    const updateLogQuery = (patch: Partial<Access.LogQuery>) => {
         setLogQuery((previous) => ({ ...previous, ...patch, page: 1 }));
     };
     const handleLogTableChange = (pagination: TablePaginationConfig) => {
@@ -1360,7 +1360,7 @@ function OpenAccessContent() {
                         title="调用配置说明"
                         description="支持创建多个 AccessKey；每个调用配置可单独设置设备范围与访问权限，Webhook 再绑定到对应配置。"
                     />
-                    <Table<OpenAccess.KeyItem>
+                    <Table<Access.KeyItem>
                         rowKey="id"
                         columns={accessKeyColumns}
                         dataSource={accessKeys}
@@ -1393,7 +1393,7 @@ function OpenAccessContent() {
                                             title="推送规则"
                                             description="Webhook 按事件类型分发，设备范围继承绑定调用配置；若还没有调用配置，请先创建调用配置。"
                                         />
-                                        <Table<OpenAccess.WebhookItem>
+                                        <Table<Access.WebhookItem>
                                             rowKey="id"
                                             columns={webhookColumns}
                                             dataSource={filteredWebhooks}
@@ -1468,7 +1468,7 @@ function OpenAccessContent() {
                                                 重置筛选
                                             </Button>
                                         </div>
-                                        <Table<OpenAccess.LogItem>
+                                        <Table<Access.LogItem>
                                             rowKey="id"
                                             columns={logColumns}
                                             dataSource={filteredLogs}
@@ -1782,7 +1782,7 @@ function OpenAccessContent() {
     );
 }
 
-export default function OpenAccessPage() {
+export default function AccessPage() {
     const { has } = usePermissions();
     if (!has('iot:open-access:query')) {
         return (
@@ -1795,5 +1795,5 @@ export default function OpenAccessPage() {
             </PageContainer>
         );
     }
-    return <OpenAccessContent />;
+    return <AccessContent />;
 }

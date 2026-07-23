@@ -49,18 +49,18 @@ FetchContent_MakeAvailable(nanopb)
 
 find_package(Protobuf CONFIG REQUIRED)
 
-set(EDGENODE_PROTO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/service/modules/edge")
+set(EDGENODE_PROTO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/service/features/edge")
 set(EDGENODE_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/edgenode")
 set(EDGENODE_PROTO_SOURCE "${EDGENODE_PROTO_DIR}/edge.proto")
-set(WEB_TERMINAL_PROTO_SOURCE "${EDGENODE_PROTO_DIR}/web_terminal.proto")
+set(WEB_TERMINAL_PROTO_SOURCE "${EDGENODE_PROTO_DIR}/terminal.proto")
 set(EDGENODE_NANOPB_PROTO_SOURCE
     "${nanopb_SOURCE_DIR}/generator/proto/nanopb.proto")
 set(EDGENODE_PROTO_CPP "${EDGENODE_GENERATED_DIR}/edge.pb.cc")
 set(EDGENODE_PROTO_H "${EDGENODE_GENERATED_DIR}/edge.pb.h")
 set(EDGENODE_NANOPB_PROTO_CPP "${EDGENODE_GENERATED_DIR}/nanopb.pb.cc")
 set(EDGENODE_NANOPB_PROTO_H "${EDGENODE_GENERATED_DIR}/nanopb.pb.h")
-set(WEB_TERMINAL_PROTO_CPP "${EDGENODE_GENERATED_DIR}/web_terminal.pb.cc")
-set(WEB_TERMINAL_PROTO_H "${EDGENODE_GENERATED_DIR}/web_terminal.pb.h")
+set(WEB_TERMINAL_PROTO_CPP "${EDGENODE_GENERATED_DIR}/terminal.pb.cc")
+set(WEB_TERMINAL_PROTO_H "${EDGENODE_GENERATED_DIR}/terminal.pb.h")
 add_custom_command(
     OUTPUT
         "${EDGENODE_PROTO_CPP}"
@@ -92,7 +92,7 @@ find_package(spdlog CONFIG REQUIRED)
 
 add_executable(iot-engine
     service/server.cpp
-    service/common/packet_log.cpp
+    service/common/packet-log.cpp
     "${EDGENODE_PROTO_CPP}"
     "${EDGENODE_NANOPB_PROTO_CPP}"
     "${WEB_TERMINAL_PROTO_CPP}")
@@ -108,26 +108,26 @@ if(MSVC)
 endif()
 
 enable_testing()
-add_executable(southbridge-protocol-test
-    tests/southbridge_protocol_test.cpp
-    service/common/packet_log.cpp)
-target_include_directories(southbridge-protocol-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(southbridge-protocol-test PRIVATE ruvia::web spdlog::spdlog)
+add_executable(collector-protocol-test
+    tests/collector-protocol-test.cpp
+    service/common/packet-log.cpp)
+target_include_directories(collector-protocol-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(collector-protocol-test PRIVATE ruvia::web spdlog::spdlog)
 if(MSVC)
-    target_compile_options(southbridge-protocol-test PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
+    target_compile_options(collector-protocol-test PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
 endif()
-add_test(NAME southbridge-protocol COMMAND southbridge-protocol-test)
+add_test(NAME collector-protocol COMMAND collector-protocol-test)
 
-add_executable(open-access-test tests/open_access_test.cpp)
-target_include_directories(open-access-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(open-access-test PRIVATE ruvia::web)
+add_executable(access-test tests/access-test.cpp)
+target_include_directories(access-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(access-test PRIVATE ruvia::web)
 if(MSVC)
-    target_compile_options(open-access-test PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
+    target_compile_options(access-test PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
 endif()
-add_test(NAME open-access COMMAND open-access-test)
+add_test(NAME access COMMAND access-test)
 
 add_executable(edge-protocol-test
-    tests/edge_protocol_test.cpp
+    tests/edge-protocol-test.cpp
     "${EDGENODE_PROTO_CPP}"
     "${EDGENODE_NANOPB_PROTO_CPP}"
     "${WEB_TERMINAL_PROTO_CPP}")
@@ -155,6 +155,4 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.env")
                 "${CMAKE_BINARY_DIR}/.env"
         COMMENT "Copying .env into ${CMAKE_BINARY_DIR}"
         VERBATIM)
-else()
-    message(WARNING ".env not found; build/.env will not be created")
 endif()

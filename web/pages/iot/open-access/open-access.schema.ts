@@ -17,7 +17,7 @@ export const webhookEventSchema = z.enum([
     'device.alert.resolved',
 ]);
 const uuidSchema = z.uuid({ error: '必须是 UUID' });
-export const openAccessIdSchema = uuidSchema;
+export const accessIdSchema = uuidSchema;
 const nullableString = z.string().nullable();
 
 export const keySaveSchema = z.object({
