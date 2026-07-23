@@ -130,7 +130,8 @@ function formatBytes(value: number) {
 }
 
 function formatConfigVersion(value: number) {
-    return value > 0 ? formatDateTime(value) : '--';
+    if (value <= 0) return '--';
+    return value >= 1_000_000_000_000 ? formatDateTime(value) : String(value);
 }
 
 function simStateText(state: Edge.Node['simState']) {

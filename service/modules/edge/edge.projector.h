@@ -259,7 +259,7 @@ SET status = 'succeeded',
     result = result || jsonb_build_object(
         'state', 'rebooted',
         'message', 'firmware reboot confirmed',
-        'softwareVersion', $1),
+        'softwareVersion', $1::text),
     updated_at = NOW(),
     completed_at = NOW()
 WHERE id = (
