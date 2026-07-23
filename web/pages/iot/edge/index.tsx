@@ -6,6 +6,7 @@ import {
     EditOutlined,
     EyeOutlined,
     GlobalOutlined,
+    MobileOutlined,
     PlusOutlined,
     SyncOutlined,
     UploadOutlined,
@@ -25,6 +26,7 @@ import {
     Modal,
     Pagination,
     Popconfirm,
+    Progress,
     Result,
     Select,
     Skeleton,
@@ -55,6 +57,7 @@ import { validateForm } from '@/utils/validation';
 import { getEdgeDetail, getTerminalTicket } from './edge.api';
 import {
     firmwareUpgradeSchema,
+    modemControlSchema,
     networkEditorSchema,
     nodeNameSchema,
     platformSchema,
@@ -65,6 +68,7 @@ import {
     useEdgeList,
     useEnrollmentMutation,
     useFirmwareUpgradeMutation,
+    useModemControlMutation,
     useNetworkMutation,
     useNodeNameMutation,
     usePlatformDeleteMutation,
@@ -103,6 +107,29 @@ function formatBytes(value: number) {
     return `${(value / 1024 / 1024).toFixed(1)} MiB`;
 }
 
+function formatConfigVersion(value: number) {
+    return value > 0 ? formatDateTime(value) : '--';
+}
+
+function simStateText(state: Edge.Node['simState']) {
+    const values: Record<Edge.Node['simState'], string> = {
+        unknown: '未知',
+        ready: '就绪',
+        not_inserted: '未插卡',
+        pin_required: '需要 PIN',
+        puk_required: '需要 PUK',
+        blocked: '已锁定',
+    };
+    return values[state] ?? '未知';
+}
+
+function mobileState(node: Edge.Node) {
+    if (!node.modemAvailable) return '未检测到';
+    if (node.simState !== 'ready') return `SIM ${simStateText(node.simState)}`;
+    if (node.mobileConnected) return `已连接${node.mobileIpv4 ? ` · ${node.mobileIpv4}` : ''}`;
+    return node.mobileRegistered ? '已注册，未拨号' : '未注册';
+}
+
 function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
     return [
         { key: 'hostname', label: '主机名', children: node.hostname || '-' },
@@ -116,7 +143,9 @@ function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
         {
             key: 'configVersion',
             label: '配置版本',
-            children: `${node.activeConfigVersion ?? 0} / ${node.desiredConfigVersion ?? 0}`,
+            children: `${formatConfigVersion(node.activeConfigVersion)} / ${formatConfigVersion(
+                node.desiredConfigVersion
+            )}`,
         },
         {
             key: 'outbox',
@@ -131,6 +160,43 @@ function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
                     ? '可用'
                     : '需升级代理',
         },
+        { key: 'mobileState', label: '4G 状态', children: mobileState(node) },
+        { key: 'iccid', label: 'ICCID', children: node.iccid || '-' },
+        {
+            key: 'mobileSignal',
+            label: '4G 信号',
+            children: node.modemAvailable
+                ? `${node.signalPercent}%${
+                      node.signalRssiDbm !== -1 ? ` · ${node.signalRssiDbm} dBm` : ''
+                  }`
+                : '-',
+        },
+        {
+            key: 'mobileNetwork',
+            label: 'APN / 运营商',
+            children: [node.apn, node.mobileOperator].filter(Boolean).join(' / ') || '-',
+        },
+        ...(node.firmwareStatus === 'accepted' || node.firmwareStatus === 'running'
+            ? [
+                  {
+                      key: 'firmwareProgress',
+                      label: '固件下载',
+                      children: (
+                          <Progress
+                              percent={node.firmwareProgressPercent}
+                              size="small"
+                              status="active"
+                              format={(percent) =>
+                                  `${percent ?? 0}% · ${formatBytes(
+                                      node.firmwareDownloadedBytes
+                                  )} / ${formatBytes(node.firmwareTotalBytes)}`
+                              }
+                          />
+                      ),
+                      span: 2,
+                  } satisfies DeviceCardItem,
+              ]
+            : []),
     ];
 }
 
@@ -351,17 +417,21 @@ export default function EdgeNodePage() {
     const [editingNetwork, setEditingNetwork] = useState<Edge.Network>();
     const [platformNode, setPlatformNode] = useState<Edge.Node>();
     const [firmwareNode, setFirmwareNode] = useState<Edge.Node>();
+    const [modemNode, setModemNode] = useState<Edge.Node>();
     const [terminalNode, setTerminalNode] = useState<Edge.Node>();
     const [networkOpen, setNetworkOpen] = useState(false);
     const [platformOpen, setPlatformOpen] = useState(false);
     const [firmwareOpen, setFirmwareOpen] = useState(false);
+    const [modemOpen, setModemOpen] = useState(false);
     const [terminalOpen, setTerminalOpen] = useState(false);
     const [networkForm] = Form.useForm<NetworkFormValues>();
     const [platformForm] = Form.useForm<Edge.PlatformDto>();
     const [firmwareForm] = Form.useForm<Edge.FirmwareUpgradeDto>();
+    const [modemForm] = Form.useForm<Edge.ModemControlDto>();
     const [nameForm] = Form.useForm<Edge.NameDto>();
     const networkMode = Form.useWatch('mode', networkForm);
     const networkBridge = Form.useWatch('bridge', networkForm);
+    const modemAction = Form.useWatch('action', modemForm);
     const { modal } = App.useApp();
     const { run: search } = useDebounceFn((value: string) => {
         setKeyword(value);
@@ -378,6 +448,7 @@ export default function EdgeNodePage() {
     const platform = usePlatformMutation();
     const platformDelete = usePlatformDeleteMutation();
     const firmwareUpgrade = useFirmwareUpgradeMutation();
+    const modemControl = useModemControlMutation();
 
     useEffect(() => {
         if (!selectedId) return;
@@ -489,6 +560,12 @@ export default function EdgeNodePage() {
         firmwareForm.setFieldsValue({ keepSettings: true });
         setFirmwareNode(node);
         setFirmwareOpen(true);
+    };
+
+    const showModem = (node: Edge.Node) => {
+        modemForm.setFieldsValue({ action: 'set_apn', apn: node.apn || '' });
+        setModemNode(node);
+        setModemOpen(true);
     };
 
     const interfaceColumns: ColumnsType<Edge.NetworkInterface> = [
@@ -624,6 +701,31 @@ export default function EdgeNodePage() {
     const taskColumns: ColumnsType<Edge.Task> = [
         { title: '类型', dataIndex: 'taskType' },
         { title: '状态', dataIndex: 'status', render: statusTag },
+        {
+            title: '进度',
+            width: 220,
+            render: (_, item) =>
+                item.taskType === 'firmware' ? (
+                    <Progress
+                        percent={item.progressPercent}
+                        size="small"
+                        status={
+                            item.status === 'failed'
+                                ? 'exception'
+                                : item.status === 'succeeded'
+                                  ? 'success'
+                                  : 'active'
+                        }
+                        format={(percent) =>
+                            `${percent ?? 0}% · ${formatBytes(item.downloadedBytes)} / ${formatBytes(
+                                item.totalBytes
+                            )}`
+                        }
+                    />
+                ) : (
+                    '-'
+                ),
+        },
         { title: '结果', dataIndex: 'message', render: (value) => value || '-' },
         {
             title: '创建时间',
@@ -791,7 +893,7 @@ export default function EdgeNodePage() {
                                                         node.supportsNetworkConfig &&
                                                         node.networkConfigVersion >= 2
                                                             ? '管理网络接口'
-                                                            : `节点代理 ${node.softwareVersion || '当前版本'} 过旧，请升级至 0.2.0`
+                                                            : `节点代理 ${node.softwareVersion || '当前版本'} 过旧，请升级至 0.3.0`
                                                     }
                                                 >
                                                     <span>
@@ -827,6 +929,21 @@ export default function EdgeNodePage() {
                                                             onClick={() =>
                                                                 void showPlatformManager(node)
                                                             }
+                                                        />
+                                                    </Tooltip>
+                                                )}
+                                            {node.enrollmentStatus === 'approved' &&
+                                                canConfig &&
+                                                node.supportsModemControl && (
+                                                    <Tooltip title="4G 设置与重拨">
+                                                        <Button
+                                                            type="text"
+                                                            size="small"
+                                                            className={
+                                                                EDGE_CARD_ACTION_BUTTON_CLASS
+                                                            }
+                                                            icon={<MobileOutlined />}
+                                                            onClick={() => showModem(node)}
                                                         />
                                                     </Tooltip>
                                                 )}
@@ -934,9 +1051,25 @@ export default function EdgeNodePage() {
                             <Descriptions.Item label="缓存">
                                 {detail.outboxRecords} 条 / {formatBytes(detail.outboxBytes)}
                             </Descriptions.Item>
+                            <Descriptions.Item label="ICCID">
+                                {detail.iccid || '-'}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="4G 状态">
+                                {mobileState(detail)}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="4G 信号">
+                                {detail.modemAvailable
+                                    ? `${detail.signalPercent}% · ${detail.signalRssiDbm} dBm`
+                                    : '-'}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="APN">{detail.apn || '-'}</Descriptions.Item>
+                            <Descriptions.Item label="运营商">
+                                {detail.mobileOperator || '-'}
+                            </Descriptions.Item>
                             <Descriptions.Item label="设备配置">
-                                {statusTag(detail.configStatus)} V{detail.activeConfigVersion} / V
-                                {detail.desiredConfigVersion}
+                                {statusTag(detail.configStatus)}{' '}
+                                {formatConfigVersion(detail.activeConfigVersion)} /{' '}
+                                {formatConfigVersion(detail.desiredConfigVersion)}
                                 {detail.configMessage ? ` · ${detail.configMessage}` : ''}
                             </Descriptions.Item>
                             <Descriptions.Item label="ttyd">
@@ -1285,6 +1418,57 @@ export default function EdgeNodePage() {
                     </div>
                     <p className="text-xs text-slate-500">
                         平台地址只填写 HTTP 或 HTTPS；节点内部自动建立对应长连接。
+                    </p>
+                </Form>
+            </FormModal>
+
+            <FormModal
+                open={modemOpen}
+                title={`4G 设置与重拨${modemNode ? ` · ${modemNode.name || modemNode.imei}` : ''}`}
+                onCancel={() => {
+                    setModemOpen(false);
+                    setModemNode(undefined);
+                }}
+                onOk={() => modemForm.submit()}
+                confirmLoading={modemControl.isPending}
+                forceRender
+                destroyOnHidden
+            >
+                <Form
+                    form={modemForm}
+                    layout="vertical"
+                    onFinish={(values) => {
+                        const parsed = validateForm(modemForm, modemControlSchema, values);
+                        if (parsed && modemNode)
+                            modemControl.mutate(
+                                { id: modemNode.id, data: parsed },
+                                {
+                                    onSuccess: () => {
+                                        setModemOpen(false);
+                                        setModemNode(undefined);
+                                    },
+                                }
+                            );
+                    }}
+                >
+                    <Form.Item label="操作" name="action">
+                        <Select
+                            options={[
+                                { value: 'set_apn', label: '设置 APN' },
+                                { value: 'redial', label: '重新拨号' },
+                            ]}
+                        />
+                    </Form.Item>
+                    <Form.Item label="APN" name="apn">
+                        <Input
+                            maxLength={63}
+                            disabled={modemAction === 'redial'}
+                            placeholder="例如 cmnet"
+                        />
+                    </Form.Item>
+                    <p className="text-xs text-slate-500">
+                        SIM 插拔、注册状态和拨号结果由节点持续上报；设置 APN
+                        后可再执行一次重新拨号。
                     </p>
                 </Form>
             </FormModal>

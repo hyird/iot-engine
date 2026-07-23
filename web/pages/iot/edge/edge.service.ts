@@ -3,6 +3,7 @@ import { useMutationWithMessage } from '@/hooks/useMutation';
 import {
     configureNetwork,
     configurePlatform,
+    controlModem,
     getEdgeDetail,
     getEdgeList,
     removePlatform,
@@ -14,7 +15,12 @@ import {
 import { type Edge, edgeQueryKeys } from './edge.types';
 
 export const useEdgeList = (query?: Edge.Query, enabled = true) =>
-    useQuery({ queryKey: edgeQueryKeys.list(query), queryFn: () => getEdgeList(query), enabled });
+    useQuery({
+        queryKey: edgeQueryKeys.list(query),
+        queryFn: () => getEdgeList(query),
+        enabled,
+        refetchInterval: 5_000,
+    });
 
 export const useEdgeDetail = (id?: string) =>
     useQuery({
@@ -46,6 +52,15 @@ export function useNetworkMutation() {
         mutationFn: (value: { id: string; data: Edge.NetworkDto }) =>
             configureNetwork(value.id, value.data),
         successMessage: '网络配置已下发',
+        invalidateKeys: [edgeQueryKeys.all],
+    });
+}
+
+export function useModemControlMutation() {
+    return useMutationWithMessage({
+        mutationFn: (value: { id: string; data: Edge.ModemControlDto }) =>
+            controlModem(value.id, value.data),
+        successMessage: '4G 操作已下发',
         invalidateKeys: [edgeQueryKeys.all],
     });
 }

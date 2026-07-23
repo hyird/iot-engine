@@ -187,6 +187,28 @@ RETURNING id)sql",
         co_await createNetworkTaskAndQueue(c, nodeId, taskId, configs.size(), envelope);
     }
 
+    ruvia::Task<void> queueModem(ruvia::Context& c, std::string_view nodeId,
+                                 const ModemControlBody& body) {
+        co_await requireNodeCapability(c, nodeId, "supports_modem_control", "4G 控制");
+        const std::string action(body.action()->view());
+        const std::string apn = body.apn() ? std::string(body.apn()->view()) : std::string{};
+        if (action == "set_apn" && apn.empty())
+            service::common::fail(17012, "设置 APN 时不能为空", 400);
+
+        const auto taskId = service::common::nextUuidV7();
+        auto envelope = protocol::outbound(nodeId);
+        auto* request = envelope.mutable_modem_control_request();
+        std::uint8_t requestId[16]{};
+        protocol::uuidBytes(taskId, requestId);
+        request->set_request_id(protocol::bytes(requestId, sizeof(requestId)));
+        request->set_action(action == "set_apn" ? pb::MODEM_CONTROL_SET_APN
+                                                  : pb::MODEM_CONTROL_REDIAL);
+        request->set_apn(apn);
+        const std::string json = "{\"action\":\"" + action + "\",\"apn\":\"" +
+                                 jsonEscape(apn) + "\"}";
+        co_await createTaskAndQueue(c, nodeId, taskId, "modem", json, envelope);
+    }
+
     ruvia::Task<std::string> queuePlatform(ruvia::Context& c, std::string_view nodeId,
                                            const PlatformBody& body) {
         co_await requireNodeCapability(c, nodeId, "supports_platform_config", "多平台配置");
@@ -375,7 +397,25 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
        supports_network_config, network_config_version, supports_firmware_update,
        supports_platform_config, supports_device_config, ttyd_available, active_config_version,
        desired_config_version, config_status, config_message, outbox_records, outbox_bytes,
-       COALESCE(last_seen_at::text, ''), created_at::text
+       COALESCE(last_seen_at::text, ''), created_at::text,
+       supports_modem_control, modem_available, sim_state, iccid, signal_csq,
+       signal_rssi_dbm, signal_percent, mobile_registered, mobile_registration_status,
+       apn, mobile_operator, mobile_connected, mobile_ipv4,
+       COALESCE((SELECT task.status FROM edge_task task
+                 WHERE task.node_id = edge_node.id AND task.task_type = 'firmware'
+                 ORDER BY task.created_at DESC LIMIT 1), ''),
+       COALESCE((SELECT (task.result->>'progressPercent')::bigint FROM edge_task task
+                 WHERE task.node_id = edge_node.id AND task.task_type = 'firmware'
+                 ORDER BY task.created_at DESC LIMIT 1), 0),
+       COALESCE((SELECT (task.result->>'downloadedBytes')::bigint FROM edge_task task
+                 WHERE task.node_id = edge_node.id AND task.task_type = 'firmware'
+                 ORDER BY task.created_at DESC LIMIT 1), 0),
+       COALESCE((SELECT (task.result->>'totalBytes')::bigint FROM edge_task task
+                 WHERE task.node_id = edge_node.id AND task.task_type = 'firmware'
+                 ORDER BY task.created_at DESC LIMIT 1), 0),
+       COALESCE((SELECT task.result->>'message' FROM edge_task task
+                 WHERE task.node_id = edge_node.id AND task.task_type = 'firmware'
+                 ORDER BY task.created_at DESC LIMIT 1), '')
 FROM edge_node)sql";
     }
 
@@ -409,7 +449,25 @@ FROM edge_node)sql";
             .outboxRecords(integer(row[20].text()))
             .outboxBytes(integer(row[21].text()))
             .lastSeenAt(row[22].text())
-            .createdAt(row[23].text());
+            .createdAt(row[23].text())
+            .supportsModemControl(row[24].text() == "t")
+            .modemAvailable(row[25].text() == "t")
+            .simState(row[26].text())
+            .iccid(row[27].text())
+            .signalCsq(integer(row[28].text()))
+            .signalRssiDbm(integer(row[29].text()))
+            .signalPercent(integer(row[30].text()))
+            .mobileRegistered(row[31].text() == "t")
+            .mobileRegistrationStatus(integer(row[32].text()))
+            .apn(row[33].text())
+            .mobileOperator(row[34].text())
+            .mobileConnected(row[35].text() == "t")
+            .mobileIpv4(row[36].text())
+            .firmwareStatus(row[37].text())
+            .firmwareProgressPercent(integer(row[38].text()))
+            .firmwareDownloadedBytes(integer(row[39].text()))
+            .firmwareTotalBytes(integer(row[40].text()))
+            .firmwareMessage(row[41].text());
     }
 
     static std::vector<std::string> split(std::string_view value) {
@@ -525,6 +583,9 @@ FROM edge_node_platform WHERE node_id = $1::uuid ORDER BY priority, name)sql",
     static ruvia::Task<ruvia::List<TaskDto>> tasks(ruvia::Context& c, std::string_view id) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT id::text, task_type, status, COALESCE(result->>'message', ''),
+       COALESCE((result->>'progressPercent')::bigint, 0),
+       COALESCE((result->>'downloadedBytes')::bigint, 0),
+       COALESCE((result->>'totalBytes')::bigint, 0),
        created_at::text, updated_at::text
 FROM edge_task WHERE node_id = $1::uuid ORDER BY created_at DESC LIMIT 50)sql",
                                                 service::common::dbParams(id));
@@ -535,8 +596,11 @@ FROM edge_task WHERE node_id = $1::uuid ORDER BY created_at DESC LIMIT 50)sql",
                 .taskType(row[1].text())
                 .status(row[2].text())
                 .message(row[3].text())
-                .createdAt(row[4].text())
-                .updatedAt(row[5].text());
+                .progressPercent(integer(row[4].text()))
+                .downloadedBytes(integer(row[5].text()))
+                .totalBytes(integer(row[6].text()))
+                .createdAt(row[7].text())
+                .updatedAt(row[8].text());
         }
         co_return result;
     }

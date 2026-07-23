@@ -146,6 +146,9 @@ class EdgeProjector final {
         case pb::Envelope::kFirmwareUpdateResult:
             co_await saveFirmwareResult(context, envelope.firmware_update_result());
             break;
+        case pb::Envelope::kModemControlResult:
+            co_await saveModemResult(context, envelope.modem_control_result());
+            break;
         case pb::Envelope::kPlatformConfigResult:
             co_await savePlatformResult(context, nodeId, envelope.platform_config_result());
             break;
@@ -166,6 +169,23 @@ class EdgeProjector final {
         }
     }
 
+    static std::string_view simState(pb::ModemSimState state) {
+        switch (state) {
+        case pb::MODEM_SIM_READY:
+            return "ready";
+        case pb::MODEM_SIM_NOT_INSERTED:
+            return "not_inserted";
+        case pb::MODEM_SIM_PIN_REQUIRED:
+            return "pin_required";
+        case pb::MODEM_SIM_PUK_REQUIRED:
+            return "puk_required";
+        case pb::MODEM_SIM_BLOCKED:
+            return "blocked";
+        default:
+            return "unknown";
+        }
+    }
+
     static ruvia::Task<void> saveHello(ruvia::WebWorkerContext& context,
                                        const pb::Hello& hello) {
         if (!protocol::validImei(hello.imei()))
@@ -175,8 +195,12 @@ class EdgeProjector final {
 INSERT INTO edge_node(id, platform_id, imei, model, software_version, hostname, architecture,
                       openwrt_release, supports_network_config, supports_firmware_update,
                       supports_platform_config, supports_device_config, network_config_version,
-                      updated_at)
-VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+                      supports_modem_control, modem_available, sim_state, iccid, signal_csq,
+                      signal_rssi_dbm, signal_percent, mobile_registered,
+                      mobile_registration_status, apn, mobile_operator, mobile_connected,
+                      mobile_ipv4, updated_at)
+VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+        $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, NOW())
 ON CONFLICT (platform_id, imei) DO UPDATE
 SET model = EXCLUDED.model, software_version = EXCLUDED.software_version,
     hostname = EXCLUDED.hostname, architecture = EXCLUDED.architecture,
@@ -186,6 +210,19 @@ SET model = EXCLUDED.model, software_version = EXCLUDED.software_version,
     supports_platform_config = EXCLUDED.supports_platform_config,
     supports_device_config = EXCLUDED.supports_device_config,
     network_config_version = EXCLUDED.network_config_version,
+    supports_modem_control = EXCLUDED.supports_modem_control,
+    modem_available = EXCLUDED.modem_available,
+    sim_state = EXCLUDED.sim_state,
+    iccid = EXCLUDED.iccid,
+    signal_csq = EXCLUDED.signal_csq,
+    signal_rssi_dbm = EXCLUDED.signal_rssi_dbm,
+    signal_percent = EXCLUDED.signal_percent,
+    mobile_registered = EXCLUDED.mobile_registered,
+    mobile_registration_status = EXCLUDED.mobile_registration_status,
+    apn = EXCLUDED.apn,
+    mobile_operator = EXCLUDED.mobile_operator,
+    mobile_connected = EXCLUDED.mobile_connected,
+    mobile_ipv4 = EXCLUDED.mobile_ipv4,
     updated_at = NOW()
 RETURNING id::text, enrollment_status)sql",
                                                      service::common::dbParams(
@@ -196,9 +233,20 @@ RETURNING id::text, enrollment_status)sql",
                                                          hello.openwrt_release(),
                                                          hello.supports_network_config(),
                                                          hello.supports_firmware_update(),
-                                                         hello.supports_platform_config(),
-                                                         hello.supports_device_config(),
-                                                         hello.network_config_version()));
+                                                          hello.supports_platform_config(),
+                                                          hello.supports_device_config(),
+                                                          hello.network_config_version(),
+                                                          hello.supports_modem_control(),
+                                                          hello.modem_available(),
+                                                          simState(hello.sim_state()),
+                                                          hello.iccid(), hello.signal_csq(),
+                                                          hello.signal_rssi_dbm(),
+                                                          hello.signal_percent(),
+                                                          hello.mobile_registered(),
+                                                          hello.mobile_registration_status(),
+                                                          hello.apn(), hello.mobile_operator(),
+                                                          hello.mobile_connected(),
+                                                          hello.mobile_ipv4()));
         const auto key = protocol::authKey(hello.imei());
         const auto value = std::string(rows.rows().front()[0].text()) + "|" +
                            std::string(rows.rows().front()[1].text());
@@ -209,7 +257,12 @@ RETURNING id::text, enrollment_status)sql",
                                            std::string_view nodeId,
                                            const pb::Heartbeat& heartbeat) {
         (void)co_await context.db().execute(R"sql(
-UPDATE edge_node SET active_config_version = $1, outbox_records = $2, outbox_bytes = $3,
+ UPDATE edge_node SET active_config_version = $1, outbox_records = $2, outbox_bytes = $3,
+                     modem_available = $4, sim_state = $5, iccid = $6,
+                     signal_csq = $7, signal_rssi_dbm = $8, signal_percent = $9,
+                     mobile_registered = $10, mobile_registration_status = $11,
+                     apn = $12, mobile_operator = $13, mobile_connected = $14,
+                     mobile_ipv4 = $15, supports_modem_control = $16,
                      config_status = CASE
                          WHEN desired_config_version = $1 AND $1 > 0 THEN 'applied'
                          ELSE config_status END,
@@ -217,11 +270,22 @@ UPDATE edge_node SET active_config_version = $1, outbox_records = $2, outbox_byt
                          WHEN desired_config_version = $1 AND $1 > 0 THEN ''
                          ELSE config_message END,
                      last_seen_at = NOW(), updated_at = NOW()
-WHERE id = $4::uuid)sql",
-                                            service::common::dbParams(
-                                                heartbeat.active_config_version(),
-                                                heartbeat.outbox_records(),
-                                                heartbeat.outbox_bytes(), nodeId));
+ WHERE id = $17::uuid)sql",
+                                             service::common::dbParams(
+                                                 heartbeat.active_config_version(),
+                                                 heartbeat.outbox_records(),
+                                                 heartbeat.outbox_bytes(),
+                                                 heartbeat.modem_available(),
+                                                 simState(heartbeat.sim_state()),
+                                                 heartbeat.iccid(), heartbeat.signal_csq(),
+                                                 heartbeat.signal_rssi_dbm(),
+                                                 heartbeat.signal_percent(),
+                                                 heartbeat.mobile_registered(),
+                                                 heartbeat.mobile_registration_status(),
+                                                 heartbeat.apn(), heartbeat.mobile_operator(),
+                                                 heartbeat.mobile_connected(),
+                                                 heartbeat.mobile_ipv4(),
+                                                 heartbeat.supports_modem_control(), nodeId));
         if (heartbeat.active_config_version() != 0) {
             (void)co_await context.db().execute(R"sql(
 UPDATE edge_config_revision revision
@@ -361,11 +425,40 @@ WHERE id = $3::uuid AND task_type = 'network')sql",
             status = "failed";
             completed = true;
         }
-        const std::string json = "{\"message\":\"" + jsonEscape(result.message()) + "\"}";
+        const std::string json =
+            "{\"message\":\"" + jsonEscape(result.message()) +
+            "\",\"progressPercent\":" + std::to_string(result.progress_percent()) +
+            ",\"downloadedBytes\":" + std::to_string(result.downloaded_bytes()) +
+            ",\"totalBytes\":" + std::to_string(result.total_bytes()) + "}";
         (void)co_await context.db().execute(R"sql(
 UPDATE edge_task SET status = $1, result = $2::jsonb, updated_at = NOW(),
     completed_at = CASE WHEN $3 THEN NOW() ELSE NULL END
 WHERE id = $4::uuid AND task_type = 'firmware')sql",
+                                             service::common::dbParams(status, json, completed, id));
+    }
+
+    static ruvia::Task<void> saveModemResult(
+        ruvia::WebWorkerContext& context, const pb::ModemControlResult& result) {
+        if (result.request_id().size() != 16)
+            co_return;
+        const auto id = protocol::uuidText(result.request_id());
+        std::string status = "running";
+        bool completed = false;
+        if (result.state() == pb::MODEM_CONTROL_ACCEPTED)
+            status = "accepted";
+        else if (result.state() == pb::MODEM_CONTROL_SUCCEEDED) {
+            status = "succeeded";
+            completed = true;
+        } else if (result.state() == pb::MODEM_CONTROL_FAILED) {
+            status = "failed";
+            completed = true;
+        }
+        const std::string json = "{\"message\":\"" + jsonEscape(result.message()) +
+                                 "\",\"apn\":\"" + jsonEscape(result.apn()) + "\"}";
+        (void)co_await context.db().execute(R"sql(
+UPDATE edge_task SET status = $1, result = $2::jsonb, updated_at = NOW(),
+    completed_at = CASE WHEN $3 THEN NOW() ELSE NULL END
+WHERE id = $4::uuid AND task_type = 'modem')sql",
                                             service::common::dbParams(status, json, completed, id));
     }
 

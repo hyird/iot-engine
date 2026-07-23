@@ -183,6 +183,20 @@ export const platformSchema = z.object({
     outboxMaxBytes: z.number().int().min(16384).max(8388608),
 });
 
+export const modemControlSchema = z
+    .object({
+        action: z.enum(['set_apn', 'redial']),
+        apn: z
+            .string()
+            .max(63, 'APN 不能超过 63 个字符')
+            .regex(/^[A-Za-z0-9._-]*$/, 'APN 只能包含字母、数字、点、下划线和连字符'),
+    })
+    .superRefine((value, context) => {
+        if (value.action === 'set_apn' && value.apn.length === 0) {
+            context.addIssue({ code: 'custom', path: ['apn'], message: 'APN 不能为空' });
+        }
+    });
+
 export const firmwareUpgradeSchema = z.object({
     file: z
         .instanceof(File)

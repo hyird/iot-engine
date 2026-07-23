@@ -30,6 +30,17 @@ inline bool isOptionalNetworkDevice(const ruvia::String& value) {
     return true;
 }
 
+inline bool isApn(const ruvia::String& value) {
+    const auto text = value.view();
+    if (text.size() > 63)
+        return false;
+    for (const unsigned char character : text)
+        if (!std::isalnum(character) && character != '.' && character != '_' &&
+            character != '-')
+            return false;
+    return true;
+}
+
 class EdgeListValidator final : public ruvia::Middleware<EdgeListValidator> {
   public:
     RUVIA_VALIDATE_QUERY(
@@ -124,6 +135,16 @@ class PlatformValidator final : public ruvia::Middleware<PlatformValidator> {
         RUVIA_RULE_NAME("outboxMaxBytes", outboxMaxBytes,
                         RUVIA_MIN(16384, "缓存上限必须在 16 KiB - 8 MiB 之间"),
                         RUVIA_MAX(8388608, "缓存上限必须在 16 KiB - 8 MiB 之间")));
+};
+
+class ModemControlValidator final : public ruvia::Middleware<ModemControlValidator> {
+  public:
+    RUVIA_VALIDATE_JSON(
+        ModemControlBody,
+        RUVIA_RULE(action, RUVIA_REQUIRED("4G 操作不能为空"),
+                   RUVIA_ONE_OF("4G 操作无效", "set_apn", "redial")),
+        RUVIA_RULE(apn, RUVIA_CUSTOM("APN 只能包含字母、数字、点、下划线和连字符",
+                                     isApn)));
 };
 
 class FirmwareDownloadValidator final : public ruvia::Middleware<FirmwareDownloadValidator> {

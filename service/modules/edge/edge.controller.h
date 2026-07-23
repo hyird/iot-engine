@@ -29,6 +29,7 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
     RUVIA_PUT("/:id/enrollment", enrollment, EdgeIdValidator, EnrollmentValidator);
     RUVIA_PUT("/:id/name", renameNode, EdgeIdValidator, NodeNameValidator);
     RUVIA_POST("/:id/network", network, EdgeIdValidator, NetworkValidator);
+    RUVIA_POST("/:id/modem", modem, EdgeIdValidator, ModemControlValidator);
     RUVIA_POST("/:id/sync", sync, EdgeIdValidator);
     RUVIA_POST("/:id/platforms", savePlatform, EdgeIdValidator, PlatformValidator);
     RUVIA_DELETE("/:id/platforms/:platformId", removePlatform,
@@ -77,6 +78,12 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
         co_await service::middleware::requirePermission(c, "iot:edge:config");
         co_await edgeService().queueNetwork(c, id(c), c.req().valid<NetworkBody>());
         co_return c.json(service::common::operation(c, "网络配置已下发"));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> modem(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:edge:config");
+        co_await edgeService().queueModem(c, id(c), c.req().valid<ModemControlBody>());
+        co_return c.json(service::common::operation(c, "4G 操作已下发"));
     }
 
     ruvia::Task<ruvia::HttpResponse> sync(ruvia::Context& c) {

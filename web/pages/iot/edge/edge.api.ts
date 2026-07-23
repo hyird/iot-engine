@@ -5,6 +5,7 @@ import {
     edgeIdSchema,
     edgeListQuerySchema,
     firmwareUpgradeSchema,
+    modemControlSchema,
     networkSchema,
     nodeNameSchema,
     platformIdSchema,
@@ -26,6 +27,8 @@ export const renameEdge = (id: string, data: Edge.NameDto) =>
     request.put<void>(`${BASE}/${edgeIdSchema.parse(id)}/name`, nodeNameSchema.parse(data));
 export const configureNetwork = (id: string, data: Edge.NetworkDto) =>
     request.post<void>(`${BASE}/${edgeIdSchema.parse(id)}/network`, networkSchema.parse(data));
+export const controlModem = (id: string, data: Edge.ModemControlDto) =>
+    request.post<void>(`${BASE}/${edgeIdSchema.parse(id)}/modem`, modemControlSchema.parse(data));
 export const syncDeviceConfig = (id: string) =>
     request.post<void>(`${BASE}/${edgeIdSchema.parse(id)}/sync`);
 export const configurePlatform = (id: string, data: Edge.PlatformDto) =>

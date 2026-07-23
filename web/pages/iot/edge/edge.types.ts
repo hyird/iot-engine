@@ -53,9 +53,12 @@ export namespace Edge {
 
     export interface Task {
         id: string;
-        taskType: 'network' | 'firmware' | 'platform_upsert' | 'platform_delete';
+        taskType: 'network' | 'firmware' | 'modem' | 'platform_upsert' | 'platform_delete';
         status: 'pending' | 'accepted' | 'running' | 'succeeded' | 'failed';
         message: string;
+        progressPercent: number;
+        downloadedBytes: number;
+        totalBytes: number;
         createdAt: string;
         updatedAt: string;
     }
@@ -76,7 +79,31 @@ export namespace Edge {
         supportsFirmwareUpdate: boolean;
         supportsPlatformConfig: boolean;
         supportsDeviceConfig: boolean;
+        supportsModemControl: boolean;
         ttydAvailable: boolean;
+        modemAvailable: boolean;
+        simState:
+            | 'unknown'
+            | 'ready'
+            | 'not_inserted'
+            | 'pin_required'
+            | 'puk_required'
+            | 'blocked';
+        iccid: string;
+        signalCsq: number;
+        signalRssiDbm: number;
+        signalPercent: number;
+        mobileRegistered: boolean;
+        mobileRegistrationStatus: number;
+        apn: string;
+        mobileOperator: string;
+        mobileConnected: boolean;
+        mobileIpv4: string;
+        firmwareStatus: Task['status'] | '';
+        firmwareProgressPercent: number;
+        firmwareDownloadedBytes: number;
+        firmwareTotalBytes: number;
+        firmwareMessage: string;
         activeConfigVersion: number;
         desiredConfigVersion: number;
         configStatus: 'idle' | 'pending' | 'applied' | 'rejected';
@@ -127,6 +154,11 @@ export namespace Edge {
     export interface FirmwareUpgradeDto {
         file: File;
         keepSettings: boolean;
+    }
+
+    export interface ModemControlDto {
+        action: 'set_apn' | 'redial';
+        apn: string;
     }
 }
 

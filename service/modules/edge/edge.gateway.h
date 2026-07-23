@@ -60,7 +60,8 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
             co_return;
         }
         pb::Envelope input;
-        if (!protocol::decode(first->payload(), input) || input.protocol_version() != 1 ||
+        if (!protocol::decode(first->payload(), input) ||
+            input.protocol_version() != protocol::kProtocolVersion ||
             input.payload_case() != pb::Envelope::kHello || input.platform_id().size() != 16 ||
             !platformMatches(input.platform_id()) || !protocol::validImei(input.hello().imei())) {
             co_await socket.close(1002, "invalid hello");
@@ -89,7 +90,7 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
             session.inboundSequence = input.sequence();
             while (auto message = co_await socket.read()) {
                 if (!message->binary() || !protocol::decode(message->payload(), input) ||
-                    input.protocol_version() != 1 ||
+                    input.protocol_version() != protocol::kProtocolVersion ||
                     input.payload_case() != pb::Envelope::kHeartbeat ||
                     !input.node_id().empty() || input.session_epoch() != 0 ||
                     input.sequence() <= session.inboundSequence ||
@@ -132,7 +133,7 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
         helloAck->set_assigned_node_id(
             protocol::bytes(session.nodeBytes.data(), session.nodeBytes.size()));
         helloAck->set_session_epoch(session.epoch);
-        helloAck->set_negotiated_protocol_version(1);
+        helloAck->set_negotiated_protocol_version(protocol::kProtocolVersion);
         helloAck->set_heartbeat_interval_sec(5);
         helloAck->set_max_message_size(static_cast<std::uint32_t>(protocol::kMaxMessageSize));
         helloAck->set_platform_time_ms(protocol::nowMs());
@@ -302,7 +303,8 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
     }
 
     static bool validInbound(const pb::Envelope& input, const Session& session) {
-        return input.protocol_version() == 1 && input.node_id().size() == 16 &&
+        return input.protocol_version() == protocol::kProtocolVersion &&
+               input.node_id().size() == 16 &&
                input.platform_id().size() == 16 && input.session_epoch() == session.epoch &&
                input.sequence() > session.inboundSequence &&
                input.node_id() == protocol::bytes(session.nodeBytes.data(), 16) &&

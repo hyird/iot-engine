@@ -87,7 +87,8 @@ void testEnvelopeRoundTrip() {
 
     service::edge::pb::Envelope decoded;
     require(service::edge::protocol::decode(wire, decoded), "envelope parse failed");
-    require(decoded.protocol_version() == 1, "protocol version changed");
+    require(decoded.protocol_version() == service::edge::protocol::kProtocolVersion,
+            "protocol version changed");
     require(decoded.session_epoch() == 42 && decoded.sequence() == 7,
             "session identity changed");
     require(decoded.payload_case() == service::edge::pb::Envelope::kPing &&

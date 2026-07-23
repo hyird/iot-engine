@@ -33,7 +33,10 @@ class EdgeConfigService final {
     ruvia::Task<std::uint64_t> queueSnapshot(ruvia::Context& c, std::string_view nodeId) {
         const auto version = co_await c.db().query(R"sql(
 UPDATE edge_node
-SET desired_config_version = GREATEST(desired_config_version, active_config_version) + 1,
+SET desired_config_version = GREATEST(
+        (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint,
+        desired_config_version + 1,
+        active_config_version + 1),
     config_status = 'pending', config_message = '', updated_at = NOW()
 WHERE id = $1::uuid AND enrollment_status = 'approved' AND supports_device_config
 RETURNING desired_config_version)sql",

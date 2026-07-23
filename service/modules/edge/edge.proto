@@ -79,6 +79,30 @@ enum FirmwareUpdateState {
   FIRMWARE_UPDATE_FAILED = 5;
 }
 
+enum ModemSimState {
+  MODEM_SIM_UNSPECIFIED = 0;
+  MODEM_SIM_UNKNOWN = 1;
+  MODEM_SIM_READY = 2;
+  MODEM_SIM_NOT_INSERTED = 3;
+  MODEM_SIM_PIN_REQUIRED = 4;
+  MODEM_SIM_PUK_REQUIRED = 5;
+  MODEM_SIM_BLOCKED = 6;
+}
+
+enum ModemControlAction {
+  MODEM_CONTROL_UNSPECIFIED = 0;
+  MODEM_CONTROL_SET_APN = 1;
+  MODEM_CONTROL_REDIAL = 2;
+}
+
+enum ModemControlState {
+  MODEM_CONTROL_STATE_UNSPECIFIED = 0;
+  MODEM_CONTROL_ACCEPTED = 1;
+  MODEM_CONTROL_RUNNING = 2;
+  MODEM_CONTROL_SUCCEEDED = 3;
+  MODEM_CONTROL_FAILED = 4;
+}
+
 enum PlatformConfigOperation {
   PLATFORM_CONFIG_UNSPECIFIED = 0;
   PLATFORM_CONFIG_UPSERT = 1;
@@ -112,6 +136,13 @@ message Hello {
   bool supports_platform_config = 22;
   bool supports_device_config = 23;
   uint32 network_config_version = 24;
+  bool modem_available = 25;
+  ModemSimState sim_state = 26;
+  string apn = 27 [(nanopb).max_length = 63];
+  string mobile_operator = 28 [(nanopb).max_length = 64];
+  bool mobile_connected = 29;
+  string mobile_ipv4 = 30 [(nanopb).max_length = 15];
+  bool supports_modem_control = 31;
 }
 
 message HelloAck {
@@ -183,6 +214,13 @@ message Heartbeat {
   uint32 signal_percent = 13;
   bool mobile_registered = 14;
   int32 mobile_registration_status = 15;
+  bool modem_available = 16;
+  ModemSimState sim_state = 17;
+  string apn = 18 [(nanopb).max_length = 63];
+  string mobile_operator = 19 [(nanopb).max_length = 64];
+  bool mobile_connected = 20;
+  string mobile_ipv4 = 21 [(nanopb).max_length = 15];
+  bool supports_modem_control = 22;
 }
 
 message HeartbeatAck {
@@ -506,6 +544,23 @@ message FirmwareUpdateResult {
   bytes request_id = 1 [(nanopb).max_size = 16];
   FirmwareUpdateState state = 2;
   string message = 3 [(nanopb).max_length = 256];
+  uint64 downloaded_bytes = 4;
+  uint64 total_bytes = 5;
+  uint32 progress_percent = 6;
+}
+
+message ModemControlRequest {
+  bytes request_id = 1 [(nanopb).max_size = 16];
+  ModemControlAction action = 2;
+  string apn = 3 [(nanopb).max_length = 63];
+}
+
+message ModemControlResult {
+  bytes request_id = 1 [(nanopb).max_size = 16];
+  ModemControlAction action = 2;
+  ModemControlState state = 3;
+  string message = 4 [(nanopb).max_length = 256];
+  string apn = 5 [(nanopb).max_length = 63];
 }
 
 message PlatformConfigRequest {
@@ -604,6 +659,8 @@ message Envelope {
     FirmwareUpdateResult firmware_update_result = 63;
     PlatformConfigRequest platform_config_request = 64;
     PlatformConfigResult platform_config_result = 65;
+    ModemControlRequest modem_control_request = 66;
+    ModemControlResult modem_control_result = 67;
     TerminalOpen terminal_open = 70;
     TerminalData terminal_data = 71;
     TerminalResize terminal_resize = 72;

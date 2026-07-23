@@ -5,7 +5,7 @@
 
 namespace service::config {
 
-inline constexpr std::array<ruvia::DbMigration, 8> kSchemaMigrations{{
+inline constexpr std::array<ruvia::DbMigration, 9> kSchemaMigrations{{
     {"0001_initial_schema", R"sql(
 DO $schema$
 BEGIN
@@ -593,6 +593,34 @@ CREATE TABLE edge_node_network (
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (node_id, name)
 );
+END
+$schema$;
+)sql"},
+    {"0009_edge_modem_management", R"sql(
+DO $schema$
+BEGIN
+ALTER TABLE edge_node
+    ADD COLUMN modem_available BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN sim_state VARCHAR(20) NOT NULL DEFAULT 'unknown'
+        CHECK (sim_state IN ('unknown', 'ready', 'not_inserted', 'pin_required',
+                             'puk_required', 'blocked')),
+    ADD COLUMN iccid VARCHAR(22) NOT NULL DEFAULT '',
+    ADD COLUMN signal_csq INTEGER NOT NULL DEFAULT 99 CHECK (signal_csq BETWEEN 0 AND 99),
+    ADD COLUMN signal_rssi_dbm INTEGER NOT NULL DEFAULT -1,
+    ADD COLUMN signal_percent INTEGER NOT NULL DEFAULT 0
+        CHECK (signal_percent BETWEEN 0 AND 100),
+    ADD COLUMN mobile_registered BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN mobile_registration_status INTEGER NOT NULL DEFAULT -1,
+    ADD COLUMN apn VARCHAR(63) NOT NULL DEFAULT '',
+    ADD COLUMN mobile_operator VARCHAR(64) NOT NULL DEFAULT '',
+    ADD COLUMN mobile_connected BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN mobile_ipv4 VARCHAR(15) NOT NULL DEFAULT '',
+    ADD COLUMN supports_modem_control BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE edge_task DROP CONSTRAINT edge_task_task_type_check;
+ALTER TABLE edge_task ADD CONSTRAINT edge_task_task_type_check
+    CHECK (task_type IN ('network', 'firmware', 'modem',
+                         'platform_upsert', 'platform_delete'));
 END
 $schema$;
 )sql"},

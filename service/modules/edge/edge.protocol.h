@@ -19,6 +19,8 @@ namespace pb = ::iot::edge::v1;
 
 namespace service::edge::protocol {
 
+inline constexpr std::uint32_t kProtocolVersion = 2;
+
 inline constexpr std::string_view kBootstrapPlatformId{
     "00000000-0000-7000-8000-000000000001"};
 inline constexpr std::string_view kPublicPlatformUrl{"https://i.a-z.xin"};
@@ -165,7 +167,7 @@ inline std::array<std::uint8_t, 16> randomUuidV7Bytes() {
 inline pb::Envelope outbound(std::string_view nodeId, std::uint64_t epoch = 0,
                              std::uint64_t sequence = 0) {
     pb::Envelope result;
-    result.set_protocol_version(1);
+    result.set_protocol_version(kProtocolVersion);
     result.set_session_epoch(epoch);
     result.set_sequence(sequence);
     result.set_created_at_ms(nowMs());

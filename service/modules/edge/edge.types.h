@@ -95,6 +95,12 @@ struct InterfaceDto final {
                 bridgePorts);
 };
 
+struct ModemControlBody final {
+    RUVIA_OPTIONAL_FIELD(action, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(apn, ruvia::String);
+    RUVIA_MODEL(ModemControlBody, action, apn);
+};
+
 struct NetworkDto final {
     RUVIA_OPTIONAL_FIELD(name, ruvia::String);
     RUVIA_OPTIONAL_FIELD(mode, ruvia::String);
@@ -136,9 +142,13 @@ struct TaskDto final {
     RUVIA_OPTIONAL_FIELD_NAME("taskType", taskType, ruvia::String);
     RUVIA_OPTIONAL_FIELD(status, ruvia::String);
     RUVIA_OPTIONAL_FIELD(message, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("progressPercent", progressPercent, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("downloadedBytes", downloadedBytes, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("totalBytes", totalBytes, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD_NAME("createdAt", createdAt, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("updatedAt", updatedAt, ruvia::String);
-    RUVIA_MODEL(TaskDto, id, taskType, status, message, createdAt, updatedAt);
+    RUVIA_MODEL(TaskDto, id, taskType, status, message, progressPercent, downloadedBytes,
+                totalBytes, createdAt, updatedAt);
 };
 
 struct EdgeNodeDto final {
@@ -157,7 +167,27 @@ struct EdgeNodeDto final {
     RUVIA_OPTIONAL_FIELD_NAME("supportsFirmwareUpdate", supportsFirmwareUpdate, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("supportsPlatformConfig", supportsPlatformConfig, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("supportsDeviceConfig", supportsDeviceConfig, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("supportsModemControl", supportsModemControl, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("ttydAvailable", ttydAvailable, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("modemAvailable", modemAvailable, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("simState", simState, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(iccid, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("signalCsq", signalCsq, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("signalRssiDbm", signalRssiDbm, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("signalPercent", signalPercent, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("mobileRegistered", mobileRegistered, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("mobileRegistrationStatus", mobileRegistrationStatus,
+                              ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD(apn, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("mobileOperator", mobileOperator, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("mobileConnected", mobileConnected, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("mobileIpv4", mobileIpv4, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("firmwareStatus", firmwareStatus, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("firmwareProgressPercent", firmwareProgressPercent, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("firmwareDownloadedBytes", firmwareDownloadedBytes,
+                              ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("firmwareTotalBytes", firmwareTotalBytes, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("firmwareMessage", firmwareMessage, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("activeConfigVersion", activeConfigVersion, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD_NAME("desiredConfigVersion", desiredConfigVersion, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD_NAME("configStatus", configStatus, ruvia::String);
@@ -174,8 +204,11 @@ struct EdgeNodeDto final {
     RUVIA_MODEL(EdgeNodeDto, id, imei, name, model, softwareVersion, hostname, architecture,
                 openwrtRelease, enrollmentStatus, online, supportsNetworkConfig,
                 networkConfigVersion, supportsFirmwareUpdate, supportsPlatformConfig,
-                supportsDeviceConfig,
-                ttydAvailable, activeConfigVersion, desiredConfigVersion, configStatus,
+                supportsDeviceConfig, supportsModemControl, ttydAvailable, modemAvailable,
+                simState, iccid, signalCsq, signalRssiDbm, signalPercent, mobileRegistered,
+                mobileRegistrationStatus, apn, mobileOperator, mobileConnected, mobileIpv4,
+                firmwareStatus, firmwareProgressPercent, firmwareDownloadedBytes,
+                firmwareTotalBytes, firmwareMessage, activeConfigVersion, desiredConfigVersion, configStatus,
                 configMessage, outboxRecords, outboxBytes, lastSeenAt, createdAt, interfaces,
                 networks, serialPorts, platforms, tasks);
 };
