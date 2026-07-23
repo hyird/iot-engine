@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -186,7 +187,22 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
         co_await socket.text("ready");
 
         while (auto message = co_await socket.read()) {
-            if (message->binary() && !message->payload().empty()) {
+            if (!message->binary()) {
+                std::uint32_t columns{};
+                std::uint32_t rows{};
+                if (!parseTerminalResize(message->payload(), columns, rows)) {
+                    co_await socket.close(1002, "invalid terminal control");
+                    co_return;
+                }
+                auto resize = protocol::outbound(nodeId);
+                resize.which_payload = iot_edge_v1_Envelope_terminal_resize_tag;
+                protocol::setBytes(&resize.payload.terminal_resize.terminal_id,
+                                   sizeof(resize.payload.terminal_resize.terminal_id.bytes),
+                                   terminalBytes.data(), terminalBytes.size());
+                resize.payload.terminal_resize.columns = columns;
+                resize.payload.terminal_resize.rows = rows;
+                co_await queue(c, nodeId, resize);
+            } else if (!message->payload().empty()) {
                 std::string_view remaining = message->payload();
                 while (!remaining.empty()) {
                     const auto size = std::min<std::size_t>(remaining.size(), 4096);
@@ -213,6 +229,27 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
                            terminalBytes.data(), terminalBytes.size());
         copy(close.payload.terminal_close.reason, "browser closed");
         co_await queue(c, nodeId, close);
+    }
+
+    static bool parseTerminalResize(std::string_view payload, std::uint32_t& columns,
+                                    std::uint32_t& rows) {
+        constexpr std::string_view prefix = "resize:";
+        if (!payload.starts_with(prefix))
+            return false;
+        payload.remove_prefix(prefix.size());
+        const auto separator = payload.find(':');
+        if (separator == std::string_view::npos)
+            return false;
+        const auto columnText = payload.substr(0, separator);
+        const auto rowText = payload.substr(separator + 1);
+        const auto [columnEnd, columnError] =
+            std::from_chars(columnText.data(), columnText.data() + columnText.size(), columns);
+        const auto [rowEnd, rowError] =
+            std::from_chars(rowText.data(), rowText.data() + rowText.size(), rows);
+        return columnError == std::errc{} && rowError == std::errc{} &&
+               columnEnd == columnText.data() + columnText.size() &&
+               rowEnd == rowText.data() + rowText.size() && columns >= 20 && columns <= 300 &&
+               rows >= 5 && rows <= 100;
     }
 
     static Session makeSession(std::string nodeId) {

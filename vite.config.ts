@@ -9,6 +9,7 @@ const rootDir = fileURLToPath(new URL('.', import.meta.url));
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, rootDir, '');
     const backendPort = env.PORT?.trim() || '1102';
+    const backendUrl = env.DEV_BACKEND_URL?.trim() || `http://127.0.0.1:${backendPort}`;
 
     return {
         root: fileURLToPath(new URL('./web', import.meta.url)),
@@ -57,8 +58,13 @@ export default defineConfig(({ mode }) => {
             port: 5173,
             proxy: {
                 '/api': {
-                    target: `http://127.0.0.1:${backendPort}`,
+                    target: backendUrl,
                     changeOrigin: true,
+                },
+                '/edge': {
+                    target: backendUrl,
+                    changeOrigin: true,
+                    ws: true,
                 },
             },
         },

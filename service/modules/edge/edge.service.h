@@ -114,6 +114,18 @@ RETURNING imei)sql",
         }
     }
 
+    ruvia::Task<void> renameNode(ruvia::Context& c, std::string_view id,
+                                 const NodeNameBody& body) {
+        const std::string name(body.name()->view());
+        const auto updated = co_await c.db().query(R"sql(
+UPDATE edge_node SET name = $1::text, updated_at = NOW()
+WHERE id = $2::uuid
+RETURNING id)sql",
+                                                   service::common::dbParams(name, id));
+        if (updated.rows().empty())
+            service::common::fail(17001, "边缘节点不存在", 404);
+    }
+
     ruvia::Task<void> queueNetwork(ruvia::Context& c, std::string_view nodeId,
                                    const NetworkBody& body) {
         co_await requireNodeCapability(c, nodeId, "supports_network_config", "网络配置");

@@ -85,6 +85,10 @@ export namespace Edge {
         rollbackTimeoutSec: number;
     }
 
+    export interface NameDto {
+        name: string;
+    }
+
     export interface PlatformDto {
         platformId?: string;
         name: string;

@@ -100,6 +100,10 @@ export const firmwareUpgradeSchema = z.object({
     keepSettings: z.boolean(),
 });
 
+export const nodeNameSchema = z.object({
+    name: z.string().min(1, '节点名称不能为空').max(100, '节点名称不能超过 100 个字符'),
+});
+
 export const edgeListQuerySchema = pageParamsSchema.extend({
     status: enrollmentStatusSchema.optional(),
     keyword: z.string().optional(),

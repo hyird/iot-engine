@@ -5,6 +5,7 @@ import {
     configurePlatform,
     getEdgeDetail,
     getEdgeList,
+    renameEdge,
     removePlatform,
     setEnrollment,
     syncDeviceConfig,
@@ -28,6 +29,14 @@ export function useEnrollmentMutation() {
         mutationFn: (value: { id: string; status: 'approved' | 'rejected'; name?: string }) =>
             setEnrollment(value.id, value.status, value.name),
         successMessage: '注册状态已更新',
+        invalidateKeys: [edgeQueryKeys.all],
+    });
+}
+
+export function useNodeNameMutation() {
+    return useMutationWithMessage({
+        mutationFn: (value: { id: string; data: Edge.NameDto }) => renameEdge(value.id, value.data),
+        successMessage: '节点名称已更新',
         invalidateKeys: [edgeQueryKeys.all],
     });
 }

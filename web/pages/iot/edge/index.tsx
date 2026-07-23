@@ -19,20 +19,29 @@ import {
     Upload,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { type KeyboardEvent, useEffect, useRef, useState } from 'react';
+import { FitAddon } from '@xterm/addon-fit';
+import { Terminal } from '@xterm/xterm';
+import '@xterm/xterm/css/xterm.css';
+import { useEffect, useRef, useState } from 'react';
 import { FormModal } from '@/components/FormModal';
 import { PageContainer } from '@/components/PageContainer';
 import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermissions } from '@/hooks/usePermission';
 import { validateForm } from '@/utils/validation';
 import { getTerminalTicket } from './edge.api';
-import { firmwareUpgradeSchema, networkSchema, platformSchema } from './edge.schema';
+import {
+    firmwareUpgradeSchema,
+    networkSchema,
+    nodeNameSchema,
+    platformSchema,
+} from './edge.schema';
 import {
     useEdgeDetail,
     useEdgeList,
     useDeviceConfigSyncMutation,
     useEnrollmentMutation,
     useFirmwareUpgradeMutation,
+    useNodeNameMutation,
     useNetworkMutation,
     usePlatformDeleteMutation,
     usePlatformMutation,
@@ -72,16 +81,60 @@ function TerminalModal({
     open: boolean;
     onClose: () => void;
 }) {
-    const [output, setOutput] = useState('');
     const [state, setState] = useState('正在连接…');
     const socketRef = useRef<WebSocket | null>(null);
-    const terminalRef = useRef<HTMLTextAreaElement | null>(null);
+    const terminalHostRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
-        if (!open || !nodeId) return;
+        const host = terminalHostRef.current;
+        if (!open || !nodeId || !host) return;
+
         let disposed = false;
         let poll: number | undefined;
-        setOutput('');
+        let fitFrame: number | undefined;
+        let lastSentSize = '';
+        const terminal = new Terminal({
+            cursorBlink: true,
+            fontFamily: "'Cascadia Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace",
+            fontSize: 14,
+            lineHeight: 1.2,
+            scrollback: 5_000,
+            theme: {
+                background: '#020617',
+                foreground: '#d1fae5',
+                cursor: '#6ee7b7',
+                cursorAccent: '#020617',
+                selectionBackground: '#164e63',
+                black: '#0f172a',
+                brightBlack: '#64748b',
+                green: '#34d399',
+                brightGreen: '#6ee7b7',
+            },
+        });
+        const fitAddon = new FitAddon();
+        terminal.loadAddon(fitAddon);
+        terminal.open(host);
+
+        const fitTerminal = () => {
+            if (host.clientWidth === 0 || host.clientHeight === 0) return;
+            fitAddon.fit();
+            const socket = socketRef.current;
+            const size = `resize:${terminal.cols}:${terminal.rows}`;
+            if (socket?.readyState === WebSocket.OPEN && size !== lastSentSize) {
+                socket.send(size);
+                lastSentSize = size;
+            }
+        };
+        const resizeObserver = new ResizeObserver(fitTerminal);
+        resizeObserver.observe(host);
+        fitFrame = window.requestAnimationFrame(fitTerminal);
+        const input = terminal.onData((data) => {
+            const socket = socketRef.current;
+            if (socket?.readyState === WebSocket.OPEN) {
+                socket.send(new TextEncoder().encode(data));
+            }
+        });
+
         setState('正在申请终端票据…');
         getTerminalTicket(nodeId)
             .then(({ ticket }) => {
@@ -94,22 +147,18 @@ function TerminalModal({
                 socketRef.current = socket;
                 socket.onopen = () => {
                     setState('已连接');
+                    fitTerminal();
                     poll = window.setInterval(() => {
                         if (socket.readyState === WebSocket.OPEN) socket.send(new Uint8Array(0));
                     }, 100);
-                    terminalRef.current?.focus();
+                    terminal.focus();
                 };
                 socket.onmessage = (event) => {
                     if (typeof event.data === 'string') {
                         if (event.data !== 'ready') setState(event.data || '终端已关闭');
                         return;
                     }
-                    const text = new TextDecoder().decode(event.data as ArrayBuffer);
-                    setOutput((current) => `${current}${text}`.slice(-100_000));
-                    requestAnimationFrame(() => {
-                        const element = terminalRef.current;
-                        if (element) element.scrollTop = element.scrollHeight;
-                    });
+                    terminal.write(new Uint8Array(event.data as ArrayBuffer));
                 };
                 socket.onerror = () => setState('终端连接失败');
                 socket.onclose = () => setState('终端已关闭');
@@ -118,34 +167,14 @@ function TerminalModal({
         return () => {
             disposed = true;
             if (poll !== undefined) window.clearInterval(poll);
+            if (fitFrame !== undefined) window.cancelAnimationFrame(fitFrame);
+            resizeObserver.disconnect();
+            input.dispose();
             socketRef.current?.close();
             socketRef.current = null;
+            terminal.dispose();
         };
     }, [nodeId, open]);
-
-    const sendKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-        const socket = socketRef.current;
-        if (!socket || socket.readyState !== WebSocket.OPEN) return;
-        const control =
-            event.ctrlKey && event.key.length === 1
-                ? String.fromCharCode(event.key.toUpperCase().charCodeAt(0) - 64)
-                : undefined;
-        const keys: Record<string, string> = {
-            Enter: '\r',
-            Backspace: '\x7f',
-            Tab: '\t',
-            ArrowUp: '\x1b[A',
-            ArrowDown: '\x1b[B',
-            ArrowRight: '\x1b[C',
-            ArrowLeft: '\x1b[D',
-            Escape: '\x1b',
-        };
-        const data = control ?? keys[event.key] ?? (event.key.length === 1 ? event.key : '');
-        if (data) {
-            event.preventDefault();
-            socket.send(new TextEncoder().encode(data));
-        }
-    };
 
     return (
         <Modal
@@ -154,15 +183,13 @@ function TerminalModal({
             footer={null}
             width="min(960px, 94vw)"
             title={`Web 终端 · ${state}`}
+            forceRender
             destroyOnHidden
         >
-            <textarea
-                ref={terminalRef}
-                value={output}
-                readOnly
-                spellCheck={false}
-                onKeyDown={sendKey}
-                className="h-[min(620px,72dvh)] w-full resize-none rounded-md border-0 bg-slate-950 p-3 font-mono text-sm leading-5 text-emerald-300 outline-none"
+            <div
+                ref={terminalHostRef}
+                className="h-[min(620px,72dvh)] w-full overflow-hidden rounded-md bg-slate-950 p-3"
+                role="application"
                 aria-label="边缘节点终端"
             />
         </Modal>
@@ -180,6 +207,7 @@ export default function EdgeNodePage() {
     const [keyword, setKeyword] = useState('');
     const [status, setStatus] = useState<Edge.EnrollmentStatus>();
     const [selectedId, setSelectedId] = useState<string>();
+    const [renamingNode, setRenamingNode] = useState<Edge.Node>();
     const [networkOpen, setNetworkOpen] = useState(false);
     const [platformOpen, setPlatformOpen] = useState(false);
     const [firmwareOpen, setFirmwareOpen] = useState(false);
@@ -187,6 +215,7 @@ export default function EdgeNodePage() {
     const [networkForm] = Form.useForm<Edge.NetworkDto>();
     const [platformForm] = Form.useForm<Edge.PlatformDto>();
     const [firmwareForm] = Form.useForm<Edge.FirmwareUpgradeDto>();
+    const [nameForm] = Form.useForm<Edge.NameDto>();
     const { modal } = App.useApp();
     const { run: search } = useDebounceFn((value: string) => {
         setKeyword(value);
@@ -196,6 +225,7 @@ export default function EdgeNodePage() {
     const { data, isLoading } = useEdgeList(query, canQuery);
     const { data: detail, isLoading: detailLoading } = useEdgeDetail(selectedId);
     const enrollment = useEnrollmentMutation();
+    const nodeName = useNodeNameMutation();
     const network = useNetworkMutation();
     const deviceConfigSync = useDeviceConfigSyncMutation();
     const platform = usePlatformMutation();
@@ -247,6 +277,11 @@ export default function EdgeNodePage() {
         setNetworkOpen(true);
     };
 
+    const showRename = (node: Edge.Node) => {
+        nameForm.setFieldsValue({ name: node.name || node.hostname });
+        setRenamingNode(node);
+    };
+
     const showPlatform = (item?: Edge.Platform) => {
         platformForm.setFieldsValue(
             item
@@ -292,12 +327,17 @@ export default function EdgeNodePage() {
             title: '操作',
             key: 'actions',
             fixed: 'right',
-            width: 210,
+            width: 250,
             render: (_, node) => (
                 <Space>
                     <Button type="link" onClick={() => setSelectedId(node.id)}>
                         详情
                     </Button>
+                    {canEdit && (
+                        <Button type="link" onClick={() => showRename(node)}>
+                            改名
+                        </Button>
+                    )}
                     {canEdit && node.enrollmentStatus !== 'approved' && (
                         <Button type="link" onClick={() => updateEnrollment(node, 'approved')}>
                             批准
@@ -445,38 +485,51 @@ export default function EdgeNodePage() {
                 width="min(960px, 92vw)"
                 loading={detailLoading}
                 extra={
-                    detail && detail.enrollmentStatus === 'approved' ? (
+                    detail ? (
                         <Space wrap>
-                            {canConfig && detail.supportsDeviceConfig && (
-                                <Button
-                                    type="primary"
-                                    loading={deviceConfigSync.isPending}
-                                    onClick={() => deviceConfigSync.mutate(detail.id)}
-                                >
-                                    同步设备配置
-                                </Button>
+                            {canEdit && (
+                                <Button onClick={() => showRename(detail)}>修改名称</Button>
                             )}
-                            {canConfig && detail.supportsNetworkConfig && (
-                                <Button onClick={showNetwork}>配置 br-lan</Button>
-                            )}
-                            {canConfig && detail.supportsPlatformConfig && (
-                                <Button onClick={() => showPlatform()}>添加平台</Button>
-                            )}
-                            {canFirmware && detail.supportsFirmwareUpdate && (
-                                <Button
-                                    danger
-                                    onClick={() => {
-                                        firmwareForm.resetFields();
-                                        firmwareForm.setFieldsValue({ keepSettings: true });
-                                        setFirmwareOpen(true);
-                                    }}
-                                >
-                                    上传固件并刷写
-                                </Button>
-                            )}
-                            {canTerminal && detail.ttydAvailable && (
-                                <Button onClick={() => setTerminalOpen(true)}>Web 终端</Button>
-                            )}
+                            {detail.enrollmentStatus === 'approved' &&
+                                canConfig &&
+                                detail.supportsDeviceConfig && (
+                                    <Button
+                                        type="primary"
+                                        loading={deviceConfigSync.isPending}
+                                        onClick={() => deviceConfigSync.mutate(detail.id)}
+                                    >
+                                        同步设备配置
+                                    </Button>
+                                )}
+                            {detail.enrollmentStatus === 'approved' &&
+                                canConfig &&
+                                detail.supportsNetworkConfig && (
+                                    <Button onClick={showNetwork}>配置 br-lan</Button>
+                                )}
+                            {detail.enrollmentStatus === 'approved' &&
+                                canConfig &&
+                                detail.supportsPlatformConfig && (
+                                    <Button onClick={() => showPlatform()}>添加平台</Button>
+                                )}
+                            {detail.enrollmentStatus === 'approved' &&
+                                canFirmware &&
+                                detail.supportsFirmwareUpdate && (
+                                    <Button
+                                        danger
+                                        onClick={() => {
+                                            firmwareForm.resetFields();
+                                            firmwareForm.setFieldsValue({ keepSettings: true });
+                                            setFirmwareOpen(true);
+                                        }}
+                                    >
+                                        上传固件并刷写
+                                    </Button>
+                                )}
+                            {detail.enrollmentStatus === 'approved' &&
+                                canTerminal &&
+                                detail.ttydAvailable && (
+                                    <Button onClick={() => setTerminalOpen(true)}>Web 终端</Button>
+                                )}
                         </Space>
                     ) : null
                 }
@@ -584,6 +637,33 @@ export default function EdgeNodePage() {
                     </>
                 )}
             </Drawer>
+
+            <FormModal
+                open={Boolean(renamingNode)}
+                title={`修改节点名称${renamingNode ? ` · ${renamingNode.imei}` : ''}`}
+                onCancel={() => setRenamingNode(undefined)}
+                onOk={() => nameForm.submit()}
+                confirmLoading={nodeName.isPending}
+                forceRender
+                destroyOnHidden
+            >
+                <Form
+                    form={nameForm}
+                    layout="vertical"
+                    onFinish={(values) => {
+                        const parsed = validateForm(nameForm, nodeNameSchema, values);
+                        if (parsed && renamingNode)
+                            nodeName.mutate(
+                                { id: renamingNode.id, data: parsed },
+                                { onSuccess: () => setRenamingNode(undefined) }
+                            );
+                    }}
+                >
+                    <Form.Item label="节点名称" name="name">
+                        <Input maxLength={100} showCount placeholder="请输入节点名称" />
+                    </Form.Item>
+                </Form>
+            </FormModal>
 
             <FormModal
                 open={networkOpen}

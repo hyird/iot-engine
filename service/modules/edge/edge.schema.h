@@ -42,6 +42,13 @@ class EnrollmentValidator final : public ruvia::Middleware<EnrollmentValidator> 
         RUVIA_RULE(name, RUVIA_MAX(100, "节点名称不能超过 100 个字符")));
 };
 
+class NodeNameValidator final : public ruvia::Middleware<NodeNameValidator> {
+  public:
+    RUVIA_VALIDATE_JSON(
+        NodeNameBody, RUVIA_RULE(name, RUVIA_REQUIRED("节点名称不能为空"),
+                                 RUVIA_MAX(100, "节点名称不能超过 100 个字符")));
+};
+
 class NetworkValidator final : public ruvia::Middleware<NetworkValidator> {
   public:
     RUVIA_VALIDATE_JSON(

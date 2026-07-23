@@ -29,6 +29,11 @@ struct EnrollmentBody final {
     RUVIA_MODEL(EnrollmentBody, status, name);
 };
 
+struct NodeNameBody final {
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
+    RUVIA_MODEL(NodeNameBody, name);
+};
+
 struct NetworkBody final {
     RUVIA_OPTIONAL_FIELD(ip, ruvia::String);
     RUVIA_OPTIONAL_FIELD(netmask, ruvia::String);

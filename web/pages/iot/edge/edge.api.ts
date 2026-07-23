@@ -6,6 +6,7 @@ import {
     edgeListQuerySchema,
     firmwareUpgradeSchema,
     networkSchema,
+    nodeNameSchema,
     platformIdSchema,
     platformSchema,
 } from './edge.schema';
@@ -21,6 +22,8 @@ export const getEdgeDetail = (id: string) =>
     request.get<Edge.Node>(`${BASE}/${edgeIdSchema.parse(id)}`);
 export const setEnrollment = (id: string, status: 'approved' | 'rejected', name?: string) =>
     request.put<void>(`${BASE}/${edgeIdSchema.parse(id)}/enrollment`, { status, name });
+export const renameEdge = (id: string, data: Edge.NameDto) =>
+    request.put<void>(`${BASE}/${edgeIdSchema.parse(id)}/name`, nodeNameSchema.parse(data));
 export const configureNetwork = (id: string, data: Edge.NetworkDto) =>
     request.post<void>(`${BASE}/${edgeIdSchema.parse(id)}/network`, networkSchema.parse(data));
 export const syncDeviceConfig = (id: string) =>

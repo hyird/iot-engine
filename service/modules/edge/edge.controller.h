@@ -27,6 +27,7 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
     RUVIA_GET("/", list, EdgeListValidator);
     RUVIA_GET("/firmware", firmwares);
     RUVIA_PUT("/:id/enrollment", enrollment, EdgeIdValidator, EnrollmentValidator);
+    RUVIA_PUT("/:id/name", renameNode, EdgeIdValidator, NodeNameValidator);
     RUVIA_POST("/:id/network", network, EdgeIdValidator, NetworkValidator);
     RUVIA_POST("/:id/sync", sync, EdgeIdValidator);
     RUVIA_POST("/:id/platforms", savePlatform, EdgeIdValidator, PlatformValidator);
@@ -64,6 +65,12 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
         co_await service::middleware::requirePermission(c, "iot:edge:edit");
         co_await edgeService().setEnrollment(c, id(c), c.req().valid<EnrollmentBody>());
         co_return c.json(service::common::operation(c, "注册状态已更新"));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> renameNode(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:edge:edit");
+        co_await edgeService().renameNode(c, id(c), c.req().valid<NodeNameBody>());
+        co_return c.json(service::common::operation(c, "节点名称已更新"));
     }
 
     ruvia::Task<ruvia::HttpResponse> network(ruvia::Context& c) {
