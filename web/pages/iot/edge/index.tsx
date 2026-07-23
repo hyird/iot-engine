@@ -13,6 +13,7 @@ import {
 } from '@ant-design/icons';
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { FitAddon } from '@xterm/addon-fit';
+import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
 import {
     App,
@@ -242,6 +243,7 @@ function TerminalModal({
 
         let disposed = false;
         let fitFrame: number | undefined;
+        let resizeTimer: number | undefined;
         let inputTimer: number | undefined;
         let outputFrame: number | undefined;
         let lastSentSize = '';
@@ -269,6 +271,13 @@ function TerminalModal({
         const fitAddon = new FitAddon();
         terminal.loadAddon(fitAddon);
         terminal.open(host);
+        try {
+            const webglAddon = new WebglAddon();
+            webglAddon.onContextLoss(() => webglAddon.dispose());
+            terminal.loadAddon(webglAddon);
+        } catch {
+            // Canvas renderer remains available when WebGL is unsupported.
+        }
 
         const fitTerminal = () => {
             fitFrame = undefined;
@@ -333,7 +342,13 @@ function TerminalModal({
             }
             terminal.write(payload);
         };
-        const resizeObserver = new ResizeObserver(scheduleFit);
+        const resizeObserver = new ResizeObserver(() => {
+            if (resizeTimer !== undefined) window.clearTimeout(resizeTimer);
+            resizeTimer = window.setTimeout(() => {
+                resizeTimer = undefined;
+                scheduleFit();
+            }, 100);
+        });
         resizeObserver.observe(host);
         scheduleFit();
         const input = terminal.onData((data) => {
@@ -394,6 +409,7 @@ function TerminalModal({
         return () => {
             disposed = true;
             if (fitFrame !== undefined) window.cancelAnimationFrame(fitFrame);
+            if (resizeTimer !== undefined) window.clearTimeout(resizeTimer);
             if (inputTimer !== undefined) window.clearTimeout(inputTimer);
             if (outputFrame !== undefined) window.cancelAnimationFrame(outputFrame);
             resizeObserver.disconnect();
@@ -413,13 +429,22 @@ function TerminalModal({
             title={`Web 终端 · ${state}`}
             forceRender
             destroyOnHidden
+            styles={{
+                body: {
+                    height: 'min(620px, calc(90dvh - 72px))',
+                    padding: 0,
+                    background: '#020617',
+                },
+            }}
+            style={{ top: 'max(16px, 5dvh)', paddingBottom: 0 }}
         >
             <div
-                ref={terminalHostRef}
-                className="h-[min(620px,72dvh)] w-full overflow-hidden rounded-md bg-slate-950 p-3"
+                className="h-full w-full overflow-hidden rounded-md bg-slate-950 p-3"
                 role="application"
                 aria-label="边缘节点终端"
-            />
+            >
+                <div ref={terminalHostRef} className="h-full min-h-0 w-full overflow-hidden" />
+            </div>
         </Modal>
     );
 }
@@ -763,8 +788,18 @@ export default function EdgeNodePage() {
             .filter((item) => item.operation === 'upsert' && item.name !== editingNetwork?.name)
             .flatMap((item) => (item.bridge ? item.bridgePorts : item.device ? [item.device] : []))
     );
-    const networkDeviceOptions = (networkNode?.interfaces ?? [])
+    const networkInterfaces = networkNode?.interfaces ?? [];
+    const subinterfaceParents = new Set<string>();
+    for (const item of networkInterfaces) {
+        let parent = item.name;
+        while (parent.includes('.')) {
+            parent = parent.slice(0, parent.lastIndexOf('.'));
+            if (parent) subinterfaceParents.add(parent);
+        }
+    }
+    const networkDeviceOptions = networkInterfaces
         .filter((item) => !item.bridge)
+        .filter((item) => !subinterfaceParents.has(item.name))
         .map((item) => ({
             value: item.name,
             label: item.displayName ? `${item.displayName} (${item.name})` : item.name,

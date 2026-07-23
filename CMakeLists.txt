@@ -89,6 +89,7 @@ add_custom_command(
 unset(VCPKG_MANIFEST_FEATURES CACHE)
 
 find_package(spdlog CONFIG REQUIRED)
+find_package(ZLIB REQUIRED)
 
 add_executable(iot-engine
     service/server.cpp
@@ -102,7 +103,8 @@ target_include_directories(iot-engine PRIVATE
 target_link_libraries(iot-engine PRIVATE
     ruvia::web
     spdlog::spdlog
-    protobuf::libprotobuf)
+    protobuf::libprotobuf
+    ZLIB::ZLIB)
 if(MSVC)
     target_compile_options(iot-engine PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
 endif()

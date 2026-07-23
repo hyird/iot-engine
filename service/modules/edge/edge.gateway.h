@@ -13,6 +13,7 @@
 #include <ruvia/core/TaskScope.h>
 #include <ruvia/web/Controller.h>
 #include <web_terminal.pb.h>
+#include <zlib.h>
 
 #include "service/common/http.h"
 #include "service/common/uuid.h"
@@ -49,6 +50,7 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
         std::uint64_t inboundSequence{};
         std::uint64_t outboundSequence{};
         std::uint64_t configSentAtMs{};
+        std::uint64_t onlineMarkedAtMs{};
         bool capabilitySeen{};
     };
 
@@ -148,7 +150,8 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
                 co_return;
             }
             session.inboundSequence = input.sequence();
-            co_await publishIngress(c, message->payload());
+            if (shouldProject(input))
+                co_await publishIngress(c, message->payload());
             co_await handle(c, socket, session, input);
             co_await markOnline(c, session);
             co_await drain(c, socket, session);
@@ -311,6 +314,24 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
                input.platform_id() == protocol::bytes(session.platformBytes.data(), 16);
     }
 
+    static bool shouldProject(const pb::Envelope& input) {
+        switch (input.payload_case()) {
+        case pb::Envelope::kHeartbeat:
+        case pb::Envelope::kCapabilityReport:
+        case pb::Envelope::kNetworkConfigResult:
+        case pb::Envelope::kFirmwareUpdateResult:
+        case pb::Envelope::kModemControlResult:
+        case pb::Envelope::kPlatformConfigResult:
+        case pb::Envelope::kConfigApplied:
+        case pb::Envelope::kConfigRejected:
+        case pb::Envelope::kTelemetryBatch:
+        case pb::Envelope::kCommandResult:
+            return true;
+        default:
+            return false;
+        }
+    }
+
     static pb::Envelope makeEnvelope(Session& session) {
         return protocol::outbound(session.nodeId, session.epoch, ++session.outboundSequence);
     }
@@ -322,10 +343,16 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
         co_await socket.binary(wire);
     }
 
-    static ruvia::Task<void> markOnline(ruvia::Context& c, const Session& session) {
+    static ruvia::Task<void> markOnline(ruvia::Context& c, Session& session) {
+        constexpr std::uint64_t refreshIntervalMs = 10000;
+        const auto now = protocol::nowMs();
+        if (session.onlineMarkedAtMs != 0 &&
+            now - session.onlineMarkedAtMs < refreshIntervalMs)
+            co_return;
         const auto key = sessionKey(session.nodeId);
         const auto epoch = std::to_string(session.epoch);
         co_await c.redis().setEx(key, std::chrono::seconds(90), epoch);
+        session.onlineMarkedAtMs = now;
     }
 
     static ruvia::Task<void> publishIngress(ruvia::Context& c, std::string_view wire) {
@@ -466,9 +493,11 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
             break;
         }
         case pb::Envelope::kPing: {
-            auto reply = makeEnvelope(session);
-            reply.mutable_pong()->set_nonce(input.ping().nonce());
-            co_await send(socket, reply);
+            if (input.ping().nonce() != 0) {
+                auto reply = makeEnvelope(session);
+                reply.mutable_pong()->set_nonce(input.ping().nonce());
+                co_await send(socket, reply);
+            }
             break;
         }
         case pb::Envelope::kTerminalData:
@@ -487,8 +516,20 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
             co_return;
         const auto id = protocol::uuidText(data.terminal_id());
         const auto key = "iot:edge:terminal:out:" + id;
+        std::string output;
+        if (data.compressed()) {
+            std::array<Bytef, 4096> inflated{};
+            uLongf inflatedSize = inflated.size();
+            if (uncompress(inflated.data(), &inflatedSize,
+                           reinterpret_cast<const Bytef*>(data.data().data()),
+                           data.data().size()) != Z_OK)
+                co_return;
+            output.assign(reinterpret_cast<const char*>(inflated.data()), inflatedSize);
+        } else {
+            output = data.data();
+        }
         webpb::WebTerminalFrame frame;
-        frame.mutable_data()->set_data(data.data());
+        frame.mutable_data()->set_data(output);
         std::string wire;
         if (!frame.SerializeToString(&wire))
             co_return;
