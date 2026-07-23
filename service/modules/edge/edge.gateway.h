@@ -388,15 +388,15 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
                                           std::string terminalId, ruvia::StopToken stopToken,
                                           bool& terminalClosed) {
         const std::string key = "iot:edge:terminal:out:" + terminalId;
-        const std::array<std::string_view, 1> keys{key};
         const auto redis = c.redis();
         while (!stopToken.stopRequested()) {
-            auto item = co_await redis.blpop(keys, std::chrono::seconds(1));
-            if (!item)
+            auto item = co_await redis.lpop(key);
+            if (!item) {
+                (void)co_await ruvia::sleepFor(c.worker(), std::chrono::milliseconds(10));
                 continue;
+            }
             webpb::WebTerminalFrame frame;
-            if (!frame.ParseFromArray(item->value().data(),
-                                      static_cast<int>(item->value().size()))) {
+            if (!frame.ParseFromArray(item->data(), static_cast<int>(item->size()))) {
                 webpb::WebTerminalFrame close;
                 close.mutable_close()->set_reason("terminal stream protocol error");
                 co_await sendWebTerminal(socket, close);
@@ -404,7 +404,7 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
                 co_await socket.close(1011, "terminal stream protocol error");
                 co_return;
             }
-            co_await socket.binary(item->value());
+            co_await socket.binary(*item);
             if (frame.payload_case() == webpb::WebTerminalFrame::kClose) {
                 terminalClosed = true;
                 co_await socket.close(1000, "terminal closed");
