@@ -34,6 +34,7 @@ import { FormModal } from '@/components/FormModal';
 import { PageContainer } from '@/components/PageContainer';
 import { StatusTag } from '@/components/StatusTag';
 import { usePermissions } from '@/hooks/usePermission';
+import { formatDateTime } from '@/utils/dateTime';
 import { validateForm } from '@/utils/validation';
 import { keySaveSchema, webhookSaveSchema } from './open-access.schema';
 import {
@@ -194,10 +195,6 @@ interface WebhookFormValues {
     eventTypes: OpenAccess.EventType[];
     secret?: string;
     headers?: WebhookHeaderFormItem[];
-}
-
-function dateText(value: string | null | undefined) {
-    return value ? new Date(value).toLocaleString() : '--';
 }
 
 function eventMeta(eventType?: string | null) {
@@ -451,6 +448,7 @@ function AccessKeyFormModal({
                     <Form.Item label="过期时间" name="expiresAt">
                         <DatePicker
                             showTime
+                            format="YYYY-MM-DD HH:mm:ss"
                             allowClear
                             className="!w-full"
                             placeholder="为空表示不过期"
@@ -869,7 +867,7 @@ function OpenAccessContent() {
             render: (value: string[]) => renderDeviceScope(value),
         },
         { title: 'Webhook 数', dataIndex: 'webhookCount', width: 110 },
-        { title: '过期时间', dataIndex: 'expiresAt', width: 180, render: dateText },
+        { title: '过期时间', dataIndex: 'expiresAt', width: 180, render: formatDateTime },
         {
             title: '最近使用',
             key: 'lastUsed',
@@ -877,7 +875,7 @@ function OpenAccessContent() {
             render: (_, record) =>
                 record.lastUsedAt ? (
                     <div className="leading-5">
-                        <div>{dateText(record.lastUsedAt)}</div>
+                        <div>{formatDateTime(record.lastUsedAt)}</div>
                         <div className="text-xs text-slate-500">{record.lastUsedIp || '--'}</div>
                     </div>
                 ) : (
@@ -990,7 +988,12 @@ function OpenAccessContent() {
             width: 90,
             render: (value: OpenAccess.Status) => <StatusTag status={value} />,
         },
-        { title: '最近触发', dataIndex: 'lastTriggeredAt', width: 180, render: dateText },
+        {
+            title: '最近触发',
+            dataIndex: 'lastTriggeredAt',
+            width: 180,
+            render: formatDateTime,
+        },
         {
             title: '最近结果',
             key: 'lastResult',
@@ -1004,7 +1007,7 @@ function OpenAccessContent() {
                                     失败
                                 </Tag>
                                 <div className="text-xs text-slate-500">
-                                    {dateText(record.lastFailureAt)}
+                                    {formatDateTime(record.lastFailureAt)}
                                     {record.lastHttpStatus ? ` / ${record.lastHttpStatus}` : ''}
                                 </div>
                             </div>
@@ -1018,7 +1021,7 @@ function OpenAccessContent() {
                                 成功
                             </Tag>
                             <div className="text-xs text-slate-500">
-                                {dateText(record.lastSuccessAt)}
+                                {formatDateTime(record.lastSuccessAt)}
                             </div>
                         </div>
                     );
@@ -1097,7 +1100,7 @@ function OpenAccessContent() {
     };
 
     const logColumns: ColumnsType<OpenAccess.LogItem> = [
-        { title: '时间', dataIndex: 'createdAt', width: 180, render: dateText },
+        { title: '时间', dataIndex: 'createdAt', width: 180, render: formatDateTime },
         {
             title: '调用配置',
             key: 'accessKey',
@@ -1665,7 +1668,7 @@ function OpenAccessContent() {
                                 {
                                     key: 'createdAt',
                                     label: '时间',
-                                    children: dateText(selectedLog.createdAt),
+                                    children: formatDateTime(selectedLog.createdAt),
                                 },
                                 {
                                     key: 'status',

@@ -1,9 +1,11 @@
 #pragma once
 
+#include <algorithm>
 #include <charconv>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <exception>
 #include <map>
 #include <optional>
 #include <string>
@@ -102,6 +104,59 @@ class DeviceService {
         co_await fillElements(c, itemById, id);
         co_await fillCommandOperations(c, itemById, id);
         co_return item;
+    }
+
+    ruvia::Task<std::string> history(ruvia::Context& c, std::string_view id) {
+        (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::view);
+
+        const auto start = c.req().query("startTime").value_or("");
+        const auto end = c.req().query("endTime").value_or("");
+        if (start.empty() || end.empty())
+            service::common::fail(18002, "startTime 和 endTime 不能为空", 400);
+
+        const auto requestedPage = service::common::parseInt64(c.req().query("page")).value_or(1);
+        const auto requestedPageSize =
+            service::common::parseInt64(c.req().query("pageSize")).value_or(20);
+        const auto page = requestedPage > 0 ? requestedPage : std::int64_t{1};
+        const auto pageSize =
+            requestedPageSize < 1 ? std::int64_t{20}
+                                  : std::min<std::int64_t>(requestedPageSize, 100);
+        const auto offset = (page - 1) * pageSize;
+
+        try {
+            const auto rows = co_await c.db().query(
+                R"sql(
+WITH filtered AS (
+  SELECT record.*, COUNT(*) OVER () AS total
+  FROM device_data record
+  WHERE record.device_id = $1::uuid
+    AND record.report_time >= $2::timestamptz
+    AND record.report_time <= $3::timestamptz
+    AND jsonb_typeof(record.data->'values') = 'object'
+  ORDER BY record.report_time DESC, record.id DESC
+  LIMIT $4::bigint OFFSET $5::bigint
+)
+SELECT jsonb_build_object(
+  'list', COALESCE(jsonb_agg(jsonb_build_object(
+    'id', id,
+    'protocol', protocol,
+    'reportTime', report_time,
+    'source', source,
+    'functionCode', data->>'function_code',
+    'values', COALESCE(data->'values', '{}'::jsonb)
+  ) ORDER BY report_time DESC, id DESC), '[]'::jsonb),
+  'total', COALESCE(MAX(total), 0),
+  'page', $6::bigint,
+  'pageSize', $4::bigint,
+  'totalPages', CEIL(COALESCE(MAX(total), 0)::numeric / $4::numeric)::bigint
+)::text
+FROM filtered)sql",
+                service::common::dbParams(id, start, end, pageSize, offset, page));
+            co_return rows.rows().empty() ? std::string{"{\"list\":[],\"total\":0}"}
+                                         : std::string{rows.rows().front()[0].text()};
+        } catch (const std::exception&) {
+            service::common::fail(18002, "时间范围格式错误", 400);
+        }
     }
 
     ruvia::Task<ruvia::List<DeviceOptionDto>> options(ruvia::Context& c) {

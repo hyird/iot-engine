@@ -133,7 +133,6 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
         } cleanup{outputPath};
 
         std::ofstream output;
-        std::string version;
         std::string keepSettingsText;
         std::string fileName;
         std::uint64_t bytes = 0;
@@ -159,11 +158,7 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
                 if (!output)
                     service::common::fail(17014, "无法保存固件文件", 500);
             }
-            if (part->name() == "version") {
-                version.append(part->body());
-                if (version.size() > 64)
-                    service::common::fail(17015, "固件版本不能超过 64 个字符", 400);
-            } else if (part->name() == "keepSettings") {
+            if (part->name() == "keepSettings") {
                 keepSettingsText.append(part->body());
                 if (keepSettingsText.size() > 5)
                     service::common::fail(17018, "保留配置参数无效", 400);
@@ -179,8 +174,13 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
                     output.close();
             }
         }
-        if (!fileSeen || bytes == 0 || fileName.empty() || version.empty())
-            service::common::fail(17017, "固件文件和版本不能为空", 400);
+        if (!fileSeen || bytes == 0 || fileName.empty())
+            service::common::fail(17017, "固件文件不能为空", 400);
+        auto version = std::filesystem::path(fileName).stem().string();
+        if (version.empty())
+            service::common::fail(17017, "无法从固件文件名识别版本", 400);
+        if (version.size() > 64)
+            service::common::fail(17015, "固件文件名生成的版本不能超过 64 个字符", 400);
         const bool keepSettings = keepSettingsText.empty() || keepSettingsText == "true" ||
                                   keepSettingsText == "1";
         if (!keepSettings && keepSettingsText != "false" && keepSettingsText != "0")

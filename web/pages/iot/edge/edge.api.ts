@@ -37,7 +37,6 @@ export const removePlatform = (id: string, platformId: string) =>
 export const upgradeFirmware = (id: string, data: Edge.FirmwareUpgradeDto) => {
     const value = firmwareUpgradeSchema.parse(data);
     const form = new FormData();
-    form.append('version', value.version);
     form.append('keepSettings', String(value.keepSettings));
     form.append('file', value.file, value.file.name);
     return request.post<void>(`${BASE}/${edgeIdSchema.parse(id)}/firmware`, form, {

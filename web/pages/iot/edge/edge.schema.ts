@@ -184,7 +184,6 @@ export const platformSchema = z.object({
 });
 
 export const firmwareUpgradeSchema = z.object({
-    version: z.string().min(1, '固件版本不能为空').max(64),
     file: z
         .instanceof(File)
         .refine(

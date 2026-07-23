@@ -1,4 +1,5 @@
 import request from '@/utils/http';
+import { appendQueryParams } from '@/utils/query';
 import type { PaginatedResult } from '@/utils/types';
 import {
     deviceCommandSchema,
@@ -28,6 +29,10 @@ const buildTree = (items: DeviceGroup.TreeItem[]) => {
 export const getDeviceList = () => request.get<PaginatedResult<Device.RealTimeData>>(DEVICE_BASE);
 export const getDeviceDetail = (id: string) =>
     request.get<Device.Item>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}`);
+export const getDeviceHistory = (id: string, query: Device.HistoryRecordQuery) =>
+    request.get<PaginatedResult<Device.HistoryRecord>>(
+        appendQueryParams(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}/history`, query)
+    );
 export const createDevice = (data: Device.CreateDto) =>
     request.post<void>(DEVICE_BASE, saveDeviceSchema.parse(data));
 export const updateDevice = (id: string, data: Device.UpdateDto) =>

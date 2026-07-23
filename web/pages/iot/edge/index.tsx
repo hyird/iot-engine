@@ -1217,9 +1217,6 @@ export default function EdgeNodePage() {
                             );
                     }}
                 >
-                    <Form.Item label="版本" name="version">
-                        <Input maxLength={64} placeholder="例如 23.05.5-r1" />
-                    </Form.Item>
                     <Form.Item
                         label="当前节点固件文件"
                         name="file"
@@ -1230,7 +1227,8 @@ export default function EdgeNodePage() {
                         </Upload>
                     </Form.Item>
                     <p className="text-xs text-slate-500">
-                        最大 128 MiB。上传完成后平台计算 SHA-256，并立即只向当前节点下发。
+                        最大 128 MiB。版本自动取固件文件名（不含扩展名）；上传完成后平台计算
+                        SHA-256，并立即只向当前节点下发。
                     </p>
                     <Form.Item label="保留 UCI 配置" name="keepSettings" valuePropName="checked">
                         <Switch />

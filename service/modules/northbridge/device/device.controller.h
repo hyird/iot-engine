@@ -1,7 +1,9 @@
 #pragma once
 
+#include <memory_resource>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include <ruvia/web/Controller.h>
 
@@ -34,6 +36,7 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
     RUVIA_POST("/groups", groupCreate, CreateDeviceGroupValidator);
     RUVIA_PUT("/groups/:id", groupUpdate, DeviceIdParamsValidator, UpdateDeviceGroupValidator);
     RUVIA_DELETE("/groups/:id", groupRemove, DeviceIdParamsValidator);
+    RUVIA_GET("/:id/history", history, DeviceIdParamsValidator);
     RUVIA_GET("/:id/shares", shares, DeviceIdParamsValidator);
     RUVIA_GET("/:id/share-targets", shareTargets, DeviceIdParamsValidator);
     RUVIA_PUT("/:id/shares", replaceShares, DeviceIdParamsValidator, ReplaceDeviceSharesValidator);
@@ -49,6 +52,16 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
   private:
     static std::string id(ruvia::Context& c) {
         return std::string(c.req().valid<DeviceIdParams>().id()->view());
+    }
+
+    static ruvia::HttpResponse jsonData(ruvia::Context& c, std::string_view data) {
+        std::pmr::string body(c.allocator<char>());
+        body.append("{\"code\":0,\"message\":\"ok\",\"data\":");
+        body.append(data);
+        body.push_back('}');
+        auto response = c.body(std::move(body));
+        response.header("Content-Type", "application/json; charset=UTF-8");
+        return response;
     }
 
     // ---- 设备 ----
@@ -71,6 +84,10 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
         co_await service::middleware::requirePermission(c, "iot:device:query");
         co_return c.json(service::common::ok<DeviceDetailResponse>(
             c, co_await deviceService().detail(c, id(c))));
+    }
+    ruvia::Task<ruvia::HttpResponse> history(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:device:query");
+        co_return jsonData(c, co_await deviceService().history(c, id(c)));
     }
     ruvia::Task<ruvia::HttpResponse> create(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:device:add");

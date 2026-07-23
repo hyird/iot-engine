@@ -18,6 +18,7 @@ import { PageContainer } from '@/components/PageContainer';
 import { StatusTag } from '@/components/StatusTag';
 import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermissions } from '@/hooks/usePermission';
+import { formatDateTime } from '@/utils/dateTime';
 import { validateForm } from '@/utils/validation';
 import { saveLinkSchema } from './link.schema';
 import { useLinkDelete, useLinkEnums, useLinkList, useLinkSave, usePublicIp } from './link.service';
@@ -49,11 +50,6 @@ const createTarget = (index = 1): Link.Target => ({
     port: 502,
     status: 'enabled',
 });
-
-function formatDateTime(value: string) {
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false });
-}
 
 export default function IotLinkPage() {
     const [keyword, setKeyword] = useState('');
@@ -241,9 +237,7 @@ export default function IotLinkPage() {
                                             {target.error_msg ? `（${target.error_msg}）` : ''}
                                             {target.last_activity_at_ms
                                                 ? `，最后活动 ${formatDateTime(
-                                                      new Date(
-                                                          target.last_activity_at_ms
-                                                      ).toISOString()
+                                                      target.last_activity_at_ms
                                                   )}`
                                                 : ''}
                                         </div>

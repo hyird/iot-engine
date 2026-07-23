@@ -44,6 +44,18 @@ export function useDeviceList(options?: { enabled?: boolean; pollingInterval?: n
     });
 }
 
+export function useDeviceHistory(
+    deviceId: string | undefined,
+    query: Device.HistoryRecordQuery,
+    enabled = true
+) {
+    return useQuery({
+        queryKey: [...deviceKeys.all, 'history', deviceId ?? '', query],
+        queryFn: () => api.getDeviceHistory(deviceId as string, query),
+        enabled: Boolean(deviceId) && enabled,
+    });
+}
+
 export function useDeviceSave() {
     return useSaveMutation<Device.CreateDto & { id?: string }, Device.CreateDto, Device.UpdateDto>({
         createFn: api.createDevice,

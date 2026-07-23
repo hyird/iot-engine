@@ -454,6 +454,31 @@ export interface HistoryDataQuery {
     endTime?: Date;
 }
 
+/** 数据库存储的单个历史测点值 */
+export interface HistoryPointValue {
+    name?: string;
+    value: unknown;
+    unit?: string;
+}
+
+/** 单次设备上报的历史记录 */
+export interface HistoryRecord {
+    id: string;
+    protocol: Protocol.Type;
+    reportTime: string;
+    source: string;
+    functionCode?: string;
+    values: Record<string, HistoryPointValue>;
+}
+
+/** 管理端历史记录查询参数 */
+export interface DeviceHistoryQuery {
+    page: number;
+    pageSize: number;
+    startTime: string;
+    endTime: string;
+}
+
 type DeviceModbusMode = ModbusMode;
 type DeviceHeartbeatConfig = HeartbeatConfig;
 type DeviceRegistrationConfig = RegistrationConfig;
@@ -469,6 +494,9 @@ type ReplaceDeviceSharesDtoType = ReplaceDeviceSharesDto;
 type DeviceCommandStatus = CommandStatus;
 type DeviceCommandCreateResult = CommandCreateResult;
 type DeviceCommandStatusResult = CommandStatusResult;
+type DeviceHistoryRecord = HistoryRecord;
+type DeviceHistoryPointValue = HistoryPointValue;
+type DeviceHistoryRecordQuery = DeviceHistoryQuery;
 type DeviceEdgeTransport = EdgeTransport;
 type DeviceEdgeMode = EdgeMode;
 type DeviceSerialParity = SerialParity;
@@ -515,5 +543,8 @@ export namespace Device {
     export type HistoryElement = ElementRecord;
     export type HistoryImage = ImageRecord;
     export type HistoryQuery = HistoryDataQuery;
+    export type HistoryRecord = DeviceHistoryRecord;
+    export type HistoryPointValue = DeviceHistoryPointValue;
+    export type HistoryRecordQuery = DeviceHistoryRecordQuery;
     export type CommandStatus = DeviceCommandStatus;
 }

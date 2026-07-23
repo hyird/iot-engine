@@ -18,12 +18,14 @@ import {
     App,
     Button,
     Card,
+    DatePicker,
     Drawer,
     Dropdown,
     Empty,
     Flex,
     Form,
     Input,
+    Pagination,
     Popconfirm,
     Popover,
     Result,
@@ -36,6 +38,7 @@ import {
     Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import dayjs, { type Dayjs } from 'dayjs';
 import {
     type CSSProperties,
     memo,
@@ -53,6 +56,7 @@ import DeviceCard, { type DeviceCardItem } from '@/components/DeviceCard';
 import { PageContainer } from '@/components/PageContainer';
 import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermissions } from '@/hooks/usePermission';
+import { formatDateTime } from '@/utils/dateTime';
 import { useLinkOptions } from '../link/link.service';
 import CommandPopover from './CommandPopover';
 import DeviceFormModal, { type DeviceFormValues } from './DeviceFormModal';
@@ -62,6 +66,7 @@ import {
     useDeviceGroupShares,
     useDeviceGroupShareTargets,
     useDeviceGroupTreeWithCount,
+    useDeviceHistory,
     useDeviceList,
     useDeviceSave,
     useDeviceShares,
@@ -181,13 +186,6 @@ const buildGroupStats = (
     };
     groups.forEach(walk);
     return result;
-};
-
-const formatReportTime = (value?: string) => {
-    if (!value) return '--';
-    const numeric = Number(value);
-    const date = new Date(Number.isFinite(numeric) && numeric > 0 ? numeric : value);
-    return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 };
 
 const formatElementValue = (element: Device.Element) => {
@@ -364,7 +362,7 @@ const DeviceShareDrawer = ({ resource, onClose }: DeviceShareDrawerProps) => {
             title: '更新时间',
             dataIndex: 'updated_at',
             width: 176,
-            render: (value?: string) => formatReportTime(value),
+            render: (value?: string) => formatDateTime(value),
         },
         {
             title: '来源',
@@ -476,10 +474,146 @@ const DeviceShareDrawer = ({ resource, onClose }: DeviceShareDrawerProps) => {
     );
 };
 
+const createDefaultHistoryRange = (): [Dayjs, Dayjs] => [dayjs().subtract(24, 'hour'), dayjs()];
+
+const formatHistoryValue = (value: unknown) => {
+    if (value === null || value === undefined || value === '') return '-';
+    if (typeof value === 'object') return JSON.stringify(value);
+    return String(value);
+};
+
+const DeviceHistoryDrawer = ({
+    device,
+    onClose,
+}: {
+    device: Device.RealTimeData;
+    onClose: () => void;
+}) => {
+    const [pagination, setPagination] = useState({ page: 1, pageSize: 20 });
+    const [range, setRange] = useState<[Dayjs, Dayjs]>(createDefaultHistoryRange);
+
+    const query = useMemo<Device.HistoryRecordQuery>(
+        () => ({
+            ...pagination,
+            startTime: range[0].toISOString(),
+            endTime: range[1].toISOString(),
+        }),
+        [pagination, range]
+    );
+    const { data, isLoading, isFetching } = useDeviceHistory(device.id, query);
+
+    const columns = useMemo<ColumnsType<Device.HistoryRecord>>(
+        () => [
+            {
+                title: '上报时间',
+                dataIndex: 'reportTime',
+                key: 'reportTime',
+                width: 180,
+                fixed: 'left',
+                render: (value) => formatDateTime(value),
+            },
+            {
+                title: '协议',
+                dataIndex: 'protocol',
+                key: 'protocol',
+                width: 100,
+                render: (value) => <Tag color="blue">{value}</Tag>,
+            },
+            {
+                title: '功能码',
+                dataIndex: 'functionCode',
+                key: 'functionCode',
+                width: 100,
+                render: (value) => value || '-',
+            },
+            {
+                title: '历史测点',
+                dataIndex: 'values',
+                key: 'values',
+                width: 560,
+                render: (values: Device.HistoryRecord['values']) => {
+                    const entries = Object.entries(values ?? {});
+                    if (entries.length === 0) return '-';
+                    return (
+                        <Flex gap={4} wrap>
+                            {entries.map(([elementId, point]) => {
+                                const text = `${point.name || elementId}: ${formatHistoryValue(point.value)}${point.unit ? ` ${point.unit}` : ''}`;
+                                return (
+                                    <Tooltip key={elementId} title={text}>
+                                        <Tag className="!m-0 max-w-[260px] truncate">{text}</Tag>
+                                    </Tooltip>
+                                );
+                            })}
+                        </Flex>
+                    );
+                },
+            },
+            {
+                title: '来源',
+                dataIndex: 'source',
+                key: 'source',
+                width: 100,
+                render: (value) => value || '-',
+            },
+        ],
+        []
+    );
+
+    return (
+        <Drawer
+            open
+            onClose={onClose}
+            title={`历史数据 · ${device.name}:${device.device_code}`}
+            width="min(1100px, 94vw)"
+            destroyOnHidden
+        >
+            <div className="flex h-full min-h-0 flex-col">
+                <Flex justify="space-between" align="center" gap={12} wrap className="mb-3">
+                    <DatePicker.RangePicker
+                        showTime
+                        allowClear={false}
+                        value={range}
+                        onChange={(value) => {
+                            if (!value?.[0] || !value[1]) return;
+                            setRange([value[0], value[1]]);
+                            setPagination((current) => ({ ...current, page: 1 }));
+                        }}
+                    />
+                    <span className="text-xs text-slate-500">
+                        直接查询数据库中已持久化的设备上报记录
+                    </span>
+                </Flex>
+                <div className="min-h-0 flex-1">
+                    <Table
+                        rowKey="id"
+                        size="small"
+                        sticky
+                        pagination={false}
+                        columns={columns}
+                        dataSource={data?.list ?? []}
+                        loading={isLoading || isFetching}
+                        scroll={{ x: 'max-content', y: 'calc(100dvh - 300px)' }}
+                        locale={{ emptyText: <Empty description="当前时间范围暂无历史数据" /> }}
+                    />
+                </div>
+                <Flex justify="flex-end" className="mt-3 shrink-0">
+                    <Pagination
+                        {...pagination}
+                        total={data?.total ?? 0}
+                        showSizeChanger
+                        showTotal={(total) => `共 ${total} 条`}
+                        onChange={(page, pageSize) => setPagination({ page, pageSize })}
+                    />
+                </Flex>
+            </div>
+        </Drawer>
+    );
+};
+
 interface DeviceGridItemProps {
     device: Device.RealTimeData;
     online: boolean;
-    onUnavailable: () => void;
+    onHistory: (device: Device.RealTimeData) => void;
     onShare: (device: Device.RealTimeData) => void;
     onEdit: (device: Device.RealTimeData) => void;
     onRemove: (device: Device.RealTimeData) => void;
@@ -494,7 +628,7 @@ const DeviceGridItem = memo(
     ({
         device,
         online,
-        onUnavailable,
+        onHistory,
         onShare,
         onEdit,
         onRemove,
@@ -528,12 +662,15 @@ const DeviceGridItem = memo(
                             gap={10}
                             className="w-full min-w-0"
                         >
-                            <span className="min-w-0 flex-1 whitespace-normal break-words pr-1 text-left leading-5">
-                                {device.name}:{device.device_code}
-                                <span className="ml-2 whitespace-nowrap text-xs font-normal text-slate-400">
-                                    设备 ID：{device.id}
-                                </span>
-                            </span>
+                            <div className="min-w-0 flex-1 pr-1 text-left">
+                                <div className="whitespace-normal break-words leading-5">
+                                    {device.name}
+                                </div>
+                                <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-xs font-normal text-slate-400">
+                                    <span>编码：{device.device_code}</span>
+                                    <span>设备 ID：{device.id}</span>
+                                </div>
+                            </div>
                             <Tag
                                 color={online ? 'success' : 'error'}
                                 className="!mr-0 shrink-0 !rounded-md !px-2"
@@ -553,7 +690,7 @@ const DeviceGridItem = memo(
                                 </Tag>
                             </span>
                             <span className="min-w-0 truncate text-xs text-slate-400">
-                                上报：{formatReportTime(device.reportTime)}
+                                上报：{formatDateTime(device.reportTime)}
                             </span>
                         </div>
                     }
@@ -626,7 +763,7 @@ const DeviceGridItem = memo(
                                     size="small"
                                     className={DEVICE_CARD_ACTION_BUTTON_CLASS}
                                     icon={<HistoryOutlined />}
-                                    onClick={onUnavailable}
+                                    onClick={() => onHistory(device)}
                                 />
                             </Tooltip>
                             {device.can_share && (
@@ -830,6 +967,7 @@ const DevicePage = () => {
         id: string;
         name: string;
     } | null>(null);
+    const [historyDevice, setHistoryDevice] = useState<Device.RealTimeData | null>(null);
     const [commandPopoverOpen, setCommandPopoverOpen] = useState(false);
     const [commandDevice, setCommandDevice] = useState<Device.RealTimeData | null>(null);
     const [commandFunc, setCommandFunc] = useState<Device.CommandOperation | null>(null);
@@ -932,6 +1070,9 @@ const DevicePage = () => {
     const openShare = useCallback((device: Device.RealTimeData) => {
         setSharing({ kind: 'device', id: device.id, name: device.name });
     }, []);
+    const openHistory = useCallback((device: Device.RealTimeData) => {
+        setHistoryDevice(device);
+    }, []);
     const openGroupShare = useCallback((group: DeviceGroup.TreeItem) => {
         setSharing({ kind: 'group', id: group.id, name: group.name });
     }, []);
@@ -955,10 +1096,7 @@ const DevicePage = () => {
         },
         [deleteDevice, modal]
     );
-    const unavailable = useCallback(
-        () => message.info('该功能将在南桥运行模块接入后启用'),
-        [message]
-    );
+    const unavailable = useCallback(() => message.info('拓扑视图暂未开放'), [message]);
     const openCommandPopover = useCallback(
         (device: Device.RealTimeData, operation: Device.CommandOperation) => {
             setCommandDevice(device);
@@ -978,7 +1116,7 @@ const DevicePage = () => {
             devices={devices}
             statusNow={statusNow}
             scrollElementRef={scrollContainerRef}
-            onUnavailable={unavailable}
+            onHistory={openHistory}
             onShare={openShare}
             onEdit={openEdit}
             onRemove={remove}
@@ -1231,6 +1369,13 @@ const DevicePage = () => {
                 onFinish={save}
             />
             <DeviceShareDrawer resource={sharing} onClose={() => setSharing(null)} />
+            {historyDevice && (
+                <DeviceHistoryDrawer
+                    key={historyDevice.id}
+                    device={historyDevice}
+                    onClose={() => setHistoryDevice(null)}
+                />
+            )}
         </PageContainer>
     );
 };
