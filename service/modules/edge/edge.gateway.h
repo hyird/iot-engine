@@ -66,28 +66,62 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
         const auto authKey = protocol::authKey(input.payload.hello.imei);
         const auto auth = co_await c.redis().get(authKey);
         const auto separator = auth ? auth->find('|') : std::string_view::npos;
-        const std::string nodeId =
+        std::string nodeId =
             auth && separator != std::string_view::npos
                 ? std::string(auth->substr(0, separator))
                 : service::common::nextUuidV7();
-        const std::string status =
+        std::string status =
             auth && separator != std::string_view::npos
                 ? std::string(auth->substr(separator + 1))
                 : "pending";
         auto session = makeSession(nodeId);
         if (status != "approved") {
-            auto reply = makeEnvelope(session);
-            reply.which_payload = status == "rejected"
-                                      ? iot_edge_v1_Envelope_enrollment_rejected_tag
-                                      : iot_edge_v1_Envelope_enrollment_pending_tag;
-            auto& enrollment = status == "rejected" ? reply.payload.enrollment_rejected
-                                                       : reply.payload.enrollment_pending;
-            copy(enrollment.code, status);
-            copy(enrollment.message, status == "rejected" ? "registration rejected"
-                                                            : "registration pending approval");
-            co_await send(socket, reply);
-            co_await socket.close(1008, status);
-            co_return;
+            co_await sendEnrollment(socket, session, status);
+            if (status == "rejected") {
+                co_await socket.close(1008, status);
+                co_return;
+            }
+
+            session.inboundSequence = input.sequence;
+            while (auto message = co_await socket.read()) {
+                if (!message->binary() || !protocol::decode(message->payload(), input) ||
+                    input.protocol_version != 1 ||
+                    input.which_payload != iot_edge_v1_Envelope_heartbeat_tag ||
+                    input.node_id.size != 0 || input.session_epoch != 0 ||
+                    input.sequence <= session.inboundSequence ||
+                    input.platform_id.size != 16 ||
+                    !platformMatches(input.platform_id.bytes)) {
+                    co_await socket.close(1002, "invalid pending heartbeat");
+                    co_return;
+                }
+                session.inboundSequence = input.sequence;
+
+                const auto refreshed = co_await c.redis().get(authKey);
+                const auto refreshedSeparator =
+                    refreshed ? refreshed->find('|') : std::string_view::npos;
+                if (refreshed && refreshedSeparator != std::string_view::npos) {
+                    nodeId = std::string(refreshed->substr(0, refreshedSeparator));
+                    status = std::string(refreshed->substr(refreshedSeparator + 1));
+                } else {
+                    status = "pending";
+                }
+
+                if (status == "approved")
+                    break;
+                if (status == "rejected") {
+                    co_await sendEnrollment(socket, session, status);
+                    co_await socket.close(1008, status);
+                    co_return;
+                }
+
+                auto heartbeat = makeEnvelope(session);
+                heartbeat.which_payload = iot_edge_v1_Envelope_heartbeat_ack_tag;
+                heartbeat.payload.heartbeat_ack.platform_time_ms = protocol::nowMs();
+                co_await send(socket, heartbeat);
+            }
+            if (status != "approved")
+                co_return;
+            session = makeSession(nodeId);
         }
 
         auto ack = makeEnvelope(session);
@@ -188,6 +222,20 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
         protocol::uuidBytes(protocol::kBootstrapPlatformId, result.platformBytes.data());
         result.epoch = randomEpoch();
         return result;
+    }
+
+    static ruvia::Task<void> sendEnrollment(ruvia::WebSocket& socket, Session& session,
+                                            std::string_view status) {
+        auto reply = makeEnvelope(session);
+        reply.which_payload = status == "rejected"
+                                  ? iot_edge_v1_Envelope_enrollment_rejected_tag
+                                  : iot_edge_v1_Envelope_enrollment_pending_tag;
+        auto& enrollment = status == "rejected" ? reply.payload.enrollment_rejected
+                                                   : reply.payload.enrollment_pending;
+        copy(enrollment.code, status);
+        copy(enrollment.message, status == "rejected" ? "registration rejected"
+                                                        : "registration pending approval");
+        co_await send(socket, reply);
     }
 
     static std::uint64_t randomEpoch() {
