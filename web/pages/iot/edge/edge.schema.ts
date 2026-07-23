@@ -24,15 +24,18 @@ const networkDeviceSchema = z
     .max(32)
     .regex(/^[A-Za-z0-9_.:-]+$/, '网卡名称包含非法字符');
 
+const logicalInterfaceNameSchema = z
+    .string()
+    .min(1, '逻辑接口名称不能为空')
+    .max(15, '逻辑接口名称不能超过 15 个字符')
+    .regex(/^[A-Za-z0-9_]+$/, '逻辑接口名称只能包含字母、数字和下划线')
+    .refine((value) => value !== 'loopback', 'loopback 接口不允许远程修改');
+
 export const networkInterfaceSchema = z
     .object({
         operation: z.enum(['upsert', 'delete']),
-        name: z
-            .string()
-            .min(1, '逻辑接口名称不能为空')
-            .max(15, '逻辑接口名称不能超过 15 个字符')
-            .regex(/^[A-Za-z0-9_]+$/, '逻辑接口名称只能包含字母、数字和下划线')
-            .refine((value) => value !== 'loopback', 'loopback 接口不允许远程修改'),
+        name: logicalInterfaceNameSchema,
+        previousName: logicalInterfaceNameSchema.optional(),
         mode: z.enum(['dhcp', 'static']).optional(),
         device: z.union([z.literal(''), networkDeviceSchema]).optional(),
         bridge: z.boolean().optional(),
@@ -42,6 +45,15 @@ export const networkInterfaceSchema = z
         gateway: z.union([z.literal(''), ipv4TextSchema]).optional(),
     })
     .superRefine((value, context) => {
+        if (value.previousName) {
+            if (value.operation !== 'upsert' || value.previousName === value.name) {
+                context.addIssue({
+                    code: 'custom',
+                    path: ['previousName'],
+                    message: '原逻辑接口名称无效',
+                });
+            }
+        }
         if (value.operation === 'delete') return;
         if (!value.mode) {
             context.addIssue({
@@ -132,6 +144,7 @@ export const networkSchema = z
     })
     .superRefine((value, context) => {
         const names = new Set<string>();
+        const previousNames = new Set<string>();
         const devices = new Set<string>();
         value.interfaces.forEach((item, index) => {
             if (names.has(item.name)) {
@@ -142,6 +155,16 @@ export const networkSchema = z
                 });
             }
             names.add(item.name);
+            if (item.previousName) {
+                if (previousNames.has(item.previousName)) {
+                    context.addIssue({
+                        code: 'custom',
+                        path: ['interfaces', index, 'previousName'],
+                        message: '同一请求不能重复修改原逻辑接口',
+                    });
+                }
+                previousNames.add(item.previousName);
+            }
             if (item.operation === 'delete') return;
             const selected = item.bridge
                 ? (item.bridgePorts ?? [])

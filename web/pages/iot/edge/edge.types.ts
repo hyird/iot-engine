@@ -122,6 +122,7 @@ export namespace Edge {
     export interface NetworkConfig {
         operation: 'upsert' | 'delete';
         name: string;
+        previousName?: string;
         mode?: 'dhcp' | 'static';
         device?: string;
         bridge?: boolean;

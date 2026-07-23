@@ -129,10 +129,11 @@ RETURNING id)sql",
 
     ruvia::Task<void> queueNetwork(ruvia::Context& c, std::string_view nodeId,
                                    const NetworkBody& body) {
-        co_await requireNetworkManagement(c, nodeId);
+        const auto networkConfigVersion = co_await requireNetworkManagement(c, nodeId);
         const auto& configs = *body.interfaces();
         const auto available = co_await manageableInterfaces(c, nodeId);
         std::unordered_set<std::string> names;
+        std::unordered_set<std::string> previousNames;
         std::unordered_set<std::string> devices;
         const auto taskId = service::common::nextUuidV7();
         auto envelope = protocol::outbound(nodeId);
@@ -143,10 +144,24 @@ RETURNING id)sql",
         for (const auto& config : configs) {
             const std::string operation(config.operation()->view());
             const std::string name(config.name()->view());
+            const std::string previousName =
+                config.previousName() ? std::string(config.previousName()->view())
+                                      : std::string{};
             if (!names.emplace(name).second)
                 service::common::fail(17003, "同一请求不能重复配置逻辑接口 " + name, 400);
             if (name == "loopback")
                 service::common::fail(17003, "loopback 接口不允许远程修改", 400);
+            if (!previousName.empty()) {
+                if (operation != "upsert" || previousName == name ||
+                    previousName == "loopback")
+                    service::common::fail(17003, "原逻辑接口名称无效", 400);
+                if (networkConfigVersion < 3)
+                    service::common::fail(
+                        17004, "节点代理版本过旧，请先升级后再修改逻辑接口名称", 409);
+                if (!previousNames.emplace(previousName).second)
+                    service::common::fail(
+                        17003, "同一请求不能重复修改原逻辑接口 " + previousName, 400);
+            }
 
             auto* item = request->add_interfaces();
             item->set_logical_name(name);
@@ -154,6 +169,7 @@ RETURNING id)sql",
                 item->set_operation(pb::NETWORK_CONFIG_DELETE);
             } else {
                 item->set_operation(pb::NETWORK_CONFIG_UPSERT);
+                item->set_previous_logical_name(previousName);
                 const std::string mode =
                     config.mode() ? std::string(config.mode()->view()) : std::string{};
                 const std::string device =
@@ -713,8 +729,8 @@ FROM edge_task WHERE node_id = $1::uuid ORDER BY created_at DESC LIMIT 50)sql",
         }
     }
 
-    static ruvia::Task<void> requireNetworkManagement(ruvia::Context& c,
-                                                       std::string_view nodeId) {
+    static ruvia::Task<std::int64_t> requireNetworkManagement(
+        ruvia::Context& c, std::string_view nodeId) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT enrollment_status, supports_network_config, network_config_version
 FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
@@ -725,8 +741,10 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
             service::common::fail(17002, "边缘节点尚未批准注册", 409);
         if (rows.rows().front()[1].text() != "t")
             service::common::fail(17004, "网络配置不可用", 409);
-        if (integer(rows.rows().front()[2].text()) < 2)
+        const auto version = integer(rows.rows().front()[2].text());
+        if (version < 2)
             service::common::fail(17004, "节点代理版本过旧，请先升级后再管理网络", 409);
+        co_return version;
     }
 
     static void validatePlatformUrl(std::string_view value) {

@@ -516,6 +516,7 @@ message NetworkInterfaceConfig {
   NetworkConfigOperation operation = 9;
   string logical_name = 10 [(nanopb).max_length = 32];
   string device = 11 [(nanopb).max_length = 32];
+  string previous_logical_name = 12 [(nanopb).max_length = 32];
 }
 
 message NetworkConfigRequest {

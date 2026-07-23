@@ -11,7 +11,7 @@ namespace service::edge {
 
 inline bool isUciSectionName(const ruvia::String& value) {
     const auto text = value.view();
-    if (text.empty() || text.size() > 32)
+    if (text.empty() || text.size() > 15)
         return false;
     for (const unsigned char character : text)
         if (!std::isalnum(character) && character != '_')
@@ -92,6 +92,9 @@ class NetworkInterfaceValidator final : public ruvia::Middleware<NetworkInterfac
         RUVIA_RULE(name, RUVIA_REQUIRED("逻辑接口名称不能为空"),
                    RUVIA_CUSTOM("逻辑接口名称只能包含字母、数字和下划线",
                                 isUciSectionName)),
+        RUVIA_RULE_NAME("previousName", previousName,
+                        RUVIA_CUSTOM("原逻辑接口名称只能包含字母、数字和下划线",
+                                     isUciSectionName)),
         RUVIA_RULE(mode, RUVIA_ONE_OF("地址协议无效", "dhcp", "static")),
         RUVIA_RULE(device, RUVIA_CUSTOM("设备名称包含非法字符", isOptionalNetworkDevice)),
         RUVIA_RULE_NAME("bridgePorts", bridgePorts, RUVIA_MAX(8, "网桥最多包含 8 个成员")),

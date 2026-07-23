@@ -79,6 +79,7 @@ import {
 import type { Edge } from './edge.types';
 
 type NetworkDraftItem = Edge.NetworkConfig & {
+    sourceName?: string;
     original: boolean;
     dirty: boolean;
     up?: boolean;
@@ -111,6 +112,7 @@ function networkDraftFromReported(item: Edge.Network): NetworkDraftItem {
     return {
         operation: 'upsert',
         name: item.name,
+        sourceName: item.name,
         mode: item.mode === 'static' ? 'static' : 'dhcp',
         device: item.bridge ? '' : item.device,
         bridge: item.bridge,
@@ -130,9 +132,20 @@ function formatBytes(value: number) {
     return `${(value / 1024 / 1024).toFixed(1)} MiB`;
 }
 
-function formatConfigVersion(value: number) {
-    if (value <= 0) return '--';
-    return value >= 1_000_000_000_000 ? formatDateTime(value) : String(value);
+function validConfigTimestamp(value: number) {
+    return value >= Date.UTC(2020, 0, 1);
+}
+
+function formatConfigVersions(active: number, desired: number) {
+    const activeValid = validConfigTimestamp(active);
+    const desiredValid = validConfigTimestamp(desired);
+    if (activeValid && desiredValid && active === desired) return formatDateTime(active);
+    if (activeValid && desiredValid) {
+        return `已应用 ${formatDateTime(active)} · 目标 ${formatDateTime(desired)}`;
+    }
+    if (desiredValid) return `${formatDateTime(desired)}（等待节点应用）`;
+    if (activeValid) return `已应用 ${formatDateTime(active)}`;
+    return '--';
 }
 
 function simStateText(state: Edge.Node['simState']) {
@@ -167,9 +180,7 @@ function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
         {
             key: 'configVersion',
             label: '配置版本',
-            children: `${formatConfigVersion(node.activeConfigVersion)} / ${formatConfigVersion(
-                node.desiredConfigVersion
-            )}`,
+            children: formatConfigVersions(node.activeConfigVersion, node.desiredConfigVersion),
         },
         {
             key: 'outbox',
@@ -575,7 +586,16 @@ export default function EdgeNodePage() {
     const submitNetworkDraft = () => {
         if (!networkNode) return;
         const parsed = networkSchema.safeParse({
-            interfaces: networkDraft.map(({ original, dirty, up, ...item }) => item),
+            interfaces: networkDraft.map(
+                ({ original, dirty, up, sourceName, ...item }): Edge.NetworkConfig => {
+                    if (item.operation === 'delete') {
+                        return { ...item, name: sourceName ?? item.name };
+                    }
+                    return sourceName && sourceName !== item.name
+                        ? { ...item, previousName: sourceName }
+                        : item;
+                }
+            ),
             rollbackTimeoutSec: networkRollbackTimeoutSec,
         });
         if (!parsed.success) {
@@ -684,7 +704,13 @@ export default function EdgeNodePage() {
         },
     ];
     const networkDraftColumns: ColumnsType<NetworkDraftItem> = [
-        { title: '逻辑接口', dataIndex: 'name', width: 120 },
+        {
+            title: '逻辑接口',
+            dataIndex: 'name',
+            width: 160,
+            render: (name: string, item) =>
+                item.sourceName && item.sourceName !== name ? `${item.sourceName} → ${name}` : name,
+        },
         {
             title: '地址方式',
             dataIndex: 'mode',
@@ -728,13 +754,14 @@ export default function EdgeNodePage() {
                             type="link"
                             size="small"
                             onClick={() => {
+                                const sourceName = item.sourceName ?? item.name;
                                 const original = networkNode?.networks?.find(
-                                    (candidate) => candidate.name === item.name
+                                    (candidate) => candidate.name === sourceName
                                 );
                                 if (!original) return;
                                 setNetworkDraft((current) =>
                                     current.map((candidate) =>
-                                        candidate.name === item.name
+                                        (candidate.sourceName ?? candidate.name) === sourceName
                                             ? networkDraftFromReported(original)
                                             : candidate
                                     )
@@ -759,7 +786,8 @@ export default function EdgeNodePage() {
                                     setNetworkDraft((current) =>
                                         item.original
                                             ? current.map((candidate) =>
-                                                  candidate.name === item.name
+                                                  (candidate.sourceName ?? candidate.name) ===
+                                                  (item.sourceName ?? item.name)
                                                       ? {
                                                             ...candidate,
                                                             operation: 'delete',
@@ -768,7 +796,9 @@ export default function EdgeNodePage() {
                                                       : candidate
                                               )
                                             : current.filter(
-                                                  (candidate) => candidate.name !== item.name
+                                                  (candidate) =>
+                                                      (candidate.sourceName ?? candidate.name) !==
+                                                      item.name
                                               )
                                     )
                                 }
@@ -785,7 +815,12 @@ export default function EdgeNodePage() {
     ];
     const assignedNetworkDevices = new Set(
         networkDraft
-            .filter((item) => item.operation === 'upsert' && item.name !== editingNetwork?.name)
+            .filter(
+                (item) =>
+                    item.operation === 'upsert' &&
+                    (item.sourceName ?? item.name) !==
+                        (editingNetwork?.sourceName ?? editingNetwork?.name)
+            )
             .flatMap((item) => (item.bridge ? item.bridgePorts : item.device ? [item.device] : []))
     );
     const networkInterfaces = networkNode?.interfaces ?? [];
@@ -1215,8 +1250,10 @@ export default function EdgeNodePage() {
                             </Descriptions.Item>
                             <Descriptions.Item label="设备配置">
                                 {statusTag(detail.configStatus)}{' '}
-                                {formatConfigVersion(detail.activeConfigVersion)} /{' '}
-                                {formatConfigVersion(detail.desiredConfigVersion)}
+                                {formatConfigVersions(
+                                    detail.activeConfigVersion,
+                                    detail.desiredConfigVersion
+                                )}
                                 {detail.configMessage ? ` · ${detail.configMessage}` : ''}
                             </Descriptions.Item>
                             <Descriptions.Item label="ttyd">
@@ -1347,6 +1384,7 @@ export default function EdgeNodePage() {
                             const draft: NetworkDraftItem = {
                                 ...parsed,
                                 operation: 'upsert',
+                                sourceName: editingNetwork?.sourceName,
                                 original: editingNetwork?.original ?? false,
                                 dirty: true,
                                 up: editingNetwork?.up,
@@ -1354,7 +1392,10 @@ export default function EdgeNodePage() {
                             setNetworkDraft((current) =>
                                 editingNetwork
                                     ? current.map((item) =>
-                                          item.name === editingNetwork.name ? draft : item
+                                          (item.sourceName ?? item.name) ===
+                                          (editingNetwork.sourceName ?? editingNetwork.name)
+                                              ? draft
+                                              : item
                                       )
                                     : [...current, draft]
                             );
@@ -1367,11 +1408,7 @@ export default function EdgeNodePage() {
                         </Form.Item>
                         <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
                             <Form.Item label="逻辑接口名称" name="name">
-                                <Input
-                                    maxLength={15}
-                                    disabled={Boolean(editingNetwork?.original)}
-                                    placeholder="例如 lan"
-                                />
+                                <Input maxLength={15} placeholder="例如 lan" />
                             </Form.Item>
                             <Form.Item label="地址方式" name="mode">
                                 <Select
@@ -1465,7 +1502,7 @@ export default function EdgeNodePage() {
                             </Space>
                         </Flex>
                         <Table
-                            rowKey="name"
+                            rowKey={(item) => item.sourceName ?? item.name}
                             size="small"
                             pagination={false}
                             columns={networkDraftColumns}

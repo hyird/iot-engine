@@ -281,7 +281,8 @@ WHERE id = (
                                            std::string_view nodeId,
                                            const pb::Heartbeat& heartbeat) {
         (void)co_await context.db().execute(R"sql(
- UPDATE edge_node SET active_config_version = $1, outbox_records = $2, outbox_bytes = $3,
+ UPDATE edge_node SET active_config_version = GREATEST(active_config_version, $1),
+                     outbox_records = $2, outbox_bytes = $3,
                      modem_available = $4, sim_state = $5, iccid = $6,
                      signal_csq = $7, signal_rssi_dbm = $8, signal_percent = $9,
                      mobile_registered = $10, mobile_registration_status = $11,

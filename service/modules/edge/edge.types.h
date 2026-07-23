@@ -37,6 +37,7 @@ struct NodeNameBody final {
 struct NetworkInterfaceBody final {
     RUVIA_OPTIONAL_FIELD(operation, ruvia::String);
     RUVIA_OPTIONAL_FIELD(name, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("previousName", previousName, ruvia::String);
     RUVIA_OPTIONAL_FIELD(mode, ruvia::String);
     RUVIA_OPTIONAL_FIELD(device, ruvia::String);
     RUVIA_OPTIONAL_FIELD(bridge, ruvia::Bool, RUVIA_DEFAULT(false));
@@ -45,8 +46,8 @@ struct NetworkInterfaceBody final {
     RUVIA_OPTIONAL_FIELD_NAME("prefixLength", prefixLength, ruvia::Int64,
                               RUVIA_DEFAULT(0));
     RUVIA_OPTIONAL_FIELD(gateway, ruvia::String);
-    RUVIA_MODEL(NetworkInterfaceBody, operation, name, mode, device, bridge, bridgePorts, ip,
-                prefixLength, gateway);
+    RUVIA_MODEL(NetworkInterfaceBody, operation, name, previousName, mode, device, bridge,
+                bridgePorts, ip, prefixLength, gateway);
 };
 
 struct NetworkBody final {
