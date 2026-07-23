@@ -29,15 +29,16 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
   public:
     RUVIA_CONTROLLER_GROUP("/edge/v1")
     RUVIA_ROUTES_BEGIN
-    const auto connectionOptions = ruvia::WebSocketRouteOptions{
+    const auto webSocketOptions = ruvia::WebSocketRouteOptions{
         .lifecycle = {
             .heartbeat = ruvia::WebSocketHeartbeatPolicy::periodic(
                 std::chrono::seconds(30), std::chrono::seconds(15)),
             .closeHandshakeTimeout = std::chrono::seconds(5),
         },
     };
-    RUVIA_GET_WS_OPTIONS("/connect", connect, connectionOptions);
-    RUVIA_GET_WS("/terminal", terminal, TerminalTicketValidator);
+    RUVIA_GET_WS_OPTIONS("/connect", connect, webSocketOptions);
+    RUVIA_GET_WS_OPTIONS(
+        "/terminal", terminal, webSocketOptions, TerminalTicketValidator);
     RUVIA_ROUTES_END
 
   private:
