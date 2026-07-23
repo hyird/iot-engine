@@ -248,9 +248,33 @@ RETURNING id::text, enrollment_status)sql",
                                                           hello.mobile_connected(),
                                                           hello.mobile_ipv4()));
         const auto key = protocol::authKey(hello.imei());
-        const auto value = std::string(rows.rows().front()[0].text()) + "|" +
-                           std::string(rows.rows().front()[1].text());
+        const auto nodeId = std::string(rows.rows().front()[0].text());
+        const auto enrollmentStatus = std::string(rows.rows().front()[1].text());
+        const auto value = nodeId + "|" + enrollmentStatus;
         co_await context.redis().set(key, value);
+        if (enrollmentStatus == "approved") {
+            (void)co_await context.db().execute(R"sql(
+UPDATE edge_task
+SET status = 'succeeded',
+    result = result || jsonb_build_object(
+        'state', 'rebooted',
+        'message', 'firmware reboot confirmed',
+        'softwareVersion', $1),
+    updated_at = NOW(),
+    completed_at = NOW()
+WHERE id = (
+    SELECT id
+    FROM edge_task
+    WHERE node_id = $2::uuid
+      AND task_type = 'firmware'
+      AND status = 'running'
+      AND result->>'state' = 'flashing'
+    ORDER BY created_at DESC
+    LIMIT 1
+))sql",
+                                                service::common::dbParams(
+                                                    hello.software_version(), nodeId));
+        }
     }
 
     static ruvia::Task<void> saveHeartbeat(ruvia::WebWorkerContext& context,
@@ -418,15 +442,24 @@ WHERE id = $3::uuid AND task_type = 'network')sql",
         bool completed = false;
         if (result.state() == pb::FIRMWARE_UPDATE_ACCEPTED)
             status = "accepted";
-        else if (result.state() == pb::FIRMWARE_UPDATE_FLASHING) {
-            status = "succeeded";
-            completed = true;
-        } else if (result.state() == pb::FIRMWARE_UPDATE_FAILED) {
+        else if (result.state() == pb::FIRMWARE_UPDATE_FAILED) {
             status = "failed";
             completed = true;
         }
+        std::string state = "running";
+        if (result.state() == pb::FIRMWARE_UPDATE_ACCEPTED)
+            state = "accepted";
+        else if (result.state() == pb::FIRMWARE_UPDATE_DOWNLOADING)
+            state = "downloading";
+        else if (result.state() == pb::FIRMWARE_UPDATE_VERIFYING)
+            state = "verifying";
+        else if (result.state() == pb::FIRMWARE_UPDATE_FLASHING)
+            state = "flashing";
+        else if (result.state() == pb::FIRMWARE_UPDATE_FAILED)
+            state = "failed";
         const std::string json =
-            "{\"message\":\"" + jsonEscape(result.message()) +
+            "{\"state\":\"" + state + "\",\"message\":\"" +
+            jsonEscape(result.message()) +
             "\",\"progressPercent\":" + std::to_string(result.progress_percent()) +
             ",\"downloadedBytes\":" + std::to_string(result.downloaded_bytes()) +
             ",\"totalBytes\":" + std::to_string(result.total_bytes()) + "}";
