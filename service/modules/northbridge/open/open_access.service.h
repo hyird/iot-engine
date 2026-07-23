@@ -564,7 +564,8 @@ FROM device WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
                 if (const auto json = ruvia::JsonValue::parse(data)) {
                     if (const auto current = jsonField(*json, "value"))
                         value.assign(current->view());
-                    if (const auto observed = json->get<ruvia::Int64>("observed_at_ms"))
+                    if (const auto observed =
+                            json->template get<ruvia::Int64>("observed_at_ms"))
                         time = jsonQuoted(iso8601(static_cast<std::int64_t>(*observed)));
                 }
             }
