@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <cstring>
+#include <iostream>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -90,19 +91,27 @@ class EdgeService {
         const auto principal = service::middleware::requireAuth(c);
         const std::string status(body.status()->view());
         const std::string name = body.name() ? std::string(body.name()->view()) : std::string{};
-        const auto updated = co_await c.db().query(R"sql(
+        std::string_view stage = "database";
+        try {
+            const auto updated = co_await c.db().query(R"sql(
 UPDATE edge_node
-SET enrollment_status = $1, name = NULLIF($2, ''), approved_by = $3::uuid,
-    approved_at = CASE WHEN $1 = 'approved' THEN NOW() ELSE NULL END, updated_at = NOW()
+SET enrollment_status = $1::text, name = NULLIF($2::text, ''), approved_by = $3::uuid,
+    approved_at = CASE WHEN $1::text = 'approved' THEN NOW() ELSE NULL END, updated_at = NOW()
 WHERE id = $4::uuid
 RETURNING imei)sql",
-                                                     service::common::dbParams(
-                                                         status, name, principal.userId, id));
-        if (updated.rows().empty())
-            service::common::fail(17001, "边缘节点不存在", 404);
-        const auto key = protocol::authKey(updated.rows().front()[0].text());
-        const auto value = std::string(id) + "|" + status;
-        co_await c.redis().set(key, value);
+                                                         service::common::dbParams(
+                                                             status, name, principal.userId, id));
+            if (updated.rows().empty())
+                service::common::fail(17001, "边缘节点不存在", 404);
+            const auto key = protocol::authKey(updated.rows().front()[0].text());
+            const auto value = std::string(id) + "|" + status;
+            stage = "redis";
+            co_await c.redis().set(key, value);
+        } catch (const std::exception& error) {
+            std::cerr << "edge enrollment update failed: stage=" << stage << " node_id=" << id
+                      << " status=" << status << " error=" << error.what() << '\n';
+            throw;
+        }
     }
 
     ruvia::Task<void> queueNetwork(ruvia::Context& c, std::string_view nodeId,
