@@ -5,7 +5,7 @@
 
 namespace service::config {
 
-inline constexpr std::array<ruvia::DbMigration, 7> kSchemaMigrations{{
+inline constexpr std::array<ruvia::DbMigration, 8> kSchemaMigrations{{
     {"0001_initial_schema", R"sql(
 DO $schema$
 BEGIN
@@ -567,6 +567,32 @@ CREATE TABLE edge_config_revision (
 );
 CREATE INDEX idx_edge_config_revision_created
     ON edge_config_revision(node_id, created_at DESC);
+END
+$schema$;
+)sql"},
+    {"0008_edge_network_management", R"sql(
+DO $schema$
+BEGIN
+ALTER TABLE edge_node
+    ADD COLUMN network_config_version INTEGER NOT NULL DEFAULT 0
+        CHECK (network_config_version BETWEEN 0 AND 100);
+
+CREATE TABLE edge_node_network (
+    node_id       UUID NOT NULL REFERENCES edge_node(id) ON DELETE CASCADE,
+    name          VARCHAR(32) NOT NULL,
+    address_mode  VARCHAR(12) NOT NULL
+                  CHECK (address_mode IN ('dhcp', 'static', 'none')),
+    device        VARCHAR(32) NOT NULL DEFAULT '',
+    is_up         BOOLEAN NOT NULL DEFAULT FALSE,
+    is_bridge     BOOLEAN NOT NULL DEFAULT FALSE,
+    ipv4          VARCHAR(15),
+    prefix_length INTEGER CHECK (prefix_length BETWEEN 0 AND 32),
+    gateway       VARCHAR(15),
+    bridge_ports  JSONB NOT NULL DEFAULT '[]'::jsonb
+                  CHECK (jsonb_typeof(bridge_ports) = 'array'),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (node_id, name)
+);
 END
 $schema$;
 )sql"},

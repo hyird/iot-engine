@@ -4,15 +4,17 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <random>
 #include <string>
 #include <string_view>
 
-extern "C" {
 #include <edge.pb.h>
-#include <pb_decode.h>
-#include <pb_encode.h>
+#include <google/protobuf/descriptor.h>
+#include <google/protobuf/message.h>
+#include <nanopb.pb.h>
+
+namespace service::edge {
+namespace pb = ::iot::edge::v1;
 }
 
 namespace service::edge::protocol {
@@ -20,6 +22,7 @@ namespace service::edge::protocol {
 inline constexpr std::string_view kBootstrapPlatformId{
     "00000000-0000-7000-8000-000000000001"};
 inline constexpr std::string_view kPublicPlatformUrl{"https://i.a-z.xin"};
+inline constexpr std::size_t kMaxMessageSize{16U * 1024U};
 
 inline std::string authKey(std::string_view imei) {
     return "iot:edge:auth:" + std::string(imei);
@@ -74,25 +77,68 @@ inline bool uuidBytes(std::string_view value, std::uint8_t output[16]) {
     return byte == 16;
 }
 
-inline std::string uuidText(const std::uint8_t value[16]) {
+inline std::string uuidText(std::string_view value) {
+    if (value.size() != 16)
+        return {};
     constexpr char digits[] = "0123456789abcdef";
     std::string output;
     output.reserve(36);
     for (std::size_t index = 0; index < 16; ++index) {
         if (index == 4 || index == 6 || index == 8 || index == 10)
             output.push_back('-');
-        output.push_back(digits[value[index] >> 4U]);
-        output.push_back(digits[value[index] & 0x0fU]);
+        const auto byte = static_cast<std::uint8_t>(value[index]);
+        output.push_back(digits[byte >> 4U]);
+        output.push_back(digits[byte & 0x0fU]);
     }
     return output;
 }
 
-inline void setBytes(void* field, std::size_t capacity, const std::uint8_t* data,
-                     std::size_t size) {
-    const auto encoded = static_cast<pb_size_t>(size);
-    std::memcpy(field, &encoded, sizeof(encoded));
-    if (size != 0 && size <= capacity)
-        std::memcpy(static_cast<std::uint8_t*>(field) + sizeof(encoded), data, size);
+inline std::string uuidText(const std::uint8_t value[16]) {
+    return uuidText(std::string_view(reinterpret_cast<const char*>(value), 16));
+}
+
+inline std::string bytes(const std::uint8_t* data, std::size_t size) {
+    if (size == 0)
+        return {};
+    return {reinterpret_cast<const char*>(data), size};
+}
+
+inline bool fitsNanopbLimits(const google::protobuf::Message& message) {
+    const auto* descriptor = message.GetDescriptor();
+    const auto* reflection = message.GetReflection();
+    for (int fieldIndex = 0; fieldIndex < descriptor->field_count(); ++fieldIndex) {
+        const auto* field = descriptor->field(fieldIndex);
+        const auto& options = field->options();
+        const NanoPBOptions* limits =
+            options.HasExtension(::nanopb) ? &options.GetExtension(::nanopb) : nullptr;
+        const int count = field->is_repeated() ? reflection->FieldSize(message, field)
+                                                : (reflection->HasField(message, field) ? 1 : 0);
+        if (limits && field->is_repeated() && limits->has_max_count() &&
+            count > limits->max_count())
+            return false;
+        for (int index = 0; index < count; ++index) {
+            if (field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_STRING) {
+                const auto& value = field->is_repeated()
+                                        ? reflection->GetRepeatedStringReference(
+                                              message, field, index, nullptr)
+                                        : reflection->GetStringReference(message, field, nullptr);
+                const auto limit =
+                    field->type() == google::protobuf::FieldDescriptor::TYPE_BYTES
+                        ? (limits && limits->has_max_size() ? limits->max_size() : -1)
+                        : (limits && limits->has_max_length() ? limits->max_length() : -1);
+                if (limit >= 0 && value.size() > static_cast<std::size_t>(limit))
+                    return false;
+            } else if (field->cpp_type() ==
+                       google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE) {
+                const auto& value =
+                    field->is_repeated() ? reflection->GetRepeatedMessage(message, field, index)
+                                         : reflection->GetMessage(message, field);
+                if (!fitsNanopbLimits(value))
+                    return false;
+            }
+        }
+    }
+    return true;
 }
 
 inline std::int64_t nowMs() {
@@ -116,38 +162,42 @@ inline std::array<std::uint8_t, 16> randomUuidV7Bytes() {
     return value;
 }
 
-inline iot_edge_v1_Envelope outbound(std::string_view nodeId, std::uint64_t epoch = 0,
-                                     std::uint64_t sequence = 0) {
-    iot_edge_v1_Envelope result = iot_edge_v1_Envelope_init_zero;
-    result.protocol_version = 1;
-    result.session_epoch = epoch;
-    result.sequence = sequence;
-    result.created_at_ms = nowMs();
+inline pb::Envelope outbound(std::string_view nodeId, std::uint64_t epoch = 0,
+                             std::uint64_t sequence = 0) {
+    pb::Envelope result;
+    result.set_protocol_version(1);
+    result.set_session_epoch(epoch);
+    result.set_sequence(sequence);
+    result.set_created_at_ms(nowMs());
     const auto messageId = randomUuidV7Bytes();
-    setBytes(&result.message_id, sizeof(result.message_id.bytes), messageId.data(),
-             messageId.size());
+    result.set_message_id(bytes(messageId.data(), messageId.size()));
     std::uint8_t platform[16]{};
     std::uint8_t node[16]{};
     if (uuidBytes(kBootstrapPlatformId, platform))
-        setBytes(&result.platform_id, sizeof(result.platform_id.bytes), platform, 16);
+        result.set_platform_id(bytes(platform, 16));
     if (uuidBytes(nodeId, node))
-        setBytes(&result.node_id, sizeof(result.node_id.bytes), node, 16);
+        result.set_node_id(bytes(node, 16));
     return result;
 }
 
-inline bool decode(std::string_view wire, iot_edge_v1_Envelope& output) {
-    output = iot_edge_v1_Envelope_init_zero;
-    auto stream = pb_istream_from_buffer(
-        reinterpret_cast<const pb_byte_t*>(wire.data()), wire.size());
-    return pb_decode(&stream, iot_edge_v1_Envelope_fields, &output);
+inline bool decode(std::string_view wire, pb::Envelope& output) {
+    output.Clear();
+    if (wire.size() > kMaxMessageSize ||
+        !output.ParseFromArray(wire.data(), static_cast<int>(wire.size())) ||
+        !output.IsInitialized() || !fitsNanopbLimits(output)) {
+        output.Clear();
+        return false;
+    }
+    return true;
 }
 
-inline std::string encode(const iot_edge_v1_Envelope& input) {
-    std::string wire(iot_edge_v1_Envelope_size, '\0');
-    auto stream = pb_ostream_from_buffer(reinterpret_cast<pb_byte_t*>(wire.data()), wire.size());
-    if (!pb_encode(&stream, iot_edge_v1_Envelope_fields, &input))
+inline std::string encode(const pb::Envelope& input) {
+    const auto size = input.ByteSizeLong();
+    if (size == 0 || size > kMaxMessageSize || !fitsNanopbLimits(input))
         return {};
-    wire.resize(stream.bytes_written);
+    std::string wire;
+    if (!input.SerializeToString(&wire))
+        return {};
     return wire;
 }
 

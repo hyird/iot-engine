@@ -1,8 +1,24 @@
 import {
+    ApiOutlined,
+    CheckOutlined,
+    CloseOutlined,
+    CodeOutlined,
+    EditOutlined,
+    EyeOutlined,
+    GlobalOutlined,
+    PlusOutlined,
+    SyncOutlined,
+    UploadOutlined,
+} from '@ant-design/icons';
+import { FitAddon } from '@xterm/addon-fit';
+import { Terminal } from '@xterm/xterm';
+import {
     App,
     Button,
     Descriptions,
     Drawer,
+    Empty,
+    Flex,
     Form,
     Input,
     InputNumber,
@@ -11,44 +27,53 @@ import {
     Popconfirm,
     Result,
     Select,
+    Skeleton,
     Space,
     Switch,
     Table,
     Tabs,
     Tag,
+    Tooltip,
     Upload,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { FitAddon } from '@xterm/addon-fit';
-import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useEffect, useRef, useState } from 'react';
+import DeviceCard, { type DeviceCardItem } from '@/components/DeviceCard';
 import { FormModal } from '@/components/FormModal';
 import { PageContainer } from '@/components/PageContainer';
 import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermissions } from '@/hooks/usePermission';
+import { formatDateTime } from '@/utils/dateTime';
 import { validateForm } from '@/utils/validation';
-import { getTerminalTicket } from './edge.api';
+import { getEdgeDetail, getTerminalTicket } from './edge.api';
 import {
     firmwareUpgradeSchema,
-    networkSchema,
+    networkEditorSchema,
     nodeNameSchema,
     platformSchema,
 } from './edge.schema';
 import {
+    useDeviceConfigSyncMutation,
     useEdgeDetail,
     useEdgeList,
-    useDeviceConfigSyncMutation,
     useEnrollmentMutation,
     useFirmwareUpgradeMutation,
-    useNodeNameMutation,
     useNetworkMutation,
+    useNodeNameMutation,
     usePlatformDeleteMutation,
     usePlatformMutation,
 } from './edge.service';
 import type { Edge } from './edge.types';
 
+type NetworkFormValues = Edge.NetworkConfig & { rollbackTimeoutSec: number };
+
 const BOOTSTRAP_URL = 'https://i.a-z.xin';
+const EDGE_CARD_GRID_CLASS = 'grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-4';
+const EDGE_CARD_ACTION_BUTTON_CLASS =
+    '!flex !h-8 !w-8 items-center justify-center !rounded-md text-slate-500 hover:!bg-slate-100 hover:!text-slate-900';
+const EDGE_CARD_DANGER_BUTTON_CLASS =
+    '!flex !h-8 !w-8 items-center justify-center !rounded-md hover:!bg-red-50';
 
 function statusTag(status: string) {
     const map: Record<string, { color: string; text: string }> = {
@@ -70,6 +95,29 @@ function formatBytes(value: number) {
     if (value < 1024) return `${value} B`;
     if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
     return `${(value / 1024 / 1024).toFixed(1)} MiB`;
+}
+
+function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
+    return [
+        { key: 'hostname', label: '主机名', children: node.hostname || '-' },
+        { key: 'architecture', label: '系统架构', children: node.architecture || '-' },
+        { key: 'openwrt', label: 'OpenWrt', children: node.openwrtRelease || '-' },
+        {
+            key: 'enrollment',
+            label: '注册状态',
+            children: <span className="[&_.ant-tag]:!m-0">{statusTag(node.enrollmentStatus)}</span>,
+        },
+        {
+            key: 'configVersion',
+            label: '配置版本',
+            children: `${node.activeConfigVersion ?? 0} / ${node.desiredConfigVersion ?? 0}`,
+        },
+        {
+            key: 'outbox',
+            label: '待传缓存',
+            children: `${node.outboxRecords ?? 0} 条 / ${formatBytes(node.outboxBytes ?? 0)}`,
+        },
+    ];
 }
 
 function TerminalModal({
@@ -208,14 +256,21 @@ export default function EdgeNodePage() {
     const [status, setStatus] = useState<Edge.EnrollmentStatus>();
     const [selectedId, setSelectedId] = useState<string>();
     const [renamingNode, setRenamingNode] = useState<Edge.Node>();
+    const [networkNode, setNetworkNode] = useState<Edge.Node>();
+    const [editingNetwork, setEditingNetwork] = useState<Edge.Network>();
+    const [platformNode, setPlatformNode] = useState<Edge.Node>();
+    const [firmwareNode, setFirmwareNode] = useState<Edge.Node>();
+    const [terminalNode, setTerminalNode] = useState<Edge.Node>();
     const [networkOpen, setNetworkOpen] = useState(false);
     const [platformOpen, setPlatformOpen] = useState(false);
     const [firmwareOpen, setFirmwareOpen] = useState(false);
     const [terminalOpen, setTerminalOpen] = useState(false);
-    const [networkForm] = Form.useForm<Edge.NetworkDto>();
+    const [networkForm] = Form.useForm<NetworkFormValues>();
     const [platformForm] = Form.useForm<Edge.PlatformDto>();
     const [firmwareForm] = Form.useForm<Edge.FirmwareUpgradeDto>();
     const [nameForm] = Form.useForm<Edge.NameDto>();
+    const networkMode = Form.useWatch('mode', networkForm);
+    const networkBridge = Form.useWatch('bridge', networkForm);
     const { modal } = App.useApp();
     const { run: search } = useDebounceFn((value: string) => {
         setKeyword(value);
@@ -223,6 +278,7 @@ export default function EdgeNodePage() {
     }, 300);
     const query = { ...pagination, keyword: keyword || undefined, status };
     const { data, isLoading } = useEdgeList(query, canQuery);
+    const nodes: Edge.Node[] = data?.list ?? [];
     const { data: detail, isLoading: detailLoading } = useEdgeDetail(selectedId);
     const enrollment = useEnrollmentMutation();
     const nodeName = useNodeNameMutation();
@@ -264,16 +320,45 @@ export default function EdgeNodePage() {
         });
     };
 
-    const showNetwork = () => {
-        const current = detail?.interfaces?.find((item) => item.name === 'br-lan');
-        const prefix = current?.prefixLength ?? 24;
-        const mask = prefix > 0 && prefix <= 32 ? (0xffffffff << (32 - prefix)) >>> 0 : 0xffffff00;
-        networkForm.setFieldsValue({
-            ip: current?.ipv4 || '',
-            netmask: [24, 16, 8, 0].map((shift) => (mask >>> shift) & 255).join('.'),
-            gateway: current?.gateway || '',
-            rollbackTimeoutSec: 60,
-        });
+    const showNetworkManager = async (node: Edge.Node) => {
+        setNetworkNode(node.networks && node.interfaces ? node : await getEdgeDetail(node.id));
+    };
+
+    const refreshNetworkManager = async () => {
+        if (!networkNode) return;
+        setNetworkNode(await getEdgeDetail(networkNode.id));
+    };
+
+    const showNetworkEditor = (item?: Edge.Network) => {
+        const firstDevice = networkNode?.interfaces?.find((candidate) => !candidate.bridge)?.name;
+        networkForm.setFieldsValue(
+            item
+                ? {
+                      operation: 'upsert',
+                      name: item.name,
+                      mode: item.mode === 'static' ? 'static' : 'dhcp',
+                      device: item.bridge ? '' : item.device,
+                      bridge: item.bridge,
+                      bridgePorts: item.bridgePorts,
+                      ip: item.mode === 'static' ? item.ipv4 : '',
+                      prefixLength: item.mode === 'static' ? item.prefixLength : 0,
+                      gateway: item.mode === 'static' ? item.gateway : '',
+                      rollbackTimeoutSec: 60,
+                  }
+                : {
+                      operation: 'upsert',
+                      name: '',
+                      mode: 'dhcp',
+                      device: firstDevice,
+                      bridge: false,
+                      bridgePorts: [],
+                      ip: '',
+                      prefixLength: 0,
+                      gateway: '',
+                      rollbackTimeoutSec: 60,
+                  }
+        );
+        setEditingNetwork(item);
         setNetworkOpen(true);
     };
 
@@ -299,63 +384,21 @@ export default function EdgeNodePage() {
         setPlatformOpen(true);
     };
 
-    const columns: ColumnsType<Edge.Node> = [
-        { title: 'IMEI', dataIndex: 'imei', width: 160 },
-        {
-            title: '节点名称',
-            dataIndex: 'name',
-            render: (value, node) => value || node.hostname || '-',
-        },
-        { title: '型号', dataIndex: 'model', render: (value) => value || '-' },
-        {
-            title: '连接',
-            dataIndex: 'online',
-            width: 90,
-            render: (online) => (
-                <Tag color={online ? 'success' : 'default'}>{online ? '在线' : '离线'}</Tag>
-            ),
-        },
-        {
-            title: '注册状态',
-            dataIndex: 'enrollmentStatus',
-            width: 110,
-            render: statusTag,
-        },
-        { title: '版本', dataIndex: 'softwareVersion', render: (value) => value || '-' },
-        { title: '最近上报', dataIndex: 'lastSeenAt', render: (value) => value || '-' },
-        {
-            title: '操作',
-            key: 'actions',
-            fixed: 'right',
-            width: 250,
-            render: (_, node) => (
-                <Space>
-                    <Button type="link" onClick={() => setSelectedId(node.id)}>
-                        详情
-                    </Button>
-                    {canEdit && (
-                        <Button type="link" onClick={() => showRename(node)}>
-                            改名
-                        </Button>
-                    )}
-                    {canEdit && node.enrollmentStatus !== 'approved' && (
-                        <Button type="link" onClick={() => updateEnrollment(node, 'approved')}>
-                            批准
-                        </Button>
-                    )}
-                    {canEdit && node.enrollmentStatus !== 'rejected' && (
-                        <Button
-                            type="link"
-                            danger
-                            onClick={() => updateEnrollment(node, 'rejected')}
-                        >
-                            拒绝
-                        </Button>
-                    )}
-                </Space>
-            ),
-        },
-    ];
+    const showPlatformManager = async (node: Edge.Node) => {
+        setPlatformNode(node.platforms ? node : await getEdgeDetail(node.id));
+    };
+
+    const refreshPlatformManager = async () => {
+        if (!platformNode) return;
+        setPlatformNode(await getEdgeDetail(platformNode.id));
+    };
+
+    const showFirmware = (node: Edge.Node) => {
+        firmwareForm.resetFields();
+        firmwareForm.setFieldsValue({ keepSettings: true });
+        setFirmwareNode(node);
+        setFirmwareOpen(true);
+    };
 
     const interfaceColumns: ColumnsType<Edge.NetworkInterface> = [
         { title: '接口', dataIndex: 'name' },
@@ -376,17 +419,91 @@ export default function EdgeNodePage() {
             render: (_, item) => (item.bridge ? `网桥 ${item.bridgePorts.join(', ')}` : '网口'),
         },
     ];
+    const networkColumns: ColumnsType<Edge.Network> = [
+        { title: '逻辑接口', dataIndex: 'name', width: 120 },
+        {
+            title: '地址方式',
+            dataIndex: 'mode',
+            width: 100,
+            render: (value: Edge.Network['mode']) =>
+                value === 'dhcp' ? 'DHCP' : value === 'static' ? '静态 IPv4' : '-',
+        },
+        {
+            title: '网卡 / 网桥成员',
+            render: (_, item) =>
+                item.bridge ? item.bridgePorts.join(', ') || '-' : item.device || '-',
+        },
+        {
+            title: 'IPv4',
+            render: (_, item) => (item.ipv4 ? `${item.ipv4}/${item.prefixLength}` : '-'),
+        },
+        {
+            title: '状态',
+            dataIndex: 'up',
+            width: 80,
+            render: (value) => (
+                <Tag color={value ? 'success' : 'default'}>{value ? 'UP' : 'DOWN'}</Tag>
+            ),
+        },
+        {
+            title: '操作',
+            width: 120,
+            render: (_, item) => (
+                <Space size={4}>
+                    <Button type="link" size="small" onClick={() => showNetworkEditor(item)}>
+                        编辑
+                    </Button>
+                    <Popconfirm
+                        title={`删除逻辑接口 ${item.name}？`}
+                        description="节点应用后若无法重新连接，将在超时后恢复原网络配置。"
+                        onConfirm={() => {
+                            if (!networkNode) return;
+                            network.mutate(
+                                {
+                                    id: networkNode.id,
+                                    data: {
+                                        interfaces: [{ operation: 'delete', name: item.name }],
+                                        rollbackTimeoutSec: 60,
+                                    },
+                                },
+                                { onSuccess: refreshNetworkManager }
+                            );
+                        }}
+                    >
+                        <Button type="link" size="small" danger>
+                            删除
+                        </Button>
+                    </Popconfirm>
+                </Space>
+            ),
+        },
+    ];
+    const assignedNetworkDevices = new Set(
+        (networkNode?.networks ?? [])
+            .filter((item) => item.name !== editingNetwork?.name)
+            .flatMap((item) => (item.bridge ? item.bridgePorts : item.device ? [item.device] : []))
+    );
+    const networkDeviceOptions = (networkNode?.interfaces ?? [])
+        .filter((item) => !item.bridge)
+        .map((item) => ({
+            value: item.name,
+            label: item.displayName ? `${item.displayName} (${item.name})` : item.name,
+            disabled: assignedNetworkDevices.has(item.name),
+        }));
     const serialColumns: ColumnsType<Edge.SerialPort> = [
         { title: '串口', dataIndex: 'path' },
         { title: '名称', dataIndex: 'displayName' },
         { title: '可读写', dataIndex: 'available', render: (value) => (value ? '是' : '否') },
         { title: 'RS485', dataIndex: 'rs485', render: (value) => (value ? '是' : '未确认') },
     ];
-    const platformColumns: ColumnsType<Edge.Platform> = [
+    const platformInfoColumns: ColumnsType<Edge.Platform> = [
         { title: '名称', dataIndex: 'name' },
         { title: 'HTTP(S) 地址', dataIndex: 'baseUrl' },
         { title: '状态', dataIndex: 'applyStatus', render: statusTag },
         { title: '启用', dataIndex: 'enabled', render: (value) => (value ? '是' : '否') },
+    ];
+    const platformColumns: ColumnsType<Edge.Platform> = [
+        ...platformInfoColumns,
         {
             title: '操作',
             width: 130,
@@ -398,8 +515,11 @@ export default function EdgeNodePage() {
                     <Popconfirm
                         title="删除这个平台配置？"
                         onConfirm={() =>
-                            selectedId &&
-                            platformDelete.mutate({ id: selectedId, platformId: item.platformId })
+                            platformNode &&
+                            platformDelete.mutate(
+                                { id: platformNode.id, platformId: item.platformId },
+                                { onSuccess: refreshPlatformManager }
+                            )
                         }
                     >
                         <Button type="link" danger>
@@ -414,7 +534,11 @@ export default function EdgeNodePage() {
         { title: '类型', dataIndex: 'taskType' },
         { title: '状态', dataIndex: 'status', render: statusTag },
         { title: '结果', dataIndex: 'message', render: (value) => value || '-' },
-        { title: '创建时间', dataIndex: 'createdAt' },
+        {
+            title: '创建时间',
+            dataIndex: 'createdAt',
+            render: (value) => formatDateTime(value),
+        },
     ];
 
     return (
@@ -464,15 +588,216 @@ export default function EdgeNodePage() {
                 </div>
             }
         >
-            <Table
-                rowKey="id"
-                columns={columns}
-                dataSource={data?.list ?? []}
-                loading={isLoading}
-                pagination={false}
-                sticky
-                scroll={{ x: 'max-content', y: 'calc(100vh - 280px)' }}
-            />
+            <div className="h-full overflow-y-auto overflow-x-hidden">
+                {isLoading && nodes.length === 0 ? (
+                    <div className={EDGE_CARD_GRID_CLASS}>
+                        {['first', 'second', 'third', 'fourth'].map((key) => (
+                            <div key={key} className="rounded-lg bg-white px-3.5 py-3">
+                                <Skeleton active paragraph={{ rows: 4 }} />
+                            </div>
+                        ))}
+                    </div>
+                ) : nodes.length === 0 ? (
+                    <div className="py-16">
+                        <Empty description={keyword ? '未找到匹配的边缘节点' : '暂无边缘节点'} />
+                    </div>
+                ) : (
+                    <div className={EDGE_CARD_GRID_CLASS}>
+                        {nodes.map((node) => (
+                            <div key={node.id} className="flex flex-col">
+                                <DeviceCard
+                                    title={
+                                        <Flex
+                                            justify="space-between"
+                                            align="start"
+                                            gap={10}
+                                            className="w-full min-w-0"
+                                        >
+                                            <span className="min-w-0 flex-1 whitespace-normal break-words pr-1 text-left leading-5">
+                                                {node.name || node.hostname || '未命名节点'}
+                                                <span className="ml-2 whitespace-nowrap text-xs font-normal text-slate-400">
+                                                    IMEI：{node.imei}
+                                                </span>
+                                            </span>
+                                            <Tag
+                                                color={node.online ? 'success' : 'default'}
+                                                className="!mr-0 shrink-0 !rounded-md !px-2"
+                                            >
+                                                {node.online ? '在线' : '离线'}
+                                            </Tag>
+                                        </Flex>
+                                    }
+                                    subtitle={
+                                        <div className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                                            <span className="flex min-w-0 shrink-0 items-center">
+                                                <Tag color="blue" className="!mr-0 !rounded-md">
+                                                    {node.model || '未知型号'}
+                                                </Tag>
+                                                <Tag color="purple" className="!mr-0 !rounded-md">
+                                                    {node.softwareVersion || '未知版本'}
+                                                </Tag>
+                                            </span>
+                                            <span className="min-w-0 truncate text-xs text-slate-400">
+                                                上报：{formatDateTime(node.lastSeenAt)}
+                                            </span>
+                                        </div>
+                                    }
+                                    items={buildNodeCardItems(node)}
+                                    column={8}
+                                    extra={
+                                        <Flex
+                                            align="center"
+                                            justify="center"
+                                            gap={10}
+                                            wrap
+                                            className="w-full"
+                                        >
+                                            <Tooltip title="查看详情">
+                                                <Button
+                                                    type="text"
+                                                    size="small"
+                                                    className={EDGE_CARD_ACTION_BUTTON_CLASS}
+                                                    icon={<EyeOutlined />}
+                                                    onClick={() => setSelectedId(node.id)}
+                                                />
+                                            </Tooltip>
+                                            {canEdit && (
+                                                <Tooltip title="修改名称">
+                                                    <Button
+                                                        type="text"
+                                                        size="small"
+                                                        className={EDGE_CARD_ACTION_BUTTON_CLASS}
+                                                        icon={<EditOutlined />}
+                                                        onClick={() => showRename(node)}
+                                                    />
+                                                </Tooltip>
+                                            )}
+                                            {node.enrollmentStatus === 'approved' &&
+                                                canConfig &&
+                                                node.supportsDeviceConfig && (
+                                                    <Tooltip title="同步设备配置">
+                                                        <Button
+                                                            type="text"
+                                                            size="small"
+                                                            className={
+                                                                EDGE_CARD_ACTION_BUTTON_CLASS
+                                                            }
+                                                            icon={<SyncOutlined />}
+                                                            loading={
+                                                                deviceConfigSync.isPending &&
+                                                                deviceConfigSync.variables ===
+                                                                    node.id
+                                                            }
+                                                            onClick={() =>
+                                                                deviceConfigSync.mutate(node.id)
+                                                            }
+                                                        />
+                                                    </Tooltip>
+                                                )}
+                                            {node.enrollmentStatus === 'approved' &&
+                                                canConfig &&
+                                                node.supportsNetworkConfig &&
+                                                node.networkConfigVersion >= 2 && (
+                                                    <Tooltip title="管理网络接口">
+                                                        <Button
+                                                            type="text"
+                                                            size="small"
+                                                            className={
+                                                                EDGE_CARD_ACTION_BUTTON_CLASS
+                                                            }
+                                                            icon={<GlobalOutlined />}
+                                                            onClick={() =>
+                                                                void showNetworkManager(node)
+                                                            }
+                                                        />
+                                                    </Tooltip>
+                                                )}
+                                            {node.enrollmentStatus === 'approved' &&
+                                                canConfig &&
+                                                node.supportsPlatformConfig && (
+                                                    <Tooltip title="管理其他平台">
+                                                        <Button
+                                                            type="text"
+                                                            size="small"
+                                                            className={
+                                                                EDGE_CARD_ACTION_BUTTON_CLASS
+                                                            }
+                                                            icon={<ApiOutlined />}
+                                                            onClick={() =>
+                                                                void showPlatformManager(node)
+                                                            }
+                                                        />
+                                                    </Tooltip>
+                                                )}
+                                            {node.enrollmentStatus === 'approved' &&
+                                                canFirmware &&
+                                                node.supportsFirmwareUpdate && (
+                                                    <Tooltip title="上传固件并刷写">
+                                                        <Button
+                                                            type="text"
+                                                            danger
+                                                            size="small"
+                                                            className={
+                                                                EDGE_CARD_DANGER_BUTTON_CLASS
+                                                            }
+                                                            icon={<UploadOutlined />}
+                                                            onClick={() => showFirmware(node)}
+                                                        />
+                                                    </Tooltip>
+                                                )}
+                                            {node.enrollmentStatus === 'approved' &&
+                                                canTerminal &&
+                                                node.ttydAvailable && (
+                                                    <Tooltip title="Web 终端">
+                                                        <Button
+                                                            type="text"
+                                                            size="small"
+                                                            className={
+                                                                EDGE_CARD_ACTION_BUTTON_CLASS
+                                                            }
+                                                            icon={<CodeOutlined />}
+                                                            onClick={() => {
+                                                                setTerminalNode(node);
+                                                                setTerminalOpen(true);
+                                                            }}
+                                                        />
+                                                    </Tooltip>
+                                                )}
+                                            {canEdit && node.enrollmentStatus !== 'approved' && (
+                                                <Tooltip title="批准注册">
+                                                    <Button
+                                                        type="text"
+                                                        size="small"
+                                                        className={EDGE_CARD_ACTION_BUTTON_CLASS}
+                                                        icon={<CheckOutlined />}
+                                                        onClick={() =>
+                                                            updateEnrollment(node, 'approved')
+                                                        }
+                                                    />
+                                                </Tooltip>
+                                            )}
+                                            {canEdit && node.enrollmentStatus !== 'rejected' && (
+                                                <Tooltip title="拒绝注册">
+                                                    <Button
+                                                        type="text"
+                                                        danger
+                                                        size="small"
+                                                        className={EDGE_CARD_DANGER_BUTTON_CLASS}
+                                                        icon={<CloseOutlined />}
+                                                        onClick={() =>
+                                                            updateEnrollment(node, 'rejected')
+                                                        }
+                                                    />
+                                                </Tooltip>
+                                            )}
+                                        </Flex>
+                                    }
+                                />
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
 
             <Drawer
                 open={Boolean(selectedId)}
@@ -482,57 +807,8 @@ export default function EdgeNodePage() {
                         ? `${detail.name || detail.hostname || '边缘节点'} · ${detail.imei}`
                         : '边缘节点详情'
                 }
-                width="min(960px, 92vw)"
+                size="min(960px, 92vw)"
                 loading={detailLoading}
-                extra={
-                    detail ? (
-                        <Space wrap>
-                            {canEdit && (
-                                <Button onClick={() => showRename(detail)}>修改名称</Button>
-                            )}
-                            {detail.enrollmentStatus === 'approved' &&
-                                canConfig &&
-                                detail.supportsDeviceConfig && (
-                                    <Button
-                                        type="primary"
-                                        loading={deviceConfigSync.isPending}
-                                        onClick={() => deviceConfigSync.mutate(detail.id)}
-                                    >
-                                        同步设备配置
-                                    </Button>
-                                )}
-                            {detail.enrollmentStatus === 'approved' &&
-                                canConfig &&
-                                detail.supportsNetworkConfig && (
-                                    <Button onClick={showNetwork}>配置 br-lan</Button>
-                                )}
-                            {detail.enrollmentStatus === 'approved' &&
-                                canConfig &&
-                                detail.supportsPlatformConfig && (
-                                    <Button onClick={() => showPlatform()}>添加平台</Button>
-                                )}
-                            {detail.enrollmentStatus === 'approved' &&
-                                canFirmware &&
-                                detail.supportsFirmwareUpdate && (
-                                    <Button
-                                        danger
-                                        onClick={() => {
-                                            firmwareForm.resetFields();
-                                            firmwareForm.setFieldsValue({ keepSettings: true });
-                                            setFirmwareOpen(true);
-                                        }}
-                                    >
-                                        上传固件并刷写
-                                    </Button>
-                                )}
-                            {detail.enrollmentStatus === 'approved' &&
-                                canTerminal &&
-                                detail.ttydAvailable && (
-                                    <Button onClick={() => setTerminalOpen(true)}>Web 终端</Button>
-                                )}
-                        </Space>
-                    ) : null
-                }
             >
                 {detail && (
                     <>
@@ -570,15 +846,29 @@ export default function EdgeNodePage() {
                                 )}
                             </Descriptions.Item>
                             <Descriptions.Item label="最近上报">
-                                {detail.lastSeenAt || '-'}
+                                {formatDateTime(detail.lastSeenAt)}
                             </Descriptions.Item>
                         </Descriptions>
                         <Tabs
                             className="mt-4"
                             items={[
                                 {
-                                    key: 'network',
-                                    label: `网口 (${detail.interfaces?.length ?? 0})`,
+                                    key: 'networks',
+                                    label: `逻辑接口 (${detail.networks?.length ?? 0})`,
+                                    children: (
+                                        <Table
+                                            rowKey="name"
+                                            size="small"
+                                            pagination={false}
+                                            columns={networkColumns.slice(0, -1)}
+                                            dataSource={detail.networks ?? []}
+                                            scroll={{ x: 'max-content', y: 360 }}
+                                        />
+                                    ),
+                                },
+                                {
+                                    key: 'interfaces',
+                                    label: `物理网卡 (${detail.interfaces?.length ?? 0})`,
                                     children: (
                                         <Table
                                             rowKey="name"
@@ -612,7 +902,7 @@ export default function EdgeNodePage() {
                                             rowKey="platformId"
                                             size="small"
                                             pagination={false}
-                                            columns={platformColumns}
+                                            columns={platformInfoColumns}
                                             dataSource={detail.platforms ?? []}
                                             scroll={{ x: 'max-content', y: 360 }}
                                         />
@@ -637,6 +927,59 @@ export default function EdgeNodePage() {
                     </>
                 )}
             </Drawer>
+
+            <Modal
+                open={Boolean(networkNode)}
+                onCancel={() => setNetworkNode(undefined)}
+                footer={null}
+                width="min(900px, 92vw)"
+                title={`网络接口${networkNode ? ` · ${networkNode.name || networkNode.imei}` : ''}`}
+                destroyOnHidden
+            >
+                <Flex justify="space-between" align="center" gap={12} className="mb-3">
+                    <span className="text-xs text-slate-500">
+                        仅显示节点允许管理的网卡，4G 上联网卡不会出现在候选列表中。
+                    </span>
+                    <Button
+                        type="primary"
+                        icon={<PlusOutlined />}
+                        onClick={() => showNetworkEditor()}
+                    >
+                        添加接口
+                    </Button>
+                </Flex>
+                <Table
+                    rowKey="name"
+                    size="small"
+                    pagination={false}
+                    columns={networkColumns}
+                    dataSource={networkNode?.networks ?? []}
+                    scroll={{ x: 'max-content', y: 360 }}
+                />
+            </Modal>
+
+            <Modal
+                open={Boolean(platformNode)}
+                onCancel={() => setPlatformNode(undefined)}
+                footer={null}
+                width="min(880px, 92vw)"
+                title={`其他平台${platformNode ? ` · ${platformNode.name || platformNode.imei}` : ''}`}
+                destroyOnHidden
+            >
+                <Flex justify="flex-end" className="mb-3">
+                    <Button type="primary" icon={<ApiOutlined />} onClick={() => showPlatform()}>
+                        添加平台
+                    </Button>
+                </Flex>
+                <Table
+                    rowKey="platformId"
+                    size="small"
+                    pagination={false}
+                    columns={platformColumns}
+                    dataSource={platformNode?.platforms ?? []}
+                    scroll={{ x: 'max-content', y: 360 }}
+                />
+            </Modal>
 
             <FormModal
                 open={Boolean(renamingNode)}
@@ -667,50 +1010,130 @@ export default function EdgeNodePage() {
 
             <FormModal
                 open={networkOpen}
-                title="配置 br-lan"
-                onCancel={() => setNetworkOpen(false)}
+                title={`${editingNetwork ? '编辑' : '添加'}网络接口${
+                    networkNode ? ` · ${networkNode.name || networkNode.imei}` : ''
+                }`}
+                onCancel={() => {
+                    setNetworkOpen(false);
+                    setEditingNetwork(undefined);
+                }}
                 onOk={() => networkForm.submit()}
                 confirmLoading={network.isPending}
+                forceRender
                 destroyOnHidden
             >
                 <Form
                     form={networkForm}
                     layout="vertical"
                     onFinish={(values) => {
-                        const parsed = validateForm(networkForm, networkSchema, values);
-                        if (parsed && selectedId)
+                        const parsed = validateForm(networkForm, networkEditorSchema, values);
+                        if (parsed && networkNode) {
+                            const { rollbackTimeoutSec, ...item } = parsed;
                             network.mutate(
-                                { id: selectedId, data: parsed },
-                                { onSuccess: () => setNetworkOpen(false) }
+                                {
+                                    id: networkNode.id,
+                                    data: {
+                                        interfaces: [{ ...item, operation: 'upsert' }],
+                                        rollbackTimeoutSec,
+                                    },
+                                },
+                                {
+                                    onSuccess: async () => {
+                                        setNetworkOpen(false);
+                                        setEditingNetwork(undefined);
+                                        await refreshNetworkManager();
+                                    },
+                                }
                             );
+                        }
                     }}
                 >
-                    <Form.Item label="接口">
-                        <Input value="br-lan" disabled />
+                    <Form.Item name="operation" hidden>
+                        <Input />
                     </Form.Item>
                     <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
-                        <Form.Item label="IPv4 地址" name="ip">
-                            <Input placeholder="192.168.1.1" />
+                        <Form.Item label="逻辑接口名称" name="name">
+                            <Input
+                                maxLength={15}
+                                disabled={Boolean(editingNetwork)}
+                                placeholder="例如 lan"
+                            />
                         </Form.Item>
-                        <Form.Item label="子网掩码" name="netmask">
-                            <Input placeholder="255.255.255.0" />
+                        <Form.Item label="地址方式" name="mode">
+                            <Select
+                                options={[
+                                    { value: 'dhcp', label: 'DHCP 客户端' },
+                                    { value: 'static', label: '静态 IPv4' },
+                                ]}
+                                onChange={(value) => {
+                                    if (value === 'dhcp') {
+                                        networkForm.setFieldsValue({
+                                            ip: '',
+                                            prefixLength: 0,
+                                            gateway: '',
+                                        });
+                                    }
+                                }}
+                            />
                         </Form.Item>
                     </div>
-                    <Form.Item label="网关（可选）" name="gateway">
-                        <Input placeholder="192.168.1.254" />
+                    <Form.Item label="创建网桥" name="bridge" valuePropName="checked">
+                        <Switch
+                            onChange={(checked) =>
+                                networkForm.setFieldsValue(
+                                    checked ? { device: '' } : { bridgePorts: [] }
+                                )
+                            }
+                        />
                     </Form.Item>
+                    {networkBridge ? (
+                        <Form.Item label="网桥成员" name="bridgePorts">
+                            <Select
+                                mode="multiple"
+                                options={networkDeviceOptions}
+                                placeholder="选择一个或多个物理网卡"
+                                optionFilterProp="label"
+                                showSearch
+                            />
+                        </Form.Item>
+                    ) : (
+                        <Form.Item label="物理网卡" name="device">
+                            <Select
+                                options={networkDeviceOptions}
+                                placeholder="选择物理网卡"
+                                optionFilterProp="label"
+                                showSearch
+                            />
+                        </Form.Item>
+                    )}
+                    {networkMode === 'static' && (
+                        <>
+                            <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                                <Form.Item label="IPv4 地址" name="ip">
+                                    <Input placeholder="192.168.1.1" />
+                                </Form.Item>
+                                <Form.Item label="IPv4 前缀长度" name="prefixLength">
+                                    <InputNumber className="w-full" min={1} max={30} />
+                                </Form.Item>
+                            </div>
+                            <Form.Item label="网关（可选）" name="gateway">
+                                <Input placeholder="192.168.1.254" />
+                            </Form.Item>
+                        </>
+                    )}
                     <Form.Item label="失联自动回滚（秒）" name="rollbackTimeoutSec">
                         <InputNumber className="w-full" min={30} max={300} />
                     </Form.Item>
                     <p className="text-xs text-slate-500">
-                        节点只通过 UCI 命令修改网络；新地址无法重新连接时会自动恢复原配置。
+                        节点通过 UCI
+                        原子应用配置；新网络无法让节点重新连接平台时，会自动恢复原配置。
                     </p>
                 </Form>
             </FormModal>
 
             <FormModal
                 open={platformOpen}
-                title="配置其他平台"
+                title={`配置其他平台${platformNode ? ` · ${platformNode.name || platformNode.imei}` : ''}`}
                 onCancel={() => setPlatformOpen(false)}
                 onOk={() => platformForm.submit()}
                 confirmLoading={platform.isPending}
@@ -721,10 +1144,15 @@ export default function EdgeNodePage() {
                     layout="vertical"
                     onFinish={(values) => {
                         const parsed = validateForm(platformForm, platformSchema, values);
-                        if (parsed && selectedId)
+                        if (parsed && platformNode)
                             platform.mutate(
-                                { id: selectedId, data: parsed },
-                                { onSuccess: () => setPlatformOpen(false) }
+                                { id: platformNode.id, data: parsed },
+                                {
+                                    onSuccess: async () => {
+                                        setPlatformOpen(false);
+                                        await refreshPlatformManager();
+                                    },
+                                }
                             );
                     }}
                 >
@@ -762,8 +1190,11 @@ export default function EdgeNodePage() {
 
             <FormModal
                 open={firmwareOpen}
-                title={`上传固件并刷写${detail ? ` · ${detail.name || detail.imei}` : ''}`}
-                onCancel={() => setFirmwareOpen(false)}
+                title={`上传固件并刷写${firmwareNode ? ` · ${firmwareNode.name || firmwareNode.imei}` : ''}`}
+                onCancel={() => {
+                    setFirmwareOpen(false);
+                    setFirmwareNode(undefined);
+                }}
                 onOk={() => firmwareForm.submit()}
                 okButtonProps={{ danger: true }}
                 confirmLoading={firmwareUpgrade.isPending}
@@ -774,10 +1205,15 @@ export default function EdgeNodePage() {
                     layout="vertical"
                     onFinish={(values) => {
                         const parsed = validateForm(firmwareForm, firmwareUpgradeSchema, values);
-                        if (parsed && selectedId)
+                        if (parsed && firmwareNode)
                             firmwareUpgrade.mutate(
-                                { id: selectedId, data: parsed },
-                                { onSuccess: () => setFirmwareOpen(false) }
+                                { id: firmwareNode.id, data: parsed },
+                                {
+                                    onSuccess: () => {
+                                        setFirmwareOpen(false);
+                                        setFirmwareNode(undefined);
+                                    },
+                                }
                             );
                     }}
                 >
@@ -806,9 +1242,12 @@ export default function EdgeNodePage() {
                 </Form>
             </FormModal>
             <TerminalModal
-                nodeId={selectedId}
+                nodeId={terminalNode?.id}
                 open={terminalOpen}
-                onClose={() => setTerminalOpen(false)}
+                onClose={() => {
+                    setTerminalOpen(false);
+                    setTerminalNode(undefined);
+                }}
             />
         </PageContainer>
     );

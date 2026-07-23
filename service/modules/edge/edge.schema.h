@@ -1,11 +1,34 @@
 #pragma once
 
+#include <cctype>
+
 #include <ruvia/web/Controller.h>
 
 #include "service/common/id.validation.h"
 #include "service/modules/edge/edge.types.h"
 
 namespace service::edge {
+
+inline bool isUciSectionName(const ruvia::String& value) {
+    const auto text = value.view();
+    if (text.empty() || text.size() > 32)
+        return false;
+    for (const unsigned char character : text)
+        if (!std::isalnum(character) && character != '_')
+            return false;
+    return true;
+}
+
+inline bool isOptionalNetworkDevice(const ruvia::String& value) {
+    const auto text = value.view();
+    if (text.size() > 32)
+        return false;
+    for (const unsigned char character : text)
+        if (!std::isalnum(character) && character != '_' && character != '-' &&
+            character != '.' && character != ':')
+            return false;
+    return true;
+}
 
 class EdgeListValidator final : public ruvia::Middleware<EdgeListValidator> {
   public:
@@ -49,14 +72,33 @@ class NodeNameValidator final : public ruvia::Middleware<NodeNameValidator> {
                                  RUVIA_MAX(100, "节点名称不能超过 100 个字符")));
 };
 
+class NetworkInterfaceValidator final : public ruvia::Middleware<NetworkInterfaceValidator> {
+  public:
+    RUVIA_VALIDATE_JSON(
+        NetworkInterfaceBody,
+        RUVIA_RULE(operation, RUVIA_REQUIRED("网络操作不能为空"),
+                   RUVIA_ONE_OF("网络操作无效", "upsert", "delete")),
+        RUVIA_RULE(name, RUVIA_REQUIRED("逻辑接口名称不能为空"),
+                   RUVIA_CUSTOM("逻辑接口名称只能包含字母、数字和下划线",
+                                isUciSectionName)),
+        RUVIA_RULE(mode, RUVIA_ONE_OF("地址协议无效", "dhcp", "static")),
+        RUVIA_RULE(device, RUVIA_CUSTOM("设备名称包含非法字符", isOptionalNetworkDevice)),
+        RUVIA_RULE_NAME("bridgePorts", bridgePorts, RUVIA_MAX(8, "网桥最多包含 8 个成员")),
+        RUVIA_RULE(ip, RUVIA_MAX(15, "IPv4 地址格式无效")),
+        RUVIA_RULE_NAME("prefixLength", prefixLength,
+                        RUVIA_MIN(0, "IPv4 前缀必须在 0 - 30 之间"),
+                        RUVIA_MAX(30, "IPv4 前缀必须在 0 - 30 之间")),
+        RUVIA_RULE(gateway, RUVIA_MAX(15, "网关格式无效")));
+};
+
 class NetworkValidator final : public ruvia::Middleware<NetworkValidator> {
   public:
     RUVIA_VALIDATE_JSON(
-        NetworkBody, RUVIA_RULE(ip, RUVIA_REQUIRED("br-lan IP 不能为空"),
-                                RUVIA_MAX(15, "br-lan IP 格式无效")),
-        RUVIA_RULE(netmask, RUVIA_REQUIRED("br-lan 掩码不能为空"),
-                   RUVIA_MAX(15, "br-lan 掩码格式无效")),
-        RUVIA_RULE(gateway, RUVIA_MAX(15, "网关格式无效")),
+        NetworkBody,
+        RUVIA_RULE(interfaces, RUVIA_REQUIRED("网络配置不能为空"),
+                   RUVIA_MIN(1, "请至少配置一个逻辑接口"),
+                   RUVIA_MAX(8, "单次最多配置 8 个逻辑接口"),
+                   RUVIA_EACH(NetworkInterfaceValidator)),
         RUVIA_RULE_NAME("rollbackTimeoutSec", rollbackTimeoutSec,
                         RUVIA_MIN(30, "回滚等待时间必须在 30 - 300 秒之间"),
                         RUVIA_MAX(300, "回滚等待时间必须在 30 - 300 秒之间")));

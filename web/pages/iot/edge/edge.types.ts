@@ -20,6 +20,18 @@ export namespace Edge {
         bridgePorts: string[];
     }
 
+    export interface Network {
+        name: string;
+        mode: 'dhcp' | 'static' | 'none';
+        device: string;
+        up: boolean;
+        bridge: boolean;
+        bridgePorts: string[];
+        ipv4: string;
+        prefixLength: number;
+        gateway: string;
+    }
+
     export interface SerialPort {
         path: string;
         displayName: string;
@@ -60,6 +72,7 @@ export namespace Edge {
         enrollmentStatus: EnrollmentStatus;
         online: boolean;
         supportsNetworkConfig: boolean;
+        networkConfigVersion: number;
         supportsFirmwareUpdate: boolean;
         supportsPlatformConfig: boolean;
         supportsDeviceConfig: boolean;
@@ -73,15 +86,26 @@ export namespace Edge {
         lastSeenAt: string;
         createdAt: string;
         interfaces?: NetworkInterface[];
+        networks?: Network[];
         serialPorts?: SerialPort[];
         platforms?: Platform[];
         tasks?: Task[];
     }
 
-    export interface NetworkDto {
-        ip: string;
-        netmask: string;
+    export interface NetworkConfig {
+        operation: 'upsert' | 'delete';
+        name: string;
+        mode?: 'dhcp' | 'static';
+        device?: string;
+        bridge?: boolean;
+        bridgePorts?: string[];
+        ip?: string;
+        prefixLength?: number;
         gateway?: string;
+    }
+
+    export interface NetworkDto {
+        interfaces: NetworkConfig[];
         rollbackTimeoutSec: number;
     }
 

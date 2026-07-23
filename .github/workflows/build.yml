@@ -18,6 +18,9 @@ env:
   VCPKG_COMMIT: 4bca8fd8654e5ba76f92661db7bfe954768ad8ef
   BUILD_TYPE: Debug
   BUN_VERSION: 1.3.14
+  UPX_VERSION: 5.1.1
+  UPX_LINUX_SHA256: 1ff660454227861e00772f743f66b900072116b9dc24f6ee28b97cce88a7828a
+  UPX_WINDOWS_SHA256: fa5380bca4c2718547aaa0134bc0d8a7fa27e102f0ac6371573d60d1c21d64de
 
 jobs:
   ubuntu_build:
@@ -37,17 +40,9 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-18 ninja-build curl zip unzip tar
+          sudo apt-get install -y clang-18 ninja-build curl zip unzip tar xz-utils
           clang-18 --version
           clang++-18 --version
-
-      - name: Set up protobuf generator
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.13'
-
-      - name: Install protobuf generator dependencies
-        run: python -m pip install protobuf==6.33.5 grpcio-tools==1.78.0
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -96,12 +91,26 @@ jobs:
       - name: Test
         run: ctest --test-dir build/ci --output-on-failure --build-config "$BUILD_TYPE"
 
+      - name: Install UPX
+        run: |
+          set -euo pipefail
+          archive="build/upx-${UPX_VERSION}-amd64_linux.tar.xz"
+          curl --fail --location --show-error --silent \
+            "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz" \
+            --output "$archive"
+          echo "${UPX_LINUX_SHA256}  ${archive}" | sha256sum --check -
+          tar -xJf "$archive" -C build
+          echo "UPX_BIN=${GITHUB_WORKSPACE}/build/upx-${UPX_VERSION}-amd64_linux/upx" >> "$GITHUB_ENV"
+
       - name: Package artifact
         run: |
+          set -euo pipefail
           cmake -E rm -rf build/artifact
           cmake -E make_directory build/artifact
           cmake -E copy build/ci/iot-engine build/artifact/iot-engine
           cmake -E copy_directory build/web build/artifact/web
+          "$UPX_BIN" --best --lzma build/artifact/iot-engine
+          "$UPX_BIN" --test build/artifact/iot-engine
           tar -C build/artifact -czf "build/iot-engine-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz" .
 
       - name: Upload artifact
@@ -130,14 +139,6 @@ jobs:
         run: |
           brew install ninja
           /usr/bin/clang++ --version
-
-      - name: Set up protobuf generator
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.13'
-
-      - name: Install protobuf generator dependencies
-        run: python -m pip install protobuf==6.33.5 grpcio-tools==1.78.0
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -186,6 +187,7 @@ jobs:
       - name: Test
         run: ctest --test-dir build/ci --output-on-failure --build-config "$BUILD_TYPE"
 
+      # UPX does not support the Mach-O executable format used by this artifact.
       - name: Package artifact
         run: |
           cmake -E rm -rf build/artifact
@@ -215,14 +217,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           persist-credentials: false
-
-      - name: Set up protobuf generator
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.13'
-
-      - name: Install protobuf generator dependencies
-        run: python -m pip install protobuf==6.33.5 grpcio-tools==1.78.0
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -271,6 +265,21 @@ jobs:
       - name: Test
         run: ctest --test-dir build/ci --output-on-failure --build-config ${{ env.BUILD_TYPE }}
 
+      - name: Install UPX
+        shell: pwsh
+        run: |
+          $archive = "build/upx-$env:UPX_VERSION-win64.zip"
+          Invoke-WebRequest `
+            -Uri "https://github.com/upx/upx/releases/download/v$env:UPX_VERSION/upx-$env:UPX_VERSION-win64.zip" `
+            -OutFile $archive
+          $actualSha256 = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $env:UPX_WINDOWS_SHA256) {
+              throw "UPX archive SHA-256 mismatch: $actualSha256"
+          }
+          Expand-Archive -Path $archive -DestinationPath build
+          "UPX_BIN=$env:GITHUB_WORKSPACE\build\upx-$env:UPX_VERSION-win64\upx.exe" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Stage artifact
         shell: pwsh
         run: |
@@ -278,6 +287,14 @@ jobs:
           cmake -E make_directory build/artifact
           cmake -E copy "build/ci/$env:BUILD_TYPE/iot-engine.exe" build/artifact/iot-engine.exe
           cmake -E copy_directory build/web build/artifact/web
+          & $env:UPX_BIN --best --lzma build/artifact/iot-engine.exe
+          if ($LASTEXITCODE -ne 0) {
+              throw "UPX compression failed with exit code $LASTEXITCODE"
+          }
+          & $env:UPX_BIN --test build/artifact/iot-engine.exe
+          if ($LASTEXITCODE -ne 0) {
+              throw "UPX verification failed with exit code $LASTEXITCODE"
+          }
 
       - name: Package artifact
         shell: pwsh

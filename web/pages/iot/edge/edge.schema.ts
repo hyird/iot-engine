@@ -14,37 +14,90 @@ function parseIpv4(value: string) {
     return numbers.reduce((result, part) => (result * 256 + part) >>> 0, 0);
 }
 
-function netmaskPrefix(value: string) {
-    const mask = parseIpv4(value);
-    if (mask === null) return null;
-    let zeroSeen = false;
-    let prefix = 0;
-    for (let bit = 31; bit >= 0; bit -= 1) {
-        const one = (mask & (2 ** bit)) !== 0;
-        if (zeroSeen && one) return null;
-        if (one) prefix += 1;
-        else zeroSeen = true;
-    }
-    return prefix >= 1 && prefix <= 30 ? prefix : null;
-}
-
 const ipv4TextSchema = z
     .string()
     .refine((value) => parseIpv4(value) !== null, '请输入有效的 IPv4 地址');
 
-export const networkSchema = z
+const networkDeviceSchema = z
+    .string()
+    .min(1, '请选择网卡')
+    .max(32)
+    .regex(/^[A-Za-z0-9_.:-]+$/, '网卡名称包含非法字符');
+
+export const networkInterfaceSchema = z
     .object({
-        ip: ipv4TextSchema,
-        netmask: z
+        operation: z.enum(['upsert', 'delete']),
+        name: z
             .string()
-            .refine((value) => netmaskPrefix(value) !== null, '请输入连续的 /1 到 /30 子网掩码'),
+            .min(1, '逻辑接口名称不能为空')
+            .max(15, '逻辑接口名称不能超过 15 个字符')
+            .regex(/^[A-Za-z0-9_]+$/, '逻辑接口名称只能包含字母、数字和下划线')
+            .refine((value) => value !== 'loopback', 'loopback 接口不允许远程修改'),
+        mode: z.enum(['dhcp', 'static']).optional(),
+        device: z.union([z.literal(''), networkDeviceSchema]).optional(),
+        bridge: z.boolean().optional(),
+        bridgePorts: z.array(networkDeviceSchema).max(8).optional(),
+        ip: z.union([z.literal(''), ipv4TextSchema]).optional(),
+        prefixLength: z.number().int().min(0).max(30).optional(),
         gateway: z.union([z.literal(''), ipv4TextSchema]).optional(),
-        rollbackTimeoutSec: z.number().int().min(30).max(300),
     })
     .superRefine((value, context) => {
-        const address = parseIpv4(value.ip);
-        const mask = parseIpv4(value.netmask);
-        if (address === null || mask === null || netmaskPrefix(value.netmask) === null) return;
+        if (value.operation === 'delete') return;
+        if (!value.mode) {
+            context.addIssue({
+                code: 'custom',
+                path: ['mode'],
+                message: '请选择 DHCP 或静态 IPv4',
+            });
+        }
+        if (value.bridge) {
+            if (value.name.length > 12) {
+                context.addIssue({
+                    code: 'custom',
+                    path: ['name'],
+                    message: '网桥逻辑名称不能超过 12 个字符',
+                });
+            }
+            if (!value.bridgePorts?.length) {
+                context.addIssue({
+                    code: 'custom',
+                    path: ['bridgePorts'],
+                    message: '请至少选择一个网桥成员',
+                });
+            }
+        } else if (!value.device) {
+            context.addIssue({
+                code: 'custom',
+                path: ['device'],
+                message: '请选择一个网卡',
+            });
+        }
+        if (value.mode === 'dhcp') {
+            if (value.ip || value.gateway || (value.prefixLength ?? 0) !== 0) {
+                context.addIssue({
+                    code: 'custom',
+                    path: ['ip'],
+                    message: 'DHCP 接口不能填写静态 IPv4',
+                });
+            }
+            return;
+        }
+        if (value.mode !== 'static') return;
+        const address = value.ip ? parseIpv4(value.ip) : null;
+        const prefix = value.prefixLength ?? 0;
+        if (address === null) {
+            context.addIssue({ code: 'custom', path: ['ip'], message: '请输入有效的 IPv4 地址' });
+            return;
+        }
+        if (prefix < 1 || prefix > 30) {
+            context.addIssue({
+                code: 'custom',
+                path: ['prefixLength'],
+                message: 'IPv4 前缀必须在 1 - 30 之间',
+            });
+            return;
+        }
+        const mask = (0xffffffff << (32 - prefix)) >>> 0;
         const hostMask = ~mask >>> 0;
         const host = address & hostMask;
         if (host === 0 || host === hostMask) {
@@ -71,6 +124,47 @@ export const networkSchema = z
             }
         }
     });
+
+export const networkSchema = z
+    .object({
+        interfaces: z.array(networkInterfaceSchema).min(1).max(8),
+        rollbackTimeoutSec: z.number().int().min(30).max(300),
+    })
+    .superRefine((value, context) => {
+        const names = new Set<string>();
+        const devices = new Set<string>();
+        value.interfaces.forEach((item, index) => {
+            if (names.has(item.name)) {
+                context.addIssue({
+                    code: 'custom',
+                    path: ['interfaces', index, 'name'],
+                    message: '同一请求不能重复配置逻辑接口',
+                });
+            }
+            names.add(item.name);
+            if (item.operation === 'delete') return;
+            const selected = item.bridge
+                ? (item.bridgePorts ?? [])
+                : item.device
+                  ? [item.device]
+                  : [];
+            selected.forEach((device) => {
+                if (devices.has(device)) {
+                    context.addIssue({
+                        code: 'custom',
+                        path: ['interfaces', index, item.bridge ? 'bridgePorts' : 'device'],
+                        message: '同一网卡不能重复分配',
+                    });
+                }
+                devices.add(device);
+            });
+        });
+    });
+
+export const networkEditorSchema = z.intersection(
+    networkInterfaceSchema,
+    z.object({ rollbackTimeoutSec: z.number().int().min(30).max(300) })
+);
 
 export const platformSchema = z.object({
     platformId: z.uuid('平台 ID 必须是 UUID').optional(),

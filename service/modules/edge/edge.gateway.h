@@ -55,16 +55,15 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
             co_await socket.close(1002, "binary hello required");
             co_return;
         }
-        iot_edge_v1_Envelope input = iot_edge_v1_Envelope_init_zero;
-        if (!protocol::decode(first->payload(), input) || input.protocol_version != 1 ||
-            input.which_payload != iot_edge_v1_Envelope_hello_tag ||
-            input.platform_id.size != 16 || !platformMatches(input.platform_id.bytes) ||
-            !protocol::validImei(input.payload.hello.imei)) {
+        pb::Envelope input;
+        if (!protocol::decode(first->payload(), input) || input.protocol_version() != 1 ||
+            input.payload_case() != pb::Envelope::kHello || input.platform_id().size() != 16 ||
+            !platformMatches(input.platform_id()) || !protocol::validImei(input.hello().imei())) {
             co_await socket.close(1002, "invalid hello");
             co_return;
         }
         co_await publishIngress(c, first->payload());
-        const auto authKey = protocol::authKey(input.payload.hello.imei);
+        const auto authKey = protocol::authKey(input.hello().imei());
         const auto auth = co_await c.redis().get(authKey);
         const auto separator = auth ? auth->find('|') : std::string_view::npos;
         std::string nodeId =
@@ -83,19 +82,19 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
                 co_return;
             }
 
-            session.inboundSequence = input.sequence;
+            session.inboundSequence = input.sequence();
             while (auto message = co_await socket.read()) {
                 if (!message->binary() || !protocol::decode(message->payload(), input) ||
-                    input.protocol_version != 1 ||
-                    input.which_payload != iot_edge_v1_Envelope_heartbeat_tag ||
-                    input.node_id.size != 0 || input.session_epoch != 0 ||
-                    input.sequence <= session.inboundSequence ||
-                    input.platform_id.size != 16 ||
-                    !platformMatches(input.platform_id.bytes)) {
+                    input.protocol_version() != 1 ||
+                    input.payload_case() != pb::Envelope::kHeartbeat ||
+                    !input.node_id().empty() || input.session_epoch() != 0 ||
+                    input.sequence() <= session.inboundSequence ||
+                    input.platform_id().size() != 16 ||
+                    !platformMatches(input.platform_id())) {
                     co_await socket.close(1002, "invalid pending heartbeat");
                     co_return;
                 }
-                session.inboundSequence = input.sequence;
+                session.inboundSequence = input.sequence();
 
                 const auto refreshed = co_await c.redis().get(authKey);
                 const auto refreshedSeparator =
@@ -116,8 +115,7 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
                 }
 
                 auto heartbeat = makeEnvelope(session);
-                heartbeat.which_payload = iot_edge_v1_Envelope_heartbeat_ack_tag;
-                heartbeat.payload.heartbeat_ack.platform_time_ms = protocol::nowMs();
+                heartbeat.mutable_heartbeat_ack()->set_platform_time_ms(protocol::nowMs());
                 co_await send(socket, heartbeat);
             }
             if (status != "approved")
@@ -126,15 +124,14 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
         }
 
         auto ack = makeEnvelope(session);
-        ack.which_payload = iot_edge_v1_Envelope_hello_ack_tag;
-        protocol::setBytes(&ack.payload.hello_ack.assigned_node_id,
-                           sizeof(ack.payload.hello_ack.assigned_node_id.bytes),
-                           session.nodeBytes.data(), session.nodeBytes.size());
-        ack.payload.hello_ack.session_epoch = session.epoch;
-        ack.payload.hello_ack.negotiated_protocol_version = 1;
-        ack.payload.hello_ack.heartbeat_interval_sec = 5;
-        ack.payload.hello_ack.max_message_size = iot_edge_v1_Envelope_size;
-        ack.payload.hello_ack.platform_time_ms = protocol::nowMs();
+        auto* helloAck = ack.mutable_hello_ack();
+        helloAck->set_assigned_node_id(
+            protocol::bytes(session.nodeBytes.data(), session.nodeBytes.size()));
+        helloAck->set_session_epoch(session.epoch);
+        helloAck->set_negotiated_protocol_version(1);
+        helloAck->set_heartbeat_interval_sec(5);
+        helloAck->set_max_message_size(static_cast<std::uint32_t>(protocol::kMaxMessageSize));
+        helloAck->set_platform_time_ms(protocol::nowMs());
         co_await send(socket, ack);
         co_await markOnline(c, session);
         co_await drain(c, socket, session);
@@ -145,7 +142,7 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
                 co_await socket.close(1002, "invalid envelope");
                 co_return;
             }
-            session.inboundSequence = input.sequence;
+            session.inboundSequence = input.sequence();
             co_await publishIngress(c, message->payload());
             co_await handle(c, socket, session, input);
             co_await markOnline(c, session);
@@ -173,16 +170,14 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
         const auto terminalBytes = protocol::randomUuidV7Bytes();
         const auto terminalId = protocol::uuidText(terminalBytes.data());
         auto open = protocol::outbound(nodeId);
-        open.which_payload = iot_edge_v1_Envelope_terminal_open_tag;
-        protocol::setBytes(&open.payload.terminal_open.terminal_id,
-                           sizeof(open.payload.terminal_open.terminal_id.bytes),
-                           terminalBytes.data(), terminalBytes.size());
+        auto* terminalOpen = open.mutable_terminal_open();
+        terminalOpen->set_terminal_id(
+            protocol::bytes(terminalBytes.data(), terminalBytes.size()));
         std::uint8_t ticketBytes[16]{};
         protocol::uuidBytes(ticket, ticketBytes);
-        protocol::setBytes(&open.payload.terminal_open.ticket,
-                           sizeof(open.payload.terminal_open.ticket.bytes), ticketBytes, 16);
-        open.payload.terminal_open.columns = 120;
-        open.payload.terminal_open.rows = 30;
+        terminalOpen->set_ticket(protocol::bytes(ticketBytes, 16));
+        terminalOpen->set_columns(120);
+        terminalOpen->set_rows(30);
         co_await queue(c, nodeId, open);
         co_await socket.text("ready");
 
@@ -195,26 +190,21 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
                     co_return;
                 }
                 auto resize = protocol::outbound(nodeId);
-                resize.which_payload = iot_edge_v1_Envelope_terminal_resize_tag;
-                protocol::setBytes(&resize.payload.terminal_resize.terminal_id,
-                                   sizeof(resize.payload.terminal_resize.terminal_id.bytes),
-                                   terminalBytes.data(), terminalBytes.size());
-                resize.payload.terminal_resize.columns = columns;
-                resize.payload.terminal_resize.rows = rows;
+                auto* terminalResize = resize.mutable_terminal_resize();
+                terminalResize->set_terminal_id(
+                    protocol::bytes(terminalBytes.data(), terminalBytes.size()));
+                terminalResize->set_columns(columns);
+                terminalResize->set_rows(rows);
                 co_await queue(c, nodeId, resize);
             } else if (!message->payload().empty()) {
                 std::string_view remaining = message->payload();
                 while (!remaining.empty()) {
                     const auto size = std::min<std::size_t>(remaining.size(), 4096);
                     auto data = protocol::outbound(nodeId);
-                    data.which_payload = iot_edge_v1_Envelope_terminal_data_tag;
-                    protocol::setBytes(&data.payload.terminal_data.terminal_id,
-                                       sizeof(data.payload.terminal_data.terminal_id.bytes),
-                                       terminalBytes.data(), terminalBytes.size());
-                    protocol::setBytes(&data.payload.terminal_data.data,
-                                       sizeof(data.payload.terminal_data.data.bytes),
-                                       reinterpret_cast<const std::uint8_t*>(remaining.data()),
-                                       size);
+                    auto* terminalData = data.mutable_terminal_data();
+                    terminalData->set_terminal_id(
+                        protocol::bytes(terminalBytes.data(), terminalBytes.size()));
+                    terminalData->set_data(remaining.data(), size);
                     co_await queue(c, nodeId, data);
                     remaining.remove_prefix(size);
                 }
@@ -223,11 +213,10 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
                 co_return;
         }
         auto close = protocol::outbound(nodeId);
-        close.which_payload = iot_edge_v1_Envelope_terminal_close_tag;
-        protocol::setBytes(&close.payload.terminal_close.terminal_id,
-                           sizeof(close.payload.terminal_close.terminal_id.bytes),
-                           terminalBytes.data(), terminalBytes.size());
-        copy(close.payload.terminal_close.reason, "browser closed");
+        auto* terminalClose = close.mutable_terminal_close();
+        terminalClose->set_terminal_id(
+            protocol::bytes(terminalBytes.data(), terminalBytes.size()));
+        terminalClose->set_reason("browser closed");
         co_await queue(c, nodeId, close);
     }
 
@@ -264,14 +253,11 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
     static ruvia::Task<void> sendEnrollment(ruvia::WebSocket& socket, Session& session,
                                             std::string_view status) {
         auto reply = makeEnvelope(session);
-        reply.which_payload = status == "rejected"
-                                  ? iot_edge_v1_Envelope_enrollment_rejected_tag
-                                  : iot_edge_v1_Envelope_enrollment_pending_tag;
-        auto& enrollment = status == "rejected" ? reply.payload.enrollment_rejected
-                                                   : reply.payload.enrollment_pending;
-        copy(enrollment.code, status);
-        copy(enrollment.message, status == "rejected" ? "registration rejected"
-                                                        : "registration pending approval");
+        auto* enrollment = status == "rejected" ? reply.mutable_enrollment_rejected()
+                                                 : reply.mutable_enrollment_pending();
+        enrollment->set_code(status);
+        enrollment->set_message(status == "rejected" ? "registration rejected"
+                                                       : "registration pending approval");
         co_await send(socket, reply);
     }
 
@@ -281,26 +267,25 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
         return value == 0 ? 1 : value;
     }
 
-    static bool platformMatches(const std::uint8_t* value) {
+    static bool platformMatches(std::string_view value) {
         std::uint8_t expected[16]{};
         return protocol::uuidBytes(protocol::kBootstrapPlatformId, expected) &&
-               std::memcmp(value, expected, sizeof(expected)) == 0;
+               value == protocol::bytes(expected, sizeof(expected));
     }
 
-    static bool validInbound(const iot_edge_v1_Envelope& input, const Session& session) {
-        return input.protocol_version == 1 && input.node_id.size == 16 &&
-               input.platform_id.size == 16 && input.session_epoch == session.epoch &&
-               input.sequence > session.inboundSequence &&
-               std::memcmp(input.node_id.bytes, session.nodeBytes.data(), 16) == 0 &&
-               std::memcmp(input.platform_id.bytes, session.platformBytes.data(), 16) == 0;
+    static bool validInbound(const pb::Envelope& input, const Session& session) {
+        return input.protocol_version() == 1 && input.node_id().size() == 16 &&
+               input.platform_id().size() == 16 && input.session_epoch() == session.epoch &&
+               input.sequence() > session.inboundSequence &&
+               input.node_id() == protocol::bytes(session.nodeBytes.data(), 16) &&
+               input.platform_id() == protocol::bytes(session.platformBytes.data(), 16);
     }
 
-    static iot_edge_v1_Envelope makeEnvelope(Session& session) {
+    static pb::Envelope makeEnvelope(Session& session) {
         return protocol::outbound(session.nodeId, session.epoch, ++session.outboundSequence);
     }
 
-    static ruvia::Task<void> send(ruvia::WebSocket& socket,
-                                  const iot_edge_v1_Envelope& envelope) {
+    static ruvia::Task<void> send(ruvia::WebSocket& socket, const pb::Envelope& envelope) {
         const auto wire = protocol::encode(envelope);
         if (wire.empty())
             throw std::runtime_error("edge envelope encode failed");
@@ -340,15 +325,13 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
             auto item = co_await c.redis().lpop(key);
             if (!item)
                 break;
-            iot_edge_v1_Envelope envelope = iot_edge_v1_Envelope_init_zero;
+            pb::Envelope envelope;
             if (!protocol::decode(*item, envelope))
                 continue;
-            envelope.session_epoch = session.epoch;
-            envelope.sequence = ++session.outboundSequence;
-            protocol::setBytes(&envelope.platform_id, sizeof(envelope.platform_id.bytes),
-                               session.platformBytes.data(), 16);
-            protocol::setBytes(&envelope.node_id, sizeof(envelope.node_id.bytes),
-                               session.nodeBytes.data(), 16);
+            envelope.set_session_epoch(session.epoch);
+            envelope.set_sequence(++session.outboundSequence);
+            envelope.set_platform_id(protocol::bytes(session.platformBytes.data(), 16));
+            envelope.set_node_id(protocol::bytes(session.nodeBytes.data(), 16));
             co_await send(socket, envelope);
             ++sent;
         }
@@ -356,7 +339,7 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
     }
 
     static ruvia::Task<void> queue(ruvia::Context& c, std::string_view nodeId,
-                                   const iot_edge_v1_Envelope& envelope) {
+                                   const pb::Envelope& envelope) {
         const auto wire = protocol::encode(envelope);
         if (wire.empty())
             throw std::runtime_error("edge terminal envelope encode failed");
@@ -387,113 +370,93 @@ class EdgeGatewayController final : public ruvia::Controller<EdgeGatewayControll
     }
 
     static ruvia::Task<void> handle(ruvia::Context& c, ruvia::WebSocket& socket,
-                                    Session& session, const iot_edge_v1_Envelope& input) {
-        switch (input.which_payload) {
-        case iot_edge_v1_Envelope_heartbeat_tag: {
+                                    Session& session, const pb::Envelope& input) {
+        switch (input.payload_case()) {
+        case pb::Envelope::kHeartbeat: {
             constexpr std::uint64_t retryIntervalMs = 30000;
             const auto now = protocol::nowMs();
             if (session.configSentAtMs == 0 || now - session.configSentAtMs >= retryIntervalMs) {
                 (void)co_await edgeConfigService().requeueIfStale(
-                    c, session.nodeId, input.payload.heartbeat.active_config_version);
+                    c, session.nodeId, input.heartbeat().active_config_version());
             }
             auto reply = makeEnvelope(session);
-            reply.which_payload = iot_edge_v1_Envelope_heartbeat_ack_tag;
-            reply.payload.heartbeat_ack.platform_time_ms = protocol::nowMs();
-            reply.payload.heartbeat_ack.request_capability_report = !session.capabilitySeen;
+            auto* heartbeatAck = reply.mutable_heartbeat_ack();
+            heartbeatAck->set_platform_time_ms(protocol::nowMs());
+            heartbeatAck->set_request_capability_report(!session.capabilitySeen);
             co_await send(socket, reply);
             break;
         }
-        case iot_edge_v1_Envelope_capability_report_tag:
+        case pb::Envelope::kCapabilityReport:
             session.capabilitySeen = true;
             break;
-        case iot_edge_v1_Envelope_telemetry_batch_tag: {
+        case pb::Envelope::kTelemetryBatch: {
             auto reply = makeEnvelope(session);
-            reply.which_payload = iot_edge_v1_Envelope_telemetry_ack_tag;
-            const auto& batch = input.payload.telemetry_batch;
-            for (pb_size_t index = 0;
-                 index < batch.records_count &&
-                 reply.payload.telemetry_ack.accepted_record_ids_count < 1;
-                 ++index) {
-                const auto& record = batch.records[index];
-                if (record.record_id.size != 16)
+            auto* telemetryAck = reply.mutable_telemetry_ack();
+            for (const auto& record : input.telemetry_batch().records()) {
+                if (record.record_id().size() != 16)
                     continue;
-                auto& accepted = reply.payload.telemetry_ack.accepted_record_ids
-                    [reply.payload.telemetry_ack.accepted_record_ids_count++];
-                protocol::setBytes(&accepted, sizeof(accepted.bytes), record.record_id.bytes, 16);
+                telemetryAck->add_accepted_record_ids(record.record_id());
+                break;
             }
             co_await send(socket, reply);
             break;
         }
-        case iot_edge_v1_Envelope_raw_packet_tag: {
-            const auto& packet = input.payload.raw_packet;
-            if (packet.packet_id.size != 16)
+        case pb::Envelope::kRawPacket: {
+            const auto& packet = input.raw_packet();
+            if (packet.packet_id().size() != 16)
                 break;
             auto reply = makeEnvelope(session);
-            reply.which_payload = iot_edge_v1_Envelope_raw_packet_ack_tag;
-            protocol::setBytes(&reply.payload.raw_packet_ack.packet_id,
-                               sizeof(reply.payload.raw_packet_ack.packet_id.bytes),
-                               packet.packet_id.bytes, 16);
+            reply.mutable_raw_packet_ack()->set_packet_id(packet.packet_id());
             co_await send(socket, reply);
             break;
         }
-        case iot_edge_v1_Envelope_command_result_tag: {
-            const auto& result = input.payload.command_result;
-            if (result.command_id.size != 16)
+        case pb::Envelope::kCommandResult: {
+            const auto& result = input.command_result();
+            if (result.command_id().size() != 16)
                 break;
             auto reply = makeEnvelope(session);
-            reply.which_payload = iot_edge_v1_Envelope_command_result_ack_tag;
-            protocol::setBytes(&reply.payload.command_result_ack.command_id,
-                               sizeof(reply.payload.command_result_ack.command_id.bytes),
-                               result.command_id.bytes, 16);
+            reply.mutable_command_result_ack()->set_command_id(result.command_id());
             co_await send(socket, reply);
             break;
         }
-        case iot_edge_v1_Envelope_ping_tag: {
+        case pb::Envelope::kPing: {
             auto reply = makeEnvelope(session);
-            reply.which_payload = iot_edge_v1_Envelope_pong_tag;
-            reply.payload.pong.nonce = input.payload.ping.nonce;
+            reply.mutable_pong()->set_nonce(input.ping().nonce());
             co_await send(socket, reply);
             break;
         }
-        case iot_edge_v1_Envelope_terminal_data_tag:
-            co_await saveTerminalData(c, input.payload.terminal_data);
+        case pb::Envelope::kTerminalData:
+            co_await saveTerminalData(c, input.terminal_data());
             break;
-        case iot_edge_v1_Envelope_terminal_close_tag:
-            co_await saveTerminalClose(c, input.payload.terminal_close);
+        case pb::Envelope::kTerminalClose:
+            co_await saveTerminalClose(c, input.terminal_close());
             break;
         default:
             break;
         }
     }
 
-    static ruvia::Task<void> saveTerminalData(ruvia::Context& c,
-                                              const iot_edge_v1_TerminalData& data) {
-        if (data.terminal_id.size != 16 || data.data.size == 0)
+    static ruvia::Task<void> saveTerminalData(ruvia::Context& c, const pb::TerminalData& data) {
+        if (data.terminal_id().size() != 16 || data.data().empty())
             co_return;
-        const auto id = protocol::uuidText(data.terminal_id.bytes);
+        const auto id = protocol::uuidText(data.terminal_id());
         const auto key = "iot:edge:terminal:out:" + id;
         std::string value(1, '\0');
-        value.append(reinterpret_cast<const char*>(data.data.bytes), data.data.size);
+        value.append(data.data());
         (void)co_await c.redis().rpush(key, value);
         (void)co_await c.redis().expire(key, std::chrono::seconds(120));
     }
 
     static ruvia::Task<void> saveTerminalClose(ruvia::Context& c,
-                                               const iot_edge_v1_TerminalClose& close) {
-        if (close.terminal_id.size != 16)
+                                               const pb::TerminalClose& close) {
+        if (close.terminal_id().size() != 16)
             co_return;
-        const auto id = protocol::uuidText(close.terminal_id.bytes);
+        const auto id = protocol::uuidText(close.terminal_id());
         const auto key = "iot:edge:terminal:out:" + id;
         std::string value(1, '\1');
-        value += close.reason;
+        value += close.reason();
         (void)co_await c.redis().rpush(key, value);
         (void)co_await c.redis().expire(key, std::chrono::seconds(120));
-    }
-
-    template <std::size_t Size> static void copy(char (&output)[Size], std::string_view input) {
-        const auto size = std::min(input.size(), Size - 1);
-        std::memcpy(output, input.data(), size);
-        output[size] = '\0';
     }
 };
 

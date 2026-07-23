@@ -6,12 +6,12 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
-#include <cstring>
 #include <iostream>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <stdexcept>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -80,6 +80,7 @@ class EdgeService {
         EdgeNodeDto node(c);
         fillNode(node, rows.rows().front());
         node.interfaces(co_await interfaces(c, id));
+        node.networks(co_await networks(c, id));
         node.serialPorts(co_await serialPorts(c, id));
         node.platforms(co_await platforms(c, id));
         node.tasks(co_await tasks(c, id));
@@ -128,31 +129,62 @@ RETURNING id)sql",
 
     ruvia::Task<void> queueNetwork(ruvia::Context& c, std::string_view nodeId,
                                    const NetworkBody& body) {
-        co_await requireNodeCapability(c, nodeId, "supports_network_config", "网络配置");
-        const std::string ip(body.ip()->view());
-        const std::string netmask(body.netmask()->view());
-        const std::string gateway = body.gateway() ? std::string(body.gateway()->view()) : "";
-        const auto prefix = validateNetwork(ip, netmask, gateway);
+        co_await requireNetworkManagement(c, nodeId);
+        const auto& configs = *body.interfaces();
+        const auto available = co_await manageableInterfaces(c, nodeId);
+        std::unordered_set<std::string> names;
+        std::unordered_set<std::string> devices;
         const auto taskId = service::common::nextUuidV7();
         auto envelope = protocol::outbound(nodeId);
-        envelope.which_payload = iot_edge_v1_Envelope_network_config_request_tag;
-        auto& request = envelope.payload.network_config_request;
+        auto* request = envelope.mutable_network_config_request();
         std::uint8_t requestId[16]{};
         protocol::uuidBytes(taskId, requestId);
-        protocol::setBytes(&request.request_id, sizeof(request.request_id.bytes), requestId, 16);
-        request.interfaces_count = 1;
-        auto& item = request.interfaces[0];
-        copy(item.name, "br-lan");
-        item.mode = iot_edge_v1_NetworkAddressMode_NETWORK_ADDRESS_STATIC;
-        copy(item.ip, ip);
-        item.prefix_length = prefix;
-        copy(item.gateway, gateway);
-        item.bridge = true;
-        request.rollback_timeout_sec = static_cast<std::uint32_t>(*body.rollbackTimeoutSec());
-        const std::string json = "{\"interface\":\"br-lan\",\"ip\":\"" + jsonEscape(ip) +
-                                 "\",\"netmask\":\"" + jsonEscape(netmask) +
-                                 "\",\"gateway\":\"" + jsonEscape(gateway) + "\"}";
-        co_await createTaskAndQueue(c, nodeId, taskId, "network", json, envelope);
+        request->set_request_id(protocol::bytes(requestId, 16));
+        for (const auto& config : configs) {
+            const std::string operation(config.operation()->view());
+            const std::string name(config.name()->view());
+            if (!names.emplace(name).second)
+                service::common::fail(17003, "同一请求不能重复配置逻辑接口 " + name, 400);
+            if (name == "loopback")
+                service::common::fail(17003, "loopback 接口不允许远程修改", 400);
+
+            auto* item = request->add_interfaces();
+            item->set_logical_name(name);
+            if (operation == "delete") {
+                item->set_operation(pb::NETWORK_CONFIG_DELETE);
+            } else {
+                item->set_operation(pb::NETWORK_CONFIG_UPSERT);
+                const std::string mode =
+                    config.mode() ? std::string(config.mode()->view()) : std::string{};
+                const std::string device =
+                    config.device() ? std::string(config.device()->view()) : std::string{};
+                const std::string ip =
+                    config.ip() ? std::string(config.ip()->view()) : std::string{};
+                const std::string gateway =
+                    config.gateway() ? std::string(config.gateway()->view()) : std::string{};
+                const bool bridge = config.bridge() && *config.bridge();
+                const auto prefix =
+                    config.prefixLength() ? static_cast<std::uint32_t>(*config.prefixLength()) : 0U;
+                const auto& ports = config.bridgePorts();
+                validateNetworkConfig(name, mode, device, bridge, ports, ip, prefix, gateway,
+                                      available, devices);
+                item->set_mode(mode == "static" ? pb::NETWORK_ADDRESS_STATIC
+                                                 : pb::NETWORK_ADDRESS_DHCP);
+                item->set_bridge(bridge);
+                item->set_device(device);
+                item->set_name(bridge ? "br-" + name : device);
+                if (ports) {
+                    for (const auto& port : *ports)
+                        item->add_bridge_ports(port.view());
+                }
+                item->set_ip(ip);
+                item->set_prefix_length(prefix);
+                item->set_gateway(gateway);
+            }
+        }
+        request->set_rollback_timeout_sec(
+            static_cast<std::uint32_t>(*body.rollbackTimeoutSec()));
+        co_await createNetworkTaskAndQueue(c, nodeId, taskId, configs.size(), envelope);
     }
 
     ruvia::Task<std::string> queuePlatform(ruvia::Context& c, std::string_view nodeId,
@@ -168,25 +200,23 @@ RETURNING id)sql",
         validatePlatformUrl(baseUrl);
         const auto taskId = service::common::nextUuidV7();
         auto envelope = protocol::outbound(nodeId);
-        envelope.which_payload = iot_edge_v1_Envelope_platform_config_request_tag;
-        auto& request = envelope.payload.platform_config_request;
+        auto* request = envelope.mutable_platform_config_request();
         std::uint8_t bytes[16]{};
         protocol::uuidBytes(taskId, bytes);
-        protocol::setBytes(&request.request_id, sizeof(request.request_id.bytes), bytes, 16);
+        request->set_request_id(protocol::bytes(bytes, 16));
         if (!protocol::uuidBytes(platformId, bytes))
             service::common::fail(17008, "平台 ID 无效", 400);
-        protocol::setBytes(&request.target_platform_id,
-                           sizeof(request.target_platform_id.bytes), bytes, 16);
-        request.operation = iot_edge_v1_PlatformConfigOperation_PLATFORM_CONFIG_UPSERT;
-        copy(request.name, name);
-        copy(request.url, baseUrl);
+        request->set_target_platform_id(protocol::bytes(bytes, 16));
+        request->set_operation(pb::PLATFORM_CONFIG_UPSERT);
+        request->set_name(name);
+        request->set_url(baseUrl);
         if (body.enrollmentToken())
-            copy(request.enrollment_token, body.enrollmentToken()->view());
-        request.enabled = *body.enabled();
-        request.priority = static_cast<std::uint32_t>(*body.priority());
-        request.reconnect_interval_sec =
-            static_cast<std::uint32_t>(*body.reconnectIntervalSec());
-        request.outbox_max_bytes = static_cast<std::uint32_t>(*body.outboxMaxBytes());
+            request->set_enrollment_token(body.enrollmentToken()->view());
+        request->set_enabled(*body.enabled());
+        request->set_priority(static_cast<std::uint32_t>(*body.priority()));
+        request->set_reconnect_interval_sec(
+            static_cast<std::uint32_t>(*body.reconnectIntervalSec()));
+        request->set_outbox_max_bytes(static_cast<std::uint32_t>(*body.outboxMaxBytes()));
         const std::string json = "{\"platform_id\":\"" + platformId +
                                  "\",\"name\":\"" + jsonEscape(name) +
                                  "\",\"base_url\":\"" + jsonEscape(baseUrl) + "\"}";
@@ -216,15 +246,13 @@ SET name = EXCLUDED.name, base_url = EXCLUDED.base_url, enabled = EXCLUDED.enabl
             service::common::fail(17007, "固化平台不能被删除", 400);
         const auto taskId = service::common::nextUuidV7();
         auto envelope = protocol::outbound(nodeId);
-        envelope.which_payload = iot_edge_v1_Envelope_platform_config_request_tag;
-        auto& request = envelope.payload.platform_config_request;
+        auto* request = envelope.mutable_platform_config_request();
         std::uint8_t bytes[16]{};
         protocol::uuidBytes(taskId, bytes);
-        protocol::setBytes(&request.request_id, sizeof(request.request_id.bytes), bytes, 16);
+        request->set_request_id(protocol::bytes(bytes, 16));
         protocol::uuidBytes(platformId, bytes);
-        protocol::setBytes(&request.target_platform_id,
-                           sizeof(request.target_platform_id.bytes), bytes, 16);
-        request.operation = iot_edge_v1_PlatformConfigOperation_PLATFORM_CONFIG_DELETE;
+        request->set_target_platform_id(protocol::bytes(bytes, 16));
+        request->set_operation(pb::PLATFORM_CONFIG_DELETE);
         const auto principal = service::middleware::requireAuth(c);
         const std::string json = "{\"platform_id\":\"" + std::string(platformId) + "\"}";
         co_await insertTask(c, nodeId, taskId, "platform_delete", json, principal.userId);
@@ -248,21 +276,20 @@ FROM edge_firmware WHERE id = $1::uuid LIMIT 1)sql",
         const auto& row = rows.rows().front();
         const auto taskId = service::common::nextUuidV7();
         auto envelope = protocol::outbound(nodeId);
-        envelope.which_payload = iot_edge_v1_Envelope_firmware_update_request_tag;
-        auto& request = envelope.payload.firmware_update_request;
+        auto* request = envelope.mutable_firmware_update_request();
         std::uint8_t bytes[32]{};
         protocol::uuidBytes(taskId, bytes);
-        protocol::setBytes(&request.request_id, sizeof(request.request_id.bytes), bytes, 16);
+        request->set_request_id(protocol::bytes(bytes, 16));
         const auto download = std::string(protocol::kPublicPlatformUrl) +
                               "/edge/v1/firmware/" + firmwareIdText + "/download?token=" +
                               std::string(row[3].text());
-        copy(request.download_url, download);
+        request->set_download_url(download);
         if (!hex(row[1].text(), bytes, 32))
             service::common::fail(17010, "固件摘要无效", 500);
-        protocol::setBytes(&request.sha256, sizeof(request.sha256.bytes), bytes, 32);
-        request.size_bytes = static_cast<std::uint64_t>(integer(row[2].text()));
-        copy(request.version, row[0].text());
-        request.keep_settings = keepSettings;
+        request->set_sha256(protocol::bytes(bytes, 32));
+        request->set_size_bytes(static_cast<std::uint64_t>(integer(row[2].text())));
+        request->set_version(row[0].text());
+        request->set_keep_settings(keepSettings);
         const std::string json = "{\"firmware_id\":\"" + firmwareIdText +
                                  "\",\"version\":\"" + jsonEscape(row[0].text()) + "\"}";
         co_await createTaskAndQueue(c, nodeId, taskId, "firmware", json, envelope);
@@ -345,17 +372,11 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
         return R"sql(SELECT id::text, imei, COALESCE(name, ''), model, software_version,
        hostname, architecture, openwrt_release, enrollment_status,
        (last_seen_at IS NOT NULL AND last_seen_at > NOW() - INTERVAL '90 seconds'),
-       supports_network_config, supports_firmware_update, supports_platform_config,
-       supports_device_config, ttyd_available, active_config_version, desired_config_version,
-       config_status, config_message, outbox_records, outbox_bytes,
+       supports_network_config, network_config_version, supports_firmware_update,
+       supports_platform_config, supports_device_config, ttyd_available, active_config_version,
+       desired_config_version, config_status, config_message, outbox_records, outbox_bytes,
        COALESCE(last_seen_at::text, ''), created_at::text
 FROM edge_node)sql";
-    }
-
-    template <std::size_t Size> static void copy(char (&output)[Size], std::string_view input) {
-        const auto size = std::min(input.size(), Size - 1);
-        std::memcpy(output, input.data(), size);
-        output[size] = '\0';
     }
 
     static std::int64_t integer(std::string_view value) {
@@ -376,18 +397,19 @@ FROM edge_node)sql";
             .enrollmentStatus(row[8].text())
             .online(row[9].text() == "t")
             .supportsNetworkConfig(row[10].text() == "t")
-            .supportsFirmwareUpdate(row[11].text() == "t")
-            .supportsPlatformConfig(row[12].text() == "t")
-            .supportsDeviceConfig(row[13].text() == "t")
-            .ttydAvailable(row[14].text() == "t")
-            .activeConfigVersion(integer(row[15].text()))
-            .desiredConfigVersion(integer(row[16].text()))
-            .configStatus(row[17].text())
-            .configMessage(row[18].text())
-            .outboxRecords(integer(row[19].text()))
-            .outboxBytes(integer(row[20].text()))
-            .lastSeenAt(row[21].text())
-            .createdAt(row[22].text());
+            .networkConfigVersion(integer(row[11].text()))
+            .supportsFirmwareUpdate(row[12].text() == "t")
+            .supportsPlatformConfig(row[13].text() == "t")
+            .supportsDeviceConfig(row[14].text() == "t")
+            .ttydAvailable(row[15].text() == "t")
+            .activeConfigVersion(integer(row[16].text()))
+            .desiredConfigVersion(integer(row[17].text()))
+            .configStatus(row[18].text())
+            .configMessage(row[19].text())
+            .outboxRecords(integer(row[20].text()))
+            .outboxBytes(integer(row[21].text()))
+            .lastSeenAt(row[22].text())
+            .createdAt(row[23].text());
     }
 
     static std::vector<std::string> split(std::string_view value) {
@@ -421,6 +443,35 @@ FROM edge_node_interface WHERE node_id = $1::uuid ORDER BY name)sql",
             item.name(row[0].text())
                 .displayName(row[1].text())
                 .mac(row[2].text())
+                .up(row[3].text() == "t")
+                .bridge(row[4].text() == "t")
+                .ipv4(row[5].text())
+                .prefixLength(integer(row[6].text()))
+                .gateway(row[7].text())
+                .bridgePorts(std::move(ports));
+        }
+        co_return result;
+    }
+
+    static ruvia::Task<ruvia::List<NetworkDto>> networks(ruvia::Context& c,
+                                                         std::string_view id) {
+        const auto rows = co_await c.db().query(R"sql(
+SELECT name, address_mode, device, is_up, is_bridge, COALESCE(ipv4, ''),
+       COALESCE(prefix_length, 0), COALESCE(gateway, ''),
+       COALESCE((SELECT string_agg(value, ',' ORDER BY value)
+                 FROM jsonb_array_elements_text(bridge_ports) AS values(value)), '')
+FROM edge_node_network WHERE node_id = $1::uuid ORDER BY name)sql",
+                                                service::common::dbParams(id));
+        ruvia::List<NetworkDto> result(c.resource());
+        for (const auto& row : rows.rows()) {
+            auto& item = result.emplace(c);
+            ruvia::List<ruvia::String> ports(c.resource());
+            for (const auto& port : split(row[8].text()))
+                if (!port.empty())
+                    ports.emplace(port, c.resource());
+            item.name(row[0].text())
+                .mode(row[1].text())
+                .device(row[2].text())
                 .up(row[3].text() == "t")
                 .bridge(row[4].text() == "t")
                 .ipv4(row[5].text())
@@ -523,34 +574,95 @@ FROM edge_task WHERE node_id = $1::uuid ORDER BY created_at DESC LIMIT 50)sql",
         return false;
     }
 
-    static std::uint32_t validateNetwork(std::string_view ipText, std::string_view maskText,
-                                         std::string_view gatewayText) {
-        std::uint32_t address{}, mask{};
-        if (!ipv4(ipText, address) || !ipv4(maskText, mask))
-            service::common::fail(17003, "br-lan IP 或掩码格式无效", 400);
-        bool zeroSeen = false;
-        std::uint32_t prefix = 0;
-        for (int bit = 31; bit >= 0; --bit) {
-            const bool one = (mask & (1U << static_cast<unsigned>(bit))) != 0;
-            if (zeroSeen && one)
-                service::common::fail(17003, "br-lan 掩码必须连续", 400);
-            if (one)
-                ++prefix;
-            else
-                zeroSeen = true;
-        }
-        if (prefix == 0 || prefix > 30)
-            service::common::fail(17003, "br-lan 掩码必须为 /1 到 /30", 400);
+    static void validateStaticNetwork(std::string_view ipText, std::uint32_t prefix,
+                                      std::string_view gatewayText) {
+        std::uint32_t address{};
+        if (!ipv4(ipText, address) || prefix == 0 || prefix > 30)
+            service::common::fail(17003, "静态 IPv4 地址或前缀长度无效", 400);
+        const auto mask = 0xffffffffU << (32U - prefix);
         const auto host = address & ~mask;
         if (host == 0 || host == ~mask)
-            service::common::fail(17003, "br-lan IP 不能是网络地址或广播地址", 400);
+            service::common::fail(17003, "静态 IPv4 不能是网络地址或广播地址", 400);
         if (!gatewayText.empty()) {
             std::uint32_t gateway{};
             if (!ipv4(gatewayText, gateway) || (gateway & mask) != (address & mask) ||
                 gateway == address || (gateway & ~mask) == 0 || (gateway & ~mask) == ~mask)
                 service::common::fail(17003, "网关必须是同网段内不同的合法主机地址", 400);
         }
-        return prefix;
+    }
+
+    static ruvia::Task<std::unordered_set<std::string>>
+    manageableInterfaces(ruvia::Context& c, std::string_view nodeId) {
+        const auto rows = co_await c.db().query(
+            "SELECT name FROM edge_node_interface "
+            "WHERE node_id = $1::uuid AND name <> 'lo' AND is_bridge = FALSE",
+            service::common::dbParams(nodeId));
+        std::unordered_set<std::string> result;
+        for (const auto& row : rows.rows())
+            result.emplace(row[0].text());
+        co_return result;
+    }
+
+    template <typename Ports>
+    static void validateNetworkConfig(std::string_view name, std::string_view mode,
+                                      std::string_view device, bool bridge, const Ports& ports,
+                                      std::string_view ip, std::uint32_t prefix,
+                                      std::string_view gateway,
+                                      const std::unordered_set<std::string>& available,
+                                      std::unordered_set<std::string>& selected) {
+        if (name.size() > 15 || (bridge && name.size() > 12))
+            service::common::fail(
+                17003, bridge ? "网桥逻辑名称不能超过 12 个字符"
+                              : "逻辑接口名称不能超过 15 个字符",
+                400);
+        if (mode != "dhcp" && mode != "static")
+            service::common::fail(17003, "地址模式只支持 DHCP 或静态 IPv4", 400);
+
+        const auto useDevice = [&](std::string_view value) {
+            const std::string text(value);
+            if (!available.contains(text))
+                service::common::fail(
+                    17003, "网卡 " + text + " 不可管理、未上报或属于受保护的 4G 上联", 400);
+            if (!selected.emplace(text).second)
+                service::common::fail(17003, "网卡 " + text + " 在同一请求中被重复占用", 400);
+        };
+
+        if (bridge) {
+            if (!device.empty())
+                service::common::fail(17003, "网桥不能同时指定单一设备", 400);
+            if (!ports || ports->empty())
+                service::common::fail(17003, "网桥至少需要一个成员网卡", 400);
+            for (const auto& port : *ports)
+                useDevice(port.view());
+        } else {
+            if (device.empty())
+                service::common::fail(17003, "非网桥接口必须选择一个网卡", 400);
+            if (ports && !ports->empty())
+                service::common::fail(17003, "非网桥接口不能配置网桥成员", 400);
+            useDevice(device);
+        }
+
+        if (mode == "static") {
+            validateStaticNetwork(ip, prefix, gateway);
+        } else if (!ip.empty() || prefix != 0 || !gateway.empty()) {
+            service::common::fail(17003, "DHCP 接口不能携带静态 IPv4 配置", 400);
+        }
+    }
+
+    static ruvia::Task<void> requireNetworkManagement(ruvia::Context& c,
+                                                       std::string_view nodeId) {
+        const auto rows = co_await c.db().query(R"sql(
+SELECT enrollment_status, supports_network_config, network_config_version
+FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
+                                                service::common::dbParams(nodeId));
+        if (rows.rows().empty())
+            service::common::fail(17001, "边缘节点不存在", 404);
+        if (rows.rows().front()[0].text() != "approved")
+            service::common::fail(17002, "边缘节点尚未批准注册", 409);
+        if (rows.rows().front()[1].text() != "t")
+            service::common::fail(17004, "网络配置不可用", 409);
+        if (integer(rows.rows().front()[2].text()) < 2)
+            service::common::fail(17004, "节点代理版本过旧，请先升级后再管理网络", 409);
     }
 
     static void validatePlatformUrl(std::string_view value) {
@@ -616,7 +728,7 @@ VALUES ($1::uuid, $2::uuid, $3, $4::jsonb, $5::uuid))sql",
     }
 
     static ruvia::Task<void> push(ruvia::Context& c, std::string_view nodeId,
-                                  const iot_edge_v1_Envelope& envelope) {
+                                  const pb::Envelope& envelope) {
         const auto wire = protocol::encode(envelope);
         if (wire.empty())
             service::common::fail(17005, "边缘命令编码失败", 500);
@@ -629,9 +741,25 @@ VALUES ($1::uuid, $2::uuid, $3, $4::jsonb, $5::uuid))sql",
                                                 std::string_view taskId,
                                                 std::string_view type,
                                                 std::string_view json,
-                                                const iot_edge_v1_Envelope& envelope) {
+                                                const pb::Envelope& envelope) {
         const auto principal = service::middleware::requireAuth(c);
         co_await insertTask(c, nodeId, taskId, type, json, principal.userId);
+        co_await push(c, nodeId, envelope);
+    }
+
+    static ruvia::Task<void>
+    createNetworkTaskAndQueue(ruvia::Context& c, std::string_view nodeId,
+                              std::string_view taskId, std::size_t interfaceCount,
+                              const pb::Envelope& envelope) {
+        const auto principal = service::middleware::requireAuth(c);
+        (void)co_await c.db().execute(R"sql(
+INSERT INTO edge_task(id, node_id, task_type, request, created_by)
+VALUES ($1::uuid, $2::uuid, 'network',
+        jsonb_build_object('interfaceCount', $3::bigint), $4::uuid))sql",
+                                      service::common::dbParams(
+                                          taskId, nodeId,
+                                          static_cast<std::int64_t>(interfaceCount),
+                                          principal.userId));
         co_await push(c, nodeId, envelope);
     }
 };

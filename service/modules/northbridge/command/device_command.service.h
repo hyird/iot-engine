@@ -4,7 +4,6 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
-#include <cstring>
 #include <exception>
 #include <iostream>
 #include <string>
@@ -247,28 +246,23 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
             co_await setPending(context, task, submittedBy);
 
             auto envelope = service::edge::protocol::outbound(nodeId);
-            envelope.which_payload = iot_edge_v1_Envelope_command_request_tag;
-            auto& command = envelope.payload.command_request;
-            if (!setUuid(command.command_id, task.messageId) ||
-                !setUuid(command.device_id, task.deviceId))
+            auto* command = envelope.mutable_command_request();
+            if (!setUuid(command->mutable_command_id(), task.messageId) ||
+                !setUuid(command->mutable_device_id(), task.deviceId))
                 service::common::fail(18010, "边缘命令标识无效", 500);
-            command.timeout_ms = 5000;
-            command.readback_count = 1;
-            command.fast_read_duration_sec = 10;
-            command.fast_read_interval_sec = 1;
-            command.values_count = static_cast<pb_size_t>(elements.size());
-            for (std::size_t index = 0; index < elements.size(); ++index) {
-                const auto& element = elements[index];
+            command->set_timeout_ms(5000);
+            command->set_readback_count(1);
+            command->set_fast_read_duration_sec(10);
+            command->set_fast_read_interval_sec(1);
+            for (const auto& element : elements) {
                 if (element.elementId.size() > 64 || element.value.size() > 128)
                     service::common::fail(
                         18010, "边缘命令要素 ID 最长 64 字符、值最长 128 字符", 400);
-                copy(command.values[index].element_id, element.elementId);
-                command.values[index].has_expected = true;
-                command.values[index].expected.kind =
-                    iot_edge_v1_ValueKind_VALUE_STRING;
-                command.values[index].expected.which_value =
-                    iot_edge_v1_ScalarValue_string_value_tag;
-                copy(command.values[index].expected.value.string_value, element.value);
+                auto* value = command->add_values();
+                value->set_element_id(element.elementId);
+                auto* expected = value->mutable_expected();
+                expected->set_kind(service::edge::pb::VALUE_STRING);
+                expected->set_string_value(element.value);
             }
             co_await pushEdgeCommand(context, nodeId, envelope);
 
@@ -359,22 +353,16 @@ WHERE d.id = $1::uuid AND d.edge_node_id IS NOT NULL AND p.protocol = 'SL651')sq
         return error == std::errc{} && end == value.data() + value.size() ? output : 0;
     }
 
-    template <typename Bytes> static bool setUuid(Bytes& output, std::string_view text) {
+    static bool setUuid(std::string* output, std::string_view text) {
         std::uint8_t value[16]{};
         if (!service::edge::protocol::uuidBytes(text, value))
             return false;
-        service::edge::protocol::setBytes(&output, sizeof(output.bytes), value, sizeof(value));
+        output->assign(service::edge::protocol::bytes(value, sizeof(value)));
         return true;
     }
 
-    template <std::size_t Size> static void copy(char (&output)[Size], std::string_view input) {
-        const auto length = std::min(input.size(), Size - 1);
-        std::memcpy(output, input.data(), length);
-        output[length] = '\0';
-    }
-
     static ruvia::Task<void> pushEdgeCommand(ruvia::Context& context, std::string_view nodeId,
-                                              const iot_edge_v1_Envelope& envelope) {
+                                              const service::edge::pb::Envelope& envelope) {
         const auto wire = service::edge::protocol::encode(envelope);
         if (wire.empty())
             service::common::fail(18010, "边缘命令编码失败", 500);

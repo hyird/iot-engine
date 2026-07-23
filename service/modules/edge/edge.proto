@@ -64,6 +64,12 @@ enum NetworkAddressMode {
   NETWORK_ADDRESS_NONE = 3;
 }
 
+enum NetworkConfigOperation {
+  NETWORK_CONFIG_UNSPECIFIED = 0;
+  NETWORK_CONFIG_UPSERT = 1;
+  NETWORK_CONFIG_DELETE = 2;
+}
+
 enum FirmwareUpdateState {
   FIRMWARE_UPDATE_UNSPECIFIED = 0;
   FIRMWARE_UPDATE_ACCEPTED = 1;
@@ -105,6 +111,7 @@ message Hello {
   int32 mobile_registration_status = 21;
   bool supports_platform_config = 22;
   bool supports_device_config = 23;
+  uint32 network_config_version = 24;
 }
 
 message HelloAck {
@@ -133,6 +140,18 @@ message InterfaceCapability {
   repeated string bridge_ports = 9 [(nanopb).max_count = 8, (nanopb).max_length = 32];
 }
 
+message NetworkCapability {
+  string name = 1 [(nanopb).max_length = 32];
+  NetworkAddressMode mode = 2;
+  string device = 3 [(nanopb).max_length = 32];
+  bool up = 4;
+  bool bridge = 5;
+  repeated string bridge_ports = 6 [(nanopb).max_count = 8, (nanopb).max_length = 32];
+  string ipv4 = 7 [(nanopb).max_length = 15];
+  uint32 prefix_length = 8;
+  string gateway = 9 [(nanopb).max_length = 15];
+}
+
 message SerialCapability {
   string path = 1 [(nanopb).max_length = 96];
   string display_name = 2 [(nanopb).max_length = 64];
@@ -141,10 +160,11 @@ message SerialCapability {
 }
 
 message CapabilityReport {
-  repeated InterfaceCapability interfaces = 1 [(nanopb).max_count = 8];
+  repeated InterfaceCapability interfaces = 1 [(nanopb).max_count = 16];
   repeated SerialCapability serial_ports = 2 [(nanopb).max_count = 8];
   string network_backend = 3 [(nanopb).max_length = 32];
   bool ttyd_available = 4;
+  repeated NetworkCapability networks = 5 [(nanopb).max_count = 8];
 }
 
 message Heartbeat {
@@ -455,6 +475,9 @@ message NetworkInterfaceConfig {
   bool bridge = 6;
   repeated string bridge_ports = 7 [(nanopb).max_count = 8, (nanopb).max_length = 32];
   bool delete_bridge = 8;
+  NetworkConfigOperation operation = 9;
+  string logical_name = 10 [(nanopb).max_length = 32];
+  string device = 11 [(nanopb).max_length = 32];
 }
 
 message NetworkConfigRequest {

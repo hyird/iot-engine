@@ -5,8 +5,8 @@ import {
     configurePlatform,
     getEdgeDetail,
     getEdgeList,
-    renameEdge,
     removePlatform,
+    renameEdge,
     setEnrollment,
     syncDeviceConfig,
     upgradeFirmware,
@@ -45,7 +45,7 @@ export function useNetworkMutation() {
     return useMutationWithMessage({
         mutationFn: (value: { id: string; data: Edge.NetworkDto }) =>
             configureNetwork(value.id, value.data),
-        successMessage: 'br-lan 配置已下发',
+        successMessage: '网络配置已下发',
         invalidateKeys: [edgeQueryKeys.all],
     });
 }

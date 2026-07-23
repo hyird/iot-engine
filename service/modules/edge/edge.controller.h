@@ -76,7 +76,7 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
     ruvia::Task<ruvia::HttpResponse> network(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:edge:config");
         co_await edgeService().queueNetwork(c, id(c), c.req().valid<NetworkBody>());
-        co_return c.json(service::common::operation(c, "br-lan 配置已下发"));
+        co_return c.json(service::common::operation(c, "网络配置已下发"));
     }
 
     ruvia::Task<ruvia::HttpResponse> sync(ruvia::Context& c) {

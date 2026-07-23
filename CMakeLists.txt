@@ -42,40 +42,40 @@ FetchContent_MakeAvailable(ruvia)
 FetchContent_Declare(nanopb
     GIT_REPOSITORY https://github.com/nanopb/nanopb.git
     GIT_TAG cad3c18ef15a663e30e3e43e3a752b66378adec1
-    # Only the three runtime C files are consumed below. Do not configure nanopb's
-    # generator or full build in the parent iot-engine project.
+    # The server uses the standard C++ Protobuf runtime. Fetch nanopb only for the
+    # exact nanopb.proto option schema shared with the OpenWrt nanopb generator.
     SOURCE_SUBDIR _runtime_sources_only)
 FetchContent_MakeAvailable(nanopb)
 
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
-execute_process(
-    COMMAND "${Python3_EXECUTABLE}" -c "import google.protobuf, grpc_tools"
-    RESULT_VARIABLE EDGENODE_PROTOBUF_PYTHON_RESULT
-    OUTPUT_QUIET
-    ERROR_QUIET)
-if(NOT EDGENODE_PROTOBUF_PYTHON_RESULT EQUAL 0)
-    message(FATAL_ERROR
-        "edgenode protobuf generation requires Python packages protobuf and grpcio-tools")
-endif()
+find_package(Protobuf CONFIG REQUIRED)
 
 set(EDGENODE_PROTO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/service/modules/edge")
 set(EDGENODE_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/edgenode")
 set(EDGENODE_PROTO_SOURCE "${EDGENODE_PROTO_DIR}/edge.proto")
-set(EDGENODE_PROTO_C "${EDGENODE_GENERATED_DIR}/edge.pb.c")
+set(EDGENODE_NANOPB_PROTO_SOURCE
+    "${nanopb_SOURCE_DIR}/generator/proto/nanopb.proto")
+set(EDGENODE_PROTO_CPP "${EDGENODE_GENERATED_DIR}/edge.pb.cc")
 set(EDGENODE_PROTO_H "${EDGENODE_GENERATED_DIR}/edge.pb.h")
+set(EDGENODE_NANOPB_PROTO_CPP "${EDGENODE_GENERATED_DIR}/nanopb.pb.cc")
+set(EDGENODE_NANOPB_PROTO_H "${EDGENODE_GENERATED_DIR}/nanopb.pb.h")
 add_custom_command(
-    OUTPUT "${EDGENODE_PROTO_C}" "${EDGENODE_PROTO_H}"
+    OUTPUT
+        "${EDGENODE_PROTO_CPP}"
+        "${EDGENODE_PROTO_H}"
+        "${EDGENODE_NANOPB_PROTO_CPP}"
+        "${EDGENODE_NANOPB_PROTO_H}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${EDGENODE_GENERATED_DIR}"
-    COMMAND "${Python3_EXECUTABLE}"
-            "${nanopb_SOURCE_DIR}/generator/nanopb_generator.py"
-            -I "${EDGENODE_PROTO_DIR}"
-            -I "${nanopb_SOURCE_DIR}/generator/proto"
-            -D "${EDGENODE_GENERATED_DIR}"
+    COMMAND protobuf::protoc
+            "--cpp_out=${EDGENODE_GENERATED_DIR}"
+            "--proto_path=${EDGENODE_PROTO_DIR}"
+            "--proto_path=${nanopb_SOURCE_DIR}/generator/proto"
             "${EDGENODE_PROTO_SOURCE}"
+            "${EDGENODE_NANOPB_PROTO_SOURCE}"
     DEPENDS
         "${EDGENODE_PROTO_SOURCE}"
-        "${nanopb_SOURCE_DIR}/generator/nanopb_generator.py"
-    COMMENT "Generating edgenode nanopb protocol"
+        "${EDGENODE_NANOPB_PROTO_SOURCE}"
+        protobuf::protoc
+    COMMENT "Generating edgenode C++ Protobuf protocol"
     VERBATIM)
 
 # Ruvia's standalone manifest features do not belong to this parent manifest.
@@ -86,15 +86,15 @@ find_package(spdlog CONFIG REQUIRED)
 add_executable(iot-engine
     service/server.cpp
     service/common/packet_log.cpp
-    "${EDGENODE_PROTO_C}"
-    ${nanopb_SOURCE_DIR}/pb_common.c
-    ${nanopb_SOURCE_DIR}/pb_encode.c
-    ${nanopb_SOURCE_DIR}/pb_decode.c)
+    "${EDGENODE_PROTO_CPP}"
+    "${EDGENODE_NANOPB_PROTO_CPP}")
 target_include_directories(iot-engine PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
-    "${EDGENODE_GENERATED_DIR}"
-    "${nanopb_SOURCE_DIR}")
-target_link_libraries(iot-engine PRIVATE ruvia::web spdlog::spdlog)
+    "${EDGENODE_GENERATED_DIR}")
+target_link_libraries(iot-engine PRIVATE
+    ruvia::web
+    spdlog::spdlog
+    protobuf::libprotobuf)
 if(MSVC)
     target_compile_options(iot-engine PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
 endif()
@@ -117,6 +117,19 @@ if(MSVC)
     target_compile_options(open-access-test PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
 endif()
 add_test(NAME open-access COMMAND open-access-test)
+
+add_executable(edge-protocol-test
+    tests/edge_protocol_test.cpp
+    "${EDGENODE_PROTO_CPP}"
+    "${EDGENODE_NANOPB_PROTO_CPP}")
+target_include_directories(edge-protocol-test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${EDGENODE_GENERATED_DIR}")
+target_link_libraries(edge-protocol-test PRIVATE protobuf::libprotobuf)
+if(MSVC)
+    target_compile_options(edge-protocol-test PRIVATE /utf-8 /Zc:__cplusplus)
+endif()
+add_test(NAME edge-protocol COMMAND edge-protocol-test)
 
 find_program(BUN_EXECUTABLE NAMES bun REQUIRED)
 

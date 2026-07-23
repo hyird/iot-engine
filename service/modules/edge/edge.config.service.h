@@ -4,7 +4,7 @@
 #include <array>
 #include <charconv>
 #include <cstdint>
-#include <cstring>
+#include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -13,6 +13,8 @@
 #include <vector>
 
 #include <openssl/evp.h>
+#include <google/protobuf/io/coded_stream.h>
+#include <google/protobuf/io/zero_copy_stream_impl_lite.h>
 #include <ruvia/web/Controller.h>
 
 #include "service/common/http.h"
@@ -101,12 +103,6 @@ WHERE id = $1::uuid AND desired_config_version = $2 AND config_status <> 'reject
         std::size_t itemCount{};
     };
 
-    template <std::size_t Size> static void copy(char (&output)[Size], std::string_view input) {
-        const auto size = std::min(input.size(), Size - 1);
-        std::memcpy(output, input.data(), size);
-        output[size] = '\0';
-    }
-
     static std::uint64_t unsignedInteger(std::string_view value) {
         std::uint64_t result{};
         const auto [end, error] =
@@ -135,21 +131,21 @@ WHERE id = $1::uuid AND desired_config_version = $2 AND config_status <> 'reject
         }
     }
 
-    static iot_edge_v1_Protocol protocolValue(std::string_view value) {
+    static pb::Protocol protocolValue(std::string_view value) {
         if (value == "Modbus")
-            return iot_edge_v1_Protocol_PROTOCOL_MODBUS;
+            return pb::PROTOCOL_MODBUS;
         if (value == "S7")
-            return iot_edge_v1_Protocol_PROTOCOL_S7;
+            return pb::PROTOCOL_S7;
         if (value == "SL651")
-            return iot_edge_v1_Protocol_PROTOCOL_SL651;
-        return iot_edge_v1_Protocol_PROTOCOL_UNSPECIFIED;
+            return pb::PROTOCOL_SL651;
+        return pb::PROTOCOL_UNSPECIFIED;
     }
 
-    static bool setUuid(void* field, std::size_t capacity, std::string_view text) {
+    static bool setUuid(std::string* field, std::string_view text) {
         std::uint8_t value[16]{};
         if (!protocol::uuidBytes(text, value))
             return false;
-        protocol::setBytes(field, capacity, value, sizeof(value));
+        field->assign(protocol::bytes(value, sizeof(value)));
         return true;
     }
 
@@ -178,21 +174,20 @@ WHERE id = $1::uuid AND desired_config_version = $2 AND config_status <> 'reject
         return high < 0 ? output : std::vector<std::uint8_t>{};
     }
 
-    template <typename Bytes>
-    static void packet(Bytes& output, std::string_view mode, std::string_view content) {
+    static void packet(std::string* output, std::string_view mode, std::string_view content) {
         const auto value = bytes(mode, content);
-        protocol::setBytes(&output, sizeof(output.bytes), value.data(),
-                           std::min(value.size(), sizeof(output.bytes)));
+        output->assign(protocol::bytes(value.data(), value.size()));
     }
 
-    static bool encodeItem(const iot_edge_v1_ConfigItem& item, std::string& output) {
-        output.assign(iot_edge_v1_ConfigItem_size, '\0');
-        auto stream = pb_ostream_from_buffer(reinterpret_cast<pb_byte_t*>(output.data()),
-                                             output.size());
-        if (!pb_encode(&stream, iot_edge_v1_ConfigItem_fields, &item))
+    static bool encodeItem(const pb::ConfigItem& item, std::string& output) {
+        const auto size = item.ByteSizeLong();
+        if (size > static_cast<std::size_t>(std::numeric_limits<int>::max()))
             return false;
-        output.resize(stream.bytes_written);
-        return true;
+        output.assign(size, '\0');
+        google::protobuf::io::ArrayOutputStream raw(output.data(), static_cast<int>(size));
+        google::protobuf::io::CodedOutputStream coded(&raw);
+        coded.SetSerializationDeterministic(true);
+        return item.SerializeToCodedStream(&coded) && !coded.HadError();
     }
 
     static std::array<std::uint8_t, 32> sha256(std::string_view value) {
@@ -234,8 +229,7 @@ WHERE id = $1::uuid AND desired_config_version = $2 AND config_status <> 'reject
         return result;
     }
 
-    static void appendWire(std::vector<std::string>& output,
-                           const iot_edge_v1_Envelope& envelope) {
+    static void appendWire(std::vector<std::string>& output, const pb::Envelope& envelope) {
         auto wire = protocol::encode(envelope);
         if (wire.empty())
             throw std::runtime_error("cannot encode edge configuration envelope");
@@ -255,14 +249,13 @@ WHERE id = $1::uuid AND desired_config_version = $2 AND config_status <> 'reject
         itemDigests.reserve(items.size());
         for (std::size_t index = 0; index < items.size(); ++index) {
             auto& item = items[index];
-            item.revision = revision;
-            item.index = static_cast<std::uint32_t>(index);
+            item.set_revision(revision);
+            item.set_index(static_cast<std::uint32_t>(index));
             std::string canonical;
             if (!encodeItem(item, canonical))
                 throw std::runtime_error("cannot encode edge config item");
             auto digest = sha256(canonical);
-            protocol::setBytes(&item.sha256, sizeof(item.sha256.bytes), digest.data(),
-                               digest.size());
+            item.set_sha256(protocol::bytes(digest.data(), digest.size()));
             itemDigests.push_back(digest);
         }
         const auto snapshotDigest = digestList(itemDigests);
@@ -272,25 +265,22 @@ WHERE id = $1::uuid AND desired_config_version = $2 AND config_status <> 'reject
         snapshot.wires.reserve(items.size() + 2);
 
         auto begin = protocol::outbound(nodeId);
-        begin.which_payload = iot_edge_v1_Envelope_config_begin_tag;
-        begin.payload.config_begin.revision = revision;
-        begin.payload.config_begin.item_count = static_cast<std::uint32_t>(items.size());
-        protocol::setBytes(&begin.payload.config_begin.sha256,
-                           sizeof(begin.payload.config_begin.sha256.bytes), snapshotDigest.data(),
-                           snapshotDigest.size());
+        auto* configBegin = begin.mutable_config_begin();
+        configBegin->set_revision(revision);
+        configBegin->set_item_count(static_cast<std::uint32_t>(items.size()));
+        configBegin->set_sha256(
+            protocol::bytes(snapshotDigest.data(), snapshotDigest.size()));
         appendWire(snapshot.wires, begin);
         for (const auto& item : items) {
             auto envelope = protocol::outbound(nodeId);
-            envelope.which_payload = iot_edge_v1_Envelope_config_item_tag;
-            envelope.payload.config_item = item;
+            *envelope.mutable_config_item() = item;
             appendWire(snapshot.wires, envelope);
         }
         auto commit = protocol::outbound(nodeId);
-        commit.which_payload = iot_edge_v1_Envelope_config_commit_tag;
-        commit.payload.config_commit.revision = revision;
-        protocol::setBytes(&commit.payload.config_commit.sha256,
-                           sizeof(commit.payload.config_commit.sha256.bytes),
-                           snapshotDigest.data(), snapshotDigest.size());
+        auto* configCommit = commit.mutable_config_commit();
+        configCommit->set_revision(revision);
+        configCommit->set_sha256(
+            protocol::bytes(snapshotDigest.data(), snapshotDigest.size()));
         appendWire(snapshot.wires, commit);
         co_return snapshot;
     }
@@ -330,9 +320,9 @@ WHERE id = $2::uuid AND desired_config_version = $3)sql",
                                           message, nodeId, static_cast<std::int64_t>(revision)));
     }
 
-    static ruvia::Task<std::vector<iot_edge_v1_ConfigItem>>
+    static ruvia::Task<std::vector<pb::ConfigItem>>
     buildItems(ruvia::Context& c, std::string_view nodeId) {
-        std::vector<iot_edge_v1_ConfigItem> items;
+        std::vector<pb::ConfigItem> items;
         const auto devices = co_await c.db().query(R"sql(
 SELECT d.id::text, d.name, d.protocol_params->>'device_code', p.protocol,
        COALESCE(NULLIF(d.protocol_params->>'timezone', ''), '+08:00'),
@@ -368,74 +358,75 @@ ORDER BY d.id)sql",
                                                      service::common::dbParams(nodeId));
         for (const auto& row : devices.rows()) {
             const auto protocol = protocolValue(row[3].text());
-            iot_edge_v1_ConfigItem endpoint = iot_edge_v1_ConfigItem_init_zero;
-            endpoint.kind = iot_edge_v1_ConfigItemKind_CONFIG_ITEM_ENDPOINT;
-            endpoint.which_item = iot_edge_v1_ConfigItem_endpoint_tag;
-            auto& endpointValue = endpoint.item.endpoint;
-            if (!setUuid(&endpointValue.endpoint_id, sizeof(endpointValue.endpoint_id.bytes),
-                         row[0].text()))
+            pb::ConfigItem endpoint;
+            endpoint.set_kind(pb::CONFIG_ITEM_ENDPOINT);
+            auto* endpointValue = endpoint.mutable_endpoint();
+            if (!setUuid(endpointValue->mutable_endpoint_id(), row[0].text()))
                 throw std::runtime_error("invalid edge device UUID");
-            copy(endpointValue.name, row[1].text());
-            copy(endpointValue.interface_name, row[10].text());
-            endpointValue.protocol = protocol;
-            endpointValue.enabled = row[31].text() == "t";
+            endpointValue->set_name(row[1].text());
+            endpointValue->set_interface_name(row[10].text());
+            endpointValue->set_protocol(protocol);
+            endpointValue->set_enabled(row[31].text() == "t");
             if (row[9].text() == "serial") {
-                endpointValue.transport = iot_edge_v1_Transport_TRANSPORT_SERIAL;
-                endpointValue.mode = iot_edge_v1_LinkMode_LINK_MODE_SERIAL;
-                endpointValue.has_serial = true;
-                copy(endpointValue.serial.channel, row[10].text());
-                endpointValue.serial.baud_rate =
-                    static_cast<std::uint32_t>(integer(row[14].text(), 9600));
-                endpointValue.serial.data_bits =
-                    static_cast<std::uint32_t>(integer(row[15].text(), 8));
-                endpointValue.serial.stop_bits =
-                    static_cast<std::uint32_t>(integer(row[16].text(), 1));
-                copy(endpointValue.serial.parity, row[17].text());
-                endpointValue.serial.rs485 = row[18].text() == "t";
+                endpointValue->set_transport(pb::TRANSPORT_SERIAL);
+                endpointValue->set_mode(pb::LINK_MODE_SERIAL);
+                auto* serial = endpointValue->mutable_serial();
+                serial->set_channel(row[10].text());
+                serial->set_baud_rate(
+                    static_cast<std::uint32_t>(integer(row[14].text(), 9600)));
+                serial->set_data_bits(
+                    static_cast<std::uint32_t>(integer(row[15].text(), 8)));
+                serial->set_stop_bits(
+                    static_cast<std::uint32_t>(integer(row[16].text(), 1)));
+                serial->set_parity(row[17].text());
+                serial->set_rs485(row[18].text() == "t");
             } else {
-                endpointValue.transport = iot_edge_v1_Transport_TRANSPORT_ETHERNET;
-                endpointValue.mode = row[11].text() == "TCP Server"
-                                         ? iot_edge_v1_LinkMode_LINK_MODE_TCP_SERVER
-                                         : iot_edge_v1_LinkMode_LINK_MODE_TCP_CLIENT;
-                copy(endpointValue.ip, row[12].text());
-                endpointValue.port = static_cast<std::uint32_t>(integer(row[13].text()));
+                endpointValue->set_transport(pb::TRANSPORT_ETHERNET);
+                endpointValue->set_mode(row[11].text() == "TCP Server"
+                                            ? pb::LINK_MODE_TCP_SERVER
+                                            : pb::LINK_MODE_TCP_CLIENT);
+                endpointValue->set_ip(row[12].text());
+                endpointValue->set_port(
+                    static_cast<std::uint32_t>(integer(row[13].text())));
             }
-            items.push_back(endpoint);
+            items.push_back(std::move(endpoint));
 
-            iot_edge_v1_ConfigItem device = iot_edge_v1_ConfigItem_init_zero;
-            device.kind = iot_edge_v1_ConfigItemKind_CONFIG_ITEM_DEVICE;
-            device.which_item = iot_edge_v1_ConfigItem_device_tag;
-            auto& deviceValue = device.item.device;
-            setUuid(&deviceValue.device_id, sizeof(deviceValue.device_id.bytes), row[0].text());
-            setUuid(&deviceValue.endpoint_id, sizeof(deviceValue.endpoint_id.bytes), row[0].text());
-            copy(deviceValue.device_code, row[2].text());
-            copy(deviceValue.name, row[1].text());
-            deviceValue.protocol = protocol;
-            copy(deviceValue.timezone, row[4].text());
-            deviceValue.io_interval_ms = 1000;
-            deviceValue.report_interval_sec =
-                static_cast<std::uint32_t>(integer(row[5].text(), 1));
-            deviceValue.online_timeout_sec =
-                static_cast<std::uint32_t>(integer(row[6].text(), 300));
-            deviceValue.modbus_slave_id =
-                static_cast<std::uint32_t>(integer(row[7].text(), 1));
-            copy(deviceValue.modbus_mode, row[8].text());
-            deviceValue.modbus_merge_gap =
-                static_cast<std::uint32_t>(integer(row[19].text()));
-            deviceValue.modbus_max_quantity =
-                static_cast<std::uint32_t>(integer(row[20].text(), 125));
-            copy(deviceValue.s7_connection_mode, row[21].text());
-            copy(deviceValue.s7_connection_type, row[22].text());
-            deviceValue.s7_rack = static_cast<std::uint32_t>(integer(row[23].text()));
-            deviceValue.s7_slot = static_cast<std::uint32_t>(integer(row[24].text(), 1));
-            copy(deviceValue.s7_local_tsap, row[25].text());
-            copy(deviceValue.s7_remote_tsap, row[26].text());
-            deviceValue.command_fast_read_duration_sec = 10;
-            deviceValue.command_fast_read_interval_sec = 1;
-            packet(deviceValue.heartbeat_payload, row[27].text(), row[28].text());
-            packet(deviceValue.registration_payload, row[29].text(), row[30].text());
-            deviceValue.enabled = row[31].text() == "t";
-            items.push_back(device);
+            pb::ConfigItem device;
+            device.set_kind(pb::CONFIG_ITEM_DEVICE);
+            auto* deviceValue = device.mutable_device();
+            setUuid(deviceValue->mutable_device_id(), row[0].text());
+            setUuid(deviceValue->mutable_endpoint_id(), row[0].text());
+            deviceValue->set_device_code(row[2].text());
+            deviceValue->set_name(row[1].text());
+            deviceValue->set_protocol(protocol);
+            deviceValue->set_timezone(row[4].text());
+            deviceValue->set_io_interval_ms(1000);
+            deviceValue->set_report_interval_sec(
+                static_cast<std::uint32_t>(integer(row[5].text(), 1)));
+            deviceValue->set_online_timeout_sec(
+                static_cast<std::uint32_t>(integer(row[6].text(), 300)));
+            deviceValue->set_modbus_slave_id(
+                static_cast<std::uint32_t>(integer(row[7].text(), 1)));
+            deviceValue->set_modbus_mode(row[8].text());
+            deviceValue->set_modbus_merge_gap(
+                static_cast<std::uint32_t>(integer(row[19].text())));
+            deviceValue->set_modbus_max_quantity(
+                static_cast<std::uint32_t>(integer(row[20].text(), 125)));
+            deviceValue->set_s7_connection_mode(row[21].text());
+            deviceValue->set_s7_connection_type(row[22].text());
+            deviceValue->set_s7_rack(
+                static_cast<std::uint32_t>(integer(row[23].text())));
+            deviceValue->set_s7_slot(
+                static_cast<std::uint32_t>(integer(row[24].text(), 1)));
+            deviceValue->set_s7_local_tsap(row[25].text());
+            deviceValue->set_s7_remote_tsap(row[26].text());
+            deviceValue->set_command_fast_read_duration_sec(10);
+            deviceValue->set_command_fast_read_interval_sec(1);
+            packet(deviceValue->mutable_heartbeat_payload(), row[27].text(), row[28].text());
+            packet(deviceValue->mutable_registration_payload(), row[29].text(),
+                   row[30].text());
+            deviceValue->set_enabled(row[31].text() == "t");
+            items.push_back(std::move(device));
         }
 
         co_await appendModbus(c, nodeId, items);
@@ -445,7 +436,7 @@ ORDER BY d.id)sql",
     }
 
     static ruvia::Task<void> appendModbus(ruvia::Context& c, std::string_view nodeId,
-                                          std::vector<iot_edge_v1_ConfigItem>& items) {
+                                          std::vector<pb::ConfigItem>& items) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT d.id::text, item->>'id', item->>'name', COALESCE(item->>'unit', ''),
        item->>'registerType', item->>'dataType',
@@ -461,28 +452,29 @@ WHERE d.edge_node_id = $1::uuid AND d.deleted_at IS NULL
 ORDER BY d.id, item->>'id')sql",
                                                  service::common::dbParams(nodeId));
         for (const auto& row : rows.rows()) {
-            iot_edge_v1_ConfigItem item = iot_edge_v1_ConfigItem_init_zero;
-            item.kind = iot_edge_v1_ConfigItemKind_CONFIG_ITEM_MODBUS_REGISTER;
-            item.which_item = iot_edge_v1_ConfigItem_modbus_register_tag;
-            auto& value = item.item.modbus_register;
-            setUuid(&value.device_id, sizeof(value.device_id.bytes), row[0].text());
-            copy(value.element_id, row[1].text());
-            copy(value.name, row[2].text());
-            copy(value.unit, row[3].text());
-            copy(value.register_type, row[4].text());
-            copy(value.data_type, row[5].text());
-            copy(value.byte_order, row[6].text());
-            value.address = static_cast<std::uint32_t>(integer(row[7].text()));
-            value.quantity = static_cast<std::uint32_t>(integer(row[8].text(), 1));
-            value.scale = number(row[9].text(), 1.0);
-            value.decimals = static_cast<std::int32_t>(integer(row[10].text(), -1));
-            value.writable = row[11].text() == "t";
-            items.push_back(item);
+            pb::ConfigItem item;
+            item.set_kind(pb::CONFIG_ITEM_MODBUS_REGISTER);
+            auto* value = item.mutable_modbus_register();
+            setUuid(value->mutable_device_id(), row[0].text());
+            value->set_element_id(row[1].text());
+            value->set_name(row[2].text());
+            value->set_unit(row[3].text());
+            value->set_register_type(row[4].text());
+            value->set_data_type(row[5].text());
+            value->set_byte_order(row[6].text());
+            value->set_address(static_cast<std::uint32_t>(integer(row[7].text())));
+            value->set_quantity(
+                static_cast<std::uint32_t>(integer(row[8].text(), 1)));
+            value->set_scale(number(row[9].text(), 1.0));
+            value->set_decimals(
+                static_cast<std::int32_t>(integer(row[10].text(), -1)));
+            value->set_writable(row[11].text() == "t");
+            items.push_back(std::move(item));
         }
     }
 
     static ruvia::Task<void> appendS7(ruvia::Context& c, std::string_view nodeId,
-                                      std::vector<iot_edge_v1_ConfigItem>& items) {
+                                      std::vector<pb::ConfigItem>& items) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT d.id::text, item->>'id', item->>'name', COALESCE(item->>'unit', ''),
        item->>'area', COALESCE((item->>'dbNumber')::integer, 0),
@@ -497,29 +489,32 @@ WHERE d.edge_node_id = $1::uuid AND d.deleted_at IS NULL
 ORDER BY d.id, item->>'id')sql",
                                                  service::common::dbParams(nodeId));
         for (const auto& row : rows.rows()) {
-            iot_edge_v1_ConfigItem item = iot_edge_v1_ConfigItem_init_zero;
-            item.kind = iot_edge_v1_ConfigItemKind_CONFIG_ITEM_S7_AREA;
-            item.which_item = iot_edge_v1_ConfigItem_s7_area_tag;
-            auto& value = item.item.s7_area;
-            setUuid(&value.device_id, sizeof(value.device_id.bytes), row[0].text());
-            copy(value.element_id, row[1].text());
-            copy(value.name, row[2].text());
-            copy(value.unit, row[3].text());
-            copy(value.area, row[4].text());
-            value.db_number = static_cast<std::uint32_t>(integer(row[5].text()));
-            value.start = static_cast<std::uint32_t>(integer(row[6].text()));
-            value.start_bit = static_cast<std::uint32_t>(integer(row[7].text()));
-            value.size = static_cast<std::uint32_t>(integer(row[8].text(), 1));
-            copy(value.data_type, row[9].text());
-            value.scale = 1.0;
-            value.decimals = static_cast<std::int32_t>(integer(row[10].text(), -1));
-            value.writable = row[11].text() == "t";
-            items.push_back(item);
+            pb::ConfigItem item;
+            item.set_kind(pb::CONFIG_ITEM_S7_AREA);
+            auto* value = item.mutable_s7_area();
+            setUuid(value->mutable_device_id(), row[0].text());
+            value->set_element_id(row[1].text());
+            value->set_name(row[2].text());
+            value->set_unit(row[3].text());
+            value->set_area(row[4].text());
+            value->set_db_number(
+                static_cast<std::uint32_t>(integer(row[5].text())));
+            value->set_start(static_cast<std::uint32_t>(integer(row[6].text())));
+            value->set_start_bit(
+                static_cast<std::uint32_t>(integer(row[7].text())));
+            value->set_size(
+                static_cast<std::uint32_t>(integer(row[8].text(), 1)));
+            value->set_data_type(row[9].text());
+            value->set_scale(1.0);
+            value->set_decimals(
+                static_cast<std::int32_t>(integer(row[10].text(), -1)));
+            value->set_writable(row[11].text() == "t");
+            items.push_back(std::move(item));
         }
     }
 
     static ruvia::Task<void> appendSl651(ruvia::Context& c, std::string_view nodeId,
-                                         std::vector<iot_edge_v1_ConfigItem>& items) {
+                                         std::vector<pb::ConfigItem>& items) {
         const auto functions = co_await c.db().query(R"sql(
 SELECT d.id::text, func->>'funcCode', func->>'name', func->>'dir'
 FROM device d
@@ -529,15 +524,14 @@ WHERE d.edge_node_id = $1::uuid AND d.deleted_at IS NULL
 ORDER BY d.id, func->>'funcCode')sql",
                                                       service::common::dbParams(nodeId));
         for (const auto& row : functions.rows()) {
-            iot_edge_v1_ConfigItem item = iot_edge_v1_ConfigItem_init_zero;
-            item.kind = iot_edge_v1_ConfigItemKind_CONFIG_ITEM_SL651_FUNCTION;
-            item.which_item = iot_edge_v1_ConfigItem_sl651_function_tag;
-            auto& value = item.item.sl651_function;
-            setUuid(&value.device_id, sizeof(value.device_id.bytes), row[0].text());
-            copy(value.function_code, row[1].text());
-            copy(value.name, row[2].text());
-            copy(value.direction, row[3].text());
-            items.push_back(item);
+            pb::ConfigItem item;
+            item.set_kind(pb::CONFIG_ITEM_SL651_FUNCTION);
+            auto* value = item.mutable_sl651_function();
+            setUuid(value->mutable_device_id(), row[0].text());
+            value->set_function_code(row[1].text());
+            value->set_name(row[2].text());
+            value->set_direction(row[3].text());
+            items.push_back(std::move(item));
         }
 
         const auto elements = co_await c.db().query(R"sql(
@@ -560,24 +554,24 @@ WHERE d.edge_node_id = $1::uuid AND d.deleted_at IS NULL
 ORDER BY d.id, func->>'funcCode', response_element, element->>'id')sql",
                                                      service::common::dbParams(nodeId));
         for (const auto& row : elements.rows()) {
-            iot_edge_v1_ConfigItem item = iot_edge_v1_ConfigItem_init_zero;
-            item.kind = iot_edge_v1_ConfigItemKind_CONFIG_ITEM_SL651_ELEMENT;
-            item.which_item = iot_edge_v1_ConfigItem_sl651_element_tag;
-            auto& value = item.item.sl651_element;
-            setUuid(&value.device_id, sizeof(value.device_id.bytes), row[0].text());
-            copy(value.function_code, row[1].text());
-            copy(value.element_id, row[2].text());
-            copy(value.name, row[3].text());
-            copy(value.unit, row[4].text());
-            copy(value.encoding, row[5].text());
-            value.length = static_cast<std::uint32_t>(integer(row[6].text()));
-            value.digits = static_cast<std::uint32_t>(integer(row[7].text()));
+            pb::ConfigItem item;
+            item.set_kind(pb::CONFIG_ITEM_SL651_ELEMENT);
+            auto* value = item.mutable_sl651_element();
+            setUuid(value->mutable_device_id(), row[0].text());
+            value->set_function_code(row[1].text());
+            value->set_element_id(row[2].text());
+            value->set_name(row[3].text());
+            value->set_unit(row[4].text());
+            value->set_encoding(row[5].text());
+            value->set_length(
+                static_cast<std::uint32_t>(integer(row[6].text())));
+            value->set_digits(
+                static_cast<std::uint32_t>(integer(row[7].text())));
             const auto guide = bytes("HEX", row[8].text());
-            protocol::setBytes(&value.guide, sizeof(value.guide.bytes), guide.data(),
-                               std::min(guide.size(), sizeof(value.guide.bytes)));
-            value.response_element = row[9].text() == "t";
-            value.writable = row[10].text() == "t" && !value.response_element;
-            items.push_back(item);
+            value->set_guide(protocol::bytes(guide.data(), guide.size()));
+            value->set_response_element(row[9].text() == "t");
+            value->set_writable(row[10].text() == "t" && !value->response_element());
+            items.push_back(std::move(item));
         }
     }
 };

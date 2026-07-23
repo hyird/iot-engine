@@ -34,13 +34,26 @@ struct NodeNameBody final {
     RUVIA_MODEL(NodeNameBody, name);
 };
 
-struct NetworkBody final {
+struct NetworkInterfaceBody final {
+    RUVIA_OPTIONAL_FIELD(operation, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(mode, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(device, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(bridge, ruvia::Bool, RUVIA_DEFAULT(false));
+    RUVIA_OPTIONAL_FIELD_NAME("bridgePorts", bridgePorts, ruvia::Array<ruvia::String>);
     RUVIA_OPTIONAL_FIELD(ip, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(netmask, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("prefixLength", prefixLength, ruvia::Int64,
+                              RUVIA_DEFAULT(0));
     RUVIA_OPTIONAL_FIELD(gateway, ruvia::String);
+    RUVIA_MODEL(NetworkInterfaceBody, operation, name, mode, device, bridge, bridgePorts, ip,
+                prefixLength, gateway);
+};
+
+struct NetworkBody final {
+    RUVIA_OPTIONAL_FIELD(interfaces, ruvia::Array<NetworkInterfaceBody>);
     RUVIA_OPTIONAL_FIELD_NAME("rollbackTimeoutSec", rollbackTimeoutSec, ruvia::Int64,
                               RUVIA_DEFAULT(60));
-    RUVIA_MODEL(NetworkBody, ip, netmask, gateway, rollbackTimeoutSec);
+    RUVIA_MODEL(NetworkBody, interfaces, rollbackTimeoutSec);
 };
 
 struct PlatformBody final {
@@ -80,6 +93,20 @@ struct InterfaceDto final {
     RUVIA_OPTIONAL_FIELD_NAME("bridgePorts", bridgePorts, ruvia::List<ruvia::String>);
     RUVIA_MODEL(InterfaceDto, name, displayName, mac, up, bridge, ipv4, prefixLength, gateway,
                 bridgePorts);
+};
+
+struct NetworkDto final {
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(mode, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(device, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(up, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD(bridge, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("bridgePorts", bridgePorts, ruvia::List<ruvia::String>);
+    RUVIA_OPTIONAL_FIELD(ipv4, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("prefixLength", prefixLength, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD(gateway, ruvia::String);
+    RUVIA_MODEL(NetworkDto, name, mode, device, up, bridge, bridgePorts, ipv4, prefixLength,
+                gateway);
 };
 
 struct SerialDto final {
@@ -126,6 +153,7 @@ struct EdgeNodeDto final {
     RUVIA_OPTIONAL_FIELD_NAME("enrollmentStatus", enrollmentStatus, ruvia::String);
     RUVIA_OPTIONAL_FIELD(online, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("supportsNetworkConfig", supportsNetworkConfig, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("networkConfigVersion", networkConfigVersion, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD_NAME("supportsFirmwareUpdate", supportsFirmwareUpdate, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("supportsPlatformConfig", supportsPlatformConfig, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("supportsDeviceConfig", supportsDeviceConfig, ruvia::Bool);
@@ -139,15 +167,17 @@ struct EdgeNodeDto final {
     RUVIA_OPTIONAL_FIELD_NAME("lastSeenAt", lastSeenAt, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("createdAt", createdAt, ruvia::String);
     RUVIA_OPTIONAL_FIELD(interfaces, ruvia::List<InterfaceDto>);
+    RUVIA_OPTIONAL_FIELD(networks, ruvia::List<NetworkDto>);
     RUVIA_OPTIONAL_FIELD_NAME("serialPorts", serialPorts, ruvia::List<SerialDto>);
     RUVIA_OPTIONAL_FIELD(platforms, ruvia::List<PlatformDto>);
     RUVIA_OPTIONAL_FIELD(tasks, ruvia::List<TaskDto>);
     RUVIA_MODEL(EdgeNodeDto, id, imei, name, model, softwareVersion, hostname, architecture,
                 openwrtRelease, enrollmentStatus, online, supportsNetworkConfig,
-                supportsFirmwareUpdate, supportsPlatformConfig, supportsDeviceConfig,
+                networkConfigVersion, supportsFirmwareUpdate, supportsPlatformConfig,
+                supportsDeviceConfig,
                 ttydAvailable, activeConfigVersion, desiredConfigVersion, configStatus,
                 configMessage, outboxRecords, outboxBytes, lastSeenAt, createdAt, interfaces,
-                serialPorts, platforms, tasks);
+                networks, serialPorts, platforms, tasks);
 };
 
 struct EdgePageDto final {
