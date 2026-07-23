@@ -19,7 +19,7 @@ export const useEdgeList = (query?: Edge.Query, enabled = true) =>
         queryKey: edgeQueryKeys.list(query),
         queryFn: () => getEdgeList(query),
         enabled,
-        refetchInterval: 5_000,
+        refetchInterval: 2_000,
     });
 
 export const useEdgeDetail = (id?: string) =>

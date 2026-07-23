@@ -161,11 +161,6 @@ export const networkSchema = z
         });
     });
 
-export const networkEditorSchema = z.intersection(
-    networkInterfaceSchema,
-    z.object({ rollbackTimeoutSec: z.number().int().min(30).max(300) })
-);
-
 export const platformSchema = z.object({
     platformId: z.uuid('平台 ID 必须是 UUID').optional(),
     name: z.string().min(1, '平台名称不能为空').max(32),

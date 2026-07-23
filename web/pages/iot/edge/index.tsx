@@ -11,6 +11,7 @@ import {
     SyncOutlined,
     UploadOutlined,
 } from '@ant-design/icons';
+import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import {
@@ -39,17 +40,16 @@ import {
     Upload,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import '@xterm/xterm/css/xterm.css';
 import { useEffect, useRef, useState } from 'react';
 import DeviceCard, { type DeviceCardItem } from '@/components/DeviceCard';
 import { FormModal } from '@/components/FormModal';
+import { PageContainer } from '@/components/PageContainer';
 import {
     WebTerminalDataSchema,
     WebTerminalFrameSchema,
     WebTerminalResizeSchema,
 } from '@/generated/edge/web_terminal_pb';
-import { PageContainer } from '@/components/PageContainer';
 import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermissions } from '@/hooks/usePermission';
 import { formatDateTime } from '@/utils/dateTime';
@@ -58,7 +58,8 @@ import { getEdgeDetail, getTerminalTicket } from './edge.api';
 import {
     firmwareUpgradeSchema,
     modemControlSchema,
-    networkEditorSchema,
+    networkInterfaceSchema,
+    networkSchema,
     nodeNameSchema,
     platformSchema,
 } from './edge.schema';
@@ -76,7 +77,11 @@ import {
 } from './edge.service';
 import type { Edge } from './edge.types';
 
-type NetworkFormValues = Edge.NetworkConfig & { rollbackTimeoutSec: number };
+type NetworkDraftItem = Edge.NetworkConfig & {
+    original: boolean;
+    dirty: boolean;
+    up?: boolean;
+};
 
 const BOOTSTRAP_URL = 'https://i.a-z.xin';
 const EDGE_CARD_GRID_CLASS = 'grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-4';
@@ -99,6 +104,23 @@ function statusTag(status: string) {
     };
     const item = map[status] ?? { color: 'default', text: status || '-' };
     return <Tag color={item.color}>{item.text}</Tag>;
+}
+
+function networkDraftFromReported(item: Edge.Network): NetworkDraftItem {
+    return {
+        operation: 'upsert',
+        name: item.name,
+        mode: item.mode === 'static' ? 'static' : 'dhcp',
+        device: item.bridge ? '' : item.device,
+        bridge: item.bridge,
+        bridgePorts: item.bridgePorts,
+        ip: item.mode === 'static' ? item.ipv4 : '',
+        prefixLength: item.mode === 'static' ? item.prefixLength : 0,
+        gateway: item.mode === 'static' ? item.gateway : '',
+        original: true,
+        dirty: false,
+        up: item.up,
+    };
 }
 
 function formatBytes(value: number) {
@@ -414,7 +436,9 @@ export default function EdgeNodePage() {
     const [selectedId, setSelectedId] = useState<string>();
     const [renamingNode, setRenamingNode] = useState<Edge.Node>();
     const [networkNode, setNetworkNode] = useState<Edge.Node>();
-    const [editingNetwork, setEditingNetwork] = useState<Edge.Network>();
+    const [networkDraft, setNetworkDraft] = useState<NetworkDraftItem[]>([]);
+    const [networkRollbackTimeoutSec, setNetworkRollbackTimeoutSec] = useState(60);
+    const [editingNetwork, setEditingNetwork] = useState<NetworkDraftItem>();
     const [platformNode, setPlatformNode] = useState<Edge.Node>();
     const [firmwareNode, setFirmwareNode] = useState<Edge.Node>();
     const [modemNode, setModemNode] = useState<Edge.Node>();
@@ -424,7 +448,7 @@ export default function EdgeNodePage() {
     const [firmwareOpen, setFirmwareOpen] = useState(false);
     const [modemOpen, setModemOpen] = useState(false);
     const [terminalOpen, setTerminalOpen] = useState(false);
-    const [networkForm] = Form.useForm<NetworkFormValues>();
+    const [networkForm] = Form.useForm<Edge.NetworkConfig>();
     const [platformForm] = Form.useForm<Edge.PlatformDto>();
     const [firmwareForm] = Form.useForm<Edge.FirmwareUpgradeDto>();
     const [modemForm] = Form.useForm<Edge.ModemControlDto>();
@@ -432,7 +456,7 @@ export default function EdgeNodePage() {
     const networkMode = Form.useWatch('mode', networkForm);
     const networkBridge = Form.useWatch('bridge', networkForm);
     const modemAction = Form.useWatch('action', modemForm);
-    const { modal } = App.useApp();
+    const { message, modal } = App.useApp();
     const { run: search } = useDebounceFn((value: string) => {
         setKeyword(value);
         setPagination((current) => ({ ...current, page: 1 }));
@@ -483,29 +507,28 @@ export default function EdgeNodePage() {
     };
 
     const showNetworkManager = async (node: Edge.Node) => {
-        setNetworkNode(node.networks && node.interfaces ? node : await getEdgeDetail(node.id));
+        const current = node.networks && node.interfaces ? node : await getEdgeDetail(node.id);
+        setNetworkDraft((current.networks ?? []).map(networkDraftFromReported));
+        setNetworkRollbackTimeoutSec(60);
+        setEditingNetwork(undefined);
+        setNetworkOpen(false);
+        setNetworkNode(current);
     };
 
-    const refreshNetworkManager = async () => {
-        if (!networkNode) return;
-        setNetworkNode(await getEdgeDetail(networkNode.id));
-    };
-
-    const showNetworkEditor = (item?: Edge.Network) => {
+    const showNetworkEditor = (item?: NetworkDraftItem) => {
         const firstDevice = networkNode?.interfaces?.find((candidate) => !candidate.bridge)?.name;
         networkForm.setFieldsValue(
             item
                 ? {
                       operation: 'upsert',
                       name: item.name,
-                      mode: item.mode === 'static' ? 'static' : 'dhcp',
-                      device: item.bridge ? '' : item.device,
+                      mode: item.mode,
+                      device: item.device,
                       bridge: item.bridge,
                       bridgePorts: item.bridgePorts,
-                      ip: item.mode === 'static' ? item.ipv4 : '',
-                      prefixLength: item.mode === 'static' ? item.prefixLength : 0,
-                      gateway: item.mode === 'static' ? item.gateway : '',
-                      rollbackTimeoutSec: 60,
+                      ip: item.ip,
+                      prefixLength: item.prefixLength,
+                      gateway: item.gateway,
                   }
                 : {
                       operation: 'upsert',
@@ -517,11 +540,31 @@ export default function EdgeNodePage() {
                       ip: '',
                       prefixLength: 0,
                       gateway: '',
-                      rollbackTimeoutSec: 60,
                   }
         );
         setEditingNetwork(item);
         setNetworkOpen(true);
+    };
+
+    const submitNetworkDraft = () => {
+        if (!networkNode) return;
+        const parsed = networkSchema.safeParse({
+            interfaces: networkDraft.map(({ original, dirty, up, ...item }) => item),
+            rollbackTimeoutSec: networkRollbackTimeoutSec,
+        });
+        if (!parsed.success) {
+            void message.error(parsed.error.issues[0]?.message ?? '网络配置校验失败');
+            return;
+        }
+        network.mutate(
+            { id: networkNode.id, data: parsed.data },
+            {
+                onSuccess: () => {
+                    setNetworkNode(undefined);
+                    setNetworkDraft([]);
+                },
+            }
+        );
     };
 
     const showRename = (node: Edge.Node) => {
@@ -587,7 +630,7 @@ export default function EdgeNodePage() {
             render: (_, item) => (item.bridge ? `网桥 ${item.bridgePorts.join(', ')}` : '网口'),
         },
     ];
-    const networkColumns: ColumnsType<Edge.Network> = [
+    const networkInfoColumns: ColumnsType<Edge.Network> = [
         { title: '逻辑接口', dataIndex: 'name', width: 120 },
         {
             title: '地址方式',
@@ -613,42 +656,110 @@ export default function EdgeNodePage() {
                 <Tag color={value ? 'success' : 'default'}>{value ? 'UP' : 'DOWN'}</Tag>
             ),
         },
+    ];
+    const networkDraftColumns: ColumnsType<NetworkDraftItem> = [
+        { title: '逻辑接口', dataIndex: 'name', width: 120 },
+        {
+            title: '地址方式',
+            dataIndex: 'mode',
+            width: 100,
+            render: (value: NetworkDraftItem['mode'], item) =>
+                item.operation === 'delete'
+                    ? '-'
+                    : value === 'dhcp'
+                      ? 'DHCP'
+                      : value === 'static'
+                        ? '静态 IPv4'
+                        : '-',
+        },
+        {
+            title: '网卡 / 网桥成员',
+            render: (_, item) =>
+                item.bridge ? item.bridgePorts?.join(', ') || '-' : item.device || '-',
+        },
+        {
+            title: 'IPv4',
+            render: (_, item) =>
+                item.operation !== 'delete' && item.ip ? `${item.ip}/${item.prefixLength}` : '-',
+        },
+        {
+            title: '修改状态',
+            width: 100,
+            render: (_, item) => {
+                if (item.operation === 'delete') return <Tag color="error">待删除</Tag>;
+                if (!item.original) return <Tag color="success">待新增</Tag>;
+                if (item.dirty) return <Tag color="processing">待更新</Tag>;
+                return <Tag>未修改</Tag>;
+            },
+        },
         {
             title: '操作',
-            width: 120,
+            width: 140,
             render: (_, item) => (
                 <Space size={4}>
-                    <Button type="link" size="small" onClick={() => showNetworkEditor(item)}>
-                        编辑
-                    </Button>
-                    <Popconfirm
-                        title={`删除逻辑接口 ${item.name}？`}
-                        description="节点应用后若无法重新连接，将在超时后恢复原网络配置。"
-                        onConfirm={() => {
-                            if (!networkNode) return;
-                            network.mutate(
-                                {
-                                    id: networkNode.id,
-                                    data: {
-                                        interfaces: [{ operation: 'delete', name: item.name }],
-                                        rollbackTimeoutSec: 60,
-                                    },
-                                },
-                                { onSuccess: refreshNetworkManager }
-                            );
-                        }}
-                    >
-                        <Button type="link" size="small" danger>
-                            删除
+                    {item.operation === 'delete' ? (
+                        <Button
+                            type="link"
+                            size="small"
+                            onClick={() => {
+                                const original = networkNode?.networks?.find(
+                                    (candidate) => candidate.name === item.name
+                                );
+                                if (!original) return;
+                                setNetworkDraft((current) =>
+                                    current.map((candidate) =>
+                                        candidate.name === item.name
+                                            ? networkDraftFromReported(original)
+                                            : candidate
+                                    )
+                                );
+                            }}
+                        >
+                            恢复
                         </Button>
-                    </Popconfirm>
+                    ) : (
+                        <>
+                            <Button
+                                type="link"
+                                size="small"
+                                onClick={() => showNetworkEditor(item)}
+                            >
+                                编辑
+                            </Button>
+                            <Popconfirm
+                                title={`将逻辑接口 ${item.name} 标记为待删除？`}
+                                description="这里只修改草稿，点击“保存并下发全部配置”后节点才会应用。"
+                                onConfirm={() =>
+                                    setNetworkDraft((current) =>
+                                        item.original
+                                            ? current.map((candidate) =>
+                                                  candidate.name === item.name
+                                                      ? {
+                                                            ...candidate,
+                                                            operation: 'delete',
+                                                            dirty: true,
+                                                        }
+                                                      : candidate
+                                              )
+                                            : current.filter(
+                                                  (candidate) => candidate.name !== item.name
+                                              )
+                                    )
+                                }
+                            >
+                                <Button type="link" size="small" danger>
+                                    删除
+                                </Button>
+                            </Popconfirm>
+                        </>
+                    )}
                 </Space>
             ),
         },
     ];
     const assignedNetworkDevices = new Set(
-        (networkNode?.networks ?? [])
-            .filter((item) => item.name !== editingNetwork?.name)
+        networkDraft
+            .filter((item) => item.operation === 'upsert' && item.name !== editingNetwork?.name)
             .flatMap((item) => (item.bridge ? item.bridgePorts : item.device ? [item.device] : []))
     );
     const networkDeviceOptions = (networkNode?.interfaces ?? [])
@@ -1094,7 +1205,7 @@ export default function EdgeNodePage() {
                                             rowKey="name"
                                             size="small"
                                             pagination={false}
-                                            columns={networkColumns.slice(0, -1)}
+                                            columns={networkInfoColumns}
                                             dataSource={detail.networks ?? []}
                                             scroll={{ x: 'max-content', y: 360 }}
                                         />
@@ -1162,35 +1273,184 @@ export default function EdgeNodePage() {
                 )}
             </Drawer>
 
-            <Modal
+            <FormModal
                 open={Boolean(networkNode)}
-                onCancel={() => setNetworkNode(undefined)}
-                footer={null}
-                width="min(900px, 92vw)"
-                title={`网络接口${networkNode ? ` · ${networkNode.name || networkNode.imei}` : ''}`}
+                onCancel={() => {
+                    if (networkOpen) {
+                        setNetworkOpen(false);
+                        setEditingNetwork(undefined);
+                    } else {
+                        setNetworkNode(undefined);
+                        setNetworkDraft([]);
+                    }
+                }}
+                onOk={() => (networkOpen ? networkForm.submit() : submitNetworkDraft())}
+                okText={networkOpen ? '保存修改' : '保存并下发全部配置'}
+                cancelText={networkOpen ? '返回接口列表' : '取消'}
+                confirmLoading={!networkOpen && network.isPending}
+                okButtonProps={{
+                    disabled: !networkOpen && !networkDraft.some((item) => item.dirty),
+                }}
+                title={`${networkOpen ? (editingNetwork ? '编辑网络接口' : '添加网络接口') : '网络接口'}${
+                    networkNode ? ` · ${networkNode.name || networkNode.imei}` : ''
+                }`}
+                forceRender
                 destroyOnHidden
             >
-                <Flex justify="space-between" align="center" gap={12} className="mb-3">
-                    <span className="text-xs text-slate-500">
-                        仅显示节点允许管理的网卡，4G 上联网卡不会出现在候选列表中。
-                    </span>
-                    <Button
-                        type="primary"
-                        icon={<PlusOutlined />}
-                        onClick={() => showNetworkEditor()}
+                {networkOpen ? (
+                    <Form
+                        form={networkForm}
+                        layout="vertical"
+                        onFinish={(values) => {
+                            const parsed = validateForm(
+                                networkForm,
+                                networkInterfaceSchema,
+                                values
+                            );
+                            if (!parsed) return;
+                            const draft: NetworkDraftItem = {
+                                ...parsed,
+                                operation: 'upsert',
+                                original: editingNetwork?.original ?? false,
+                                dirty: true,
+                                up: editingNetwork?.up,
+                            };
+                            setNetworkDraft((current) =>
+                                editingNetwork
+                                    ? current.map((item) =>
+                                          item.name === editingNetwork.name ? draft : item
+                                      )
+                                    : [...current, draft]
+                            );
+                            setNetworkOpen(false);
+                            setEditingNetwork(undefined);
+                        }}
                     >
-                        添加接口
-                    </Button>
-                </Flex>
-                <Table
-                    rowKey="name"
-                    size="small"
-                    pagination={false}
-                    columns={networkColumns}
-                    dataSource={networkNode?.networks ?? []}
-                    scroll={{ x: 'max-content', y: 360 }}
-                />
-            </Modal>
+                        <Form.Item name="operation" hidden>
+                            <Input />
+                        </Form.Item>
+                        <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                            <Form.Item label="逻辑接口名称" name="name">
+                                <Input
+                                    maxLength={15}
+                                    disabled={Boolean(editingNetwork?.original)}
+                                    placeholder="例如 lan"
+                                />
+                            </Form.Item>
+                            <Form.Item label="地址方式" name="mode">
+                                <Select
+                                    options={[
+                                        { value: 'dhcp', label: 'DHCP 客户端' },
+                                        { value: 'static', label: '静态 IPv4' },
+                                    ]}
+                                    onChange={(value) => {
+                                        if (value === 'dhcp') {
+                                            networkForm.setFieldsValue({
+                                                ip: '',
+                                                prefixLength: 0,
+                                                gateway: '',
+                                            });
+                                        }
+                                    }}
+                                />
+                            </Form.Item>
+                        </div>
+                        <Form.Item label="创建网桥" name="bridge" valuePropName="checked">
+                            <Switch
+                                onChange={(checked) =>
+                                    networkForm.setFieldsValue(
+                                        checked ? { device: '' } : { bridgePorts: [] }
+                                    )
+                                }
+                            />
+                        </Form.Item>
+                        {networkBridge ? (
+                            <Form.Item label="网桥成员" name="bridgePorts">
+                                <Select
+                                    mode="multiple"
+                                    options={networkDeviceOptions}
+                                    placeholder="选择一个或多个物理网卡"
+                                    optionFilterProp="label"
+                                    showSearch
+                                />
+                            </Form.Item>
+                        ) : (
+                            <Form.Item label="物理网卡" name="device">
+                                <Select
+                                    options={networkDeviceOptions}
+                                    placeholder="选择物理网卡"
+                                    optionFilterProp="label"
+                                    showSearch
+                                />
+                            </Form.Item>
+                        )}
+                        {networkMode === 'static' && (
+                            <>
+                                <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                                    <Form.Item label="IPv4 地址" name="ip">
+                                        <Input placeholder="192.168.1.1" />
+                                    </Form.Item>
+                                    <Form.Item label="IPv4 前缀长度" name="prefixLength">
+                                        <InputNumber className="w-full" min={1} max={30} />
+                                    </Form.Item>
+                                </div>
+                                <Form.Item label="网关（可选）" name="gateway">
+                                    <Input placeholder="192.168.1.254" />
+                                </Form.Item>
+                            </>
+                        )}
+                    </Form>
+                ) : (
+                    <>
+                        <Flex justify="space-between" align="center" gap={12} className="mb-3">
+                            <span className="text-xs text-slate-500">
+                                在此集中编辑全部接口；4G 上联网卡已排除，最后一次性原子下发。
+                            </span>
+                            <Space>
+                                <Button
+                                    disabled={!networkDraft.some((item) => item.dirty)}
+                                    onClick={() =>
+                                        setNetworkDraft(
+                                            (networkNode?.networks ?? []).map(
+                                                networkDraftFromReported
+                                            )
+                                        )
+                                    }
+                                >
+                                    撤销全部修改
+                                </Button>
+                                <Button
+                                    type="primary"
+                                    icon={<PlusOutlined />}
+                                    onClick={() => showNetworkEditor()}
+                                >
+                                    添加接口
+                                </Button>
+                            </Space>
+                        </Flex>
+                        <Table
+                            rowKey="name"
+                            size="small"
+                            pagination={false}
+                            columns={networkDraftColumns}
+                            dataSource={networkDraft}
+                            scroll={{ x: 'max-content', y: 360 }}
+                        />
+                        <div className="mt-4">
+                            <div className="mb-1 text-sm">失联自动回滚（秒）</div>
+                            <InputNumber
+                                min={30}
+                                max={300}
+                                value={networkRollbackTimeoutSec}
+                                onChange={(value) => setNetworkRollbackTimeoutSec(value ?? 60)}
+                            />
+                            <div className="mt-1 text-xs text-slate-500">
+                                节点先保存并应用整套 UCI 配置；若管理链路未恢复，再还原旧配置。
+                            </div>
+                        </div>
+                    </>
+                )}
+            </FormModal>
 
             <Modal
                 open={Boolean(platformNode)}
@@ -1239,129 +1499,6 @@ export default function EdgeNodePage() {
                     <Form.Item label="节点名称" name="name">
                         <Input maxLength={100} showCount placeholder="请输入节点名称" />
                     </Form.Item>
-                </Form>
-            </FormModal>
-
-            <FormModal
-                open={networkOpen}
-                title={`${editingNetwork ? '编辑' : '添加'}网络接口${
-                    networkNode ? ` · ${networkNode.name || networkNode.imei}` : ''
-                }`}
-                onCancel={() => {
-                    setNetworkOpen(false);
-                    setEditingNetwork(undefined);
-                }}
-                onOk={() => networkForm.submit()}
-                confirmLoading={network.isPending}
-                forceRender
-                destroyOnHidden
-            >
-                <Form
-                    form={networkForm}
-                    layout="vertical"
-                    onFinish={(values) => {
-                        const parsed = validateForm(networkForm, networkEditorSchema, values);
-                        if (parsed && networkNode) {
-                            const { rollbackTimeoutSec, ...item } = parsed;
-                            network.mutate(
-                                {
-                                    id: networkNode.id,
-                                    data: {
-                                        interfaces: [{ ...item, operation: 'upsert' }],
-                                        rollbackTimeoutSec,
-                                    },
-                                },
-                                {
-                                    onSuccess: async () => {
-                                        setNetworkOpen(false);
-                                        setEditingNetwork(undefined);
-                                        await refreshNetworkManager();
-                                    },
-                                }
-                            );
-                        }
-                    }}
-                >
-                    <Form.Item name="operation" hidden>
-                        <Input />
-                    </Form.Item>
-                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
-                        <Form.Item label="逻辑接口名称" name="name">
-                            <Input
-                                maxLength={15}
-                                disabled={Boolean(editingNetwork)}
-                                placeholder="例如 lan"
-                            />
-                        </Form.Item>
-                        <Form.Item label="地址方式" name="mode">
-                            <Select
-                                options={[
-                                    { value: 'dhcp', label: 'DHCP 客户端' },
-                                    { value: 'static', label: '静态 IPv4' },
-                                ]}
-                                onChange={(value) => {
-                                    if (value === 'dhcp') {
-                                        networkForm.setFieldsValue({
-                                            ip: '',
-                                            prefixLength: 0,
-                                            gateway: '',
-                                        });
-                                    }
-                                }}
-                            />
-                        </Form.Item>
-                    </div>
-                    <Form.Item label="创建网桥" name="bridge" valuePropName="checked">
-                        <Switch
-                            onChange={(checked) =>
-                                networkForm.setFieldsValue(
-                                    checked ? { device: '' } : { bridgePorts: [] }
-                                )
-                            }
-                        />
-                    </Form.Item>
-                    {networkBridge ? (
-                        <Form.Item label="网桥成员" name="bridgePorts">
-                            <Select
-                                mode="multiple"
-                                options={networkDeviceOptions}
-                                placeholder="选择一个或多个物理网卡"
-                                optionFilterProp="label"
-                                showSearch
-                            />
-                        </Form.Item>
-                    ) : (
-                        <Form.Item label="物理网卡" name="device">
-                            <Select
-                                options={networkDeviceOptions}
-                                placeholder="选择物理网卡"
-                                optionFilterProp="label"
-                                showSearch
-                            />
-                        </Form.Item>
-                    )}
-                    {networkMode === 'static' && (
-                        <>
-                            <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
-                                <Form.Item label="IPv4 地址" name="ip">
-                                    <Input placeholder="192.168.1.1" />
-                                </Form.Item>
-                                <Form.Item label="IPv4 前缀长度" name="prefixLength">
-                                    <InputNumber className="w-full" min={1} max={30} />
-                                </Form.Item>
-                            </div>
-                            <Form.Item label="网关（可选）" name="gateway">
-                                <Input placeholder="192.168.1.254" />
-                            </Form.Item>
-                        </>
-                    )}
-                    <Form.Item label="失联自动回滚（秒）" name="rollbackTimeoutSec">
-                        <InputNumber className="w-full" min={30} max={300} />
-                    </Form.Item>
-                    <p className="text-xs text-slate-500">
-                        节点通过 UCI
-                        原子应用配置；新网络无法让节点重新连接平台时，会自动恢复原配置。
-                    </p>
                 </Form>
             </FormModal>
 
