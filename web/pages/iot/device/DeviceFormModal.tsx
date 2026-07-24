@@ -120,7 +120,10 @@ const DeviceFormModal = ({
         connectionMode === 'edge' ? edgeNodeId : undefined
     );
     const edgeInterfacesWithIp = useMemo(
-        () => (edgeNode?.interfaces ?? []).filter((network) => network.ipv4?.trim()),
+        () =>
+            (edgeNode?.interfaces ?? []).filter(
+                (network) => !network.bridge && network.ipv4?.trim()
+            ),
         [edgeNode?.interfaces]
     );
 
