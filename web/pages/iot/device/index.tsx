@@ -245,27 +245,33 @@ const edgeEndpointLabel = (device: Device.RealTimeData) => {
 
 const tcpStateText = (device: Device.RealTimeData, online: boolean) => {
     const state = device.edgeStatus?.state?.trim();
-    if (!state) return online ? 'TCP状态：在线' : 'TCP状态：待上报';
+    const clientCount = device.edgeStatus?.clientCount ?? 0;
+    if (!state) return online ? 'TCP状态：已连接' : 'TCP状态：已断开';
     const labelMap: Record<string, string> = {
-        online: '在线',
+        online: '已连接',
         connected: '已连接',
-        listening: '监听中',
-        connecting: '连接中',
-        offline: '离线',
-        error: '异常',
-        failed: '异常',
+        listening: clientCount > 0 ? '已连接' : '已断开',
+        connecting: '重连中',
+        reconnecting: '重连中',
+        offline: '已断开',
+        disconnected: '已断开',
+        stopped: '已断开',
+        idle: '已断开',
+        error: '已断开',
+        failed: '已断开',
     };
     const label = labelMap[state.toLowerCase()] ?? state;
-    const clients =
-        device.edgeStatus?.clientCount !== undefined ? ` · ${device.edgeStatus.clientCount}连接` : '';
+    const clients = clientCount > 0 ? ` · ${clientCount}连接` : '';
     return `TCP状态：${label}${clients}`;
 };
 
 const tcpStateColor = (device: Device.RealTimeData, online: boolean) => {
     const state = device.edgeStatus?.state?.toLowerCase();
     if (!state) return online ? 'green' : 'default';
-    if (['online', 'connected', 'listening'].includes(state)) return 'green';
-    if (['connecting'].includes(state)) return 'processing';
+    if (['online', 'connected'].includes(state)) return 'green';
+    if (state === 'listening')
+        return (device.edgeStatus?.clientCount ?? 0) > 0 ? 'green' : 'default';
+    if (['connecting', 'reconnecting'].includes(state)) return 'processing';
     if (['error', 'failed'].includes(state)) return 'red';
     return 'default';
 };

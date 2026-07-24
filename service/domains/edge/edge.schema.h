@@ -174,4 +174,12 @@ class LogsValidator final : public ruvia::Middleware<LogsValidator> {
         RUVIA_RULE(source, RUVIA_MAX(16, "日志来源不能超过 16 个字符")));
 };
 
+class LogLevelValidator final : public ruvia::Middleware<LogLevelValidator> {
+  public:
+    RUVIA_VALIDATE_JSON(
+        LogLevelBody,
+        RUVIA_RULE(level, RUVIA_REQUIRED("日志级别不能为空"),
+                   RUVIA_ONE_OF("日志级别无效", "debug", "info", "warn", "error")));
+};
+
 } // namespace service::edge

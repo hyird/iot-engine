@@ -73,6 +73,7 @@ import {
     useEdgeLogs,
     useEnrollmentMutation,
     useFirmwareUpgradeMutation,
+    useLogLevelMutation,
     useModemControlMutation,
     useNetworkMutation,
     useNodeNameMutation,
@@ -502,6 +503,7 @@ export default function EdgeNodePage() {
     const [terminalNode, setTerminalNode] = useState<Edge.Node>();
     const [logNode, setLogNode] = useState<Edge.Node>();
     const [logLevel, setLogLevel] = useState<Edge.LogLevel>();
+    const [nodeLogLevel, setNodeLogLevel] = useState<Edge.LogLevel>('info');
     const [networkOpen, setNetworkOpen] = useState(false);
     const [platformOpen, setPlatformOpen] = useState(false);
     const [firmwareOpen, setFirmwareOpen] = useState(false);
@@ -538,6 +540,7 @@ export default function EdgeNodePage() {
     const platformDelete = usePlatformDeleteMutation();
     const firmwareUpgrade = useFirmwareUpgradeMutation();
     const modemControl = useModemControlMutation();
+    const logLevelControl = useLogLevelMutation();
 
     useEffect(() => {
         if (!selectedId) return;
@@ -1215,6 +1218,9 @@ export default function EdgeNodePage() {
                                                             icon={<FileTextOutlined />}
                                                             onClick={() => {
                                                                 setLogLevel(undefined);
+                                                                setNodeLogLevel(
+                                                                    node.status.log?.level ?? 'info'
+                                                                );
                                                                 setLogNode(node);
                                                             }}
                                                         />
@@ -1639,6 +1645,7 @@ export default function EdgeNodePage() {
                 onCancel={() => {
                     setLogNode(undefined);
                     setLogLevel(undefined);
+                    setNodeLogLevel('info');
                 }}
                 footer={null}
                 width="min(920px, 92vw)"
@@ -1646,19 +1653,41 @@ export default function EdgeNodePage() {
                 destroyOnHidden
             >
                 <Flex justify="space-between" align="center" gap={12} className="mb-3">
-                    <Select<Edge.LogLevel>
-                        allowClear
-                        className="w-[140px]"
-                        placeholder="日志级别"
-                        value={logLevel}
-                        onChange={(value) => setLogLevel(value)}
-                        options={[
-                            { value: 'debug', label: 'debug' },
-                            { value: 'info', label: 'info' },
-                            { value: 'warn', label: 'warn' },
-                            { value: 'error', label: 'error' },
-                        ]}
-                    />
+                    <Space>
+                        <Select<Edge.LogLevel>
+                            className="w-[140px]"
+                            value={nodeLogLevel}
+                            loading={logLevelControl.isPending}
+                            disabled={!canConfig || !logNode?.status.online}
+                            onChange={(value) => {
+                                setNodeLogLevel(value);
+                                if (logNode)
+                                    logLevelControl.mutate(
+                                        { id: logNode.id, data: { level: value } },
+                                        { onSuccess: () => void refreshLogs() }
+                                    );
+                            }}
+                            options={[
+                                { value: 'debug', label: 'DEBUG' },
+                                { value: 'info', label: 'INFO' },
+                                { value: 'warn', label: 'WARN' },
+                                { value: 'error', label: 'ERROR' },
+                            ]}
+                        />
+                        <Select<Edge.LogLevel>
+                            allowClear
+                            className="w-[140px]"
+                            placeholder="筛选级别"
+                            value={logLevel}
+                            onChange={(value) => setLogLevel(value)}
+                            options={[
+                                { value: 'debug', label: 'debug' },
+                                { value: 'info', label: 'info' },
+                                { value: 'warn', label: 'warn' },
+                                { value: 'error', label: 'error' },
+                            ]}
+                        />
+                    </Space>
                     <Button
                         icon={<ReloadOutlined />}
                         loading={logsLoading}

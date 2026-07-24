@@ -5,7 +5,7 @@
 
 namespace service::config {
 
-inline constexpr std::array<ruvia::DbMigration, 10> kSchemaMigrations{{
+inline constexpr std::array<ruvia::DbMigration, 11> kSchemaMigrations{{
     {"0001_initial_schema", R"sql(
 DO $schema$
 BEGIN
@@ -750,6 +750,21 @@ SET status = jsonb_build_object(
 ALTER TABLE edge_node_platform
     DROP COLUMN apply_status,
     DROP COLUMN last_message;
+END
+$schema$;
+)sql"},
+    {"0011_edge_log_status", R"sql(
+DO $schema$
+BEGIN
+ALTER TABLE edge_node
+    ALTER COLUMN status SET DEFAULT
+        '{"config":{"activeVersion":0,"desiredVersion":0,"state":"idle","message":""},"outbox":{"records":0,"bytes":0},"log":{"level":"info"}}'::jsonb;
+
+UPDATE edge_node
+SET status = jsonb_set(
+        jsonb_set(status, '{log}', COALESCE(status->'log', '{}'::jsonb), true),
+        '{log,level}', to_jsonb(COALESCE(status->'log'->>'level', 'info')::text), true)
+WHERE NOT (status ? 'log') OR status->'log'->>'level' IS NULL;
 END
 $schema$;
 )sql"},

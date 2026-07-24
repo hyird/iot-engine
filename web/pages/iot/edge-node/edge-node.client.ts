@@ -5,6 +5,7 @@ import {
     edgeIdSchema,
     edgeListQuerySchema,
     firmwareUpgradeSchema,
+    logLevelSchema,
     logsQuerySchema,
     modemControlSchema,
     networkSchema,
@@ -26,6 +27,8 @@ export const getLogs = (id: string, query?: Edge.LogsQuery) =>
     request.get<Edge.Logs>(
         appendQueryParams(`${BASE}/${edgeIdSchema.parse(id)}/logs`, logsQuerySchema.parse(query ?? {}))
     );
+export const setLogLevel = (id: string, data: Edge.LogLevelDto) =>
+    request.put<void>(`${BASE}/${edgeIdSchema.parse(id)}/logs/level`, logLevelSchema.parse(data));
 export const setEnrollment = (id: string, status: 'approved' | 'rejected', name?: string) =>
     request.put<void>(`${BASE}/${edgeIdSchema.parse(id)}/enrollment`, { status, name });
 export const renameEdge = (id: string, data: Edge.NameDto) =>

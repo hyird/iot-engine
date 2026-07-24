@@ -10,6 +10,7 @@ import {
     removePlatform,
     renameEdge,
     setEnrollment,
+    setLogLevel,
     syncDeviceConfig,
     upgradeFirmware,
 } from './edge-node.client';
@@ -105,6 +106,15 @@ export function useFirmwareUpgradeMutation() {
         mutationFn: (value: { id: string; data: Edge.FirmwareUpgradeDto }) =>
             upgradeFirmware(value.id, value.data),
         successMessage: '固件已上传，刷写任务已下发给当前节点',
+        invalidateKeys: [edgeQueryKeys.all],
+    });
+}
+
+export function useLogLevelMutation() {
+    return useMutationWithMessage({
+        mutationFn: (value: { id: string; data: Edge.LogLevelDto }) =>
+            setLogLevel(value.id, value.data),
+        successMessage: '日志等级已下发',
         invalidateKeys: [edgeQueryKeys.all],
     });
 }

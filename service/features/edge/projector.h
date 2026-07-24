@@ -196,7 +196,7 @@ class Projector final {
         const auto candidate = service::common::nextUuidV7();
         const auto rows = co_await context.db().query(R"sql(
 INSERT INTO edge_node(id, platform_id, imei, model, software_version, hostname, architecture,
-                      openwrt_release, capability, mobile, updated_at)
+                      openwrt_release, capability, mobile, status, updated_at)
 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8,
         jsonb_build_object(
             'networkConfig', $9::boolean,
@@ -221,6 +221,14 @@ VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8,
             'operator', $25::text,
             'connected', $26::boolean,
             'ipv4', $27::text),
+        jsonb_build_object(
+            'config', jsonb_build_object(
+                'activeVersion', 0,
+                'desiredVersion', 0,
+                'state', 'idle',
+                'message', ''),
+            'outbox', jsonb_build_object('records', 0, 'bytes', 0),
+            'log', jsonb_build_object('level', COALESCE(NULLIF($28::text, ''), 'info'))),
         NOW())
 ON CONFLICT (platform_id, imei) DO UPDATE
 SET model = EXCLUDED.model, software_version = EXCLUDED.software_version,
@@ -229,6 +237,10 @@ SET model = EXCLUDED.model, software_version = EXCLUDED.software_version,
     capability = EXCLUDED.capability || jsonb_build_object(
         'terminal', COALESCE((edge_node.capability->>'terminal')::boolean, false)),
     mobile = EXCLUDED.mobile,
+    status = jsonb_set(
+        jsonb_set(edge_node.status, '{log}',
+                  COALESCE(edge_node.status->'log', '{}'::jsonb), true),
+        '{log,level}', to_jsonb(COALESCE(NULLIF($28::text, ''), 'info')::text), true),
     updated_at = NOW()
 RETURNING id::text, enrollment_status)sql",
                                                      service::common::dbParams(
@@ -253,7 +265,8 @@ RETURNING id::text, enrollment_status)sql",
                                                           hello.mobile_registration_status(),
                                                           hello.apn(), hello.mobile_operator(),
                                                           hello.mobile_connected(),
-                                                          hello.mobile_ipv4()));
+                                                          hello.mobile_ipv4(),
+                                                          hello.log_level()));
         const auto key = protocol::authKey(hello.imei());
         const auto nodeId = std::string(rows.rows().front()[0].text());
         const auto enrollmentStatus = std::string(rows.rows().front()[1].text());
@@ -261,15 +274,7 @@ RETURNING id::text, enrollment_status)sql",
         co_await context.redis().set(key, value);
         if (enrollmentStatus == "approved") {
             (void)co_await context.db().execute(R"sql(
-UPDATE edge_task
-SET status = 'succeeded',
-    result = result || jsonb_build_object(
-        'state', 'rebooted',
-        'message', 'firmware reboot confirmed',
-        'softwareVersion', $1::text),
-    updated_at = NOW(),
-    completed_at = NOW()
-WHERE id = (
+WITH target AS (
     SELECT id
     FROM edge_task
     WHERE node_id = $2::uuid
@@ -278,7 +283,27 @@ WHERE id = (
       AND result->>'state' = 'flashing'
     ORDER BY created_at DESC
     LIMIT 1
-))sql",
+)
+UPDATE edge_task task
+SET status = CASE
+        WHEN task.request->>'version' = $1::text THEN 'succeeded'
+        ELSE 'failed'
+    END,
+    result = task.result || jsonb_build_object(
+        'state', CASE
+            WHEN task.request->>'version' = $1::text THEN 'rebooted'
+            ELSE 'versionMismatch'
+        END,
+        'message', CASE
+            WHEN task.request->>'version' = $1::text THEN 'firmware reboot confirmed'
+            ELSE 'firmware rebooted but version mismatch'
+        END,
+        'targetVersion', COALESCE(task.request->>'version', ''),
+        'softwareVersion', $1::text),
+    updated_at = NOW(),
+    completed_at = NOW()
+FROM target
+WHERE task.id = target.id)sql",
                                                 service::common::dbParams(
                                                     hello.software_version(), nodeId));
         }
@@ -303,7 +328,8 @@ SET status = jsonb_build_object(
                 WHEN COALESCE((status->'config'->>'desiredVersion')::bigint, 0) = $1
                      AND $1 > 0 THEN ''
                 ELSE COALESCE(status->'config'->>'message', '') END),
-        'outbox', jsonb_build_object('records', $2::bigint, 'bytes', $3::bigint)),
+        'outbox', jsonb_build_object('records', $2::bigint, 'bytes', $3::bigint),
+        'log', jsonb_build_object('level', COALESCE(NULLIF($16::text, ''), 'info'))),
     mobile = jsonb_build_object(
         'available', $4::boolean,
         'simState', $5::text,
@@ -316,10 +342,10 @@ SET status = jsonb_build_object(
         'operator', $13::text,
         'connected', $14::boolean,
         'ipv4', $15::text),
-    capability = jsonb_set(capability, '{modemControl}', to_jsonb($16::boolean), true),
+    capability = jsonb_set(capability, '{modemControl}', to_jsonb($17::boolean), true),
     last_seen_at = NOW(),
     updated_at = NOW()
-WHERE id = $17::uuid)sql",
+WHERE id = $18::uuid)sql",
                                              service::common::dbParams(
                                                  heartbeat.active_config_version(),
                                                  heartbeat.outbox_records(),
@@ -334,6 +360,7 @@ WHERE id = $17::uuid)sql",
                                                  heartbeat.apn(), heartbeat.mobile_operator(),
                                                  heartbeat.mobile_connected(),
                                                  heartbeat.mobile_ipv4(),
+                                                 heartbeat.log_level(),
                                                  heartbeat.supports_modem_control(), nodeId));
         if (heartbeat.active_config_version() != 0) {
             (void)co_await context.db().execute(R"sql(

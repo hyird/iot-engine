@@ -144,6 +144,7 @@ message Hello {
   string mobile_ipv4 = 30 [(nanopb).max_length = 15];
   bool supports_modem_control = 31;
   bool supports_logs = 32;
+  string log_level = 33 [(nanopb).max_length = 8];
 }
 
 message HelloAck {
@@ -222,6 +223,7 @@ message Heartbeat {
   bool mobile_connected = 20;
   string mobile_ipv4 = 21 [(nanopb).max_length = 15];
   bool supports_modem_control = 22;
+  string log_level = 23 [(nanopb).max_length = 8];
 }
 
 message HeartbeatAck {
@@ -606,6 +608,18 @@ message LogResult {
   repeated LogLine lines = 4 [(nanopb).max_count = 48];
 }
 
+message LogLevelRequest {
+  bytes request_id = 1 [(nanopb).max_size = 16];
+  string level = 2 [(nanopb).max_length = 8];
+}
+
+message LogLevelResult {
+  bytes request_id = 1 [(nanopb).max_size = 16];
+  bool success = 2;
+  string level = 3 [(nanopb).max_length = 8];
+  string message = 4 [(nanopb).max_length = 96];
+}
+
 message TerminalOpen {
   bytes terminal_id = 1 [(nanopb).max_size = 16];
   bytes ticket = 2 [(nanopb).max_size = 64];
@@ -691,6 +705,8 @@ message Envelope {
     TerminalData terminal_data = 71;
     TerminalResize terminal_resize = 72;
     TerminalClose terminal_close = 73;
+    LogLevelRequest log_level_request = 74;
+    LogLevelResult log_level_result = 75;
     Ping ping = 80;
     Pong pong = 81;
     Error error = 90;

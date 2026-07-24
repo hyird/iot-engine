@@ -456,6 +456,49 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
         service::common::fail(17020, "节点日志请求超时", 504);
     }
 
+    ruvia::Task<void> setLogLevel(ruvia::Context& c, std::string_view nodeId,
+                                  const LogLevelBody& body) {
+        co_await requireNodeCapability(c, nodeId, "logs", "节点日志");
+        const auto session = co_await c.redis().get(sessionKey(nodeId));
+        if (!session)
+            service::common::fail(17019, "节点当前离线", 409);
+
+        const auto level = std::string(body.level()->view());
+        const auto requestId = service::common::nextUuidV7();
+        std::uint8_t bytes[16]{};
+        protocol::uuidBytes(requestId, bytes);
+        auto envelope = protocol::outbound(nodeId);
+        auto* request = envelope.mutable_log_level_request();
+        request->set_request_id(protocol::bytes(bytes, sizeof(bytes)));
+        request->set_level(level);
+        co_await push(c, nodeId, envelope);
+
+        const auto key = logLevelResultKey(requestId);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (auto payload = co_await c.redis().get(key)) {
+                (void)co_await c.redis().del(key);
+                pb::LogLevelResult result;
+                if (!result.ParseFromArray(payload->data(), static_cast<int>(payload->size())))
+                    service::common::fail(17020, "节点日志等级回包解析失败", 502);
+                if (!result.success())
+                    service::common::fail(17020, result.message(), 502);
+                const auto currentLevel = result.level().empty() ? level : result.level();
+                (void)co_await c.db().execute(R"sql(
+UPDATE edge_node
+SET status = jsonb_set(
+        jsonb_set(status, '{log}', COALESCE(status->'log', '{}'::jsonb), true),
+        '{log,level}', to_jsonb($1::text), true),
+    updated_at = NOW()
+WHERE id = $2::uuid)sql",
+                                               service::common::dbParams(currentLevel, nodeId));
+                co_return;
+            }
+            (void)co_await ruvia::sleepFor(c.worker(), std::chrono::milliseconds(50));
+        }
+        service::common::fail(17020, "节点日志等级请求超时", 504);
+    }
+
   private:
     static std::string nodeSelect() {
         return R"sql(SELECT id::text, imei, COALESCE(name, ''), model, software_version,
@@ -468,6 +511,7 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
        COALESCE(status->'config'->>'message', ''),
        COALESCE((status->'outbox'->>'records')::bigint, 0),
        COALESCE((status->'outbox'->>'bytes')::bigint, 0),
+       COALESCE(status->'log'->>'level', 'info'),
        COALESCE((capability->>'networkConfig')::boolean, false),
        COALESCE((capability->>'networkConfigVersion')::bigint, 0),
        COALESCE((capability->>'firmwareUpdate')::boolean, false),
@@ -521,43 +565,46 @@ FROM edge_node)sql";
             .message(row[15].text());
         OutboxStatusDto outbox(c);
         outbox.records(integer(row[16].text())).bytes(integer(row[17].text()));
+        LogStatusDto log(c);
+        log.level(row[18].text());
         status.online(row[9].text() == "t")
             .lastSeenAt(row[10].text())
             .config(std::move(config))
-            .outbox(std::move(outbox));
+            .outbox(std::move(outbox))
+            .log(std::move(log));
 
         CapabilityDto capability(c);
-        capability.networkConfig(row[18].text() == "t")
-            .networkConfigVersion(integer(row[19].text()))
-            .firmwareUpdate(row[20].text() == "t")
-            .platformConfig(row[21].text() == "t")
-            .deviceConfig(row[22].text() == "t")
-            .modemControl(row[23].text() == "t")
-            .terminal(row[24].text() == "t")
-            .logs(row[25].text() == "t");
+        capability.networkConfig(row[19].text() == "t")
+            .networkConfigVersion(integer(row[20].text()))
+            .firmwareUpdate(row[21].text() == "t")
+            .platformConfig(row[22].text() == "t")
+            .deviceConfig(row[23].text() == "t")
+            .modemControl(row[24].text() == "t")
+            .terminal(row[25].text() == "t")
+            .logs(row[26].text() == "t");
 
         SignalDto signal(c);
-        signal.csq(integer(row[29].text()))
-            .rssiDbm(integer(row[30].text()))
-            .percent(integer(row[31].text()));
+        signal.csq(integer(row[30].text()))
+            .rssiDbm(integer(row[31].text()))
+            .percent(integer(row[32].text()));
         MobileDto mobile(c);
-        mobile.available(row[26].text() == "t")
-            .simState(row[27].text())
-            .iccid(row[28].text())
+        mobile.available(row[27].text() == "t")
+            .simState(row[28].text())
+            .iccid(row[29].text())
             .signal(std::move(signal))
-            .registered(row[32].text() == "t")
-            .registrationStatus(integer(row[33].text()))
-            .apn(row[34].text())
-            .operatorName(row[35].text())
-            .connected(row[36].text() == "t")
-            .ipv4(row[37].text());
+            .registered(row[33].text() == "t")
+            .registrationStatus(integer(row[34].text()))
+            .apn(row[35].text())
+            .operatorName(row[36].text())
+            .connected(row[37].text() == "t")
+            .ipv4(row[38].text());
 
         FirmwareStatusDto firmware(c);
-        firmware.state(row[38].text())
-            .progressPercent(integer(row[39].text()))
-            .downloadedBytes(integer(row[40].text()))
-            .totalBytes(integer(row[41].text()))
-            .message(row[42].text());
+        firmware.state(row[39].text())
+            .progressPercent(integer(row[40].text()))
+            .downloadedBytes(integer(row[41].text()))
+            .totalBytes(integer(row[42].text()))
+            .message(row[43].text());
 
         node.id(row[0].text())
             .imei(row[1].text())
@@ -917,6 +964,10 @@ VALUES ($1::uuid, $2::uuid, $3, $4::jsonb, $5::uuid))sql",
 
     static std::string logResultKey(std::string_view requestId) {
         return "iot:edge:logs:" + std::string(requestId);
+    }
+
+    static std::string logLevelResultKey(std::string_view requestId) {
+        return "iot:edge:logs:level:" + std::string(requestId);
     }
 
     static ruvia::Task<void> createTaskAndQueue(ruvia::Context& c, std::string_view nodeId,

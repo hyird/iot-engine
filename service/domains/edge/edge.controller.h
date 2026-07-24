@@ -37,6 +37,7 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
     RUVIA_POST_STREAM("/:id/firmware", uploadFirmware, EdgeIdValidator);
     RUVIA_POST("/:id/terminal-ticket", terminalTicket, EdgeIdValidator);
     RUVIA_GET("/:id/logs", logs, EdgeIdValidator, LogsValidator);
+    RUVIA_PUT("/:id/logs/level", logLevel, EdgeIdValidator, LogLevelValidator);
     RUVIA_GET("/:id", detail, EdgeIdValidator);
     RUVIA_ROUTES_END
 
@@ -122,6 +123,12 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
         co_await service::middleware::requirePermission(c, "iot:edge:query");
         co_return c.json(service::common::ok<LogsResponse>(
             c, co_await edgeService().logs(c, id(c), c.req().valid<LogsQuery>())));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> logLevel(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:edge:config");
+        co_await edgeService().setLogLevel(c, id(c), c.req().valid<LogLevelBody>());
+        co_return c.json(service::common::operation(c, "日志等级已下发"));
     }
 
     ruvia::Task<ruvia::HttpResponse> uploadFirmware(ruvia::Context& c) {

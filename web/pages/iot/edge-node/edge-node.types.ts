@@ -80,11 +80,16 @@ export namespace Edge {
         bytes: number;
     }
 
+    export interface LogStatus {
+        level: LogLevel;
+    }
+
     export interface NodeStatus {
         online: boolean;
         lastSeenAt: string;
         config: ConfigStatus;
         outbox: OutboxStatus;
+        log: LogStatus;
     }
 
     export interface Capability {
@@ -212,6 +217,10 @@ export namespace Edge {
 
     export interface Logs {
         lines: LogLine[];
+    }
+
+    export interface LogLevelDto {
+        level: LogLevel;
     }
 }
 

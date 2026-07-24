@@ -89,6 +89,11 @@ struct LogsQuery final {
     RUVIA_MODEL(LogsQuery, limit, level, source);
 };
 
+struct LogLevelBody final {
+    RUVIA_OPTIONAL_FIELD(level, ruvia::String);
+    RUVIA_MODEL(LogLevelBody, level);
+};
+
 struct InterfaceDto final {
     RUVIA_OPTIONAL_FIELD(name, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("displayName", displayName, ruvia::String);
@@ -164,12 +169,18 @@ struct OutboxStatusDto final {
     RUVIA_MODEL(OutboxStatusDto, records, bytes);
 };
 
+struct LogStatusDto final {
+    RUVIA_OPTIONAL_FIELD(level, ruvia::String);
+    RUVIA_MODEL(LogStatusDto, level);
+};
+
 struct NodeStatusDto final {
     RUVIA_OPTIONAL_FIELD(online, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("lastSeenAt", lastSeenAt, ruvia::String);
     RUVIA_OPTIONAL_FIELD(config, ConfigStatusDto);
     RUVIA_OPTIONAL_FIELD(outbox, OutboxStatusDto);
-    RUVIA_MODEL(NodeStatusDto, online, lastSeenAt, config, outbox);
+    RUVIA_OPTIONAL_FIELD(log, LogStatusDto);
+    RUVIA_MODEL(NodeStatusDto, online, lastSeenAt, config, outbox, log);
 };
 
 struct CapabilityDto final {
