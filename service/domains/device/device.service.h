@@ -729,6 +729,10 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
   private:
     static std::int64_t toInt(std::string_view value) { return std::stoll(std::string(value)); }
 
+    static std::string edgeEndpointStatusKey(std::string_view nodeId, std::string_view endpointId) {
+        return "iot:edge:endpoint:" + std::string(nodeId) + ':' + std::string(endpointId);
+    }
+
     // 列顺序必须与 fillItem 的 row 下标严格对应。
     static std::string itemColumns() {
         return R"sql(d.id::text, d.name, d.protocol_params->>'device_code', d.link_id::text,
@@ -930,6 +934,8 @@ ORDER BY configured.device_id, configured.protocol_order,
         auto pipeline = c.redis().pipeline();
         std::vector<DeviceItemDto*> deviceBindings;
         deviceBindings.reserve(items.size());
+        std::vector<DeviceItemDto*> endpointBindings;
+        endpointBindings.reserve(items.size());
         for (const auto& [id, item] : items) {
             (void)id;
             if (!item->deviceCode())
@@ -937,6 +943,12 @@ ORDER BY configured.device_id, configured.protocol_order,
             pipeline.hgetAll(
                 service::telemetry::latest::stateKey(item->deviceCode()->view()));
             deviceBindings.push_back(item);
+            if (item->edgeNodeId() && item->id() && item->edgeTransport() &&
+                item->edgeTransport()->view() == "tcp") {
+                pipeline.hgetAll(
+                    edgeEndpointStatusKey(item->edgeNodeId()->view(), item->id()->view()));
+                endpointBindings.push_back(item);
+            }
         }
         for (const auto& binding : bindings)
             pipeline.hgetAll(binding.key);
@@ -962,6 +974,21 @@ ORDER BY configured.device_id, configured.protocol_order,
                 online = service::message::utcNowMilliseconds() - toInt(reportTime) <= windowMs;
             }
             item->connected(online).connectionState(online ? "online" : "offline");
+        }
+        for (auto* item : endpointBindings) {
+            const auto& reply = replies[replyIndex++];
+            const auto state = redisHashField(reply, "state");
+            if (!state.empty())
+                item->edgeTcpState(state);
+            const auto reason = redisHashField(reply, "reason");
+            if (!reason.empty())
+                item->edgeTcpReason(reason);
+            const auto clientCount = redisHashField(reply, "client_count");
+            if (!clientCount.empty())
+                item->edgeTcpClientCount(toInt(clientCount));
+            const auto lastActivity = redisHashField(reply, "last_activity_at_ms");
+            if (!lastActivity.empty())
+                item->edgeTcpLastActivityAt(toInt(lastActivity));
         }
         std::map<DeviceItemDto*, std::int64_t> latestReport;
         for (const auto& binding : bindings) {
@@ -1442,6 +1469,9 @@ WHERE node_id = $1::uuid AND name = $2 LIMIT 1)sql",
                                                                              interfaceName));
         if (network.rows().empty())
             service::common::fail(18003, "所选网口不是节点已上报的接口", 409);
+        const auto interfaceIp = network.rows().front()[0].text();
+        if (interfaceIp.empty())
+            service::common::fail(18003, "所选网口没有 IPv4，不能用于边缘 TCP 设备", 409);
         const auto mode = str(body.edgeMode());
         const auto ip = str(body.edgeIp());
         if ((mode != "TCP Client" && mode != "TCP Server") || !body.edgePort() || !ipv4(ip))
@@ -1449,8 +1479,7 @@ WHERE node_id = $1::uuid AND name = $2 LIMIT 1)sql",
         if (protocol == "S7" && mode != "TCP Client")
             service::common::fail(18003, "S7 仅支持边缘节点主动连接 PLC", 400);
         if (mode == "TCP Server") {
-            const auto interfaceIp = network.rows().front()[0].text();
-            if (interfaceIp.empty() || (ip != "0.0.0.0" && ip != interfaceIp))
+            if (ip != "0.0.0.0" && ip != interfaceIp)
                 service::common::fail(18003, "TCP Server 监听地址必须是所选网口地址", 400);
         } else if (packetEnabled(body.heartbeat()) || packetEnabled(body.registration())) {
             service::common::fail(18002, "仅 TCP Server 设备支持注册包或心跳包", 400);
@@ -1462,23 +1491,111 @@ WHERE node_id = $1::uuid AND name = $2 LIMIT 1)sql",
                                                    std::optional<std::string> excludedId) {
         if (!body.edgeNodeId() || body.edgeNodeId()->view().empty())
             co_return;
-        const auto endpoint = edgeEndpointJson(body);
+        const auto transport = str(body.edgeTransport());
+        const auto interfaceName = str(body.edgeInterface());
+        const auto mode = str(body.edgeMode());
+        const auto ip = str(body.edgeIp());
+        const auto port = body.edgePort() ? static_cast<std::int64_t>(*body.edgePort()) : 0;
+        const auto slaveId = body.slaveId() ? static_cast<std::int64_t>(*body.slaveId()) : 1;
         const auto excluded = excludedId.value_or(std::string(kNilUuid));
-        const auto rows = co_await c.db().query(R"sql(
+        std::string protocol;
+        if (body.protocolConfigId() && !body.protocolConfigId()->view().empty()) {
+            const auto protocolRows = co_await c.db().query(
+                "SELECT protocol FROM protocol_config WHERE id = $1::uuid AND deleted_at IS NULL",
+                service::common::dbParams(body.protocolConfigId()->view()));
+            if (protocolRows.rows().empty())
+                co_return;
+            protocol = std::string(protocolRows.rows().front()[0].text());
+        } else if (excludedId) {
+            const auto protocolRows = co_await c.db().query(R"sql(
+SELECT p.protocol
+FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id AND p.deleted_at IS NULL
+WHERE d.id = $1::uuid AND d.deleted_at IS NULL LIMIT 1)sql",
+                                                            service::common::dbParams(excluded));
+            if (protocolRows.rows().empty())
+                co_return;
+            protocol = std::string(protocolRows.rows().front()[0].text());
+        } else {
+            co_return;
+        }
+
+        if (transport == "serial") {
+            const auto rows = co_await c.db().query(R"sql(
 SELECT d.name
+FROM device d
+WHERE d.edge_node_id = $1::uuid AND d.id <> $2::uuid AND d.deleted_at IS NULL
+  AND d.edge_endpoint->>'transport' = 'serial'
+  AND d.edge_endpoint->>'interface' = $3
+ORDER BY d.id LIMIT 1)sql",
+                                                    service::common::dbParams(
+                                                        body.edgeNodeId()->view(), excluded,
+                                                        interfaceName));
+            if (!rows.rows().empty())
+                service::common::fail(
+                    18006,
+                    "边缘串口已被设备占用，冲突设备: " + std::string(rows.rows().front()[0].text()),
+                    409);
+            co_return;
+        }
+
+        if (transport != "tcp")
+            co_return;
+
+        if (mode == "TCP Server") {
+            const auto rows = co_await c.db().query(R"sql(
+SELECT d.name
+FROM device d
+WHERE d.edge_node_id = $1::uuid AND d.id <> $2::uuid AND d.deleted_at IS NULL
+  AND d.edge_endpoint->>'transport' = 'tcp'
+  AND d.edge_endpoint->>'mode' = 'TCP Server'
+  AND COALESCE((d.edge_endpoint->>'port')::integer, 0) = $3
+  AND (
+    d.edge_endpoint->>'ip' = $4
+    OR d.edge_endpoint->>'ip' = '0.0.0.0'
+    OR $4 = '0.0.0.0'
+  )
+ORDER BY d.id LIMIT 1)sql",
+                                                    service::common::dbParams(
+                                                        body.edgeNodeId()->view(), excluded, port,
+                                                        ip));
+            if (!rows.rows().empty())
+                service::common::fail(
+                    18006,
+                    "边缘 TCP Server 监听地址端口冲突，冲突设备: " +
+                        std::string(rows.rows().front()[0].text()),
+                    409);
+            co_return;
+        }
+
+        if (mode != "TCP Client" || (protocol != "Modbus" && protocol != "S7"))
+            co_return;
+
+        const auto rows = co_await c.db().query(R"sql(
+SELECT d.name, COALESCE((d.protocol_params->>'slave_id')::integer, 1)
 FROM device d
 JOIN protocol_config p ON p.id = d.protocol_config_id AND p.deleted_at IS NULL
 WHERE d.edge_node_id = $1::uuid AND d.id <> $2::uuid AND d.deleted_at IS NULL
-  AND d.edge_endpoint = $3::jsonb
+  AND p.protocol = $3
+  AND d.edge_endpoint->>'transport' = 'tcp'
+  AND d.edge_endpoint->>'mode' = 'TCP Client'
+  AND d.edge_endpoint->>'ip' = $4
+  AND COALESCE((d.edge_endpoint->>'port')::integer, 0) = $5
 ORDER BY d.id)sql",
                                                 service::common::dbParams(
-                                                    body.edgeNodeId()->view(), excluded, endpoint));
+                                                    body.edgeNodeId()->view(), excluded, protocol,
+                                                    ip, port));
         for (const auto& row : rows.rows()) {
-            service::common::fail(
-                18006,
-                "OpenWrt 紧凑运行时要求一个物理端点只关联一个设备，冲突设备: " +
-                    std::string(row[0].text()),
-                409);
+            const std::string name(row[0].text());
+            if (protocol == "S7")
+                service::common::fail(18006,
+                                      "边缘 S7 TCP Client 同一目标只能关联一个设备，冲突设备: " +
+                                          name,
+                                      409);
+            if (toInt(row[1].text()) == slaveId)
+                service::common::fail(
+                    18006,
+                    "边缘 Modbus TCP Client 同一目标下 Slave ID 重复，冲突设备: " + name,
+                    409);
         }
     }
 

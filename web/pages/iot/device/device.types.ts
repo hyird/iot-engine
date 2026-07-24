@@ -49,6 +49,10 @@ export interface EdgeConnection {
     edge_mode?: EdgeMode;
     edge_ip?: string;
     edge_port?: number;
+    edgeTcpState?: string;
+    edgeTcpReason?: string;
+    edgeTcpClientCount?: number;
+    edgeTcpLastActivityAt?: number;
     serial_baud_rate?: number;
     serial_data_bits?: number;
     serial_stop_bits?: number;

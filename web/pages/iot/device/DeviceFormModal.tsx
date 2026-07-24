@@ -119,6 +119,10 @@ const DeviceFormModal = ({
     const { data: edgeNode, isLoading: edgeNodeLoading } = useEdgeDetail(
         connectionMode === 'edge' ? edgeNodeId : undefined
     );
+    const edgeInterfacesWithIp = useMemo(
+        () => (edgeNode?.interfaces ?? []).filter((network) => network.ipv4?.trim()),
+        [edgeNode?.interfaces]
+    );
 
     // 本地链路模式：协议类型从选中链路推导
     const selectedLink = linkOptions.find((opt) => opt.id === linkId);
@@ -484,13 +488,13 @@ const DeviceFormModal = ({
                                                   {serial.available ? '' : ' [不可用]'}
                                               </Select.Option>
                                           ))
-                                        : (edgeNode?.interfaces ?? []).map((network) => (
+                                        : edgeInterfacesWithIp.map((network) => (
                                               <Select.Option
                                                   key={network.name}
                                                   value={network.name}
                                               >
                                                   {network.displayName || network.name}
-                                                  {network.ipv4 ? ` · ${network.ipv4}` : ''}
+                                                  {` · ${network.ipv4}`}
                                                   {network.up ? '' : ' [未连接]'}
                                               </Select.Option>
                                           ))}

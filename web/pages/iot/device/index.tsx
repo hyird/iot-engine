@@ -215,6 +215,56 @@ const buildCardItems = (device: Device.RealTimeData): DeviceCardItem[] =>
 const getDeviceDisplayElementCount = (device: Device.RealTimeData) =>
     device.element_count ?? device.elements?.length ?? 0;
 
+const edgeNodeLabel = (device: Device.RealTimeData) =>
+    device.edge_node_name || device.edge_node_imei || device.edge_node_id || '未绑定节点';
+
+const edgeEndpointLabel = (device: Device.RealTimeData) => {
+    if (device.edge_transport === 'serial') {
+        const settings = [
+            device.serial_baud_rate,
+            device.serial_data_bits && device.serial_stop_bits
+                ? `${device.serial_data_bits}N${device.serial_stop_bits}`
+                : '',
+        ]
+            .filter(Boolean)
+            .join(' · ');
+        return `串口 ${device.edge_interface || '-'}${settings ? ` · ${settings}` : ''}`;
+    }
+    if (device.edge_transport === 'tcp') {
+        const address =
+            device.edge_ip && device.edge_port ? `${device.edge_ip}:${device.edge_port}` : '-';
+        return `网口/TCP ${device.edge_mode || '-'} · ${address}`;
+    }
+    return '边缘链路未配置';
+};
+
+const tcpStateText = (device: Device.RealTimeData, online: boolean) => {
+    const state = device.edgeTcpState?.trim();
+    if (!state) return online ? 'TCP状态：在线' : 'TCP状态：待上报';
+    const labelMap: Record<string, string> = {
+        online: '在线',
+        connected: '已连接',
+        listening: '监听中',
+        connecting: '连接中',
+        offline: '离线',
+        error: '异常',
+        failed: '异常',
+    };
+    const label = labelMap[state.toLowerCase()] ?? state;
+    const clients =
+        device.edgeTcpClientCount !== undefined ? ` · ${device.edgeTcpClientCount}连接` : '';
+    return `TCP状态：${label}${clients}`;
+};
+
+const tcpStateColor = (device: Device.RealTimeData, online: boolean) => {
+    const state = device.edgeTcpState?.toLowerCase();
+    if (!state) return online ? 'green' : 'default';
+    if (['online', 'connected', 'listening'].includes(state)) return 'green';
+    if (['connecting'].includes(state)) return 'processing';
+    if (['error', 'failed'].includes(state)) return 'red';
+    return 'default';
+};
+
 const DEVICE_ACCESS_LEVEL_OPTIONS: Array<{
     value: Device.ShareAccessLevel;
     label: string;
@@ -651,11 +701,7 @@ const DeviceGridItem = memo(
         );
         const canRemoteControl = device.remote_control !== false;
         const isCommandPopoverOpen = commandPopoverOpen && commandDeviceId === device.id;
-        const connectionLabel = device.edge_node_id
-            ? `边缘：${device.edge_node_name || device.edge_node_imei || device.edge_node_id}${
-                  device.edge_interface ? ` · ${device.edge_interface}` : ''
-              }`
-            : device.link_name || '未绑定连接';
+        const isEdgeTcp = device.edge_node_id && device.edge_transport === 'tcp';
 
         return (
             <div className={`flex flex-col ${wide ? 'xl:col-span-2' : ''}`}>
@@ -686,14 +732,33 @@ const DeviceGridItem = memo(
                     }
                     subtitle={
                         <div className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                            <span className="flex min-w-0 shrink-0 items-center">
+                            {device.edge_node_id ? (
+                                <>
+                                    <Tag color="blue" className="!mr-0 !rounded-md">
+                                        边缘：{edgeNodeLabel(device)}
+                                    </Tag>
+                                    <Tag color="cyan" className="!mr-0 !rounded-md">
+                                        {edgeEndpointLabel(device)}
+                                    </Tag>
+                                    {isEdgeTcp && (
+                                        <Tooltip title={device.edgeTcpReason || undefined}>
+                                            <Tag
+                                                color={tcpStateColor(device, online)}
+                                                className="!mr-0 !rounded-md"
+                                            >
+                                                {tcpStateText(device, online)}
+                                            </Tag>
+                                        </Tooltip>
+                                    )}
+                                </>
+                            ) : (
                                 <Tag color="blue" className="!mr-0 !rounded-md">
-                                    {connectionLabel}
+                                    {device.link_name || '未绑定连接'}
                                 </Tag>
-                                <Tag color="purple" className="!mr-0 !rounded-md">
-                                    {device.protocol_name || device.protocol_type || '未配置协议'}
-                                </Tag>
-                            </span>
+                            )}
+                            <Tag color="purple" className="!mr-0 !rounded-md">
+                                {device.protocol_name || device.protocol_type || '未配置协议'}
+                            </Tag>
                             <span className="min-w-0 truncate text-xs text-slate-400">
                                 上报：{formatDateTime(device.reportTime)}
                             </span>

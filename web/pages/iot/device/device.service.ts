@@ -41,6 +41,9 @@ export function useDeviceList(options?: { enabled?: boolean; pollingInterval?: n
         queryKey: deviceKeys.lists(),
         queryFn: api.getDeviceList,
         enabled: options?.enabled ?? true,
+        refetchInterval: options?.pollingInterval ?? false,
+        refetchOnWindowFocus: false,
+        staleTime: 5_000,
     });
 }
 

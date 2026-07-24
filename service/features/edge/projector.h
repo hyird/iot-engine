@@ -164,6 +164,9 @@ class Projector final {
         case pb::Envelope::kCommandResult:
             co_await saveCommandResult(context, nodeId, envelope.command_result());
             break;
+        case pb::Envelope::kEndpointStatusReport:
+            co_await saveEndpointStatus(context, nodeId, envelope.endpoint_status_report());
+            break;
         default:
             break;
         }
@@ -714,6 +717,40 @@ WHERE d.id = $1::uuid AND d.edge_node_id = $2::uuid AND d.deleted_at IS NULL LIM
              {"created_at_ms", std::to_string(message::utcNowMilliseconds())},
              {"completed_at_ms", std::to_string(result.completed_at_ms())}},
             10000);
+    }
+
+    static std::string endpointStatusKey(std::string_view nodeId, std::string_view endpointId) {
+        return "iot:edge:endpoint:" + std::string(nodeId) + ':' + std::string(endpointId);
+    }
+
+    static ruvia::Task<void> saveEndpointStatus(ruvia::WebWorkerContext& context,
+                                                 std::string_view nodeId,
+                                                 const pb::EndpointStatusReport& report) {
+        for (const auto& status : report.endpoints()) {
+            if (status.endpoint_id().size() != 16)
+                continue;
+            const auto endpointId = protocol::uuidText(status.endpoint_id());
+            std::string clients;
+            for (const auto& client : status.clients()) {
+                if (!clients.empty())
+                    clients.push_back(',');
+                clients += client;
+            }
+            const auto key = endpointStatusKey(nodeId, endpointId);
+            co_await service::message::redis::eraseHash(context.redis(), key);
+            co_await service::message::redis::setHash(
+                context.redis(), key,
+                {{"node_id", std::string(nodeId)},
+                 {"endpoint_id", endpointId},
+                 {"state", status.state()},
+                 {"reason", status.reason()},
+                 {"client_count", std::to_string(status.client_count())},
+                 {"clients", clients},
+                 {"last_activity_at_ms", std::to_string(status.last_activity_at_ms())},
+                 {"updated_at_ms", std::to_string(protocol::nowMs())}});
+            (void)co_await service::message::redis::command(
+                context.redis(), {"PEXPIRE", key, "300000"});
+        }
     }
 
     static std::string jsonEscape(std::string_view value) {
