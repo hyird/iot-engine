@@ -133,6 +133,16 @@ local latest_key = 'iot:device:' .. ARGV[2] .. ':latest'
 if redis.call('HGET', runtime_key, 'device_id') ~= ARGV[1] then
   return -1
 end
+local configured_ids = {}
+local has_configured_ids = false
+local configured_json = redis.call('HGET', latest_key, '_element_ids')
+if configured_json ~= false and configured_json ~= nil and configured_json ~= '' then
+  local ok, decoded = pcall(cjson.decode, configured_json)
+  if ok and type(decoded) == 'table' then
+    configured_ids = decoded
+    has_configured_ids = true
+  end
+end
 local observed_at = number_or(ARGV[4], 0)
 local online_until = observed_at + number_or(ARGV[7], 300000)
 local now = number_or(ARGV[5], observed_at)
@@ -162,42 +172,44 @@ if observed_at >= current_report then
 end
 local count = 0
 for element_id, point in pairs(payload.values or {}) do
-  local value = '-'
-  if point.value ~= nil and point.value ~= cjson.null then
-    value = tostring(point.value)
-  end
-  local existing = redis.call('HGET', latest_key, element_id)
-  local previous = {}
-  if existing ~= false and existing ~= nil and existing ~= '' then
-    local ok, decoded = pcall(cjson.decode, existing)
-    if ok and type(decoded) == 'table' then previous = decoded end
-  end
-  local current = number_or(previous.observedAt, -1)
-  if observed_at >= current then
-    local elementName = tostring(point.name or previous.name or element_id)
-    local unit = tostring(point.unit or previous.unit or '')
-    local scale = previous.scale
-    local decimals = previous.decimals
-    local group = tostring(previous.group or '')
-    local encode = tostring(previous.encode or '')
-    local sort = number_or(previous.sort, 0)
-    local document = cjson.encode({
-      id = element_id,
-      name = elementName,
-      value = value,
-      unit = unit,
-      scale = scale,
-      decimals = decimals,
-      group = group,
-      encode = encode,
-      sort = sort,
-      protocol = ARGV[3],
-      observedAt = observed_at,
-      updatedAt = number_or(ARGV[5], observed_at),
-      source = ARGV[6]
-    })
-    redis.call('HSET', latest_key, element_id, document)
-    count = count + 1
+  if not (has_configured_ids and configured_ids[element_id] == nil) then
+    local value = '-'
+    if point.value ~= nil and point.value ~= cjson.null then
+      value = tostring(point.value)
+    end
+    local existing = redis.call('HGET', latest_key, element_id)
+    local previous = {}
+    if existing ~= false and existing ~= nil and existing ~= '' then
+      local ok, decoded = pcall(cjson.decode, existing)
+      if ok and type(decoded) == 'table' then previous = decoded end
+    end
+    local current = number_or(previous.observedAt, -1)
+    if observed_at >= current then
+      local elementName = tostring(point.name or previous.name or element_id)
+      local unit = tostring(point.unit or previous.unit or '')
+      local scale = previous.scale
+      local decimals = previous.decimals
+      local group = tostring(previous.group or '')
+      local encode = tostring(previous.encode or '')
+      local sort = number_or(previous.sort, 0)
+      local document = cjson.encode({
+        id = element_id,
+        name = elementName,
+        value = value,
+        unit = unit,
+        scale = scale,
+        decimals = decimals,
+        group = group,
+        encode = encode,
+        sort = sort,
+        protocol = ARGV[3],
+        observedAt = observed_at,
+        updatedAt = number_or(ARGV[5], observed_at),
+        source = ARGV[6]
+      })
+      redis.call('HSET', latest_key, element_id, document)
+      count = count + 1
+    end
   end
 end
 return count
