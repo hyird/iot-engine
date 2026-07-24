@@ -275,30 +275,32 @@ RETURNING id::text, enrollment_status)sql",
         if (enrollmentStatus == "approved") {
             (void)co_await context.db().execute(R"sql(
 WITH target AS (
-    SELECT id
-    FROM edge_task
-    WHERE node_id = $2::uuid
-      AND task_type = 'firmware'
-      AND status = 'running'
-      AND result->>'state' = 'flashing'
+    SELECT task.id,
+           COALESCE(firmware.version, task.request->>'version', '') AS target_version
+    FROM edge_task task
+    LEFT JOIN edge_firmware firmware ON firmware.id::text = task.request->>'firmware_id'
+    WHERE task.node_id = $2::uuid
+      AND task.task_type = 'firmware'
+      AND task.status = 'running'
+      AND task.result->>'state' = 'flashing'
     ORDER BY created_at DESC
     LIMIT 1
 )
 UPDATE edge_task task
 SET status = CASE
-        WHEN task.request->>'version' = $1::text THEN 'succeeded'
+        WHEN target.target_version = $1::text THEN 'succeeded'
         ELSE 'failed'
     END,
     result = task.result || jsonb_build_object(
         'state', CASE
-            WHEN task.request->>'version' = $1::text THEN 'rebooted'
+            WHEN target.target_version = $1::text THEN 'rebooted'
             ELSE 'versionMismatch'
         END,
         'message', CASE
-            WHEN task.request->>'version' = $1::text THEN 'firmware reboot confirmed'
+            WHEN target.target_version = $1::text THEN 'firmware reboot confirmed'
             ELSE 'firmware rebooted but version mismatch'
         END,
-        'targetVersion', COALESCE(task.request->>'version', ''),
+        'targetVersion', target.target_version,
         'softwareVersion', $1::text),
     updated_at = NOW(),
     completed_at = NOW()

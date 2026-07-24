@@ -1505,13 +1505,12 @@ WHERE node_id = $1::uuid AND path = $2 LIMIT 1)sql",
 
         const auto network = co_await c.db().query(R"sql(
 SELECT COALESCE(ipv4, ''), is_up FROM edge_node_interface
-WHERE node_id = $1::uuid AND name = $2 AND is_bridge = FALSE
-  AND COALESCE(ipv4, '') <> ''
+WHERE node_id = $1::uuid AND name = $2 AND COALESCE(ipv4, '') <> ''
 LIMIT 1)sql",
                                                    service::common::dbParams(nodeId,
                                                                              interfaceName));
         if (network.rows().empty())
-            service::common::fail(18003, "所选网口不存在、无 IPv4 或不是业务物理口", 409);
+            service::common::fail(18003, "所选网口不存在、未上报 IPv4 或属于受保护上联", 409);
         const auto interfaceIp = network.rows().front()[0].text();
         const auto mode = str(body.edgeMode());
         const auto ip = str(body.edgeIp());

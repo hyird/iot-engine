@@ -121,9 +121,7 @@ const DeviceFormModal = ({
     );
     const edgeInterfacesWithIp = useMemo(
         () =>
-            (edgeNode?.interfaces ?? []).filter(
-                (network) => !network.bridge && network.ipv4?.trim()
-            ),
+            (edgeNode?.interfaces ?? []).filter((network) => network.ipv4?.trim()),
         [edgeNode?.interfaces]
     );
 

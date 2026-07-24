@@ -812,8 +812,7 @@ FROM edge_task WHERE node_id = $1::uuid ORDER BY created_at DESC LIMIT 50)sql",
     manageableInterfaces(ruvia::Context& c, std::string_view nodeId) {
         const auto rows = co_await c.db().query(
             "SELECT name FROM edge_node_interface "
-            "WHERE node_id = $1::uuid AND name <> 'lo' AND is_bridge = FALSE "
-            "AND COALESCE(ipv4, '') <> ''",
+            "WHERE node_id = $1::uuid AND name <> 'lo' AND is_bridge = FALSE",
             service::common::dbParams(nodeId));
         std::unordered_set<std::string> result;
         for (const auto& row : rows.rows())

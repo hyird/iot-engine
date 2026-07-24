@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -44,6 +45,36 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
   private:
     static std::string id(ruvia::Context& c) {
         return std::string(c.req().valid<EdgeIdParams>().id()->view());
+    }
+
+    static std::string firmwareVersion(std::string_view fileName) {
+        const auto stem = std::filesystem::path(std::string(fileName)).stem().string();
+        for (std::size_t start = 0; start < stem.size(); ++start) {
+            if (!std::isdigit(static_cast<unsigned char>(stem[start])))
+                continue;
+            std::size_t end = start;
+            bool hasDot = false;
+            bool previousDot = false;
+            while (end < stem.size()) {
+                const unsigned char value = static_cast<unsigned char>(stem[end]);
+                if (std::isdigit(value)) {
+                    previousDot = false;
+                    ++end;
+                    continue;
+                }
+                if (stem[end] == '.' && !previousDot) {
+                    hasDot = true;
+                    previousDot = true;
+                    ++end;
+                    continue;
+                }
+                break;
+            }
+            if (hasDot && !previousDot)
+                return stem.substr(start, end - start);
+            start = end;
+        }
+        return {};
     }
 
     static std::optional<std::string> text(const std::optional<ruvia::String>& value) {
@@ -197,7 +228,7 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
         }
         if (!fileSeen || bytes == 0 || fileName.empty())
             service::common::fail(17017, "固件文件不能为空", 400);
-        auto version = std::filesystem::path(fileName).stem().string();
+        auto version = firmwareVersion(fileName);
         if (version.empty())
             service::common::fail(17017, "无法从固件文件名识别版本", 400);
         if (version.size() > 64)

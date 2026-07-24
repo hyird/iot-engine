@@ -282,12 +282,16 @@ function TerminalModal({
         const encoder = new TextEncoder();
         const pendingInput: Uint8Array[] = [];
         const pendingOutput: Uint8Array[] = [];
+        const outputLimitNotice = encoder.encode('\r\n[终端输出过快，已省略较早内容]\r\n');
+        let pendingOutputBytes = 0;
+        let outputWriting = false;
+        let outputNoticeQueued = false;
         const terminal = new Terminal({
             cursorBlink: true,
             fontFamily: "'Cascadia Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace",
             fontSize: 14,
             lineHeight: 1.2,
-            scrollback: 5_000,
+            scrollback: 2_000,
             theme: {
                 background: '#020617',
                 foreground: '#d1fae5',
@@ -362,17 +366,68 @@ function TerminalModal({
                 )
             );
         };
-        const flushOutput = () => {
-            outputFrame = undefined;
-            if (pendingOutput.length === 0) return;
-            const size = pendingOutput.reduce((total, chunk) => total + chunk.byteLength, 0);
+        const takeOutput = (limit: number) => {
+            if (pendingOutput.length === 0) return undefined;
+            const parts: Uint8Array[] = [];
+            let size = 0;
+            while (pendingOutput.length > 0 && size < limit) {
+                const chunk = pendingOutput[0];
+                const remaining = limit - size;
+                if (chunk.byteLength <= remaining) {
+                    parts.push(chunk);
+                    pendingOutput.shift();
+                    pendingOutputBytes -= chunk.byteLength;
+                    size += chunk.byteLength;
+                } else {
+                    parts.push(chunk.slice(0, remaining));
+                    pendingOutput[0] = chunk.slice(remaining);
+                    pendingOutputBytes -= remaining;
+                    size += remaining;
+                }
+            }
+            outputNoticeQueued = pendingOutput.some((chunk) => chunk === outputLimitNotice);
+            if (parts.length === 1) return parts[0];
             const payload = new Uint8Array(size);
             let offset = 0;
-            for (const chunk of pendingOutput.splice(0)) {
+            for (const chunk of parts) {
                 payload.set(chunk, offset);
                 offset += chunk.byteLength;
             }
-            terminal.write(payload);
+            return payload;
+        };
+        const scheduleOutput = () => {
+            if (disposed || outputWriting || outputFrame !== undefined) return;
+            outputFrame = window.requestAnimationFrame(flushOutput);
+        };
+        const trimOutputBacklog = () => {
+            const maxBacklogBytes = 1024 * 1024;
+            while (pendingOutputBytes > maxBacklogBytes && pendingOutput.length > 0) {
+                const chunk = pendingOutput.shift();
+                pendingOutputBytes -= chunk?.byteLength ?? 0;
+            }
+            if (!outputNoticeQueued) {
+                pendingOutput.unshift(outputLimitNotice);
+                pendingOutputBytes += outputLimitNotice.byteLength;
+                outputNoticeQueued = true;
+            }
+        };
+        function flushOutput() {
+            outputFrame = undefined;
+            if (disposed || outputWriting || pendingOutput.length === 0) return;
+            const payload = takeOutput(32 * 1024);
+            if (!payload || payload.byteLength === 0) return;
+            outputWriting = true;
+            terminal.write(payload, () => {
+                outputWriting = false;
+                scheduleOutput();
+            });
+        }
+        const appendOutput = (payload: Uint8Array) => {
+            if (disposed || payload.byteLength === 0) return;
+            pendingOutput.push(payload);
+            pendingOutputBytes += payload.byteLength;
+            if (pendingOutputBytes > 1024 * 1024) trimOutputBacklog();
+            scheduleOutput();
         };
         const resizeObserver = new ResizeObserver(() => {
             if (resizeTimer !== undefined) window.clearTimeout(resizeTimer);
@@ -418,10 +473,7 @@ function TerminalModal({
                             setState('已连接');
                             terminal.focus();
                         } else if (frame.payload.case === 'data') {
-                            pendingOutput.push(frame.payload.value.data);
-                            if (outputFrame === undefined) {
-                                outputFrame = window.requestAnimationFrame(flushOutput);
-                            }
+                            appendOutput(frame.payload.value.data);
                         } else if (frame.payload.case === 'close') {
                             setState(frame.payload.value.reason || '终端已关闭');
                             socket.close(1000, 'terminal closed');
@@ -584,7 +636,18 @@ export default function EdgeNodePage() {
     };
 
     const showNetworkEditor = (item?: NetworkDraftItem) => {
-        const firstDevice = networkNode?.interfaces?.find((candidate) => !candidate.bridge)?.name;
+        const interfaces = networkNode?.interfaces ?? [];
+        const subinterfaceParents = new Set<string>();
+        for (const candidate of interfaces) {
+            let parent = candidate.name;
+            while (parent.includes('.')) {
+                parent = parent.slice(0, parent.lastIndexOf('.'));
+                if (parent) subinterfaceParents.add(parent);
+            }
+        }
+        const firstDevice = interfaces.find(
+            (candidate) => !candidate.bridge && !subinterfaceParents.has(candidate.name)
+        )?.name;
         networkForm.setFieldsValue(
             item
                 ? {
@@ -865,7 +928,6 @@ export default function EdgeNodePage() {
     }
     const networkDeviceOptions = networkInterfaces
         .filter((item) => !item.bridge)
-        .filter((item) => Boolean(item.ipv4))
         .filter((item) => !subinterfaceParents.has(item.name))
         .map((item) => ({
             value: item.name,
