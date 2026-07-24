@@ -283,7 +283,7 @@ WITH target AS (
       AND task.task_type = 'firmware'
       AND task.status = 'running'
       AND task.result->>'state' = 'flashing'
-    ORDER BY created_at DESC
+    ORDER BY task.created_at DESC
     LIMIT 1
 )
 UPDATE edge_task task
