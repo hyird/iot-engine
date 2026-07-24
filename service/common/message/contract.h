@@ -445,7 +445,7 @@ inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
     ParsedDeviceMessage parsed;
     parsed.messageId = std::string(require("message_id"));
     parsed.causationId = std::string(require("causation_id"));
-    parsed.linkId = std::string(require("link_id"));
+    parsed.linkId = std::string(message.get("link_id"));
     parsed.deviceId = std::string(require("device_id"));
     parsed.deviceCode = std::string(require("device_code"));
     parsed.protocol = std::string(require("protocol"));
@@ -474,7 +474,7 @@ inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
     parsed.valuesJson = std::string(require("values_json"));
     const auto payload = require("raw_payload_hex");
     parsed.rawPayloads = rawPayloadsFromJson(payload);
-    if (parsed.rawPayloads.empty())
+    if (parsed.rawPayloads.empty() && payload != "[]")
         throw std::runtime_error("Invalid parsed packet HEX payload array");
     return parsed;
 }

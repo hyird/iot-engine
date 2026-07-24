@@ -1797,6 +1797,28 @@ void testPacketLog() {
     std::filesystem::remove_all(directory, ignored);
 }
 
+void testEdgeParsedMessageContract() {
+    service::message::ParsedDeviceMessage parsed;
+    parsed.messageId = "019f91c9-4087-7e6c-88c0-c431b0dc15d8";
+    parsed.causationId = parsed.messageId;
+    parsed.deviceId = "019f91bf-6f83-7491-8a53-cd4fde034b72";
+    parsed.deviceCode = "PCS7";
+    parsed.protocol = "S7";
+    parsed.connectionId = "019f8c99-913c-7a0c-b6ad-c43bb9b12764";
+    parsed.occurredAtMs = 1784856700000;
+    parsed.observedAtMs = 1784856700000;
+    parsed.source = "edge";
+    parsed.valuesJson = R"json({"values":{"VW0":{"name":"VW0","value":1,"unit":""}}})json";
+
+    service::message::StreamMessage streamMessage{.id = "1-0",
+                                                  .fields = service::message::parsedFields(parsed)};
+    const auto roundTrip = service::message::parsedFrom(streamMessage);
+    require(roundTrip.linkId.empty(), "edge parsed message required a link id");
+    require(roundTrip.rawPayloads.empty(), "edge parsed message changed empty raw payloads");
+    require(roundTrip.deviceCode == "PCS7" && roundTrip.source == "edge",
+            "edge parsed message did not round-trip required fields");
+}
+
 } // namespace
 
 int main() {
@@ -1822,6 +1844,7 @@ int main() {
         run("worker timer", testWorkerTimer);
         run("runtime writable contract", testRuntimeWritableContract);
         run("command value decimal parsing", testCommandValueDecimalParsing);
+        run("edge parsed message contract", testEdgeParsedMessageContract);
         run("packet log", testPacketLog);
         std::cout << "collector protocol tests passed\n";
         return EXIT_SUCCESS;
