@@ -124,6 +124,12 @@ struct SerialDto final {
     RUVIA_MODEL(SerialDto, path, displayName, available, rs485);
 };
 
+struct PlatformStatusDto final {
+    RUVIA_OPTIONAL_FIELD(state, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
+    RUVIA_MODEL(PlatformStatusDto, state, message);
+};
+
 struct PlatformDto final {
     RUVIA_OPTIONAL_FIELD_NAME("platformId", platformId, ruvia::String);
     RUVIA_OPTIONAL_FIELD(name, ruvia::String);
@@ -132,10 +138,74 @@ struct PlatformDto final {
     RUVIA_OPTIONAL_FIELD(priority, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD_NAME("reconnectIntervalSec", reconnectIntervalSec, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD_NAME("outboxMaxBytes", outboxMaxBytes, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("applyStatus", applyStatus, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("lastMessage", lastMessage, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(status, PlatformStatusDto);
     RUVIA_MODEL(PlatformDto, platformId, name, baseUrl, enabled, priority, reconnectIntervalSec,
-                outboxMaxBytes, applyStatus, lastMessage);
+                outboxMaxBytes, status);
+};
+
+struct ConfigStatusDto final {
+    RUVIA_OPTIONAL_FIELD_NAME("activeVersion", activeVersion, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("desiredVersion", desiredVersion, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD(state, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
+    RUVIA_MODEL(ConfigStatusDto, activeVersion, desiredVersion, state, message);
+};
+
+struct OutboxStatusDto final {
+    RUVIA_OPTIONAL_FIELD(records, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD(bytes, ruvia::Int64);
+    RUVIA_MODEL(OutboxStatusDto, records, bytes);
+};
+
+struct NodeStatusDto final {
+    RUVIA_OPTIONAL_FIELD(online, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("lastSeenAt", lastSeenAt, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(config, ConfigStatusDto);
+    RUVIA_OPTIONAL_FIELD(outbox, OutboxStatusDto);
+    RUVIA_MODEL(NodeStatusDto, online, lastSeenAt, config, outbox);
+};
+
+struct CapabilityDto final {
+    RUVIA_OPTIONAL_FIELD_NAME("networkConfig", networkConfig, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("networkConfigVersion", networkConfigVersion, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("firmwareUpdate", firmwareUpdate, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("platformConfig", platformConfig, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("deviceConfig", deviceConfig, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("modemControl", modemControl, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD(terminal, ruvia::Bool);
+    RUVIA_MODEL(CapabilityDto, networkConfig, networkConfigVersion, firmwareUpdate,
+                platformConfig, deviceConfig, modemControl, terminal);
+};
+
+struct SignalDto final {
+    RUVIA_OPTIONAL_FIELD(csq, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("rssiDbm", rssiDbm, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD(percent, ruvia::Int64);
+    RUVIA_MODEL(SignalDto, csq, rssiDbm, percent);
+};
+
+struct MobileDto final {
+    RUVIA_OPTIONAL_FIELD(available, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("simState", simState, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(iccid, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(signal, SignalDto);
+    RUVIA_OPTIONAL_FIELD(registered, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("registrationStatus", registrationStatus, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD(apn, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("operator", operatorName, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(connected, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD(ipv4, ruvia::String);
+    RUVIA_MODEL(MobileDto, available, simState, iccid, signal, registered, registrationStatus, apn,
+                operatorName, connected, ipv4);
+};
+
+struct FirmwareStatusDto final {
+    RUVIA_OPTIONAL_FIELD(state, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("progressPercent", progressPercent, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("downloadedBytes", downloadedBytes, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("totalBytes", totalBytes, ruvia::Int64);
+    RUVIA_MODEL(FirmwareStatusDto, state, message, progressPercent, downloadedBytes, totalBytes);
 };
 
 struct TaskDto final {
@@ -162,40 +232,10 @@ struct EdgeNodeDto final {
     RUVIA_OPTIONAL_FIELD(architecture, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("openwrtRelease", openwrtRelease, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("enrollmentStatus", enrollmentStatus, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(online, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("supportsNetworkConfig", supportsNetworkConfig, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("networkConfigVersion", networkConfigVersion, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("supportsFirmwareUpdate", supportsFirmwareUpdate, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("supportsPlatformConfig", supportsPlatformConfig, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("supportsDeviceConfig", supportsDeviceConfig, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("supportsModemControl", supportsModemControl, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("ttydAvailable", ttydAvailable, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("modemAvailable", modemAvailable, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("simState", simState, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(iccid, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("signalCsq", signalCsq, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("signalRssiDbm", signalRssiDbm, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("signalPercent", signalPercent, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("mobileRegistered", mobileRegistered, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("mobileRegistrationStatus", mobileRegistrationStatus,
-                              ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(apn, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("mobileOperator", mobileOperator, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("mobileConnected", mobileConnected, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("mobileIpv4", mobileIpv4, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("firmwareStatus", firmwareStatus, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("firmwareProgressPercent", firmwareProgressPercent, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("firmwareDownloadedBytes", firmwareDownloadedBytes,
-                              ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("firmwareTotalBytes", firmwareTotalBytes, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("firmwareMessage", firmwareMessage, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("activeConfigVersion", activeConfigVersion, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("desiredConfigVersion", desiredConfigVersion, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("configStatus", configStatus, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("configMessage", configMessage, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("outboxRecords", outboxRecords, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("outboxBytes", outboxBytes, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("lastSeenAt", lastSeenAt, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(status, NodeStatusDto);
+    RUVIA_OPTIONAL_FIELD(capability, CapabilityDto);
+    RUVIA_OPTIONAL_FIELD(mobile, MobileDto);
+    RUVIA_OPTIONAL_FIELD(firmware, FirmwareStatusDto);
     RUVIA_OPTIONAL_FIELD_NAME("createdAt", createdAt, ruvia::String);
     RUVIA_OPTIONAL_FIELD(interfaces, ruvia::List<InterfaceDto>);
     RUVIA_OPTIONAL_FIELD(networks, ruvia::List<NetworkDto>);
@@ -203,15 +243,8 @@ struct EdgeNodeDto final {
     RUVIA_OPTIONAL_FIELD(platforms, ruvia::List<PlatformDto>);
     RUVIA_OPTIONAL_FIELD(tasks, ruvia::List<TaskDto>);
     RUVIA_MODEL(EdgeNodeDto, id, imei, name, model, softwareVersion, hostname, architecture,
-                openwrtRelease, enrollmentStatus, online, supportsNetworkConfig,
-                networkConfigVersion, supportsFirmwareUpdate, supportsPlatformConfig,
-                supportsDeviceConfig, supportsModemControl, ttydAvailable, modemAvailable,
-                simState, iccid, signalCsq, signalRssiDbm, signalPercent, mobileRegistered,
-                mobileRegistrationStatus, apn, mobileOperator, mobileConnected, mobileIpv4,
-                firmwareStatus, firmwareProgressPercent, firmwareDownloadedBytes,
-                firmwareTotalBytes, firmwareMessage, activeConfigVersion, desiredConfigVersion, configStatus,
-                configMessage, outboxRecords, outboxBytes, lastSeenAt, createdAt, interfaces,
-                networks, serialPorts, platforms, tasks);
+                openwrtRelease, enrollmentStatus, status, capability, mobile, firmware, createdAt,
+                interfaces, networks, serialPorts, platforms, tasks);
 };
 
 struct EdgePageDto final {

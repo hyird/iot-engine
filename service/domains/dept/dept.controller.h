@@ -15,7 +15,7 @@ namespace service::dept {
 
 class DeptController final : public ruvia::Controller<DeptController> {
   public:
-    RUVIA_CONTROLLER_GROUP("/api/departments", service::middleware::AuthMiddleware)
+    RUVIA_CONTROLLER_GROUP("/v1/departments", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
     RUVIA_GET("/", list, DeptListQueryValidator);
     RUVIA_GET("/options", options);

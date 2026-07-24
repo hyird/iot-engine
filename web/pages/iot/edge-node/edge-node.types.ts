@@ -47,8 +47,7 @@ export namespace Edge {
         priority: number;
         reconnectIntervalSec: number;
         outboxMaxBytes: number;
-        applyStatus: 'pending' | 'applied' | 'failed';
-        lastMessage: string;
+        status: PlatformStatus;
     }
 
     export interface Task {
@@ -63,6 +62,73 @@ export namespace Edge {
         updatedAt: string;
     }
 
+    export interface PlatformStatus {
+        state: 'pending' | 'applied' | 'failed';
+        message: string;
+    }
+
+    export interface ConfigStatus {
+        activeVersion: number;
+        desiredVersion: number;
+        state: 'idle' | 'pending' | 'applied' | 'rejected';
+        message: string;
+    }
+
+    export interface OutboxStatus {
+        records: number;
+        bytes: number;
+    }
+
+    export interface NodeStatus {
+        online: boolean;
+        lastSeenAt: string;
+        config: ConfigStatus;
+        outbox: OutboxStatus;
+    }
+
+    export interface Capability {
+        networkConfig: boolean;
+        networkConfigVersion: number;
+        firmwareUpdate: boolean;
+        platformConfig: boolean;
+        deviceConfig: boolean;
+        modemControl: boolean;
+        terminal: boolean;
+    }
+
+    export interface Signal {
+        csq: number;
+        rssiDbm: number;
+        percent: number;
+    }
+
+    export interface Mobile {
+        available: boolean;
+        simState:
+            | 'unknown'
+            | 'ready'
+            | 'not_inserted'
+            | 'pin_required'
+            | 'puk_required'
+            | 'blocked';
+        iccid: string;
+        signal: Signal;
+        registered: boolean;
+        registrationStatus: number;
+        apn: string;
+        operator: string;
+        connected: boolean;
+        ipv4: string;
+    }
+
+    export interface FirmwareStatus {
+        state: Task['status'] | '';
+        progressPercent: number;
+        downloadedBytes: number;
+        totalBytes: number;
+        message: string;
+    }
+
     export interface Node {
         id: string;
         imei: string;
@@ -73,44 +139,10 @@ export namespace Edge {
         architecture: string;
         openwrtRelease: string;
         enrollmentStatus: EnrollmentStatus;
-        online: boolean;
-        supportsNetworkConfig: boolean;
-        networkConfigVersion: number;
-        supportsFirmwareUpdate: boolean;
-        supportsPlatformConfig: boolean;
-        supportsDeviceConfig: boolean;
-        supportsModemControl: boolean;
-        ttydAvailable: boolean;
-        modemAvailable: boolean;
-        simState:
-            | 'unknown'
-            | 'ready'
-            | 'not_inserted'
-            | 'pin_required'
-            | 'puk_required'
-            | 'blocked';
-        iccid: string;
-        signalCsq: number;
-        signalRssiDbm: number;
-        signalPercent: number;
-        mobileRegistered: boolean;
-        mobileRegistrationStatus: number;
-        apn: string;
-        mobileOperator: string;
-        mobileConnected: boolean;
-        mobileIpv4: string;
-        firmwareStatus: Task['status'] | '';
-        firmwareProgressPercent: number;
-        firmwareDownloadedBytes: number;
-        firmwareTotalBytes: number;
-        firmwareMessage: string;
-        activeConfigVersion: number;
-        desiredConfigVersion: number;
-        configStatus: 'idle' | 'pending' | 'applied' | 'rejected';
-        configMessage: string;
-        outboxRecords: number;
-        outboxBytes: number;
-        lastSeenAt: string;
+        status: NodeStatus;
+        capability: Capability;
+        mobile: Mobile;
+        firmware: FirmwareStatus;
         createdAt: string;
         interfaces?: NetworkInterface[];
         networks?: Network[];

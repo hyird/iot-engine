@@ -12,6 +12,7 @@
 
 #include "service/common/message/contract.h"
 #include "service/features/collector/stream.h"
+#include "service/features/telemetry/latest.h"
 
 namespace service::command {
 
@@ -37,7 +38,7 @@ inline std::string_view field(const std::vector<message::StreamField>& fields,
 template <typename Redis>
 ruvia::Task<DeviceRoute> deviceRoute(const Redis& redis, std::string_view deviceCode) {
     const auto fields = co_await message::redis::hashEntries(
-        redis, "iot:state:device:" + std::string(deviceCode));
+        redis, service::telemetry::latest::runtimeKey(deviceCode));
     const auto worker = field(fields, "worker_id");
     const auto connection = field(fields, "connection_id");
     const auto epoch = field(fields, "session_epoch");

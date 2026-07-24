@@ -18,13 +18,13 @@ namespace service::device {
 
 class DeviceController final : public ruvia::Controller<DeviceController> {
   public:
-    RUVIA_CONTROLLER_GROUP("/api/device", service::middleware::AuthMiddleware)
+    RUVIA_CONTROLLER_GROUP("/v1/device", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
     // 设备
     RUVIA_GET("/options", options);
     RUVIA_GET("/realtime", realtime);
     RUVIA_GET("/commands/:id", commandStatus, DeviceIdParamsValidator);
-    // 设备分组（统一收编到 /api/device/groups）
+    // 设备分组（统一收编到 /v1/device/groups）
     RUVIA_GET("/groups/tree-count", groupTreeCount);
     RUVIA_GET("/groups/tree", groupTree);
     RUVIA_GET("/groups/:id/shares", groupShares, DeviceIdParamsValidator);

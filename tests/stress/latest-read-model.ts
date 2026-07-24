@@ -127,7 +127,7 @@ async function publish(value: number, observedAt: number) {
         'values_json',
         JSON.stringify({
             values: {
-                [elementId]: { name: element.element_name, value, unit: element.unit },
+                [elementId]: { name: element.name, value, unit: element.unit },
             },
         }),
         'raw_payload_hex',
@@ -140,9 +140,10 @@ const elementId = fixture.coverage.latestSamples.find(
     (sample) => sample.deviceCode === deviceCode,
 )?.elementId ?? fixture.coverage.modbusElementIds[0];
 if (!elementId) throw new Error(`fixture has no latest-value sample for ${deviceCode}`);
-const elementKey = `iot:latest:device:${deviceCode}:element:${elementId}`;
-const element = await hash(elementKey);
-if (!element.element_name) throw new Error('hydrated element metadata is missing');
+const latestKey = `iot:device:${deviceCode}:latest`;
+const initialLatest = await hash(latestKey);
+if (!initialLatest[elementId]) throw new Error('hydrated element metadata is missing');
+const element = JSON.parse(initialLatest[elementId]) as { name: string; unit: string };
 
 const newerObservedAt = Date.now();
 const olderObservedAt = newerObservedAt - 60_000;
@@ -151,8 +152,13 @@ const olderValue = 1001;
 await publish(newerValue, newerObservedAt);
 await waitFor(
     'newer Redis latest value',
-    () => hash(elementKey),
-    (value) => value.value === String(newerValue) && value.observed_at_ms === String(newerObservedAt),
+    async () => {
+        const latest = await hash(latestKey);
+        return latest[elementId]
+            ? (JSON.parse(latest[elementId]) as { value: string; observedAt: number })
+            : undefined;
+    },
+    (value) => value?.value === String(newerValue) && value.observedAt === newerObservedAt,
 );
 await publish(olderValue, olderObservedAt);
 await waitFor(
@@ -165,25 +171,27 @@ await waitFor(
     (value) => value.pending === 0 && value.depth === 0,
 );
 
-const retained = await hash(elementKey);
-if (retained.value !== String(newerValue) || retained.observed_at_ms !== String(newerObservedAt))
+const retainedLatest = await hash(latestKey);
+const retained = retainedLatest[elementId]
+    ? (JSON.parse(retainedLatest[elementId]) as {
+          id: string;
+          value: string;
+          observedAt: number;
+      })
+    : undefined;
+if (!retained || retained.value !== String(newerValue) || retained.observedAt !== newerObservedAt)
     throw new Error('late telemetry overwrote the newer Redis value');
-const retainedDocument = JSON.parse(retained.data) as {
-    element_id: string;
-    value: number;
-    observed_at_ms: number;
-};
 if (
-    retainedDocument.element_id !== elementId ||
-    retainedDocument.value !== newerValue ||
-    retainedDocument.observed_at_ms !== newerObservedAt
+    retained.id !== elementId ||
+    retained.value !== String(newerValue) ||
+    retained.observedAt !== newerObservedAt
 )
     throw new Error('Redis latest JSON document does not match the indexed Hash fields');
-const state = await hash(`iot:state:device:${deviceCode}`);
+const state = await hash(`iot:runtime:device:${deviceCode}`);
 if (state.last_report_at_ms !== String(newerObservedAt))
     throw new Error('late telemetry moved the device report timestamp backwards');
 
-const response = await fetch(`http://${host}:1102/api/device`, {
+const response = await fetch(`http://${host}:1102/v1/device`, {
     headers: { Authorization: `Bearer ${await accessToken()}` },
 });
 const result = (await response.json()) as {
@@ -209,7 +217,7 @@ console.log(
             deviceCode,
             elementId,
             retainedValue: retained.value,
-            retainedObservedAt: retained.observed_at_ms,
+            retainedObservedAt: retained.observedAt,
             lateObservedAt: olderObservedAt,
             parsedDepth: 0,
             pending: 0,

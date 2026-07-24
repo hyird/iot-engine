@@ -32,14 +32,26 @@ class ConfigService final {
 
     ruvia::Task<std::uint64_t> queueSnapshot(ruvia::Context& c, std::string_view nodeId) {
         const auto version = co_await c.db().query(R"sql(
-UPDATE edge_node
-SET desired_config_version = GREATEST(
-        (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint,
-        desired_config_version + 1,
-        active_config_version + 1),
-    config_status = 'pending', config_message = '', updated_at = NOW()
-WHERE id = $1::uuid AND enrollment_status = 'approved' AND supports_device_config
-RETURNING desired_config_version)sql",
+WITH next AS (
+    SELECT id,
+           GREATEST(
+               (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint,
+               COALESCE((status->'config'->>'desiredVersion')::bigint, 0) + 1,
+               COALESCE((status->'config'->>'activeVersion')::bigint, 0) + 1) AS revision
+    FROM edge_node
+    WHERE id = $1::uuid AND enrollment_status = 'approved'
+      AND COALESCE((capability->>'deviceConfig')::boolean, false)
+)
+UPDATE edge_node node
+SET status = jsonb_set(
+        jsonb_set(
+            jsonb_set(node.status, '{config,desiredVersion}', to_jsonb(next.revision), true),
+            '{config,state}', to_jsonb('pending'::text), true),
+        '{config,message}', to_jsonb(''::text), true),
+    updated_at = NOW()
+FROM next
+WHERE node.id = next.id
+RETURNING next.revision)sql",
                                                    service::common::dbParams(nodeId));
         if (version.rows().empty())
             service::common::fail(17011, "边缘节点未批准或不支持设备配置", 409);
@@ -66,9 +78,11 @@ VALUES ($1::uuid, $2, $3, $4, $5::uuid))sql",
     ruvia::Task<bool> requeueIfStale(ruvia::Context& c, std::string_view nodeId,
                                      std::uint64_t activeRevision) {
         const auto desired = co_await c.db().query(R"sql(
-SELECT desired_config_version, config_status
+SELECT COALESCE((status->'config'->>'desiredVersion')::bigint, 0),
+       COALESCE(status->'config'->>'state', 'idle')
 FROM edge_node
-WHERE id = $1::uuid AND enrollment_status = 'approved' AND supports_device_config)sql",
+WHERE id = $1::uuid AND enrollment_status = 'approved'
+  AND COALESCE((capability->>'deviceConfig')::boolean, false))sql",
                                                    service::common::dbParams(nodeId));
         if (desired.rows().empty())
             co_return false;
@@ -91,8 +105,14 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
                                           snapshot->digest,
                                           static_cast<std::int64_t>(snapshot->itemCount)));
         (void)co_await c.db().execute(R"sql(
-UPDATE edge_node SET config_status = 'pending', config_message = '', updated_at = NOW()
-WHERE id = $1::uuid AND desired_config_version = $2 AND config_status <> 'rejected')sql",
+UPDATE edge_node
+SET status = jsonb_set(
+        jsonb_set(status, '{config,state}', to_jsonb('pending'::text), true),
+        '{config,message}', to_jsonb(''::text), true),
+    updated_at = NOW()
+WHERE id = $1::uuid
+  AND COALESCE((status->'config'->>'desiredVersion')::bigint, 0) = $2
+  AND COALESCE(status->'config'->>'state', 'idle') <> 'rejected')sql",
                                       service::common::dbParams(
                                           nodeId, static_cast<std::int64_t>(revision)));
         co_await replaceQueue(c, nodeId, revision, snapshot->wires);
@@ -317,8 +337,13 @@ return #ARGV - 1
     static ruvia::Task<void> rejectBuild(ruvia::Context& c, std::string_view nodeId,
                                          std::uint64_t revision, std::string_view message) {
         (void)co_await c.db().execute(R"sql(
-UPDATE edge_node SET config_status = 'rejected', config_message = $1, updated_at = NOW()
-WHERE id = $2::uuid AND desired_config_version = $3)sql",
+UPDATE edge_node
+SET status = jsonb_set(
+        jsonb_set(status, '{config,state}', to_jsonb('rejected'::text), true),
+        '{config,message}', to_jsonb($1::text), true),
+    updated_at = NOW()
+WHERE id = $2::uuid
+  AND COALESCE((status->'config'->>'desiredVersion')::bigint, 0) = $3)sql",
                                       service::common::dbParams(
                                           message, nodeId, static_cast<std::int64_t>(revision)));
     }

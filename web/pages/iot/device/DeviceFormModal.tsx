@@ -80,7 +80,7 @@ interface DeviceFormValues {
 
 interface DeviceFormModalProps {
     open: boolean;
-    editing: Device.Item | null;
+    editing: Device.RealTimeData | null;
     loading: boolean;
     linkOptions: Link.Option[];
     onCancel: () => void;
@@ -132,7 +132,7 @@ const DeviceFormModal = ({
     const protocolType = connectionMode === 'edge' ? edgeProtocol : linkProtocolType;
 
     // 心跳包/注册包仅 Modbus/S7 的 TCP Server 模式使用。
-    const linkMode = connectionMode === 'edge' ? edgeMode : selectedLink?.mode;
+    const linkMode = connectionMode === 'edge' ? edgeMode : selectedLink?.endpoint.mode;
     const showPacketConfig = linkMode === 'TCP Server' && protocolType !== 'SL651';
 
     const { data: protocolOptions, isLoading: protocolOptionsLoading } = useProtocolConfigOptions(
@@ -359,10 +359,10 @@ const DeviceFormModal = ({
                         >
                             {linkOptions.map((opt) => (
                                 <Select.Option key={opt.id} value={opt.id}>
-                                    {opt.name} ({opt.protocol} - {opt.mode}
-                                    {opt.mode === 'TCP Server'
-                                        ? ` - ${opt.ip}:${opt.port}`
-                                        : ` - ${opt.targets?.length || 0} 个目标`}
+                                    {opt.name} ({opt.protocol} - {opt.endpoint.mode}
+                                    {opt.endpoint.mode === 'TCP Server'
+                                        ? ` - ${opt.endpoint.ip}:${opt.endpoint.port}`
+                                        : ` - ${opt.endpoint.targets?.length || 0} 个目标`}
                                     )
                                 </Select.Option>
                             ))}
@@ -370,14 +370,14 @@ const DeviceFormModal = ({
                     </Form.Item>
                 )}
 
-                {connectionMode === 'link' && selectedLink?.mode === 'TCP Client' && (
+                {connectionMode === 'link' && selectedLink?.endpoint.mode === 'TCP Client' && (
                     <Form.Item
                         label="目标地址"
                         name="target_id"
                         rules={[{ required: true, message: '请选择该设备使用的目标地址' }]}
                     >
                         <Select placeholder="选择目标 IP:Port">
-                            {(selectedLink.targets || []).map((target) => (
+                            {(selectedLink.endpoint.targets || []).map((target) => (
                                 <Select.Option
                                     key={target.id}
                                     value={target.id}
@@ -415,12 +415,12 @@ const DeviceFormModal = ({
                                         key={node.id}
                                         value={node.id}
                                         label={`${node.name || node.hostname || node.imei} ${node.imei}`}
-                                        disabled={!node.supportsDeviceConfig}
+                                        disabled={!node.capability.deviceConfig}
                                     >
                                         {node.name || node.hostname || '未命名节点'} ({node.imei})
-                                        {!node.supportsDeviceConfig
+                                        {!node.capability.deviceConfig
                                             ? ' [需升级 edgenode]'
-                                            : node.online
+                                            : node.status.online
                                               ? ''
                                               : ' [离线]'}
                                     </Select.Option>

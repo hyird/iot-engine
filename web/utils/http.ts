@@ -261,7 +261,7 @@ request.interceptors.response.use(
         const originalRequest = error.config as RequestConfig | undefined;
         const requestUrl = originalRequest?.url || '';
         const isSilent = originalRequest?._silent ?? false;
-        const isAuthRefreshRequest = requestUrl.includes('/api/auth/refresh');
+        const isAuthRefreshRequest = requestUrl.includes('/v1/auth/refresh');
         const hasAuthHeader = hasAuthorizationHeader(originalRequest?.headers);
 
         if (isSilent) {

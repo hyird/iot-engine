@@ -9,7 +9,7 @@ import {
     updateRoleSchema,
 } from './role.schema';
 
-const BASE = '/api/roles';
+const BASE = '/v1/roles';
 
 export const getList = (params?: Role.Query) =>
     request.get<PaginatedResult<Role.Item>>(

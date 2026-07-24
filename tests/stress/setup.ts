@@ -91,8 +91,14 @@ function addLink(
     port: number,
     targets: unknown[],
 ) {
+    const endpoint = {
+        mode,
+        ip: mode === 'TCP Server' ? ip : '',
+        port: mode === 'TCP Server' ? port : 0,
+        targets: mode === 'TCP Client' ? targets : [],
+    };
     statements.push(
-        `INSERT INTO link(id,name,mode,protocol,ip,port,targets,status,created_by) VALUES (${quote(id)},${quote(name)},${quote(mode)},${quote(protocol)},${quote(ip)},${port},${json(targets)},'enabled',${quote(adminId)})`,
+        `INSERT INTO link(id,name,protocol,endpoint,status,created_by) VALUES (${quote(id)},${quote(name)},${quote(protocol)},${json(endpoint)},'enabled',${quote(adminId)})`,
     );
 }
 

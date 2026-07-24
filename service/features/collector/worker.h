@@ -33,6 +33,7 @@
 #include "service/features/collector/stream.h"
 #include "service/features/collector/client.h"
 #include "service/features/collector/config.h"
+#include "service/features/telemetry/latest.h"
 
 namespace service::collector {
 
@@ -86,9 +87,9 @@ class Worker final {
             for (const auto& deviceCode : deviceCodes)
                 co_await markDeviceOffline(deviceCode, connectionId, "local_closed");
         routes_.clear();
-        co_await message::redis::eraseMatching(redis_, "iot:state:link:*:worker:" +
+        co_await message::redis::eraseMatching(redis_, "iot:runtime:link:*:worker:" +
                                                                 std::to_string(workerIndex_));
-        co_await message::redis::eraseHash(redis_, "iot:state:runtime-config:worker:" +
+        co_await message::redis::eraseHash(redis_, "iot:runtime:collector:" +
                                                             std::to_string(workerIndex_));
         redis_.close();
         scheduler_.stop();
@@ -341,10 +342,10 @@ class Worker final {
                                                       "iot-engine:control");
             // Runtime state is a projection owned by this worker. Remove leftovers from an
             // unclean previous process before publishing the freshly loaded snapshot.
-            co_await message::redis::eraseMatching(redis_, "iot:state:link:*:worker:" +
+            co_await message::redis::eraseMatching(redis_, "iot:runtime:link:*:worker:" +
                                                                     std::to_string(workerIndex_));
             co_await message::redis::eraseMatchingIfFieldValue(
-                redis_, "iot:state:device:*", "worker_id", std::to_string(workerIndex_));
+                redis_, "iot:runtime:device:*", "worker_id", std::to_string(workerIndex_));
             loadedConfigVersion_ = co_await config::activeVersion(redis_);
             auto snapshot = co_await config::load(redis_, loadedConfigVersion_);
             engine_.reload(snapshot);
@@ -410,7 +411,7 @@ class Worker final {
                             snapshot.links.begin(), snapshot.links.end(),
                             [&link](const auto& current) { return current.id == link.id; }))
                         co_await message::redis::eraseHash(
-                            redis_, "iot:state:link:" + link.id +
+                            redis_, "iot:runtime:link:" + link.id +
                                         ":worker:" + std::to_string(workerIndex_));
                 }
                 loadedSnapshot_ = std::move(snapshot);
@@ -1123,7 +1124,7 @@ class Worker final {
             }
             routes_.erase(bound);
         }
-        co_await message::redis::eraseHash(redis_, "iot:state:connection:" +
+        co_await message::redis::eraseHash(redis_, "iot:runtime:connection:" +
                                                             std::string(connectionId));
         connectionEpochs_.erase(std::string(connectionId));
         (void)reason;
@@ -1166,7 +1167,7 @@ redis.call('HSET', KEYS[1],
   'connection_id', ARGV[4], 'session_epoch', ARGV[5], 'updated_at_ms', ARGV[6])
 return {previous_worker, previous_connection}
 )lua";
-        const auto key = "iot:state:device:" + action.deviceCode;
+        const auto key = service::telemetry::latest::runtimeKey(action.deviceCode);
         const auto worker = std::to_string(workerIndex_);
         const auto epoch = std::to_string(sessionEpoch);
         const auto now = std::to_string(message::utcNowMilliseconds());
@@ -1207,11 +1208,19 @@ if not redis.call('HGET', KEYS[1], 'last_report_at_ms') then
   redis.call('HSET', KEYS[1], 'state', 'offline', 'state_reason', ARGV[2])
 end
 redis.call('HSET', KEYS[1], 'updated_at_ms', ARGV[3])
+redis.call('HSET', KEYS[2], '_state', cjson.encode({
+  state = 'offline',
+  reason = ARGV[2],
+  lastReportAt = tonumber(redis.call('HGET', KEYS[1], 'last_report_at_ms') or '0'),
+  onlineUntil = tonumber(redis.call('HGET', KEYS[1], 'online_until_ms') or '0'),
+  updatedAt = tonumber(ARGV[3])
+}), '_updated_at_ms', ARGV[3])
 return 1
 )lua";
-        const auto key = "iot:state:device:" + std::string(deviceCode);
+        const auto key = service::telemetry::latest::runtimeKey(deviceCode);
+        const auto latestKey = service::telemetry::latest::latestKey(deviceCode);
         const auto now = std::to_string(message::utcNowMilliseconds());
-        const std::string_view keys[]{key};
+        const std::string_view keys[]{key, latestKey};
         const std::string_view args[]{connectionId, reason, now};
         (void)co_await redis_.eval(script, keys, args);
     }
@@ -1428,7 +1437,8 @@ return 1
             }
             fields.push_back({"updated_at_ms", std::to_string(message::utcNowMilliseconds())});
             const auto key =
-                "iot:state:link:" + std::string(linkId) + ":worker:" + std::to_string(workerIndex_);
+                "iot:runtime:link:" + std::string(linkId) +
+                ":worker:" + std::to_string(workerIndex_);
             co_await message::redis::eraseHash(redis_, key);
             co_await message::redis::setHash(redis_, key, fields);
             co_await message::redis::acknowledgeAndDelete(redis_, stream, group, message.id);
@@ -1451,7 +1461,7 @@ return 1
     ruvia::Task<void> publishRuntimeState() {
         const auto now = std::to_string(message::utcNowMilliseconds());
         co_await message::redis::setHash(
-            redis_, "iot:state:runtime-config:worker:" + std::to_string(workerIndex_),
+            redis_, "iot:runtime:collector:" + std::to_string(workerIndex_),
             {{"worker_id", std::to_string(workerIndex_)},
              {"version", loadedConfigVersion_},
              {"state", "applied"},

@@ -25,26 +25,32 @@ interface LinkTarget {
     ip: string;
     port: number;
     status: LinkStatus;
-    conn_status?: ConnectionStatus;
-    state_reason?: string;
-    error_msg?: string;
-    last_activity_at_ms?: number;
+    runtime?: RuntimeStatus;
+}
+
+interface RuntimeStatus {
+    state?: ConnectionStatus;
+    reason?: string;
+    error?: string;
+    clientCount?: number;
+    clients?: string[];
+    lastActivityAt?: number;
+}
+
+interface LinkEndpoint {
+    mode: LinkMode;
+    ip: string;
+    port: number;
+    targets: LinkTarget[];
 }
 
 interface LinkItem {
     id: string;
     name: string;
-    mode: LinkMode;
     protocol: LinkProtocol;
-    ip: string;
-    port: number;
-    targets: LinkTarget[];
+    endpoint: LinkEndpoint;
     status: LinkStatus;
-    conn_status: ConnectionStatus;
-    client_count: number;
-    state_reason?: string;
-    clients?: string[];
-    error_msg?: string;
+    runtime?: RuntimeStatus;
     created_by: string;
     created_at: string;
     updated_at: string;
@@ -58,11 +64,8 @@ interface LinkQuery extends PageParams {
 
 interface SaveLinkDto {
     name: string;
-    mode: LinkMode;
     protocol: LinkProtocol;
-    ip: string;
-    port: number;
-    targets: LinkTarget[];
+    endpoint: LinkEndpoint;
     status: LinkStatus;
 }
 
@@ -78,6 +81,9 @@ export namespace Link {
     export type Mode = LinkMode;
     export type Protocol = LinkProtocol;
     export type Status = LinkStatus;
+    export type Connection = ConnectionStatus;
+    export type Runtime = RuntimeStatus;
+    export type Endpoint = LinkEndpoint;
     export type Target = LinkTarget;
     export type Item = LinkItem;
     export type Query = LinkQuery;

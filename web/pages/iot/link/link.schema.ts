@@ -17,43 +17,45 @@ const targetSchema = z.object({
 export const saveLinkSchema = z
     .object({
         name: z.string().min(1, '链路名称不能为空').max(100, '链路名称不能超过 100 个字符'),
-        mode: modeSchema,
         protocol: protocolSchema,
-        ip: z.string(),
-        port: z.number().int().min(0).max(65535),
-        targets: z.array(targetSchema).max(100, '单条链路最多配置 100 个目标'),
+        endpoint: z.object({
+            mode: modeSchema,
+            ip: z.string(),
+            port: z.number().int().min(0).max(65535),
+            targets: z.array(targetSchema).max(100, '单条链路最多配置 100 个目标'),
+        }),
         status: statusSchema,
     })
     .superRefine((value, context) => {
-        if (value.protocol === 'SL651' && value.mode !== 'TCP Server')
+        if (value.protocol === 'SL651' && value.endpoint.mode !== 'TCP Server')
             context.addIssue({
                 code: 'custom',
-                path: ['protocol'],
+                path: ['endpoint', 'mode'],
                 message: 'SL651 只支持 TCP Server 模式',
             });
-        if (value.mode === 'TCP Server') {
-            if (value.ip !== '0.0.0.0')
+        if (value.endpoint.mode === 'TCP Server') {
+            if (value.endpoint.ip !== '0.0.0.0')
                 context.addIssue({
                     code: 'custom',
-                    path: ['ip'],
+                    path: ['endpoint', 'ip'],
                     message: 'TCP Server 监听 IP 必须是 0.0.0.0',
                 });
-            if (value.port < 1)
+            if (value.endpoint.port < 1)
                 context.addIssue({
                     code: 'custom',
-                    path: ['port'],
+                    path: ['endpoint', 'port'],
                     message: '端口必须在 1 - 65535 之间',
                 });
-            if (value.targets.length)
+            if (value.endpoint.targets.length)
                 context.addIssue({
                     code: 'custom',
-                    path: ['targets'],
+                    path: ['endpoint', 'targets'],
                     message: 'TCP Server 不能配置目标地址',
                 });
-        } else if (!value.targets.length) {
+        } else if (!value.endpoint.targets.length) {
             context.addIssue({
                 code: 'custom',
-                path: ['targets'],
+                path: ['endpoint', 'targets'],
                 message: 'TCP Client 至少需要一个目标地址',
             });
         }

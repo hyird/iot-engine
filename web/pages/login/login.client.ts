@@ -8,10 +8,10 @@ import request, { type RequestConfig } from '@/utils/http';
 
 /** API 端点 */
 const ENDPOINTS = {
-    LOGIN: '/api/auth/login',
-    REFRESH: '/api/auth/refresh',
-    ME: '/api/auth/me',
-    LOGOUT: '/api/auth/logout',
+    LOGIN: '/v1/auth/login',
+    REFRESH: '/v1/auth/refresh',
+    ME: '/v1/auth/me',
+    LOGOUT: '/v1/auth/logout',
 } as const;
 
 /** 登录 */

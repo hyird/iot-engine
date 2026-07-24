@@ -13,7 +13,7 @@ import {
 } from './open-access.schema';
 import type { Access } from './open-access.types';
 
-const BASE = '/api/open-access';
+const BASE = '/v1/open-access';
 
 export const getDevices = async () =>
     deviceOptionSchema.array().parse(await request.get<unknown>(`${BASE}/devices`));

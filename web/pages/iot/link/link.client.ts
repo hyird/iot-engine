@@ -4,7 +4,7 @@ import type { PaginatedResult } from '@/utils/types';
 import { linkIdSchema, linkListQuerySchema, saveLinkSchema } from './link.schema';
 import type { Link } from './link.types';
 
-const BASE = '/api/link';
+const BASE = '/v1/link';
 
 export const getList = (params?: Link.Query) =>
     request.get<PaginatedResult<Link.Item>>(

@@ -12,6 +12,7 @@
 
 #include "service/features/edge/config.h"
 #include "service/features/event/config.h"
+#include "service/features/telemetry/latest.h"
 #include "service/common/http.h"
 #include "service/common/uuid.h"
 #include "service/middleware/auth.h"
@@ -155,6 +156,11 @@ SET name = CASE WHEN body.value ? 'name' THEN body.value->>'name' ELSE p.name EN
     updated_at = NOW()
 FROM body WHERE p.id = $2)sql",
                                       service::common::dbParams(payload.view(), id));
+        try {
+            co_await service::telemetry::latest::projectProtocol(c, id);
+        } catch (...) {
+            // Startup hydration repairs Redis read models if Redis is temporarily unavailable.
+        }
         co_await service::message::publishConfigEvent(c, "protocol", "updated", id);
         co_await syncEdgeNodes(c, id);
     }

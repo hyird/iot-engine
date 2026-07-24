@@ -34,7 +34,7 @@ inline std::string routeId(ruvia::Context& c) {
 
 class AccessAdminController final : public ruvia::Controller<AccessAdminController> {
   public:
-    RUVIA_CONTROLLER_GROUP("/api/open-access", service::middleware::AuthMiddleware)
+    RUVIA_CONTROLLER_GROUP("/v1/open-access", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
     RUVIA_GET("/devices", devices);
     RUVIA_GET("/keys", keys);
@@ -116,7 +116,7 @@ class AccessAdminController final : public ruvia::Controller<AccessAdminControll
 
 class AccessController final : public ruvia::Controller<AccessController> {
   public:
-    RUVIA_CONTROLLER_GROUP("/open-api")
+    RUVIA_CONTROLLER_GROUP("/open")
     RUVIA_ROUTES_BEGIN
     RUVIA_GET("/devices", devices);
     RUVIA_GET("/devices/:id/realtime", realtime);

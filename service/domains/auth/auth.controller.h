@@ -11,7 +11,7 @@ namespace service::auth {
 
 class AuthController final : public ruvia::Controller<AuthController> {
   public:
-    RUVIA_CONTROLLER_GROUP("/api/auth")
+    RUVIA_CONTROLLER_GROUP("/v1/auth")
     RUVIA_ROUTES_BEGIN
     RUVIA_POST("/login", login, LoginValidator);
     RUVIA_POST("/refresh", refresh, RefreshValidator);

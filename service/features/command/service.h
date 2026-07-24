@@ -107,9 +107,11 @@ class CommandService final {
         const auto edge = co_await context.db().query(R"sql(
 SELECT COALESCE(d.edge_node_id::text, ''), d.protocol_params->>'device_code', p.protocol,
        COALESCE((d.protocol_params->>'remote_control')::boolean, true),
-       COALESCE(n.enrollment_status = 'approved' AND n.supports_device_config AND
-                n.config_status = 'applied' AND
-                n.active_config_version = n.desired_config_version, false)
+       COALESCE(n.enrollment_status = 'approved'
+                AND COALESCE((n.capability->>'deviceConfig')::boolean, false)
+                AND COALESCE(n.status->'config'->>'state', 'idle') = 'applied'
+                AND COALESCE((n.status->'config'->>'activeVersion')::bigint, 0)
+                    = COALESCE((n.status->'config'->>'desiredVersion')::bigint, 0), false)
 FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id
              AND p.deleted_at IS NULL AND p.enabled
 LEFT JOIN edge_node n ON n.id = d.edge_node_id

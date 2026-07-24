@@ -121,7 +121,7 @@ async function waitForWorkers(version: string) {
     const initialKeys = (await waitFor(
         'Collector Worker runtime states',
         async () =>
-            (await redis.send('KEYS', ['iot:state:runtime-config:worker:*'])) as string[],
+            (await redis.send('KEYS', ['iot:runtime:collector:*'])) as string[],
         (keys) => keys.length > 0,
     )) as string[];
     await waitFor(
@@ -132,7 +132,7 @@ async function waitForWorkers(version: string) {
 }
 
 async function route(code: string) {
-    return hash(`iot:state:device:${code}`);
+    return hash(`iot:runtime:device:${code}`);
 }
 
 function track(socket: net.Socket) {
@@ -312,8 +312,8 @@ const body = (
 });
 
 try {
-    await expectConflict(`/api/link/${fixture.links.s7Server}`, '链路已被设备使用');
-    await expectConflict(`/api/protocol/configs/${fixture.protocols.S7}`, '协议配置已被设备使用');
+    await expectConflict(`/v1/link/${fixture.links.s7Server}`, '链路已被设备使用');
+    await expectConflict(`/v1/protocol/configs/${fixture.protocols.S7}`, '协议配置已被设备使用');
 
     const modbus = await connect(fixture.serverPorts.modbus);
     attachModbus(modbus);
@@ -336,13 +336,13 @@ try {
     let version = await activeVersion();
     await waitForWorkers(version);
 
-    await api('POST', '/api/device', body('enabled', 'TCP'));
+    await api('POST', '/v1/device', body('enabled', 'TCP'));
     createdDeviceId = await databaseDeviceId();
     version = await activeVersion(version);
     await waitForWorkers(version);
     const projectedTcp = await hash(`iot:config:runtime:${version}:device:${createdDeviceId}`);
     if (projectedTcp.modbus_mode !== 'TCP') throw new Error('created TCP mode was not projected');
-    const listResult = await api('GET', '/api/device');
+    const listResult = await api('GET', '/v1/device');
     const createdInList = (
         listResult.data as {
             list: Array<{ device_code: string; elements: Array<{ value: string }> }>;
@@ -363,7 +363,7 @@ try {
     configuredTcp.write(deviceCode);
     await waitFor('new TCP device route', () => route(deviceCode), (value) => Boolean(value.connection_id));
 
-    await api('PUT', `/api/device/${createdDeviceId}`, body('enabled', 'RTU'));
+    await api('PUT', `/v1/device/${createdDeviceId}`, body('enabled', 'RTU'));
     version = await activeVersion(version);
     await waitForWorkers(version);
     const projectedRtu = await hash(`iot:config:runtime:${version}:device:${createdDeviceId}`);
@@ -373,7 +373,7 @@ try {
     const configuredRtu = await connect(fixture.serverPorts.modbus);
     configuredRtu.write(deviceCode);
     await waitFor('new RTU device route', () => route(deviceCode), (value) => Boolean(value.connection_id));
-    await api('PUT', `/api/device/${createdDeviceId}`, body('disabled', 'RTU'));
+    await api('PUT', `/v1/device/${createdDeviceId}`, body('disabled', 'RTU'));
     version = await activeVersion(version);
     await waitForWorkers(version);
     await waitFor('disabled device route removal', () => route(deviceCode), (value) => !value.connection_id);
@@ -383,7 +383,7 @@ try {
         throw new Error('disabled device remained in runtime snapshot');
 
     const deletedDeviceId = createdDeviceId;
-    await api('DELETE', `/api/device/${deletedDeviceId}`);
+    await api('DELETE', `/v1/device/${deletedDeviceId}`);
     createdDeviceId = '';
     await waitFor('database soft delete', () => databaseDeviceDeleted(deletedDeviceId), Boolean);
     await Bun.sleep(500);
@@ -399,7 +399,7 @@ try {
     );
     await Promise.all(
         batchCodes.map((code, index) =>
-            api('POST', '/api/device', body('enabled', 'TCP', code, 120 + index)),
+            api('POST', '/v1/device', body('enabled', 'TCP', code, 120 + index)),
         ),
     );
     const createdBatch = await waitFor(
@@ -418,7 +418,7 @@ try {
 
     await Promise.all(
         [...createdBatch].map(([code, id], index) =>
-            api('PUT', `/api/device/${id}`, body('disabled', 'TCP', code, 120 + index)),
+            api('PUT', `/v1/device/${id}`, body('disabled', 'TCP', code, 120 + index)),
         ),
     );
     version = await activeVersion(version);
@@ -428,7 +428,7 @@ try {
             throw new Error(`concurrently disabled device remained active: ${id}`);
     }
 
-    await Promise.all([...createdBatch.values()].map((id) => api('DELETE', `/api/device/${id}`)));
+    await Promise.all([...createdBatch.values()].map((id) => api('DELETE', `/v1/device/${id}`)));
     batchDeviceIds.clear();
     await Bun.sleep(500);
     const batchDeleteVersion = String(
@@ -463,14 +463,14 @@ try {
     for (const socket of sockets) socket.destroy();
     if (createdDeviceId) {
         try {
-            await api('DELETE', `/api/device/${createdDeviceId}`);
+            await api('DELETE', `/v1/device/${createdDeviceId}`);
         } catch {
             // Preserve the original failure; the test row is clearly named for manual cleanup.
         }
     }
     for (const id of batchDeviceIds) {
         try {
-            await api('DELETE', `/api/device/${id}`);
+            await api('DELETE', `/v1/device/${id}`);
         } catch {
             // Preserve the original failure while still attempting bounded fixture cleanup.
         }

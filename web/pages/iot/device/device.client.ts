@@ -11,8 +11,8 @@ import {
 import type { Device } from './device.types';
 import type { DeviceGroup } from './device-group.types';
 
-const DEVICE_BASE = '/api/device';
-const GROUP_BASE = '/api/device/groups';
+const DEVICE_BASE = '/v1/device';
+const GROUP_BASE = '/v1/device/groups';
 
 const buildTree = (items: DeviceGroup.TreeItem[]) => {
     const map = new Map<string, DeviceGroup.TreeItem>();
@@ -28,7 +28,7 @@ const buildTree = (items: DeviceGroup.TreeItem[]) => {
 
 export const getDeviceList = () => request.get<PaginatedResult<Device.RealTimeData>>(DEVICE_BASE);
 export const getDeviceDetail = (id: string) =>
-    request.get<Device.Item>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}`);
+    request.get<Device.RealTimeData>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}`);
 export const getDeviceHistory = (id: string, query: Device.HistoryRecordQuery) =>
     request.get<PaginatedResult<Device.HistoryRecord>>(
         appendQueryParams(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}/history`, query)

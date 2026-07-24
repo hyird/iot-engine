@@ -22,7 +22,7 @@ namespace service::edge {
 
 class EdgeController final : public ruvia::Controller<EdgeController> {
   public:
-    RUVIA_CONTROLLER_GROUP("/api/edge", service::middleware::AuthMiddleware)
+    RUVIA_CONTROLLER_GROUP("/v1/edge", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
     RUVIA_GET("/", list, EdgeListValidator);
     RUVIA_GET("/firmware", firmwares);

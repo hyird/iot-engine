@@ -15,9 +15,9 @@ import { appendQueryParams } from '@/utils/query';
 import request from '@/utils/http';
 
 const ENDPOINTS = {
-    BASE: '/api/users',
-    DETAIL: (id: string) => `/api/users/${id}`,
-    OPTIONS: '/api/users/options',
+    BASE: '/v1/users',
+    DETAIL: (id: string) => `/v1/users/${id}`,
+    OPTIONS: '/v1/users/options',
 } as const;
 
 export function getList(params?: User.Query) {
@@ -31,7 +31,7 @@ export function getOptions(params?: Pick<User.Query, 'keyword'>) {
 }
 
 export function getRoleOptions() {
-    return request.get<User.Role[]>('/api/roles/options');
+    return request.get<User.Role[]>('/v1/roles/options');
 }
 
 export function create(data: User.CreateDto) {

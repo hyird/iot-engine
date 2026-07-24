@@ -437,7 +437,7 @@ inline ruvia::Task<void> writeLinkStatus(const Redis& redis, std::size_t workerI
                                          bool publishEvent = true) {
     const auto id = std::string(linkId);
     const auto key =
-        "iot:state:link:" + id + ":worker:" + std::to_string(workerIndex);
+        "iot:runtime:link:" + id + ":worker:" + std::to_string(workerIndex);
     co_await eraseHash(redis, key);
     co_await setHash(redis, key, fields);
     if (publishEvent) {
@@ -453,7 +453,7 @@ template <typename Redis>
 inline ruvia::Task<void> removeLinkStatus(const Redis& redis, std::size_t workerIndex,
                                           std::string_view linkId) {
     const auto id = std::string(linkId);
-    co_await eraseHash(redis, "iot:state:link:" + id +
+    co_await eraseHash(redis, "iot:runtime:link:" + id +
                                   ":worker:" + std::to_string(workerIndex));
     (void)co_await add(redis, linkEventStream(workerIndex),
                        {{"message_id", nextMessageId()},

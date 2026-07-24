@@ -61,7 +61,7 @@ class EdgeService {
         ruvia::List<EdgeNodeDto> nodes(c.resource());
         for (const auto& row : rows.rows()) {
             auto& node = nodes.emplace(c);
-            fillNode(node, row);
+            fillNode(c, node, row);
         }
         EdgePageDto result(c);
         result.list(std::move(nodes))
@@ -78,7 +78,7 @@ class EdgeService {
         if (rows.rows().empty())
             service::common::fail(17001, "边缘节点不存在", 404);
         EdgeNodeDto node(c);
-        fillNode(node, rows.rows().front());
+        fillNode(c, node, rows.rows().front());
         node.interfaces(co_await interfaces(c, id));
         node.networks(co_await networks(c, id));
         node.serialPorts(co_await serialPorts(c, id));
@@ -205,7 +205,7 @@ RETURNING id)sql",
 
     ruvia::Task<void> queueModem(ruvia::Context& c, std::string_view nodeId,
                                  const ModemControlBody& body) {
-        co_await requireNodeCapability(c, nodeId, "supports_modem_control", "4G 控制");
+        co_await requireNodeCapability(c, nodeId, "modemControl", "4G 控制");
         const std::string action(body.action()->view());
         const std::string apn = body.apn() ? std::string(body.apn()->view()) : std::string{};
         if (action == "set_apn" && apn.empty())
@@ -227,7 +227,7 @@ RETURNING id)sql",
 
     ruvia::Task<std::string> queuePlatform(ruvia::Context& c, std::string_view nodeId,
                                            const PlatformBody& body) {
-        co_await requireNodeCapability(c, nodeId, "supports_platform_config", "多平台配置");
+        co_await requireNodeCapability(c, nodeId, "platformConfig", "多平台配置");
         const std::string platformId = body.platformId()
                                            ? std::string(body.platformId()->view())
                                            : service::common::nextUuidV7();
@@ -261,13 +261,14 @@ RETURNING id)sql",
         const auto principal = service::middleware::requireAuth(c);
         (void)co_await c.db().execute(R"sql(
 INSERT INTO edge_node_platform(node_id, platform_id, name, base_url, enabled, priority,
-                               reconnect_interval_sec, outbox_max_bytes, apply_status)
-VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, 'pending')
+                               reconnect_interval_sec, outbox_max_bytes, status)
+VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8,
+        jsonb_build_object('state', 'pending', 'message', ''))
 ON CONFLICT (node_id, platform_id) DO UPDATE
 SET name = EXCLUDED.name, base_url = EXCLUDED.base_url, enabled = EXCLUDED.enabled,
     priority = EXCLUDED.priority, reconnect_interval_sec = EXCLUDED.reconnect_interval_sec,
-    outbox_max_bytes = EXCLUDED.outbox_max_bytes, apply_status = 'pending',
-    last_message = NULL, updated_at = NOW())sql",
+    outbox_max_bytes = EXCLUDED.outbox_max_bytes,
+    status = jsonb_build_object('state', 'pending', 'message', ''), updated_at = NOW())sql",
                                       service::common::dbParams(
                                           nodeId, platformId, name, baseUrl, *body.enabled(),
                                           *body.priority(), *body.reconnectIntervalSec(),
@@ -279,7 +280,7 @@ SET name = EXCLUDED.name, base_url = EXCLUDED.base_url, enabled = EXCLUDED.enabl
 
     ruvia::Task<void> deletePlatform(ruvia::Context& c, std::string_view nodeId,
                                      std::string_view platformId) {
-        co_await requireNodeCapability(c, nodeId, "supports_platform_config", "多平台配置");
+        co_await requireNodeCapability(c, nodeId, "platformConfig", "多平台配置");
         if (platformId == protocol::kBootstrapPlatformId)
             service::common::fail(17007, "固化平台不能被删除", 400);
         const auto taskId = service::common::nextUuidV7();
@@ -298,7 +299,7 @@ SET name = EXCLUDED.name, base_url = EXCLUDED.base_url, enabled = EXCLUDED.enabl
     }
 
     ruvia::Task<void> validateFirmwareTarget(ruvia::Context& c, std::string_view nodeId) {
-        co_await requireNodeCapability(c, nodeId, "supports_firmware_update", "远程刷写");
+        co_await requireNodeCapability(c, nodeId, "firmwareUpdate", "远程刷写");
     }
 
     ruvia::Task<void> queueFirmware(ruvia::Context& c, std::string_view nodeId,
@@ -382,7 +383,7 @@ WHERE id = $1::uuid AND download_token = $2 LIMIT 1)sql",
     ruvia::Task<TerminalTicketDto> terminalTicket(ruvia::Context& c,
                                                   std::string_view nodeId) {
         const auto rows = co_await c.db().query(R"sql(
-SELECT enrollment_status, ttyd_available,
+SELECT enrollment_status, COALESCE((capability->>'terminal')::boolean, false),
        (last_seen_at IS NOT NULL AND last_seen_at > NOW() - INTERVAL '90 seconds')
 FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
                                                 service::common::dbParams(nodeId));
@@ -410,13 +411,32 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
         return R"sql(SELECT id::text, imei, COALESCE(name, ''), model, software_version,
        hostname, architecture, openwrt_release, enrollment_status,
        (last_seen_at IS NOT NULL AND last_seen_at > NOW() - INTERVAL '90 seconds'),
-       supports_network_config, network_config_version, supports_firmware_update,
-       supports_platform_config, supports_device_config, ttyd_available, active_config_version,
-       desired_config_version, config_status, config_message, outbox_records, outbox_bytes,
        COALESCE(last_seen_at::text, ''), created_at::text,
-       supports_modem_control, modem_available, sim_state, iccid, signal_csq,
-       signal_rssi_dbm, signal_percent, mobile_registered, mobile_registration_status,
-       apn, mobile_operator, mobile_connected, mobile_ipv4,
+       COALESCE((status->'config'->>'activeVersion')::bigint, 0),
+       COALESCE((status->'config'->>'desiredVersion')::bigint, 0),
+       COALESCE(status->'config'->>'state', 'idle'),
+       COALESCE(status->'config'->>'message', ''),
+       COALESCE((status->'outbox'->>'records')::bigint, 0),
+       COALESCE((status->'outbox'->>'bytes')::bigint, 0),
+       COALESCE((capability->>'networkConfig')::boolean, false),
+       COALESCE((capability->>'networkConfigVersion')::bigint, 0),
+       COALESCE((capability->>'firmwareUpdate')::boolean, false),
+       COALESCE((capability->>'platformConfig')::boolean, false),
+       COALESCE((capability->>'deviceConfig')::boolean, false),
+       COALESCE((capability->>'modemControl')::boolean, false),
+       COALESCE((capability->>'terminal')::boolean, false),
+       COALESCE((mobile->>'available')::boolean, false),
+       COALESCE(mobile->>'simState', 'unknown'),
+       COALESCE(mobile->>'iccid', ''),
+       COALESCE((mobile->'signal'->>'csq')::bigint, 99),
+       COALESCE((mobile->'signal'->>'rssiDbm')::bigint, -1),
+       COALESCE((mobile->'signal'->>'percent')::bigint, 0),
+       COALESCE((mobile->>'registered')::boolean, false),
+       COALESCE((mobile->>'registrationStatus')::bigint, -1),
+       COALESCE(mobile->>'apn', ''),
+       COALESCE(mobile->>'operator', ''),
+       COALESCE((mobile->>'connected')::boolean, false),
+       COALESCE(mobile->>'ipv4', ''),
        COALESCE((SELECT task.status FROM edge_task task
                  WHERE task.node_id = edge_node.id AND task.task_type = 'firmware'
                  ORDER BY task.created_at DESC LIMIT 1), ''),
@@ -441,7 +461,52 @@ FROM edge_node)sql";
         return error == std::errc{} && end == value.data() + value.size() ? result : 0;
     }
 
-    template <typename Row> static void fillNode(EdgeNodeDto& node, const Row& row) {
+    template <typename Row> static void fillNode(ruvia::Context& c, EdgeNodeDto& node, const Row& row) {
+        NodeStatusDto status(c);
+        ConfigStatusDto config(c);
+        config.activeVersion(integer(row[12].text()))
+            .desiredVersion(integer(row[13].text()))
+            .state(row[14].text())
+            .message(row[15].text());
+        OutboxStatusDto outbox(c);
+        outbox.records(integer(row[16].text())).bytes(integer(row[17].text()));
+        status.online(row[9].text() == "t")
+            .lastSeenAt(row[10].text())
+            .config(std::move(config))
+            .outbox(std::move(outbox));
+
+        CapabilityDto capability(c);
+        capability.networkConfig(row[18].text() == "t")
+            .networkConfigVersion(integer(row[19].text()))
+            .firmwareUpdate(row[20].text() == "t")
+            .platformConfig(row[21].text() == "t")
+            .deviceConfig(row[22].text() == "t")
+            .modemControl(row[23].text() == "t")
+            .terminal(row[24].text() == "t");
+
+        SignalDto signal(c);
+        signal.csq(integer(row[28].text()))
+            .rssiDbm(integer(row[29].text()))
+            .percent(integer(row[30].text()));
+        MobileDto mobile(c);
+        mobile.available(row[25].text() == "t")
+            .simState(row[26].text())
+            .iccid(row[27].text())
+            .signal(std::move(signal))
+            .registered(row[31].text() == "t")
+            .registrationStatus(integer(row[32].text()))
+            .apn(row[33].text())
+            .operatorName(row[34].text())
+            .connected(row[35].text() == "t")
+            .ipv4(row[36].text());
+
+        FirmwareStatusDto firmware(c);
+        firmware.state(row[37].text())
+            .progressPercent(integer(row[38].text()))
+            .downloadedBytes(integer(row[39].text()))
+            .totalBytes(integer(row[40].text()))
+            .message(row[41].text());
+
         node.id(row[0].text())
             .imei(row[1].text())
             .name(row[2].text())
@@ -451,39 +516,11 @@ FROM edge_node)sql";
             .architecture(row[6].text())
             .openwrtRelease(row[7].text())
             .enrollmentStatus(row[8].text())
-            .online(row[9].text() == "t")
-            .supportsNetworkConfig(row[10].text() == "t")
-            .networkConfigVersion(integer(row[11].text()))
-            .supportsFirmwareUpdate(row[12].text() == "t")
-            .supportsPlatformConfig(row[13].text() == "t")
-            .supportsDeviceConfig(row[14].text() == "t")
-            .ttydAvailable(row[15].text() == "t")
-            .activeConfigVersion(integer(row[16].text()))
-            .desiredConfigVersion(integer(row[17].text()))
-            .configStatus(row[18].text())
-            .configMessage(row[19].text())
-            .outboxRecords(integer(row[20].text()))
-            .outboxBytes(integer(row[21].text()))
-            .lastSeenAt(row[22].text())
-            .createdAt(row[23].text())
-            .supportsModemControl(row[24].text() == "t")
-            .modemAvailable(row[25].text() == "t")
-            .simState(row[26].text())
-            .iccid(row[27].text())
-            .signalCsq(integer(row[28].text()))
-            .signalRssiDbm(integer(row[29].text()))
-            .signalPercent(integer(row[30].text()))
-            .mobileRegistered(row[31].text() == "t")
-            .mobileRegistrationStatus(integer(row[32].text()))
-            .apn(row[33].text())
-            .mobileOperator(row[34].text())
-            .mobileConnected(row[35].text() == "t")
-            .mobileIpv4(row[36].text())
-            .firmwareStatus(row[37].text())
-            .firmwareProgressPercent(integer(row[38].text()))
-            .firmwareDownloadedBytes(integer(row[39].text()))
-            .firmwareTotalBytes(integer(row[40].text()))
-            .firmwareMessage(row[41].text());
+            .status(std::move(status))
+            .capability(std::move(capability))
+            .mobile(std::move(mobile))
+            .firmware(std::move(firmware))
+            .createdAt(row[11].text());
     }
 
     static std::vector<std::string> split(std::string_view value) {
@@ -577,12 +614,14 @@ WHERE node_id = $1::uuid ORDER BY path)sql",
                                                            std::string_view id) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT platform_id::text, name, base_url, enabled, priority, reconnect_interval_sec,
-       outbox_max_bytes, apply_status, COALESCE(last_message, '')
+       outbox_max_bytes, COALESCE(status->>'state', 'pending'), COALESCE(status->>'message', '')
 FROM edge_node_platform WHERE node_id = $1::uuid ORDER BY priority, name)sql",
                                                 service::common::dbParams(id));
         ruvia::List<PlatformDto> result(c.resource());
         for (const auto& row : rows.rows()) {
             auto& item = result.emplace(c);
+            PlatformStatusDto status(c);
+            status.state(row[7].text()).message(row[8].text());
             item.platformId(row[0].text())
                 .name(row[1].text())
                 .baseUrl(row[2].text())
@@ -590,8 +629,7 @@ FROM edge_node_platform WHERE node_id = $1::uuid ORDER BY priority, name)sql",
                 .priority(integer(row[4].text()))
                 .reconnectIntervalSec(integer(row[5].text()))
                 .outboxMaxBytes(integer(row[6].text()))
-                .applyStatus(row[7].text())
-                .lastMessage(row[8].text());
+                .status(std::move(status));
         }
         co_return result;
     }
@@ -732,7 +770,8 @@ FROM edge_task WHERE node_id = $1::uuid ORDER BY created_at DESC LIMIT 50)sql",
     static ruvia::Task<std::int64_t> requireNetworkManagement(
         ruvia::Context& c, std::string_view nodeId) {
         const auto rows = co_await c.db().query(R"sql(
-SELECT enrollment_status, supports_network_config, network_config_version
+SELECT enrollment_status, COALESCE((capability->>'networkConfig')::boolean, false),
+       COALESCE((capability->>'networkConfigVersion')::bigint, 0)
 FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
                                                 service::common::dbParams(nodeId));
         if (rows.rows().empty())
@@ -786,12 +825,12 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
     }
 
     static ruvia::Task<void> requireNodeCapability(ruvia::Context& c, std::string_view nodeId,
-                                                   std::string_view column,
+                                                   std::string_view key,
                                                    std::string_view feature) {
         const auto rows = co_await c.db().query(
-            "SELECT enrollment_status, " + std::string(column) +
-                " FROM edge_node WHERE id = $1::uuid LIMIT 1",
-            service::common::dbParams(nodeId));
+            "SELECT enrollment_status, COALESCE((capability->>$1)::boolean, false) "
+            "FROM edge_node WHERE id = $2::uuid LIMIT 1",
+            service::common::dbParams(key, nodeId));
         if (rows.rows().empty())
             service::common::fail(17001, "边缘节点不存在", 404);
         if (rows.rows().front()[0].text() != "approved")

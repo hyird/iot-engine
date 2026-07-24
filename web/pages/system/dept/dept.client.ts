@@ -9,7 +9,7 @@ import {
     updateDeptSchema,
 } from './dept.schema';
 
-const BASE = '/api/departments';
+const BASE = '/v1/departments';
 export const getList = (params?: Dept.Query) =>
     request.get<PaginatedResult<Dept.Item>>(
         appendQueryParams(BASE, deptListQuerySchema.parse(params ?? {}))

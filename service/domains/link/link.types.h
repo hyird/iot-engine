@@ -13,15 +13,20 @@ struct LinkTargetBody final {
     RUVIA_MODEL(LinkTargetBody, id, name, ip, port, status);
 };
 
-struct SaveLinkBody final {
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
+struct LinkEndpointBody final {
     RUVIA_OPTIONAL_FIELD(mode, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String);
     RUVIA_OPTIONAL_FIELD(ip, ruvia::String);
     RUVIA_OPTIONAL_FIELD(port, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD(targets, ruvia::Array<LinkTargetBody>);
+    RUVIA_MODEL(LinkEndpointBody, mode, ip, port, targets);
+};
+
+struct SaveLinkBody final {
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(endpoint, LinkEndpointBody);
     RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_MODEL(SaveLinkBody, name, mode, protocol, ip, port, targets, status);
+    RUVIA_MODEL(SaveLinkBody, name, protocol, endpoint, status);
 };
 
 struct LinkListQuery final {
@@ -39,46 +44,54 @@ struct LinkIdParams final {
     RUVIA_MODEL(LinkIdParams, id);
 };
 
+struct RuntimeDto final {
+    RUVIA_OPTIONAL_FIELD(state, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(reason, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(error, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("clientCount", clientCount, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD(clients, ruvia::List<ruvia::String>);
+    RUVIA_OPTIONAL_FIELD_NAME("lastActivityAt", lastActivityAt, ruvia::Int64);
+    RUVIA_MODEL(RuntimeDto, state, reason, error, clientCount, clients, lastActivityAt);
+};
+
 struct LinkTargetDto final {
     RUVIA_OPTIONAL_FIELD(id, ruvia::String);
     RUVIA_OPTIONAL_FIELD(name, ruvia::String);
     RUVIA_OPTIONAL_FIELD(ip, ruvia::String);
     RUVIA_OPTIONAL_FIELD(port, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("conn_status", connStatus, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("state_reason", stateReason, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("error_msg", errorMessage, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("last_activity_at_ms", lastActivityAtMs, ruvia::Int64);
-    RUVIA_MODEL(LinkTargetDto, id, name, ip, port, status, connStatus, stateReason, errorMessage, lastActivityAtMs);
+    RUVIA_OPTIONAL_FIELD(runtime, RuntimeDto);
+    RUVIA_MODEL(LinkTargetDto, id, name, ip, port, status, runtime);
+};
+
+struct LinkEndpointDto final {
+    RUVIA_OPTIONAL_FIELD(mode, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(ip, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(port, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD(targets, ruvia::List<LinkTargetDto>);
+    RUVIA_MODEL(LinkEndpointDto, mode, ip, port, targets);
 };
 
 struct LinkItemDto final {
     RUVIA_OPTIONAL_FIELD(id, ruvia::String);
     RUVIA_OPTIONAL_FIELD(name, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(mode, ruvia::String);
     RUVIA_OPTIONAL_FIELD(protocol, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(ip, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(port, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(targets, ruvia::List<LinkTargetDto>);
+    RUVIA_OPTIONAL_FIELD(endpoint, LinkEndpointDto);
     RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("conn_status", connStatus, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("client_count", clientCount, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("state_reason", stateReason, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(clients, ruvia::List<ruvia::String>);
-    RUVIA_OPTIONAL_FIELD_NAME("error_msg", errorMessage, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(runtime, RuntimeDto);
     RUVIA_OPTIONAL_FIELD_NAME("created_by", createdBy, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("created_at", createdAt, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("updated_at", updatedAt, ruvia::String);
-    RUVIA_MODEL(LinkItemDto, id, name, mode, protocol, ip, port, targets, status, connStatus,
-                clientCount, stateReason, clients, errorMessage, createdBy, createdAt, updatedAt);
+    RUVIA_MODEL(LinkItemDto, id, name, protocol, endpoint, status, runtime, createdBy, createdAt,
+                updatedAt);
 };
 
 struct LinkOptionDto final {
     RUVIA_OPTIONAL_FIELD(id, ruvia::String);
     RUVIA_OPTIONAL_FIELD(name, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(mode, ruvia::String);
     RUVIA_OPTIONAL_FIELD(protocol, ruvia::String);
-    RUVIA_MODEL(LinkOptionDto, id, name, mode, protocol);
+    RUVIA_OPTIONAL_FIELD(endpoint, LinkEndpointDto);
+    RUVIA_MODEL(LinkOptionDto, id, name, protocol, endpoint);
 };
 
 struct LinkEnumsDto final {

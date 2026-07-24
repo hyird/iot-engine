@@ -108,25 +108,25 @@ const LOG_ACTION_OPTIONS = [
 const EXAMPLE_DEVICE_ID = '018f8ad8-7b9a-7ef1-bd92-6a90127d5d44';
 const AUTH_HEADER_EXAMPLE = 'X-Access-Key: <你的AccessKey>';
 const DEVICE_LIST_EXAMPLE = [
-    'curl -X GET "https://your-host/open-api/devices?page=1&pageSize=50" \\',
+    'curl -X GET "https://your-host/open/devices?page=1&pageSize=50" \\',
     '  -H "X-Access-Key: <你的AccessKey>"',
     '',
     '# 返回授权范围内设备的 id / code / name',
 ].join('\n');
 const REALTIME_EXAMPLE = [
-    `curl -X GET "https://your-host/open-api/devices/${EXAMPLE_DEVICE_ID}/realtime" \\`,
+    `curl -X GET "https://your-host/open/devices/${EXAMPLE_DEVICE_ID}/realtime" \\`,
     '  -H "X-Access-Key: <你的AccessKey>"',
     '',
     '# 返回 device + points，未采集点位的 value 为 null',
 ].join('\n');
 const HISTORY_EXAMPLE = [
-    `curl -X GET "https://your-host/open-api/devices/${EXAMPLE_DEVICE_ID}/history?startTime=2026-07-22T00:00:00Z&endTime=2026-07-22T23:59:59Z&page=1&pageSize=20" \\`,
+    `curl -X GET "https://your-host/open/devices/${EXAMPLE_DEVICE_ID}/history?startTime=2026-07-22T00:00:00Z&endTime=2026-07-22T23:59:59Z&page=1&pageSize=20" \\`,
     '  -H "X-Access-Key: <你的AccessKey>"',
     '',
     '# startTime / endTime 必填，时间统一使用带时区的 ISO 8601',
 ].join('\n');
 const COMMAND_EXAMPLE = [
-    `curl -X POST "https://your-host/open-api/devices/${EXAMPLE_DEVICE_ID}/commands" \\`,
+    `curl -X POST "https://your-host/open/devices/${EXAMPLE_DEVICE_ID}/commands" \\`,
     '  -H "Content-Type: application/json" \\',
     '  -H "X-Access-Key: <你的AccessKey>" \\',
     '  -d \'{"elements":[{"elementId":"001","value":"1"}]}\'',
@@ -134,7 +134,7 @@ const COMMAND_EXAMPLE = [
     '# 接口受理成功不等于设备已经执行，最终结果以命令响应为准',
 ].join('\n');
 const ALERT_EXAMPLE = [
-    'curl -X GET "https://your-host/open-api/alerts?status=active&severity=critical&page=1&pageSize=20" \\',
+    'curl -X GET "https://your-host/open/alerts?status=active&severity=critical&page=1&pageSize=20" \\',
     '  -H "X-Access-Key: <你的AccessKey>"',
     '',
     '# 可追加 deviceId，仅能查询当前 AccessKey 授权范围',

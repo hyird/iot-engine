@@ -15,7 +15,7 @@ namespace service::link {
 
 class LinkController final : public ruvia::Controller<LinkController> {
   public:
-    RUVIA_CONTROLLER_GROUP("/api/link", service::middleware::AuthMiddleware)
+    RUVIA_CONTROLLER_GROUP("/v1/link", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
     RUVIA_GET("/", list, LinkListQueryValidator);
     RUVIA_GET("/options", options);

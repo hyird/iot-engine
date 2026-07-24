@@ -537,18 +537,16 @@ FROM device WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
             service::common::fail(19001, "设备不存在", 404);
         const auto& device = deviceRows.rows().front();
         const auto points = co_await configuredPoints(c, deviceId);
-        auto pipeline = c.redis().pipeline();
-        for (const auto& point : points)
-            pipeline.hgetAll(
-                service::telemetry::latest::elementKey(device[1].text(), point.id));
-        const auto replies = co_await std::move(pipeline).exec();
+        const auto latestKey = service::telemetry::latest::latestKey(device[1].text());
+        const auto latest = co_await service::message::redis::command(
+            c.redis(), std::vector<std::string>{"HGETALL", latestKey});
         std::string body = "{\"device\":{\"id\":" + jsonQuoted(deviceId) +
                            ",\"code\":" + jsonQuoted(device[1].text()) +
                            ",\"name\":" + jsonQuoted(device[0].text()) + "},\"points\":[";
         for (std::size_t index = 0; index < points.size(); ++index) {
             if (index != 0)
                 body.push_back(',');
-            const auto data = redisHashField(replies[index], "data");
+            const auto data = redisHashField(latest, points[index].id);
             std::string value = "null";
             std::string time = "null";
             if (!data.empty()) {
@@ -556,7 +554,7 @@ FROM device WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
                     if (const auto current = jsonField(*json, "value"))
                         value.assign(current->view());
                     if (const auto observed =
-                            json->template get<ruvia::Int64>("observed_at_ms"))
+                            json->template get<ruvia::Int64>("observedAt"))
                         time = jsonQuoted(iso8601(static_cast<std::int64_t>(*observed)));
                 }
             }

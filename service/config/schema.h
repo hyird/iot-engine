@@ -5,7 +5,7 @@
 
 namespace service::config {
 
-inline constexpr std::array<ruvia::DbMigration, 9> kSchemaMigrations{{
+inline constexpr std::array<ruvia::DbMigration, 10> kSchemaMigrations{{
     {"0001_initial_schema", R"sql(
 DO $schema$
 BEGIN
@@ -621,6 +621,135 @@ ALTER TABLE edge_task DROP CONSTRAINT edge_task_task_type_check;
 ALTER TABLE edge_task ADD CONSTRAINT edge_task_task_type_check
     CHECK (task_type IN ('network', 'firmware', 'modem',
                          'platform_upsert', 'platform_delete'));
+END
+$schema$;
+)sql"},
+    {"0010_unified_json_runtime_design", R"sql(
+DO $schema$
+BEGIN
+ALTER TABLE link
+    ADD COLUMN endpoint JSONB NOT NULL DEFAULT '{}'::jsonb
+        CHECK (jsonb_typeof(endpoint) = 'object');
+
+UPDATE link
+SET endpoint = jsonb_strip_nulls(jsonb_build_object(
+    'mode', mode,
+    'ip', CASE WHEN mode = 'TCP Server' THEN ip ELSE '' END,
+    'port', CASE WHEN mode = 'TCP Server' THEN port ELSE 0 END,
+    'targets', CASE WHEN mode = 'TCP Client' THEN targets ELSE '[]'::jsonb END
+));
+
+ALTER TABLE link DROP CONSTRAINT IF EXISTS ck_link_endpoint;
+DROP INDEX IF EXISTS idx_link_mode;
+
+ALTER TABLE link
+    DROP COLUMN mode,
+    DROP COLUMN ip,
+    DROP COLUMN port,
+    DROP COLUMN targets;
+
+ALTER TABLE link ADD CONSTRAINT ck_link_endpoint CHECK (
+    jsonb_typeof(endpoint) = 'object'
+    AND endpoint->>'mode' IN ('TCP Server', 'TCP Client')
+    AND COALESCE(jsonb_typeof(endpoint->'targets'), 'array') = 'array'
+    AND (
+        (endpoint->>'mode' = 'TCP Server'
+         AND endpoint->>'ip' = '0.0.0.0'
+         AND COALESCE(endpoint->>'port', '') ~ '^[0-9]+$'
+         AND (endpoint->>'port')::integer BETWEEN 1 AND 65535
+         AND jsonb_array_length(COALESCE(endpoint->'targets', '[]'::jsonb)) = 0)
+        OR
+        (endpoint->>'mode' = 'TCP Client'
+         AND COALESCE(endpoint->>'ip', '') = ''
+         AND COALESCE((endpoint->>'port')::integer, 0) = 0
+         AND jsonb_array_length(COALESCE(endpoint->'targets', '[]'::jsonb)) > 0)
+    )
+);
+CREATE INDEX idx_link_endpoint_mode ON link((endpoint->>'mode')) WHERE deleted_at IS NULL;
+CREATE INDEX idx_link_endpoint_gin ON link USING GIN(endpoint);
+
+ALTER TABLE edge_node
+    ADD COLUMN status JSONB NOT NULL DEFAULT
+        '{"config":{"activeVersion":0,"desiredVersion":0,"state":"idle","message":""},"outbox":{"records":0,"bytes":0}}'::jsonb
+        CHECK (jsonb_typeof(status) = 'object'),
+    ADD COLUMN capability JSONB NOT NULL DEFAULT '{}'::jsonb
+        CHECK (jsonb_typeof(capability) = 'object'),
+    ADD COLUMN mobile JSONB NOT NULL DEFAULT '{}'::jsonb
+        CHECK (jsonb_typeof(mobile) = 'object');
+
+UPDATE edge_node
+SET status = jsonb_build_object(
+        'config', jsonb_build_object(
+            'activeVersion', active_config_version,
+            'desiredVersion', desired_config_version,
+            'state', config_status,
+            'message', config_message),
+        'outbox', jsonb_build_object(
+            'records', outbox_records,
+            'bytes', outbox_bytes)),
+    capability = jsonb_build_object(
+        'networkConfig', supports_network_config,
+        'networkConfigVersion', network_config_version,
+        'firmwareUpdate', supports_firmware_update,
+        'platformConfig', supports_platform_config,
+        'deviceConfig', supports_device_config,
+        'modemControl', supports_modem_control,
+        'terminal', ttyd_available),
+    mobile = jsonb_build_object(
+        'available', modem_available,
+        'simState', sim_state,
+        'iccid', iccid,
+        'signal', jsonb_build_object(
+            'csq', signal_csq,
+            'rssiDbm', signal_rssi_dbm,
+            'percent', signal_percent),
+        'registered', mobile_registered,
+        'registrationStatus', mobile_registration_status,
+        'apn', apn,
+        'operator', mobile_operator,
+        'connected', mobile_connected,
+        'ipv4', mobile_ipv4);
+
+ALTER TABLE edge_node
+    DROP COLUMN supports_network_config,
+    DROP COLUMN supports_firmware_update,
+    DROP COLUMN supports_platform_config,
+    DROP COLUMN ttyd_available,
+    DROP COLUMN active_config_version,
+    DROP COLUMN outbox_records,
+    DROP COLUMN outbox_bytes,
+    DROP COLUMN desired_config_version,
+    DROP COLUMN supports_device_config,
+    DROP COLUMN config_status,
+    DROP COLUMN config_message,
+    DROP COLUMN modem_available,
+    DROP COLUMN sim_state,
+    DROP COLUMN iccid,
+    DROP COLUMN signal_csq,
+    DROP COLUMN signal_rssi_dbm,
+    DROP COLUMN signal_percent,
+    DROP COLUMN mobile_registered,
+    DROP COLUMN mobile_registration_status,
+    DROP COLUMN apn,
+    DROP COLUMN mobile_operator,
+    DROP COLUMN mobile_connected,
+    DROP COLUMN mobile_ipv4,
+    DROP COLUMN supports_modem_control;
+
+CREATE INDEX idx_edge_node_capability_gin ON edge_node USING GIN(capability);
+
+ALTER TABLE edge_node_platform
+    ADD COLUMN status JSONB NOT NULL DEFAULT '{"state":"pending","message":""}'::jsonb
+        CHECK (jsonb_typeof(status) = 'object');
+
+UPDATE edge_node_platform
+SET status = jsonb_build_object(
+    'state', apply_status,
+    'message', COALESCE(last_message, ''));
+
+ALTER TABLE edge_node_platform
+    DROP COLUMN apply_status,
+    DROP COLUMN last_message;
 END
 $schema$;
 )sql"},

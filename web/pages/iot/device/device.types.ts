@@ -40,6 +40,13 @@ export type EdgeTransport = 'serial' | 'tcp';
 export type EdgeMode = 'TCP Client' | 'TCP Server';
 export type SerialParity = 'none' | 'even' | 'odd';
 
+export interface EdgeStatus {
+    state?: string;
+    reason?: string;
+    clientCount?: number;
+    lastActivityAt?: number;
+}
+
 export interface EdgeConnection {
     edge_node_id?: string;
     edge_node_name?: string;
@@ -49,10 +56,7 @@ export interface EdgeConnection {
     edge_mode?: EdgeMode;
     edge_ip?: string;
     edge_port?: number;
-    edgeTcpState?: string;
-    edgeTcpReason?: string;
-    edgeTcpClientCount?: number;
-    edgeTcpLastActivityAt?: number;
+    edgeStatus?: EdgeStatus;
     serial_baud_rate?: number;
     serial_data_bits?: number;
     serial_stop_bits?: number;

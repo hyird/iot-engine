@@ -27,16 +27,9 @@ class SaveLinkValidator final : public ruvia::Middleware<SaveLinkValidator> {
     RUVIA_VALIDATE_JSON(SaveLinkBody,
                         RUVIA_RULE(name, RUVIA_REQUIRED("链路名称不能为空"),
                                    RUVIA_MAX(100, "链路名称不能超过 100 个字符")),
-                        RUVIA_RULE(mode, RUVIA_REQUIRED("链路模式不能为空"),
-                                   RUVIA_ONE_OF("链路模式无效", "TCP Server", "TCP Client")),
                         RUVIA_RULE(protocol, RUVIA_REQUIRED("协议不能为空"),
                                    RUVIA_ONE_OF("协议无效", "SL651", "Modbus", "S7")),
-                        RUVIA_RULE(ip, RUVIA_MAX(50, "监听 IP 不能超过 50 个字符")),
-                        RUVIA_RULE(port, RUVIA_MIN(0, "端口必须在 0 - 65535 之间"),
-                                   RUVIA_MAX(65535, "端口必须在 0 - 65535 之间")),
-                        RUVIA_RULE(targets, RUVIA_REQUIRED("目标列表不能为空"),
-                                   RUVIA_MAX(100, "单条链路最多配置 100 个目标"),
-                                   RUVIA_EACH(LinkTargetValidator)),
+                        RUVIA_RULE(endpoint, RUVIA_REQUIRED("链路端点不能为空")),
                         RUVIA_RULE(status, RUVIA_ONE_OF("状态无效", "enabled", "disabled")))
 };
 

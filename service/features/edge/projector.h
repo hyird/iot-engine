@@ -196,36 +196,38 @@ class Projector final {
         const auto candidate = service::common::nextUuidV7();
         const auto rows = co_await context.db().query(R"sql(
 INSERT INTO edge_node(id, platform_id, imei, model, software_version, hostname, architecture,
-                      openwrt_release, supports_network_config, supports_firmware_update,
-                      supports_platform_config, supports_device_config, network_config_version,
-                      supports_modem_control, modem_available, sim_state, iccid, signal_csq,
-                      signal_rssi_dbm, signal_percent, mobile_registered,
-                      mobile_registration_status, apn, mobile_operator, mobile_connected,
-                      mobile_ipv4, updated_at)
-VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-        $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, NOW())
+                      openwrt_release, capability, mobile, updated_at)
+VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8,
+        jsonb_build_object(
+            'networkConfig', $9::boolean,
+            'firmwareUpdate', $10::boolean,
+            'platformConfig', $11::boolean,
+            'deviceConfig', $12::boolean,
+            'networkConfigVersion', $13::bigint,
+            'modemControl', $14::boolean,
+            'terminal', false),
+        jsonb_build_object(
+            'available', $15::boolean,
+            'simState', $16::text,
+            'iccid', $17::text,
+            'signal', jsonb_build_object(
+                'csq', $18::bigint,
+                'rssiDbm', $19::bigint,
+                'percent', $20::bigint),
+            'registered', $21::boolean,
+            'registrationStatus', $22::bigint,
+            'apn', $23::text,
+            'operator', $24::text,
+            'connected', $25::boolean,
+            'ipv4', $26::text),
+        NOW())
 ON CONFLICT (platform_id, imei) DO UPDATE
 SET model = EXCLUDED.model, software_version = EXCLUDED.software_version,
     hostname = EXCLUDED.hostname, architecture = EXCLUDED.architecture,
     openwrt_release = EXCLUDED.openwrt_release,
-    supports_network_config = EXCLUDED.supports_network_config,
-    supports_firmware_update = EXCLUDED.supports_firmware_update,
-    supports_platform_config = EXCLUDED.supports_platform_config,
-    supports_device_config = EXCLUDED.supports_device_config,
-    network_config_version = EXCLUDED.network_config_version,
-    supports_modem_control = EXCLUDED.supports_modem_control,
-    modem_available = EXCLUDED.modem_available,
-    sim_state = EXCLUDED.sim_state,
-    iccid = EXCLUDED.iccid,
-    signal_csq = EXCLUDED.signal_csq,
-    signal_rssi_dbm = EXCLUDED.signal_rssi_dbm,
-    signal_percent = EXCLUDED.signal_percent,
-    mobile_registered = EXCLUDED.mobile_registered,
-    mobile_registration_status = EXCLUDED.mobile_registration_status,
-    apn = EXCLUDED.apn,
-    mobile_operator = EXCLUDED.mobile_operator,
-    mobile_connected = EXCLUDED.mobile_connected,
-    mobile_ipv4 = EXCLUDED.mobile_ipv4,
+    capability = EXCLUDED.capability || jsonb_build_object(
+        'terminal', COALESCE((edge_node.capability->>'terminal')::boolean, false)),
+    mobile = EXCLUDED.mobile,
     updated_at = NOW()
 RETURNING id::text, enrollment_status)sql",
                                                      service::common::dbParams(
@@ -284,21 +286,38 @@ WHERE id = (
                                            std::string_view nodeId,
                                            const pb::Heartbeat& heartbeat) {
         (void)co_await context.db().execute(R"sql(
- UPDATE edge_node SET active_config_version = GREATEST(active_config_version, $1),
-                     outbox_records = $2, outbox_bytes = $3,
-                     modem_available = $4, sim_state = $5, iccid = $6,
-                     signal_csq = $7, signal_rssi_dbm = $8, signal_percent = $9,
-                     mobile_registered = $10, mobile_registration_status = $11,
-                     apn = $12, mobile_operator = $13, mobile_connected = $14,
-                     mobile_ipv4 = $15, supports_modem_control = $16,
-                     config_status = CASE
-                         WHEN desired_config_version = $1 AND $1 > 0 THEN 'applied'
-                         ELSE config_status END,
-                     config_message = CASE
-                         WHEN desired_config_version = $1 AND $1 > 0 THEN ''
-                         ELSE config_message END,
-                     last_seen_at = NOW(), updated_at = NOW()
- WHERE id = $17::uuid)sql",
+UPDATE edge_node
+SET status = jsonb_build_object(
+        'config', jsonb_build_object(
+            'activeVersion', GREATEST(
+                COALESCE((status->'config'->>'activeVersion')::bigint, 0),
+                $1::bigint),
+            'desiredVersion', COALESCE((status->'config'->>'desiredVersion')::bigint, 0),
+            'state', CASE
+                WHEN COALESCE((status->'config'->>'desiredVersion')::bigint, 0) = $1
+                     AND $1 > 0 THEN 'applied'
+                ELSE COALESCE(status->'config'->>'state', 'idle') END,
+            'message', CASE
+                WHEN COALESCE((status->'config'->>'desiredVersion')::bigint, 0) = $1
+                     AND $1 > 0 THEN ''
+                ELSE COALESCE(status->'config'->>'message', '') END),
+        'outbox', jsonb_build_object('records', $2::bigint, 'bytes', $3::bigint)),
+    mobile = jsonb_build_object(
+        'available', $4::boolean,
+        'simState', $5::text,
+        'iccid', $6::text,
+        'signal', jsonb_build_object('csq', $7::bigint, 'rssiDbm', $8::bigint,
+                                     'percent', $9::bigint),
+        'registered', $10::boolean,
+        'registrationStatus', $11::bigint,
+        'apn', $12::text,
+        'operator', $13::text,
+        'connected', $14::boolean,
+        'ipv4', $15::text),
+    capability = jsonb_set(capability, '{modemControl}', to_jsonb($16::boolean), true),
+    last_seen_at = NOW(),
+    updated_at = NOW()
+WHERE id = $17::uuid)sql",
                                              service::common::dbParams(
                                                  heartbeat.active_config_version(),
                                                  heartbeat.outbox_records(),
@@ -320,7 +339,8 @@ UPDATE edge_config_revision revision
 SET status = 'applied', message = '', completed_at = COALESCE(completed_at, NOW())
 FROM edge_node node
 WHERE revision.node_id = node.id AND node.id = $1::uuid
-  AND revision.revision = $2 AND node.desired_config_version = $2)sql",
+  AND revision.revision = $2
+  AND COALESCE((node.status->'config'->>'desiredVersion')::bigint, 0) = $2)sql",
                                                 service::common::dbParams(
                                                     nodeId,
                                                     heartbeat.active_config_version()));
@@ -418,7 +438,8 @@ VALUES ($1::uuid, $2, $3, $4, $5))sql",
                                                     item.available(), item.rs485()));
         }
         (void)co_await context.db().execute(
-            "UPDATE edge_node SET ttyd_available = $1, updated_at = NOW() WHERE id = $2::uuid",
+            "UPDATE edge_node SET capability = jsonb_set(capability, '{terminal}', "
+            "to_jsonb($1::boolean), true), updated_at = NOW() WHERE id = $2::uuid",
             service::common::dbParams(report.ttyd_available(), nodeId));
     }
 
@@ -512,7 +533,9 @@ UPDATE edge_task SET status = $1, result = $2::jsonb, updated_at = NOW(), comple
 WHERE id = $3::uuid AND task_type IN ('platform_upsert', 'platform_delete'))sql",
                                             service::common::dbParams(status, json, id));
         (void)co_await context.db().execute(R"sql(
-UPDATE edge_node_platform SET apply_status = $1, last_message = $2, updated_at = NOW()
+UPDATE edge_node_platform
+SET status = jsonb_build_object('state', $1::text, 'message', $2::text),
+    updated_at = NOW()
 WHERE node_id = $3::uuid
   AND platform_id = (SELECT (request->>'platform_id')::uuid FROM edge_task WHERE id = $4::uuid))sql",
                                             service::common::dbParams(
@@ -556,9 +579,18 @@ WHERE node_id = $1::uuid AND revision = $2 AND sha256 = $3)sql",
                                                 digest));
         (void)co_await context.db().execute(R"sql(
 UPDATE edge_node
-SET active_config_version = GREATEST(active_config_version, $1),
-    config_status = CASE WHEN desired_config_version = $1 THEN 'applied' ELSE config_status END,
-    config_message = CASE WHEN desired_config_version = $1 THEN '' ELSE config_message END,
+SET status = jsonb_set(
+        jsonb_set(
+            jsonb_set(status, '{config,activeVersion}', to_jsonb(GREATEST(
+                COALESCE((status->'config'->>'activeVersion')::bigint, 0), $1::bigint)), true),
+            '{config,state}', to_jsonb(CASE
+                WHEN COALESCE((status->'config'->>'desiredVersion')::bigint, 0) = $1
+                THEN 'applied'
+                ELSE COALESCE(status->'config'->>'state', 'idle') END::text), true),
+        '{config,message}', to_jsonb(CASE
+            WHEN COALESCE((status->'config'->>'desiredVersion')::bigint, 0) = $1
+            THEN ''
+            ELSE COALESCE(status->'config'->>'message', '') END::text), true),
     updated_at = NOW()
 WHERE id = $2::uuid)sql",
                                             service::common::dbParams(
@@ -581,8 +613,15 @@ WHERE node_id = $2::uuid AND revision = $3)sql",
                                                 static_cast<std::int64_t>(result.revision())));
         (void)co_await context.db().execute(R"sql(
 UPDATE edge_node
-SET config_status = CASE WHEN desired_config_version = $1 THEN 'rejected' ELSE config_status END,
-    config_message = CASE WHEN desired_config_version = $1 THEN $2 ELSE config_message END,
+SET status = jsonb_set(
+        jsonb_set(status, '{config,state}', to_jsonb(CASE
+            WHEN COALESCE((status->'config'->>'desiredVersion')::bigint, 0) = $1
+            THEN 'rejected'
+            ELSE COALESCE(status->'config'->>'state', 'idle') END::text), true),
+        '{config,message}', to_jsonb(CASE
+            WHEN COALESCE((status->'config'->>'desiredVersion')::bigint, 0) = $1
+            THEN $2::text
+            ELSE COALESCE(status->'config'->>'message', '') END::text), true),
     updated_at = NOW()
 WHERE id = $3::uuid)sql",
                                             service::common::dbParams(
@@ -720,7 +759,8 @@ WHERE d.id = $1::uuid AND d.edge_node_id = $2::uuid AND d.deleted_at IS NULL LIM
     }
 
     static std::string endpointStatusKey(std::string_view nodeId, std::string_view endpointId) {
-        return "iot:edge:endpoint:" + std::string(nodeId) + ':' + std::string(endpointId);
+        return "iot:runtime:edge:" + std::string(nodeId) + ":endpoint:" +
+               std::string(endpointId);
     }
 
     static ruvia::Task<void> saveEndpointStatus(ruvia::WebWorkerContext& context,

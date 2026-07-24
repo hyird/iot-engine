@@ -95,7 +95,8 @@ template <typename Database> inline ruvia::Task<RuntimeSnapshot> loadRuntimeSnap
     RuntimeSnapshot snapshot;
 
     const auto links = co_await db.query(R"sql(
-SELECT id::text, name, mode, protocol, COALESCE(ip, ''), port, status
+SELECT id::text, name, endpoint->>'mode', protocol, COALESCE(endpoint->>'ip', ''),
+       COALESCE((endpoint->>'port')::integer, 0), status
 FROM link WHERE deleted_at IS NULL ORDER BY id)sql");
     for (const auto& row : links.rows()) {
         LinkDefinition link;
@@ -113,8 +114,8 @@ FROM link WHERE deleted_at IS NULL ORDER BY id)sql");
 SELECT l.id::text, target->>'id', target->>'name', target->>'ip', target->>'port',
        COALESCE(target->>'status', 'enabled')
 FROM link l
-CROSS JOIN LATERAL jsonb_array_elements(l.targets) AS target
-WHERE l.deleted_at IS NULL AND l.mode = 'TCP Client'
+CROSS JOIN LATERAL jsonb_array_elements(COALESCE(l.endpoint->'targets', '[]'::jsonb)) AS target
+WHERE l.deleted_at IS NULL AND l.endpoint->>'mode' = 'TCP Client'
 ORDER BY l.id)sql");
     for (const auto& row : targets.rows()) {
         const auto linkId = cell(row, 0);
@@ -133,7 +134,8 @@ ORDER BY l.id)sql");
     }
 
     const auto devices = co_await db.query(R"sql(
-SELECT d.id::text, d.protocol_params->>'device_code', d.name, d.link_id::text, l.mode,
+SELECT d.id::text, d.protocol_params->>'device_code', d.name, d.link_id::text,
+       l.endpoint->>'mode',
        COALESCE(d.protocol_params->>'target_id', ''), p.protocol,
        COALESCE(d.protocol_params->>'timezone', '+08:00'),
        COALESCE((d.protocol_params->>'online_timeout')::integer, 300),

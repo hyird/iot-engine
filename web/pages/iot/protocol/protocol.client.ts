@@ -9,7 +9,7 @@ import {
 } from './protocol.schema';
 import type { Protocol } from './protocol.types';
 
-const BASE = '/api/protocol/configs';
+const BASE = '/v1/protocol/configs';
 const MAX_PAGE_SIZE = 1000;
 
 export const getList = (params?: Protocol.Query, config?: RequestConfig) =>

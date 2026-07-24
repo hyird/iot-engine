@@ -12,7 +12,7 @@ namespace service::user {
 
 class UserController final : public ruvia::Controller<UserController> {
   public:
-    RUVIA_CONTROLLER_GROUP("/api/users", service::middleware::AuthMiddleware)
+    RUVIA_CONTROLLER_GROUP("/v1/users", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
     RUVIA_GET("/", list, UserListQueryValidator);
     RUVIA_GET("/options", options, UserOptionsQueryValidator);

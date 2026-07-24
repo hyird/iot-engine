@@ -17,7 +17,7 @@ namespace service::protocol {
 
 class ProtocolController final : public ruvia::Controller<ProtocolController> {
   public:
-    RUVIA_CONTROLLER_GROUP("/api/protocol/configs", service::middleware::AuthMiddleware)
+    RUVIA_CONTROLLER_GROUP("/v1/protocol/configs", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
     RUVIA_GET("/", list, ProtocolListQueryValidator);
     RUVIA_GET("/options", options, ProtocolListQueryValidator);

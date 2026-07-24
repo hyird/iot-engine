@@ -201,6 +201,14 @@ struct DeviceCommandOperationDto final {
     RUVIA_MODEL(DeviceCommandOperationDto, name, elements);
 };
 
+struct EdgeStatusDto final {
+    RUVIA_OPTIONAL_FIELD(state, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(reason, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("clientCount", clientCount, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("lastActivityAt", lastActivityAt, ruvia::Int64);
+    RUVIA_MODEL(EdgeStatusDto, state, reason, clientCount, lastActivityAt);
+};
+
 struct DeviceItemDto final {
     RUVIA_OPTIONAL_FIELD(id, ruvia::String);
     RUVIA_OPTIONAL_FIELD(name, ruvia::String);
@@ -244,10 +252,7 @@ struct DeviceItemDto final {
     RUVIA_OPTIONAL_FIELD_NAME("element_count", elementCount, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD(connected, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("connectionState", connectionState, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(edgeTcpState, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(edgeTcpReason, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(edgeTcpClientCount, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(edgeTcpLastActivityAt, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("edgeStatus", edgeStatus, EdgeStatusDto);
     RUVIA_OPTIONAL_FIELD_NAME("reportTime", reportTime, ruvia::String);
     RUVIA_OPTIONAL_FIELD(elements, ruvia::List<DeviceElementDto>);
     RUVIA_OPTIONAL_FIELD_NAME("commandOperations", commandOperations,
@@ -264,8 +269,7 @@ struct DeviceItemDto final {
                 modbusMode, slaveId, timezone, heartbeat, registration, remark, createdBy,
                 createdAt, updatedAt, linkName, linkMode, linkProtocol, protocolName,
                 protocolType, readInterval, storageInterval, elementCount, connected,
-                connectionState, edgeTcpState, edgeTcpReason, edgeTcpClientCount,
-                edgeTcpLastActivityAt, reportTime, elements, commandOperations, canEdit,
+                connectionState, edgeStatus, reportTime, elements, commandOperations, canEdit,
                 canDelete, canShare, canCommand, accessLevel);
 };
 

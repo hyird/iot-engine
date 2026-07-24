@@ -148,8 +148,8 @@ function formatConfigVersions(active: number, desired: number) {
     return '--';
 }
 
-function simStateText(state: Edge.Node['simState']) {
-    const values: Record<Edge.Node['simState'], string> = {
+function simStateText(state: Edge.Mobile['simState']) {
+    const values: Record<Edge.Mobile['simState'], string> = {
         unknown: '未知',
         ready: '就绪',
         not_inserted: '未插卡',
@@ -161,13 +161,20 @@ function simStateText(state: Edge.Node['simState']) {
 }
 
 function mobileState(node: Edge.Node) {
-    if (!node.modemAvailable) return '未检测到';
-    if (node.simState !== 'ready') return `SIM ${simStateText(node.simState)}`;
-    if (node.mobileConnected) return `已连接${node.mobileIpv4 ? ` · ${node.mobileIpv4}` : ''}`;
-    return node.mobileRegistered ? '已注册，未拨号' : '未注册';
+    const mobile = node.mobile;
+    if (!mobile.available) return '未检测到';
+    if (mobile.simState !== 'ready') return `SIM ${simStateText(mobile.simState)}`;
+    if (mobile.connected) return `已连接${mobile.ipv4 ? ` · ${mobile.ipv4}` : ''}`;
+    return mobile.registered ? '已注册，未拨号' : '未注册';
 }
 
 function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
+    const status = node.status;
+    const config = status.config;
+    const outbox = status.outbox;
+    const capability = node.capability;
+    const mobile = node.mobile;
+    const firmware = node.firmware;
     return [
         { key: 'hostname', label: '主机名', children: node.hostname || '-' },
         { key: 'architecture', label: '系统架构', children: node.architecture || '-' },
@@ -180,51 +187,51 @@ function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
         {
             key: 'configVersion',
             label: '配置版本',
-            children: formatConfigVersions(node.activeConfigVersion, node.desiredConfigVersion),
+            children: formatConfigVersions(config.activeVersion, config.desiredVersion),
         },
         {
             key: 'outbox',
             label: '待传缓存',
-            children: `${node.outboxRecords ?? 0} 条 / ${formatBytes(node.outboxBytes ?? 0)}`,
+            children: `${outbox.records ?? 0} 条 / ${formatBytes(outbox.bytes ?? 0)}`,
         },
         {
             key: 'networkManager',
             label: '网络管理',
             children:
-                node.supportsNetworkConfig && node.networkConfigVersion >= 2
+                capability.networkConfig && capability.networkConfigVersion >= 2
                     ? '可用'
                     : '需升级代理',
         },
         { key: 'mobileState', label: '4G 状态', children: mobileState(node) },
-        { key: 'iccid', label: 'ICCID', children: node.iccid || '-' },
+        { key: 'iccid', label: 'ICCID', children: mobile.iccid || '-' },
         {
             key: 'mobileSignal',
             label: '4G 信号',
-            children: node.modemAvailable
-                ? `${node.signalPercent}%${
-                      node.signalRssiDbm !== -1 ? ` · ${node.signalRssiDbm} dBm` : ''
+            children: mobile.available
+                ? `${mobile.signal.percent}%${
+                      mobile.signal.rssiDbm !== -1 ? ` · ${mobile.signal.rssiDbm} dBm` : ''
                   }`
                 : '-',
         },
         {
             key: 'mobileNetwork',
             label: 'APN / 运营商',
-            children: [node.apn, node.mobileOperator].filter(Boolean).join(' / ') || '-',
+            children: [mobile.apn, mobile.operator].filter(Boolean).join(' / ') || '-',
         },
-        ...(node.firmwareStatus === 'accepted' || node.firmwareStatus === 'running'
+        ...(firmware.state === 'accepted' || firmware.state === 'running'
             ? [
                   {
                       key: 'firmwareProgress',
                       label: '固件下载',
                       children: (
                           <Progress
-                              percent={node.firmwareProgressPercent}
+                              percent={firmware.progressPercent}
                               size="small"
                               status="active"
                               format={(percent) =>
                                   `${percent ?? 0}% · ${formatBytes(
-                                      node.firmwareDownloadedBytes
-                                  )} / ${formatBytes(node.firmwareTotalBytes)}`
+                                      firmware.downloadedBytes
+                                  )} / ${formatBytes(firmware.totalBytes)}`
                               }
                           />
                       ),
@@ -652,7 +659,7 @@ export default function EdgeNodePage() {
     };
 
     const showModem = (node: Edge.Node) => {
-        modemForm.setFieldsValue({ action: 'set_apn', apn: node.apn || '' });
+        modemForm.setFieldsValue({ action: 'set_apn', apn: node.mobile.apn || '' });
         setModemNode(node);
         setModemOpen(true);
     };
@@ -849,7 +856,7 @@ export default function EdgeNodePage() {
     const platformInfoColumns: ColumnsType<Edge.Platform> = [
         { title: '名称', dataIndex: 'name' },
         { title: 'HTTP(S) 地址', dataIndex: 'baseUrl' },
-        { title: '状态', dataIndex: 'applyStatus', render: statusTag },
+        { title: '状态', render: (_, item) => statusTag(item.status.state) },
         { title: '启用', dataIndex: 'enabled', render: (value) => (value ? '是' : '否') },
     ];
     const platformColumns: ColumnsType<Edge.Platform> = [
@@ -978,7 +985,10 @@ export default function EdgeNodePage() {
                     </div>
                 ) : (
                     <div className={EDGE_CARD_GRID_CLASS}>
-                        {nodes.map((node) => (
+                        {nodes.map((node) => {
+                            const status = node.status;
+                            const capability = node.capability;
+                            return (
                             <div key={node.id} className="flex flex-col">
                                 <DeviceCard
                                     title={
@@ -995,10 +1005,10 @@ export default function EdgeNodePage() {
                                                 </span>
                                             </span>
                                             <Tag
-                                                color={node.online ? 'success' : 'default'}
+                                                color={status.online ? 'success' : 'default'}
                                                 className="!mr-0 shrink-0 !rounded-md !px-2"
                                             >
-                                                {node.online ? '在线' : '离线'}
+                                                {status.online ? '在线' : '离线'}
                                             </Tag>
                                         </Flex>
                                     }
@@ -1013,7 +1023,7 @@ export default function EdgeNodePage() {
                                                 </Tag>
                                             </span>
                                             <span className="min-w-0 truncate text-xs text-slate-400">
-                                                上报：{formatDateTime(node.lastSeenAt)}
+                                                上报：{formatDateTime(status.lastSeenAt)}
                                             </span>
                                         </div>
                                     }
@@ -1049,7 +1059,7 @@ export default function EdgeNodePage() {
                                             )}
                                             {node.enrollmentStatus === 'approved' &&
                                                 canConfig &&
-                                                node.supportsDeviceConfig && (
+                                                capability.deviceConfig && (
                                                     <Tooltip title="同步设备配置">
                                                         <Button
                                                             type="text"
@@ -1072,8 +1082,8 @@ export default function EdgeNodePage() {
                                             {node.enrollmentStatus === 'approved' && canConfig && (
                                                 <Tooltip
                                                     title={
-                                                        node.supportsNetworkConfig &&
-                                                        node.networkConfigVersion >= 2
+                                                        capability.networkConfig &&
+                                                        capability.networkConfigVersion >= 2
                                                             ? '管理网络接口'
                                                             : `节点代理 ${node.softwareVersion || '当前版本'} 过旧，请升级至 0.3.0`
                                                     }
@@ -1083,8 +1093,8 @@ export default function EdgeNodePage() {
                                                             type="text"
                                                             size="small"
                                                             disabled={
-                                                                !node.supportsNetworkConfig ||
-                                                                node.networkConfigVersion < 2
+                                                                !capability.networkConfig ||
+                                                                capability.networkConfigVersion < 2
                                                             }
                                                             className={
                                                                 EDGE_CARD_ACTION_BUTTON_CLASS
@@ -1099,7 +1109,7 @@ export default function EdgeNodePage() {
                                             )}
                                             {node.enrollmentStatus === 'approved' &&
                                                 canConfig &&
-                                                node.supportsPlatformConfig && (
+                                                capability.platformConfig && (
                                                     <Tooltip title="管理其他平台">
                                                         <Button
                                                             type="text"
@@ -1116,7 +1126,7 @@ export default function EdgeNodePage() {
                                                 )}
                                             {node.enrollmentStatus === 'approved' &&
                                                 canConfig &&
-                                                node.supportsModemControl && (
+                                                capability.modemControl && (
                                                     <Tooltip title="4G 设置与重拨">
                                                         <Button
                                                             type="text"
@@ -1131,7 +1141,7 @@ export default function EdgeNodePage() {
                                                 )}
                                             {node.enrollmentStatus === 'approved' &&
                                                 canFirmware &&
-                                                node.supportsFirmwareUpdate && (
+                                                capability.firmwareUpdate && (
                                                     <Tooltip title="上传固件并刷写">
                                                         <Button
                                                             type="text"
@@ -1147,7 +1157,7 @@ export default function EdgeNodePage() {
                                                 )}
                                             {node.enrollmentStatus === 'approved' &&
                                                 canTerminal &&
-                                                node.ttydAvailable && (
+                                                capability.terminal && (
                                                     <Tooltip title="Web 终端">
                                                         <Button
                                                             type="text"
@@ -1194,7 +1204,8 @@ export default function EdgeNodePage() {
                                     }
                                 />
                             </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 )}
             </div>
@@ -1216,7 +1227,11 @@ export default function EdgeNodePage() {
                             <Descriptions.Item label="IMEI">{detail.imei}</Descriptions.Item>
                             <Descriptions.Item label="状态">
                                 {statusTag(detail.enrollmentStatus)}{' '}
-                                {detail.online ? <Tag color="success">在线</Tag> : <Tag>离线</Tag>}
+                                {detail.status.online ? (
+                                    <Tag color="success">在线</Tag>
+                                ) : (
+                                    <Tag>离线</Tag>
+                                )}
                             </Descriptions.Item>
                             <Descriptions.Item label="型号">
                                 {detail.model || '-'}
@@ -1231,40 +1246,45 @@ export default function EdgeNodePage() {
                                 {detail.openwrtRelease || '-'}
                             </Descriptions.Item>
                             <Descriptions.Item label="缓存">
-                                {detail.outboxRecords} 条 / {formatBytes(detail.outboxBytes)}
+                                {detail.status.outbox.records} 条 /{' '}
+                                {formatBytes(detail.status.outbox.bytes)}
                             </Descriptions.Item>
                             <Descriptions.Item label="ICCID">
-                                {detail.iccid || '-'}
+                                {detail.mobile.iccid || '-'}
                             </Descriptions.Item>
                             <Descriptions.Item label="4G 状态">
                                 {mobileState(detail)}
                             </Descriptions.Item>
                             <Descriptions.Item label="4G 信号">
-                                {detail.modemAvailable
-                                    ? `${detail.signalPercent}% · ${detail.signalRssiDbm} dBm`
+                                {detail.mobile.available
+                                    ? `${detail.mobile.signal.percent}% · ${detail.mobile.signal.rssiDbm} dBm`
                                     : '-'}
                             </Descriptions.Item>
-                            <Descriptions.Item label="APN">{detail.apn || '-'}</Descriptions.Item>
+                            <Descriptions.Item label="APN">
+                                {detail.mobile.apn || '-'}
+                            </Descriptions.Item>
                             <Descriptions.Item label="运营商">
-                                {detail.mobileOperator || '-'}
+                                {detail.mobile.operator || '-'}
                             </Descriptions.Item>
                             <Descriptions.Item label="设备配置">
-                                {statusTag(detail.configStatus)}{' '}
+                                {statusTag(detail.status.config.state)}{' '}
                                 {formatConfigVersions(
-                                    detail.activeConfigVersion,
-                                    detail.desiredConfigVersion
+                                    detail.status.config.activeVersion,
+                                    detail.status.config.desiredVersion
                                 )}
-                                {detail.configMessage ? ` · ${detail.configMessage}` : ''}
+                                {detail.status.config.message
+                                    ? ` · ${detail.status.config.message}`
+                                    : ''}
                             </Descriptions.Item>
                             <Descriptions.Item label="ttyd">
-                                {detail.ttydAvailable ? (
+                                {detail.capability.terminal ? (
                                     <Tag color="success">已检测</Tag>
                                 ) : (
                                     <Tag>未安装</Tag>
                                 )}
                             </Descriptions.Item>
                             <Descriptions.Item label="最近上报">
-                                {formatDateTime(detail.lastSeenAt)}
+                                {formatDateTime(detail.status.lastSeenAt)}
                             </Descriptions.Item>
                         </Descriptions>
                         <Tabs

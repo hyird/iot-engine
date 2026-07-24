@@ -13,7 +13,7 @@ import {
 } from './edge-node.schema';
 import type { Edge } from './edge-node.types';
 
-const BASE = '/api/edge';
+const BASE = '/v1/edge';
 
 export const getEdgeList = (query?: Edge.Query) =>
     request.get<PaginatedResult<Edge.Node>>(

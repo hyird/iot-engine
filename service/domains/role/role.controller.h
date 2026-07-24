@@ -15,7 +15,7 @@ namespace service::role {
 
 class RoleController final : public ruvia::Controller<RoleController> {
   public:
-    RUVIA_CONTROLLER_GROUP("/api/roles", service::middleware::AuthMiddleware)
+    RUVIA_CONTROLLER_GROUP("/v1/roles", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
     RUVIA_GET("/", list, RoleListQueryValidator);
     RUVIA_GET("/options", options);

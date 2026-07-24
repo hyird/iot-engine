@@ -101,7 +101,7 @@ class LinkService {
             params.emplace_back(*keywordPattern);
             where += " AND name ILIKE $" + std::to_string(params.size());
         }
-        appendFilter(where, params, "mode", mode);
+        appendFilter(where, params, "endpoint->>'mode'", mode);
         appendFilter(where, params, "protocol", protocol);
         appendFilter(where, params, "status", status);
 
@@ -114,7 +114,8 @@ class LinkService {
         listParams.emplace_back((page - 1) * pageSize);
         const auto offsetIndex = listParams.size();
         const auto rows = co_await c.db().query(
-            "SELECT id::text, name, mode, protocol, ip, port, status, created_by::text, "
+            "SELECT id::text, name, protocol, endpoint->>'mode', COALESCE(endpoint->>'ip', ''), "
+            "COALESCE((endpoint->>'port')::integer, 0), status, created_by::text, "
             "created_at::text, updated_at::text FROM link" +
                 where + " ORDER BY id DESC LIMIT $" + std::to_string(limitIndex) + " OFFSET $" +
                 std::to_string(offsetIndex),
@@ -136,7 +137,8 @@ class LinkService {
 
     ruvia::Task<LinkItemDto> detail(ruvia::Context& c, std::string_view id) {
         const auto rows = co_await c.db().query(R"sql(
-SELECT id::text, name, mode, protocol, ip, port, status, created_by::text,
+SELECT id::text, name, protocol, endpoint->>'mode', COALESCE(endpoint->>'ip', ''),
+       COALESCE((endpoint->>'port')::integer, 0), status, created_by::text,
        created_at::text, updated_at::text
 FROM link WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
                                                 service::common::dbParams(id));
@@ -149,12 +151,22 @@ FROM link WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
 
     ruvia::Task<ruvia::List<LinkOptionDto>> options(ruvia::Context& c) {
         const auto rows = co_await c.db().query(
-            "SELECT id::text, name, mode, protocol FROM link WHERE deleted_at IS NULL AND "
+            "SELECT id::text, name, protocol, endpoint->>'mode', COALESCE(endpoint->>'ip', ''), "
+            "COALESCE((endpoint->>'port')::integer, 0) "
+            "FROM link WHERE deleted_at IS NULL AND "
             "status = 'enabled' ORDER BY name");
         ruvia::List<LinkOptionDto> result(c.resource());
         for (const auto& row : rows.rows()) {
             auto& item = result.emplace(c);
-            item.id(row[0].text()).name(row[1].text()).mode(row[2].text()).protocol(row[3].text());
+            LinkEndpointDto endpoint(c);
+            endpoint.mode(row[3].text())
+                .ip(row[4].text())
+                .port(toInt(row[5].text()))
+                .targets(co_await loadTargets(c, row[0].text(), RuntimeStatus{}));
+            item.id(row[0].text())
+                .name(row[1].text())
+                .protocol(row[2].text())
+                .endpoint(std::move(endpoint));
         }
         co_return result;
     }
@@ -207,28 +219,28 @@ FROM link WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
     ruvia::Task<void> create(ruvia::Context& c, const SaveLinkBody& body) {
         const auto principal = service::middleware::requireAuth(c);
         const auto name = required(body.name(), "链路名称不能为空");
-        const auto mode = required(body.mode(), "链路模式不能为空");
         const auto protocol = required(body.protocol(), "协议不能为空");
-        const auto ip = body.ip() ? std::string(body.ip()->view()) : "";
-        const auto port = body.port() ? static_cast<std::int64_t>(*body.port()) : 0;
+        const auto& endpoint = requiredEndpoint(body);
+        const auto mode = required(endpoint.mode(), "链路模式不能为空");
+        const auto ip = endpoint.ip() ? std::string(endpoint.ip()->view()) : "";
+        const auto port = endpoint.port() ? static_cast<std::int64_t>(*endpoint.port()) : 0;
         const auto status = body.status() ? std::string(body.status()->view()) : "enabled";
-        const auto& targets = *body.targets();
+        const auto& targets = requiredTargets(endpoint);
         validateConfiguration(mode, protocol, ip, port, targets);
         co_await ensureAvailable(c, name, mode, ip, port, std::nullopt);
-        const auto targetsJson = serializeTargets(targets);
+        const auto endpointJson = serializeEndpoint(mode, ip, port, targets);
         const auto id = service::common::nextUuidV7();
         (void)co_await c.db().execute(R"sql(
-INSERT INTO link(id, name, mode, protocol, ip, port, targets, status, created_by)
-VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8, $9))sql",
-                                      service::common::dbParams(id, name, mode, protocol, ip, port,
-                                                                targetsJson, status,
-                                                                principal.userId));
+INSERT INTO link(id, name, protocol, endpoint, status, created_by)
+VALUES ($1::uuid, $2, $3, $4::jsonb, $5, $6))sql",
+                                      service::common::dbParams(id, name, protocol, endpointJson,
+                                                                status, principal.userId));
         co_await service::message::publishConfigEvent(c, "link", "created", id);
     }
 
     ruvia::Task<void> update(ruvia::Context& c, std::string_view id, const SaveLinkBody& body) {
         const auto rows = co_await c.db().query(
-            "SELECT mode, protocol, created_by FROM link WHERE id = $1 AND deleted_at IS "
+            "SELECT endpoint->>'mode', protocol, created_by FROM link WHERE id = $1 AND deleted_at IS "
             "NULL LIMIT 1",
             service::common::dbParams(id));
         if (rows.rows().empty())
@@ -236,23 +248,24 @@ VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8, $9))sql",
         co_await requireOwner(c, rows.rows().front()[2].text());
 
         const auto name = required(body.name(), "链路名称不能为空");
-        const auto mode = required(body.mode(), "链路模式不能为空");
         const auto protocol = required(body.protocol(), "协议不能为空");
+        const auto& endpoint = requiredEndpoint(body);
+        const auto mode = required(endpoint.mode(), "链路模式不能为空");
         if (mode != rows.rows().front()[0].text() || protocol != rows.rows().front()[1].text())
             service::common::fail(15006, "链路模式和协议创建后不能修改", 400);
-        const auto ip = body.ip() ? std::string(body.ip()->view()) : "";
-        const auto port = body.port() ? static_cast<std::int64_t>(*body.port()) : 0;
+        const auto ip = endpoint.ip() ? std::string(endpoint.ip()->view()) : "";
+        const auto port = endpoint.port() ? static_cast<std::int64_t>(*endpoint.port()) : 0;
         const auto status = body.status() ? std::string(body.status()->view()) : "enabled";
-        const auto& targets = *body.targets();
+        const auto& targets = requiredTargets(endpoint);
         validateConfiguration(mode, protocol, ip, port, targets);
         co_await ensureAvailable(c, name, mode, ip, port, std::string(id));
-        const auto targetsJson = serializeTargets(targets);
+        const auto endpointJson = serializeEndpoint(mode, ip, port, targets);
         (void)co_await c.db().execute(
             R"sql(
 UPDATE link
-SET name = $1, ip = $2, port = $3, targets = $4::jsonb, status = $5, updated_at = NOW()
-WHERE id = $6)sql",
-            service::common::dbParams(name, ip, port, targetsJson, status, id));
+SET name = $1, endpoint = $2::jsonb, status = $3, updated_at = NOW()
+WHERE id = $4)sql",
+            service::common::dbParams(name, endpointJson, status, id));
         co_await service::message::publishConfigEvent(c, "link", "updated", id);
     }
 
@@ -329,6 +342,18 @@ WHERE id = $6)sql",
         return std::string(value->view());
     }
 
+    static const LinkEndpointBody& requiredEndpoint(const SaveLinkBody& body) {
+        if (!body.endpoint())
+            service::common::fail(15002, "链路端点不能为空", 400);
+        return *body.endpoint();
+    }
+
+    static const ruvia::Array<LinkTargetBody>& requiredTargets(const LinkEndpointBody& endpoint) {
+        if (!endpoint.targets())
+            service::common::fail(15002, "目标列表不能为空", 400);
+        return *endpoint.targets();
+    }
+
     static void appendFilter(std::string& where, std::vector<ruvia::DbValue>& params,
                              std::string_view column, const std::optional<std::string>& value) {
         if (!value || value->empty())
@@ -353,29 +378,35 @@ WHERE id = $6)sql",
                 break;
             start = end + 1;
         }
+        RuntimeDto runtimeDto(c);
+        runtimeDto.state(runtime.text("state", "stopped"))
+            .reason(runtime.text("state_reason"))
+            .error(runtime.text("error"))
+            .clientCount(runtime.integer("connection_count"))
+            .clients(std::move(clients))
+            .lastActivityAt(runtime.integer("last_activity_at_ms"));
         item.id(id)
             .name(row[1].text())
-            .mode(row[2].text())
-            .protocol(row[3].text())
-            .ip(row[4].text())
-            .port(toInt(row[5].text()))
-            .targets(co_await loadTargets(c, id, runtime))
+            .protocol(row[2].text())
             .status(row[6].text())
-            .connStatus(runtime.text("state", "stopped"))
-            .clientCount(runtime.integer("connection_count"))
-            .stateReason(runtime.text("state_reason"))
-            .clients(std::move(clients))
-            .errorMessage(runtime.text("error"))
+            .runtime(std::move(runtimeDto))
             .createdBy(row[7].text())
             .createdAt(row[8].text())
             .updatedAt(row[9].text());
+        LinkEndpointDto endpoint(c);
+        endpoint.mode(row[3].text())
+            .ip(row[4].text())
+            .port(toInt(row[5].text()))
+            .targets(co_await loadTargets(c, id, runtime));
+        item.endpoint(std::move(endpoint));
     }
 
     ruvia::Task<ruvia::List<LinkTargetDto>> loadTargets(ruvia::Context& c, std::string_view id,
                                                         const RuntimeStatus& runtime) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT target->>'id', target->>'name', target->>'ip', target->>'port', target->>'status'
-FROM link, jsonb_array_elements(targets) WITH ORDINALITY AS value(target, position)
+FROM link, jsonb_array_elements(COALESCE(endpoint->'targets', '[]'::jsonb))
+  WITH ORDINALITY AS value(target, position)
 WHERE link.id = $1 ORDER BY position)sql",
                                                 service::common::dbParams(id));
         ruvia::List<LinkTargetDto> result(c.resource());
@@ -383,15 +414,17 @@ WHERE link.id = $1 ORDER BY position)sql",
             auto& target = result.emplace(c);
             const auto targetId = std::string(row[0].text());
             const auto prefix = "target:" + targetId + ':';
+            RuntimeDto targetRuntime(c);
+            targetRuntime.state(runtime.text(prefix + "state", "stopped"))
+                .reason(runtime.text(prefix + "reason"))
+                .error(runtime.text(prefix + "error"))
+                .lastActivityAt(runtime.integer(prefix + "last_activity_at_ms"));
             target.id(targetId)
                 .name(row[1].text())
                 .ip(row[2].text())
                 .port(toInt(row[3].text()))
                 .status(row[4].text())
-                .connStatus(runtime.text(prefix + "state", "stopped"))
-                .stateReason(runtime.text(prefix + "reason"))
-                .errorMessage(runtime.text(prefix + "error"))
-                .lastActivityAtMs(runtime.integer(prefix + "last_activity_at_ms"));
+                .runtime(std::move(targetRuntime));
         }
         co_return result;
     }
@@ -399,7 +432,7 @@ WHERE link.id = $1 ORDER BY position)sql",
     static ruvia::Task<RuntimeStatus> loadRuntimeStatus(ruvia::Context& c, std::string_view id) {
         RuntimeStatus status;
         try {
-            const auto pattern = "iot:state:link:" + std::string(id) + ":worker:*";
+            const auto pattern = "iot:runtime:link:" + std::string(id) + ":worker:*";
             std::string cursor = "0";
             std::vector<std::string> keys;
             do {
@@ -605,11 +638,27 @@ WHERE link.id = $1 ORDER BY position)sql",
         return result;
     }
 
+    template <typename Targets>
+    static std::string serializeEndpoint(std::string_view mode, std::string_view ip,
+                                         std::int64_t port, const Targets& targets) {
+        std::string result = "{\"mode\":";
+        appendJsonString(result, mode);
+        result += ",\"ip\":";
+        appendJsonString(result, mode == "TCP Server" ? ip : "");
+        result += ",\"port\":" + std::to_string(mode == "TCP Server" ? port : 0);
+        result += ",\"targets\":";
+        result += mode == "TCP Client" ? serializeTargets(targets) : "[]";
+        result.push_back('}');
+        return result;
+    }
+
     ruvia::Task<void> ensureAvailable(ruvia::Context& c, const std::string& name,
                                       const std::string& mode, const std::string& ip,
                                       std::int64_t port, std::optional<std::string> excludedId) {
         std::string sql = "SELECT 1 FROM link WHERE deleted_at IS NULL AND (name = $1 OR "
-                          "($2 = 'TCP Server' AND mode = $2 AND ip = $3 AND port = $4))";
+                          "($2 = 'TCP Server' AND endpoint->>'mode' = $2 "
+                          "AND endpoint->>'ip' = $3 "
+                          "AND COALESCE((endpoint->>'port')::integer, 0) = $4))";
         auto params = service::common::dbParams(name, mode, ip, port);
         if (excludedId) {
             params.emplace_back(*excludedId);

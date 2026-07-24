@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <exception>
 #include <map>
+#include <memory_resource>
 #include <optional>
 #include <set>
 #include <string>
@@ -270,8 +271,7 @@ class DeviceService {
             fillItem(c, item, row, actor);
             itemsById.emplace(std::string(row[0].text()), &item);
         }
-        co_await fillElements(c, itemsById, std::nullopt);
-        co_await fillCommandOperations(c, itemsById, std::nullopt);
+        co_await fillLatest(c, itemsById);
         DevicePageDataDto result(c);
         result.list(std::move(items)).total(static_cast<std::int64_t>(rows.rows().size()));
         co_return result;
@@ -320,7 +320,7 @@ class DeviceService {
         DeviceItemDto item(c);
         fillItem(c, item, rows.rows().front(), actor);
         std::map<std::string, DeviceItemDto*, std::less<>> itemById{{std::string(id), &item}};
-        co_await fillElements(c, itemById, id);
+        co_await fillLatest(c, itemById);
         co_await fillCommandOperations(c, itemById, id);
         co_return item;
     }
@@ -457,6 +457,7 @@ VALUES ($1::uuid, $2, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
         try {
             co_await service::telemetry::latest::initializeDevice(c.redis(), id,
                                                                                deviceCode);
+            co_await service::telemetry::latest::projectDevice(c, id);
         } catch (...) {
             // PostgreSQL is authoritative; startup hydration or the first report repairs Redis.
         }
@@ -469,7 +470,8 @@ VALUES ($1::uuid, $2, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
         (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner);
         const auto rows = co_await c.db().query(
             "SELECT COALESCE(link_id::text, ''), COALESCE(edge_node_id::text, ''), "
-            "protocol_config_id::text FROM device WHERE id = $1 AND deleted_at IS NULL",
+            "protocol_config_id::text, protocol_params->>'device_code' FROM device WHERE id = $1 "
+            "AND deleted_at IS NULL",
                                                 service::common::dbParams(id));
         if (rows.rows().empty())
             service::common::fail(18001, "设备不存在", 404);
@@ -568,6 +570,14 @@ VALUES ($1::uuid, $2, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
                                               ", updated_at = NOW() WHERE id = $" +
                                               std::to_string(params.size()),
                                           params);
+        }
+        try {
+            if (body.deviceCode() && body.deviceCode()->view() != rows.rows().front()[3].text())
+                co_await service::telemetry::latest::eraseDevice(c.redis(),
+                                                                 rows.rows().front()[3].text());
+            co_await service::telemetry::latest::projectDevice(c, id);
+        } catch (...) {
+            // PostgreSQL remains authoritative; startup hydration repairs Redis read models.
         }
         co_await service::message::publishConfigEvent(c, "device", "updated", id);
         if (!rows.rows().front()[1].text().empty())
@@ -730,7 +740,8 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
     static std::int64_t toInt(std::string_view value) { return std::stoll(std::string(value)); }
 
     static std::string edgeEndpointStatusKey(std::string_view nodeId, std::string_view endpointId) {
-        return "iot:edge:endpoint:" + std::string(nodeId) + ':' + std::string(endpointId);
+        return "iot:runtime:edge:" + std::string(nodeId) + ":endpoint:" +
+               std::string(endpointId);
     }
 
     // 列顺序必须与 fillItem 的 row 下标严格对应。
@@ -746,7 +757,7 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
   d.protocol_params->'heartbeat'->>'mode', d.protocol_params->'heartbeat'->>'content',
   d.protocol_params->'registration'->>'mode', d.protocol_params->'registration'->>'content',
   COALESCE(d.remark, ''), d.created_by::text, d.created_at::text, d.updated_at::text,
-  COALESCE(l.name, ''), COALESCE(l.mode, ''), COALESCE(l.protocol, ''), p.name, p.protocol,
+  COALESCE(l.name, ''), COALESCE(l.endpoint->>'mode', ''), COALESCE(l.protocol, ''), p.name, p.protocol,
   COALESCE((p.config->>'readInterval')::numeric, (p.config->>'pollInterval')::numeric)::text,
   (p.config->>'storageInterval')::numeric::text,
   CASE p.protocol
@@ -850,159 +861,43 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
     }
 
     static ruvia::Task<void>
-    fillElements(ruvia::Context& c, const std::map<std::string, DeviceItemDto*, std::less<>>& items,
-                 std::optional<std::string_view> onlyDevice) {
+    fillLatest(ruvia::Context& c, const std::map<std::string, DeviceItemDto*, std::less<>>& items) {
         if (items.empty())
             co_return;
-        std::string filter;
-        std::vector<ruvia::DbValue> params;
-        if (onlyDevice) {
-            filter = " AND d.id = $1::uuid";
-            params.emplace_back(*onlyDevice);
-        }
-        const std::string sql = R"sql(
-WITH configured AS (
-  SELECT d.id AS device_id, d.protocol_params->>'device_code' AS device_code,
-         element, 1 AS protocol_order,
-         position AS function_order, 0::bigint AS element_order
-  FROM device d
-  JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'Modbus'
-  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]'::jsonb))
-    WITH ORDINALITY AS entry(element, position)
-  WHERE d.deleted_at IS NULL)sql" +
-                                filter + R"sql(
-  UNION ALL
-  SELECT d.id, d.protocol_params->>'device_code', element, 2, position, 0::bigint
-  FROM device d
-  JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'S7'
-  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]'::jsonb))
-    WITH ORDINALITY AS entry(element, position)
-  WHERE d.deleted_at IS NULL)sql" +
-                                filter + R"sql(
-  UNION ALL
-  SELECT d.id, d.protocol_params->>'device_code', element, 3,
-         function_position, element_position
-  FROM device d
-  JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'SL651'
-  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]'::jsonb))
-    WITH ORDINALITY AS functions(function, function_position)
-  CROSS JOIN LATERAL jsonb_array_elements(
-    COALESCE(function->'elements', '[]'::jsonb) ||
-    COALESCE(function->'responseElements', '[]'::jsonb))
-    WITH ORDINALITY AS elements(element, element_position)
-  WHERE d.deleted_at IS NULL)sql" +
-                                filter + R"sql(
-)
-SELECT configured.device_id::text, configured.device_code, configured.element->>'id',
-       configured.element->>'name',
-       COALESCE(configured.element->>'unit', ''),
-       COALESCE(configured.element->>'scale', '1'),
-       COALESCE(configured.element->>'decimals', configured.element->>'digits', '-1'),
-       COALESCE(configured.element->>'group', ''),
-       COALESCE(configured.element->>'encode', '')
-FROM configured
-ORDER BY configured.device_id, configured.protocol_order,
-         configured.function_order, configured.element_order)sql";
-        const auto rows = co_await c.db().query(sql, params);
-        struct ElementBinding {
-            DeviceItemDto* device = nullptr;
-            DeviceElementDto* element = nullptr;
-            std::string key;
-        };
-        std::vector<ElementBinding> bindings;
-        bindings.reserve(rows.rows().size());
-        for (const auto& row : rows.rows()) {
-            const auto item = items.find(std::string(row[0].text()));
-            if (item == items.end())
-                continue;
-            auto& element = item->second->elementsEnsure().emplace(c);
-            element.id(row[2].text())
-                .name(row[3].text())
-                .value("-")
-                .unit(row[4].text())
-                .scale(std::stod(std::string(row[5].text())))
-                .decimals(toInt(row[6].text()));
-            if (!row[7].text().empty())
-                element.group(row[7].text());
-            if (!row[8].text().empty())
-                element.encode(row[8].text());
-            bindings.push_back({item->second, &element,
-                                service::telemetry::latest::elementKey(
-                                    row[1].text(), row[2].text())});
-        }
-
         auto pipeline = c.redis().pipeline();
-        std::vector<DeviceItemDto*> deviceBindings;
-        deviceBindings.reserve(items.size());
-        std::vector<DeviceItemDto*> endpointBindings;
-        endpointBindings.reserve(items.size());
+        enum class ReplyKind { runtime, latest, endpoint };
+        struct ReplyBinding {
+            ReplyKind kind;
+            DeviceItemDto* item;
+        };
+        std::vector<ReplyBinding> bindings;
+        bindings.reserve(items.size() * 3);
         for (const auto& [id, item] : items) {
             (void)id;
             if (!item->deviceCode())
                 continue;
-            pipeline.hgetAll(
-                service::telemetry::latest::stateKey(item->deviceCode()->view()));
-            deviceBindings.push_back(item);
+            pipeline.hgetAll(service::telemetry::latest::runtimeKey(item->deviceCode()->view()));
+            bindings.push_back({ReplyKind::runtime, item});
+            pipeline.hgetAll(service::telemetry::latest::latestKey(item->deviceCode()->view()));
+            bindings.push_back({ReplyKind::latest, item});
             if (item->edgeNodeId() && item->id() && item->edgeTransport() &&
                 item->edgeTransport()->view() == "tcp") {
                 pipeline.hgetAll(
                     edgeEndpointStatusKey(item->edgeNodeId()->view(), item->id()->view()));
-                endpointBindings.push_back(item);
+                bindings.push_back({ReplyKind::endpoint, item});
             }
         }
-        for (const auto& binding : bindings)
-            pipeline.hgetAll(binding.key);
         const auto replies = co_await std::move(pipeline).exec();
-        std::size_t replyIndex = 0;
-        for (auto* item : deviceBindings) {
-            const auto& reply = replies[replyIndex++];
-            const auto reportTime = redisHashField(reply, "last_report_at_ms");
-            auto online = false;
-            if (!reportTime.empty()) {
-                item->reportTime(reportTime);
-                const auto protocol =
-                    item->protocolType() ? item->protocolType()->view() : std::string_view{};
-                const auto windowMs =
-                    protocol == "SL651"
-                        ? (item->onlineTimeout() ? static_cast<std::int64_t>(*item->onlineTimeout())
-                                                 : 300) *
-                              1000
-                        : static_cast<std::int64_t>(
-                              (item->readInterval() ? static_cast<double>(*item->readInterval())
-                                                    : 5.0) *
-                              3000.0);
-                online = service::message::utcNowMilliseconds() - toInt(reportTime) <= windowMs;
+        for (std::size_t index = 0; index < bindings.size() && index < replies.size(); ++index) {
+            const auto& binding = bindings[index];
+            if (binding.kind == ReplyKind::runtime) {
+                applyRuntime(*binding.item, replies[index]);
+            } else if (binding.kind == ReplyKind::latest) {
+                applyLatestElements(c, *binding.item, replies[index]);
+            } else {
+                applyEdgeRuntime(c, *binding.item, replies[index]);
             }
-            item->connected(online).connectionState(online ? "online" : "offline");
         }
-        for (auto* item : endpointBindings) {
-            const auto& reply = replies[replyIndex++];
-            const auto state = redisHashField(reply, "state");
-            if (!state.empty())
-                item->edgeTcpState(state);
-            const auto reason = redisHashField(reply, "reason");
-            if (!reason.empty())
-                item->edgeTcpReason(reason);
-            const auto clientCount = redisHashField(reply, "client_count");
-            if (!clientCount.empty())
-                item->edgeTcpClientCount(toInt(clientCount));
-            const auto lastActivity = redisHashField(reply, "last_activity_at_ms");
-            if (!lastActivity.empty())
-                item->edgeTcpLastActivityAt(toInt(lastActivity));
-        }
-        std::map<DeviceItemDto*, std::int64_t> latestReport;
-        for (const auto& binding : bindings) {
-            const auto& reply = replies[replyIndex++];
-            const auto value = redisHashField(reply, "value");
-            if (!value.empty())
-                binding.element->value(value);
-            const auto observedAt = redisHashField(reply, "observed_at_ms");
-            if (!observedAt.empty())
-                latestReport[binding.device] =
-                    std::max(latestReport[binding.device], toInt(observedAt));
-        }
-        for (const auto& [item, observedAt] : latestReport)
-            item->reportTime(std::to_string(observedAt));
     }
 
     static ruvia::Task<void>
@@ -1202,6 +1097,152 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         return {};
     }
 
+    static std::optional<ruvia::JsonValue> jsonField(const ruvia::JsonValue& object,
+                                                     std::string_view field) {
+        if (!object.isObject())
+            return std::nullopt;
+        std::optional<ruvia::JsonValue> result;
+        const auto valid = ruvia::detail::visitJsonObjectFields(
+            ruvia::detail::ResolvedPmrResourceTag{}, object.view(),
+            std::pmr::get_default_resource(),
+            [&](std::string_view key, std::string_view value) {
+                if (key == field)
+                    result = ruvia::JsonValue::parse(value);
+                return true;
+            });
+        return valid ? result : std::nullopt;
+    }
+
+    static std::optional<std::string> jsonString(const ruvia::JsonValue& object,
+                                                 std::string_view field) {
+        const auto value = object.get<ruvia::String>(field);
+        if (!value)
+            return std::nullopt;
+        return std::string(value->view());
+    }
+
+    static std::int64_t jsonInt(const ruvia::JsonValue& object, std::string_view field,
+                                std::int64_t fallback) {
+        if (const auto value = object.get<ruvia::Int64>(field))
+            return static_cast<std::int64_t>(*value);
+        const auto raw = jsonField(object, field);
+        if (!raw)
+            return fallback;
+        try {
+            return std::stoll(std::string(raw->view()));
+        } catch (...) {
+            return fallback;
+        }
+    }
+
+    static double jsonDouble(const ruvia::JsonValue& object, std::string_view field,
+                             double fallback) {
+        const auto raw = jsonField(object, field);
+        if (!raw)
+            return fallback;
+        try {
+            return std::stod(std::string(raw->view()));
+        } catch (...) {
+            return fallback;
+        }
+    }
+
+    static void applyRuntime(DeviceItemDto& item, const ruvia::RedisValue& reply) {
+        const auto reportTime = redisHashField(reply, "last_report_at_ms");
+        if (!reportTime.empty())
+            item.reportTime(reportTime);
+        const auto state = redisHashField(reply, "state");
+        const bool online = state == "online";
+        item.connected(online).connectionState(online ? "online" : "offline");
+    }
+
+    static void applyEdgeRuntime(ruvia::Context& c, DeviceItemDto& item,
+                                 const ruvia::RedisValue& reply) {
+        const auto state = redisHashField(reply, "state");
+        if (state.empty())
+            return;
+        EdgeStatusDto status(c);
+        status.state(state);
+        const auto reason = redisHashField(reply, "reason");
+        if (!reason.empty())
+            status.reason(reason);
+        const auto clientCount = redisHashField(reply, "client_count");
+        if (!clientCount.empty())
+            status.clientCount(toInt(clientCount));
+        const auto lastActivity = redisHashField(reply, "last_activity_at_ms");
+        if (!lastActivity.empty())
+            status.lastActivityAt(toInt(lastActivity));
+        item.edgeStatus(std::move(status));
+    }
+
+    struct LatestElement final {
+        std::int64_t sort = 0;
+        std::int64_t observedAt = 0;
+        double scale = 1.0;
+        std::int64_t decimals = -1;
+        std::string id;
+        std::string name;
+        std::string value{"-"};
+        std::string unit;
+        std::string group;
+        std::string encode;
+    };
+
+    static void applyLatestElements(ruvia::Context& c, DeviceItemDto& item,
+                                    const ruvia::RedisValue& reply) {
+        if (reply.kind() != ruvia::RedisValue::Kind::kArray)
+            return;
+        std::vector<LatestElement> elements;
+        const auto& entries = reply.array();
+        for (std::size_t index = 0; index + 1 < entries.size(); index += 2) {
+            if (entries[index].kind() != ruvia::RedisValue::Kind::kString ||
+                entries[index + 1].kind() != ruvia::RedisValue::Kind::kString)
+                continue;
+            const auto field = entries[index].string();
+            if (field.empty() || field.front() == '_')
+                continue;
+            const auto parsed = ruvia::JsonValue::parse(entries[index + 1].string());
+            if (!parsed || !parsed->isObject())
+                continue;
+            LatestElement element;
+            element.id = jsonString(*parsed, "id").value_or(std::string(field));
+            element.name = jsonString(*parsed, "name").value_or(element.id);
+            element.value = jsonString(*parsed, "value").value_or("-");
+            element.unit = jsonString(*parsed, "unit").value_or("");
+            element.group = jsonString(*parsed, "group").value_or("");
+            element.encode = jsonString(*parsed, "encode").value_or("");
+            element.scale = jsonDouble(*parsed, "scale", 1.0);
+            element.decimals = jsonInt(*parsed, "decimals", -1);
+            element.sort = jsonInt(*parsed, "sort", 0);
+            element.observedAt = jsonInt(*parsed, "observedAt", 0);
+            elements.push_back(std::move(element));
+        }
+        std::sort(elements.begin(), elements.end(), [](const auto& left, const auto& right) {
+            if (left.sort != right.sort)
+                return left.sort < right.sort;
+            return left.id < right.id;
+        });
+        ruvia::List<DeviceElementDto> dtos(c.resource());
+        std::int64_t reportTime = 0;
+        for (const auto& element : elements) {
+            auto& dto = dtos.emplace(c);
+            dto.id(element.id)
+                .name(element.name)
+                .value(element.value)
+                .unit(element.unit)
+                .scale(element.scale)
+                .decimals(element.decimals);
+            if (!element.group.empty())
+                dto.group(element.group);
+            if (!element.encode.empty())
+                dto.encode(element.encode);
+            reportTime = std::max(reportTime, element.observedAt);
+        }
+        item.elements(std::move(dtos));
+        if (reportTime > 0 && !item.reportTime())
+            item.reportTime(std::to_string(reportTime));
+    }
+
     static std::string str(const std::optional<ruvia::String>& value) {
         return value ? std::string(value->view()) : std::string{};
     }
@@ -1381,7 +1422,7 @@ ORDER BY device_id, operation_position, operation_key, element_position,
 SELECT p.protocol
 FROM edge_node n CROSS JOIN protocol_config p
 WHERE n.id = $1::uuid AND n.enrollment_status = 'approved'
-  AND n.supports_device_config
+  AND COALESCE((n.capability->>'deviceConfig')::boolean, false)
   AND p.id = $2::uuid AND p.deleted_at IS NULL LIMIT 1)sql",
                                                         service::common::dbParams(edgeNodeId,
                                                                                   configId));
@@ -1394,7 +1435,7 @@ WHERE n.id = $1::uuid AND n.enrollment_status = 'approved'
             co_await validateEdgeEndpoint(c, body, edgeNodeId, configProtocol);
         } else {
             const auto relation = co_await c.db().query(R"sql(
-SELECT l.protocol, l.mode, p.protocol
+SELECT l.protocol, l.endpoint->>'mode', p.protocol
 FROM link l CROSS JOIN protocol_config p
 WHERE l.id = $1 AND l.deleted_at IS NULL AND p.id = $2 AND p.deleted_at IS NULL LIMIT 1)sql",
                                                       service::common::dbParams(linkId, configId));
@@ -1632,7 +1673,7 @@ candidate AS (
              '{"mode":"OFF"}'::jsonb) AS heartbeat
   FROM (SELECT 1) b LEFT JOIN current_device ON TRUE
 )
-SELECT candidate.link_id, link.mode, protocol.protocol, candidate.target_id,
+SELECT candidate.link_id, link.endpoint->>'mode', protocol.protocol, candidate.target_id,
        candidate.slave_id,
        upper(COALESCE(candidate.registration->>'mode', 'OFF')),
        CASE upper(COALESCE(candidate.registration->>'mode', 'OFF'))

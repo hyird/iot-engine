@@ -380,7 +380,7 @@ async function scan(pattern: string) {
 }
 
 async function onlineRouteCount() {
-    const keys = await scan('iot:state:device:*');
+    const keys = await scan('iot:runtime:device:*');
     const connections = await Promise.all(
         keys.map((key) => redis.send('HGET', [key, 'connection_id'])),
     );
@@ -392,13 +392,13 @@ async function waitRuntimeReady() {
     const deadline = Date.now() + 120_000;
     while (Date.now() < deadline) {
         const counts = await Promise.all(
-            linkIds.map(async (linkId) => (await scan(`iot:state:link:${linkId}:worker:*`)).length),
+            linkIds.map(async (linkId) => (await scan(`iot:runtime:link:${linkId}:worker:*`)).length),
         );
         if (counts.every((count) => count > 0)) return counts;
         await Bun.sleep(100);
     }
     const counts = await Promise.all(
-        linkIds.map(async (linkId) => (await scan(`iot:state:link:${linkId}:worker:*`)).length),
+        linkIds.map(async (linkId) => (await scan(`iot:runtime:link:${linkId}:worker:*`)).length),
     );
     throw new Error(`collector runtime not ready: ${JSON.stringify(counts)}`);
 }
@@ -492,7 +492,7 @@ function taskFields(id: string, protocol: string, linkId: string, deviceId: stri
 
 async function enqueueDiscovery(protocol: 'Modbus' | 'S7', payload: Buffer, transport = 'TCP') {
     const linkId = protocol === 'Modbus' ? fixture.links.modbusServer : fixture.links.s7Server;
-    const stateKeys = await scan(`iot:state:link:${linkId}:worker:*`);
+    const stateKeys = await scan(`iot:runtime:link:${linkId}:worker:*`);
     const workers = new Set(stateKeys.map((key) => key.split(':').at(-1) as string));
     for (const worker of workers) {
         await enqueue(taskFields(uuidv7(), protocol, linkId, '', '', '', payload, 'discovery', Buffer.alloc(0), Buffer.alloc(0), transport), worker);
@@ -523,7 +523,7 @@ for (let index = 0; index < deviceCount; index++) {
 async function issueDeviceCommands(index: number, attempt: number) {
     try {
         const modbusCode = `MS${pad(index, 3)}`;
-        const modbusRoute = await hash(`iot:state:device:${modbusCode}`);
+        const modbusRoute = await hash(`iot:runtime:device:${modbusCode}`);
         if (modbusRoute.connection_id) {
             const tcp = index % 2 === 0;
             const functionCode =
@@ -545,7 +545,7 @@ async function issueDeviceCommands(index: number, attempt: number) {
             await enqueue(taskFields(commandId, 'Modbus', fixture.links.modbusServer, modbusRoute.device_id, modbusCode, modbusRoute.connection_id, payload, write ? 'write' : 'read', readback, expected, tcp ? 'TCP' : 'RTU', modbusRoute.session_epoch), modbusRoute.worker_id);
         }
         const s7Code = `SS${pad(index, 3)}`;
-        const s7Route = await hash(`iot:state:device:${s7Code}`);
+        const s7Route = await hash(`iot:runtime:device:${s7Code}`);
         if (s7Route.connection_id) {
             const write = attempt % 2 === 0;
             const payload = write ? s7Write() : s7Read(index);
@@ -555,7 +555,7 @@ async function issueDeviceCommands(index: number, attempt: number) {
             await enqueue(taskFields(commandId, 'S7', fixture.links.s7Server, s7Route.device_id, s7Code, s7Route.connection_id, payload, write ? 'write' : 'read', readback, write ? Buffer.from([0x12, 0x34]) : Buffer.alloc(0), 'TCP', s7Route.session_epoch), s7Route.worker_id);
         }
         const slCode = pad(index + 1, 10);
-        const slRoute = await hash(`iot:state:device:${slCode}`);
+        const slRoute = await hash(`iot:runtime:device:${slCode}`);
         if (slRoute.connection_id) {
             const functionCode = 0x30 + (attempt % 0x20);
             const commandId = uuidv7();
@@ -619,7 +619,7 @@ const metricsTimer = setInterval(async () => {
     peakRouteCount = Math.max(peakRouteCount, routeCount);
     const parsed = await partitionStreamDepth('iot:channel:packet:parsed');
     const results = await partitionStreamDepth('iot:channel:command:result');
-    const linkStates = (await scan('iot:state:link:*:worker:*')).length;
+    const linkStates = (await scan('iot:runtime:link:*:worker:*')).length;
     console.log(JSON.stringify({ routeCount, parsed, results, linkStates, ingressFrames, egressFrames, reconnects, commands, discoveryCommands, socketErrors, maxEventLoopLagMs }));
 }, 5000);
 timers.add(metricsTimer);
@@ -674,13 +674,21 @@ const latestSamples = (fixture.coverage.latestSamples as Array<{
 const latestObservations = await Promise.all(
     latestSamples.map((sample) =>
         redis.send('HGET', [
-            `iot:latest:device:${sample.deviceCode}:element:${sample.elementId}`,
-            'updated_at_ms',
+            `iot:device:${sample.deviceCode}:latest`,
+            sample.elementId,
         ]),
     ),
 );
+const latestUpdatedAt = latestObservations.map((raw) => {
+    if (!raw) return 0;
+    try {
+        return Number((JSON.parse(String(raw)) as { updatedAt?: number }).updatedAt ?? 0);
+    } catch {
+        return 0;
+    }
+});
 const missingLatestElementIds = latestSamples
-    .filter((_, index) => Number(latestObservations[index] ?? 0) < startedAtMs)
+    .filter((_, index) => latestUpdatedAt[index] < startedAtMs)
     .map((sample) => sample.elementId);
 const stressDeviceIds = Object.values(fixture.devices).flat() as string[];
 const deviceIdList = stressDeviceIds.map((id) => `'${id.replaceAll("'", "''")}'`).join(',');

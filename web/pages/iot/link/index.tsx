@@ -31,9 +31,12 @@ const tooltipStyles = {
     container: { maxWidth: 'none', whiteSpace: 'nowrap' },
 } as const;
 
-type LinkFormValues = Link.SaveDto & { id?: string };
+type LinkFormValues = Omit<Link.SaveDto, 'endpoint'> &
+    Link.Endpoint & {
+        id?: string;
+    };
 
-const connectionLabels: Record<Link.Item['conn_status'], { color: string; text: string }> = {
+const connectionLabels: Record<Link.Connection, { color: string; text: string }> = {
     stopped: { color: 'default', text: '已停止' },
     listening: { color: 'processing', text: '监听中' },
     connected: { color: 'success', text: '已连接' },
@@ -108,11 +111,11 @@ export default function IotLinkPage() {
         form.setFieldsValue({
             id: record.id,
             name: record.name,
-            mode: record.mode,
+            mode: record.endpoint.mode,
             protocol: record.protocol,
-            ip: record.mode === 'TCP Server' ? '0.0.0.0' : '',
-            port: record.port,
-            targets: record.targets.map((target) => ({ ...target })),
+            ip: record.endpoint.mode === 'TCP Server' ? '0.0.0.0' : '',
+            port: record.endpoint.port,
+            targets: record.endpoint.targets.map((target) => ({ ...target })),
             status: record.status,
         });
         setModalVisible(true);
@@ -129,10 +132,15 @@ export default function IotLinkPage() {
 
     const onFinish = (values: LinkFormValues) => {
         const payload: Link.SaveDto = {
-            ...values,
-            ip: values.mode === 'TCP Server' ? '0.0.0.0' : '',
-            port: values.mode === 'TCP Server' ? values.port : 0,
-            targets: values.mode === 'TCP Client' ? values.targets : [],
+            name: values.name,
+            protocol: values.protocol,
+            status: values.status,
+            endpoint: {
+                mode: values.mode,
+                ip: values.mode === 'TCP Server' ? '0.0.0.0' : '',
+                port: values.mode === 'TCP Server' ? values.port : 0,
+                targets: values.mode === 'TCP Client' ? values.targets : [],
+            },
         };
         const validated = validateForm(form, saveLinkSchema, payload);
         if (!validated) return;
@@ -160,24 +168,24 @@ export default function IotLinkPage() {
 
     const columns: ColumnsType<Link.Item> = [
         { title: '链路名称', dataIndex: 'name' },
-        { title: '模式', dataIndex: 'mode' },
+        { title: '模式', key: 'mode', render: (_, record) => record.endpoint.mode },
         { title: '协议', dataIndex: 'protocol' },
         {
             title: '监听 / 目标地址',
             key: 'endpoint',
             render: (_, record) =>
-                record.mode === 'TCP Server' ? (
-                    `${record.ip}:${record.port}`
+                record.endpoint.mode === 'TCP Server' ? (
+                    `${record.endpoint.ip}:${record.endpoint.port}`
                 ) : (
                     <Tooltip
                         styles={tooltipStyles}
-                        title={record.targets.map((target) => (
+                        title={record.endpoint.targets.map((target) => (
                             <div key={target.id}>
                                 {target.name}: {target.ip}:{target.port}
                             </div>
                         ))}
                     >
-                        <Tag color="blue">{record.targets.length} 个目标</Tag>
+                        <Tag color="blue">{record.endpoint.targets.length} 个目标</Tag>
                     </Tooltip>
                 ),
         },
@@ -190,23 +198,28 @@ export default function IotLinkPage() {
             title: '连接状态',
             key: 'conn_status',
             render: (_, record) => {
-                const display = connectionLabels[record.conn_status] ?? connectionLabels.stopped;
-                if (record.mode === 'TCP Server' && record.conn_status === 'listening') {
+                const runtime = record.runtime;
+                const state = runtime?.state ?? 'stopped';
+                const display = connectionLabels[state] ?? connectionLabels.stopped;
+                if (record.endpoint.mode === 'TCP Server' && state === 'listening') {
                     const clientCount = (
-                        <Tag color="blue" className={record.client_count ? 'cursor-pointer' : ''}>
-                            {record.client_count} 客户端
+                        <Tag
+                            color="blue"
+                            className={runtime?.clientCount ? 'cursor-pointer' : ''}
+                        >
+                            {runtime?.clientCount ?? 0} 客户端
                         </Tag>
                     );
                     return (
                         <Space size={4}>
                             <Tag color={display.color}>{display.text}</Tag>
-                            {record.client_count ? (
+                            {runtime?.clientCount ? (
                                 <Tooltip
                                     styles={tooltipStyles}
                                     title={
                                         <div>
                                             <div className="mb-1 font-medium">已连接客户端：</div>
-                                            {record.clients?.map((endpoint) => (
+                                            {runtime.clients?.map((endpoint) => (
                                                 <div key={endpoint}>{endpoint}</div>
                                             ))}
                                         </div>
@@ -220,24 +233,30 @@ export default function IotLinkPage() {
                         </Space>
                     );
                 }
-                if (record.mode === 'TCP Client') {
-                    const enabledTargetCount = record.targets.filter(
+                if (record.endpoint.mode === 'TCP Client') {
+                    const enabledTargetCount = record.endpoint.targets.filter(
                         (target) => target.status === 'enabled'
                     ).length;
                     return (
                         <Space size={4}>
                             <Tooltip
                                 styles={tooltipStyles}
-                                title={record.targets
+                                title={record.endpoint.targets
                                     .filter((target) => target.status === 'enabled')
                                     .map((target) => (
                                         <div key={target.id}>
                                             {target.name}（{target.ip}:{target.port}）：
-                                            {connectionLabels[target.conn_status ?? 'stopped'].text}
-                                            {target.error_msg ? `（${target.error_msg}）` : ''}
-                                            {target.last_activity_at_ms
+                                            {
+                                                connectionLabels[
+                                                    target.runtime?.state ?? 'stopped'
+                                                ].text
+                                            }
+                                            {target.runtime?.error
+                                                ? `（${target.runtime.error}）`
+                                                : ''}
+                                            {target.runtime?.lastActivityAt
                                                 ? `，最后活动 ${formatDateTime(
-                                                      target.last_activity_at_ms
+                                                      target.runtime.lastActivityAt
                                                   )}`
                                                 : ''}
                                         </div>
@@ -246,7 +265,7 @@ export default function IotLinkPage() {
                                 <Tag color={display.color}>{display.text}</Tag>
                             </Tooltip>
                             <Tag color="blue">
-                                {record.client_count}/{enabledTargetCount} 服务端
+                                {runtime?.clientCount ?? 0}/{enabledTargetCount} 服务端
                             </Tag>
                         </Space>
                     );
