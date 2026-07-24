@@ -164,4 +164,14 @@ class TerminalTicketValidator final : public ruvia::Middleware<TerminalTicketVal
                                     RUVIA_CUSTOM("终端票据无效", service::common::isUuidField)));
 };
 
+class LogsValidator final : public ruvia::Middleware<LogsValidator> {
+  public:
+    RUVIA_VALIDATE_QUERY(
+        LogsQuery,
+        RUVIA_RULE(limit, RUVIA_MIN(1, "日志条数必须在 1 - 48 之间"),
+                   RUVIA_MAX(48, "日志条数必须在 1 - 48 之间")),
+        RUVIA_RULE(level, RUVIA_ONE_OF("日志级别无效", "debug", "info", "warn", "error")),
+        RUVIA_RULE(source, RUVIA_MAX(16, "日志来源不能超过 16 个字符")));
+};
+
 } // namespace service::edge

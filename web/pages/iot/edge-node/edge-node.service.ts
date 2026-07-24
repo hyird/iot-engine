@@ -6,6 +6,7 @@ import {
     controlModem,
     getEdgeDetail,
     getEdgeList,
+    getLogs,
     removePlatform,
     renameEdge,
     setEnrollment,
@@ -28,6 +29,14 @@ export const useEdgeDetail = (id?: string) =>
         queryFn: () => getEdgeDetail(id as string),
         enabled: Boolean(id),
         refetchInterval: 10_000,
+    });
+
+export const useEdgeLogs = (id?: string, query?: Edge.LogsQuery, enabled = true) =>
+    useQuery({
+        queryKey: edgeQueryKeys.logs(id, query),
+        queryFn: () => getLogs(id as string, query),
+        enabled: enabled && Boolean(id),
+        staleTime: 0,
     });
 
 export function useEnrollmentMutation() {

@@ -5,6 +5,7 @@ import {
     edgeIdSchema,
     edgeListQuerySchema,
     firmwareUpgradeSchema,
+    logsQuerySchema,
     modemControlSchema,
     networkSchema,
     nodeNameSchema,
@@ -21,6 +22,10 @@ export const getEdgeList = (query?: Edge.Query) =>
     );
 export const getEdgeDetail = (id: string) =>
     request.get<Edge.Node>(`${BASE}/${edgeIdSchema.parse(id)}`);
+export const getLogs = (id: string, query?: Edge.LogsQuery) =>
+    request.get<Edge.Logs>(
+        appendQueryParams(`${BASE}/${edgeIdSchema.parse(id)}/logs`, logsQuerySchema.parse(query ?? {}))
+    );
 export const setEnrollment = (id: string, status: 'approved' | 'rejected', name?: string) =>
     request.put<void>(`${BASE}/${edgeIdSchema.parse(id)}/enrollment`, { status, name });
 export const renameEdge = (id: string, data: Edge.NameDto) =>

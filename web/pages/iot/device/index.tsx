@@ -23,6 +23,7 @@ import {
     Flex,
     Form,
     Input,
+    Modal,
     Pagination,
     Popconfirm,
     Popover,
@@ -54,7 +55,7 @@ import DeviceCard, { type DeviceCardItem } from '@/components/DeviceCard';
 import { PageContainer } from '@/components/PageContainer';
 import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermissions } from '@/hooks/usePermission';
-import { formatDateTime } from '@/utils/dateTime';
+import { formatDateTime, parseDateTime } from '@/utils/dateTime';
 import { useLinkOptions } from '../link/link.service';
 import CommandPopover from './CommandPopover';
 import { getDeviceDetail } from './device.client';
@@ -112,9 +113,9 @@ const createGroupStats = (): DeviceGroupStats => ({ total: 0, online: 0, offline
 
 const isOnline = (device: Device.RealTimeData, now = Date.now()) => {
     if (device.reportTime) {
-        const reportTime = new Date(device.reportTime).getTime();
-        if (!Number.isNaN(reportTime)) {
-            return now - reportTime < (device.online_timeout || 300) * 1000;
+        const reportTime = parseDateTime(device.reportTime);
+        if (reportTime && !Number.isNaN(reportTime.getTime())) {
+            return now - reportTime.getTime() < (device.online_timeout || 300) * 1000;
         }
     }
     return device.connectionState === 'online' || device.connected === true;
@@ -530,13 +531,170 @@ const DeviceShareDrawer = ({ resource, onClose }: DeviceShareDrawerProps) => {
 
 const createDefaultHistoryRange = (): [Dayjs, Dayjs] => [dayjs().subtract(24, 'hour'), dayjs()];
 
-const formatHistoryValue = (value: unknown) => {
-    if (value === null || value === undefined || value === '') return '-';
-    if (typeof value === 'object') return JSON.stringify(value);
-    return String(value);
+const getHistoryTimePresets = () => [
+    {
+        label: '最近1小时',
+        value: [dayjs().subtract(1, 'hour'), dayjs()] as [Dayjs, Dayjs],
+    },
+    {
+        label: '最近6小时',
+        value: [dayjs().subtract(6, 'hour'), dayjs()] as [Dayjs, Dayjs],
+    },
+    {
+        label: '最近24小时',
+        value: createDefaultHistoryRange(),
+    },
+    {
+        label: '最近3天',
+        value: [dayjs().subtract(3, 'day').startOf('day'), dayjs()] as [Dayjs, Dayjs],
+    },
+    {
+        label: '最近7天',
+        value: [dayjs().subtract(7, 'day').startOf('day'), dayjs()] as [Dayjs, Dayjs],
+    },
+];
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const normalizeHistoryPoint = (point: unknown, fallbackName?: string): Device.HistoryPointValue => {
+    if (!isPlainRecord(point)) return { name: fallbackName, value: point };
+    return {
+        name: typeof point.name === 'string' && point.name.trim() ? point.name : fallbackName,
+        value: Object.hasOwn(point, 'value') ? point.value : point,
+        unit: typeof point.unit === 'string' ? point.unit : undefined,
+    };
 };
 
-const DeviceHistoryDrawer = ({
+const parseHistoryBitLabels = (
+    value: unknown,
+    dictConfig: NonNullable<Device.Element['dictConfig']>
+) => {
+    const textValue = typeof value === 'string' ? value.trim() : '';
+    const numeric =
+        typeof value === 'number'
+            ? value
+            : textValue
+              ? Number.parseInt(textValue, textValue.startsWith('0x') || /[A-Fa-f]/.test(textValue) ? 16 : 10)
+              : Number.NaN;
+    if (!Number.isFinite(numeric)) return [];
+    return dictConfig.items
+        .filter((item) => {
+            const bitIndex = Number.parseInt(item.key, 10);
+            if (!Number.isInteger(bitIndex) || bitIndex < 0 || bitIndex > 31) return false;
+            const bitValue = (numeric >> bitIndex) & 1;
+            const triggerValue = item.value || '1';
+            return (
+                (triggerValue === '1' && bitValue === 1) || (triggerValue === '0' && bitValue === 0)
+            );
+        })
+        .map((item) => item.label)
+        .filter(Boolean);
+};
+
+const formatHistoryValue = (
+    point: Device.HistoryPointValue | undefined,
+    meta?: Pick<Device.Element, 'decimals' | 'dictConfig' | 'unit'>
+) => {
+    if (!point) return '-';
+    const value = point.value;
+    if (value === null || value === undefined || value === '') return '-';
+
+    if (meta?.dictConfig?.mapType === 'VALUE') {
+        const mapped = meta.dictConfig.items.find((item) => item.key === String(value))?.label;
+        if (mapped) return mapped;
+    }
+    if (meta?.dictConfig?.mapType === 'BIT') {
+        const labels = parseHistoryBitLabels(value, meta.dictConfig);
+        if (labels.length) return labels.join('、');
+    }
+
+    const numeric = typeof value === 'number' ? value : Number(value);
+    const formatted =
+        Number.isFinite(numeric) && meta?.decimals !== undefined && meta.decimals >= 0
+            ? numeric.toFixed(meta.decimals)
+            : typeof value === 'object'
+              ? JSON.stringify(value)
+              : String(value);
+    const unit = point.unit ?? meta?.unit;
+    return unit ? `${formatted} ${unit}` : formatted;
+};
+
+interface HistoryPointColumn {
+    key: string;
+    keys: string[];
+    label: string;
+    order: number;
+    unit?: string;
+    decimals?: number;
+    dictConfig?: Device.Element['dictConfig'];
+}
+
+const buildHistoryPointColumns = (
+    device: Device.RealTimeData,
+    records: Device.HistoryRecord[]
+): HistoryPointColumn[] => {
+    const configuredByKey = new Map<string, HistoryPointColumn>();
+    const configuredByName = new Map<string, HistoryPointColumn>();
+    device.elements?.forEach((element, index) => {
+        const label = element.name?.trim();
+        const key = element.id?.trim() || label || `configured_${index}`;
+        const meta: HistoryPointColumn = {
+            key,
+            keys: [key],
+            label: label || key,
+            order: index,
+            unit: element.unit,
+            decimals: element.decimals,
+            dictConfig: element.dictConfig,
+        };
+        configuredByKey.set(key, meta);
+        if (label) configuredByName.set(label, meta);
+    });
+
+    const columns = new Map<string, HistoryPointColumn>();
+    let fallbackOrder = device.elements?.length ?? 0;
+    for (const record of records) {
+        for (const [pointKey, rawPoint] of Object.entries(record.values ?? {})) {
+            const point = normalizeHistoryPoint(rawPoint, pointKey);
+            const label = point.name?.trim();
+            const configured =
+                configuredByKey.get(pointKey) || (label ? configuredByName.get(label) : undefined);
+            const key = configured?.key ?? pointKey;
+            const existing = columns.get(key);
+            if (existing) {
+                if (!existing.keys.includes(pointKey)) existing.keys.push(pointKey);
+                continue;
+            }
+            columns.set(key, {
+                ...(configured ?? {
+                    key,
+                    keys: [pointKey],
+                    label: label || pointKey,
+                    order: fallbackOrder++,
+                }),
+                keys: Array.from(new Set([...(configured?.keys ?? []), pointKey])),
+                unit: configured?.unit ?? point.unit,
+            });
+        }
+    }
+    return [...columns.values()].sort(
+        (a, b) => a.order - b.order || a.label.localeCompare(b.label)
+    );
+};
+
+const getHistoryPoint = (record: Device.HistoryRecord, column: HistoryPointColumn) => {
+    for (const key of column.keys) {
+        if (Object.hasOwn(record.values ?? {}, key)) {
+            return normalizeHistoryPoint(record.values[key], column.label);
+        }
+    }
+    return Object.entries(record.values ?? {})
+        .map(([key, point]) => normalizeHistoryPoint(point, key))
+        .find((point) => point.name === column.label);
+};
+
+const DeviceHistoryModal = ({
     device,
     onClose,
 }: {
@@ -555,9 +713,14 @@ const DeviceHistoryDrawer = ({
         [pagination, range]
     );
     const { data, isLoading, isFetching } = useDeviceHistory(device.id, query);
+    const records = data?.list ?? [];
+    const pointColumns = useMemo(
+        () => buildHistoryPointColumns(device, records),
+        [device, records]
+    );
 
-    const columns = useMemo<ColumnsType<Device.HistoryRecord>>(
-        () => [
+    const columns = useMemo<ColumnsType<Device.HistoryRecord>>(() => {
+        const tableColumns: ColumnsType<Device.HistoryRecord> = [
             {
                 title: '上报时间',
                 dataIndex: 'reportTime',
@@ -566,60 +729,58 @@ const DeviceHistoryDrawer = ({
                 fixed: 'left',
                 render: (value) => formatDateTime(value),
             },
-            {
-                title: '协议',
-                dataIndex: 'protocol',
-                key: 'protocol',
-                width: 100,
-                render: (value) => <Tag color="blue">{value}</Tag>,
-            },
-            {
-                title: '功能码',
-                dataIndex: 'functionCode',
-                key: 'functionCode',
-                width: 100,
-                render: (value) => value || '-',
-            },
-            {
-                title: '历史测点',
-                dataIndex: 'values',
-                key: 'values',
-                width: 560,
-                render: (values: Device.HistoryRecord['values']) => {
-                    const entries = Object.entries(values ?? {});
-                    if (entries.length === 0) return '-';
+            ...pointColumns.map((column) => ({
+                title: column.label,
+                key: column.key,
+                width: 150,
+                ellipsis: true,
+                render: (_: unknown, record: Device.HistoryRecord) => {
+                    const point = getHistoryPoint(record, column);
+                    const text = formatHistoryValue(point, column);
                     return (
-                        <Flex gap={4} wrap>
-                            {entries.map(([elementId, point]) => {
-                                const text = `${point.name || elementId}: ${formatHistoryValue(point.value)}${point.unit ? ` ${point.unit}` : ''}`;
-                                return (
-                                    <Tooltip key={elementId} title={text}>
-                                        <Tag className="!m-0 max-w-[260px] truncate">{text}</Tag>
-                                    </Tooltip>
-                                );
-                            })}
-                        </Flex>
+                        <Tooltip title={text}>
+                            <span className="block min-w-0 truncate tabular-nums">{text}</span>
+                        </Tooltip>
                     );
                 },
-            },
+            })),
             {
-                title: '来源',
+                title: '采集',
                 dataIndex: 'source',
                 key: 'source',
-                width: 100,
-                render: (value) => value || '-',
+                width: 120,
+                render: (_: unknown, record) => {
+                    const detail = [
+                        record.protocol ? `协议：${record.protocol}` : '',
+                        record.functionCode ? `功能码：${record.functionCode}` : '',
+                    ]
+                        .filter(Boolean)
+                        .join('，');
+                    const tag = <Tag className="!mr-0">{record.source || '-'}</Tag>;
+                    return detail ? <Tooltip title={detail}>{tag}</Tooltip> : tag;
+                },
             },
-        ],
-        []
-    );
+        ];
+        return tableColumns;
+    }, [pointColumns]);
+    const tableWidth = Math.max(760, 180 + pointColumns.length * 150 + 120);
 
     return (
-        <Drawer
+        <Modal
             open
-            onClose={onClose}
-            title={`历史数据 · ${device.name}:${device.device_code}`}
-            width="min(1100px, 94vw)"
+            onCancel={onClose}
+            title={`历史数据 - ${device.name || device.device_code}`}
+            width="min(1180px, 94vw)"
+            footer={null}
             destroyOnHidden
+            styles={{
+                body: {
+                    height: '75vh',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    overflow: 'hidden',
+                },
+            }}
         >
             <div className="flex h-full min-h-0 flex-col">
                 <Flex justify="space-between" align="center" gap={12} wrap className="mb-3">
@@ -627,15 +788,21 @@ const DeviceHistoryDrawer = ({
                         showTime
                         allowClear={false}
                         value={range}
+                        presets={getHistoryTimePresets()}
                         onChange={(value) => {
                             if (!value?.[0] || !value[1]) return;
                             setRange([value[0], value[1]]);
                             setPagination((current) => ({ ...current, page: 1 }));
                         }}
                     />
-                    <span className="text-xs text-slate-500">
-                        直接查询数据库中已持久化的设备上报记录
-                    </span>
+                    <Button
+                        onClick={() => {
+                            setRange(createDefaultHistoryRange());
+                            setPagination((current) => ({ ...current, page: 1 }));
+                        }}
+                    >
+                        重置
+                    </Button>
                 </Flex>
                 <div className="min-h-0 flex-1">
                     <Table
@@ -644,9 +811,9 @@ const DeviceHistoryDrawer = ({
                         sticky
                         pagination={false}
                         columns={columns}
-                        dataSource={data?.list ?? []}
+                        dataSource={records}
                         loading={isLoading || isFetching}
-                        scroll={{ x: 'max-content', y: 'calc(100dvh - 300px)' }}
+                        scroll={{ x: tableWidth, y: 'calc(75vh - 150px)' }}
                         locale={{ emptyText: <Empty description="当前时间范围暂无历史数据" /> }}
                     />
                 </div>
@@ -660,7 +827,7 @@ const DeviceHistoryDrawer = ({
                     />
                 </Flex>
             </div>
-        </Drawer>
+        </Modal>
     );
 };
 
@@ -1462,7 +1629,7 @@ const DevicePage = () => {
             />
             <DeviceShareDrawer resource={sharing} onClose={() => setSharing(null)} />
             {historyDevice && (
-                <DeviceHistoryDrawer
+                <DeviceHistoryModal
                     key={historyDevice.id}
                     device={historyDevice}
                     onClose={() => setHistoryDevice(null)}

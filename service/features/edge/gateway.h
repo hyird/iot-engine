@@ -507,9 +507,22 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         case pb::Envelope::kTerminalClose:
             co_await saveTerminalClose(c, input.terminal_close());
             break;
+        case pb::Envelope::kLogResult:
+            co_await saveLogResult(c, input.log_result());
+            break;
         default:
             break;
         }
+    }
+
+    static ruvia::Task<void> saveLogResult(ruvia::Context& c, const pb::LogResult& result) {
+        if (result.request_id().size() != 16)
+            co_return;
+        std::string wire;
+        if (!result.SerializeToString(&wire))
+            co_return;
+        const auto id = protocol::uuidText(result.request_id());
+        co_await c.redis().setEx("iot:edge:logs:" + id, std::chrono::seconds(60), wire);
     }
 
     static ruvia::Task<void> saveTerminalData(ruvia::Context& c, const pb::TerminalData& data) {

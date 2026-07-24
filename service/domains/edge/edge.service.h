@@ -16,6 +16,7 @@
 #include <vector>
 
 #include <openssl/rand.h>
+#include <ruvia/core/Timer.h>
 #include <ruvia/web/Context.h>
 
 #include "service/common/http.h"
@@ -406,6 +407,55 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
         co_return result;
     }
 
+    ruvia::Task<LogsDto> logs(ruvia::Context& c, std::string_view nodeId,
+                              const LogsQuery& query) {
+        co_await requireNodeCapability(c, nodeId, "logs", "节点日志");
+        const auto session = co_await c.redis().get(sessionKey(nodeId));
+        if (!session)
+            service::common::fail(17019, "节点当前离线", 409);
+
+        const auto requestId = service::common::nextUuidV7();
+        std::uint8_t bytes[16]{};
+        protocol::uuidBytes(requestId, bytes);
+        auto envelope = protocol::outbound(nodeId);
+        auto* request = envelope.mutable_log_request();
+        request->set_request_id(protocol::bytes(bytes, sizeof(bytes)));
+        request->set_limit(static_cast<std::uint32_t>(
+            std::clamp<std::int64_t>(*query.limit(), 1, 48)));
+        if (query.level())
+            request->set_level(query.level()->view());
+        if (query.source())
+            request->set_source(query.source()->view());
+        co_await push(c, nodeId, envelope);
+
+        const auto key = logResultKey(requestId);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (auto payload = co_await c.redis().get(key)) {
+                (void)co_await c.redis().del(key);
+                pb::LogResult result;
+                if (!result.ParseFromArray(payload->data(), static_cast<int>(payload->size())))
+                    service::common::fail(17020, "节点日志回包解析失败", 502);
+                if (!result.success())
+                    service::common::fail(17020, result.message(), 502);
+                LogsDto output(c);
+                ruvia::List<LogLineDto> lines(c.resource());
+                for (const auto& line : result.lines()) {
+                    auto& item = lines.emplace(c);
+                    item.time(line.time_ms())
+                        .level(line.level())
+                        .source(line.source())
+                        .message(line.message())
+                        .detail(line.detail());
+                }
+                output.lines(std::move(lines));
+                co_return output;
+            }
+            (void)co_await ruvia::sleepFor(c.worker(), std::chrono::milliseconds(50));
+        }
+        service::common::fail(17020, "节点日志请求超时", 504);
+    }
+
   private:
     static std::string nodeSelect() {
         return R"sql(SELECT id::text, imei, COALESCE(name, ''), model, software_version,
@@ -425,6 +475,7 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
        COALESCE((capability->>'deviceConfig')::boolean, false),
        COALESCE((capability->>'modemControl')::boolean, false),
        COALESCE((capability->>'terminal')::boolean, false),
+       COALESCE((capability->>'logs')::boolean, false),
        COALESCE((mobile->>'available')::boolean, false),
        COALESCE(mobile->>'simState', 'unknown'),
        COALESCE(mobile->>'iccid', ''),
@@ -482,30 +533,31 @@ FROM edge_node)sql";
             .platformConfig(row[21].text() == "t")
             .deviceConfig(row[22].text() == "t")
             .modemControl(row[23].text() == "t")
-            .terminal(row[24].text() == "t");
+            .terminal(row[24].text() == "t")
+            .logs(row[25].text() == "t");
 
         SignalDto signal(c);
-        signal.csq(integer(row[28].text()))
-            .rssiDbm(integer(row[29].text()))
-            .percent(integer(row[30].text()));
+        signal.csq(integer(row[29].text()))
+            .rssiDbm(integer(row[30].text()))
+            .percent(integer(row[31].text()));
         MobileDto mobile(c);
-        mobile.available(row[25].text() == "t")
-            .simState(row[26].text())
-            .iccid(row[27].text())
+        mobile.available(row[26].text() == "t")
+            .simState(row[27].text())
+            .iccid(row[28].text())
             .signal(std::move(signal))
-            .registered(row[31].text() == "t")
-            .registrationStatus(integer(row[32].text()))
-            .apn(row[33].text())
-            .operatorName(row[34].text())
-            .connected(row[35].text() == "t")
-            .ipv4(row[36].text());
+            .registered(row[32].text() == "t")
+            .registrationStatus(integer(row[33].text()))
+            .apn(row[34].text())
+            .operatorName(row[35].text())
+            .connected(row[36].text() == "t")
+            .ipv4(row[37].text());
 
         FirmwareStatusDto firmware(c);
-        firmware.state(row[37].text())
-            .progressPercent(integer(row[38].text()))
-            .downloadedBytes(integer(row[39].text()))
-            .totalBytes(integer(row[40].text()))
-            .message(row[41].text());
+        firmware.state(row[38].text())
+            .progressPercent(integer(row[39].text()))
+            .downloadedBytes(integer(row[40].text()))
+            .totalBytes(integer(row[41].text()))
+            .message(row[42].text());
 
         node.id(row[0].text())
             .imei(row[1].text())
@@ -713,7 +765,8 @@ FROM edge_task WHERE node_id = $1::uuid ORDER BY created_at DESC LIMIT 50)sql",
     manageableInterfaces(ruvia::Context& c, std::string_view nodeId) {
         const auto rows = co_await c.db().query(
             "SELECT name FROM edge_node_interface "
-            "WHERE node_id = $1::uuid AND name <> 'lo' AND is_bridge = FALSE",
+            "WHERE node_id = $1::uuid AND name <> 'lo' AND is_bridge = FALSE "
+            "AND COALESCE(ipv4, '') <> ''",
             service::common::dbParams(nodeId));
         std::unordered_set<std::string> result;
         for (const auto& row : rows.rows())
@@ -856,6 +909,14 @@ VALUES ($1::uuid, $2::uuid, $3, $4::jsonb, $5::uuid))sql",
         const auto key = "iot:edge:egress:" + std::string(nodeId);
         (void)co_await c.redis().rpush(key, wire);
         co_await c.redis().ltrim(key, -100, -1);
+    }
+
+    static std::string sessionKey(std::string_view nodeId) {
+        return "iot:edge:session:" + std::string(nodeId);
+    }
+
+    static std::string logResultKey(std::string_view requestId) {
+        return "iot:edge:logs:" + std::string(requestId);
     }
 
     static ruvia::Task<void> createTaskAndQueue(ruvia::Context& c, std::string_view nodeId,

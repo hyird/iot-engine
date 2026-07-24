@@ -36,6 +36,7 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
                  EdgePlatformParamsValidator);
     RUVIA_POST_STREAM("/:id/firmware", uploadFirmware, EdgeIdValidator);
     RUVIA_POST("/:id/terminal-ticket", terminalTicket, EdgeIdValidator);
+    RUVIA_GET("/:id/logs", logs, EdgeIdValidator, LogsValidator);
     RUVIA_GET("/:id", detail, EdgeIdValidator);
     RUVIA_ROUTES_END
 
@@ -115,6 +116,12 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
         co_await service::middleware::requirePermission(c, "iot:edge:terminal");
         co_return c.json(service::common::ok<TerminalTicketResponse>(
             c, co_await edgeService().terminalTicket(c, id(c))));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> logs(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:edge:query");
+        co_return c.json(service::common::ok<LogsResponse>(
+            c, co_await edgeService().logs(c, id(c), c.req().valid<LogsQuery>())));
     }
 
     ruvia::Task<ruvia::HttpResponse> uploadFirmware(ruvia::Context& c) {

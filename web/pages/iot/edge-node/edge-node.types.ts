@@ -1,5 +1,6 @@
 export namespace Edge {
     export type EnrollmentStatus = 'pending' | 'approved' | 'rejected';
+    export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
     export interface Query {
         page?: number;
@@ -94,6 +95,7 @@ export namespace Edge {
         deviceConfig: boolean;
         modemControl: boolean;
         terminal: boolean;
+        logs: boolean;
     }
 
     export interface Signal {
@@ -193,10 +195,30 @@ export namespace Edge {
         action: 'set_apn' | 'redial';
         apn: string;
     }
+
+    export interface LogsQuery {
+        limit?: number;
+        level?: LogLevel;
+        source?: string;
+    }
+
+    export interface LogLine {
+        time: number;
+        level: LogLevel;
+        source: string;
+        message: string;
+        detail: string;
+    }
+
+    export interface Logs {
+        lines: LogLine[];
+    }
 }
 
 export const edgeQueryKeys = {
     all: ['edge'] as const,
     list: (query?: Edge.Query) => [...edgeQueryKeys.all, 'list', query ?? {}] as const,
     detail: (id?: string) => [...edgeQueryKeys.all, 'detail', id ?? ''] as const,
+    logs: (id?: string, query?: Edge.LogsQuery) =>
+        [...edgeQueryKeys.all, 'logs', id ?? '', query ?? {}] as const,
 };

@@ -233,5 +233,10 @@ export const edgeListQuerySchema = pageParamsSchema.extend({
     status: enrollmentStatusSchema.optional(),
     keyword: z.string().optional(),
 });
+export const logsQuerySchema = z.object({
+    limit: z.number().int().min(1).max(48).optional(),
+    level: z.enum(['debug', 'info', 'warn', 'error']).optional(),
+    source: z.string().max(16).optional(),
+});
 export const edgeIdSchema = z.uuid('节点 ID 必须是 UUID');
 export const platformIdSchema = z.uuid('平台 ID 必须是 UUID');

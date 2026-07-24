@@ -143,6 +143,7 @@ message Hello {
   bool mobile_connected = 29;
   string mobile_ipv4 = 30 [(nanopb).max_length = 15];
   bool supports_modem_control = 31;
+  bool supports_logs = 32;
 }
 
 message HelloAck {
@@ -583,6 +584,28 @@ message PlatformConfigResult {
   string message = 3 [(nanopb).max_length = 256];
 }
 
+message LogRequest {
+  bytes request_id = 1 [(nanopb).max_size = 16];
+  uint32 limit = 2;
+  string level = 3 [(nanopb).max_length = 8];
+  string source = 4 [(nanopb).max_length = 16];
+}
+
+message LogLine {
+  int64 time_ms = 1;
+  string level = 2 [(nanopb).max_length = 8];
+  string source = 3 [(nanopb).max_length = 16];
+  string message = 4 [(nanopb).max_length = 96];
+  string detail = 5 [(nanopb).max_length = 128];
+}
+
+message LogResult {
+  bytes request_id = 1 [(nanopb).max_size = 16];
+  bool success = 2;
+  string message = 3 [(nanopb).max_length = 96];
+  repeated LogLine lines = 4 [(nanopb).max_count = 48];
+}
+
 message TerminalOpen {
   bytes terminal_id = 1 [(nanopb).max_size = 16];
   bytes ticket = 2 [(nanopb).max_size = 64];
@@ -662,6 +685,8 @@ message Envelope {
     PlatformConfigResult platform_config_result = 65;
     ModemControlRequest modem_control_request = 66;
     ModemControlResult modem_control_result = 67;
+    LogRequest log_request = 68;
+    LogResult log_result = 69;
     TerminalOpen terminal_open = 70;
     TerminalData terminal_data = 71;
     TerminalResize terminal_resize = 72;

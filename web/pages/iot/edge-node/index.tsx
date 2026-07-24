@@ -5,9 +5,11 @@ import {
     CodeOutlined,
     EditOutlined,
     EyeOutlined,
+    FileTextOutlined,
     GlobalOutlined,
     MobileOutlined,
     PlusOutlined,
+    ReloadOutlined,
     SyncOutlined,
     UploadOutlined,
 } from '@ant-design/icons';
@@ -68,6 +70,7 @@ import {
     useDeviceConfigSyncMutation,
     useEdgeDetail,
     useEdgeList,
+    useEdgeLogs,
     useEnrollmentMutation,
     useFirmwareUpgradeMutation,
     useModemControlMutation,
@@ -106,6 +109,16 @@ function statusTag(status: string) {
     };
     const item = map[status] ?? { color: 'default', text: status || '-' };
     return <Tag color={item.color}>{item.text}</Tag>;
+}
+
+function logLevelTag(level: string) {
+    const map: Record<string, string> = {
+        debug: 'default',
+        info: 'processing',
+        warn: 'warning',
+        error: 'error',
+    };
+    return <Tag color={map[level] ?? 'default'}>{level || '-'}</Tag>;
 }
 
 function networkDraftFromReported(item: Edge.Network): NetworkDraftItem {
@@ -487,6 +500,8 @@ export default function EdgeNodePage() {
     const [firmwareNode, setFirmwareNode] = useState<Edge.Node>();
     const [modemNode, setModemNode] = useState<Edge.Node>();
     const [terminalNode, setTerminalNode] = useState<Edge.Node>();
+    const [logNode, setLogNode] = useState<Edge.Node>();
+    const [logLevel, setLogLevel] = useState<Edge.LogLevel>();
     const [networkOpen, setNetworkOpen] = useState(false);
     const [platformOpen, setPlatformOpen] = useState(false);
     const [firmwareOpen, setFirmwareOpen] = useState(false);
@@ -509,6 +524,12 @@ export default function EdgeNodePage() {
     const { data, isLoading } = useEdgeList(query, canQuery);
     const nodes: Edge.Node[] = data?.list ?? [];
     const { data: detail, isLoading: detailLoading } = useEdgeDetail(selectedId);
+    const logsQuery = { limit: 48, level: logLevel };
+    const { data: logs, isFetching: logsLoading, refetch: refreshLogs } = useEdgeLogs(
+        logNode?.id,
+        logsQuery,
+        Boolean(logNode)
+    );
     const enrollment = useEnrollmentMutation();
     const nodeName = useNodeNameMutation();
     const network = useNetworkMutation();
@@ -841,6 +862,7 @@ export default function EdgeNodePage() {
     }
     const networkDeviceOptions = networkInterfaces
         .filter((item) => !item.bridge)
+        .filter((item) => Boolean(item.ipv4))
         .filter((item) => !subinterfaceParents.has(item.name))
         .map((item) => ({
             value: item.name,
@@ -921,6 +943,23 @@ export default function EdgeNodePage() {
             dataIndex: 'createdAt',
             render: (value) => formatDateTime(value),
         },
+    ];
+    const logColumns: ColumnsType<Edge.LogLine> = [
+        {
+            title: '时间',
+            dataIndex: 'time',
+            width: 170,
+            render: (value) => formatDateTime(value),
+        },
+        {
+            title: '级别',
+            dataIndex: 'level',
+            width: 90,
+            render: logLevelTag,
+        },
+        { title: '来源', dataIndex: 'source', width: 110, render: (value) => value || '-' },
+        { title: '事件', dataIndex: 'message', width: 180, render: (value) => value || '-' },
+        { title: '详情', dataIndex: 'detail', render: (value) => value || '-' },
     ];
 
     return (
@@ -1155,6 +1194,33 @@ export default function EdgeNodePage() {
                                                         />
                                                     </Tooltip>
                                                 )}
+                                            {node.enrollmentStatus === 'approved' && canQuery && (
+                                                <Tooltip
+                                                    title={
+                                                        !status.online
+                                                            ? '节点当前离线'
+                                                            : capability.logs
+                                                              ? '节点日志'
+                                                              : `节点代理 ${node.softwareVersion || '当前版本'} 过旧，请升级至 0.3.4`
+                                                    }
+                                                >
+                                                    <span>
+                                                        <Button
+                                                            type="text"
+                                                            size="small"
+                                                            disabled={!status.online || !capability.logs}
+                                                            className={
+                                                                EDGE_CARD_ACTION_BUTTON_CLASS
+                                                            }
+                                                            icon={<FileTextOutlined />}
+                                                            onClick={() => {
+                                                                setLogLevel(undefined);
+                                                                setLogNode(node);
+                                                            }}
+                                                        />
+                                                    </span>
+                                                </Tooltip>
+                                            )}
                                             {node.enrollmentStatus === 'approved' &&
                                                 canTerminal &&
                                                 capability.terminal && (
@@ -1565,6 +1631,50 @@ export default function EdgeNodePage() {
                     columns={platformColumns}
                     dataSource={platformNode?.platforms ?? []}
                     scroll={{ x: 'max-content', y: 360 }}
+                />
+            </Modal>
+
+            <Modal
+                open={Boolean(logNode)}
+                onCancel={() => {
+                    setLogNode(undefined);
+                    setLogLevel(undefined);
+                }}
+                footer={null}
+                width="min(920px, 92vw)"
+                title={`节点日志${logNode ? ` · ${logNode.name || logNode.imei}` : ''}`}
+                destroyOnHidden
+            >
+                <Flex justify="space-between" align="center" gap={12} className="mb-3">
+                    <Select<Edge.LogLevel>
+                        allowClear
+                        className="w-[140px]"
+                        placeholder="日志级别"
+                        value={logLevel}
+                        onChange={(value) => setLogLevel(value)}
+                        options={[
+                            { value: 'debug', label: 'debug' },
+                            { value: 'info', label: 'info' },
+                            { value: 'warn', label: 'warn' },
+                            { value: 'error', label: 'error' },
+                        ]}
+                    />
+                    <Button
+                        icon={<ReloadOutlined />}
+                        loading={logsLoading}
+                        onClick={() => void refreshLogs()}
+                    >
+                        刷新
+                    </Button>
+                </Flex>
+                <Table
+                    rowKey={(item, index) => `${item.time}-${item.source}-${index ?? 0}`}
+                    size="small"
+                    pagination={false}
+                    loading={logsLoading}
+                    columns={logColumns}
+                    dataSource={logs?.lines ?? []}
+                    scroll={{ x: 'max-content', y: 420 }}
                 />
             </Modal>
 

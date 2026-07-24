@@ -82,6 +82,13 @@ struct TerminalTicketQuery final {
     RUVIA_MODEL(TerminalTicketQuery, ticket);
 };
 
+struct LogsQuery final {
+    RUVIA_OPTIONAL_FIELD(limit, ruvia::Int64, RUVIA_DEFAULT(48));
+    RUVIA_OPTIONAL_FIELD(level, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(source, ruvia::String);
+    RUVIA_MODEL(LogsQuery, limit, level, source);
+};
+
 struct InterfaceDto final {
     RUVIA_OPTIONAL_FIELD(name, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("displayName", displayName, ruvia::String);
@@ -173,8 +180,9 @@ struct CapabilityDto final {
     RUVIA_OPTIONAL_FIELD_NAME("deviceConfig", deviceConfig, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD_NAME("modemControl", modemControl, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD(terminal, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD(logs, ruvia::Bool);
     RUVIA_MODEL(CapabilityDto, networkConfig, networkConfigVersion, firmwareUpdate,
-                platformConfig, deviceConfig, modemControl, terminal);
+                platformConfig, deviceConfig, modemControl, terminal, logs);
 };
 
 struct SignalDto final {
@@ -271,6 +279,20 @@ struct TerminalTicketDto final {
     RUVIA_MODEL(TerminalTicketDto, ticket);
 };
 
+struct LogLineDto final {
+    RUVIA_OPTIONAL_FIELD(time, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD(level, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(source, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(detail, ruvia::String);
+    RUVIA_MODEL(LogLineDto, time, level, source, message, detail);
+};
+
+struct LogsDto final {
+    RUVIA_OPTIONAL_FIELD(lines, ruvia::List<LogLineDto>);
+    RUVIA_MODEL(LogsDto, lines);
+};
+
 #define EDGE_RESPONSE(name, dataType)                                                          \
     struct name final {                                                                        \
         RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);                                               \
@@ -283,6 +305,7 @@ EDGE_RESPONSE(EdgePageResponse, EdgePageDto);
 EDGE_RESPONSE(EdgeDetailResponse, EdgeNodeDto);
 EDGE_RESPONSE(FirmwareListResponse, ruvia::List<FirmwareDto>);
 EDGE_RESPONSE(TerminalTicketResponse, TerminalTicketDto);
+EDGE_RESPONSE(LogsResponse, LogsDto);
 
 #undef EDGE_RESPONSE
 

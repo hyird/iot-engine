@@ -2,7 +2,7 @@ export type DateTimeValue = Date | number | string | null | undefined;
 
 const pad = (value: number) => String(value).padStart(2, '0');
 
-function parseDateTime(value: Exclude<DateTimeValue, null | undefined>) {
+export function parseDateTime(value: Exclude<DateTimeValue, null | undefined>) {
     if (value instanceof Date) return new Date(value.getTime());
     if (typeof value === 'number') return new Date(value);
 

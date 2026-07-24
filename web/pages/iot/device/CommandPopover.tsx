@@ -1,5 +1,6 @@
 import { App, Button, Checkbox, Flex, Input } from 'antd';
 import { useCallback, useState } from 'react';
+import { parseDateTime } from '@/utils/dateTime';
 import { useDeviceCommand } from './device.service';
 import type { Device } from './device.types';
 
@@ -102,9 +103,9 @@ const validateValue = (element: CommandElement): string | null => {
 
 const isDeviceOnline = (device: Device.RealTimeData) => {
     if (device.reportTime) {
-        const reportTime = new Date(device.reportTime).getTime();
-        if (!Number.isNaN(reportTime))
-            return Date.now() - reportTime < (device.online_timeout || 300) * 1000;
+        const reportTime = parseDateTime(device.reportTime);
+        if (reportTime && !Number.isNaN(reportTime.getTime()))
+            return Date.now() - reportTime.getTime() < (device.online_timeout || 300) * 1000;
     }
     return device.connectionState === 'online' || device.connected === true;
 };
