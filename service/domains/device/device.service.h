@@ -1192,13 +1192,31 @@ ORDER BY device_id, operation_position, operation_key, element_position,
                                     const ruvia::RedisValue& reply) {
         if (reply.kind() != ruvia::RedisValue::Kind::kArray)
             return;
-        std::vector<LatestElement> elements;
+        bool hasElementIds = false;
+        std::set<std::string, std::less<>> elementIds;
+        std::map<std::string, LatestElement, std::less<>> latest;
+
         const auto& entries = reply.array();
         for (std::size_t index = 0; index + 1 < entries.size(); index += 2) {
             if (entries[index].kind() != ruvia::RedisValue::Kind::kString ||
                 entries[index + 1].kind() != ruvia::RedisValue::Kind::kString)
                 continue;
             const auto field = entries[index].string();
+            if (field == "_element_ids") {
+                hasElementIds = true;
+                const auto parsed = ruvia::JsonValue::parse(entries[index + 1].string());
+                if (parsed && parsed->isObject()) {
+                    (void)ruvia::detail::visitJsonObjectFields(
+                        ruvia::detail::ResolvedPmrResourceTag{}, parsed->view(),
+                        std::pmr::get_default_resource(),
+                        [&](std::string_view key, std::string_view) {
+                            if (!key.empty())
+                                elementIds.emplace(key);
+                            return true;
+                        });
+                }
+                continue;
+            }
             if (field.empty() || field.front() == '_')
                 continue;
             const auto parsed = ruvia::JsonValue::parse(entries[index + 1].string());
@@ -1215,6 +1233,15 @@ ORDER BY device_id, operation_position, operation_key, element_position,
             element.decimals = jsonInt(*parsed, "decimals", -1);
             element.sort = jsonInt(*parsed, "sort", 0);
             element.observedAt = jsonInt(*parsed, "observedAt", 0);
+            const auto elementId = element.id;
+            latest.insert_or_assign(elementId, std::move(element));
+        }
+
+        std::vector<LatestElement> elements;
+        elements.reserve(latest.size());
+        for (auto& [id, element] : latest) {
+            if (hasElementIds && !elementIds.contains(id))
+                continue;
             elements.push_back(std::move(element));
         }
         std::sort(elements.begin(), elements.end(), [](const auto& left, const auto& right) {

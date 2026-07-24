@@ -498,6 +498,8 @@ class Session final : public ProtocolSession,
             inflight_->writeAckMissing = true;
             return startReadback();
         }
+        // A timed-out S7 request leaves the negotiated COTP/S7 session in an unknown state.
+        // Complete through the common path so ISO-DR is sent and the next operation handshakes.
         auto failed = std::move(*inflight_);
         inflight_.reset();
         std::vector<ProtocolAction> actions{failAction(failed, failed.phase == Phase::Readback

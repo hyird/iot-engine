@@ -40,7 +40,10 @@ const DeviceGroupPanel = ({
     const [editingGroup, setEditingGroup] = useState<DeviceGroup.TreeItem | null>(null);
     const [parentIdForCreate, setParentIdForCreate] = useState<string | null>(null);
 
-    const { data: treeData = [], isLoading } = useDeviceGroupTreeWithCount();
+    const { data: treeData = [], isLoading } = useDeviceGroupTreeWithCount({
+        refetchInterval: 5000,
+        refetchOnWindowFocus: false,
+    });
     const saveMutation = useDeviceGroupSave();
     const deleteMutation = useDeviceGroupDelete();
 

@@ -43,7 +43,6 @@ import {
     memo,
     type ReactNode,
     type RefObject,
-    startTransition,
     useCallback,
     useEffect,
     useLayoutEffect,
@@ -53,7 +52,6 @@ import {
 } from 'react';
 import DeviceCard, { type DeviceCardItem } from '@/components/DeviceCard';
 import { PageContainer } from '@/components/PageContainer';
-import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermissions } from '@/hooks/usePermission';
 import { formatDateTime, parseDateTime } from '@/utils/dateTime';
 import { useLinkOptions } from '../link/link.service';
@@ -87,6 +85,7 @@ const DEVICE_CARD_DANGER_BUTTON_CLASS =
     '!flex !h-8 !w-8 items-center justify-center !rounded-md hover:!bg-red-50';
 const WIDE_DEVICE_CARD_ITEM_COUNT = 18;
 const DEVICE_VIRTUAL_ROW_GAP = 12;
+const DEVICE_LIST_POLLING_INTERVAL = 5000;
 
 interface DeviceProtocolStats {
     total: number;
@@ -1202,6 +1201,7 @@ const DevicePage = () => {
         has('iot:device-group:edit') ||
         has('iot:device-group:delete');
 
+    const [searchText, setSearchText] = useState('');
     const [keyword, setKeyword] = useState('');
     const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
     const [formOpen, setFormOpen] = useState(false);
@@ -1224,8 +1224,15 @@ const DevicePage = () => {
         return () => window.clearInterval(timer);
     }, []);
 
-    const { data, isLoading, refetch } = useDeviceList({ enabled: canQuery });
-    const { data: groupTree = [] } = useDeviceGroupTreeWithCount({ enabled: canQuery });
+    const { data, isLoading, isFetching, refetch } = useDeviceList({
+        enabled: canQuery,
+        pollingInterval: DEVICE_LIST_POLLING_INTERVAL,
+    });
+    const { data: groupTree = [] } = useDeviceGroupTreeWithCount({
+        enabled: canQuery,
+        refetchInterval: DEVICE_LIST_POLLING_INTERVAL,
+        refetchOnWindowFocus: false,
+    });
     const { data: linkOptions = [] } = useLinkOptions({ enabled: canQuery });
     const saveMutation = useDeviceSave();
     const { mutateAsync: deleteDevice } = useDeviceDelete();
@@ -1300,9 +1307,10 @@ const DevicePage = () => {
         [filteredDevices]
     );
 
-    const { run: debouncedSearch } = useDebounceFn((value: string) => {
-        startTransition(() => setKeyword(value));
-    }, 300);
+    const applySearch = useCallback((value: string) => {
+        setSearchText(value);
+        setKeyword(value.trim());
+    }, []);
 
     const openCreate = () => {
         setEditing(null);
@@ -1490,8 +1498,15 @@ const DevicePage = () => {
                         />
                         <Search
                             allowClear
+                            enterButton
+                            value={searchText}
                             placeholder="设备名称 / 编码 / 类型"
-                            onChange={(event) => debouncedSearch(event.target.value)}
+                            onChange={(event) => {
+                                const value = event.target.value;
+                                setSearchText(value);
+                                if (!value) setKeyword('');
+                            }}
+                            onSearch={applySearch}
                             className="w-60"
                         />
                         <Tooltip title="拓扑视图">
@@ -1501,7 +1516,7 @@ const DevicePage = () => {
                             <Button
                                 icon={<ReloadOutlined />}
                                 onClick={() => refetch()}
-                                loading={isLoading}
+                                loading={isFetching}
                             />
                         </Tooltip>
                         {canAdd && (

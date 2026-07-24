@@ -63,6 +63,20 @@ inline std::string jsonQuoted(std::string_view value) {
     return "\"" + jsonEscape(value) + "\"";
 }
 
+inline std::string jsonKeySet(const std::vector<std::string>& keys) {
+    std::string result = "{";
+    bool first = true;
+    for (const auto& key : keys) {
+        if (!first)
+            result.push_back(',');
+        first = false;
+        result += jsonQuoted(key);
+        result += ":true";
+    }
+    result.push_back('}');
+    return result;
+}
+
 inline std::string stateJson(std::string_view state, std::string_view reason,
                              std::string_view lastReport, std::string_view onlineUntil,
                              std::string_view updatedAt) {
@@ -278,10 +292,12 @@ WHERE d.deleted_at IS NULL)sql" +
     std::vector<std::vector<std::string>> metaCommands;
     metaCommands.reserve(devices.rows().size() * 3);
     std::map<std::string, std::int64_t, std::less<>> onlineWindows;
+    std::map<std::string, std::vector<std::string>, std::less<>> elementIds;
     for (const auto& row : devices.rows()) {
         const std::string deviceId(row[0].text());
         const std::string deviceCode(row[1].text());
         onlineWindows.insert_or_assign(deviceCode, std::stoll(std::string(row[2].text())));
+        elementIds.insert_or_assign(deviceCode, std::vector<std::string>{});
         metaCommands.push_back({"DEL", latestKey(deviceCode)});
         {
             std::vector<std::string_view> views(metaCommands.back().begin(),
@@ -398,21 +414,31 @@ ORDER BY numbered.device_id, numbered.protocol_order,
                                                    params);
     auto pipeline = redis.pipeline();
     std::vector<std::vector<std::string>> commands;
-    commands.reserve(elements.rows().size());
+    commands.reserve(elements.rows().size() + elementIds.size());
     std::map<std::string, std::int64_t, std::less<>> lastReports;
     for (const auto& row : elements.rows()) {
-        commands.push_back({"HSET", latestKey(row[1].text()), std::string(row[3].text()),
-                            std::string(row[13].text())});
+        const std::string deviceCode(row[1].text());
+        const std::string elementId(row[3].text());
+        elementIds[deviceCode].push_back(elementId);
+        commands.push_back({"HSET", latestKey(deviceCode), elementId, std::string(row[13].text())});
         std::vector<std::string_view> views;
         views.reserve(commands.back().size());
         for (const auto& argument : commands.back())
             views.push_back(argument);
         pipeline.command(views);
         if (!row[7].text().empty()) {
-            auto& lastReport = lastReports[std::string(row[1].text())];
+            auto& lastReport = lastReports[deviceCode];
             lastReport = std::max(
                 lastReport, static_cast<std::int64_t>(std::stoll(std::string(row[7].text()))));
         }
+    }
+    for (const auto& [deviceCode, ids] : elementIds) {
+        commands.push_back({"HSET", latestKey(deviceCode), "_element_ids", jsonKeySet(ids)});
+        std::vector<std::string_view> views;
+        views.reserve(commands.back().size());
+        for (const auto& argument : commands.back())
+            views.push_back(argument);
+        pipeline.command(views);
     }
     if (!commands.empty())
         (void)co_await std::move(pipeline).exec();
