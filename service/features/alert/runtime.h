@@ -234,6 +234,7 @@ WITH rules AS (
       AND (latest.report_time IS NULL OR report_time < latest.report_time)
     ORDER BY report_time DESC LIMIT 1
   ) previous ON TRUE
+)
 )sql"
                                                   : R"sql(
 WITH rules AS (
@@ -254,6 +255,7 @@ WITH rules AS (
       AND report_time < to_timestamp($3::double precision / 1000.0)
     ORDER BY report_time DESC LIMIT 1
   ) previous ON TRUE
+)
 )sql";
         return input + R"sql(
 , conditions AS (
