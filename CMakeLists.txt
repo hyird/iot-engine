@@ -48,6 +48,26 @@ FetchContent_Declare(nanopb
 FetchContent_MakeAvailable(nanopb)
 
 find_package(Protobuf CONFIG REQUIRED)
+find_package(jsoncpp CONFIG REQUIRED)
+find_package(unofficial-brotli CONFIG REQUIRED)
+find_package(Drogon CONFIG REQUIRED)
+find_package(pugixml CONFIG REQUIRED)
+find_package(boost_json CONFIG REQUIRED)
+
+# Drogon's bundled Find modules can select vcpkg's debug-only libraries while
+# generating a multi-config static Windows build. Rebind the interface targets
+# to vcpkg's configuration-aware imported targets.
+if(TARGET Jsoncpp_lib AND TARGET JsonCpp::JsonCpp)
+    set_target_properties(Jsoncpp_lib PROPERTIES
+        INTERFACE_LINK_LIBRARIES JsonCpp::JsonCpp)
+endif()
+if(TARGET Brotli_lib
+   AND TARGET unofficial::brotli::brotlidec
+   AND TARGET unofficial::brotli::brotlienc)
+    set_target_properties(Brotli_lib PROPERTIES
+        INTERFACE_LINK_LIBRARIES
+        "unofficial::brotli::brotlidec;unofficial::brotli::brotlienc")
+endif()
 
 set(EDGENODE_PROTO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/service/features/edge")
 set(EDGENODE_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/edgenode")
@@ -93,17 +113,29 @@ find_package(spdlog CONFIG REQUIRED)
 add_executable(iot-engine
     service/server.cpp
     service/common/packet-log.cpp
+    service/features/gb28181/device/DeviceRegistry.cpp
+    service/features/gb28181/media/StreamRegistry.cpp
+    service/features/gb28181/media/ZlmClient.cpp
+    service/features/gb28181/runtime.cpp
+    service/features/gb28181/sip/DigestAuth.cpp
+    service/features/gb28181/sip/SipMessage.cpp
+    service/features/gb28181/sip/SipServer.cpp
     "${EDGENODE_PROTO_CPP}"
     "${EDGENODE_NANOPB_PROTO_CPP}"
     "${WEB_TERMINAL_PROTO_CPP}")
 target_include_directories(iot-engine PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181"
     "${EDGENODE_GENERATED_DIR}")
 target_link_libraries(iot-engine PRIVATE
     ruvia::web
+    Drogon::Drogon
+    Boost::json
+    pugixml::pugixml
     spdlog::spdlog
     protobuf::libprotobuf)
 if(MSVC)
+    target_compile_definitions(iot-engine PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_compile_options(iot-engine PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
 endif()
 

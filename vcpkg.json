@@ -4,12 +4,15 @@
   "version-string": "0.1.0",
   "dependencies": [
     "asio",
+    "boost-json",
     "brotli",
+    "drogon",
     "hiredis",
     "libpq",
     "mimalloc",
     "openssl",
     "protobuf",
+    "pugixml",
     "spdlog",
     "zlib",
     "zstd"

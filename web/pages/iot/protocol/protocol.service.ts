@@ -36,6 +36,18 @@ export function useProtocolConfigOptions(
     });
 }
 
+export function useProtocolConfigDetail(
+    id: string | undefined,
+    options?: Omit<UseQueryOptions<Protocol.Item>, 'queryKey' | 'queryFn'>
+) {
+    return useQuery({
+        queryKey: protocolQueryKeys.detail(id ?? ''),
+        queryFn: () => api.getDetail(id as string),
+        enabled: Boolean(id),
+        ...options,
+    });
+}
+
 export function useProtocolConfigSave() {
     return useSaveMutation<SaveProtocolConfigParams, Protocol.CreateDto, Protocol.UpdateDto>({
         createFn: api.create,

@@ -1,5 +1,6 @@
 import {
     ApartmentOutlined,
+    AlertOutlined,
     ApiOutlined,
     AppstoreOutlined,
     ClusterOutlined,
@@ -13,6 +14,7 @@ import {
     SafetyCertificateOutlined,
     SettingOutlined,
     UserOutlined,
+    VideoCameraOutlined,
 } from '@ant-design/icons';
 import {
     Avatar,
@@ -30,6 +32,7 @@ import { useMemo, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { APP_NAME } from '@/config/app';
 import { usePermissions } from '@/hooks/usePermission';
+import { useGb28181Health } from '@/pages/iot/gb28181/gb28181.service';
 import { useCurrentUser, useLogout } from '@/pages/login';
 
 const { Header, Sider, Content } = Layout;
@@ -58,6 +61,16 @@ const breadcrumbGroups = [
         routes: [
             { path: '/device', title: '设备管理', permission: 'iot:device:query' },
             {
+                path: '/iot/alert',
+                title: '告警中心',
+                permission: 'iot:alert:query',
+            },
+            {
+                path: '/iot/gb28181',
+                title: '视频监控',
+                permission: 'iot:gb28181:query',
+            },
+            {
                 path: '/iot/open-access',
                 title: '开放接入',
                 permission: 'iot:open-access:query',
@@ -82,6 +95,11 @@ export default function AdminLayout() {
     const { data: user, isLoading } = useCurrentUser();
     const logout = useLogout();
     const { has } = usePermissions();
+    const canQueryGb28181 = has('iot:gb28181:query');
+    const { data: gb28181Health } = useGb28181Health({
+        enabled: canQueryGb28181,
+    });
+    const gb28181Enabled = gb28181Health?.enabled === true;
     const { token } = theme.useToken();
     const currentBreadcrumbGroup = breadcrumbGroups.find((group) =>
         group.routes.some((route) => route.path === location.pathname)
@@ -90,7 +108,9 @@ export default function AdminLayout() {
         (route) => route.path === location.pathname
     );
     const siblingRoutes =
-        currentBreadcrumbGroup?.routes.filter((route) => has(route.permission)) ?? [];
+        currentBreadcrumbGroup?.routes.filter(
+            (route) => has(route.permission) && (route.path !== '/iot/gb28181' || gb28181Enabled)
+        ) ?? [];
 
     const breadcrumbItems = currentBreadcrumbGroup
         ? [
@@ -173,6 +193,16 @@ export default function AdminLayout() {
         if (has('iot:device:query')) {
             items.push({ key: '/device', icon: <HddOutlined />, label: '设备管理' });
         }
+        if (has('iot:alert:query')) {
+            items.push({ key: '/iot/alert', icon: <AlertOutlined />, label: '告警中心' });
+        }
+        if (canQueryGb28181 && gb28181Enabled) {
+            items.push({
+                key: '/iot/gb28181',
+                icon: <VideoCameraOutlined />,
+                label: '视频监控',
+            });
+        }
         if (has('iot:open-access:query')) {
             items.push({ key: '/iot/open-access', icon: <ApiOutlined />, label: '开放接入' });
         }
@@ -203,7 +233,7 @@ export default function AdminLayout() {
             });
         }
         return items;
-    }, [has]);
+    }, [canQueryGb28181, gb28181Enabled, has]);
 
     if (isLoading && !user) {
         return (

@@ -11,3 +11,8 @@ export function usePermissions() {
     );
     return useMemo(() => ({ has, permissions }), [has, permissions]);
 }
+
+export function usePermission(permission: string) {
+    const { has } = usePermissions();
+    return has(permission);
+}

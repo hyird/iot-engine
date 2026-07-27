@@ -38,11 +38,18 @@
         "antd": "^6.5.1",
         "axios": "^1.18.1",
         "dayjs": "^1.11.21",
+        "hls.js": "^1.6.16",
+        "jv4-connection": "^1.0.9",
+        "jv4-decoder": "^1.1.7",
+        "jv4-demuxer": "^1.1.3",
+        "jv4-renderer": "^1.0.2",
+        "mpegts.js": "^1.8.0",
         "react": "^19.2.7",
         "react-dom": "^19.2.7",
         "react-router-dom": "^7.18.1",
         "tailwindcss": "^4.3.3",
         "zod": "^4.4.3",
+        "zlmrtc-client": "^0.1.1",
         "zustand": "^5.0.14"
     },
     "devDependencies": {

@@ -15,6 +15,8 @@ const S7ConfigPage = lazy(() => import('@/pages/iot/protocol/S7Config'));
 const DevicePage = lazy(() => import('@/pages/iot/device'));
 const AccessPage = lazy(() => import('@/pages/iot/open-access'));
 const EdgeNodePage = lazy(() => import('@/pages/iot/edge-node'));
+const AlertPage = lazy(() => import('@/pages/iot/alert/Alert'));
+const Gb28181Page = lazy(() => import('@/pages/iot/gb28181/GB28181'));
 
 const routeErrorElement = (
     <div className="flex h-screen items-center justify-center p-6">
@@ -65,6 +67,8 @@ const router = createHashRouter([
                     { path: 'device', element: <DevicePage /> },
                     { path: 'iot/open-access', element: <AccessPage /> },
                     { path: 'iot/edge', element: <EdgeNodePage /> },
+                    { path: 'iot/alert', element: <AlertPage /> },
+                    { path: 'iot/gb28181', element: <Gb28181Page /> },
                 ],
             },
         ],

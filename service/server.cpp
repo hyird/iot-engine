@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <exception>
@@ -18,6 +19,10 @@
 #include "service/common/http.h"
 #include "service/common/packet-log.h"
 #include "service/config/schema.h"
+#include "service/domains/alert/alert.controller.h"
+#include "service/features/alert/runtime.h"
+#include "service/domains/gb28181/gb28181.controller.h"
+#include "service/features/gb28181/runtime.h"
 #include "service/domains/edge/edge.controller.h"
 #include "service/features/edge/gateway.h"
 #include "service/domains/device/device.controller.h"
@@ -92,6 +97,48 @@ namespace
         return config;
     }
 
+    bool envFlag(const ruvia::Env &env, std::string_view name, bool fallback = false)
+    {
+        const auto value = env.get(name);
+        if (!value)
+            return fallback;
+        std::string normalized(*value);
+        std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        return normalized == "1" || normalized == "true" || normalized == "yes" ||
+               normalized == "on";
+    }
+
+    AppConfig gb28181Config(const ruvia::Env &env)
+    {
+        AppConfig config;
+        config.enabled = envFlag(env, "GB28181_ENABLED");
+        config.sip.domain = std::string(env.get("GB28181_SIP_DOMAIN").value_or(""));
+        config.sip.id = std::string(env.get("GB28181_SIP_ID").value_or(""));
+        config.sip.host =
+            std::string(env.get("GB28181_SIP_HOST").value_or("0.0.0.0"));
+        config.sip.publicIp =
+            std::string(env.get("GB28181_SIP_PUBLIC_IP").value_or(""));
+        config.sip.port = env.get<std::uint16_t>("GB28181_SIP_PORT").value_or(5060);
+        config.sip.password =
+            std::string(env.get("GB28181_SIP_PASSWORD").value_or(""));
+        config.sip.transport =
+            std::string(env.get("GB28181_SIP_TRANSPORT").value_or("udp"));
+        config.sip.logging = envFlag(env, "GB28181_SIP_LOGGING", true);
+        config.media.zlmBaseUrl =
+            std::string(env.get("ZLM_BASE_URL").value_or("http://127.0.0.1:8080"));
+        config.media.zlmPublicBaseUrl =
+            std::string(env.get("ZLM_PUBLIC_BASE_URL").value_or(""));
+        config.media.zlmSecret = std::string(env.get("ZLM_SECRET").value_or(""));
+        config.media.rtpPublicIp =
+            std::string(env.get("GB28181_RTP_PUBLIC_IP").value_or(""));
+        config.media.rtpPortRangeStart =
+            env.get<std::uint16_t>("GB28181_RTP_PORT_START").value_or(30000);
+        config.media.rtpPortRangeEnd =
+            env.get<std::uint16_t>("GB28181_RTP_PORT_END").value_or(30500);
+        return config;
+    }
+
     void configureWeb(ruvia::App &app, const std::filesystem::path &runtime)
     {
         const auto webRoot = runtime / "web";
@@ -147,6 +194,7 @@ int main(int argc, char *argv[])
         app.loadDotenv();
         const auto runtime = runtimeDirectory(argc > 0 ? argv[0] : nullptr);
         service::common::packet_log::initialize(packetLogConfig(app.env(), runtime));
+        service::gb28181::runtime().configure(gb28181Config(app.env()));
 
         auto db = databaseConfig(app.env());
         ruvia::DbMigrationOptions migrationOptions;
@@ -168,11 +216,12 @@ int main(int argc, char *argv[])
         auto openWebhooks = std::make_shared<service::access::WebhookRuntime>();
         auto configReconciler = std::make_shared<service::runtime::Reconciler>();
         auto edgeProjector = std::make_shared<service::edge::Projector>();
+        auto alerts = std::make_shared<service::alert::Runtime>();
         app.useDb(std::move(db))
             .useRedis(std::move(serviceRedis))
             .onStart([collector, telemetry, commandResults, openWebhooks, configReconciler,
-                      edgeProjector, collectorRedis = std::move(collectorRedis), collectorWorkerCount,
-                      &app]() mutable
+                      edgeProjector, alerts, collectorRedis = std::move(collectorRedis),
+                      collectorWorkerCount, &app]() mutable
                      {
                 auto workers = app.workers();
                 if (workers.empty())
@@ -182,6 +231,8 @@ int main(int argc, char *argv[])
                 commandResults->start(workers, collectorWorkerCount);
                 openWebhooks->start(workers);
                 edgeProjector->start(workers.front());
+                alerts->start(workers.front());
+                service::gb28181::runtime().start();
                 auto started = std::make_shared<std::promise<void>>();
                 auto ready = started->get_future();
                 const auto posted = workers.front().post(
@@ -195,8 +246,10 @@ int main(int argc, char *argv[])
                 ready.get();
                 configReconciler->start(workers.front(), collectorWorkerCount); })
             .onStop([collector, telemetry, commandResults, openWebhooks, configReconciler,
-                     edgeProjector]
+                     edgeProjector, alerts]
                     {
+                alerts->stop();
+                service::gb28181::runtime().stop();
                 configReconciler->stop();
                 edgeProjector->stop();
                 collector->stop();

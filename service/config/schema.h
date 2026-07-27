@@ -5,7 +5,7 @@
 
 namespace service::config {
 
-inline constexpr std::array<ruvia::DbMigration, 11> kSchemaMigrations{{
+inline constexpr std::array<ruvia::DbMigration, 12> kSchemaMigrations{{
     {"0001_initial_schema", R"sql(
 DO $schema$
 BEGIN
@@ -765,6 +765,94 @@ SET status = jsonb_set(
         jsonb_set(status, '{log}', COALESCE(status->'log', '{}'::jsonb), true),
         '{log,level}', to_jsonb(COALESCE(status->'log'->>'level', 'info')::text), true)
 WHERE NOT (status ? 'log') OR status->'log'->>'level' IS NULL;
+END
+$schema$;
+)sql"},
+    {"0012_alert_center", R"sql(
+DO $schema$
+BEGIN
+CREATE TABLE alert_rule (
+    id                    UUID PRIMARY KEY,
+    name                  VARCHAR(128) NOT NULL,
+    device_id             UUID NOT NULL REFERENCES device(id) ON DELETE CASCADE,
+    severity              VARCHAR(20) NOT NULL
+                          CHECK (severity IN ('critical', 'warning', 'info')),
+    conditions            JSONB NOT NULL CHECK (jsonb_typeof(conditions) = 'array'),
+    logic                 VARCHAR(8) NOT NULL DEFAULT 'and'
+                          CHECK (logic IN ('and', 'or')),
+    silence_duration      INTEGER NOT NULL DEFAULT 300
+                          CHECK (silence_duration BETWEEN 0 AND 86400),
+    recovery_condition    VARCHAR(32) NOT NULL DEFAULT 'reverse',
+    recovery_wait_seconds INTEGER NOT NULL DEFAULT 60
+                          CHECK (recovery_wait_seconds BETWEEN 0 AND 86400),
+    status                status_enum NOT NULL DEFAULT 'enabled',
+    remark                VARCHAR(500),
+    created_by            UUID NOT NULL REFERENCES sys_user(id) ON DELETE RESTRICT,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at            TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX idx_alert_rule_name_device_active
+    ON alert_rule(device_id, name) WHERE deleted_at IS NULL;
+CREATE INDEX idx_alert_rule_device
+    ON alert_rule(device_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_alert_rule_status
+    ON alert_rule(status) WHERE deleted_at IS NULL;
+
+CREATE TABLE alert_rule_template (
+    id                    UUID PRIMARY KEY,
+    name                  VARCHAR(128) NOT NULL,
+    category              VARCHAR(64),
+    description           VARCHAR(500),
+    severity              VARCHAR(20) NOT NULL
+                          CHECK (severity IN ('critical', 'warning', 'info')),
+    conditions            JSONB NOT NULL CHECK (jsonb_typeof(conditions) = 'array'),
+    logic                 VARCHAR(8) NOT NULL DEFAULT 'and'
+                          CHECK (logic IN ('and', 'or')),
+    silence_duration      INTEGER NOT NULL DEFAULT 300
+                          CHECK (silence_duration BETWEEN 0 AND 86400),
+    recovery_condition    VARCHAR(32) NOT NULL DEFAULT 'reverse',
+    recovery_wait_seconds INTEGER NOT NULL DEFAULT 60
+                          CHECK (recovery_wait_seconds BETWEEN 0 AND 86400),
+    applicable_protocols  JSONB NOT NULL DEFAULT '[]'::jsonb
+                          CHECK (jsonb_typeof(applicable_protocols) = 'array'),
+    protocol_config_id    UUID REFERENCES protocol_config(id) ON DELETE SET NULL,
+    created_by            UUID NOT NULL REFERENCES sys_user(id) ON DELETE RESTRICT,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at            TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX idx_alert_template_name_active
+    ON alert_rule_template(name) WHERE deleted_at IS NULL;
+CREATE INDEX idx_alert_template_category
+    ON alert_rule_template(category) WHERE deleted_at IS NULL;
+
+ALTER TABLE open_alert_record
+    ADD COLUMN acknowledged_at TIMESTAMPTZ,
+    ADD COLUMN acknowledged_by UUID REFERENCES sys_user(id) ON DELETE SET NULL,
+    ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+ALTER TABLE open_alert_record
+    ADD CONSTRAINT fk_open_alert_record_rule
+        FOREIGN KEY (rule_id) REFERENCES alert_rule(id) ON DELETE SET NULL NOT VALID,
+    ADD CONSTRAINT ck_open_alert_record_severity
+        CHECK (severity IN ('critical', 'warning', 'info')) NOT VALID,
+    ADD CONSTRAINT ck_open_alert_record_status
+        CHECK (status IN ('active', 'acknowledged', 'resolved')) NOT VALID;
+
+CREATE UNIQUE INDEX idx_open_alert_one_unresolved_rule
+    ON open_alert_record(rule_id)
+    WHERE rule_id IS NOT NULL AND status IN ('active', 'acknowledged');
+CREATE INDEX idx_open_alert_rule_time
+    ON open_alert_record(rule_id, triggered_at DESC);
+
+CREATE TABLE alert_rule_state (
+    rule_id             UUID PRIMARY KEY REFERENCES alert_rule(id) ON DELETE CASCADE,
+    matched             BOOLEAN NOT NULL DEFAULT FALSE,
+    recovery_started_at TIMESTAMPTZ,
+    last_evaluated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 END
 $schema$;
 )sql"},

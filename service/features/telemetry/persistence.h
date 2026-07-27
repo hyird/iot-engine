@@ -22,6 +22,7 @@
 
 #include "service/common/message/contract.h"
 #include "service/features/access/event.h"
+#include "service/features/alert/runtime.h"
 #include "service/features/collector/stream.h"
 #include "service/features/telemetry/latest.h"
 
@@ -174,6 +175,19 @@ class PersistenceRuntime final {
                     try {
                         co_await persist(context, messages);
                         co_await latest::update(redis, messages);
+                        std::vector<message::ParsedDeviceMessage> alertMessages;
+                        alertMessages.reserve(messages.size());
+                        for (const auto& message : messages)
+                            alertMessages.push_back(message::parsedFrom(message));
+                        try {
+                            co_await service::alert::Runtime::evaluateTelemetry(context,
+                                                                               alertMessages);
+                        } catch (const std::exception& error) {
+                            // A malformed rule must not block telemetry persistence or ACK.
+                            // The periodic evaluator will retry against the persisted latest data.
+                            std::cerr << "alert telemetry evaluation failed: " << error.what()
+                                      << '\n';
+                        }
                         for (const auto& message : messages) {
                             const auto parsed = message::parsedFrom(message);
                             const auto eventType =
