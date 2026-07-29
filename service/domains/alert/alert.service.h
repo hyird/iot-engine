@@ -54,7 +54,8 @@ SELECT jsonb_build_object(
     'severity', severity, 'conditions', conditions, 'logic', logic,
     'silence_duration', silence_duration, 'recovery_condition', recovery_condition,
     'recovery_wait_seconds', recovery_wait_seconds, 'status', status,
-    'remark', remark, 'created_at', created_at, 'updated_at', updated_at)
+    'remark', remark, 'created_at', iot_utc_timestamp(created_at),
+    'updated_at', iot_utc_timestamp(updated_at))
     ORDER BY created_at DESC, id DESC) FROM listed), '[]'::jsonb),
   'total', COALESCE((SELECT total FROM counted), 0),
   'page', $)sql" + std::to_string(limit.third) + R"sql(::bigint,
@@ -77,7 +78,8 @@ SELECT jsonb_build_object(
   'recovery_condition', rule.recovery_condition,
   'recovery_wait_seconds', rule.recovery_wait_seconds,
   'status', rule.status, 'remark', rule.remark,
-  'created_at', rule.created_at, 'updated_at', rule.updated_at)::text
+  'created_at', iot_utc_timestamp(rule.created_at),
+  'updated_at', iot_utc_timestamp(rule.updated_at))::text
 FROM alert_rule rule JOIN device ON device.id = rule.device_id
 WHERE rule.id = $1::uuid AND rule.deleted_at IS NULL)sql",
                                                       service::common::dbParams(id)),
@@ -179,7 +181,7 @@ SELECT jsonb_build_object(
     'id', id, 'name', name, 'category', category, 'description', description,
     'severity', severity, 'logic', logic, 'silence_duration', silence_duration,
     'protocol_config_id', protocol_config_id, 'config_name', config_name,
-    'protocol_type', protocol_type, 'created_at', created_at)
+    'protocol_type', protocol_type, 'created_at', iot_utc_timestamp(created_at))
     ORDER BY created_at DESC, id DESC) FROM listed), '[]'::jsonb),
   'total', COALESCE((SELECT total FROM counted), 0),
   'page', $)sql" + std::to_string(limit.third) + R"sql(::bigint,
@@ -201,7 +203,8 @@ SELECT jsonb_build_object(
   'recovery_wait_seconds', recovery_wait_seconds,
   'applicable_protocols', applicable_protocols,
   'protocol_config_id', protocol_config_id, 'created_by', created_by,
-  'created_at', created_at, 'updated_at', updated_at)::text
+  'created_at', iot_utc_timestamp(created_at),
+  'updated_at', iot_utc_timestamp(updated_at))::text
 FROM alert_rule_template WHERE id = $1::uuid AND deleted_at IS NULL)sql",
                                                       service::common::dbParams(id)),
                            "告警模板不存在");
@@ -328,8 +331,10 @@ SELECT jsonb_build_object(
     'id', id, 'rule_id', rule_id, 'rule_name', rule_name,
     'device_id', device_id, 'device_name', device_name,
     'severity', severity, 'status', status, 'message', message, 'detail', detail,
-    'triggered_at', triggered_at, 'acknowledged_at', acknowledged_at,
-    'acknowledged_by', acknowledged_by, 'resolved_at', resolved_at)
+    'triggered_at', iot_utc_timestamp(triggered_at),
+    'acknowledged_at', iot_utc_timestamp(acknowledged_at),
+    'acknowledged_by', acknowledged_by,
+    'resolved_at', iot_utc_timestamp(resolved_at))
     ORDER BY triggered_at DESC, id DESC) FROM listed), '[]'::jsonb),
   'total', COALESCE((SELECT total FROM counted), 0),
   'page', $)sql" + std::to_string(limit.third) + R"sql(::bigint,
@@ -392,7 +397,7 @@ SELECT COALESCE(jsonb_agg(jsonb_build_object(
   'severity', grouped.severity, 'total_count', grouped.total_count,
   'active_count', grouped.active_count, 'acked_count', grouped.acked_count,
   'resolved_count', grouped.resolved_count,
-  'latest_trigger_time', grouped.latest_trigger_time)
+  'latest_trigger_time', iot_utc_timestamp(grouped.latest_trigger_time))
   ORDER BY grouped.latest_trigger_time DESC), '[]'::jsonb)::text
 FROM (
   SELECT record.rule_id, COALESCE(rule.name, '已删除规则') AS rule_name,

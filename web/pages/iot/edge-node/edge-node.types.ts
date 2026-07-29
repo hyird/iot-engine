@@ -208,7 +208,7 @@ export namespace Edge {
     }
 
     export interface LogLine {
-        time: number;
+        time: string;
         level: LogLevel;
         source: string;
         message: string;

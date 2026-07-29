@@ -37,9 +37,11 @@ SELECT COALESCE(jsonb_agg(item ORDER BY created_at DESC), '[]'::jsonb)::text
 FROM (
   SELECT jsonb_build_object(
     'id', key.id, 'name', key.name, 'accessKeyPrefix', key.access_key_prefix,
-    'status', key.status, 'scopes', key.scopes, 'expiresAt', key.expires_at,
-    'lastUsedAt', key.last_used_at, 'lastUsedIp', key.last_used_ip,
-    'remark', key.remark, 'createdAt', key.created_at, 'updatedAt', key.updated_at,
+    'status', key.status, 'scopes', key.scopes,
+    'expiresAt', iot_utc_timestamp(key.expires_at),
+    'lastUsedAt', iot_utc_timestamp(key.last_used_at), 'lastUsedIp', key.last_used_ip,
+    'remark', key.remark, 'createdAt', iot_utc_timestamp(key.created_at),
+    'updatedAt', iot_utc_timestamp(key.updated_at),
     'webhookCount', COUNT(DISTINCT webhook.id),
     'deviceIds', COALESCE(jsonb_agg(DISTINCT binding.device_id)
       FILTER (WHERE binding.device_id IS NOT NULL), '[]'::jsonb)
@@ -194,11 +196,12 @@ FROM (
     'deviceIds', COALESCE(jsonb_agg(binding.device_id)
       FILTER (WHERE binding.device_id IS NOT NULL), '[]'::jsonb),
     'hasSecret', webhook.secret IS NOT NULL,
-    'lastTriggeredAt', webhook.last_triggered_at,
-    'lastSuccessAt', webhook.last_success_at,
-    'lastFailureAt', webhook.last_failure_at,
+    'lastTriggeredAt', iot_utc_timestamp(webhook.last_triggered_at),
+    'lastSuccessAt', iot_utc_timestamp(webhook.last_success_at),
+    'lastFailureAt', iot_utc_timestamp(webhook.last_failure_at),
     'lastHttpStatus', webhook.last_http_status, 'lastError', webhook.last_error,
-    'createdAt', webhook.created_at, 'updatedAt', webhook.updated_at
+    'createdAt', iot_utc_timestamp(webhook.created_at),
+    'updatedAt', iot_utc_timestamp(webhook.updated_at)
   ) AS item, webhook.created_at
   FROM open_webhook webhook
   JOIN open_access_key key ON key.id = webhook.access_key_id AND key.deleted_at IS NULL
@@ -344,7 +347,8 @@ SELECT jsonb_build_object(
     'requestIp', request_ip, 'httpStatus', http_status, 'deviceId', device_id,
     'deviceCode', device_code, 'message', message,
     'requestPayload', request_payload, 'responsePayload', response_payload,
-    'createdAt', created_at) ORDER BY created_at DESC, id DESC) FROM page), '[]'::jsonb),
+    'createdAt', iot_utc_timestamp(created_at))
+    ORDER BY created_at DESC, id DESC) FROM page), '[]'::jsonb),
   'total', (SELECT total FROM counted), 'page', $)sql" +
                     std::to_string(pageParam) + "::bigint" + ", 'pageSize', $" +
                     std::to_string(pageSizeParam) + "::bigint" +
@@ -491,7 +495,7 @@ SELECT jsonb_build_object(
   'list', COALESCE((SELECT jsonb_agg(jsonb_build_object(
     'id', id, 'device', jsonb_build_object('id', device_id, 'code', device_code,
       'name', device_name), 'ruleId', rule_id, 'severity', severity,
-    'status', status, 'message', message, 'time', triggered_at)
+    'status', status, 'message', message, 'time', iot_utc_timestamp(triggered_at))
     ORDER BY triggered_at DESC, id DESC) FROM page), '[]'::jsonb),
   'total', (SELECT total FROM counted), 'page', $)sql" +
                 std::to_string(pageParam) + "::bigint, 'pageSize', $" + std::to_string(limit) +
@@ -833,7 +837,7 @@ WHERE access_key_id = $1::uuid AND name = $2 AND deleted_at IS NULL
 
     ruvia::Task<KeyState> requireKey(ruvia::Context& c, std::string_view id) {
         const auto rows = co_await c.db().query(R"sql(
-SELECT name, status, scopes::text, expires_at::text, remark
+SELECT name, status, scopes::text, iot_utc_timestamp(expires_at), remark
 FROM open_access_key WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
                                                 service::common::dbParams(id));
         if (rows.rows().empty())
@@ -982,7 +986,7 @@ WITH device_ref AS (
       'points', COALESCE(jsonb_agg(jsonb_build_object(
         'id', point.id, 'name', point.name,
         'value', filtered.data->'values'->point.id->'value', 'unit', point.unit,
-        'time', filtered.report_time)
+        'time', iot_utc_timestamp(filtered.report_time))
         ORDER BY point.protocol_order, point.function_order, point.element_order), '[]'::jsonb)
     ) AS item
   FROM filtered CROSS JOIN device_ref CROSS JOIN point

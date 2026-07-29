@@ -34,7 +34,7 @@ interface RuntimeStatus {
     error?: string;
     clientCount?: number;
     clients?: string[];
-    lastActivityAt?: number;
+    lastActivityAt?: string;
 }
 
 interface LinkEndpoint {

@@ -62,7 +62,8 @@ class DeptService {
             "COALESCE(d.parent_id::text, ''), COALESCE(parent.name, ''), "
             "COALESCE(d.leader_id::text, ''), "
             "COALESCE(u.nickname, u.username, ''), d.sort_order, d.status, "
-            "d.created_at::text, d.updated_at::text FROM sys_department d "
+            "iot_utc_timestamp(d.created_at), iot_utc_timestamp(d.updated_at) "
+            "FROM sys_department d "
             "LEFT JOIN sys_department parent ON parent.id = d.parent_id "
             "LEFT JOIN sys_user u ON u.id = d.leader_id AND u.deleted_at IS NULL" +
                 where + " ORDER BY d.sort_order, d.id LIMIT $" + std::to_string(limitIndex) +
@@ -87,7 +88,7 @@ class DeptService {
 SELECT d.id::text, d.name, COALESCE(d.code, ''), COALESCE(d.parent_id::text, ''),
        COALESCE(parent.name, ''), COALESCE(d.leader_id::text, ''),
        COALESCE(u.nickname, u.username, ''), d.sort_order, d.status,
-       d.created_at::text, d.updated_at::text
+       iot_utc_timestamp(d.created_at), iot_utc_timestamp(d.updated_at)
 FROM sys_department d
 LEFT JOIN sys_department parent ON parent.id = d.parent_id
 LEFT JOIN sys_user u ON u.id = d.leader_id AND u.deleted_at IS NULL

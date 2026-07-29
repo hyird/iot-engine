@@ -5,7 +5,7 @@
 
 namespace service::config {
 
-inline constexpr std::array<ruvia::DbMigration, 12> kSchemaMigrations{{
+inline constexpr std::array<ruvia::DbMigration, 13> kSchemaMigrations{{
     {"0001_initial_schema", R"sql(
 DO $schema$
 BEGIN
@@ -855,6 +855,29 @@ CREATE TABLE alert_rule_state (
 );
 END
 $schema$;
+)sql"},
+    {"0013_timestamp_contract", R"sql(
+DO $schema$
+BEGIN
+EXECUTE format('ALTER DATABASE %I SET timezone TO %L', current_database(), 'UTC');
+EXECUTE format('ALTER DATABASE %I SET datestyle TO %L', current_database(), 'ISO, YMD');
+PERFORM set_config('TimeZone', 'UTC', false);
+PERFORM set_config('DateStyle', 'ISO, YMD', false);
+END
+$schema$;
+
+CREATE OR REPLACE FUNCTION iot_utc_timestamp(value TIMESTAMPTZ)
+RETURNS TEXT
+LANGUAGE SQL
+IMMUTABLE
+PARALLEL SAFE
+RETURNS NULL ON NULL INPUT
+AS $function$
+SELECT to_char(value AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+$function$;
+
+COMMENT ON FUNCTION iot_utc_timestamp(TIMESTAMPTZ) IS
+    'Serializes typed timestamps at the public API boundary as UTC RFC 3339 seconds';
 )sql"},
 }};
 

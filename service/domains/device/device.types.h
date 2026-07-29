@@ -205,7 +205,7 @@ struct EdgeStatusDto final {
     RUVIA_OPTIONAL_FIELD(state, ruvia::String);
     RUVIA_OPTIONAL_FIELD(reason, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("clientCount", clientCount, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("lastActivityAt", lastActivityAt, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("lastActivityAt", lastActivityAt, ruvia::String);
     RUVIA_MODEL(EdgeStatusDto, state, reason, clientCount, lastActivityAt);
 };
 

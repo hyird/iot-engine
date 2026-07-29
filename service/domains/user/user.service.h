@@ -55,7 +55,8 @@ class UserService {
         const auto rows = co_await c.db().query(
             "SELECT u.id, u.username, COALESCE(u.nickname, ''), COALESCE(u.phone, ''), "
             "COALESCE(u.email, ''), u.status, COALESCE(u.department_id::text, ''), "
-            "COALESCE(d.name, ''), u.created_at::text, u.updated_at::text "
+            "COALESCE(d.name, ''), iot_utc_timestamp(u.created_at), "
+            "iot_utc_timestamp(u.updated_at) "
             "FROM sys_user u LEFT JOIN sys_department d ON d.id = u.department_id " +
                 where + " ORDER BY u.id DESC LIMIT $" + std::to_string(limitIndex) + " OFFSET $" +
                 std::to_string(offsetIndex),
@@ -80,7 +81,7 @@ class UserService {
         const auto rows = co_await c.db().query(R"sql(
 SELECT u.id, u.username, COALESCE(u.nickname, ''), COALESCE(u.phone, ''),
        COALESCE(u.email, ''), u.status, COALESCE(u.department_id::text, ''),
-       COALESCE(d.name, ''), u.created_at::text, u.updated_at::text
+       COALESCE(d.name, ''), iot_utc_timestamp(u.created_at), iot_utc_timestamp(u.updated_at)
 FROM sys_user u
 LEFT JOIN sys_department d ON d.id = u.department_id
 WHERE u.id = $1 AND u.deleted_at IS NULL LIMIT 1)sql",

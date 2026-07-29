@@ -44,7 +44,7 @@ export interface EdgeStatus {
     state?: string;
     reason?: string;
     clientCount?: number;
-    lastActivityAt?: number;
+    lastActivityAt?: string;
 }
 
 export interface EdgeConnection {

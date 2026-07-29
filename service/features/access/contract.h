@@ -5,12 +5,9 @@
 #include <chrono>
 #include <cctype>
 #include <cstdint>
-#include <cstdlib>
-#include <iomanip>
 #include <memory_resource>
 #include <optional>
 #include <set>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -23,6 +20,7 @@
 #include <ruvia/web/ModelObject.h>
 
 #include "service/common/http.h"
+#include "service/common/timestamp.h"
 #include "service/common/uuid.h"
 
 namespace service::access {
@@ -190,26 +188,11 @@ inline std::string sanitize(std::string_view value, std::size_t maximum = 1000) 
 }
 
 inline std::string iso8601(std::int64_t milliseconds) {
-    const auto seconds = milliseconds / 1000;
-    const auto remainder = std::llabs(milliseconds % 1000);
-    const auto time = static_cast<std::time_t>(seconds);
-    std::tm utc{};
-#ifdef _WIN32
-    gmtime_s(&utc, &time);
-#else
-    gmtime_r(&time, &utc);
-#endif
-    std::ostringstream output;
-    output << std::put_time(&utc, "%Y-%m-%dT%H:%M:%S") << '.' << std::setw(3) << std::setfill('0')
-           << remainder << 'Z';
-    return output.str();
+    return service::common::utcTimestampFromMilliseconds(milliseconds);
 }
 
 inline std::string nowIso8601() {
-    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                         std::chrono::system_clock::now().time_since_epoch())
-                         .count();
-    return iso8601(now);
+    return service::common::utcTimestampNow();
 }
 
 inline bool supportedScope(std::string_view value) {

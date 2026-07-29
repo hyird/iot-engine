@@ -20,6 +20,7 @@
 
 #include "service/features/event/config.h"
 #include "service/common/http.h"
+#include "service/common/timestamp.h"
 #include "service/common/uuid.h"
 #include "service/middleware/auth.h"
 #include "service/features/edge/config.h"
@@ -359,7 +360,7 @@ SELECT jsonb_build_object(
   'list', COALESCE(jsonb_agg(jsonb_build_object(
     'id', id,
     'protocol', protocol,
-    'reportTime', report_time,
+    'reportTime', iot_utc_timestamp(report_time),
     'source', source,
     'functionCode', data->>'function_code',
     'values', COALESCE(data->'values', '{}'::jsonb)
@@ -621,7 +622,8 @@ VALUES ($1::uuid, $2, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
             " SELECT g.id::text, g.name, COALESCE(g.parent_id::text, ''), g.status, g.sort_order, "
             "COALESCE(g.remark, ''), " +
             countExpr +
-            ", g.created_at::text, g.updated_at::text, g.created_by::text FROM device_group g "
+            ", iot_utc_timestamp(g.created_at), iot_utc_timestamp(g.updated_at), "
+            "g.created_by::text FROM device_group g "
             "WHERE g.deleted_at IS NULL AND g.id IN (SELECT id FROM visible_group) "
             "ORDER BY g.sort_order, g.id";
         const auto rows = co_await c.db().query(
@@ -641,8 +643,10 @@ VALUES ($1::uuid, $2, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
                 "COALESCE(device_group.parent_id::text, ''), device_group.status, "
                 "device_group.sort_order, COALESCE(device_group.remark, ''), "
                 "(SELECT COUNT(*) FROM scoped_device scoped WHERE scoped.group_id = "
-                "device_group.id AND scoped.access_rank > 0), device_group.created_at::text, "
-                "device_group.updated_at::text, device_group.created_by::text FROM device_group "
+                "device_group.id AND scoped.access_rank > 0), "
+                "iot_utc_timestamp(device_group.created_at), "
+                "iot_utc_timestamp(device_group.updated_at), "
+                "device_group.created_by::text FROM device_group "
                 "WHERE device_group.id = $4 "
                 "AND device_group.deleted_at IS NULL "
                 "AND device_group.id IN (SELECT id FROM visible_group) LIMIT 1",
@@ -756,7 +760,8 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
   COALESCE(NULLIF(d.protocol_params->>'timezone', ''), '+08:00'),
   d.protocol_params->'heartbeat'->>'mode', d.protocol_params->'heartbeat'->>'content',
   d.protocol_params->'registration'->>'mode', d.protocol_params->'registration'->>'content',
-  COALESCE(d.remark, ''), d.created_by::text, d.created_at::text, d.updated_at::text,
+  COALESCE(d.remark, ''), d.created_by::text,
+  iot_utc_timestamp(d.created_at), iot_utc_timestamp(d.updated_at),
   COALESCE(l.name, ''), COALESCE(l.endpoint->>'mode', ''), COALESCE(l.protocol, ''), p.name, p.protocol,
   COALESCE((p.config->>'readInterval')::numeric, (p.config->>'pollInterval')::numeric)::text,
   (p.config->>'storageInterval')::numeric::text,
@@ -1149,8 +1154,11 @@ ORDER BY device_id, operation_position, operation_key, element_position,
 
     static void applyRuntime(DeviceItemDto& item, const ruvia::RedisValue& reply) {
         const auto reportTime = redisHashField(reply, "last_report_at_ms");
-        if (!reportTime.empty())
-            item.reportTime(reportTime);
+        if (!reportTime.empty()) {
+            const auto milliseconds = toInt(reportTime);
+            if (milliseconds > 0)
+                item.reportTime(service::common::utcTimestampFromMilliseconds(milliseconds));
+        }
         const auto state = redisHashField(reply, "state");
         const bool online = state == "online";
         item.connected(online).connectionState(online ? "online" : "offline");
@@ -1170,8 +1178,12 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         if (!clientCount.empty())
             status.clientCount(toInt(clientCount));
         const auto lastActivity = redisHashField(reply, "last_activity_at_ms");
-        if (!lastActivity.empty())
-            status.lastActivityAt(toInt(lastActivity));
+        if (!lastActivity.empty()) {
+            const auto milliseconds = toInt(lastActivity);
+            if (milliseconds > 0)
+                status.lastActivityAt(
+                    service::common::utcTimestampFromMilliseconds(milliseconds));
+        }
         item.edgeStatus(std::move(status));
     }
 
@@ -1267,7 +1279,7 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         }
         item.elements(std::move(dtos));
         if (reportTime > 0 && !item.reportTime())
-            item.reportTime(std::to_string(reportTime));
+            item.reportTime(service::common::utcTimestampFromMilliseconds(reportTime));
     }
 
     static std::string str(const std::optional<ruvia::String>& value) {
@@ -1902,7 +1914,8 @@ SELECT access_grant.id::text,
             THEN COALESCE(NULLIF(target_user.nickname, ''), target_user.username, '已删除用户')
             ELSE COALESCE(target_department.name, '已删除部门') END,
        access_grant.access_level, 'device', '', '', FALSE,
-       access_grant.created_at::text, access_grant.updated_at::text
+       iot_utc_timestamp(access_grant.created_at),
+       iot_utc_timestamp(access_grant.updated_at)
 FROM device_access_grant access_grant
 LEFT JOIN sys_user target_user ON target_user.id = access_grant.user_id
 LEFT JOIN sys_department target_department
@@ -1917,7 +1930,8 @@ SELECT group_access.id::text,
                           '已删除用户')
             ELSE COALESCE(inherited_department.name, '已删除部门') END,
        group_access.access_level, 'group', ancestor.id::text, ancestor.name, TRUE,
-       group_access.created_at::text, group_access.updated_at::text
+       iot_utc_timestamp(group_access.created_at),
+       iot_utc_timestamp(group_access.updated_at)
 FROM device_group_access_grant group_access
 JOIN ancestor_group ancestor ON ancestor.id = group_access.group_id
 LEFT JOIN sys_user inherited_user ON inherited_user.id = group_access.user_id
@@ -2021,7 +2035,8 @@ SELECT access_grant.id::text,
             THEN COALESCE(NULLIF(target_user.nickname, ''), target_user.username, '已删除用户')
             ELSE COALESCE(target_department.name, '已删除部门') END,
        access_grant.access_level, 'group', target_group.id::text, target_group.name, FALSE,
-       access_grant.created_at::text, access_grant.updated_at::text
+       iot_utc_timestamp(access_grant.created_at),
+       iot_utc_timestamp(access_grant.updated_at)
 FROM device_group_access_grant access_grant
 JOIN device_group target_group ON target_group.id = access_grant.group_id
 LEFT JOIN sys_user target_user ON target_user.id = access_grant.user_id

@@ -50,8 +50,8 @@ class RoleService {
         listParams.emplace_back((page - 1) * pageSize);
         const auto offsetIndex = listParams.size();
         const auto rows = co_await c.db().query(
-            "SELECT id, name, code, COALESCE(description, ''), status, created_at::text, "
-            "updated_at::text FROM sys_role" +
+            "SELECT id, name, code, COALESCE(description, ''), status, "
+            "iot_utc_timestamp(created_at), iot_utc_timestamp(updated_at) FROM sys_role" +
                 where + " ORDER BY id DESC LIMIT $" + std::to_string(limitIndex) + " OFFSET $" +
                 std::to_string(offsetIndex),
             listParams);
@@ -73,7 +73,8 @@ class RoleService {
 
     ruvia::Task<RoleItemDto> detail(ruvia::Context& c, std::string_view id) {
         const auto rows = co_await c.db().query(R"sql(
-SELECT id, name, code, COALESCE(description, ''), status, created_at::text, updated_at::text
+SELECT id, name, code, COALESCE(description, ''), status,
+       iot_utc_timestamp(created_at), iot_utc_timestamp(updated_at)
 FROM sys_role WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
                                                 service::common::dbParams(id));
         if (rows.rows().empty())

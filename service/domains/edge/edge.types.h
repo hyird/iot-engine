@@ -291,7 +291,7 @@ struct TerminalTicketDto final {
 };
 
 struct LogLineDto final {
-    RUVIA_OPTIONAL_FIELD(time, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD(time, ruvia::String);
     RUVIA_OPTIONAL_FIELD(level, ruvia::String);
     RUVIA_OPTIONAL_FIELD(source, ruvia::String);
     RUVIA_OPTIONAL_FIELD(message, ruvia::String);

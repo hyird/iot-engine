@@ -50,7 +50,7 @@ struct RuntimeDto final {
     RUVIA_OPTIONAL_FIELD(error, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("clientCount", clientCount, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD(clients, ruvia::List<ruvia::String>);
-    RUVIA_OPTIONAL_FIELD_NAME("lastActivityAt", lastActivityAt, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("lastActivityAt", lastActivityAt, ruvia::String);
     RUVIA_MODEL(RuntimeDto, state, reason, error, clientCount, clients, lastActivityAt);
 };
 

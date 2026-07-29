@@ -21,6 +21,7 @@
 
 #include "service/features/event/config.h"
 #include "service/common/http.h"
+#include "service/common/timestamp.h"
 #include "service/common/uuid.h"
 #include "service/middleware/auth.h"
 #include "service/domains/link/link.types.h"
@@ -116,7 +117,7 @@ class LinkService {
         const auto rows = co_await c.db().query(
             "SELECT id::text, name, protocol, endpoint->>'mode', COALESCE(endpoint->>'ip', ''), "
             "COALESCE((endpoint->>'port')::integer, 0), status, created_by::text, "
-            "created_at::text, updated_at::text FROM link" +
+            "iot_utc_timestamp(created_at), iot_utc_timestamp(updated_at) FROM link" +
                 where + " ORDER BY id DESC LIMIT $" + std::to_string(limitIndex) + " OFFSET $" +
                 std::to_string(offsetIndex),
             listParams);
@@ -139,7 +140,7 @@ class LinkService {
         const auto rows = co_await c.db().query(R"sql(
 SELECT id::text, name, protocol, endpoint->>'mode', COALESCE(endpoint->>'ip', ''),
        COALESCE((endpoint->>'port')::integer, 0), status, created_by::text,
-       created_at::text, updated_at::text
+       iot_utc_timestamp(created_at), iot_utc_timestamp(updated_at)
 FROM link WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
                                                 service::common::dbParams(id));
         if (rows.rows().empty())
@@ -383,8 +384,11 @@ WHERE id = $4)sql",
             .reason(runtime.text("state_reason"))
             .error(runtime.text("error"))
             .clientCount(runtime.integer("connection_count"))
-            .clients(std::move(clients))
-            .lastActivityAt(runtime.integer("last_activity_at_ms"));
+            .clients(std::move(clients));
+        const auto lastActivityAt = runtime.integer("last_activity_at_ms");
+        if (lastActivityAt > 0)
+            runtimeDto.lastActivityAt(
+                service::common::utcTimestampFromMilliseconds(lastActivityAt));
         item.id(id)
             .name(row[1].text())
             .protocol(row[2].text())
@@ -417,8 +421,11 @@ WHERE link.id = $1 ORDER BY position)sql",
             RuntimeDto targetRuntime(c);
             targetRuntime.state(runtime.text(prefix + "state", "stopped"))
                 .reason(runtime.text(prefix + "reason"))
-                .error(runtime.text(prefix + "error"))
-                .lastActivityAt(runtime.integer(prefix + "last_activity_at_ms"));
+                .error(runtime.text(prefix + "error"));
+            const auto lastActivityAt = runtime.integer(prefix + "last_activity_at_ms");
+            if (lastActivityAt > 0)
+                targetRuntime.lastActivityAt(
+                    service::common::utcTimestampFromMilliseconds(lastActivityAt));
             target.id(targetId)
                 .name(row[1].text())
                 .ip(row[2].text())

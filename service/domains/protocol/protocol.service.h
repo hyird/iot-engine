@@ -202,7 +202,8 @@ ORDER BY edge_node_id::text)sql",
         return R"sql(jsonb_build_object(
     'id', id, 'protocol', protocol, 'name', name, 'enabled', enabled,
     'config', config, 'remark', COALESCE(remark, ''),
-    'created_at', created_at, 'updated_at', updated_at))sql";
+    'created_at', iot_utc_timestamp(created_at),
+    'updated_at', iot_utc_timestamp(updated_at)))sql";
     }
 
     static std::string requiredString(const ruvia::JsonValue& payload, std::string_view field,

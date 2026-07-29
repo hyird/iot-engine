@@ -20,6 +20,7 @@
 #include <ruvia/web/Context.h>
 
 #include "service/common/http.h"
+#include "service/common/timestamp.h"
 #include "service/common/uuid.h"
 #include "service/middleware/auth.h"
 #include "service/features/edge/protocol.h"
@@ -337,7 +338,7 @@ FROM edge_firmware WHERE id = $1::uuid LIMIT 1)sql",
 
     ruvia::Task<ruvia::List<FirmwareDto>> firmwares(ruvia::Context& c) {
         const auto rows = co_await c.db().query(R"sql(
-SELECT id::text, version, file_name, sha256, size_bytes, created_at::text
+SELECT id::text, version, file_name, sha256, size_bytes, iot_utc_timestamp(created_at)
 FROM edge_firmware ORDER BY created_at DESC LIMIT 100)sql");
         ruvia::List<FirmwareDto> result(c.resource());
         for (const auto& row : rows.rows()) {
@@ -442,7 +443,7 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
                 ruvia::List<LogLineDto> lines(c.resource());
                 for (const auto& line : result.lines()) {
                     auto& item = lines.emplace(c);
-                    item.time(line.time_ms())
+                    item.time(service::common::utcTimestampFromMilliseconds(line.time_ms()))
                         .level(line.level())
                         .source(line.source())
                         .message(line.message())
@@ -504,7 +505,7 @@ WHERE id = $2::uuid)sql",
         return R"sql(SELECT id::text, imei, COALESCE(name, ''), model, software_version,
        hostname, architecture, openwrt_release, enrollment_status,
        (last_seen_at IS NOT NULL AND last_seen_at > NOW() - INTERVAL '90 seconds'),
-       COALESCE(last_seen_at::text, ''), created_at::text,
+       COALESCE(iot_utc_timestamp(last_seen_at), ''), iot_utc_timestamp(created_at),
        COALESCE((status->'config'->>'activeVersion')::bigint, 0),
        COALESCE((status->'config'->>'desiredVersion')::bigint, 0),
        COALESCE(status->'config'->>'state', 'idle'),
@@ -739,7 +740,7 @@ SELECT id::text, task_type, status, COALESCE(result->>'message', ''),
        COALESCE((result->>'progressPercent')::bigint, 0),
        COALESCE((result->>'downloadedBytes')::bigint, 0),
        COALESCE((result->>'totalBytes')::bigint, 0),
-       created_at::text, updated_at::text
+       iot_utc_timestamp(created_at), iot_utc_timestamp(updated_at)
 FROM edge_task WHERE node_id = $1::uuid ORDER BY created_at DESC LIMIT 50)sql",
                                                 service::common::dbParams(id));
         ruvia::List<TaskDto> result(c.resource());
