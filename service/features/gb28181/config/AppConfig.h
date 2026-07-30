@@ -15,10 +15,15 @@ struct SipConfig {
 };
 
 struct MediaConfig {
-    std::string zlmBaseUrl;
     std::string zlmPublicBaseUrl;
-    std::string zlmSecret;
     std::string rtpPublicIp;
+    int workerThreads{0};
+    int logLevel{2};
+    std::uint16_t httpPort{8080};
+    std::uint16_t rtspPort{8554};
+    std::uint16_t rtmpPort{1935};
+    std::uint16_t rtcPort{8000};
+    std::uint16_t srtPort{9000};
     std::uint16_t rtpPortRangeStart{30000};
     std::uint16_t rtpPortRangeEnd{30500};
 };

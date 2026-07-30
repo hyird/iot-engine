@@ -1,161 +1,149 @@
 #pragma once
 
-#include <cstdint>
-#include <sstream>
-#include <string>
-#include <string_view>
-
-#include "service/features/gb28181/device/Device.h"
-#include "service/features/gb28181/media/MediaTypes.h"
-#include "service/features/gb28181/media/StreamRegistry.h"
-#include "service/features/gb28181/sip/SipServer.h"
+#include <ruvia/web/Model.h>
 
 namespace service::gb28181 {
 
-inline std::string jsonEscape(std::string_view value) {
-    std::string result;
-    result.reserve(value.size() + 8);
-    static constexpr char digits[] = "0123456789abcdef";
-    for (const auto ch : value) {
-        switch (ch) {
-        case '"':
-            result += "\\\"";
-            break;
-        case '\\':
-            result += "\\\\";
-            break;
-        case '\b':
-            result += "\\b";
-            break;
-        case '\f':
-            result += "\\f";
-            break;
-        case '\n':
-            result += "\\n";
-            break;
-        case '\r':
-            result += "\\r";
-            break;
-        case '\t':
-            result += "\\t";
-            break;
-        default:
-            if (static_cast<unsigned char>(ch) < 0x20U) {
-                result += "\\u00";
-                result.push_back(digits[(static_cast<unsigned char>(ch) >> 4U) & 0x0FU]);
-                result.push_back(digits[static_cast<unsigned char>(ch) & 0x0FU]);
-            } else {
-                result.push_back(ch);
-            }
-        }
+struct GbHealthDto final {
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(service, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(enabled, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD(started, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD(error, ruvia::String);
+    RUVIA_MODEL(GbHealthDto, status, service, enabled, started, error);
+};
+
+struct GbSipConfigDto final {
+    RUVIA_OPTIONAL_FIELD(domain, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(host, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("public_ip", publicIp, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(port, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD(transport, ruvia::String);
+    RUVIA_MODEL(GbSipConfigDto, domain, id, host, publicIp, port, transport);
+};
+
+struct GbChannelDto final {
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(manufacturer, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(online, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("ptz_type", ptzType, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("ptz_capable", ptzCapable, ruvia::Bool);
+    RUVIA_MODEL(GbChannelDto, id, name, manufacturer, online, ptzType, ptzCapable);
+};
+
+struct GbRecordDto final {
+    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("file_path", filePath, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(address, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("start_time", startTime, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("end_time", endTime, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(type, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("recorder_id", recorderId, ruvia::String);
+    RUVIA_MODEL(GbRecordDto, deviceId, name, filePath, address, startTime, endTime, type,
+                recorderId);
+};
+
+struct GbDeviceDto final {
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(manufacturer, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("remote_address", remoteAddress, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("remote_ip", remoteIp, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("remote_port", remotePort, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("registration_source", registrationSource, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(online, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD(channels, ruvia::List<GbChannelDto>);
+    RUVIA_OPTIONAL_FIELD(records, ruvia::List<GbRecordDto>);
+    RUVIA_MODEL(GbDeviceDto, id, name, manufacturer, remoteAddress, remoteIp, remotePort,
+                registrationSource, online, channels, records);
+};
+
+struct GbDeviceListDto final {
+    RUVIA_OPTIONAL_FIELD(items, ruvia::List<GbDeviceDto>);
+    RUVIA_MODEL(GbDeviceListDto, items);
+};
+
+struct GbStreamDto final {
+    RUVIA_OPTIONAL_FIELD(app, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(stream, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(schema, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(online, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("reader_count", readerCount, ruvia::Int64);
+    RUVIA_MODEL(GbStreamDto, app, stream, schema, online, readerCount);
+};
+
+struct GbStreamListDto final {
+    RUVIA_OPTIONAL_FIELD(items, ruvia::List<GbStreamDto>);
+    RUVIA_MODEL(GbStreamListDto, items);
+};
+
+struct GbPlayUrlsDto final {
+    RUVIA_OPTIONAL_FIELD_NAME("http_flv", httpFlv, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("ws_flv", wsFlv, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("http_ts", httpTs, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(hls, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(webrtc, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(rtsp, ruvia::String);
+    RUVIA_MODEL(GbPlayUrlsDto, httpFlv, wsFlv, httpTs, hls, webrtc, rtsp);
+};
+
+struct GbPreviewStartDto final {
+    RUVIA_OPTIONAL_FIELD(sent, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(ssrc, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("rtp_port", rtpPort, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD_NAME("play_urls", playUrls, GbPlayUrlsDto);
+    RUVIA_MODEL(GbPreviewStartDto, sent, sessionId, deviceId, channelId, streamId, ssrc,
+                rtpPort, playUrls);
+};
+
+struct GbPreviewStopDto final {
+    RUVIA_OPTIONAL_FIELD(stopped, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("bye_sent", byeSent, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("rtp_server_closed", rtpServerClosed, ruvia::Bool);
+    RUVIA_MODEL(GbPreviewStopDto, stopped, sessionId, streamId, byeSent, rtpServerClosed);
+};
+
+struct GbActionDto final {
+    RUVIA_OPTIONAL_FIELD(registered, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD(sent, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(action, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(speed, ruvia::Int64);
+    RUVIA_OPTIONAL_FIELD(pan, ruvia::Double);
+    RUVIA_OPTIONAL_FIELD(tilt, ruvia::Double);
+    RUVIA_OPTIONAL_FIELD(zoom, ruvia::Double);
+    RUVIA_MODEL(GbActionDto, registered, sent, deviceId, channelId, action, speed, pan, tilt,
+                zoom);
+};
+
+#define GB28181_RESPONSE(name, dataType)                                               \
+    struct name final {                                                               \
+        RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);                                      \
+        RUVIA_OPTIONAL_FIELD(message, ruvia::String);                                  \
+        RUVIA_OPTIONAL_FIELD(data, dataType);                                          \
+        RUVIA_MODEL(name, code, message, data);                                        \
     }
-    return result;
-}
 
-inline std::string jsonQuoted(std::string_view value) {
-    return "\"" + jsonEscape(value) + "\"";
-}
+GB28181_RESPONSE(GbHealthResponse, GbHealthDto);
+GB28181_RESPONSE(GbSipConfigResponse, GbSipConfigDto);
+GB28181_RESPONSE(GbDeviceListResponse, GbDeviceListDto);
+GB28181_RESPONSE(GbDeviceResponse, GbDeviceDto);
+GB28181_RESPONSE(GbStreamListResponse, GbStreamListDto);
+GB28181_RESPONSE(GbStreamResponse, GbStreamDto);
+GB28181_RESPONSE(GbPreviewStartResponse, GbPreviewStartDto);
+GB28181_RESPONSE(GbPreviewStopResponse, GbPreviewStopDto);
+GB28181_RESPONSE(GbActionResponse, GbActionDto);
 
-inline std::pair<std::string, std::string> splitRemoteAddress(std::string_view address) {
-    if (address.starts_with('[')) {
-        const auto end = address.find(']');
-        if (end != std::string_view::npos) {
-            auto port = end + 1 < address.size() && address[end + 1] == ':'
-                            ? std::string(address.substr(end + 2))
-                            : std::string{};
-            return {std::string(address.substr(1, end - 1)), std::move(port)};
-        }
-    }
-    const auto colon = address.rfind(':');
-    if (colon == std::string_view::npos || address.find(':') != colon)
-        return {std::string(address), {}};
-    return {std::string(address.substr(0, colon)), std::string(address.substr(colon + 1))};
-}
-
-inline std::string channelJson(const Channel& channel) {
-    return "{\"id\":" + jsonQuoted(channel.id) + ",\"name\":" + jsonQuoted(channel.name) +
-           ",\"manufacturer\":" + jsonQuoted(channel.manufacturer) +
-           ",\"online\":" + (channel.online ? "true" : "false") +
-           ",\"ptz_type\":" + std::to_string(channel.ptzType) +
-           ",\"ptz_capable\":" + (channel.ptzType > 0 ? "true" : "false") + "}";
-}
-
-inline std::string recordJson(const RecordItem& record) {
-    return "{\"device_id\":" + jsonQuoted(record.deviceId) +
-           ",\"name\":" + jsonQuoted(record.name) +
-           ",\"file_path\":" + jsonQuoted(record.filePath) +
-           ",\"address\":" + jsonQuoted(record.address) +
-           ",\"start_time\":" + jsonQuoted(record.startTime) +
-           ",\"end_time\":" + jsonQuoted(record.endTime) +
-           ",\"type\":" + jsonQuoted(record.type) +
-           ",\"recorder_id\":" + jsonQuoted(record.recorderId) + "}";
-}
-
-inline std::string deviceJson(const Device& device) {
-    const auto [remoteIp, remotePort] = splitRemoteAddress(device.remoteAddress);
-    std::string channels{"["};
-    for (std::size_t index = 0; index < device.channels.size(); ++index) {
-        if (index)
-            channels.push_back(',');
-        channels += channelJson(device.channels[index]);
-    }
-    channels.push_back(']');
-
-    std::string records{"["};
-    for (std::size_t index = 0; index < device.records.size(); ++index) {
-        if (index)
-            records.push_back(',');
-        records += recordJson(device.records[index]);
-    }
-    records.push_back(']');
-
-    return "{\"id\":" + jsonQuoted(device.id) + ",\"name\":" + jsonQuoted(device.name) +
-           ",\"manufacturer\":" + jsonQuoted(device.manufacturer) +
-           ",\"remote_address\":" + jsonQuoted(device.remoteAddress) +
-           ",\"remote_ip\":" + jsonQuoted(remoteIp) +
-           ",\"remote_port\":" + jsonQuoted(remotePort) +
-           ",\"registration_source\":" + jsonQuoted(device.registrationSource) +
-           ",\"online\":" + (device.online ? "true" : "false") +
-           ",\"channels\":" + channels + ",\"records\":" + records + "}";
-}
-
-inline std::string streamJson(const StreamStatus& stream) {
-    return "{\"app\":" + jsonQuoted(stream.app) + ",\"stream\":" + jsonQuoted(stream.stream) +
-           ",\"schema\":" + jsonQuoted(stream.schema) +
-           ",\"online\":" + (stream.online ? "true" : "false") +
-           ",\"reader_count\":" + std::to_string(stream.readerCount) + "}";
-}
-
-inline std::string playUrlsJson(const PlayUrls& urls) {
-    return "{\"http_flv\":" + jsonQuoted(urls.httpFlv) +
-           ",\"ws_flv\":" + jsonQuoted(urls.wsFlv) +
-           ",\"http_ts\":" + jsonQuoted(urls.httpTs) + ",\"hls\":" + jsonQuoted(urls.hls) +
-           ",\"webrtc\":" + jsonQuoted(urls.webRtc) + ",\"rtsp\":" + jsonQuoted(urls.rtsp) +
-           "}";
-}
-
-inline std::string previewJson(const SipServer::PreviewStartResult& result) {
-    return "{\"sent\":true,\"session_id\":" + jsonQuoted(result.sessionId) +
-           ",\"device_id\":" + jsonQuoted(result.deviceId) +
-           ",\"channel_id\":" + jsonQuoted(result.channelId) +
-           ",\"stream_id\":" + jsonQuoted(result.streamId) +
-           ",\"ssrc\":" + jsonQuoted(result.ssrc) +
-           ",\"rtp_port\":" + std::to_string(result.rtpPort) +
-           ",\"play_urls\":" + playUrlsJson(result.playUrls) + "}";
-}
-
-inline std::string previewStopJson(const SipServer::PreviewStopResult& result) {
-    return "{\"stopped\":true,\"session_id\":" + jsonQuoted(result.sessionId) +
-           ",\"stream_id\":" + jsonQuoted(result.streamId) +
-           ",\"bye_sent\":" + (result.byeSent ? "true" : "false") +
-           ",\"rtp_server_closed\":" + (result.rtpServerClosed ? "true" : "false") + "}";
-}
-
-inline std::string jsonNumber(double value) {
-    std::ostringstream output;
-    output.precision(15);
-    output << value;
-    return output.str();
-}
+#undef GB28181_RESPONSE
 
 } // namespace service::gb28181

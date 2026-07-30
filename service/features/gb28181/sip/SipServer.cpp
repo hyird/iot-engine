@@ -1,17 +1,19 @@
 #include "sip/SipServer.h"
 
+#include "service/common/log.h"
 #include "sip/DigestAuth.h"
 #include "sip/SipMessage.h"
 
-#include <trantor/utils/Logger.h>
 #include <pugixml.hpp>
+
+#include <asio/write.hpp>
 
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <coroutine>
 #include <cctype>
 #include <cstring>
+#include <future>
 #include <random>
 #include <sstream>
 #include <iomanip>
@@ -20,33 +22,20 @@
 #include <utility>
 #include <vector>
 
-#ifndef _WIN32
-#include <errno.h>
-#include <fcntl.h>
-#include <unistd.h>
-#endif
-
 namespace {
-
-#ifdef _WIN32
-using NativeSocket = SOCKET;
-constexpr NativeSocket invalidSocket = INVALID_SOCKET;
-using SockLen = int;
-#else
-using NativeSocket = int;
-constexpr NativeSocket invalidSocket = -1;
-using SockLen = socklen_t;
-#endif
-
-struct TcpConnectionContext {
-    std::string pending;
-    SipServer::SipPeer peer;
-};
 
 struct RemoteEndpoint {
     std::string host;
     uint16_t port{0};
 };
+
+template <typename Endpoint>
+std::string endpointKey(const Endpoint& endpoint) {
+    const auto address = endpoint.address().to_string();
+    return endpoint.address().is_v6()
+               ? "[" + address + "]:" + std::to_string(endpoint.port())
+               : address + ":" + std::to_string(endpoint.port());
+}
 
 std::string extractUserFromSipUri(const std::string& value) {
     const auto sip = value.find("sip:");
@@ -302,159 +291,54 @@ long long gbTimeToUnixSeconds(const std::string& value) {
 #endif
 }
 
-bool isInvalidSocket(NativeSocket socket) {
-    return socket == invalidSocket;
-}
-
-void closeSocket(NativeSocket socket) {
-    if (isInvalidSocket(socket)) {
+void runOnLoopAndWait(const ruvia::EventLoop& loop, std::function<void()> work) {
+    if (!loop.valid())
+        throw std::runtime_error("GB28181 SIP IO loop is not configured");
+    if (loop.isCurrent()) {
+        work();
         return;
     }
-#ifdef _WIN32
-    ::closesocket(socket);
-#else
-    ::close(socket);
-#endif
-}
-
-std::string socketErrorMessage() {
-#ifdef _WIN32
-    return "WSA error=" + std::to_string(WSAGetLastError());
-#else
-    return "errno=" + std::to_string(errno);
-#endif
-}
-
-bool wouldBlock() {
-#ifdef _WIN32
-    const auto error = WSAGetLastError();
-    return error == WSAEWOULDBLOCK;
-#else
-    return errno == EAGAIN || errno == EWOULDBLOCK;
-#endif
-}
-
-void setNonBlocking(NativeSocket socket) {
-#ifdef _WIN32
-    u_long mode = 1;
-    if (::ioctlsocket(socket, FIONBIO, &mode) != 0) {
-        throw std::runtime_error("Could not set UDP socket non-blocking: " + socketErrorMessage());
-    }
-#else
-    const auto flags = ::fcntl(socket, F_GETFL, 0);
-    if (flags < 0 || ::fcntl(socket, F_SETFL, flags | O_NONBLOCK) != 0) {
-        throw std::runtime_error("Could not set UDP socket non-blocking: " + socketErrorMessage());
-    }
-#endif
-}
-
-sockaddr_in makeSocketAddress(const std::string& host, uint16_t port) {
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_port = htons(port);
-    if (::inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1) {
-        throw std::runtime_error("Invalid IPv4 address: " + host);
-    }
-    return address;
-}
-
-std::string socketAddressToIp(const sockaddr_in& address) {
-    char buffer[INET_ADDRSTRLEN]{};
-    if (::inet_ntop(AF_INET, &address.sin_addr, buffer, sizeof(buffer)) == nullptr) {
-        return {};
-    }
-    return buffer;
-}
-
-class LoopDispatchAwaiter {
-public:
-    using Work = std::function<void()>;
-
-    LoopDispatchAwaiter(trantor::EventLoop* loop, Work work)
-        : loop_(loop), work_(std::move(work)) {}
-
-    bool await_ready() const noexcept {
-        return loop_ == nullptr || loop_->isInLoopThread();
-    }
-
-    void await_suspend(std::coroutine_handle<> handle) {
-        resumeLoop_ = trantor::EventLoop::getEventLoopOfCurrentThread();
-        loop_->queueInLoop([this, handle]() mutable {
-            runWork();
-            // Network socket work runs on TcpIoPool, but the awaiting startup
-            // coroutine must continue on its original loop so later DB/HTTP
-            // work stays in the Drogon domain.
-            if (resumeLoop_ != nullptr && resumeLoop_ != loop_) {
-                resumeLoop_->queueInLoop([handle]() mutable {
-                    handle.resume();
-                });
-                return;
-            }
-            handle.resume();
-        });
-    }
-
-    void await_resume() {
-        if (await_ready()) {
-            runWork();
-        }
-        if (exception_) {
-            std::rethrow_exception(exception_);
-        }
-    }
-
-private:
-    void runWork() {
-        if (ran_) {
-            return;
-        }
-        ran_ = true;
+    auto completion = std::make_shared<std::promise<void>>();
+    auto future = completion->get_future();
+    const auto posted = loop.post([completion, work = std::move(work)]() mutable {
         try {
-            work_();
+            work();
+            completion->set_value();
         } catch (...) {
-            exception_ = std::current_exception();
+            completion->set_exception(std::current_exception());
         }
-    }
-
-    trantor::EventLoop* loop_{nullptr};
-    trantor::EventLoop* resumeLoop_{nullptr};
-    Work work_;
-    bool ran_{false};
-    std::exception_ptr exception_;
-};
+    });
+    if (!posted.accepted())
+        throw std::runtime_error("GB28181 SIP worker rejected operation");
+    future.get();
+}
 
 } // namespace
 
 SipServer::SipServer(SipConfig sipConfig, MediaConfig mediaConfig, DeviceRegistry& deviceRegistry,
-                     ZlmClient& zlmClient, trantor::EventLoop* ioLoop)
+                     ZlmSdk& zlmSdk, ruvia::EventLoop ioLoop)
     : sipConfig_(std::move(sipConfig)),
       mediaConfig_(std::move(mediaConfig)),
       deviceRegistry_(deviceRegistry),
-      zlmClient_(zlmClient),
-      ioLoop_(ioLoop) {}
+      zlmSdk_(zlmSdk),
+      ioLoop_(std::move(ioLoop)) {}
 
 SipServer::~SipServer() {
     if (!running_.load()) {
         return;
     }
-    if (ioLoop_ != nullptr && ioLoop_->isInLoopThread()) {
+    if (ioLoop_.valid() && ioLoop_.isCurrent()) {
         running_.store(false);
         stopInLoop();
     } else {
-        LOG_WARN << "[GB28181][SIP] SipServer destroyed while running; call stopCoro() before destruction";
+        LOG_WARN << "[GB28181][SIP] SipServer destroyed while running; call stop() before destruction";
     }
 }
 
 void SipServer::start() {
-    drogon::async_run([this]() -> drogon::Task<> {
-        co_await startCoro();
-    });
-}
-
-drogon::Task<> SipServer::startCoro() {
     if (running_.exchange(true)) {
         LOG_DEBUG << "[GB28181][SIP] Start skipped: server already running";
-        co_return;
+        return;
     }
 
     LOG_DEBUG << "[GB28181][SIP] Starting, listen=" << sipConfig_.host << ":" << sipConfig_.port
@@ -463,9 +347,9 @@ drogon::Task<> SipServer::startCoro() {
              << ", public_ip=" << sipConfig_.publicIp
              << ", media_rtp_ip=" << mediaConfig_.rtpPublicIp
              << ", rtp_port_range=" << mediaConfig_.rtpPortRangeStart << "-" << mediaConfig_.rtpPortRangeEnd
-             << ", zlm_base_url=" << mediaConfig_.zlmBaseUrl;
+             << ", zlm_media_workers=" << mediaConfig_.workerThreads;
 
-    if (ioLoop_ == nullptr) {
+    if (!ioLoop_.valid()) {
         running_.store(false);
         throw std::runtime_error("GB28181 SIP IO loop is not configured");
     }
@@ -477,72 +361,68 @@ drogon::Task<> SipServer::startCoro() {
             throw;
         }
     };
-    co_await LoopDispatchAwaiter(ioLoop_, std::move(startWork));
+    runOnLoopAndWait(ioLoop_, std::move(startWork));
 }
 
 void SipServer::stop() {
-    drogon::async_run([this]() -> drogon::Task<> {
-        co_await stopCoro();
-    });
-}
-
-drogon::Task<> SipServer::stopCoro() {
     if (!running_.exchange(false)) {
         LOG_DEBUG << "[GB28181][SIP] Stop skipped: server is not running";
-        co_return;
+        return;
     }
 
-    if (ioLoop_ == nullptr) {
+    if (!ioLoop_.valid()) {
         LOG_DEBUG << "[GB28181][SIP] Stop skipped: IO loop is not available";
-        co_return;
+        return;
     }
     LOG_DEBUG << "[GB28181][SIP] Stopping";
-    co_await LoopDispatchAwaiter(ioLoop_, [this]() {
+    runOnLoopAndWait(ioLoop_, [this]() {
         stopInLoop();
     });
 }
 
 void SipServer::startInLoop() {
-    if (ioLoop_ == nullptr) {
+    if (!ioLoop_.valid() || !ioLoop_.isCurrent()) {
         throw std::runtime_error("GB28181 SIP IO loop is not available");
     }
 
-    udpSocket_ = ::socket(AF_INET, SOCK_DGRAM, 0);
-    if (isInvalidSocket(udpSocket_)) {
-        throw std::runtime_error("Could not create GB28181 UDP socket: " + socketErrorMessage());
-    }
-    int reuse = 1;
-    ::setsockopt(udpSocket_, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse));
-    setNonBlocking(udpSocket_);
+    std::error_code error;
+    const auto address = asio::ip::make_address(sipConfig_.host, error);
+    if (error)
+        throw std::runtime_error("Invalid GB28181 SIP listen address: " + error.message());
 
-    const auto udpAddress = makeSocketAddress(sipConfig_.host, sipConfig_.port);
-    if (::bind(udpSocket_, reinterpret_cast<const sockaddr*>(&udpAddress), sizeof(udpAddress)) != 0) {
-        const auto message = socketErrorMessage();
-        closeSocket(udpSocket_);
-        udpSocket_ = invalidSocket;
-        throw std::runtime_error("Could not bind GB28181 UDP socket: " + message);
-    }
+    const asio::ip::udp::endpoint udpEndpoint(address, sipConfig_.port);
+    udpSocket_ = std::make_unique<asio::ip::udp::socket>(ioLoop_.ioContext());
+    udpSocket_->open(udpEndpoint.protocol(), error);
+    if (error)
+        throw std::runtime_error("Could not open GB28181 UDP socket: " + error.message());
+    udpSocket_->set_option(asio::socket_base::reuse_address(true), error);
+    if (error)
+        throw std::runtime_error("Could not configure GB28181 UDP socket: " + error.message());
+    udpSocket_->bind(udpEndpoint, error);
+    if (error)
+        throw std::runtime_error("Could not bind GB28181 UDP socket: " + error.message());
 
-    udpChannel_ = std::make_unique<trantor::Channel>(ioLoop_, static_cast<int>(udpSocket_));
-    udpChannel_->setReadCallback([this]() { handleUdpReadable(); });
-    udpChannel_->enableReading();
+    const asio::ip::tcp::endpoint tcpEndpoint(address, sipConfig_.port);
+    tcpAcceptor_ = std::make_unique<asio::ip::tcp::acceptor>(ioLoop_.ioContext());
+    tcpAcceptor_->open(tcpEndpoint.protocol(), error);
+    if (error)
+        throw std::runtime_error("Could not open GB28181 TCP acceptor: " + error.message());
+    tcpAcceptor_->set_option(asio::socket_base::reuse_address(true), error);
+    if (error)
+        throw std::runtime_error("Could not configure GB28181 TCP acceptor: " + error.message());
+    tcpAcceptor_->bind(tcpEndpoint, error);
+    if (error)
+        throw std::runtime_error("Could not bind GB28181 TCP acceptor: " + error.message());
+    tcpAcceptor_->listen(asio::socket_base::max_listen_connections, error);
+    if (error)
+        throw std::runtime_error("Could not listen on GB28181 TCP acceptor: " + error.message());
 
-    const auto tcpAddress = trantor::InetAddress(sipConfig_.host, sipConfig_.port);
-#ifdef _WIN32
-    tcpServer_ = std::make_shared<trantor::TcpServer>(ioLoop_, tcpAddress, "Gb28181SipTcpServer", true, false);
-#else
-    tcpServer_ = std::make_shared<trantor::TcpServer>(ioLoop_, tcpAddress, "Gb28181SipTcpServer");
-#endif
-    tcpServer_->setConnectionCallback([this](const trantor::TcpConnectionPtr& connection) {
-        handleTcpConnection(connection);
-    });
-    tcpServer_->setRecvMessageCallback([this](const trantor::TcpConnectionPtr& connection, trantor::MsgBuffer* buffer) {
-        handleTcpMessage(connection, buffer);
-    });
-    tcpServer_->start();
-
-    LOG_DEBUG << "[GB28181][SIP] UDP listening on " << sipConfig_.host << ":" << sipConfig_.port << " via TcpIoPool";
-    LOG_DEBUG << "[GB28181][SIP] TCP listening on " << sipConfig_.host << ":" << sipConfig_.port << " via TcpIoPool";
+    receiveUdp();
+    acceptTcp();
+    LOG_DEBUG << "[GB28181][SIP] UDP listening on " << sipConfig_.host << ":"
+              << sipConfig_.port << " via Ruvia core worker " << ioLoop_.id();
+    LOG_DEBUG << "[GB28181][SIP] TCP listening on " << sipConfig_.host << ":"
+              << sipConfig_.port << " via Ruvia core worker " << ioLoop_.id();
 }
 
 void SipServer::stopInLoop() {
@@ -554,17 +434,16 @@ void SipServer::stopInLoop() {
         viewerCount = previewViewers_.size();
     }
 
-    if (udpChannel_) {
-        udpChannel_->disableAll();
-        udpChannel_->remove();
-        udpChannel_.reset();
+    std::error_code error;
+    if (udpSocket_) {
+        udpSocket_->cancel(error);
+        udpSocket_->close(error);
+        udpSocket_.reset();
     }
-    closeSocket(udpSocket_);
-    udpSocket_ = invalidSocket;
-
-    if (tcpServer_) {
-        tcpServer_->stop();
-        tcpServer_.reset();
+    if (tcpAcceptor_) {
+        tcpAcceptor_->cancel(error);
+        tcpAcceptor_->close(error);
+        tcpAcceptor_.reset();
     }
 
     std::size_t tcpConnectionCount = 0;
@@ -572,9 +451,11 @@ void SipServer::stopInLoop() {
         std::lock_guard lock(tcpConnectionsMutex_);
         tcpConnectionCount = tcpConnections_.size();
         for (auto& [_, connection] : tcpConnections_) {
-            if (connection && connection->connected()) {
-                connection->forceClose();
-            }
+            if (!connection)
+                continue;
+            connection->socket.cancel(error);
+            connection->socket.shutdown(asio::ip::tcp::socket::shutdown_both, error);
+            connection->socket.close(error);
         }
         tcpConnections_.clear();
     }
@@ -584,103 +465,141 @@ void SipServer::stopInLoop() {
              << ", tcp_connections=" << tcpConnectionCount;
 }
 
-void SipServer::handleUdpReadable() {
-    while (running_) {
-        std::array<char, 8192> buffer{};
-        sockaddr_in remoteAddress{};
-        SockLen remoteLength = sizeof(remoteAddress);
-        const auto size = ::recvfrom(
-            udpSocket_,
-            buffer.data(),
-            static_cast<int>(buffer.size()),
-            0,
-            reinterpret_cast<sockaddr*>(&remoteAddress),
-            &remoteLength);
-        if (size < 0) {
-            if (!wouldBlock() && running_) {
-                LOG_WARN << "[GB28181][SIP] UDP receive failed: " << socketErrorMessage();
+void SipServer::receiveUdp() {
+    if (!running_.load() || !udpSocket_ || !udpSocket_->is_open())
+        return;
+    udpSocket_->async_receive_from(
+        asio::buffer(udpBuffer_), udpRemote_,
+        [this](const std::error_code& error, std::size_t size) {
+            if (!running_.load())
+                return;
+            if (error) {
+                if (error != asio::error::operation_aborted)
+                    LOG_WARN << "[GB28181][SIP] UDP receive failed: " << error.message();
+                receiveUdp();
+                return;
             }
+            SipPeer peer;
+            peer.transport = SipTransport::Udp;
+            peer.udp = udpRemote_;
+            peer.address = udpRemote_.address().to_string();
+            peer.port = udpRemote_.port();
+            if (sipConfig_.logging) {
+                LOG_DEBUG << "[GB28181][SIP][UDP_RX] remote=" << peerToString(peer)
+                          << ", bytes=" << size;
+            }
+            handlePacket(std::string(udpBuffer_.data(), size), peer);
+            receiveUdp();
+        });
+}
+
+void SipServer::acceptTcp() {
+    if (!running_.load() || !tcpAcceptor_ || !tcpAcceptor_->is_open())
+        return;
+    tcpAcceptor_->async_accept([this](const std::error_code& error,
+                                      asio::ip::tcp::socket socket) {
+        if (!running_.load())
+            return;
+        if (error) {
+            if (error != asio::error::operation_aborted)
+                LOG_WARN << "[GB28181][SIP] TCP accept failed: " << error.message();
+            acceptTcp();
             return;
         }
-
-        SipPeer peer;
-        peer.transport = SipTransport::Udp;
-        peer.udp = remoteAddress;
-        peer.address = socketAddressToIp(remoteAddress);
-        peer.port = ntohs(remoteAddress.sin_port);
-        if (sipConfig_.logging) {
-            LOG_DEBUG << "[GB28181][SIP][UDP_RX] remote=" << peerToString(peer)
-                      << ", bytes=" << size;
+        std::error_code endpointError;
+        const auto endpoint = socket.remote_endpoint(endpointError);
+        if (endpointError) {
+            LOG_WARN << "[GB28181][SIP] TCP remote endpoint failed: "
+                     << endpointError.message();
+            socket.close(endpointError);
+            acceptTcp();
+            return;
         }
-        handlePacket(std::string(buffer.data(), static_cast<size_t>(size)), peer);
-    }
-}
-
-void SipServer::handleTcpConnection(const trantor::TcpConnectionPtr& connection) {
-    const auto key = connection->peerAddr().toIpPort();
-    if (connection->connected()) {
-        SipPeer peer;
-        peer.transport = SipTransport::Tcp;
-        peer.tcp = connection;
-        peer.address = connection->peerAddr().toIp();
-        peer.port = connection->peerAddr().toPort();
-
-        auto context = std::make_shared<TcpConnectionContext>();
-        context->peer = peer;
-        connection->setContext(context);
-
+        auto connection = std::make_shared<TcpConnection>(std::move(socket));
+        connection->key = endpointKey(endpoint);
+        connection->address = endpoint.address().to_string();
+        connection->port = endpoint.port();
         {
             std::lock_guard lock(tcpConnectionsMutex_);
-            tcpConnections_[key] = connection;
+            tcpConnections_[connection->key] = connection;
         }
-        LOG_DEBUG << "[GB28181][SIP] TCP connected from " << key;
-        return;
-    }
-
-    {
-        std::lock_guard lock(tcpConnectionsMutex_);
-        const auto iter = tcpConnections_.find(key);
-        if (iter != tcpConnections_.end() && iter->second == connection) {
-            tcpConnections_.erase(iter);
-        }
-    }
-    connection->clearContext();
-    LOG_DEBUG << "[GB28181][SIP] TCP disconnected from " << key;
+        LOG_DEBUG << "[GB28181][SIP] TCP connected from " << connection->key;
+        readTcp(connection);
+        acceptTcp();
+    });
 }
 
-void SipServer::handleTcpMessage(const trantor::TcpConnectionPtr& connection, trantor::MsgBuffer* buffer) {
-    auto context = connection->getContext<TcpConnectionContext>();
-    if (!context) {
+void SipServer::readTcp(const TcpConnectionPtr& connection) {
+    if (!running_.load() || !connection || !connection->socket.is_open())
         return;
+    connection->socket.async_read_some(
+        asio::buffer(connection->readBuffer),
+        [this, connection](const std::error_code& error, std::size_t size) {
+            if (error) {
+                if (error != asio::error::operation_aborted &&
+                    error != asio::error::eof) {
+                    LOG_WARN << "[GB28181][SIP] TCP receive failed from "
+                             << connection->key << ": " << error.message();
+                }
+                removeTcpConnection(connection);
+                return;
+            }
+            connection->pending.append(connection->readBuffer.data(), size);
+            processTcpPending(connection);
+            readTcp(connection);
+        });
+}
+
+void SipServer::removeTcpConnection(const TcpConnectionPtr& connection) {
+    if (!connection)
+        return;
+    std::error_code ignored;
+    connection->socket.close(ignored);
+    bool removed = false;
+    {
+        std::lock_guard lock(tcpConnectionsMutex_);
+        const auto found = tcpConnections_.find(connection->key);
+        if (found != tcpConnections_.end() && found->second == connection) {
+            tcpConnections_.erase(found);
+            removed = true;
+        }
     }
+    if (removed)
+        LOG_DEBUG << "[GB28181][SIP] TCP disconnected from " << connection->key;
+}
 
-    context->pending.append(buffer->peek(), buffer->readableBytes());
-    buffer->retrieveAll();
-
-    const auto key = connection->peerAddr().toIpPort();
+void SipServer::processTcpPending(const TcpConnectionPtr& connection) {
+    if (!connection)
+        return;
     if (sipConfig_.logging) {
-        LOG_DEBUG << "[GB28181][SIP][TCP_RX] remote=" << key
-                  << ", pending_bytes=" << context->pending.size();
+        LOG_DEBUG << "[GB28181][SIP][TCP_RX] remote=" << connection->key
+                  << ", pending_bytes=" << connection->pending.size();
     }
     while (true) {
-        const auto headerEnd = context->pending.find("\r\n\r\n");
-        if (headerEnd == std::string::npos) {
+        const auto headerEnd = connection->pending.find("\r\n\r\n");
+        if (headerEnd == std::string::npos)
             break;
-        }
-        const auto contentLength = contentLengthOf(context->pending.substr(0, headerEnd));
+        const auto contentLength =
+            contentLengthOf(connection->pending.substr(0, headerEnd));
         if (!contentLength.has_value()) {
-            LOG_WARN << "[GB28181][SIP] TCP message with invalid Content-Length from " << key
-                     << ", header=\"" << compactForLog(context->pending.substr(0, headerEnd), 300) << "\"";
-            context->pending.clear();
+            LOG_WARN << "[GB28181][SIP] TCP message with invalid Content-Length from "
+                     << connection->key << ", header=\""
+                     << compactForLog(connection->pending.substr(0, headerEnd), 300)
+                     << "\"";
+            connection->pending.clear();
             break;
         }
         const auto packetSize = headerEnd + 4 + *contentLength;
-        if (context->pending.size() < packetSize) {
+        if (connection->pending.size() < packetSize)
             break;
-        }
-        auto packet = context->pending.substr(0, packetSize);
-        context->pending.erase(0, packetSize);
-        handlePacket(packet, context->peer);
+        auto packet = connection->pending.substr(0, packetSize);
+        connection->pending.erase(0, packetSize);
+        SipPeer peer;
+        peer.transport = SipTransport::Tcp;
+        peer.tcp = connection;
+        peer.address = connection->address;
+        peer.port = connection->port;
+        handlePacket(packet, peer);
     }
 }
 
@@ -1313,7 +1232,8 @@ bool SipServer::sendPtzPreciseControl(
     return true;
 }
 
-drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPreviewCoro(const std::string& deviceId, const std::string& channelId) {
+std::optional<SipServer::PreviewStartResult>
+SipServer::startPreview(const std::string& deviceId, const std::string& channelId) {
     LOG_DEBUG << "[GB28181][Preview] Start requested, device=" << deviceId
              << ", channel=" << channelId;
 
@@ -1323,13 +1243,13 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPrevi
         LOG_WARN << "[GB28181][Preview] Start skipped, device=" << deviceId
                  << ", channel=" << channelId
                  << ", reason=" << unavailableReason;
-        co_return std::nullopt;
+        return std::nullopt;
     }
     if (route->hasChannels && !route->channelExists) {
         LOG_WARN << "[GB28181][Preview] Start skipped, device=" << deviceId
                  << ", channel=" << channelId
                  << ", reason=channel_not_found";
-        co_return std::nullopt;
+        return std::nullopt;
     }
 
     const auto endpoint = parseRemoteEndpoint(route->remoteAddress);
@@ -1338,7 +1258,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPrevi
                  << ", channel=" << channelId
                  << ", reason=invalid_remote_address"
                  << ", remote_address=" << route->remoteAddress;
-        co_return std::nullopt;
+        return std::nullopt;
     }
 
     auto remote = peerFromAddress(route->remoteAddress);
@@ -1347,7 +1267,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPrevi
                  << ", channel=" << channelId
                  << ", reason=peer_unavailable"
                  << ", remote_address=" << route->remoteAddress;
-        co_return std::nullopt;
+        return std::nullopt;
     }
 
     std::vector<std::string> staleSessionIds;
@@ -1368,7 +1288,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPrevi
                          << ", stream_session=" << session.sessionId
                          << ", stream_id=" << session.streamId
                          << ", viewers=" << session.viewerCount;
-                co_return PreviewStartResult{
+                return PreviewStartResult{
                     viewerId,
                     session.deviceId,
                     session.channelId,
@@ -1382,7 +1302,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPrevi
     }
 
     for (const auto& staleSessionId : staleSessionIds) {
-        const auto result = co_await stopPreviewCoro(staleSessionId);
+        const auto result = stopPreview(staleSessionId);
         if (result.has_value()) {
             LOG_DEBUG << "[GB28181][Preview] Closed stale session before restart, session=" << staleSessionId
                      << ", stream_id=" << result->streamId
@@ -1404,13 +1324,13 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPrevi
     LOG_DEBUG << "[GB28181][Preview] Opening ZLM RTP server, device=" << deviceId
              << ", channel=" << channelId
              << ", ssrc=" << ssrc;
-    const auto rtpServer = co_await zlmClient_.openRtpServerCoro(deviceId, channelId, ssrc);
+    const auto rtpServer = zlmSdk_.openRtpServer(deviceId, channelId, ssrc);
     if (!rtpServer.has_value()) {
         LOG_WARN << "[GB28181][Preview] Start failed, device=" << deviceId
                  << ", channel=" << channelId
                  << ", reason=zlm_open_rtp_failed"
                  << ", ssrc=" << ssrc;
-        co_return std::nullopt;
+        return std::nullopt;
     }
     LOG_DEBUG << "[GB28181][Preview] ZLM RTP server opened, stream_id=" << rtpServer->streamId
              << ", rtp_port=" << rtpServer->port
@@ -1486,7 +1406,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPrevi
              << ", remote=" << transportName(remote->transport) << " " << peerToString(*remote)
              << ", sdp=\"" << compactForLog(bodyText, 700) << "\"";
 
-    co_return PreviewStartResult{
+    return PreviewStartResult{
         viewerId,
         session.deviceId,
         session.channelId,
@@ -1519,7 +1439,9 @@ void SipServer::markStreamOnline(const std::string& streamId, bool online) {
     }
 }
 
-drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPlaybackCoro(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime) {
+std::optional<SipServer::PreviewStartResult>
+SipServer::startPlayback(const std::string& deviceId, const std::string& channelId,
+                         const std::string& startTime, const std::string& endTime) {
     LOG_DEBUG << "[GB28181][Playback] Start requested, device=" << deviceId
              << ", channel=" << channelId
              << ", start_time=" << startTime
@@ -1531,7 +1453,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPlayb
         LOG_WARN << "[GB28181][Playback] Start skipped, device=" << deviceId
                  << ", channel=" << channelId
                  << ", reason=" << unavailableReason;
-        co_return std::nullopt;
+        return std::nullopt;
     }
 
     const auto endpoint = parseRemoteEndpoint(route->remoteAddress);
@@ -1540,7 +1462,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPlayb
                  << ", channel=" << channelId
                  << ", reason=invalid_remote_address"
                  << ", remote_address=" << route->remoteAddress;
-        co_return std::nullopt;
+        return std::nullopt;
     }
 
     auto remote = peerFromAddress(route->remoteAddress);
@@ -1549,7 +1471,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPlayb
                  << ", channel=" << channelId
                  << ", reason=peer_unavailable"
                  << ", remote_address=" << route->remoteAddress;
-        co_return std::nullopt;
+        return std::nullopt;
     }
 
     const auto cseq = cseq_.fetch_add(1);
@@ -1565,13 +1487,14 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPlayb
     LOG_DEBUG << "[GB28181][Playback] Opening ZLM RTP server, device=" << deviceId
              << ", channel=" << channelId
              << ", ssrc=" << ssrc;
-    const auto rtpServer = co_await zlmClient_.openRtpServerCoro(deviceId, channelId, ssrc, "playback");
+    const auto rtpServer =
+        zlmSdk_.openRtpServer(deviceId, channelId, ssrc, "playback");
     if (!rtpServer.has_value()) {
         LOG_WARN << "[GB28181][Playback] Start failed, device=" << deviceId
                  << ", channel=" << channelId
                  << ", reason=zlm_open_rtp_failed"
                  << ", ssrc=" << ssrc;
-        co_return std::nullopt;
+        return std::nullopt;
     }
     LOG_DEBUG << "[GB28181][Playback] ZLM RTP server opened, stream_id=" << rtpServer->streamId
              << ", rtp_port=" << rtpServer->port
@@ -1650,7 +1573,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPlayb
              << ", remote=" << transportName(remote->transport) << " " << peerToString(*remote)
              << ", sdp=\"" << compactForLog(bodyText, 700) << "\"";
 
-    co_return PreviewStartResult{
+    return PreviewStartResult{
         session.sessionId,
         session.deviceId,
         session.channelId,
@@ -1660,7 +1583,8 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPlayb
         session.playUrls,
     };
 }
-drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreviewCoro(const std::string& sessionId) {
+std::optional<SipServer::PreviewStopResult>
+SipServer::stopPreview(const std::string& sessionId) {
     LOG_DEBUG << "[GB28181][Preview] Stop requested, session=" << sessionId;
 
     PreviewSession session;
@@ -1678,7 +1602,7 @@ drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreview
             LOG_WARN << "[GB28181][Preview] Stop skipped, session=" << sessionId
                      << ", resolved_stream_session=" << streamSessionId
                      << ", reason=session_not_found";
-            co_return std::nullopt;
+            return std::nullopt;
         }
 
         if (iter->second.mode == "preview" && iter->second.viewerCount > 1 && streamSessionId != sessionId) {
@@ -1687,7 +1611,7 @@ drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreview
                      << ", stream_session=" << streamSessionId
                      << ", stream_id=" << iter->second.streamId
                      << ", viewers=" << iter->second.viewerCount;
-            co_return PreviewStopResult{
+            return PreviewStopResult{
                 sessionId,
                 iter->second.streamId,
                 false,
@@ -1751,13 +1675,13 @@ drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreview
                  << ", call_id=" << session.callId;
     }
 
-    const bool rtpServerClosed = co_await zlmClient_.closeRtpServerCoro(session.streamId);
+    const bool rtpServerClosed = zlmSdk_.closeRtpServer(session.streamId);
     LOG_DEBUG << "[GB28181][Preview] RTP server close finished, session=" << streamSessionId
              << ", stream_id=" << session.streamId
              << ", closed=" << rtpServerClosed
              << ", bye_sent=" << byeSent;
 
-    co_return PreviewStopResult{
+    return PreviewStopResult{
         sessionId,
         session.streamId,
         byeSent,
@@ -1765,7 +1689,8 @@ drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreview
     };
 }
 
-drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreviewByStreamCoro(const std::string& streamId) {
+std::optional<SipServer::PreviewStopResult>
+SipServer::stopPreviewByStream(const std::string& streamId) {
     LOG_DEBUG << "[GB28181][Preview] Stop by stream requested, stream_id=" << streamId;
 
     std::string sessionId;
@@ -1782,21 +1707,9 @@ drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreview
     if (sessionId.empty()) {
         LOG_WARN << "[GB28181][Preview] Stop by stream skipped, stream_id=" << streamId
                  << ", reason=session_not_found";
-        co_return std::nullopt;
+        return std::nullopt;
     }
-    co_return co_await stopPreviewCoro(sessionId);
-}
-
-drogon::Task<bool> SipServer::forceCloseRtpServerCoro(const std::string& streamId) {
-    if (streamId.empty()) {
-        LOG_WARN << "[GB28181][Media] Force close RTP skipped, reason=stream_id_empty";
-        co_return false;
-    }
-    LOG_WARN << "[GB28181][Media] Force closing orphan RTP server, stream_id=" << streamId;
-    const auto closed = co_await zlmClient_.closeRtpServerCoro(streamId);
-    LOG_WARN << "[GB28181][Media] Force close RTP finished, stream_id=" << streamId
-             << ", closed=" << closed;
-    co_return closed;
+    return stopPreview(sessionId);
 }
 
 void SipServer::sendResponse(const SipMessage& request, const SipPeer& remote, int statusCode, const std::string& reason, const std::string& extraHeaders) {
@@ -1845,45 +1758,86 @@ void SipServer::sendRequest(const std::string& request, const SipPeer& remote) {
         logSipSend(request, remote, true);
     }
 
-    std::lock_guard lock(sendMutex_);
+    auto data = std::make_shared<std::string>(request);
     if (remote.transport == SipTransport::Tcp) {
-        if (!remote.tcp || !remote.tcp->connected()) {
+        if (!remote.tcp) {
             LOG_WARN << "[GB28181][SIP] TCP send failed: connection is closed, remote="
                      << peerToString(remote);
             return;
         }
-        remote.tcp->send(request);
-        if (sipConfig_.logging) {
-            LOG_DEBUG << "[GB28181][SIP][TCP_TX] remote=" << peerToString(remote)
-                      << ", bytes=" << request.size();
-        }
+        const auto connection = remote.tcp;
+        const auto posted = ioLoop_.post(
+            [this, connection, data] { writeTcp(connection, data); });
+        if (!posted.accepted())
+            LOG_WARN << "[GB28181][SIP] TCP send rejected by Ruvia worker, remote="
+                     << peerToString(remote);
         return;
     }
 
-    if (ioLoop_ == nullptr || isInvalidSocket(udpSocket_)) {
+    if (!ioLoop_.valid()) {
         LOG_WARN << "[GB28181][SIP] UDP send failed: socket is not ready, remote="
                  << peerToString(remote);
         return;
     }
 
-    ioLoop_->queueInLoop([this, request, remoteAddress = remote.udp]() {
-        if (!running_ || isInvalidSocket(udpSocket_)) {
+    const auto posted = ioLoop_.post([this, data, remoteAddress = remote.udp]() {
+        if (!running_.load() || !udpSocket_ || !udpSocket_->is_open())
             return;
-        }
-        const auto sent = ::sendto(
-            udpSocket_,
-            request.data(),
-            static_cast<int>(request.size()),
-            0,
-            reinterpret_cast<const sockaddr*>(&remoteAddress),
-            sizeof(remoteAddress));
-        if (sent < 0) {
-            LOG_WARN << "[GB28181][SIP] UDP send failed: " << socketErrorMessage();
-        } else if (sipConfig_.logging) {
-            LOG_DEBUG << "[GB28181][SIP][UDP_TX] bytes=" << sent;
-        }
+        udpSocket_->async_send_to(
+            asio::buffer(*data), remoteAddress,
+            [this, data](const std::error_code& error, std::size_t sent) {
+                if (error) {
+                    if (error != asio::error::operation_aborted)
+                        LOG_WARN << "[GB28181][SIP] UDP send failed: "
+                                 << error.message();
+                } else if (sipConfig_.logging) {
+                    LOG_DEBUG << "[GB28181][SIP][UDP_TX] bytes=" << sent;
+                }
+            });
     });
+    if (!posted.accepted())
+        LOG_WARN << "[GB28181][SIP] UDP send rejected by Ruvia worker, remote="
+                 << peerToString(remote);
 }
+
+void SipServer::writeTcp(const TcpConnectionPtr& connection,
+                         std::shared_ptr<std::string> data) {
+    if (!running_.load() || !connection || !connection->socket.is_open())
+        return;
+    connection->writes.push_back(std::move(data));
+    if (!connection->writeInProgress)
+        continueTcpWrite(connection);
+}
+
+void SipServer::continueTcpWrite(const TcpConnectionPtr& connection) {
+    if (!connection || !connection->socket.is_open() || connection->writes.empty()) {
+        if (connection)
+            connection->writeInProgress = false;
+        return;
+    }
+    connection->writeInProgress = true;
+    const auto data = connection->writes.front();
+    asio::async_write(
+        connection->socket, asio::buffer(*data),
+        [this, connection, data](const std::error_code& error, std::size_t sent) {
+            if (error) {
+                if (error != asio::error::operation_aborted)
+                    LOG_WARN << "[GB28181][SIP] TCP send failed to "
+                             << connection->key << ": " << error.message();
+                connection->writes.clear();
+                connection->writeInProgress = false;
+                removeTcpConnection(connection);
+                return;
+            }
+            connection->writes.pop_front();
+            if (sipConfig_.logging) {
+                LOG_DEBUG << "[GB28181][SIP][TCP_TX] remote=" << connection->key
+                          << ", bytes=" << sent;
+            }
+            continueTcpWrite(connection);
+        });
+}
+
 std::optional<SipServer::SipPeer> SipServer::peerFromAddress(const std::string& remoteAddress) const {
     const auto endpoint = parseRemoteEndpoint(remoteAddress);
     if (!endpoint.has_value()) {
@@ -1896,7 +1850,7 @@ std::optional<SipServer::SipPeer> SipServer::peerFromAddress(const std::string& 
     {
         std::lock_guard lock(tcpConnectionsMutex_);
         const auto iter = tcpConnections_.find(remoteAddress);
-        if (iter != tcpConnections_.end() && iter->second && iter->second->connected()) {
+        if (iter != tcpConnections_.end() && iter->second) {
             peer.transport = SipTransport::Tcp;
             peer.tcp = iter->second;
             return peer;
@@ -1904,28 +1858,39 @@ std::optional<SipServer::SipPeer> SipServer::peerFromAddress(const std::string& 
     }
 
     peer.transport = SipTransport::Udp;
-    peer.udp = makeSocketAddress(peer.address, peer.port);
+    std::error_code error;
+    const auto address = asio::ip::make_address(peer.address, error);
+    if (error)
+        return std::nullopt;
+    peer.udp = asio::ip::udp::endpoint(address, peer.port);
     return peer;
 }
 
 void SipServer::scheduleCatalogQuery(const std::string& deviceId) {
-    if (ioLoop_ == nullptr) {
+    if (!ioLoop_.valid()) {
         LOG_WARN << "[GB28181][Catalog] Schedule skipped, device=" << deviceId
                  << ", reason=io_loop_unavailable";
         return;
     }
     LOG_DEBUG << "[GB28181][Catalog] Query scheduled, device=" << deviceId
              << ", delay_seconds=0.5";
-    ioLoop_->runAfter(0.5, [this, deviceId]() {
-        if (!running_) {
-            LOG_DEBUG << "[GB28181][Catalog] Scheduled query skipped, device=" << deviceId
-                     << ", reason=server_stopped";
-            return;
-        }
-        if (queryCatalog(deviceId)) {
-            LOG_DEBUG << "[GB28181][Catalog] Scheduled query sent, device=" << deviceId;
-        } else {
-            LOG_WARN << "[GB28181][Catalog] Scheduled query failed, device=" << deviceId;
-        }
+    const auto posted = ioLoop_.post([this, deviceId] {
+        auto timer = std::make_shared<asio::steady_timer>(ioLoop_.ioContext());
+        timer->expires_after(std::chrono::milliseconds(500));
+        timer->async_wait([this, deviceId, timer](const std::error_code& error) {
+            if (error || !running_.load()) {
+                if (!error) {
+                    LOG_DEBUG << "[GB28181][Catalog] Scheduled query skipped, device="
+                              << deviceId << ", reason=server_stopped";
+                }
+                return;
+            }
+            if (queryCatalog(deviceId))
+                LOG_DEBUG << "[GB28181][Catalog] Scheduled query sent, device=" << deviceId;
+            else
+                LOG_WARN << "[GB28181][Catalog] Scheduled query failed, device=" << deviceId;
+        });
     });
+    if (!posted.accepted())
+        LOG_WARN << "[GB28181][Catalog] Schedule rejected, device=" << deviceId;
 }

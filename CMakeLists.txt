@@ -17,6 +17,18 @@ if(NOT "$ENV{VCPKG_DEFAULT_HOST_TRIPLET}" STREQUAL "")
     set(VCPKG_HOST_TRIPLET "$ENV{VCPKG_DEFAULT_HOST_TRIPLET}" CACHE STRING "")
 endif()
 
+list(PREPEND VCPKG_OVERLAY_PORTS
+    "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg-overlay-ports")
+
+# ZLMediaKit and its Find*.cmake modules use CMAKE_BUILD_TYPE even with
+# multi-config generators. Set the dependency-discovery configuration before
+# project() loads the vcpkg toolchain, otherwise Visual Studio can bind Release
+# targets to /MTd libraries from debug/lib.
+if(CMAKE_GENERATOR MATCHES "Visual Studio|Xcode|Ninja Multi-Config")
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING
+        "Dependency-discovery configuration for multi-config generators" FORCE)
+endif()
+
 project(iot_engine VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -47,20 +59,119 @@ FetchContent_Declare(nanopb
     SOURCE_SUBDIR _runtime_sources_only)
 FetchContent_MakeAvailable(nanopb)
 
-find_package(Protobuf CONFIG REQUIRED)
-find_package(jsoncpp CONFIG REQUIRED)
-find_package(unofficial-brotli CONFIG REQUIRED)
-find_package(Drogon CONFIG REQUIRED)
-find_package(pugixml CONFIG REQUIRED)
-find_package(boost_json CONFIG REQUIRED)
-
-# Drogon's bundled Find modules can select vcpkg's debug-only libraries while
-# generating a multi-config static Windows build. Rebind the interface targets
-# to vcpkg's configuration-aware imported targets.
-if(TARGET Jsoncpp_lib AND TARGET JsonCpp::JsonCpp)
-    set_target_properties(Jsoncpp_lib PROPERTIES
-        INTERFACE_LINK_LIBRARIES JsonCpp::JsonCpp)
+# ZLMediaKit's C SDK exposes PCM-to-AAC input only when FAAC is present. FAAC
+# does not ship a CMake build or a vcpkg port, so build its upstream static
+# library directly from the source list used by its own MSVC project.
+FetchContent_Declare(faac_source
+    GIT_REPOSITORY https://github.com/knik0/faac.git
+    GIT_TAG 3aec0c1cef9442fe2f8eb86a5b475c68e94f3306
+    GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(faac_source)
+add_library(faac STATIC
+    "${faac_source_SOURCE_DIR}/libfaac/bitstream.c"
+    "${faac_source_SOURCE_DIR}/libfaac/blockswitch.c"
+    "${faac_source_SOURCE_DIR}/libfaac/channels.c"
+    "${faac_source_SOURCE_DIR}/libfaac/fft.c"
+    "${faac_source_SOURCE_DIR}/libfaac/filtbank.c"
+    "${faac_source_SOURCE_DIR}/libfaac/frame.c"
+    "${faac_source_SOURCE_DIR}/libfaac/huff2.c"
+    "${faac_source_SOURCE_DIR}/libfaac/huffdata.c"
+    "${faac_source_SOURCE_DIR}/libfaac/quantize.c"
+    "${faac_source_SOURCE_DIR}/libfaac/stereo.c"
+    "${faac_source_SOURCE_DIR}/libfaac/tns.c"
+    "${faac_source_SOURCE_DIR}/libfaac/util.c")
+target_include_directories(faac
+    PUBLIC "${faac_source_SOURCE_DIR}/include"
+    PRIVATE "${faac_source_SOURCE_DIR}/libfaac")
+target_compile_definitions(faac PRIVATE PACKAGE_VERSION="1.31.1")
+set_property(TARGET faac PROPERTY COMPILE_WARNING_AS_ERROR OFF)
+if(MSVC)
+    target_compile_definitions(faac PRIVATE _CRT_SECURE_NO_WARNINGS)
+else()
+    target_link_libraries(faac PUBLIC m)
 endif()
+set(FAAC_INCLUDE_DIR "${faac_source_SOURCE_DIR}/include" CACHE PATH "" FORCE)
+set(FAAC_LIBRARY faac CACHE STRING "" FORCE)
+
+# ZLMediaKit runs the GB28181 media data plane in its own EventPollerPool and
+# WorkThreadPool. Link mk_api statically so the release remains one executable;
+# linkage does not change the media worker isolation boundary.
+set(ENABLE_API ON CACHE BOOL "" FORCE)
+set(ENABLE_API_STATIC_LIB ON CACHE BOOL "" FORCE)
+# These switches build separate ZLM executables/install surfaces, not embedded
+# mk_api capabilities. Keep the application boundary on the C SDK only.
+set(ENABLE_CXX_API OFF CACHE BOOL "" FORCE)
+set(ENABLE_SERVER OFF CACHE BOOL "" FORCE)
+set(ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(ENABLE_PLAYER OFF CACHE BOOL "" FORCE)
+set(ENABLE_FAAC ON CACHE BOOL "" FORCE)
+set(ENABLE_FFMPEG ON CACHE BOOL "" FORCE)
+set(ENABLE_HLS ON CACHE BOOL "" FORCE)
+set(ENABLE_MP4 ON CACHE BOOL "" FORCE)
+set(ENABLE_RTPPROXY ON CACHE BOOL "" FORCE)
+set(ENABLE_SRT ON CACHE BOOL "" FORCE)
+set(ENABLE_SCTP ON CACHE BOOL "" FORCE)
+set(ENABLE_WEBRTC ON CACHE BOOL "" FORCE)
+set(ENABLE_OPENSSL ON CACHE BOOL "" FORCE)
+set(ENABLE_X264 ON CACHE BOOL "" FORCE)
+set(ENABLE_VIDEOSTACK ON CACHE BOOL "" FORCE)
+set(ENABLE_OBJCOPY OFF CACHE BOOL "" FORCE)
+set(DISABLE_REPORT ON CACHE BOOL "" FORCE)
+FetchContent_Declare(zlmediakit
+    GIT_REPOSITORY https://github.com/ZLMediaKit/ZLMediaKit.git
+    GIT_TAG 79d795a767da85bbba821b871265fd87d853d808
+    GIT_SHALLOW TRUE
+    GIT_SUBMODULES
+        3rdpart/ZLToolKit
+        3rdpart/jsoncpp
+        3rdpart/media-server
+    GIT_SUBMODULES_RECURSE TRUE
+    PATCH_COMMAND
+        "${CMAKE_COMMAND}"
+        "-DSOURCE_DIR=<SOURCE_DIR>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch-zlmediakit.cmake")
+
+FetchContent_MakeAvailable(zlmediakit)
+
+get_target_property(IOT_ENGINE_ZLM_DEFINITIONS zlmediakit COMPILE_DEFINITIONS)
+foreach(IOT_ENGINE_ZLM_FEATURE
+        ENABLE_FAAC
+        ENABLE_FFMPEG
+        ENABLE_HLS
+        ENABLE_MP4
+        ENABLE_OPENSSL
+        ENABLE_RTPPROXY
+        ENABLE_SRT
+        ENABLE_WEBRTC
+        ENABLE_X264
+        ENABLE_VIDEOSTACK)
+    if(NOT "${IOT_ENGINE_ZLM_FEATURE}" IN_LIST IOT_ENGINE_ZLM_DEFINITIONS)
+        message(FATAL_ERROR
+            "Embedded ZLMediaKit feature was not enabled: ${IOT_ENGINE_ZLM_FEATURE}")
+    endif()
+endforeach()
+get_target_property(IOT_ENGINE_ZLM_WEBRTC_DEFINITIONS webrtc COMPILE_DEFINITIONS)
+if(NOT "ENABLE_SCTP" IN_LIST IOT_ENGINE_ZLM_WEBRTC_DEFINITIONS)
+    message(FATAL_ERROR "Embedded ZLMediaKit WebRTC data channel support was not enabled")
+endif()
+unset(IOT_ENGINE_ZLM_DEFINITIONS)
+unset(IOT_ENGINE_ZLM_WEBRTC_DEFINITIONS)
+unset(IOT_ENGINE_ZLM_FEATURE)
+
+if(ENABLE_API_STATIC_LIB)
+    target_compile_definitions(mk_api INTERFACE MediaKitApi_STATIC)
+endif()
+if(MSVC)
+    # mk_common.h only includes the generated export header when this is set.
+    # Without it, static consumers are incorrectly compiled with dllimport.
+    target_compile_definitions(mk_api INTERFACE GENERATE_EXPORT)
+endif()
+
+find_package(Protobuf CONFIG REQUIRED)
+find_package(unofficial-brotli CONFIG REQUIRED)
+find_package(pugixml CONFIG REQUIRED)
+
+# Rebind Brotli to vcpkg's configuration-aware imported targets.
 if(TARGET Brotli_lib
    AND TARGET unofficial::brotli::brotlidec
    AND TARGET unofficial::brotli::brotlienc)
@@ -115,7 +226,7 @@ add_executable(iot-engine
     service/common/packet-log.cpp
     service/features/gb28181/device/DeviceRegistry.cpp
     service/features/gb28181/media/StreamRegistry.cpp
-    service/features/gb28181/media/ZlmClient.cpp
+    service/features/gb28181/media/ZlmSdk.cpp
     service/features/gb28181/runtime.cpp
     service/features/gb28181/sip/DigestAuth.cpp
     service/features/gb28181/sip/SipMessage.cpp
@@ -129,13 +240,15 @@ target_include_directories(iot-engine PRIVATE
     "${EDGENODE_GENERATED_DIR}")
 target_link_libraries(iot-engine PRIVATE
     ruvia::web
-    Drogon::Drogon
-    Boost::json
     pugixml::pugixml
     spdlog::spdlog
-    protobuf::libprotobuf)
+    protobuf::libprotobuf
+    mk_api)
 if(MSVC)
-    target_compile_definitions(iot-engine PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_definitions(iot-engine PRIVATE
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+        MediaKitApi_STATIC)
     target_compile_options(iot-engine PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
 endif()
 
@@ -171,6 +284,49 @@ if(MSVC)
     target_compile_options(edge-protocol-test PRIVATE /utf-8 /Zc:__cplusplus)
 endif()
 add_test(NAME edge-protocol COMMAND edge-protocol-test)
+
+add_executable(gb28181-media-test
+    tests/gb28181-media-test.cpp
+    service/features/gb28181/media/ZlmSdk.cpp)
+target_include_directories(gb28181-media-test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181")
+target_link_libraries(gb28181-media-test PRIVATE
+    ruvia::web
+    spdlog::spdlog
+    mk_api)
+if(MSVC)
+    target_compile_definitions(gb28181-media-test PRIVATE
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+        MediaKitApi_STATIC)
+    target_compile_options(gb28181-media-test PRIVATE /utf-8 /Zc:__cplusplus)
+endif()
+add_test(NAME gb28181-media COMMAND gb28181-media-test)
+
+add_executable(gb28181-sip-test
+    tests/gb28181-sip-test.cpp
+    service/features/gb28181/device/DeviceRegistry.cpp
+    service/features/gb28181/media/ZlmSdk.cpp
+    service/features/gb28181/sip/DigestAuth.cpp
+    service/features/gb28181/sip/SipMessage.cpp
+    service/features/gb28181/sip/SipServer.cpp)
+target_include_directories(gb28181-sip-test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181")
+target_link_libraries(gb28181-sip-test PRIVATE
+    ruvia::web
+    pugixml::pugixml
+    spdlog::spdlog
+    mk_api)
+if(MSVC)
+    target_compile_definitions(gb28181-sip-test PRIVATE
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+        MediaKitApi_STATIC)
+    target_compile_options(gb28181-sip-test PRIVATE /utf-8 /Zc:__cplusplus)
+endif()
+add_test(NAME gb28181-sip COMMAND gb28181-sip-test)
 
 find_program(BUN_EXECUTABLE NAMES bun REQUIRED)
 

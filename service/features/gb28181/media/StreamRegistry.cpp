@@ -1,12 +1,15 @@
 #include "media/StreamRegistry.h"
 
-void StreamRegistry::updateStreamChanged(const std::string& app, const std::string& stream, const std::string& schema, bool online) {
+void StreamRegistry::updateStreamChanged(const std::string& app, const std::string& stream,
+                                         const std::string& schema, bool online,
+                                         int readerCount) {
     std::lock_guard lock(mutex_);
     auto& status = streams_[keyFor(app, stream, schema)];
     status.app = app;
     status.stream = stream;
     status.schema = schema;
     status.online = online;
+    status.readerCount = readerCount;
 }
 
 void StreamRegistry::updateNoneReader(const std::string& app, const std::string& stream, const std::string& schema) {

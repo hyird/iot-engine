@@ -16,7 +16,8 @@ struct StreamStatus {
 
 class StreamRegistry {
 public:
-    void updateStreamChanged(const std::string& app, const std::string& stream, const std::string& schema, bool online);
+    void updateStreamChanged(const std::string& app, const std::string& stream,
+                             const std::string& schema, bool online, int readerCount);
     void updateNoneReader(const std::string& app, const std::string& stream, const std::string& schema);
     std::optional<StreamStatus> findStream(const std::string& stream) const;
     std::vector<StreamStatus> listStreams() const;

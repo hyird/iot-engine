@@ -23,25 +23,48 @@ void Runtime::start() {
     try {
         if (config_.sip.domain.empty() || config_.sip.id.empty() ||
             config_.sip.publicIp.empty() || config_.sip.password.empty() ||
-            config_.media.zlmBaseUrl.empty() || config_.media.rtpPublicIp.empty()) {
+            config_.media.rtpPublicIp.empty()) {
             throw std::runtime_error(
-                "GB28181 configuration requires domain, id, public IP, password, ZLM URL and RTP IP");
+                "GB28181 configuration requires domain, id, public IP, password and RTP IP");
         }
-        if (config_.media.rtpPortRangeStart > config_.media.rtpPortRangeEnd)
+        const auto randomRtpPort = config_.media.rtpPortRangeStart == 0 &&
+                                   config_.media.rtpPortRangeEnd == 0;
+        if (!randomRtpPort &&
+            (config_.media.rtpPortRangeStart == 0 ||
+             config_.media.rtpPortRangeStart > config_.media.rtpPortRangeEnd))
             throw std::runtime_error("GB28181 RTP port range is invalid");
+        if (config_.media.workerThreads < 0)
+            throw std::runtime_error("ZLM worker thread count cannot be negative");
+        if (config_.media.logLevel < 0 || config_.media.logLevel > 4)
+            throw std::runtime_error("ZLM log level must be between 0 and 4");
 
-        loopThread_ = std::make_unique<trantor::EventLoopThread>("GB28181-SIP");
-        loopThread_->run();
-        auto* loop = loopThread_->getLoop();
-        if (loop == nullptr)
+        loopPool_ = std::make_unique<ruvia::EventLoopPool>(
+            ruvia::EventLoopPoolOptions{.loopCount = 1, .mailboxCapacity = 1024});
+        loopPool_->start();
+        sipLoop_ = loopPool_->loop(0);
+        if (!sipLoop_.valid())
             throw std::runtime_error("GB28181 event loop failed to start");
 
         devices_ = std::make_unique<DeviceRegistry>();
         streams_ = std::make_unique<StreamRegistry>();
-        zlm_ = std::make_unique<ZlmClient>(config_.media, loop);
-        sip_ =
-            std::make_unique<SipServer>(config_.sip, config_.media, *devices_, *zlm_, loop);
-        drogon::sync_wait(sip_->startCoro());
+        ZlmSdk::Callbacks callbacks;
+        callbacks.onStreamChanged =
+            [this](std::string app, std::string stream, std::string schema, bool online,
+                   int readerCount) {
+                streamChanged(std::move(app), std::move(stream), std::move(schema), online,
+                              readerCount);
+            };
+        callbacks.onStreamNoneReader =
+            [this](std::string app, std::string stream, std::string schema) {
+                streamNoneReader(std::move(app), std::move(stream), std::move(schema));
+            };
+        callbacks.onRtpDetached =
+            [this](std::string stream) { scheduleStreamClose(std::move(stream)); };
+        zlm_ = std::make_unique<ZlmSdk>(config_.media, std::move(callbacks));
+        zlm_->start();
+        sip_ = std::make_unique<SipServer>(config_.sip, config_.media, *devices_, *zlm_,
+                                           sipLoop_);
+        sip_->start();
         lastError_.clear();
     } catch (const std::exception& error) {
         lastError_ = error.what();
@@ -52,27 +75,30 @@ void Runtime::start() {
 }
 
 void Runtime::stop() noexcept {
-    if (!started_.exchange(false) && !loopThread_)
+    if (!started_.exchange(false) && !loopPool_)
         return;
     try {
+        if (zlm_)
+            zlm_->stop();
         if (sip_)
-            drogon::sync_wait(sip_->stopCoro());
+            sip_->stop();
     } catch (const std::exception& error) {
         lastError_ = error.what();
+    }
+    if (loopPool_) {
+        loopPool_->stop();
+        try {
+            loopPool_->join();
+        } catch (const std::exception& error) {
+            lastError_ = error.what();
+        }
     }
     sip_.reset();
     zlm_.reset();
     streams_.reset();
     devices_.reset();
-    if (loopThread_) {
-        if (auto* loop = loopThread_->getLoop())
-            loop->quit();
-        try {
-            loopThread_->wait();
-        } catch (...) {
-        }
-        loopThread_.reset();
-    }
+    sipLoop_ = {};
+    loopPool_.reset();
 }
 
 std::vector<Device> Runtime::devices() const {
@@ -88,30 +114,41 @@ void Runtime::mockRegister(std::string deviceId, std::string remoteAddress) {
     devices_->upsertRegistration(deviceId, remoteAddress, "mock");
 }
 
-bool Runtime::queryCatalog(std::string_view deviceId) {
+std::future<bool> Runtime::queryCatalog(std::string deviceId) {
     requireStarted();
-    return sip_->queryCatalog(std::string(deviceId));
+    return launch<bool>([this, deviceId = std::move(deviceId)] {
+        return sip_->queryCatalog(deviceId);
+    });
 }
 
-bool Runtime::queryRecords(std::string_view deviceId, std::string_view channelId,
-                           std::string_view startTime, std::string_view endTime) {
+std::future<bool> Runtime::queryRecords(std::string deviceId, std::string channelId,
+                                        std::string startTime, std::string endTime) {
     requireStarted();
-    return sip_->queryRecords(std::string(deviceId), std::string(channelId),
-                              std::string(startTime), std::string(endTime));
+    return launch<bool>(
+        [this, deviceId = std::move(deviceId), channelId = std::move(channelId),
+         startTime = std::move(startTime), endTime = std::move(endTime)] {
+            return sip_->queryRecords(deviceId, channelId, startTime, endTime);
+        });
 }
 
-bool Runtime::ptz(std::string_view deviceId, std::string_view channelId,
-                  std::string_view action, std::uint8_t speed) {
+std::future<bool> Runtime::ptz(std::string deviceId, std::string channelId,
+                               std::string action, std::uint8_t speed) {
     requireStarted();
-    return sip_->sendPtzControl(std::string(deviceId), std::string(channelId),
-                                std::string(action), speed);
+    return launch<bool>(
+        [this, deviceId = std::move(deviceId), channelId = std::move(channelId),
+         action = std::move(action), speed] {
+            return sip_->sendPtzControl(deviceId, channelId, action, speed);
+        });
 }
 
-bool Runtime::ptzPosition(std::string_view deviceId, std::string_view channelId, double pan,
-                          double tilt, double zoom) {
+std::future<bool> Runtime::ptzPosition(std::string deviceId, std::string channelId,
+                                       double pan, double tilt, double zoom) {
     requireStarted();
-    return sip_->sendPtzPreciseControl(std::string(deviceId), std::string(channelId), pan, tilt,
-                                       zoom);
+    return launch<bool>(
+        [this, deviceId = std::move(deviceId), channelId = std::move(channelId), pan,
+         tilt, zoom] {
+            return sip_->sendPtzPreciseControl(deviceId, channelId, pan, tilt, zoom);
+        });
 }
 
 std::future<std::optional<SipServer::PreviewStartResult>>
@@ -119,9 +156,8 @@ Runtime::startPreview(std::string deviceId, std::string channelId) {
     requireStarted();
     return launch<std::optional<SipServer::PreviewStartResult>>(
         [this, deviceId = std::move(deviceId),
-         channelId = std::move(channelId)]() -> drogon::Task<
-            std::optional<SipServer::PreviewStartResult>> {
-            co_return co_await sip_->startPreviewCoro(deviceId, channelId);
+         channelId = std::move(channelId)]() {
+            return sip_->startPreview(deviceId, channelId);
         });
 }
 
@@ -132,9 +168,8 @@ Runtime::startPlayback(std::string deviceId, std::string channelId, std::string 
     return launch<std::optional<SipServer::PreviewStartResult>>(
         [this, deviceId = std::move(deviceId), channelId = std::move(channelId),
          startTime = std::move(startTime),
-         endTime = std::move(endTime)]() -> drogon::Task<
-            std::optional<SipServer::PreviewStartResult>> {
-            co_return co_await sip_->startPlaybackCoro(deviceId, channelId, startTime, endTime);
+         endTime = std::move(endTime)]() {
+            return sip_->startPlayback(deviceId, channelId, startTime, endTime);
         });
 }
 
@@ -142,9 +177,8 @@ std::future<std::optional<SipServer::PreviewStopResult>>
 Runtime::stopPreview(std::string sessionId) {
     requireStarted();
     return launch<std::optional<SipServer::PreviewStopResult>>(
-        [this, sessionId = std::move(sessionId)]() -> drogon::Task<
-            std::optional<SipServer::PreviewStopResult>> {
-            co_return co_await sip_->stopPreviewCoro(sessionId);
+        [this, sessionId = std::move(sessionId)]() {
+            return sip_->stopPreview(sessionId);
         });
 }
 
@@ -152,17 +186,9 @@ std::future<std::optional<SipServer::PreviewStopResult>>
 Runtime::stopPreviewByStream(std::string streamId) {
     requireStarted();
     return launch<std::optional<SipServer::PreviewStopResult>>(
-        [this, streamId = std::move(streamId)]() -> drogon::Task<
-            std::optional<SipServer::PreviewStopResult>> {
-            co_return co_await sip_->stopPreviewByStreamCoro(streamId);
+        [this, streamId = std::move(streamId)]() {
+            return sip_->stopPreviewByStream(streamId);
         });
-}
-
-std::future<bool> Runtime::forceCloseRtp(std::string streamId) {
-    requireStarted();
-    return launch<bool>([this, streamId = std::move(streamId)]() -> drogon::Task<bool> {
-        co_return co_await sip_->forceCloseRtpServerCoro(streamId);
-    });
 }
 
 std::vector<StreamStatus> Runtime::streams() const {
@@ -173,17 +199,50 @@ std::optional<StreamStatus> Runtime::stream(std::string_view id) const {
     return streams_ ? streams_->findStream(std::string(id)) : std::nullopt;
 }
 
-void Runtime::streamChanged(std::string app, std::string stream, std::string schema, bool online) {
-    if (!streams_)
+void Runtime::streamChanged(std::string app, std::string stream, std::string schema, bool online,
+                            int readerCount) {
+    if (!started_.load() || !sipLoop_.valid())
         return;
-    streams_->updateStreamChanged(app, stream, schema, online);
-    if (sip_)
-        sip_->markStreamOnline(stream, online);
+    (void)sipLoop_.post(
+        [this, app = std::move(app), stream = std::move(stream),
+         schema = std::move(schema), online, readerCount] {
+            if (!started_.load())
+                return;
+            if (streams_)
+                streams_->updateStreamChanged(app, stream, schema, online, readerCount);
+            if (sip_)
+                sip_->markStreamOnline(stream, online);
+        });
 }
 
 void Runtime::streamNoneReader(std::string app, std::string stream, std::string schema) {
-    if (streams_)
-        streams_->updateNoneReader(std::move(app), stream, std::move(schema));
+    if (!started_.load() || !sipLoop_.valid())
+        return;
+    (void)sipLoop_.post(
+        [this, app = std::move(app), stream = std::move(stream),
+         schema = std::move(schema)] {
+            if (!started_.load())
+                return;
+            if (streams_)
+                streams_->updateNoneReader(app, stream, schema);
+            if (!sip_ || !zlm_)
+                return;
+            const auto stopped = sip_->stopPreviewByStream(stream);
+            if (!stopped)
+                (void)zlm_->closeRtpServer(stream);
+        });
+}
+
+void Runtime::scheduleStreamClose(std::string stream) {
+    if (!started_.load() || stream.empty() || !sipLoop_.valid())
+        return;
+    (void)sipLoop_.post([this, stream = std::move(stream)] {
+        if (!started_.load() || !sip_ || !zlm_)
+            return;
+        const auto stopped = sip_->stopPreviewByStream(stream);
+        if (!stopped)
+            (void)zlm_->closeRtpServer(stream);
+    });
 }
 
 void Runtime::requireStarted() const {

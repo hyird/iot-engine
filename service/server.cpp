@@ -125,13 +125,17 @@ namespace
         config.sip.transport =
             std::string(env.get("GB28181_SIP_TRANSPORT").value_or("udp"));
         config.sip.logging = envFlag(env, "GB28181_SIP_LOGGING", true);
-        config.media.zlmBaseUrl =
-            std::string(env.get("ZLM_BASE_URL").value_or("http://127.0.0.1:8080"));
         config.media.zlmPublicBaseUrl =
             std::string(env.get("ZLM_PUBLIC_BASE_URL").value_or(""));
-        config.media.zlmSecret = std::string(env.get("ZLM_SECRET").value_or(""));
         config.media.rtpPublicIp =
             std::string(env.get("GB28181_RTP_PUBLIC_IP").value_or(""));
+        config.media.workerThreads = env.get<int>("ZLM_WORKER_THREADS").value_or(0);
+        config.media.logLevel = env.get<int>("ZLM_LOG_LEVEL").value_or(2);
+        config.media.httpPort = env.get<std::uint16_t>("ZLM_HTTP_PORT").value_or(8080);
+        config.media.rtspPort = env.get<std::uint16_t>("ZLM_RTSP_PORT").value_or(8554);
+        config.media.rtmpPort = env.get<std::uint16_t>("ZLM_RTMP_PORT").value_or(1935);
+        config.media.rtcPort = env.get<std::uint16_t>("ZLM_RTC_PORT").value_or(8000);
+        config.media.srtPort = env.get<std::uint16_t>("ZLM_SRT_PORT").value_or(9000);
         config.media.rtpPortRangeStart =
             env.get<std::uint16_t>("GB28181_RTP_PORT_START").value_or(30000);
         config.media.rtpPortRangeEnd =

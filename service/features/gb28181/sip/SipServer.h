@@ -2,29 +2,22 @@
 
 #include "config/AppConfig.h"
 #include "device/DeviceRegistry.h"
-#include "media/ZlmClient.h"
+#include "media/ZlmSdk.h"
 #include "sip/SipMessage.h"
 
+#include <asio/ip/tcp.hpp>
+#include <asio/ip/udp.hpp>
+#include <asio/steady_timer.hpp>
+#include <ruvia/core/EventLoopPool.h>
+
+#include <array>
 #include <atomic>
-#include <drogon/drogon.h>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <trantor/net/Channel.h>
-#include <trantor/net/EventLoop.h>
-#include <trantor/net/TcpConnection.h>
-#include <trantor/net/TcpServer.h>
-#include <trantor/utils/MsgBuffer.h>
 #include <unordered_map>
-
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <netinet/in.h>
-#include <sys/socket.h>
-#endif
 
 #ifdef GetMessage
 #undef GetMessage
@@ -50,22 +43,22 @@ public:
     };
 
     SipServer(SipConfig sipConfig, MediaConfig mediaConfig, DeviceRegistry& deviceRegistry,
-              ZlmClient& zlmClient, trantor::EventLoop* ioLoop);
+              ZlmSdk& zlmSdk, ruvia::EventLoop ioLoop);
     ~SipServer();
 
     void start();
     void stop();
-    drogon::Task<> startCoro();
-    drogon::Task<> stopCoro();
     bool queryCatalog(const std::string& deviceId);
     bool queryRecords(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime);
     bool sendPtzControl(const std::string& deviceId, const std::string& channelId, const std::string& action, uint8_t speed);
     bool sendPtzPreciseControl(const std::string& deviceId, const std::string& channelId, double pan, double tilt, double zoom);
-    drogon::Task<std::optional<PreviewStartResult>> startPreviewCoro(const std::string& deviceId, const std::string& channelId);
-    drogon::Task<std::optional<PreviewStartResult>> startPlaybackCoro(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime);
-    drogon::Task<std::optional<PreviewStopResult>> stopPreviewCoro(const std::string& sessionId);
-    drogon::Task<std::optional<PreviewStopResult>> stopPreviewByStreamCoro(const std::string& streamId);
-    drogon::Task<bool> forceCloseRtpServerCoro(const std::string& streamId);
+    std::optional<PreviewStartResult> startPreview(const std::string& deviceId,
+                                                   const std::string& channelId);
+    std::optional<PreviewStartResult>
+    startPlayback(const std::string& deviceId, const std::string& channelId,
+                  const std::string& startTime, const std::string& endTime);
+    std::optional<PreviewStopResult> stopPreview(const std::string& sessionId);
+    std::optional<PreviewStopResult> stopPreviewByStream(const std::string& streamId);
     void markStreamOnline(const std::string& streamId, bool online);
 
     enum class SipTransport {
@@ -73,11 +66,25 @@ public:
         Tcp,
     };
 
-    using TcpConnectionPtr = trantor::TcpConnectionPtr;
+    struct TcpConnection final {
+        explicit TcpConnection(asio::ip::tcp::socket value)
+            : socket(std::move(value)) {}
+
+        asio::ip::tcp::socket socket;
+        std::string key;
+        std::string address;
+        std::uint16_t port{0};
+        std::array<char, 8192> readBuffer{};
+        std::string pending;
+        std::deque<std::shared_ptr<std::string>> writes;
+        bool writeInProgress{false};
+    };
+
+    using TcpConnectionPtr = std::shared_ptr<TcpConnection>;
 
     struct SipPeer {
         SipTransport transport{SipTransport::Udp};
-        sockaddr_in udp{};
+        asio::ip::udp::endpoint udp;
         TcpConnectionPtr tcp;
         std::string address;
         uint16_t port{0};
@@ -107,17 +114,13 @@ private:
     SipConfig sipConfig_;
     MediaConfig mediaConfig_;
     DeviceRegistry& deviceRegistry_;
-    ZlmClient& zlmClient_;
+    ZlmSdk& zlmSdk_;
     std::atomic_bool running_{false};
-    trantor::EventLoop* ioLoop_{nullptr};
-    std::unique_ptr<trantor::Channel> udpChannel_;
-    std::shared_ptr<trantor::TcpServer> tcpServer_;
-#ifdef _WIN32
-    SOCKET udpSocket_{INVALID_SOCKET};
-#else
-    int udpSocket_{-1};
-#endif
-    std::mutex sendMutex_;
+    ruvia::EventLoop ioLoop_;
+    std::unique_ptr<asio::ip::udp::socket> udpSocket_;
+    std::unique_ptr<asio::ip::tcp::acceptor> tcpAcceptor_;
+    std::array<char, 8192> udpBuffer_{};
+    asio::ip::udp::endpoint udpRemote_;
     mutable std::mutex tcpConnectionsMutex_;
     std::mutex sessionMutex_;
     std::atomic_uint cseq_{1};
@@ -128,9 +131,13 @@ private:
 
     void startInLoop();
     void stopInLoop();
-    void handleUdpReadable();
-    void handleTcpConnection(const TcpConnectionPtr& connection);
-    void handleTcpMessage(const TcpConnectionPtr& connection, trantor::MsgBuffer* buffer);
+    void receiveUdp();
+    void acceptTcp();
+    void readTcp(const TcpConnectionPtr& connection);
+    void removeTcpConnection(const TcpConnectionPtr& connection);
+    void processTcpPending(const TcpConnectionPtr& connection);
+    void writeTcp(const TcpConnectionPtr& connection, std::shared_ptr<std::string> data);
+    void continueTcpWrite(const TcpConnectionPtr& connection);
     void handlePacket(const std::string& packet, const SipPeer& remote);
     void handleRegister(const SipMessage& message, const SipPeer& remote);
     void handleMessage(const SipMessage& message, const SipPeer& remote);

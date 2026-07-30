@@ -4,16 +4,31 @@
   "version-string": "0.1.0",
   "dependencies": [
     "asio",
-    "boost-json",
     "brotli",
-    "drogon",
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": [
+        "avcodec",
+        "avfilter",
+        "avformat",
+        "gpl",
+        "openssl",
+        "srt",
+        "swresample",
+        "swscale",
+        "x264"
+      ]
+    },
     "hiredis",
     "libpq",
-    "mimalloc",
+    "libsrtp",
     "openssl",
     "protobuf",
     "pugixml",
     "spdlog",
+    "usrsctp",
+    "x264",
     "zlib",
     "zstd"
   ]
