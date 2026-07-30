@@ -5,7 +5,7 @@
 
 namespace service::config {
 
-inline constexpr std::array<ruvia::DbMigration, 13> kSchemaMigrations{{
+inline constexpr std::array<ruvia::DbMigration, 15> kSchemaMigrations{{
     {"0001_initial_schema", R"sql(
 DO $schema$
 BEGIN
@@ -878,6 +878,72 @@ $function$;
 
 COMMENT ON FUNCTION iot_utc_timestamp(TIMESTAMPTZ) IS
     'Serializes typed timestamps at the public API boundary as UTC RFC 3339 seconds';
+)sql"},
+    {"0014_gb28181_projection", R"sql(
+CREATE TABLE gb28181_device (
+    id                  VARCHAR(128) PRIMARY KEY,
+    name                VARCHAR(255) NOT NULL DEFAULT '',
+    manufacturer        VARCHAR(255) NOT NULL DEFAULT '',
+    remote_address      VARCHAR(255) NOT NULL DEFAULT '',
+    registration_source VARCHAR(32) NOT NULL DEFAULT 'sip',
+    online              BOOLEAN NOT NULL DEFAULT FALSE,
+    last_seen_at        TIMESTAMPTZ NOT NULL,
+    mapped_device_id    UUID REFERENCES device(id) ON DELETE SET NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_gb28181_device_online ON gb28181_device(online, last_seen_at DESC);
+CREATE INDEX idx_gb28181_device_mapped ON gb28181_device(mapped_device_id)
+    WHERE mapped_device_id IS NOT NULL;
+
+CREATE TABLE gb28181_channel (
+    device_id   VARCHAR(128) NOT NULL REFERENCES gb28181_device(id) ON DELETE CASCADE,
+    id          VARCHAR(128) NOT NULL,
+    name        VARCHAR(255) NOT NULL DEFAULT '',
+    manufacturer VARCHAR(255) NOT NULL DEFAULT '',
+    online      BOOLEAN NOT NULL DEFAULT FALSE,
+    ptz_type    INTEGER NOT NULL DEFAULT -1,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (device_id, id)
+);
+CREATE INDEX idx_gb28181_channel_online
+    ON gb28181_channel(device_id, online);
+
+CREATE TABLE gb28181_record (
+    device_id   VARCHAR(128) NOT NULL REFERENCES gb28181_device(id) ON DELETE CASCADE,
+    channel_id  VARCHAR(128) NOT NULL,
+    name        VARCHAR(255) NOT NULL DEFAULT '',
+    file_path   TEXT NOT NULL DEFAULT '',
+    address     TEXT NOT NULL DEFAULT '',
+    start_time  TIMESTAMPTZ NOT NULL,
+    end_time    TIMESTAMPTZ NOT NULL,
+    record_type VARCHAR(64) NOT NULL DEFAULT '',
+    recorder_id VARCHAR(128) NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (device_id, channel_id, start_time, end_time, file_path)
+);
+CREATE INDEX idx_gb28181_record_range
+    ON gb28181_record(device_id, channel_id, start_time DESC, end_time DESC);
+
+CREATE TABLE gb28181_stream (
+    app          VARCHAR(128) NOT NULL,
+    stream       VARCHAR(255) NOT NULL,
+    schema       VARCHAR(32) NOT NULL,
+    online       BOOLEAN NOT NULL DEFAULT FALSE,
+    reader_count INTEGER NOT NULL DEFAULT 0 CHECK (reader_count >= 0),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (app, stream, schema)
+);
+CREATE INDEX idx_gb28181_stream_online
+    ON gb28181_stream(online, updated_at DESC);
+)sql"},
+    {"0015_sql_query_optimization", R"sql(
+CREATE INDEX idx_alert_rule_enabled_device
+    ON alert_rule(device_id)
+    WHERE deleted_at IS NULL AND status = 'enabled';
+
+CREATE INDEX idx_gb28181_record_device_time
+    ON gb28181_record(device_id, start_time DESC);
 )sql"},
 }};
 

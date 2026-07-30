@@ -56,3 +56,23 @@ export const startPlayback = (payload: GB28181.RecordQueryPayload) =>
             { start_time: payload.startTime, end_time: payload.endTime }
         )
     );
+export const mapDevice = (payload: GB28181.MapDevicePayload) =>
+    request.post<GB28181.CommandResult>(
+        appendQueryParams(`${BASE}/devices/${pathPart(payload.deviceId)}/mapping`, {
+            mapped_device_id: payload.mappedDeviceId,
+        })
+    );
+export const unmapDevice = (deviceId: string) =>
+    request.delete<GB28181.CommandResult>(`${BASE}/devices/${pathPart(deviceId)}/mapping`);
+export const getRecording = (payload: GB28181.StreamPayload) =>
+    request.get<GB28181.CommandResult>(
+        `${BASE}/streams/${pathPart(payload.streamId)}/recording`
+    );
+export const startRecording = (payload: GB28181.StreamPayload) =>
+    request.post<GB28181.CommandResult>(
+        `${BASE}/streams/${pathPart(payload.streamId)}/recording/start`
+    );
+export const stopRecording = (payload: GB28181.StreamPayload) =>
+    request.post<GB28181.CommandResult>(
+        `${BASE}/streams/${pathPart(payload.streamId)}/recording/stop`
+    );

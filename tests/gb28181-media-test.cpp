@@ -5,6 +5,7 @@
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <type_traits>
 
@@ -21,6 +22,7 @@ int main() {
     try {
         MediaConfig config;
         config.rtpPublicIp = "127.0.0.1";
+        config.playTokenSecret = "gb28181-media-test-secret";
         config.workerThreads = 1;
         config.logLevel = 4;
         config.httpPort = 0;
@@ -73,8 +75,25 @@ int main() {
         require(opened->playUrls.rtsp.find(std::to_string(ports.rtsp)) !=
                     std::string::npos,
                 "RTSP URL does not use the embedded RTSP server");
+        require(opened->playUrls.rtmp.find(std::to_string(ports.rtmp)) !=
+                    std::string::npos,
+                "RTMP URL does not use the embedded RTMP server");
         require(opened->playUrls.webRtc.find("/index/api/webrtc") != std::string::npos,
                 "WebRTC URL does not use the C SDK signaling callback");
+        const auto tokenAt = opened->playUrls.httpFlv.find("token=");
+        const auto expiresAt = opened->playUrls.httpFlv.find("&expires=");
+        require(tokenAt != std::string::npos && expiresAt != std::string::npos,
+                "play URL is not signed");
+        const auto token = opened->playUrls.httpFlv.substr(
+            tokenAt + 6, expiresAt - (tokenAt + 6));
+        const auto expires =
+            std::stoll(opened->playUrls.httpFlv.substr(expiresAt + 9));
+        require(sdk.validatePlayToken(opened->streamId, token, expires),
+                "generated play token is not valid");
+        require(!sdk.validatePlayToken(opened->streamId, token + "0", expires),
+                "tampered play token was accepted");
+        require(!sdk.validatePlayToken(opened->streamId, token, 1),
+                "expired play token was accepted");
         require(sdk.closeRtpServer(opened->streamId),
                 "embedded ZLM RTP server did not close");
 

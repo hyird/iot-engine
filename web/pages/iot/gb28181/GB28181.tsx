@@ -5,7 +5,8 @@ import {
     SendOutlined,
     VideoCameraOutlined,
 } from '@ant-design/icons';
-import { App, Button, Card, Input, Result, Select, Space, Tag, Typography } from 'antd';
+import { App, Button, Card, DatePicker, Input, Result, Select, Space, Tag, Typography } from 'antd';
+import dayjs, { type Dayjs } from 'dayjs';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { PageContainer } from '@/components/PageContainer';
 import { usePermission } from '@/hooks/usePermission';
@@ -16,8 +17,15 @@ import {
     useGb28181CatalogQuery,
     useGb28181Devices,
     useGb28181Health,
+    useGb28181MapDevice,
+    useGb28181PlaybackStart,
     useGb28181PreviewStart,
     useGb28181PreviewStop,
+    useGb28181RecordQuery,
+    useGb28181Recording,
+    useGb28181RecordingStart,
+    useGb28181RecordingStop,
+    useGb28181UnmapDevice,
 } from './gb28181.service';
 import { useAuthStore } from '@/store/authStore';
 import type { GB28181 } from './gb28181.types';
@@ -33,6 +41,7 @@ export default function Gb28181Page() {
     const { message } = App.useApp();
     const canQuery = usePermission('iot:gb28181:query');
     const canControl = usePermission('iot:gb28181:control');
+    const canRecord = usePermission('iot:gb28181:record');
     const token = useAuthStore((state) => state.token);
 
     const [keyword, setKeyword] = useState('');
@@ -40,17 +49,31 @@ export default function Gb28181Page() {
     const [selectedChannelId, setSelectedChannelId] = useState<string>();
     const [activeSession, setActiveSession] = useState<GB28181.PreviewStartResult | null>(null);
     const [ptzSpeed, setPtzSpeed] = useState(80);
+    const [recordRange, setRecordRange] = useState<[Dayjs, Dayjs]>([
+        dayjs().subtract(1, 'hour'),
+        dayjs(),
+    ]);
+    const [selectedRecordIndex, setSelectedRecordIndex] = useState<string>();
+    const [mappedDeviceId, setMappedDeviceId] = useState('');
     const activeSessionRef = useRef<GB28181.PreviewStartResult | null>(null);
     const ptzSessionRef = useRef<GB28181.PreviewStartResult | null>(null);
     const ptzSpeedRef = useRef(ptzSpeed);
     const tokenRef = useRef<string | null>(token);
 
     const healthQuery = useGb28181Health({ enabled: canQuery });
-    const devicesQuery = useGb28181Devices({ enabled: canQuery });
+    const devicesQuery = useGb28181Devices({
+        enabled: canQuery && healthQuery.data?.enabled === true,
+    });
 
     const catalogMutation = useGb28181CatalogQuery();
     const previewStartMutation = useGb28181PreviewStart();
     const previewStopMutation = useGb28181PreviewStop();
+    const recordQueryMutation = useGb28181RecordQuery();
+    const playbackStartMutation = useGb28181PlaybackStart();
+    const mapDeviceMutation = useGb28181MapDevice();
+    const unmapDeviceMutation = useGb28181UnmapDevice();
+    const recordingStartMutation = useGb28181RecordingStart();
+    const recordingStopMutation = useGb28181RecordingStop();
     const devices = devicesQuery.data?.items ?? [];
 
     useEffect(() => {
@@ -134,6 +157,25 @@ export default function Gb28181Page() {
         () => channels.find((channel) => channel.id === selectedChannelId) ?? channels[0],
         [channels, selectedChannelId]
     );
+    const selectedRecord =
+        selectedRecordIndex === undefined
+            ? undefined
+            : selectedDevice?.records[Number(selectedRecordIndex)];
+    const recordingQuery = useGb28181Recording(
+        activeSession?.stream_id,
+        canRecord && healthQuery.data?.media_capabilities.recording === true
+    );
+    const isRecording = recordingQuery.data?.recording === true;
+
+    useEffect(() => {
+        // Device id is intentionally part of the reset trigger: switching
+        // between two currently-unmapped devices must discard draft input.
+        if (selectedDevice?.id === undefined) {
+            setMappedDeviceId('');
+            return;
+        }
+        setMappedDeviceId(selectedDevice?.mapped_device_id ?? '');
+    }, [selectedDevice?.id, selectedDevice?.mapped_device_id]);
 
     const stats = useMemo(() => {
         const onlineDevices = devices.filter((device) => device.online).length;
@@ -275,6 +317,87 @@ export default function Gb28181Page() {
         }
     };
 
+    const rfc3339Seconds = (value: Dayjs) =>
+        value.toDate().toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+    const handleQueryRecords = () => {
+        const target = currentTarget();
+        if (!target) return;
+        recordQueryMutation.mutate(
+            {
+                ...target,
+                startTime: rfc3339Seconds(recordRange[0]),
+                endTime: rfc3339Seconds(recordRange[1]),
+            },
+            {
+                onSuccess: () => {
+                    window.setTimeout(() => devicesQuery.refetch(), 1200);
+                },
+            }
+        );
+    };
+
+    const handleStartPlayback = () => {
+        if (!selectedDevice || !selectedRecord) {
+            message.warning('请选择录像');
+            return;
+        }
+        playbackStartMutation.mutate(
+            {
+                deviceId: selectedDevice.id,
+                channelId: selectedRecord.device_id,
+                startTime: selectedRecord.start_time,
+                endTime: selectedRecord.end_time,
+            },
+            {
+                onSuccess: (result) => {
+                    const previousSession = activeSessionRef.current;
+                    if (previousSession && previousSession.session_id !== result.session_id) {
+                        stopPreviewKeepalive(previousSession.session_id, tokenRef.current);
+                    }
+                    activeSessionRef.current = result;
+                    setActiveSession(result);
+                },
+            }
+        );
+    };
+
+    const handleSaveMapping = () => {
+        if (!selectedDevice) return;
+        const target = mappedDeviceId.trim();
+        if (!target) {
+            message.warning('请输入平台设备 UUID');
+            return;
+        }
+        mapDeviceMutation.mutate({
+            deviceId: selectedDevice.id,
+            mappedDeviceId: target,
+        });
+    };
+
+    const handleRemoveMapping = () => {
+        if (!selectedDevice) return;
+        unmapDeviceMutation.mutate(selectedDevice.id, {
+            onSuccess: () => setMappedDeviceId(''),
+        });
+    };
+
+    const handleStartRecording = () => {
+        if (!activeSession) return;
+        recordingStartMutation.mutate(
+            { streamId: activeSession.stream_id },
+            { onSuccess: () => recordingQuery.refetch() }
+        );
+    };
+
+    const handleStopRecording = () => {
+        if (!activeSession) return;
+        recordingStopMutation.mutate(
+            { streamId: activeSession.stream_id },
+            { onSuccess: () => recordingQuery.refetch() }
+        );
+    };
+
     if (!canQuery) {
         return (
             <PageContainer>
@@ -282,6 +405,18 @@ export default function Gb28181Page() {
                     status="403"
                     title="无权限"
                     subTitle="您没有 GB28181 查询权限，请联系管理员。"
+                />
+            </PageContainer>
+        );
+    }
+
+    if (!healthQuery.isLoading && healthQuery.data?.enabled !== true) {
+        return (
+            <PageContainer>
+                <Result
+                    status="404"
+                    title="GB28181 未启用"
+                    subTitle="服务端关闭后不会提供菜单或业务接口。"
                 />
             </PageContainer>
         );
@@ -330,6 +465,7 @@ export default function Gb28181Page() {
                         onSelect={(device) => {
                             setSelectedDeviceId(device.id);
                             setSelectedChannelId(undefined);
+                            setSelectedRecordIndex(undefined);
                         }}
                     />
                 </div>
@@ -384,6 +520,26 @@ export default function Gb28181Page() {
                                 >
                                     停止
                                 </Button>
+                                {isRecording && <Tag color="red">录像中</Tag>}
+                                <Button
+                                    disabled={
+                                        !canRecord ||
+                                        !activeSession ||
+                                        healthQuery.data?.media_capabilities.recording !== true ||
+                                        isRecording
+                                    }
+                                    loading={recordingStartMutation.isPending}
+                                    onClick={handleStartRecording}
+                                >
+                                    开始录像
+                                </Button>
+                                <Button
+                                    disabled={!canRecord || !activeSession || !isRecording}
+                                    loading={recordingStopMutation.isPending}
+                                    onClick={handleStopRecording}
+                                >
+                                    停止录像
+                                </Button>
                             </Space>
                         }
                     >
@@ -423,6 +579,81 @@ export default function Gb28181Page() {
                         selectedChannel={selectedChannel}
                         activeSession={activeSession}
                     />
+
+                    <Card size="small" title="平台设备关联">
+                        <Space.Compact className="w-full">
+                            <Input
+                                value={mappedDeviceId}
+                                disabled={!selectedDevice || !canControl}
+                                placeholder="核心平台设备 UUID（用于告警与资产关联）"
+                                onChange={(event) => setMappedDeviceId(event.target.value)}
+                            />
+                            <Button
+                                type="primary"
+                                disabled={!selectedDevice || !canControl}
+                                loading={mapDeviceMutation.isPending}
+                                onClick={handleSaveMapping}
+                            >
+                                保存关联
+                            </Button>
+                            <Button
+                                danger
+                                disabled={
+                                    !selectedDevice ||
+                                    !canControl ||
+                                    !selectedDevice.mapped_device_id
+                                }
+                                loading={unmapDeviceMutation.isPending}
+                                onClick={handleRemoveMapping}
+                            >
+                                解除
+                            </Button>
+                        </Space.Compact>
+                    </Card>
+
+                    <Card
+                        size="small"
+                        title="设备录像"
+                        extra={
+                            <Space wrap>
+                                <DatePicker.RangePicker
+                                    showTime
+                                    value={recordRange}
+                                    onChange={(value) => {
+                                        if (value?.[0] && value[1])
+                                            setRecordRange([value[0], value[1]]);
+                                    }}
+                                />
+                                <Button
+                                    disabled={!canRecord || !selectedChannel}
+                                    loading={recordQueryMutation.isPending}
+                                    onClick={handleQueryRecords}
+                                >
+                                    查询录像
+                                </Button>
+                                <Button
+                                    type="primary"
+                                    disabled={!canRecord || !selectedRecord}
+                                    loading={playbackStartMutation.isPending}
+                                    onClick={handleStartPlayback}
+                                >
+                                    开始回放
+                                </Button>
+                            </Space>
+                        }
+                    >
+                        <Select
+                            allowClear
+                            className="w-full"
+                            placeholder="选择查询到的录像"
+                            value={selectedRecordIndex}
+                            onChange={setSelectedRecordIndex}
+                            options={(selectedDevice?.records ?? []).map((record, index) => ({
+                                value: String(index),
+                                label: `${record.name || record.device_id} · ${record.start_time} — ${record.end_time}`,
+                            }))}
+                        />
+                    </Card>
                 </div>
             </div>
         </PageContainer>

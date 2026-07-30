@@ -1,6 +1,7 @@
 #include "sip/SipServer.h"
 
 #include "service/common/log.h"
+#include "service/common/timestamp.h"
 #include "sip/DigestAuth.h"
 #include "sip/SipMessage.h"
 
@@ -61,6 +62,35 @@ std::string extractTag(const std::string& value) {
         return value.substr(begin);
     }
     return value.substr(begin, end - begin);
+}
+
+std::optional<int> registrationExpires(const SipMessage& message) {
+    auto value = message.header("Expires");
+    if (value.empty()) {
+        const auto contact = message.header("Contact");
+        auto marker = contact;
+        std::transform(marker.begin(), marker.end(), marker.begin(),
+                       [](unsigned char character) {
+                           return static_cast<char>(std::tolower(character));
+                       });
+        const auto position = marker.find("expires=");
+        if (position != std::string::npos) {
+            const auto begin = position + 8;
+            const auto end = marker.find_first_of(";> \t\r\n", begin);
+            value = marker.substr(begin, end - begin);
+        }
+    }
+    if (value.empty())
+        return std::nullopt;
+    try {
+        std::size_t consumed{};
+        const auto result = std::stoi(value, &consumed);
+        if (consumed != value.size() || result < 0)
+            return std::nullopt;
+        return result;
+    } catch (...) {
+        return std::nullopt;
+    }
 }
 
 unsigned int extractCSeqNumber(const std::string& value) {
@@ -272,26 +302,18 @@ std::string ptzCommand(const std::string& action, uint8_t speed) {
     return output.str();
 }
 
-long long gbTimeToUnixSeconds(const std::string& value) {
-    std::tm tm{};
-    std::istringstream input(value);
-    input >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
-    if (input.fail()) {
-        input.clear();
-        input.str(value);
-        input >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
-    }
-    if (input.fail()) {
-        return 0;
-    }
-#ifdef _WIN32
-    return static_cast<long long>(_mkgmtime(&tm));
-#else
-    return static_cast<long long>(timegm(&tm));
-#endif
+long long gbTimeToUnixSeconds(const std::string& value,
+                              int defaultOffsetMinutes) {
+    const auto parsed =
+        service::common::parseUtcTimestamp(value, defaultOffsetMinutes);
+    return parsed ? static_cast<long long>(
+                        std::chrono::system_clock::to_time_t(*parsed))
+                  : 0;
 }
 
 void runOnLoopAndWait(const ruvia::EventLoop& loop, std::function<void()> work) {
+    // Supervisor-only lifecycle barrier used before HTTP serving starts and
+    // after it stops. Request/Worker paths use Runtime::invoke + OneShot.
     if (!loop.valid())
         throw std::runtime_error("GB28181 SIP IO loop is not configured");
     if (loop.isCurrent()) {
@@ -353,6 +375,19 @@ void SipServer::start() {
         running_.store(false);
         throw std::runtime_error("GB28181 SIP IO loop is not configured");
     }
+    const auto transport = lower(sipConfig_.transport);
+    if (transport != "udp" && transport != "tcp" && transport != "both") {
+        running_.store(false);
+        throw std::runtime_error(
+            "GB28181 SIP transport must be udp, tcp or both");
+    }
+    if (sipConfig_.registrationTimeoutSeconds <= 0 ||
+        sipConfig_.commandTimeoutSeconds <= 0 ||
+        sipConfig_.inviteTimeoutSeconds <= 0 ||
+        sipConfig_.nonceTtlSeconds <= 0) {
+        running_.store(false);
+        throw std::runtime_error("GB28181 SIP timeouts must be positive");
+    }
     auto startWork = [this]() {
         try {
             startInLoop();
@@ -365,7 +400,7 @@ void SipServer::start() {
 }
 
 void SipServer::stop() {
-    if (!running_.exchange(false)) {
+    if (!running_.load()) {
         LOG_DEBUG << "[GB28181][SIP] Stop skipped: server is not running";
         return;
     }
@@ -377,6 +412,7 @@ void SipServer::stop() {
     LOG_DEBUG << "[GB28181][SIP] Stopping";
     runOnLoopAndWait(ioLoop_, [this]() {
         stopInLoop();
+        running_.store(false);
     });
 }
 
@@ -390,51 +426,74 @@ void SipServer::startInLoop() {
     if (error)
         throw std::runtime_error("Invalid GB28181 SIP listen address: " + error.message());
 
-    const asio::ip::udp::endpoint udpEndpoint(address, sipConfig_.port);
-    udpSocket_ = std::make_unique<asio::ip::udp::socket>(ioLoop_.ioContext());
-    udpSocket_->open(udpEndpoint.protocol(), error);
-    if (error)
-        throw std::runtime_error("Could not open GB28181 UDP socket: " + error.message());
-    udpSocket_->set_option(asio::socket_base::reuse_address(true), error);
-    if (error)
-        throw std::runtime_error("Could not configure GB28181 UDP socket: " + error.message());
-    udpSocket_->bind(udpEndpoint, error);
-    if (error)
-        throw std::runtime_error("Could not bind GB28181 UDP socket: " + error.message());
+    const auto transport = lower(sipConfig_.transport);
+    if (transport == "udp" || transport == "both") {
+        const asio::ip::udp::endpoint endpoint(address, sipConfig_.port);
+        udpSocket_ = std::make_unique<asio::ip::udp::socket>(ioLoop_.ioContext());
+        udpSocket_->open(endpoint.protocol(), error);
+        if (error)
+            throw std::runtime_error("Could not open GB28181 UDP socket: " +
+                                     error.message());
+        udpSocket_->set_option(asio::socket_base::reuse_address(true), error);
+        if (error)
+            throw std::runtime_error("Could not configure GB28181 UDP socket: " +
+                                     error.message());
+        udpSocket_->bind(endpoint, error);
+        if (error)
+            throw std::runtime_error("Could not bind GB28181 UDP socket: " +
+                                     error.message());
+        receiveUdp();
+        LOG_DEBUG << "[GB28181][SIP] UDP listening on " << sipConfig_.host << ":"
+                  << sipConfig_.port << " via Ruvia core worker " << ioLoop_.id();
+    }
 
-    const asio::ip::tcp::endpoint tcpEndpoint(address, sipConfig_.port);
-    tcpAcceptor_ = std::make_unique<asio::ip::tcp::acceptor>(ioLoop_.ioContext());
-    tcpAcceptor_->open(tcpEndpoint.protocol(), error);
-    if (error)
-        throw std::runtime_error("Could not open GB28181 TCP acceptor: " + error.message());
-    tcpAcceptor_->set_option(asio::socket_base::reuse_address(true), error);
-    if (error)
-        throw std::runtime_error("Could not configure GB28181 TCP acceptor: " + error.message());
-    tcpAcceptor_->bind(tcpEndpoint, error);
-    if (error)
-        throw std::runtime_error("Could not bind GB28181 TCP acceptor: " + error.message());
-    tcpAcceptor_->listen(asio::socket_base::max_listen_connections, error);
-    if (error)
-        throw std::runtime_error("Could not listen on GB28181 TCP acceptor: " + error.message());
-
-    receiveUdp();
-    acceptTcp();
-    LOG_DEBUG << "[GB28181][SIP] UDP listening on " << sipConfig_.host << ":"
-              << sipConfig_.port << " via Ruvia core worker " << ioLoop_.id();
-    LOG_DEBUG << "[GB28181][SIP] TCP listening on " << sipConfig_.host << ":"
-              << sipConfig_.port << " via Ruvia core worker " << ioLoop_.id();
+    if (transport == "tcp" || transport == "both") {
+        const asio::ip::tcp::endpoint endpoint(address, sipConfig_.port);
+        tcpAcceptor_ =
+            std::make_unique<asio::ip::tcp::acceptor>(ioLoop_.ioContext());
+        tcpAcceptor_->open(endpoint.protocol(), error);
+        if (error)
+            throw std::runtime_error("Could not open GB28181 TCP acceptor: " +
+                                     error.message());
+        tcpAcceptor_->set_option(asio::socket_base::reuse_address(true), error);
+        if (error)
+            throw std::runtime_error("Could not configure GB28181 TCP acceptor: " +
+                                     error.message());
+        tcpAcceptor_->bind(endpoint, error);
+        if (error)
+            throw std::runtime_error("Could not bind GB28181 TCP acceptor: " +
+                                     error.message());
+        tcpAcceptor_->listen(asio::socket_base::max_listen_connections, error);
+        if (error)
+            throw std::runtime_error("Could not listen on GB28181 TCP acceptor: " +
+                                     error.message());
+        acceptTcp();
+        LOG_DEBUG << "[GB28181][SIP] TCP listening on " << sipConfig_.host << ":"
+                  << sipConfig_.port << " via Ruvia core worker " << ioLoop_.id();
+    }
+    deadlineTimer_ =
+        std::make_unique<asio::steady_timer>(ioLoop_.ioContext());
 }
 
 void SipServer::stopInLoop() {
-    std::size_t sessionCount = 0;
-    std::size_t viewerCount = 0;
-    {
-        std::lock_guard lock(sessionMutex_);
-        sessionCount = previewSessions_.size();
-        viewerCount = previewViewers_.size();
-    }
+    const auto sessionCount = previewSessions_.size();
+    const auto viewerCount = previewViewers_.size();
+    std::vector<std::string> sessions;
+    sessions.reserve(sessionCount);
+    for (const auto& [id, _] : previewSessions_)
+        sessions.push_back(id);
+    for (const auto& id : sessions)
+        (void)stopPreview(id);
 
     std::error_code error;
+    if (deadlineTimer_) {
+        deadlineTimer_->cancel(error);
+        deadlineTimer_.reset();
+    }
+    deadlines_ = {};
+    deadlineGenerations_.clear();
+    digestNonceCounts_.clear();
+    pendingRecordQueries_.clear();
     if (udpSocket_) {
         udpSocket_->cancel(error);
         udpSocket_->close(error);
@@ -447,18 +506,15 @@ void SipServer::stopInLoop() {
     }
 
     std::size_t tcpConnectionCount = 0;
-    {
-        std::lock_guard lock(tcpConnectionsMutex_);
-        tcpConnectionCount = tcpConnections_.size();
-        for (auto& [_, connection] : tcpConnections_) {
-            if (!connection)
-                continue;
-            connection->socket.cancel(error);
-            connection->socket.shutdown(asio::ip::tcp::socket::shutdown_both, error);
-            connection->socket.close(error);
-        }
-        tcpConnections_.clear();
+    tcpConnectionCount = tcpConnections_.size();
+    for (auto& [_, connection] : tcpConnections_) {
+        if (!connection)
+            continue;
+        connection->socket.cancel(error);
+        connection->socket.shutdown(asio::ip::tcp::socket::shutdown_both, error);
+        connection->socket.close(error);
     }
+    tcpConnections_.clear();
 
     LOG_DEBUG << "[GB28181][SIP] Stopped, active_sessions=" << sessionCount
              << ", active_viewers=" << viewerCount
@@ -519,10 +575,7 @@ void SipServer::acceptTcp() {
         connection->key = endpointKey(endpoint);
         connection->address = endpoint.address().to_string();
         connection->port = endpoint.port();
-        {
-            std::lock_guard lock(tcpConnectionsMutex_);
-            tcpConnections_[connection->key] = connection;
-        }
+        tcpConnections_[connection->key] = connection;
         LOG_DEBUG << "[GB28181][SIP] TCP connected from " << connection->key;
         readTcp(connection);
         acceptTcp();
@@ -556,13 +609,10 @@ void SipServer::removeTcpConnection(const TcpConnectionPtr& connection) {
     std::error_code ignored;
     connection->socket.close(ignored);
     bool removed = false;
-    {
-        std::lock_guard lock(tcpConnectionsMutex_);
-        const auto found = tcpConnections_.find(connection->key);
-        if (found != tcpConnections_.end() && found->second == connection) {
-            tcpConnections_.erase(found);
-            removed = true;
-        }
+    const auto found = tcpConnections_.find(connection->key);
+    if (found != tcpConnections_.end() && found->second == connection) {
+        tcpConnections_.erase(found);
+        removed = true;
     }
     if (removed)
         LOG_DEBUG << "[GB28181][SIP] TCP disconnected from " << connection->key;
@@ -655,6 +705,12 @@ void SipServer::handleResponse(const SipMessage& message, const SipPeer& remote)
                  << ", call_id=" << message.header("Call-ID")
                  << ", cseq=\"" << cseq << "\""
                  << ", body=\"" << compactForLog(message.body, 300) << "\"";
+        if (cseq.find("INVITE") != std::string::npos) {
+            const auto sessionId =
+                sessionIdByCallId(message.header("Call-ID"));
+            if (sessionId)
+                (void)stopPreview(*sessionId);
+        }
         return;
     }
 
@@ -674,14 +730,11 @@ void SipServer::handleInviteOk(const SipMessage& message, const SipPeer& remote)
 
     PreviewSession session;
     bool found = false;
-    {
-        std::lock_guard lock(sessionMutex_);
-        for (auto& [_, candidate] : previewSessions_) {
-            if (candidate.callId == callId) {
-                session = candidate;
-                found = true;
-                break;
-            }
+    for (auto& [_, candidate] : previewSessions_) {
+        if (candidate.callId == callId) {
+            session = candidate;
+            found = true;
+            break;
         }
     }
 
@@ -704,14 +757,12 @@ void SipServer::handleInviteOk(const SipMessage& message, const SipPeer& remote)
                  << ", call_id=" << callId
                  << ", body=\"" << compactForLog(message.body, 1200) << "\"";
     }
-    {
-        std::lock_guard lock(sessionMutex_);
-        for (auto& [_, candidate] : previewSessions_) {
-            if (candidate.callId == callId) {
-                candidate.toTag = toTag;
-                candidate.established = true;
-                break;
-            }
+    for (auto& [_, candidate] : previewSessions_) {
+        if (candidate.callId == callId) {
+            candidate.toTag = toTag;
+            candidate.established = true;
+            cancelDeadline(DeadlineKind::Invite, candidate.sessionId);
+            break;
         }
     }
 
@@ -746,8 +797,24 @@ void SipServer::handleInviteOk(const SipMessage& message, const SipPeer& remote)
 }
 
 void SipServer::handleRegister(const SipMessage& message, const SipPeer& remote) {
-    if (!DigestAuth::verifyRegister(message, sipConfig_.domain, sipConfig_.password)) {
-        const auto nonce = DigestAuth::makeNonce();
+    const auto proof = DigestAuth::verifyRegister(
+        message, sipConfig_.domain, sipConfig_.password, sipConfig_.password,
+        sipConfig_.nonceTtlSeconds);
+    bool replay = false;
+    if (proof) {
+        const auto replayKey = proof->nonce + "\n" + proof->username;
+        const auto previous = digestNonceCounts_.find(replayKey);
+        replay = previous != digestNonceCounts_.end() &&
+                 proof->nonceCount <= previous->second;
+        if (!replay) {
+            digestNonceCounts_[replayKey] = proof->nonceCount;
+            scheduleDeadline(
+                DeadlineKind::AuthNonce, replayKey,
+                std::chrono::seconds(sipConfig_.nonceTtlSeconds));
+        }
+    }
+    if (!proof || replay) {
+        const auto nonce = DigestAuth::makeNonce(sipConfig_.password);
         std::ostringstream auth;
         auth << "WWW-Authenticate: Digest realm=\"" << sipConfig_.domain
              << "\", nonce=\"" << nonce
@@ -771,7 +838,24 @@ void SipServer::handleRegister(const SipMessage& message, const SipPeer& remote)
         deviceId = remote.address;
     }
 
+    const auto expires = registrationExpires(message);
+    if (expires && *expires == 0) {
+        deviceRegistry_.markOffline(deviceId);
+        cancelDeadline(DeadlineKind::Registration, deviceId);
+        closeDeviceSessions(deviceId);
+        sendResponse(message, remote, 200, "OK");
+        LOG_INFO << "[GB28181][Register] Device unregistered, device=" << deviceId
+                 << ", remote=" << transportName(remote.transport) << " "
+                 << peerToString(remote);
+        return;
+    }
+
     deviceRegistry_.upsertRegistration(deviceId, peerToString(remote));
+    const auto lifetime =
+        expires ? std::min(*expires, sipConfig_.registrationTimeoutSeconds)
+                : sipConfig_.registrationTimeoutSeconds;
+    scheduleDeadline(DeadlineKind::Registration, deviceId,
+                     std::chrono::seconds(std::max(1, lifetime)));
     LOG_INFO << "[GB28181][Register] Device registered, device=" << deviceId
              << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
              << ", contact=\"" << message.header("Contact") << "\""
@@ -818,11 +902,16 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
         bool shouldQueryCatalog = false;
         if (statusOnline(status)) {
             shouldQueryCatalog = deviceRegistry_.updateKeepaliveAndNeedsCatalog(deviceId, peerToString(remote));
+            scheduleDeadline(
+                DeadlineKind::Registration, deviceId,
+                std::chrono::seconds(sipConfig_.registrationTimeoutSeconds));
             if (shouldQueryCatalog) {
                 scheduleCatalogQuery(deviceId);
             }
         } else {
             deviceRegistry_.markOffline(deviceId);
+            cancelDeadline(DeadlineKind::Registration, deviceId);
+            closeDeviceSessions(deviceId);
         }
         LOG_DEBUG << "[GB28181][Keepalive] device=" << deviceId
                  << ", status=" << status
@@ -870,11 +959,12 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
         if (!snText.empty()) {
             try {
                 const auto sn = static_cast<unsigned int>(std::stoul(snText));
-                std::lock_guard lock(sessionMutex_);
                 const auto iter = pendingRecordQueries_.find(sn);
                 if (iter != pendingRecordQueries_.end()) {
                     deviceId = iter->second;
                     pendingRecordQueries_.erase(iter);
+                    cancelDeadline(DeadlineKind::RecordQuery,
+                                   std::to_string(sn));
                 }
             } catch (...) {
             }
@@ -886,11 +976,16 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
             record.name = xmlText(item, "Name");
             record.filePath = xmlText(item, "FilePath");
             record.address = xmlText(item, "Address");
-            record.startTime = xmlText(item, "StartTime");
-            record.endTime = xmlText(item, "EndTime");
+            const auto rawStart = xmlText(item, "StartTime");
+            const auto rawEnd = xmlText(item, "EndTime");
+            record.startTime = service::common::canonicalUtcTimestamp(
+                rawStart, sipConfig_.deviceTimezoneOffsetMinutes);
+            record.endTime = service::common::canonicalUtcTimestamp(
+                rawEnd, sipConfig_.deviceTimezoneOffsetMinutes);
             record.type = xmlText(item, "Type");
             record.recorderId = xmlText(item, "RecorderID");
-            if (!record.deviceId.empty()) {
+            if (!record.deviceId.empty() && !record.startTime.empty() &&
+                !record.endTime.empty()) {
                 LOG_DEBUG << "[GB28181][Record] Item, device=" << deviceId
                           << ", channel=" << record.deviceId
                           << ", name=\"" << record.name << "\""
@@ -898,6 +993,11 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
                           << ", end_time=" << record.endTime
                           << ", type=" << record.type;
                 records.push_back(std::move(record));
+            } else if (!record.deviceId.empty()) {
+                LOG_WARN << "[GB28181][Record] Invalid time rejected, device="
+                         << deviceId << ", channel=" << record.deviceId
+                         << ", start_time=\"" << rawStart << "\", end_time=\""
+                         << rawEnd << "\"";
             }
         }
         const auto recordCount = records.size();
@@ -1032,10 +1132,9 @@ bool SipServer::queryRecords(const std::string& deviceId, const std::string& cha
     const auto branch = "z9hG4bK-" + makeToken("record");
     const auto tag = makeToken("tag");
     const auto callId = makeToken("record") + "@" + sipConfig_.domain;
-    {
-        std::lock_guard lock(sessionMutex_);
-        pendingRecordQueries_[sn] = deviceId;
-    }
+    pendingRecordQueries_[sn] = deviceId;
+    scheduleDeadline(DeadlineKind::RecordQuery, std::to_string(sn),
+                     std::chrono::seconds(sipConfig_.commandTimeoutSeconds));
 
     std::ostringstream request;
     request << "MESSAGE sip:" << channelId << "@" << endpoint->host << ":" << endpoint->port << " SIP/2.0\r\n"
@@ -1271,33 +1370,30 @@ SipServer::startPreview(const std::string& deviceId, const std::string& channelI
     }
 
     std::vector<std::string> staleSessionIds;
-    {
-        std::lock_guard lock(sessionMutex_);
-        for (auto& [_, session] : previewSessions_) {
-            if (session.mode == "preview" && session.deviceId == deviceId && session.channelId == channelId) {
-                if (!session.mediaOnline) {
-                    staleSessionIds.push_back(session.sessionId);
-                    continue;
-                }
-                const auto viewerId = makeToken("viewer");
-                ++session.viewerCount;
-                previewViewers_[viewerId] = session.sessionId;
-                LOG_DEBUG << "[GB28181][Preview] Stream reused, device=" << deviceId
+    for (auto& [_, session] : previewSessions_) {
+        if (session.mode == "preview" && session.deviceId == deviceId && session.channelId == channelId) {
+            if (!session.mediaOnline) {
+                staleSessionIds.push_back(session.sessionId);
+                continue;
+            }
+            const auto viewerId = makeToken("viewer");
+            ++session.viewerCount;
+            previewViewers_[viewerId] = session.sessionId;
+            LOG_DEBUG << "[GB28181][Preview] Stream reused, device=" << deviceId
                          << ", channel=" << channelId
                          << ", viewer_session=" << viewerId
                          << ", stream_session=" << session.sessionId
                          << ", stream_id=" << session.streamId
                          << ", viewers=" << session.viewerCount;
-                return PreviewStartResult{
-                    viewerId,
-                    session.deviceId,
-                    session.channelId,
-                    session.streamId,
-                    session.ssrc,
-                    session.rtpPort,
-                    session.playUrls,
-                };
-            }
+            return PreviewStartResult{
+                viewerId,
+                session.deviceId,
+                session.channelId,
+                session.streamId,
+                session.ssrc,
+                session.rtpPort,
+                session.playUrls,
+            };
         }
     }
 
@@ -1382,11 +1478,10 @@ SipServer::startPreview(const std::string& deviceId, const std::string& channelI
 
     const auto viewerId = makeToken("viewer");
 
-    {
-        std::lock_guard lock(sessionMutex_);
-        previewSessions_.emplace(sessionId, session);
-        previewViewers_.emplace(viewerId, sessionId);
-    }
+    previewSessions_.emplace(sessionId, session);
+    previewViewers_.emplace(viewerId, sessionId);
+    scheduleDeadline(DeadlineKind::Invite, sessionId,
+                     std::chrono::seconds(sipConfig_.inviteTimeoutSeconds));
     LOG_DEBUG << "[GB28181][Preview] Session stored, viewer_session=" << viewerId
              << ", stream_session=" << sessionId
              << ", stream_id=" << session.streamId
@@ -1418,7 +1513,6 @@ SipServer::startPreview(const std::string& deviceId, const std::string& channelI
 }
 
 void SipServer::markStreamOnline(const std::string& streamId, bool online) {
-    std::lock_guard lock(sessionMutex_);
     bool found = false;
     for (auto& [_, session] : previewSessions_) {
         if (session.streamId == streamId) {
@@ -1500,8 +1594,10 @@ SipServer::startPlayback(const std::string& deviceId, const std::string& channel
              << ", rtp_port=" << rtpServer->port
              << ", ssrc=" << ssrc;
 
-    const auto startSeconds = gbTimeToUnixSeconds(startTime);
-    const auto endSeconds = gbTimeToUnixSeconds(endTime);
+    const auto startSeconds =
+        gbTimeToUnixSeconds(startTime, sipConfig_.deviceTimezoneOffsetMinutes);
+    const auto endSeconds =
+        gbTimeToUnixSeconds(endTime, sipConfig_.deviceTimezoneOffsetMinutes);
     if (startSeconds == 0 || endSeconds == 0 || endSeconds <= startSeconds) {
         LOG_WARN << "[GB28181][Playback] Time range converted to an unusual value, device=" << deviceId
                  << ", channel=" << channelId
@@ -1556,10 +1652,9 @@ SipServer::startPlayback(const std::string& deviceId, const std::string& channel
     session.remote = *remote;
     session.mode = "playback";
 
-    {
-        std::lock_guard lock(sessionMutex_);
-        previewSessions_[sessionId] = session;
-    }
+    previewSessions_[sessionId] = session;
+    scheduleDeadline(DeadlineKind::Invite, sessionId,
+                     std::chrono::seconds(sipConfig_.inviteTimeoutSeconds));
 
     sendRequest(request.str(), *remote);
     LOG_DEBUG << "[GB28181][Playback] INVITE sent, device=" << deviceId
@@ -1589,9 +1684,7 @@ SipServer::stopPreview(const std::string& sessionId) {
 
     PreviewSession session;
     std::string streamSessionId = sessionId;
-    {
-        std::lock_guard lock(sessionMutex_);
-        const auto viewerIter = previewViewers_.find(sessionId);
+    const auto viewerIter = previewViewers_.find(sessionId);
         if (viewerIter != previewViewers_.end()) {
             streamSessionId = viewerIter->second;
             previewViewers_.erase(viewerIter);
@@ -1627,8 +1720,8 @@ SipServer::stopPreview(const std::string& sessionId) {
                 ++viewer;
             }
         }
-        previewSessions_.erase(iter);
-    }
+    previewSessions_.erase(iter);
+    cancelDeadline(DeadlineKind::Invite, streamSessionId);
 
     LOG_DEBUG << "[GB28181][Preview] Stream session removed, requested_session=" << sessionId
              << ", stream_session=" << streamSessionId
@@ -1669,10 +1762,31 @@ SipServer::stopPreview(const std::string& sessionId) {
                  << ", cseq=" << cseq
                  << ", remote=" << transportName(session.remote.transport) << " " << peerToString(session.remote);
     } else {
-        LOG_DEBUG << "[GB28181][Preview] BYE skipped because session was not established, session="
-                 << streamSessionId
-                 << ", stream_id=" << session.streamId
-                 << ", call_id=" << session.callId;
+        const auto publicHost =
+            sipConfig_.publicIp.empty() ||
+                    sipConfig_.publicIp == "YOUR_PUBLIC_SERVER_IP"
+                ? sipConfig_.host
+                : sipConfig_.publicIp;
+        std::ostringstream cancel;
+        cancel << "CANCEL sip:" << session.channelId << "@"
+               << session.remote.address << ":" << session.remote.port
+               << " SIP/2.0\r\n"
+               << "Via: SIP/2.0/" << transportName(session.remote.transport) << " "
+               << publicHost << ":" << sipConfig_.port
+               << ";branch=" << session.branch << "\r\n"
+               << "From: <sip:" << sipConfig_.id << "@" << sipConfig_.domain
+               << ">;tag=" << session.fromTag << "\r\n"
+               << "To: <sip:" << session.channelId << "@" << sipConfig_.domain
+               << ">\r\n"
+               << "Call-ID: " << session.callId << "\r\n"
+               << "CSeq: " << session.inviteCseq << " CANCEL\r\n"
+               << "Max-Forwards: 70\r\n"
+               << "User-Agent: gb28181-platform-cpp\r\n"
+               << "Content-Length: 0\r\n\r\n";
+        sendRequest(cancel.str(), session.remote);
+        LOG_DEBUG << "[GB28181][Preview] CANCEL sent for pending session, session="
+                  << streamSessionId << ", stream_id=" << session.streamId
+                  << ", call_id=" << session.callId;
     }
 
     const bool rtpServerClosed = zlmSdk_.closeRtpServer(session.streamId);
@@ -1694,13 +1808,10 @@ SipServer::stopPreviewByStream(const std::string& streamId) {
     LOG_DEBUG << "[GB28181][Preview] Stop by stream requested, stream_id=" << streamId;
 
     std::string sessionId;
-    {
-        std::lock_guard lock(sessionMutex_);
-        for (const auto& [candidateSessionId, session] : previewSessions_) {
-            if (session.streamId == streamId) {
-                sessionId = candidateSessionId;
-                break;
-            }
+    for (const auto& [candidateSessionId, session] : previewSessions_) {
+        if (session.streamId == streamId) {
+            sessionId = candidateSessionId;
+            break;
         }
     }
 
@@ -1847,15 +1958,14 @@ std::optional<SipServer::SipPeer> SipServer::peerFromAddress(const std::string& 
     SipPeer peer;
     peer.address = endpoint->host;
     peer.port = endpoint->port;
-    {
-        std::lock_guard lock(tcpConnectionsMutex_);
-        const auto iter = tcpConnections_.find(remoteAddress);
-        if (iter != tcpConnections_.end() && iter->second) {
-            peer.transport = SipTransport::Tcp;
-            peer.tcp = iter->second;
-            return peer;
-        }
+    const auto iter = tcpConnections_.find(remoteAddress);
+    if (iter != tcpConnections_.end() && iter->second) {
+        peer.transport = SipTransport::Tcp;
+        peer.tcp = iter->second;
+        return peer;
     }
+    if (lower(sipConfig_.transport) == "tcp")
+        return std::nullopt;
 
     peer.transport = SipTransport::Udp;
     std::error_code error;
@@ -1867,30 +1977,131 @@ std::optional<SipServer::SipPeer> SipServer::peerFromAddress(const std::string& 
 }
 
 void SipServer::scheduleCatalogQuery(const std::string& deviceId) {
-    if (!ioLoop_.valid()) {
+    if (!ioLoop_.valid() || !ioLoop_.isCurrent()) {
         LOG_WARN << "[GB28181][Catalog] Schedule skipped, device=" << deviceId
                  << ", reason=io_loop_unavailable";
         return;
     }
     LOG_DEBUG << "[GB28181][Catalog] Query scheduled, device=" << deviceId
              << ", delay_seconds=0.5";
-    const auto posted = ioLoop_.post([this, deviceId] {
-        auto timer = std::make_shared<asio::steady_timer>(ioLoop_.ioContext());
-        timer->expires_after(std::chrono::milliseconds(500));
-        timer->async_wait([this, deviceId, timer](const std::error_code& error) {
-            if (error || !running_.load()) {
-                if (!error) {
-                    LOG_DEBUG << "[GB28181][Catalog] Scheduled query skipped, device="
-                              << deviceId << ", reason=server_stopped";
-                }
-                return;
-            }
-            if (queryCatalog(deviceId))
-                LOG_DEBUG << "[GB28181][Catalog] Scheduled query sent, device=" << deviceId;
-            else
-                LOG_WARN << "[GB28181][Catalog] Scheduled query failed, device=" << deviceId;
-        });
+    scheduleDeadline(DeadlineKind::Catalog, deviceId,
+                     std::chrono::milliseconds(500));
+}
+
+std::string SipServer::deadlineKey(DeadlineKind kind, const std::string& key) {
+    return std::to_string(static_cast<int>(kind)) + ":" + key;
+}
+
+void SipServer::scheduleDeadline(DeadlineKind kind, std::string key,
+                                 std::chrono::milliseconds delay) {
+    if (!deadlineTimer_ || !ioLoop_.isCurrent())
+        return;
+    const auto composite = deadlineKey(kind, key);
+    const auto generation = ++deadlineGenerations_[composite];
+    deadlines_.push(Deadline{
+        .at = std::chrono::steady_clock::now() + delay,
+        .kind = kind,
+        .key = std::move(key),
+        .generation = generation,
     });
-    if (!posted.accepted())
-        LOG_WARN << "[GB28181][Catalog] Schedule rejected, device=" << deviceId;
+    armDeadlineTimer();
+}
+
+void SipServer::cancelDeadline(DeadlineKind kind, const std::string& key) {
+    ++deadlineGenerations_[deadlineKey(kind, key)];
+    armDeadlineTimer();
+}
+
+void SipServer::armDeadlineTimer() {
+    if (!deadlineTimer_ || !running_.load())
+        return;
+    while (!deadlines_.empty()) {
+        const auto& next = deadlines_.top();
+        const auto generation =
+            deadlineGenerations_.find(deadlineKey(next.kind, next.key));
+        if (generation != deadlineGenerations_.end() &&
+            generation->second == next.generation)
+            break;
+        deadlines_.pop();
+    }
+    std::error_code ignored;
+    deadlineTimer_->cancel(ignored);
+    if (deadlines_.empty())
+        return;
+    deadlineTimer_->expires_at(deadlines_.top().at);
+    deadlineTimer_->async_wait(
+        [this](const std::error_code& error) { processDeadlines(error); });
+}
+
+void SipServer::processDeadlines(const std::error_code& error) {
+    if (error || !running_.load())
+        return;
+    const auto now = std::chrono::steady_clock::now();
+    while (!deadlines_.empty() && deadlines_.top().at <= now) {
+        auto deadline = deadlines_.top();
+        deadlines_.pop();
+        const auto generation =
+            deadlineGenerations_.find(deadlineKey(deadline.kind, deadline.key));
+        if (generation == deadlineGenerations_.end() ||
+            generation->second != deadline.generation)
+            continue;
+        ++generation->second;
+        expireDeadline(deadline);
+    }
+    armDeadlineTimer();
+}
+
+void SipServer::expireDeadline(const Deadline& deadline) {
+    switch (deadline.kind) {
+    case DeadlineKind::Catalog:
+        if (queryCatalog(deadline.key))
+            LOG_DEBUG << "[GB28181][Catalog] Scheduled query sent, device="
+                      << deadline.key;
+        else
+            LOG_WARN << "[GB28181][Catalog] Scheduled query failed, device="
+                     << deadline.key;
+        break;
+    case DeadlineKind::Registration:
+        deviceRegistry_.markOffline(deadline.key);
+        closeDeviceSessions(deadline.key);
+        LOG_WARN << "[GB28181][Register] Device expired, device=" << deadline.key;
+        break;
+    case DeadlineKind::Invite:
+        LOG_WARN << "[GB28181][Invite] Session timed out, session="
+                 << deadline.key;
+        (void)stopPreview(deadline.key);
+        break;
+    case DeadlineKind::RecordQuery:
+        try {
+            pendingRecordQueries_.erase(
+                static_cast<unsigned int>(std::stoul(deadline.key)));
+        } catch (...) {
+        }
+        LOG_WARN << "[GB28181][Record] Query timed out, sn=" << deadline.key;
+        break;
+    case DeadlineKind::AuthNonce:
+        digestNonceCounts_.erase(deadline.key);
+        break;
+    }
+}
+
+void SipServer::closeDeviceSessions(const std::string& deviceId) {
+    std::vector<std::string> sessions;
+    for (const auto& [id, session] : previewSessions_) {
+        if (session.deviceId == deviceId)
+            sessions.push_back(id);
+    }
+    for (const auto& id : sessions)
+        (void)stopPreview(id);
+}
+
+std::optional<std::string>
+SipServer::sessionIdByCallId(const std::string& callId) const {
+    if (callId.empty())
+        return std::nullopt;
+    for (const auto& [id, session] : previewSessions_) {
+        if (session.callId == callId)
+            return id;
+    }
+    return std::nullopt;
 }

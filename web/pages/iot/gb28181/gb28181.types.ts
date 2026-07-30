@@ -5,6 +5,30 @@ export namespace GB28181 {
         enabled: boolean;
         started: boolean;
         error: string;
+        media_ports: {
+            http: number;
+            https: number;
+            rtsp: number;
+            rtsps: number;
+            rtmp: number;
+            rtmps: number;
+            rtc: number;
+            srt: number;
+        };
+        media_capabilities: {
+            faac: boolean;
+            ffmpeg: boolean;
+            hls: boolean;
+            mp4: boolean;
+            rtp_proxy: boolean;
+            srt: boolean;
+            sctp: boolean;
+            web_rtc: boolean;
+            x264: boolean;
+            video_stack: boolean;
+            tls: boolean;
+            recording: boolean;
+        };
     }
 
     export interface SipConfig {
@@ -44,12 +68,15 @@ export namespace GB28181 {
         remote_ip: string;
         remote_port: string;
         registration_source: string;
+        mapped_device_id: string;
+        last_seen_at: string;
         online: boolean;
         channels: Channel[];
         records: RecordItem[];
     }
 
     export interface StreamStatus {
+        id: string;
         app: string;
         stream: string;
         schema: string;
@@ -68,6 +95,7 @@ export namespace GB28181 {
         hls: string;
         webrtc: string;
         rtsp: string;
+        rtmp: string;
     }
 
     export interface PreviewStartResult {
@@ -95,6 +123,8 @@ export namespace GB28181 {
         channel_id?: string;
         action?: string;
         speed?: number;
+        mapped_device_id?: string;
+        recording?: boolean;
     }
 
     export interface StartPreviewPayload {
@@ -126,6 +156,15 @@ export namespace GB28181 {
         channelId: string;
         startTime: string;
         endTime: string;
+    }
+
+    export interface StreamPayload {
+        streamId: string;
+    }
+
+    export interface MapDevicePayload {
+        deviceId: string;
+        mappedDeviceId: string;
     }
 
     export type PtzAction = 'left' | 'right' | 'up' | 'down' | 'zoomin' | 'zoomout' | 'stop';

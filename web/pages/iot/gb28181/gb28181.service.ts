@@ -11,6 +11,7 @@ export const gb28181Keys = {
     health: () => ['gb28181', 'health'] as const,
     devices: () => ['gb28181', 'devices'] as const,
     streams: () => ['gb28181', 'streams'] as const,
+    recording: (streamId: string) => ['gb28181', 'streams', streamId, 'recording'] as const,
 };
 
 export function useGb28181Health(
@@ -57,6 +58,63 @@ export function useGb28181PreviewStop() {
     return useMutationWithMessage<GB28181.PreviewStopResult, GB28181.StopPreviewPayload>({
         mutationFn: api.stopPreview,
         successMessage: '会话已停止',
+        invalidateKeys: [gb28181Keys.streams()],
+    });
+}
+
+export function useGb28181RecordQuery() {
+    return useMutationWithMessage<GB28181.CommandResult, GB28181.RecordQueryPayload>({
+        mutationFn: api.queryRecords,
+        successMessage: '录像查询已发送',
+        invalidateKeys: [gb28181Keys.devices()],
+    });
+}
+
+export function useGb28181PlaybackStart() {
+    return useMutationWithMessage<GB28181.PreviewStartResult, GB28181.RecordQueryPayload>({
+        mutationFn: api.startPlayback,
+        successMessage: '录像回放已发起',
+        invalidateKeys: [gb28181Keys.streams()],
+    });
+}
+
+export function useGb28181MapDevice() {
+    return useMutationWithMessage<GB28181.CommandResult, GB28181.MapDevicePayload>({
+        mutationFn: api.mapDevice,
+        successMessage: '平台设备关联已保存',
+        invalidateKeys: [gb28181Keys.devices()],
+    });
+}
+
+export function useGb28181UnmapDevice() {
+    return useMutationWithMessage<GB28181.CommandResult, string>({
+        mutationFn: api.unmapDevice,
+        successMessage: '平台设备关联已解除',
+        invalidateKeys: [gb28181Keys.devices()],
+    });
+}
+
+export function useGb28181Recording(streamId?: string, enabled = true) {
+    return useQuery({
+        queryKey: gb28181Keys.recording(streamId ?? ''),
+        queryFn: () => api.getRecording({ streamId: streamId ?? '' }),
+        enabled: enabled && Boolean(streamId),
+        refetchInterval: 3_000,
+    });
+}
+
+export function useGb28181RecordingStart() {
+    return useMutationWithMessage<GB28181.CommandResult, GB28181.StreamPayload>({
+        mutationFn: api.startRecording,
+        successMessage: '录像已开始',
+        invalidateKeys: [gb28181Keys.streams()],
+    });
+}
+
+export function useGb28181RecordingStop() {
+    return useMutationWithMessage<GB28181.CommandResult, GB28181.StreamPayload>({
+        mutationFn: api.stopRecording,
+        successMessage: '录像已停止',
         invalidateKeys: [gb28181Keys.streams()],
     });
 }

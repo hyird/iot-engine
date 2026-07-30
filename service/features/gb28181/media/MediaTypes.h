@@ -12,6 +12,7 @@ struct PlayUrls {
     std::string hls;
     std::string webRtc;
     std::string rtsp;
+    std::string rtmp;
 };
 
 struct OpenRtpServerResult {

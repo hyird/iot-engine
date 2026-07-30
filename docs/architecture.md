@@ -14,12 +14,16 @@
 │   ├── Redis 消费与发布
 │   ├── PostgreSQL/TimescaleDB
 │   └── 配置投影与遥测持久化
-└── Collector Worker Pool
-    ├── TCP Server/TCP Client
-    ├── 连接、协议 Session 与设备路由
-    ├── Modbus/S7/SL651 协议运行时
-    ├── 协议独立的上报、查询、控制与响应处理
-    └── Redis 消费与发布
+├── Collector Worker Pool
+│   ├── TCP Server/TCP Client
+│   ├── 连接、协议 Session 与设备路由
+│   ├── Modbus/S7/SL651 协议运行时
+│   ├── 协议独立的上报、查询、控制与响应处理
+│   └── Redis 消费与发布
+└── GB28181（可选）
+    ├── Ruvia SIP Actor（单事件循环线程）
+    ├── ZLMediaKit EventPollerPool
+    └── ZLMediaKit WorkThreadPool
 ```
 
 Redis 是南北桥之间唯一的运行时通信边界。南桥不读取或写入 PostgreSQL。所有与南桥
@@ -29,15 +33,24 @@ Redis 是南北桥之间唯一的运行时通信边界。南桥不读取或写�
 
 ## 2. CPU 与 Worker 分配
 
-进程启动时读取逻辑 CPU 数量，总线程预算由北桥和南桥平分：
+进程启动时读取逻辑 CPU 数量。GB28181 启用时，先从总预算扣除一个 SIP Actor
+以及 ZLMediaKit 的 EventPoller、WorkThread 两组线程，再由北桥和南桥平分剩余预算：
 
 ```cpp
 const auto cpu = std::max(2u, std::thread::hardware_concurrency());
-const auto serviceWorkerCount = (cpu + 1) / 2;
-const auto collectorWorkerCount = cpu / 2;
+const auto gb28181WorkerCount =
+    gb28181.enabled ? 1u + 2u * std::max(1, zlmWorkerThreads) : 0u;
+const auto businessCpu = std::max(2u, cpu > gb28181WorkerCount
+                                         ? cpu - gb28181WorkerCount
+                                         : 0u);
+const auto serviceWorkerCount = (businessCpu + 1) / 2;
+const auto collectorWorkerCount = businessCpu / 2;
 ```
 
-CPU 数为奇数时，多出的一个 Worker 分配给北桥。允许通过配置覆盖自动计算结果，但默认不创建超过 CPU 总数的业务 Worker。
+CPU 数为奇数时，多出的一个 Worker 分配给北桥。`ZLM_WORKER_THREADS=N` 同时设置
+ZLMediaKit 的两组内部线程，因此媒体面实际占用 `2N` 个线程。Service 和 Collector
+各至少保留一个 Worker；当主机 CPU 数低于这个硬下限加媒体运行时所需线程时，系统会
+明确记录受控超配，而不是隐式增加线程。
 
 每个 Worker 是一个完整、独立的事件循环线程。Worker 内可以并发运行多个协程，但同一时刻只在所属线程上访问本地运行状态。
 
@@ -485,21 +498,68 @@ Redis 配置丢失时由北桥重建，南桥不得绕过边界直接查询数�
 2. 启动 Service Worker Pool
 3. 北桥从 PostgreSQL 重建 Redis 配置快照
 4. 北桥建立全部设备离线状态并从 TimescaleDB 回填逐要素最新值
-5. 标记配置和实时读模型 ready
-6. 启动 Collector Worker Pool
-7. 南桥加载配置、发布 applied version 并启动链路
+5. 从 PostgreSQL 恢复 GB28181 设备、通道、录像与流投影
+6. 标记配置和实时读模型 ready
+7. GB28181 启用时启动 ZLMediaKit，再启动 SIP Actor
+8. 启动 Collector Worker Pool
+9. 南桥加载配置、发布 applied version 并启动链路
 ```
 
 ## 10. 时间规则
 
 - PostgreSQL 会话时区固定为 UTC；
 - 数据库时间字段使用 `TIMESTAMPTZ`；
-- API 和 Redis 消息使用带 `Z` 或明确 UTC 偏移的 ISO 8601 时间；
+- API 输出和 Redis 投影统一使用秒精度 `YYYY-MM-DDTHH:mm:ssZ`；
+- API 输入只接受 RFC 3339 的 `Z`/明确偏移，协议明确允许无时区时才使用该设备的配置偏移；
 - 每台设备独立保存 `timezone`；
 - 设备报文时间先按设备时区解析，再转换为 UTC；
+- 时间在协议入口转成 `time_point` 或 UTC epoch，数据库读回和 Redis 投影再次按类型
+  生成规范值；不得在统一响应出口猜测、修补字符串；
+- 非类型化的本地化时间（例如 `Tue Jul ... CST ...`）和非法日历日期直接拒绝，
+  不得替换成当前时间；
 - 设备时区不得改变数据库或连接会话时区。
 
-## 11. 协议边界
+## 11. GB28181 与 ZLMediaKit 边界
+
+GB28181 是可关闭的能力。`GB28181_ENABLED=false` 时 SIP、ZLMediaKit 均不启动，
+GB28181 业务 API 返回 404，前端菜单和直接访问页面都不展示业务内容；健康接口保留，
+用于前端判定能力状态和运维诊断。
+
+### 11.1 控制面与媒体面
+
+SIP 控制面运行在一个独立的 Ruvia Actor 中。设备、事务、连接和 deadline 状态只允许
+由该事件循环访问，不使用互斥量。HTTP Worker 通过 `Task + OneShot` 异步投递命令，
+超时或请求取消后迟到结果会被丢弃；预览/回放若已建立则同时回滚媒体会话。Actor 只用
+一个底层 steady timer 和 deadline 优先队列管理注册过期、目录查询、INVITE、录像查询
+及 nonce 清理。
+
+ZLMediaKit 通过 C SDK 静态链接进入进程，负责 RTP/RTCP、PS 解复用、转封装、WebRTC、
+HTTP-FLV、HLS、RTSP、RTMP、SRT、录制和其内部网络 I/O。它不是 Sans-I/O SDK，
+EventPollerPool 与 WorkThreadPool 属于 ZLMediaKit 自有资源；业务层不得跨过 C SDK
+访问其 C++ 内部类型，也不得让 ZLMediaKit 回调直接操作 PostgreSQL、Redis 或 HTTP
+Context。回调只转换为强类型 Model 后投递到所属 Ruvia 边界。
+
+ZLMediaKit 回调来自它自己的多个线程，因此 C SDK 适配器内部允许用最小互斥区保护
+SDK 生命周期、回调失效和 RTP handle 表；设备、流、SIP 事务等业务状态不进入这些
+互斥区，仍只由 Ruvia SIP Actor 拥有。
+
+### 11.2 数据、鉴权与能力
+
+PostgreSQL 的 `gb28181_device`、`gb28181_channel`、`gb28181_record` 和
+`gb28181_stream` 是可恢复事实；Redis 的 `iot:state:gb28181:*` 是实时读投影。
+GB28181 设备通过 `mapped_device_id` 显式关联核心 `device`，告警和其他领域只使用这个
+强类型关联，不解析 SIP/XML 或媒体内部状态。所有协议/XML/媒体回调必须先转成项目
+Model，iot-engine 业务代码禁止引入 JsonCpp、ZLMediaKit JSON 或其他 JSON DOM。
+
+播放地址必须包含短时 HMAC token 和过期时间，HTTP-FLV、HLS、RTSP、RTMP 与 WebRTC
+统一校验。WebRTC CORS 只允许配置的精确 Origin，不返回通配符。TLS 只有在证书配置
+完整时才启动 HTTPS/RTSPS/RTMPS，并在健康接口中分别报告“编译能力”和“运行能力”；
+录像只通过显式的开始、停止、状态 API 控制。
+
+停止顺序固定为先停止 SIP Actor、失效并清理设备/会话/RTP 状态，再停止
+ZLMediaKit，最后停止 GB28181 数据投影器，避免控制面持有已经销毁的媒体资源。
+
+## 12. 协议边界
 
 三种协议只复用 Worker 执行环境、Link 传输和 socket 所有权，不复用任务调度、会话状态或命令完成条件：
 
@@ -572,7 +632,7 @@ state_reason
 
 北桥持久化只消费统一结果，不包含 Modbus、S7 或 SL651 的协议解析逻辑。
 
-## 12. 实施要求
+## 13. 实施要求
 
 目标实现需要独立的 Service Worker Pool 和 Collector Worker Pool。Collector Worker 必须拥有自己的事件循环和 Redis 上下文，不能借用某个 Web Worker，也不能通过同步客户端补齐功能。
 
@@ -585,3 +645,7 @@ Poll Scheduler、通用读写队列、通用 `in-flight` 或统一命令状态�
 或空实现满足接口。
 
 Ruvia 需要提供可供非 HTTP Worker 使用的通用异步 Worker Context，使北桥和南桥复用同一套协程、Redis 和生命周期能力，同时保持各自独立的资源所有权。
+
+静态媒体栈的依赖边界、许可证原文打包方式和 GPL 发布约束见
+[`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)。CI 发布制品不得省略该清单及
+`licenses/` 目录。

@@ -13,11 +13,13 @@
 #include <array>
 #include <atomic>
 #include <deque>
+#include <chrono>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <optional>
+#include <queue>
 #include <unordered_map>
+#include <vector>
 
 #ifdef GetMessage
 #undef GetMessage
@@ -91,6 +93,27 @@ public:
     };
 
 private:
+    enum class DeadlineKind {
+        Catalog,
+        Registration,
+        Invite,
+        RecordQuery,
+        AuthNonce,
+    };
+
+    struct Deadline {
+        std::chrono::steady_clock::time_point at;
+        DeadlineKind kind{DeadlineKind::Catalog};
+        std::string key;
+        std::uint64_t generation{0};
+    };
+
+    struct DeadlineLater {
+        bool operator()(const Deadline& left, const Deadline& right) const noexcept {
+            return left.at > right.at;
+        }
+    };
+
     struct PreviewSession {
         std::string sessionId;
         std::string deviceId;
@@ -119,15 +142,17 @@ private:
     ruvia::EventLoop ioLoop_;
     std::unique_ptr<asio::ip::udp::socket> udpSocket_;
     std::unique_ptr<asio::ip::tcp::acceptor> tcpAcceptor_;
+    std::unique_ptr<asio::steady_timer> deadlineTimer_;
     std::array<char, 8192> udpBuffer_{};
     asio::ip::udp::endpoint udpRemote_;
-    mutable std::mutex tcpConnectionsMutex_;
-    std::mutex sessionMutex_;
     std::atomic_uint cseq_{1};
     std::unordered_map<std::string, TcpConnectionPtr> tcpConnections_;
     std::map<std::string, PreviewSession> previewSessions_;
     std::map<std::string, std::string> previewViewers_;
     std::map<unsigned int, std::string> pendingRecordQueries_;
+    std::unordered_map<std::string, std::uint32_t> digestNonceCounts_;
+    std::unordered_map<std::string, std::uint64_t> deadlineGenerations_;
+    std::priority_queue<Deadline, std::vector<Deadline>, DeadlineLater> deadlines_;
 
     void startInLoop();
     void stopInLoop();
@@ -147,4 +172,15 @@ private:
     void sendRequest(const std::string& request, const SipPeer& remote);
     std::optional<SipPeer> peerFromAddress(const std::string& remoteAddress) const;
     void scheduleCatalogQuery(const std::string& deviceId);
+    void scheduleDeadline(DeadlineKind kind, std::string key,
+                          std::chrono::milliseconds delay);
+    void cancelDeadline(DeadlineKind kind, const std::string& key);
+    void armDeadlineTimer();
+    void processDeadlines(const std::error_code& error);
+    void expireDeadline(const Deadline& deadline);
+    [[nodiscard]] static std::string deadlineKey(DeadlineKind kind,
+                                                 const std::string& key);
+    void closeDeviceSessions(const std::string& deviceId);
+    [[nodiscard]] std::optional<std::string>
+    sessionIdByCallId(const std::string& callId) const;
 };

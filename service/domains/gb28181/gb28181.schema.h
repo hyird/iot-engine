@@ -11,6 +11,7 @@
 #include <ruvia/web/Context.h>
 
 #include "service/common/http.h"
+#include "service/common/timestamp.h"
 
 namespace service::gb28181 {
 
@@ -28,6 +29,16 @@ inline std::string requiredQuery(ruvia::Context& c, std::string_view name,
     if (!value || value->empty() || value->size() > 128)
         service::common::fail(10001, std::string(message), 400);
     return std::string(*value);
+}
+
+inline std::string requiredUtcQuery(ruvia::Context& c, std::string_view name,
+                                    std::string_view message) {
+    const auto value = requiredQuery(c, name, message);
+    const auto canonical = service::common::canonicalUtcTimestamp(value);
+    if (canonical.empty())
+        service::common::fail(
+            10001, std::string(name) + " 必须是有效的 RFC 3339 时间", 400);
+    return canonical;
 }
 
 inline std::uint8_t ptzSpeed(ruvia::Context& c) {

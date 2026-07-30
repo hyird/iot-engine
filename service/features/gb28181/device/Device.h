@@ -29,6 +29,7 @@ struct Device {
     std::string manufacturer;
     std::string remoteAddress;
     std::string registrationSource{"sip"};
+    std::string mappedDeviceId;
     bool online{false};
     std::chrono::system_clock::time_point lastSeen{};
     std::vector<Channel> channels;

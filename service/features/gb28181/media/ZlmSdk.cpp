@@ -4,8 +4,15 @@
 
 #include <ruvia/web/ModelJson.h>
 
+#include <openssl/crypto.h>
+#include <openssl/hmac.h>
+
 #include <algorithm>
 #include <charconv>
+#include <chrono>
+#include <filesystem>
+#include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -45,23 +52,42 @@ std::string authorityHost(std::string_view url) {
     return std::string(colon == std::string_view::npos ? authority : authority.substr(0, colon));
 }
 
-std::string publicHttpBase(const MediaConfig& config, std::uint16_t actualPort) {
+std::string publicHttpBase(const MediaConfig& config, std::uint16_t actualHttpPort,
+                           std::uint16_t actualHttpsPort) {
     if (!config.zlmPublicBaseUrl.empty())
         return trimTrailingSlash(config.zlmPublicBaseUrl);
     std::ostringstream value;
-    value << "http://" << config.rtpPublicIp;
-    if (actualPort != 80)
-        value << ':' << actualPort;
+    const auto secure = config.tlsEnabled;
+    const auto port = secure ? actualHttpsPort : actualHttpPort;
+    value << (secure ? "https://" : "http://") << config.rtpPublicIp;
+    if ((secure && port != 443) || (!secure && port != 80))
+        value << ':' << port;
     return value.str();
 }
 
 std::string rtspBase(const MediaConfig& config, std::uint16_t httpPort,
-                     std::uint16_t rtspPort) {
-    const auto host = authorityHost(publicHttpBase(config, httpPort));
+                     std::uint16_t httpsPort, std::uint16_t rtspPort,
+                     std::uint16_t rtspsPort) {
+    const auto host = authorityHost(publicHttpBase(config, httpPort, httpsPort));
+    const auto secure = config.tlsEnabled;
+    const auto port = secure ? rtspsPort : rtspPort;
     std::ostringstream value;
-    value << "rtsp://" << host;
-    if (rtspPort != 554)
-        value << ':' << rtspPort;
+    value << (secure ? "rtsps://" : "rtsp://") << host;
+    if ((secure && port != 322) || (!secure && port != 554))
+        value << ':' << port;
+    return value.str();
+}
+
+std::string rtmpBase(const MediaConfig& config, std::uint16_t httpPort,
+                     std::uint16_t httpsPort, std::uint16_t rtmpPort,
+                     std::uint16_t rtmpsPort) {
+    const auto host = authorityHost(publicHttpBase(config, httpPort, httpsPort));
+    const auto secure = config.tlsEnabled;
+    const auto port = secure ? rtmpsPort : rtmpPort;
+    std::ostringstream value;
+    value << (secure ? "rtmps://" : "rtmp://") << host;
+    if ((secure && port != 443) || (!secure && port != 1935))
+        value << ':' << port;
     return value.str();
 }
 
@@ -77,6 +103,52 @@ std::uint32_t parseSsrc(std::string_view value) {
     return parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size() ? result : 0;
 }
 
+std::string queryParameter(std::string_view query, std::string_view name) {
+    if (query.starts_with('?'))
+        query.remove_prefix(1);
+    while (!query.empty()) {
+        const auto separator = query.find('&');
+        const auto item = query.substr(0, separator);
+        const auto equals = item.find('=');
+        if (item.substr(0, equals) == name)
+            return equals == std::string_view::npos
+                       ? std::string{}
+                       : std::string(item.substr(equals + 1));
+        if (separator == std::string_view::npos)
+            break;
+        query.remove_prefix(separator + 1);
+    }
+    return {};
+}
+
+std::optional<std::int64_t> parseExpiry(std::string_view value) {
+    std::int64_t result{};
+    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
+    if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size())
+        return std::nullopt;
+    return result;
+}
+
+std::int64_t unixSecondsNow() {
+    return std::chrono::duration_cast<std::chrono::seconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+std::string hmacSha256Hex(std::string_view secret, std::string_view payload) {
+    unsigned int length{};
+    unsigned char digest[EVP_MAX_MD_SIZE]{};
+    if (HMAC(EVP_sha256(), secret.data(), static_cast<int>(secret.size()),
+             reinterpret_cast<const unsigned char*>(payload.data()), payload.size(),
+             digest, &length) == nullptr)
+        throw std::runtime_error("Unable to sign ZLM playback URL");
+    std::ostringstream value;
+    value << std::hex << std::setfill('0');
+    for (unsigned int index = 0; index < length; ++index)
+        value << std::setw(2) << static_cast<unsigned int>(digest[index]);
+    return value.str();
+}
+
 } // namespace
 
 std::mutex ZlmSdk::callbackMutex_;
@@ -86,6 +158,8 @@ ZlmSdk::ZlmSdk(MediaConfig config, Callbacks callbacks)
     : config_(std::move(config)),
       callbacks_(std::make_shared<CallbackState>()) {
     callbacks_->callbacks = std::move(callbacks);
+    callbacks_->playTokenSecret = config_.playTokenSecret;
+    callbacks_->corsOrigin = config_.corsOrigin;
     nextRtpPort_.store(config_.rtpPortRangeStart);
 }
 
@@ -102,8 +176,18 @@ void ZlmSdk::start() {
         return;
 
     try {
-        if (config_.workerThreads < 0)
-            throw std::runtime_error("ZLM worker thread count cannot be negative");
+        if (config_.workerThreads <= 0)
+            throw std::runtime_error("ZLM worker thread count must be positive");
+        if (config_.playTokenSecret.size() < 16)
+            throw std::runtime_error(
+                "GB28181 media token secret must contain at least 16 characters");
+        if (config_.playTokenTtlSeconds <= 0)
+            throw std::runtime_error("GB28181 media token TTL must be positive");
+        if (config_.tlsEnabled &&
+            (config_.tlsPemPath.empty() ||
+             !std::filesystem::is_regular_file(config_.tlsPemPath)))
+            throw std::runtime_error(
+                "ZLM TLS is enabled but the PEM certificate path is invalid");
 
         {
             std::lock_guard lock(callbackMutex_);
@@ -122,30 +206,44 @@ void ZlmSdk::start() {
         sdkConfig.log_file_days = 0;
         sdkConfig.ini_is_path = 0;
         sdkConfig.ini = ini.c_str();
-        sdkConfig.ssl_is_path = 0;
-        sdkConfig.ssl = nullptr;
-        sdkConfig.ssl_pwd = nullptr;
+        sdkConfig.ssl_is_path = config_.tlsEnabled ? 1 : 0;
+        sdkConfig.ssl = config_.tlsEnabled ? config_.tlsPemPath.c_str() : nullptr;
+        sdkConfig.ssl_pwd =
+            config_.tlsEnabled && !config_.tlsPassword.empty()
+                ? config_.tlsPassword.c_str()
+                : nullptr;
         mk_env_init(&sdkConfig);
 
         mk_events events{};
         events.on_mk_media_changed = &ZlmSdk::handleMediaChanged;
         events.on_mk_media_no_reader = &ZlmSdk::handleMediaNoReader;
+        events.on_mk_media_play = &ZlmSdk::handleMediaPlay;
         events.on_mk_http_request = &ZlmSdk::handleHttpRequest;
         mk_events_listen(&events);
 
         ports_.http = mk_http_server_start(config_.httpPort, 0);
         ports_.rtsp = mk_rtsp_server_start(config_.rtspPort, 0);
         ports_.rtmp = mk_rtmp_server_start(config_.rtmpPort, 0);
+        if (config_.tlsEnabled) {
+            ports_.https = mk_http_server_start(config_.httpsPort, 1);
+            ports_.rtsps = mk_rtsp_server_start(config_.rtspsPort, 1);
+            ports_.rtmps = mk_rtmp_server_start(config_.rtmpsPort, 1);
+        }
         ports_.rtc = mk_rtc_server_start(config_.rtcPort);
         ports_.srt = mk_srt_server_start(config_.srtPort);
         if (ports_.http == 0 || ports_.rtsp == 0 || ports_.rtmp == 0 ||
-            ports_.rtc == 0 || ports_.srt == 0)
+            ports_.rtc == 0 || ports_.srt == 0 ||
+            (config_.tlsEnabled &&
+             (ports_.https == 0 || ports_.rtsps == 0 || ports_.rtmps == 0)))
             throw std::runtime_error("Embedded ZLMediaKit failed to bind one or more servers");
 
         LOG_INFO << "[GB28181][ZLM SDK] Started with isolated media workers, workers="
                  << config_.workerThreads << ", http=" << ports_.http
                  << ", rtsp=" << ports_.rtsp << ", rtmp=" << ports_.rtmp
                  << ", rtc=" << ports_.rtc << ", srt=" << ports_.srt;
+        if (config_.tlsEnabled)
+            LOG_INFO << "[GB28181][ZLM SDK] TLS listeners, https=" << ports_.https
+                     << ", rtsps=" << ports_.rtsps << ", rtmps=" << ports_.rtmps;
     } catch (...) {
         stop();
         throw;
@@ -250,21 +348,79 @@ bool ZlmSdk::closeRtpServer(const std::string& streamId) {
 }
 
 PlayUrls ZlmSdk::buildPlayUrls(const std::string& streamId) const {
-    const auto httpBase = publicHttpBase(config_, ports_.http == 0 ? config_.httpPort
-                                                                  : ports_.http);
+    const auto httpPort = ports_.http == 0 ? config_.httpPort : ports_.http;
+    const auto httpsPort = ports_.https == 0 ? config_.httpsPort : ports_.https;
+    const auto httpBase = publicHttpBase(config_, httpPort, httpsPort);
     const auto wsBase = httpToWs(httpBase);
-    const auto rtsp = rtspBase(config_, ports_.http == 0 ? config_.httpPort : ports_.http,
-                               ports_.rtsp == 0 ? config_.rtspPort : ports_.rtsp);
+    const auto rtsp = rtspBase(
+        config_, httpPort, httpsPort,
+        ports_.rtsp == 0 ? config_.rtspPort : ports_.rtsp,
+        ports_.rtsps == 0 ? config_.rtspsPort : ports_.rtsps);
+    const auto rtmp = rtmpBase(
+        config_, httpPort, httpsPort,
+        ports_.rtmp == 0 ? config_.rtmpPort : ports_.rtmp,
+        ports_.rtmps == 0 ? config_.rtmpsPort : ports_.rtmps);
     const auto path = std::string("/") + std::string(kRtpApp) + "/" + streamId;
+    const auto expires = unixSecondsNow() + config_.playTokenTtlSeconds;
+    const auto auth = "token=" + makePlayToken(streamId, expires) +
+                      "&expires=" + std::to_string(expires);
     return PlayUrls{
-        .httpFlv = httpBase + path + ".live.flv",
-        .wsFlv = wsBase + path + ".live.flv",
-        .httpTs = httpBase + path + ".live.ts",
-        .hls = httpBase + path + "/hls.m3u8",
+        .httpFlv = httpBase + path + ".live.flv?" + auth,
+        .wsFlv = wsBase + path + ".live.flv?" + auth,
+        .httpTs = httpBase + path + ".live.ts?" + auth,
+        .hls = httpBase + path + "/hls.m3u8?" + auth,
         .webRtc = httpBase + std::string(kWebRtcPath) + "?app=" +
-                  std::string(kRtpApp) + "&stream=" + streamId + "&type=play",
-        .rtsp = rtsp + path,
+                  std::string(kRtpApp) + "&stream=" + streamId + "&type=play&" + auth,
+        .rtsp = rtsp + path + "?" + auth,
+        .rtmp = rtmp + path + "?" + auth,
     };
+}
+
+ZlmSdk::Capabilities ZlmSdk::capabilities() const noexcept {
+    auto result = Capabilities{};
+    result.tls = config_.tlsEnabled;
+    result.recording = config_.recordingEnabled;
+    return result;
+}
+
+std::string ZlmSdk::makePlayToken(std::string_view stream, std::int64_t expires) const {
+    return hmacSha256Hex(config_.playTokenSecret,
+                         std::string(stream) + "\n" + std::to_string(expires));
+}
+
+bool ZlmSdk::authorizePlay(const CallbackState& state, std::string_view stream,
+                           std::string_view token, std::int64_t expires) {
+    if (!managedStream(stream) || token.empty() || expires < unixSecondsNow())
+        return false;
+    const auto expected = hmacSha256Hex(
+        state.playTokenSecret, std::string(stream) + "\n" + std::to_string(expires));
+    return token.size() == expected.size() &&
+           CRYPTO_memcmp(token.data(), expected.data(), expected.size()) == 0;
+}
+
+bool ZlmSdk::validatePlayToken(std::string_view stream, std::string_view token,
+                               std::int64_t expires) const {
+    return authorizePlay(*callbacks_, stream, token, expires);
+}
+
+bool ZlmSdk::startMp4Recording(const std::string& streamId) {
+    if (!started_.load() || !config_.recordingEnabled || !managedStream(streamId))
+        return false;
+    const char* path = config_.recordRoot.empty() ? nullptr : config_.recordRoot.c_str();
+    return mk_recorder_start(1, kDefaultVhost.data(), kRtpApp.data(), streamId.c_str(),
+                             path, config_.recordMaxSegmentSeconds) == 1;
+}
+
+bool ZlmSdk::stopMp4Recording(const std::string& streamId) {
+    return started_.load() && managedStream(streamId) &&
+           mk_recorder_stop(1, kDefaultVhost.data(), kRtpApp.data(),
+                            streamId.c_str()) == 1;
+}
+
+bool ZlmSdk::isMp4Recording(const std::string& streamId) const {
+    return started_.load() && managedStream(streamId) &&
+           mk_recorder_is_recording(1, kDefaultVhost.data(), kRtpApp.data(),
+                                    streamId.c_str()) == 1;
 }
 
 std::string ZlmSdk::makeStreamId(const std::string& deviceId,
@@ -296,11 +452,32 @@ std::string ZlmSdk::sdkIni() const {
         << "enable_rtmp=1\n"
         << "enable_ts=1\n"
         << "enable_fmp4=1\n"
+        << "enable_mp4=0\n"
+        << "mp4_save_path=" << config_.recordRoot << "\n"
         << "[rtc]\n"
         << "externIP=" << config_.rtpPublicIp << "\n"
         << "port=" << config_.rtcPort << "\n"
         << "tcpPort=" << config_.rtcPort << "\n";
     return ini.str();
+}
+
+void API_CALL ZlmSdk::handleMediaPlay(const mk_media_info media,
+                                      const mk_auth_invoker invoker,
+                                      const mk_sock_info) {
+    const auto state = activeCallbacks();
+    if (!state) {
+        mk_auth_invoker_do(invoker, "media service unavailable");
+        return;
+    }
+    const auto app = std::string_view(safe(mk_media_info_get_app(media)));
+    const auto stream = std::string_view(safe(mk_media_info_get_stream(media)));
+    const auto query = std::string_view(safe(mk_media_info_get_params(media)));
+    const auto expires = parseExpiry(queryParameter(query, "expires"));
+    const auto token = queryParameter(query, "token");
+    const auto allowed =
+        app == kRtpApp && expires &&
+        authorizePlay(*state, stream, token, *expires);
+    mk_auth_invoker_do(invoker, allowed ? nullptr : "invalid or expired play token");
 }
 
 std::shared_ptr<ZlmSdk::CallbackState> ZlmSdk::activeCallbacks() {
@@ -348,15 +525,18 @@ void API_CALL ZlmSdk::handleHttpRequest(const mk_parser parser,
         return;
 
     *consumed = 1;
+    const auto state = activeCallbacks();
     const auto app = std::string(safe(mk_parser_get_url_param(parser, "app")));
     const auto stream = std::string(safe(mk_parser_get_url_param(parser, "stream")));
     const auto type = std::string(safe(mk_parser_get_url_param(parser, "type")));
+    const auto token = std::string(safe(mk_parser_get_url_param(parser, "token")));
+    const auto expires = parseExpiry(safe(mk_parser_get_url_param(parser, "expires")));
     std::size_t contentLength = 0;
     const auto* offer = mk_parser_get_content(parser, &contentLength);
-    if (app != kRtpApp || !managedStream(stream) || type != "play" || offer == nullptr ||
+    if (!state || app != kRtpApp || type != "play" || !expires ||
+        !authorizePlay(*state, stream, token, *expires) || offer == nullptr ||
         contentLength == 0) {
-        const char* headers[] = {"Content-Type", "application/json",
-                                 "Access-Control-Allow-Origin", "*", nullptr};
+        const char* headers[] = {"Content-Type", "application/json", nullptr};
         WebRtcResponseModel body;
         body.code(-1).msg("invalid WebRTC play request");
         const auto serialized = ruvia::toJson(body);
@@ -375,8 +555,13 @@ void API_CALL ZlmSdk::handleHttpRequest(const mk_parser parser,
 void API_CALL ZlmSdk::handleWebRtcAnswer(void* userData, const char* answer,
                                          const char* error) {
     const auto invoker = static_cast<mk_http_response_invoker>(userData);
-    const char* headers[] = {"Content-Type", "application/json",
-                             "Access-Control-Allow-Origin", "*", nullptr};
+    const auto state = activeCallbacks();
+    const char* headers[5] = {"Content-Type", "application/json", nullptr, nullptr,
+                              nullptr};
+    if (state && !state->corsOrigin.empty()) {
+        headers[2] = "Access-Control-Allow-Origin";
+        headers[3] = state->corsOrigin.c_str();
+    }
     WebRtcResponseModel body;
     if (answer != nullptr) {
         body.code(0).type("answer").sdp(answer);

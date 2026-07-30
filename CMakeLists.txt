@@ -104,6 +104,15 @@ set(ENABLE_CXX_API OFF CACHE BOOL "" FORCE)
 set(ENABLE_SERVER OFF CACHE BOOL "" FORCE)
 set(ENABLE_TESTS OFF CACHE BOOL "" FORCE)
 set(ENABLE_PLAYER OFF CACHE BOOL "" FORCE)
+# These are auxiliary integration/debug surfaces rather than media codecs or
+# protocols. iot-engine owns persistence through Ruvia/PostgreSQL and does not
+# expose ZLM's Python, MySQL, allocator, or C++ API boundaries.
+set(ENABLE_MYSQL OFF CACHE BOOL "" FORCE)
+set(ENABLE_PYTHON OFF CACHE BOOL "" FORCE)
+set(ENABLE_ASAN OFF CACHE BOOL "" FORCE)
+set(ENABLE_MEM_DEBUG OFF CACHE BOOL "" FORCE)
+set(ENABLE_JEMALLOC_STATIC OFF CACHE BOOL "" FORCE)
+set(ENABLE_TCMALLOC OFF CACHE BOOL "" FORCE)
 set(ENABLE_FAAC ON CACHE BOOL "" FORCE)
 set(ENABLE_FFMPEG ON CACHE BOOL "" FORCE)
 set(ENABLE_HLS ON CACHE BOOL "" FORCE)
@@ -216,6 +225,16 @@ add_custom_command(
     COMMENT "Generating edgenode C++ Protobuf protocol"
     VERBATIM)
 
+add_library(edgenode-protocol STATIC
+    "${EDGENODE_PROTO_CPP}"
+    "${EDGENODE_NANOPB_PROTO_CPP}"
+    "${WEB_TERMINAL_PROTO_CPP}")
+target_include_directories(edgenode-protocol PUBLIC "${EDGENODE_GENERATED_DIR}")
+target_link_libraries(edgenode-protocol PUBLIC protobuf::libprotobuf)
+if(MSVC)
+    target_compile_options(edgenode-protocol PRIVATE /utf-8 /Zc:__cplusplus)
+endif()
+
 # Ruvia's standalone manifest features do not belong to this parent manifest.
 unset(VCPKG_MANIFEST_FEATURES CACHE)
 
@@ -230,10 +249,7 @@ add_executable(iot-engine
     service/features/gb28181/runtime.cpp
     service/features/gb28181/sip/DigestAuth.cpp
     service/features/gb28181/sip/SipMessage.cpp
-    service/features/gb28181/sip/SipServer.cpp
-    "${EDGENODE_PROTO_CPP}"
-    "${EDGENODE_NANOPB_PROTO_CPP}"
-    "${WEB_TERMINAL_PROTO_CPP}")
+    service/features/gb28181/sip/SipServer.cpp)
 target_include_directories(iot-engine PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181"
@@ -242,8 +258,9 @@ target_link_libraries(iot-engine PRIVATE
     ruvia::web
     pugixml::pugixml
     spdlog::spdlog
-    protobuf::libprotobuf
-    mk_api)
+    edgenode-protocol
+    mk_api
+    OpenSSL::Crypto)
 if(MSVC)
     target_compile_definitions(iot-engine PRIVATE
         NOMINMAX
@@ -271,15 +288,10 @@ if(MSVC)
 endif()
 add_test(NAME access COMMAND access-test)
 
-add_executable(edge-protocol-test
-    tests/edge-protocol-test.cpp
-    "${EDGENODE_PROTO_CPP}"
-    "${EDGENODE_NANOPB_PROTO_CPP}"
-    "${WEB_TERMINAL_PROTO_CPP}")
+add_executable(edge-protocol-test tests/edge-protocol-test.cpp)
 target_include_directories(edge-protocol-test PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}"
-    "${EDGENODE_GENERATED_DIR}")
-target_link_libraries(edge-protocol-test PRIVATE protobuf::libprotobuf)
+    "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(edge-protocol-test PRIVATE edgenode-protocol)
 if(MSVC)
     target_compile_options(edge-protocol-test PRIVATE /utf-8 /Zc:__cplusplus)
 endif()
@@ -294,7 +306,8 @@ target_include_directories(gb28181-media-test PRIVATE
 target_link_libraries(gb28181-media-test PRIVATE
     ruvia::web
     spdlog::spdlog
-    mk_api)
+    mk_api
+    OpenSSL::Crypto)
 if(MSVC)
     target_compile_definitions(gb28181-media-test PRIVATE
         NOMINMAX
@@ -318,7 +331,8 @@ target_link_libraries(gb28181-sip-test PRIVATE
     ruvia::web
     pugixml::pugixml
     spdlog::spdlog
-    mk_api)
+    mk_api
+    OpenSSL::Crypto)
 if(MSVC)
     target_compile_definitions(gb28181-sip-test PRIVATE
         NOMINMAX

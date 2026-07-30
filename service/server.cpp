@@ -124,22 +124,51 @@ namespace
             std::string(env.get("GB28181_SIP_PASSWORD").value_or(""));
         config.sip.transport =
             std::string(env.get("GB28181_SIP_TRANSPORT").value_or("udp"));
+        config.sip.registrationTimeoutSeconds =
+            env.get<int>("GB28181_REGISTRATION_TIMEOUT_SECONDS").value_or(180);
+        config.sip.commandTimeoutSeconds =
+            env.get<int>("GB28181_COMMAND_TIMEOUT_SECONDS").value_or(10);
+        config.sip.inviteTimeoutSeconds =
+            env.get<int>("GB28181_INVITE_TIMEOUT_SECONDS").value_or(15);
+        config.sip.nonceTtlSeconds =
+            env.get<int>("GB28181_NONCE_TTL_SECONDS").value_or(300);
+        config.sip.deviceTimezoneOffsetMinutes =
+            env.get<int>("GB28181_DEVICE_TIMEZONE_OFFSET_MINUTES").value_or(480);
         config.sip.logging = envFlag(env, "GB28181_SIP_LOGGING", true);
         config.media.zlmPublicBaseUrl =
             std::string(env.get("ZLM_PUBLIC_BASE_URL").value_or(""));
         config.media.rtpPublicIp =
             std::string(env.get("GB28181_RTP_PUBLIC_IP").value_or(""));
-        config.media.workerThreads = env.get<int>("ZLM_WORKER_THREADS").value_or(0);
+        config.media.playTokenSecret =
+            std::string(env.get("GB28181_MEDIA_TOKEN_SECRET").value_or(""));
+        config.media.playTokenTtlSeconds =
+            env.get<int>("GB28181_MEDIA_TOKEN_TTL_SECONDS").value_or(300);
+        config.media.corsOrigin =
+            std::string(env.get("GB28181_MEDIA_CORS_ORIGIN").value_or(""));
+        config.media.workerThreads = env.get<int>("ZLM_WORKER_THREADS").value_or(1);
         config.media.logLevel = env.get<int>("ZLM_LOG_LEVEL").value_or(2);
         config.media.httpPort = env.get<std::uint16_t>("ZLM_HTTP_PORT").value_or(8080);
+        config.media.httpsPort = env.get<std::uint16_t>("ZLM_HTTPS_PORT").value_or(8443);
         config.media.rtspPort = env.get<std::uint16_t>("ZLM_RTSP_PORT").value_or(8554);
+        config.media.rtspsPort = env.get<std::uint16_t>("ZLM_RTSPS_PORT").value_or(8322);
         config.media.rtmpPort = env.get<std::uint16_t>("ZLM_RTMP_PORT").value_or(1935);
+        config.media.rtmpsPort = env.get<std::uint16_t>("ZLM_RTMPS_PORT").value_or(1936);
         config.media.rtcPort = env.get<std::uint16_t>("ZLM_RTC_PORT").value_or(8000);
         config.media.srtPort = env.get<std::uint16_t>("ZLM_SRT_PORT").value_or(9000);
         config.media.rtpPortRangeStart =
             env.get<std::uint16_t>("GB28181_RTP_PORT_START").value_or(30000);
         config.media.rtpPortRangeEnd =
             env.get<std::uint16_t>("GB28181_RTP_PORT_END").value_or(30500);
+        config.media.tlsEnabled = envFlag(env, "ZLM_TLS_ENABLED");
+        config.media.tlsPemPath =
+            std::string(env.get("ZLM_TLS_PEM_PATH").value_or(""));
+        config.media.tlsPassword =
+            std::string(env.get("ZLM_TLS_PASSWORD").value_or(""));
+        config.media.recordingEnabled = envFlag(env, "GB28181_RECORDING_ENABLED");
+        config.media.recordRoot =
+            std::string(env.get("GB28181_RECORD_ROOT").value_or(""));
+        config.media.recordMaxSegmentSeconds =
+            env.get<std::uint32_t>("GB28181_RECORD_MAX_SEGMENT_SECONDS").value_or(3600);
         return config;
     }
 
@@ -198,7 +227,8 @@ int main(int argc, char *argv[])
         app.loadDotenv();
         const auto runtime = runtimeDirectory(argc > 0 ? argv[0] : nullptr);
         service::common::packet_log::initialize(packetLogConfig(app.env(), runtime));
-        service::gb28181::runtime().configure(gb28181Config(app.env()));
+        const auto gb28181 = gb28181Config(app.env());
+        service::gb28181::runtime().configure(gb28181);
 
         auto db = databaseConfig(app.env());
         ruvia::DbMigrationOptions migrationOptions;
@@ -210,8 +240,28 @@ int main(int argc, char *argv[])
 
         configureWeb(app, runtime);
         const auto cpu = std::max(2U, std::thread::hardware_concurrency());
-        const auto serviceWorkerCount = static_cast<std::size_t>((cpu + 1U) / 2U);
-        const auto collectorWorkerCount = static_cast<std::size_t>(cpu / 2U);
+        const auto mediaWorkers =
+            static_cast<unsigned>(std::max(1, gb28181.media.workerThreads));
+        // GB28181 owns one SIP actor plus two ZLM pools (EventPoller and
+        // WorkThread). Reserve those threads before splitting the remaining
+        // business budget between the northbound and southbound workers.
+        const auto gb28181WorkerCount =
+            gb28181.enabled ? 1U + 2U * mediaWorkers : 0U;
+        // Service and Collector each need at least one worker. On a host with
+        // fewer CPUs than that hard minimum plus the enabled media runtime,
+        // controlled oversubscription is unavoidable and remains explicit.
+        const auto businessCpu =
+            std::max(2U, cpu > gb28181WorkerCount
+                             ? cpu - gb28181WorkerCount
+                             : 0U);
+        const auto serviceWorkerCount =
+            static_cast<std::size_t>((businessCpu + 1U) / 2U);
+        const auto collectorWorkerCount =
+            static_cast<std::size_t>(businessCpu / 2U);
+        std::cout << "worker budget: cpu=" << cpu
+                  << ", service=" << serviceWorkerCount
+                  << ", collector=" << collectorWorkerCount
+                  << ", gb28181=" << gb28181WorkerCount << '\n';
         auto serviceRedis = redisConfig(app.env());
         auto collectorRedis = serviceRedis;
         auto collector = std::make_shared<service::collector::Runtime>();
@@ -220,11 +270,13 @@ int main(int argc, char *argv[])
         auto openWebhooks = std::make_shared<service::access::WebhookRuntime>();
         auto configReconciler = std::make_shared<service::runtime::Reconciler>();
         auto edgeProjector = std::make_shared<service::edge::Projector>();
+        auto gb28181Projector = std::make_shared<service::gb28181::Projector>();
         auto alerts = std::make_shared<service::alert::Runtime>();
         app.useDb(std::move(db))
             .useRedis(std::move(serviceRedis))
             .onStart([collector, telemetry, commandResults, openWebhooks, configReconciler,
-                      edgeProjector, alerts, collectorRedis = std::move(collectorRedis),
+                      edgeProjector, gb28181Projector, alerts,
+                      collectorRedis = std::move(collectorRedis),
                       collectorWorkerCount, &app]() mutable
                      {
                 auto workers = app.workers();
@@ -236,6 +288,9 @@ int main(int argc, char *argv[])
                 openWebhooks->start(workers);
                 edgeProjector->start(workers.front());
                 alerts->start(workers.front());
+                auto gb28181Snapshot = gb28181Projector->start(workers.front());
+                service::gb28181::runtime().attachProjector(
+                    gb28181Projector, std::move(gb28181Snapshot));
                 service::gb28181::runtime().start();
                 auto started = std::make_shared<std::promise<void>>();
                 auto ready = started->get_future();
@@ -250,10 +305,11 @@ int main(int argc, char *argv[])
                 ready.get();
                 configReconciler->start(workers.front(), collectorWorkerCount); })
             .onStop([collector, telemetry, commandResults, openWebhooks, configReconciler,
-                     edgeProjector, alerts]
+                     edgeProjector, gb28181Projector, alerts]
                     {
                 alerts->stop();
                 service::gb28181::runtime().stop();
+                gb28181Projector->stop();
                 configReconciler->stop();
                 edgeProjector->stop();
                 collector->stop();
