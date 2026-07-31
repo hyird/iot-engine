@@ -264,7 +264,10 @@ void ZlmSdk::stop() noexcept {
         if (active == callbacks_)
             activeCallbacks_.reset();
     }
-    mk_events_listen(nullptr);
+    // ZLMediaKit stores the event table in process-global state without
+    // synchronizing readers. Keep our process-lifetime handlers installed so
+    // shutdown cannot race worker threads reading a partially cleared table.
+    // activeCallbacks_ already makes every handler a no-op after this point.
     {
         std::lock_guard lock(rtpMutex_);
         rtpServers_.clear();
