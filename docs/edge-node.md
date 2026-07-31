@@ -183,17 +183,20 @@ tmpfs 并续传；设备重启或断电会清空 tmpfs。
 平台不保存可恢复的明文 enrollment token。批准后使用独立节点凭据；凭据轮换和吊销要有
 审计。
 
-### 5.2 `edge_endpoint`
+### 5.2 统一 `link`
 
-- `id UUID PRIMARY KEY`、`edge_node_id UUID`；
-- `name`、`transport`、`mode`、`protocol`、`status`；
-- 以太网地址/端口；
-- 串口通道、波特率、数据位、停止位、校验位和 RS485 参数；
-- 创建、更新时间与软删除字段。
+中心采集和边缘采集只使用同一张 `link` 事实表：
 
-设备继续使用现有 `device.link_id` 关联统一链路模型。边缘端点在配置投影时转换成
-`LinkDefinition`，不再保留旧项目的 `link_id = 0` 哨兵值。现有 `link.agent_*` 占位字段
-在迁移前必须核对用途，不能直接删除。
+- `execution` 固定为 `collector` 或 `edge`；
+- `execution = collector` 时 `edge_node_id` 必须为空，`endpoint` 保存 TCP
+  Server/Client 及 Client 目标；
+- `execution = edge` 时 `edge_node_id` 必填，`endpoint` 保存以太网或串口的全部连接参数；
+- `device.link_id` 始终非空，遥测消息和 `device_data.link_id` 始终携带同一个链路 ID；
+- 边缘配置中的 `Endpoint.endpoint_id` 使用 `link.id`，`Device.device_id` 仍使用
+  `device.id`。
+
+不建立 `edge_endpoint` 影子表，不在 `device` 上重复保存 `edge_node_id` 或
+`edge_endpoint`，也不保留 `agent_*`、整数哨兵或旧字段回填逻辑。
 
 ### 5.3 `edge_event` 与凭据表
 

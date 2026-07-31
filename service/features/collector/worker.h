@@ -33,6 +33,7 @@
 #include "service/features/collector/stream.h"
 #include "service/features/collector/client.h"
 #include "service/features/collector/config.h"
+#include "service/features/collector/reconcile.h"
 #include "service/features/telemetry/latest.h"
 
 namespace service::collector {
@@ -402,10 +403,9 @@ class Worker final {
             const auto version = co_await config::activeVersion(redis_);
             if (version != loadedConfigVersion_) {
                 auto snapshot = co_await config::load(redis_, version);
-                const auto affected = affectedLinks(loadedSnapshot_, snapshot);
-                tcp_.stopLinks(affected);
-                engine_.reload(snapshot, affected);
-                tcp_.reconcile(snapshot, affected);
+                const auto plan = planRuntimeReconcile(loadedSnapshot_, snapshot);
+                tcp_.reconcile(snapshot, plan);
+                engine_.reload(snapshot, plan.affectedLinks);
                 for (const auto& link : loadedSnapshot_.links) {
                     if (std::none_of(
                             snapshot.links.begin(), snapshot.links.end(),
@@ -542,45 +542,6 @@ class Worker final {
                                   engine_.execute(task.connectionId, std::move(command)));
         }
         co_return true;
-    }
-
-    [[nodiscard]] static std::set<std::string, std::less<>>
-    affectedLinks(const RuntimeSnapshot& previous, const RuntimeSnapshot& next) {
-        std::map<std::string, LinkDefinition, std::less<>> previousLinks;
-        std::map<std::string, LinkDefinition, std::less<>> nextLinks;
-        std::map<std::string, std::vector<DeviceDefinition>, std::less<>> previousDevices;
-        std::map<std::string, std::vector<DeviceDefinition>, std::less<>> nextDevices;
-        for (const auto& link : previous.links)
-            previousLinks.emplace(link.id, link);
-        for (const auto& link : next.links)
-            nextLinks.emplace(link.id, link);
-        for (const auto& device : previous.devices)
-            previousDevices[device.linkId].push_back(device);
-        for (const auto& device : next.devices)
-            nextDevices[device.linkId].push_back(device);
-        const auto sortDevices = [](auto& grouped) {
-            for (auto& [linkId, devices] : grouped) {
-                (void)linkId;
-                std::ranges::sort(devices, {}, &DeviceDefinition::id);
-            }
-        };
-        sortDevices(previousDevices);
-        sortDevices(nextDevices);
-
-        std::set<std::string, std::less<>> result;
-        for (const auto& [id, link] : previousLinks) {
-            const auto current = nextLinks.find(id);
-            if (current == nextLinks.end() || current->second != link ||
-                previousDevices[id] != nextDevices[id])
-                result.insert(id);
-        }
-        for (const auto& [id, link] : nextLinks) {
-            const auto old = previousLinks.find(id);
-            if (old == previousLinks.end() || old->second != link ||
-                previousDevices[id] != nextDevices[id])
-                result.insert(id);
-        }
-        return result;
     }
 
     ruvia::Task<bool> consumeControl() {

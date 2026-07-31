@@ -301,6 +301,14 @@ if(MSVC)
 endif()
 add_test(NAME access COMMAND access-test)
 
+add_executable(storage-policy-test tests/storage-policy-test.cpp)
+target_include_directories(storage-policy-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(storage-policy-test PRIVATE ruvia::web)
+if(MSVC)
+    target_compile_options(storage-policy-test PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
+endif()
+add_test(NAME storage-policy COMMAND storage-policy-test)
+
 add_executable(edge-protocol-test tests/edge-protocol-test.cpp)
 target_include_directories(edge-protocol-test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}")

@@ -271,37 +271,13 @@ class Session final : public ProtocolSession,
     Session(LinkDefinition link, std::string connectionId, std::vector<DeviceDefinition> devices)
         : link_(std::move(link)), connectionId_(std::move(connectionId)),
           devices_(std::move(devices)) {
-        for (const auto& device : devices_) {
+        for (const auto& device : devices_)
             devicesByCode_.emplace(normalizeCode(device.code), &device);
-            requiresRegistration_ =
-                requiresRegistration_ ||
-                (device.registrationMode != "OFF" && !device.registrationBytes.empty());
-        }
     }
 
     [[nodiscard]] std::vector<ProtocolAction> consume(const ProtocolInput& input) override {
         std::vector<ProtocolAction> actions;
         std::vector<std::uint8_t> bytes(input.bytes.begin(), input.bytes.end());
-        if (const auto registration = matchRegistration(bytes); registration.device) {
-            for (const auto& device : devices_) {
-                if (device.registrationMode == "OFF" ||
-                    device.registrationBytes != registration.device->registrationBytes)
-                    continue;
-                boundDeviceIds_.insert(device.id);
-                actions.push_back({.kind = ProtocolActionKind::BindDevice,
-                                   .connectionId = connectionId_,
-                                   .deviceId = device.id,
-                                   .deviceCode = device.code});
-            }
-            bytes = registration.payload;
-            if (bytes.empty())
-                return actions;
-        }
-        if (isHeartbeat(bytes))
-            return actions;
-        if (requiresRegistration_ && boundDeviceIds_.empty())
-            return actions;
-
         receiveBuffer_.insert(receiveBuffer_.end(), bytes.begin(), bytes.end());
         if (receiveBuffer_.size() > kMaximumReceiveBuffer) {
             receiveBuffer_.clear();
@@ -481,11 +457,6 @@ class Session final : public ProtocolSession,
         std::uint64_t deadlineToken = 0;
     };
 
-    struct RegistrationMatch {
-        const DeviceDefinition* device = nullptr;
-        std::vector<std::uint8_t> payload;
-    };
-
     [[nodiscard]] const DeviceDefinition*
     findDevice(const ProtocolCommand& command) const noexcept {
         if (!command.deviceId.empty()) {
@@ -497,38 +468,6 @@ class Session final : public ProtocolSession,
         }
         const auto current = devicesByCode_.find(normalizeCode(command.deviceCode));
         return current == devicesByCode_.end() ? nullptr : current->second;
-    }
-
-    [[nodiscard]] RegistrationMatch
-    matchRegistration(const std::vector<std::uint8_t>& bytes) const {
-        RegistrationMatch result;
-        const DeviceDefinition* prefix = nullptr;
-        for (const auto& device : devices_) {
-            if (device.registrationMode == "OFF" || device.registrationBytes.empty())
-                continue;
-            if (bytes == device.registrationBytes) {
-                result.device = &device;
-                return result;
-            }
-            if (!prefix && bytes.size() > device.registrationBytes.size() &&
-                std::equal(device.registrationBytes.begin(), device.registrationBytes.end(),
-                           bytes.begin()))
-                prefix = &device;
-        }
-        if (prefix) {
-            result.device = prefix;
-            result.payload.assign(
-                bytes.begin() + static_cast<std::ptrdiff_t>(prefix->registrationBytes.size()),
-                bytes.end());
-        }
-        return result;
-    }
-
-    [[nodiscard]] bool isHeartbeat(const std::vector<std::uint8_t>& bytes) const {
-        return std::any_of(devices_.begin(), devices_.end(), [&](const auto& device) {
-            return device.heartbeatMode != "OFF" && !device.heartbeatBytes.empty() &&
-                   device.heartbeatBytes == bytes;
-        });
     }
 
     void compileElementCommand(const DeviceDefinition& device, ProtocolCommand& command) {
@@ -579,12 +518,8 @@ class Session final : public ProtocolSession,
         const auto device = devicesByCode_.find(parsed->deviceCode);
         if (device == devicesByCode_.end())
             return {};
-        if (requiresRegistration_ && !boundDeviceIds_.contains(device->second->id))
-            return {};
-
         std::vector<ProtocolAction> actions;
-        if (!requiresRegistration_ || boundDeviceIds_.contains(device->second->id)) {
-            boundDeviceIds_.insert(device->second->id);
+        if (boundDeviceIds_.insert(device->second->id).second) {
             actions.push_back({.kind = ProtocolActionKind::BindDevice,
                                .connectionId = connectionId_,
                                .deviceId = device->second->id,
@@ -843,7 +778,6 @@ class Session final : public ProtocolSession,
     std::vector<std::uint8_t> receiveBuffer_;
     std::map<std::string, PendingCommand, std::less<>> pendingCommands_;
     std::map<std::string, MultiPacket, std::less<>> multiPackets_;
-    bool requiresRegistration_ = false;
     std::uint64_t nextDeadlineToken_ = 1;
     std::uint16_t nextSerial_ = 1;
 };
@@ -853,8 +787,7 @@ class Runtime final : public ProtocolRuntime {
     [[nodiscard]] std::string_view protocol() const noexcept override { return "SL651"; }
 
     [[nodiscard]] ProtocolCapabilities capabilities() const noexcept override {
-        return ProtocolCapability::TcpServer | ProtocolCapability::Registration |
-               ProtocolCapability::Heartbeat | ProtocolCapability::Commands |
+        return ProtocolCapability::TcpServer | ProtocolCapability::Commands |
                ProtocolCapability::UnsolicitedReports;
     }
 

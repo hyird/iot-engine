@@ -327,16 +327,20 @@ WHERE id = $1::uuid AND deleted_at IS NULL)sql",
         try {
             const auto rows = co_await c.db().query(
                 R"sql(
-WITH filtered AS (
-  SELECT log.*, key.name AS access_key_name, webhook.name AS webhook_name
-  FROM open_access_log log
-  LEFT JOIN open_access_key key ON key.id = log.access_key_id
-  LEFT JOIN open_webhook webhook ON webhook.id = log.webhook_id
+WITH counted AS (
+  SELECT COUNT(*) AS total FROM open_access_log log
 )sql" + where + R"sql(
-), counted AS (SELECT COUNT(*) AS total FROM filtered), page AS (
-  SELECT * FROM filtered ORDER BY created_at DESC, id DESC
+), page_rows AS (
+  SELECT log.* FROM open_access_log log
+)sql" + where + R"sql(
+  ORDER BY log.created_at DESC, log.id DESC
   LIMIT $)sql" + std::to_string(limitParam) +
-                    "::bigint OFFSET $" + std::to_string(offsetParam) + R"sql(::bigint
+                     "::bigint OFFSET $" + std::to_string(offsetParam) + R"sql(::bigint
+), page AS (
+  SELECT page_rows.*, key.name AS access_key_name, webhook.name AS webhook_name
+  FROM page_rows
+  LEFT JOIN open_access_key key ON key.id = page_rows.access_key_id
+  LEFT JOIN open_webhook webhook ON webhook.id = page_rows.webhook_id
 )
 SELECT jsonb_build_object(
   'list', COALESCE((SELECT jsonb_agg(jsonb_build_object(
@@ -479,17 +483,24 @@ SELECT jsonb_build_object(
         const auto pageParam = params.size();
         const auto rows = co_await c.db().query(
             R"sql(
-WITH filtered AS (
-  SELECT record.*, device.name AS device_name,
-         device.protocol_params->>'device_code' AS device_code
+WITH counted AS (
+  SELECT COUNT(*) AS total
   FROM open_alert_record record
   JOIN open_access_key_device binding ON binding.device_id = record.device_id
-  JOIN device ON device.id = record.device_id
 )sql" + where + R"sql(
-), counted AS (SELECT COUNT(*) AS total FROM filtered), page AS (
-  SELECT * FROM filtered ORDER BY triggered_at DESC, id DESC
+), page_rows AS (
+  SELECT record.*
+  FROM open_alert_record record
+  JOIN open_access_key_device binding ON binding.device_id = record.device_id
+)sql" + where + R"sql(
+  ORDER BY record.triggered_at DESC, record.id DESC
   LIMIT $)sql" + std::to_string(limit) +
-                "::bigint OFFSET $" + std::to_string(offset) + R"sql(::bigint
+                 "::bigint OFFSET $" + std::to_string(offset) + R"sql(::bigint
+), page AS (
+  SELECT page_rows.*, device.name AS device_name,
+         device.protocol_params->>'device_code' AS device_code
+  FROM page_rows
+  JOIN device ON device.id = page_rows.device_id
 )
 SELECT jsonb_build_object(
   'list', COALESCE((SELECT jsonb_agg(jsonb_build_object(
@@ -971,15 +982,21 @@ WITH device_ref AS (
   SELECT element->>'id' AS id, COALESCE(element->>'name', element->>'id') AS name,
          COALESCE(element->>'unit', '') AS unit, protocol_order, function_order, element_order
   FROM configured WHERE COALESCE(element->>'encode', '') <> 'JPEG'
+), counted AS (
+  SELECT COUNT(*) AS total
+  FROM device_data data
+  WHERE data.device_id = $1::uuid
+    AND data.report_time >= $2::timestamptz AND data.report_time <= $3::timestamptz
+    AND jsonb_typeof(data.data->'values') = 'object'
 ), filtered AS (
-  SELECT data.*, COUNT(*) OVER () AS total
+  SELECT data.id, data.report_time, data.data
   FROM device_data data
   WHERE data.device_id = $1::uuid
     AND data.report_time >= $2::timestamptz AND data.report_time <= $3::timestamptz
     AND jsonb_typeof(data.data->'values') = 'object'
   ORDER BY data.report_time DESC, data.id DESC LIMIT $4::bigint OFFSET $5::bigint
 ), items AS (
-  SELECT filtered.report_time, filtered.id, filtered.total,
+  SELECT filtered.report_time, filtered.id,
     jsonb_build_object(
       'device', jsonb_build_object('id', device_ref.id, 'code', device_ref.code,
         'name', device_ref.name),
@@ -990,13 +1007,15 @@ WITH device_ref AS (
         ORDER BY point.protocol_order, point.function_order, point.element_order), '[]'::jsonb)
     ) AS item
   FROM filtered CROSS JOIN device_ref CROSS JOIN point
-  GROUP BY filtered.report_time, filtered.id, filtered.total,
-           device_ref.id, device_ref.code, device_ref.name
+  GROUP BY filtered.report_time, filtered.id,
+            device_ref.id, device_ref.code, device_ref.name
 )
 SELECT jsonb_build_object(
   'list', COALESCE(jsonb_agg(item ORDER BY report_time DESC, id DESC), '[]'::jsonb),
-  'total', COALESCE(MAX(total), 0), 'page', $6::bigint, 'pageSize', $4::bigint,
-  'totalPages', CEIL(COALESCE(MAX(total), 0)::numeric / $4::numeric)::bigint)::text
+  'total', COALESCE((SELECT total FROM counted), 0),
+  'page', $6::bigint, 'pageSize', $4::bigint,
+  'totalPages',
+    CEIL(COALESCE((SELECT total FROM counted), 0)::numeric / $4::numeric)::bigint)::text
 FROM items)sql";
     }
 };

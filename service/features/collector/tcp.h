@@ -27,6 +27,7 @@
 
 #include "service/common/message/contract.h"
 #include "service/features/collector/engine.h"
+#include "service/features/collector/reconcile.h"
 #include "service/features/collector/types.h"
 #include "service/features/collector/timer.h"
 
@@ -118,16 +119,36 @@ class Tcp final {
             lastActivity_.erase(linkId);
     }
 
-    void reconcile(const RuntimeSnapshot& snapshot,
-                   const std::set<std::string, std::less<>>& affectedLinks) {
+    void reconcile(const RuntimeSnapshot& snapshot, const RuntimeReconcilePlan& plan) {
         stopped_ = false;
-        for (const auto& linkId : affectedLinks)
-            definitions_.erase(linkId);
-        for (const auto& link : snapshot.links) {
-            if (!affectedLinks.contains(link.id))
+        std::map<std::string, const LinkDefinition*, std::less<>> nextLinks;
+        for (const auto& link : snapshot.links)
+            if (plan.affectedLinks.contains(link.id))
+                nextLinks.emplace(link.id, &link);
+
+        for (const auto& linkId : plan.affectedLinks) {
+            const auto old = definitions_.find(linkId);
+            const auto next = nextLinks.find(linkId);
+            const auto* nextLink = next == nextLinks.end() ? nullptr : next->second;
+            const bool incrementalClient =
+                !plan.restartLinks.contains(linkId) &&
+                old != definitions_.end() && nextLink &&
+                old->second.mode == "TCP Client" &&
+                nextLink->mode == "TCP Client" &&
+                old->second.protocol == nextLink->protocol;
+
+            if (incrementalClient) {
+                definitions_.insert_or_assign(linkId, *nextLink);
+                reconcileClientTargets(*nextLink, plan.restartClientTargets);
                 continue;
-            definitions_.insert_or_assign(link.id, link);
-            startDefinition(link);
+            }
+
+            stopLinks({linkId});
+            definitions_.erase(linkId);
+            if (nextLink) {
+                definitions_.emplace(linkId, *nextLink);
+                startDefinition(*nextLink);
+            }
         }
     }
 
@@ -141,8 +162,10 @@ class Tcp final {
 
     void close(std::string_view connectionId, std::string reason = "local_closed") {
         const auto current = connections_.find(connectionId);
-        if (current != connections_.end())
-            current->second->close(std::move(reason));
+        if (current != connections_.end()) {
+            auto connection = current->second;
+            connection->close(std::move(reason));
+        }
     }
 
     void send(std::string_view connectionId, std::vector<std::uint8_t> bytes,
@@ -396,14 +419,16 @@ class Tcp final {
 
         void stop() {
             stopped = true;
-            if (reconnectToken != 0)
+            if (reconnectToken != 0) {
                 owner.scheduler_.cancel(reconnectToken);
+                reconnectToken = 0;
+            }
             std::error_code ignored;
             socket.cancel(ignored);
             socket.close(ignored);
-            if (!connectionId.empty())
-                owner.removeConnection(connectionId, "local_closed", false);
-            connectionId.clear();
+            const auto activeConnection = std::exchange(connectionId, {});
+            if (!activeConnection.empty())
+                owner.close(activeConnection, "local_closed");
         }
 
         void connect() {
@@ -428,6 +453,11 @@ class Tcp final {
                     self->fail(error);
                     return;
                 }
+                // stop() can race a connect completion that was already queued as
+                // successful. Do not let the retired target recreate a connection
+                // after the new configuration generation has taken ownership.
+                if (self->stopped)
+                    return;
                 self->connectionId = message::nextMessageId();
                 self->state = "connected";
                 self->reason.clear();
@@ -506,12 +536,80 @@ class Tcp final {
                 std::hash<std::string_view>{}(target.id) % workerCount_ != workerIndex_)
                 continue;
             assigned = true;
-            auto client = std::make_shared<ClientTarget>(*this, link, target);
-            clients_.emplace(client->key(), client);
-            client->start();
+            startClient(link, target);
         }
         if (!assigned)
             publish(link.id, "idle");
+    }
+
+    void startClient(const LinkDefinition& link, const LinkTargetDefinition& target) {
+        auto client = std::make_shared<ClientTarget>(*this, link, target);
+        clients_.insert_or_assign(client->key(), client);
+        client->start();
+    }
+
+    void reconcileClientTargets(
+        const LinkDefinition& link,
+        const std::set<ClientTargetKey>& restartClientTargets) {
+        std::map<std::string, LinkTargetDefinition, std::less<>> desired;
+        if (link.status == "enabled") {
+            for (const auto& target : link.targets) {
+                if (target.status != "enabled" ||
+                    std::hash<std::string_view>{}(target.id) % workerCount_ != workerIndex_)
+                    continue;
+                desired.insert_or_assign(target.id, target);
+            }
+        }
+
+        for (auto current = clients_.begin(); current != clients_.end();) {
+            auto& client = current->second;
+            if (client->link.id != link.id) {
+                ++current;
+                continue;
+            }
+            const auto target = desired.find(client->target.id);
+            const bool forced =
+                restartClientTargets.contains({link.id, client->target.id});
+            const bool endpointUnchanged =
+                target != desired.end() &&
+                target->second.ip == client->target.ip &&
+                target->second.port == client->target.port;
+            if (forced || !endpointUnchanged) {
+                client->stop();
+                current = clients_.erase(current);
+                continue;
+            }
+
+            client->link = link;
+            client->target = target->second;
+            desired.erase(target);
+            ++current;
+        }
+
+        for (const auto& [targetId, target] : desired) {
+            (void)targetId;
+            startClient(link, target);
+        }
+
+        bool hasAssignedTarget = false;
+        bool hasConnectedTarget = false;
+        bool hasFailedTarget = false;
+        for (const auto& [key, client] : clients_) {
+            (void)key;
+            if (client->link.id != link.id)
+                continue;
+            hasAssignedTarget = true;
+            hasConnectedTarget = hasConnectedTarget || !client->connectionId.empty();
+            hasFailedTarget = hasFailedTarget || client->failed;
+        }
+        if (link.status != "enabled")
+            publish(link.id, "stopped");
+        else if (!hasAssignedTarget)
+            publish(link.id, "idle");
+        else if (hasConnectedTarget)
+            publish(link.id, "connected");
+        else
+            publish(link.id, hasFailedTarget ? "reconnecting" : "connecting");
     }
 
     void addConnection(const LinkDefinition& link, std::string targetId, std::string id,
@@ -577,11 +675,13 @@ class Tcp final {
             if (client != clients_.end()) {
                 client->second->connectionId.clear();
                 client->second->failed = true;
-                client->second->reconnectToken = scheduler_.scheduleAfter(
-                    std::chrono::seconds(2), [target = client->second] {
-                        target->reconnectToken = 0;
-                        target->connect();
-                    });
+                if (!client->second->stopped && client->second->reconnectToken == 0) {
+                    client->second->reconnectToken = scheduler_.scheduleAfter(
+                        std::chrono::seconds(2), [target = client->second] {
+                            target->reconnectToken = 0;
+                            target->connect();
+                        });
+                }
             }
         }
     }

@@ -449,7 +449,17 @@ Collector
 任一北桥 Worker 执行数据库写入，但南桥消息本身不改分区，也不重新发布到其他南桥
 Worker。北桥 Worker 数量与南桥 Worker 数量不同时，使用稳定的取模映射分配分区。
 
-数据库不是另起一套 `iot_*` 命名，而是以 `iot-manager` 的现有表为基线：`sys_department`、`sys_role`、`sys_user`、`sys_user_role`、`link`、`protocol_config`、`device_group`、`device`、`device_data`。原表的核心字段和 JSONB 边界必须保留；本项目只在其上增加 UUIDv7、所有权、约束和南北桥运行所需字段。全部业务主键使用 UUIDv7，不能恢复整数兼容列或重复影子表。
+数据库 Schema 只定义当前最终模型，不兼容旧库，也不包含旧字段迁移、回填、双读或双写。
+发布这一版本时必须删除旧数据库并从空库执行全部 Schema；禁止在旧库上增量升级。
+业务表使用 `sys_department`、`sys_role`、`sys_user`、`sys_user_role`、`link`、
+`protocol_config`、`device_group`、`device`、`device_data` 等统一命名，全部业务主键使用
+UUIDv7，不建立整数兼容列或重复影子表。
+
+`link` 是中心与边缘采集共用的连接事实。`execution = collector` 时由中心 Collector
+执行，`endpoint` 保存 TCP Server/Client 参数且 `edge_node_id` 必须为空；
+`execution = edge` 时由指定 `edge_node_id` 执行，`endpoint` 保存 TCP 或串口参数。
+中心链路管理 API 只管理 `collector` 链路；边缘设备配置原子创建并绑定 `edge` 链路。
+两种执行位置最终都通过非空 `device.link_id` 进入同一解析、遥测持久化和最新值投影。
 
 `device` 保留原版 `protocol_params JSONB` 作为设备协议参数真源。设备编码、目标 ID、在线超时、远程控制、Modbus 模式、Slave ID、设备时区、心跳包和注册包都放在该对象中；`id/name/link_id/protocol_config_id/group_id/status` 等稳定关系保持强类型列。设备编码通过 JSONB 表达式唯一索引保证全局唯一。
 

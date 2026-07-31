@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <ruvia/web/App.h>
 #include <ruvia/web/db/Db.h>
@@ -19,6 +20,7 @@
 #include "service/common/http.h"
 #include "service/common/packet-log.h"
 #include "service/config/schema.h"
+#include "service/config/storage.h"
 #include "service/domains/alert/alert.controller.h"
 #include "service/features/alert/runtime.h"
 #include "service/domains/gb28181/gb28181.controller.h"
@@ -231,12 +233,26 @@ int main(int argc, char *argv[])
         service::gb28181::runtime().configure(gb28181);
 
         auto db = databaseConfig(app.env());
+        const auto storagePolicy = service::config::deviceDataStoragePolicy(app.env());
+        const auto storagePolicyMigration =
+            service::config::deviceDataStoragePolicyMigration(storagePolicy);
+        std::vector<ruvia::DbMigration> migrations;
+        migrations.reserve(service::config::kSchemaMigrations.size() + 1);
+        migrations.insert(migrations.end(), service::config::kSchemaMigrations.begin(),
+                          service::config::kSchemaMigrations.end());
+        migrations.emplace_back(storagePolicyMigration.id, storagePolicyMigration.sql);
         ruvia::DbMigrationOptions migrationOptions;
         migrationOptions.table = "sys_schema_migrations";
-        const auto report = ruvia::DbMigrator::migrate(db, service::config::kSchemaMigrations,
-                                                       std::move(migrationOptions));
+        const auto report =
+            ruvia::DbMigrator::migrate(db, migrations, std::move(migrationOptions));
         std::cout << "database migrations: applied=" << report.applied().size()
                   << ", skipped=" << report.skipped().size() << '\n';
+        std::cout << "device_data storage policy: chunk="
+                  << storagePolicy.chunkIntervalHours << "h, compression="
+                  << (storagePolicy.compressionEnabled
+                          ? std::to_string(storagePolicy.compressionAfterHours) + "h"
+                          : "disabled")
+                  << ", mutable-window=" << storagePolicy.mutableWindowHours << "h\n";
 
         configureWeb(app, runtime);
         const auto cpu = std::max(2U, std::thread::hardware_concurrency());

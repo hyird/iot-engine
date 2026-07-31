@@ -187,10 +187,11 @@ FROM body WHERE p.id = $2)sql",
   private:
     static ruvia::Task<void> syncEdgeNodes(ruvia::Context& c, std::string_view configId) {
         const auto rows = co_await c.db().query(R"sql(
-SELECT DISTINCT edge_node_id::text
-FROM device
-WHERE protocol_config_id = $1::uuid AND edge_node_id IS NOT NULL AND deleted_at IS NULL
-ORDER BY edge_node_id::text)sql",
+SELECT DISTINCT l.edge_node_id::text
+FROM device d
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
+WHERE d.protocol_config_id = $1::uuid AND d.deleted_at IS NULL
+ORDER BY l.edge_node_id::text)sql",
                                                 service::common::dbParams(configId));
         for (const auto& row : rows.rows())
             (void)co_await service::edge::configService().queueSnapshot(c, row[0].text());

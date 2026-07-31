@@ -97,7 +97,9 @@ template <typename Database> inline ruvia::Task<RuntimeSnapshot> loadRuntimeSnap
     const auto links = co_await db.query(R"sql(
 SELECT id::text, name, endpoint->>'mode', protocol, COALESCE(endpoint->>'ip', ''),
        COALESCE((endpoint->>'port')::integer, 0), status
-FROM link WHERE deleted_at IS NULL ORDER BY id)sql");
+FROM link
+WHERE deleted_at IS NULL AND execution = 'collector'
+ORDER BY id)sql");
     for (const auto& row : links.rows()) {
         LinkDefinition link;
         link.id = cell(row, 0);
@@ -115,7 +117,8 @@ SELECT l.id::text, target->>'id', target->>'name', target->>'ip', target->>'port
        COALESCE(target->>'status', 'enabled')
 FROM link l
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(l.endpoint->'targets', '[]'::jsonb)) AS target
-WHERE l.deleted_at IS NULL AND l.endpoint->>'mode' = 'TCP Client'
+WHERE l.deleted_at IS NULL AND l.execution = 'collector'
+  AND l.endpoint->>'mode' = 'TCP Client'
 ORDER BY l.id)sql");
     for (const auto& row : targets.rows()) {
         const auto linkId = cell(row, 0);
@@ -162,7 +165,8 @@ SELECT d.id::text, d.protocol_params->>'device_code', d.name, d.link_id::text,
        COALESCE(p.config->'packet'->>'mergeGap', '100'),
        COALESCE(p.config->'packet'->>'maxQuantity', '125')
 FROM device d
-JOIN link l ON l.id = d.link_id AND l.deleted_at IS NULL AND l.status = 'enabled'
+JOIN link l ON l.id = d.link_id AND l.deleted_at IS NULL
+  AND l.status = 'enabled' AND l.execution = 'collector'
 JOIN protocol_config p ON p.id = d.protocol_config_id
   AND p.deleted_at IS NULL AND p.enabled = TRUE
 WHERE d.deleted_at IS NULL AND d.status = 'enabled'

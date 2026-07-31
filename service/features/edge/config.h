@@ -358,14 +358,14 @@ SELECT d.id::text, d.name, d.protocol_params->>'device_code', p.protocol,
        COALESCE((d.protocol_params->>'online_timeout')::integer, 300),
        COALESCE((d.protocol_params->>'slave_id')::integer, 1),
        COALESCE(d.protocol_params->>'modbus_mode', 'TCP'),
-       d.edge_endpoint->>'transport', d.edge_endpoint->>'interface',
-       COALESCE(d.edge_endpoint->>'mode', ''), COALESCE(d.edge_endpoint->>'ip', ''),
-       COALESCE((d.edge_endpoint->>'port')::integer, 0),
-       COALESCE((d.edge_endpoint->>'baud_rate')::integer, 9600),
-       COALESCE((d.edge_endpoint->>'data_bits')::integer, 8),
-       COALESCE((d.edge_endpoint->>'stop_bits')::integer, 1),
-       COALESCE(d.edge_endpoint->>'parity', 'none'),
-       COALESCE((d.edge_endpoint->>'rs485')::boolean, false),
+       l.endpoint->>'transport', l.endpoint->>'interface',
+       COALESCE(l.endpoint->>'mode', ''), COALESCE(l.endpoint->>'ip', ''),
+       COALESCE((l.endpoint->>'port')::integer, 0),
+       COALESCE((l.endpoint->>'baud_rate')::integer, 9600),
+       COALESCE((l.endpoint->>'data_bits')::integer, 8),
+       COALESCE((l.endpoint->>'stop_bits')::integer, 1),
+       COALESCE(l.endpoint->>'parity', 'none'),
+       COALESCE((l.endpoint->>'rs485')::boolean, false),
        COALESCE((p.config->'packet'->>'mergeGap')::integer, 0),
        COALESCE((p.config->'packet'->>'maxQuantity')::integer, 125),
        COALESCE(p.config->'connection'->>'mode', 'RACK_SLOT'),
@@ -378,10 +378,12 @@ SELECT d.id::text, d.name, d.protocol_params->>'device_code', p.protocol,
        COALESCE(d.protocol_params->'heartbeat'->>'content', ''),
        COALESCE(d.protocol_params->'registration'->>'mode', 'OFF'),
        COALESCE(d.protocol_params->'registration'->>'content', ''),
-       d.status = 'enabled' AND p.enabled
+       d.status = 'enabled' AND p.enabled AND l.status = 'enabled',
+       d.link_id::text
 FROM device d
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
 JOIN protocol_config p ON p.id = d.protocol_config_id AND p.deleted_at IS NULL
-WHERE d.edge_node_id = $1::uuid AND d.deleted_at IS NULL
+WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
 ORDER BY d.id)sql",
                                                      service::common::dbParams(nodeId));
         for (const auto& row : devices.rows()) {
@@ -389,8 +391,8 @@ ORDER BY d.id)sql",
             pb::ConfigItem endpoint;
             endpoint.set_kind(pb::CONFIG_ITEM_ENDPOINT);
             auto* endpointValue = endpoint.mutable_endpoint();
-            if (!setUuid(endpointValue->mutable_endpoint_id(), row[0].text()))
-                throw std::runtime_error("invalid edge device UUID");
+            if (!setUuid(endpointValue->mutable_endpoint_id(), row[32].text()))
+                throw std::runtime_error("invalid edge link UUID");
             endpointValue->set_name(row[1].text());
             endpointValue->set_interface_name(row[10].text());
             endpointValue->set_protocol(protocol);
@@ -423,7 +425,7 @@ ORDER BY d.id)sql",
             device.set_kind(pb::CONFIG_ITEM_DEVICE);
             auto* deviceValue = device.mutable_device();
             setUuid(deviceValue->mutable_device_id(), row[0].text());
-            setUuid(deviceValue->mutable_endpoint_id(), row[0].text());
+            setUuid(deviceValue->mutable_endpoint_id(), row[32].text());
             deviceValue->set_device_code(row[2].text());
             deviceValue->set_name(row[1].text());
             deviceValue->set_protocol(protocol);
@@ -474,9 +476,10 @@ SELECT d.id::text, item->>'id', item->>'name', COALESCE(item->>'unit', ''),
        COALESCE((item->>'decimals')::integer, -1),
        COALESCE((item->>'writable')::boolean, false)
 FROM device d
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
 JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'Modbus'
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]')) item
-WHERE d.edge_node_id = $1::uuid AND d.deleted_at IS NULL
+WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
 ORDER BY d.id, item->>'id')sql",
                                                  service::common::dbParams(nodeId));
         for (const auto& row : rows.rows()) {
@@ -511,9 +514,10 @@ SELECT d.id::text, item->>'id', item->>'name', COALESCE(item->>'unit', ''),
        COALESCE((item->>'decimals')::integer, -1),
        COALESCE((item->>'writable')::boolean, false)
 FROM device d
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
 JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'S7'
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]')) item
-WHERE d.edge_node_id = $1::uuid AND d.deleted_at IS NULL
+WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
 ORDER BY d.id, item->>'id')sql",
                                                  service::common::dbParams(nodeId));
         for (const auto& row : rows.rows()) {
@@ -546,9 +550,10 @@ ORDER BY d.id, item->>'id')sql",
         const auto functions = co_await c.db().query(R"sql(
 SELECT d.id::text, func->>'funcCode', func->>'name', func->>'dir'
 FROM device d
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
 JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'SL651'
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]')) func
-WHERE d.edge_node_id = $1::uuid AND d.deleted_at IS NULL
+WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
 ORDER BY d.id, func->>'funcCode')sql",
                                                       service::common::dbParams(nodeId));
         for (const auto& row : functions.rows()) {
@@ -569,6 +574,7 @@ SELECT d.id::text, func->>'funcCode', element->>'id', element->>'name',
        COALESCE(element->>'guideHex', ''), response_element,
        func->>'dir' = 'DOWN'
 FROM device d
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
 JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'SL651'
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]')) func
 CROSS JOIN LATERAL (
@@ -578,7 +584,7 @@ CROSS JOIN LATERAL (
   SELECT value AS element, true AS response_element
   FROM jsonb_array_elements(COALESCE(func->'responseElements', '[]'))
 ) values
-WHERE d.edge_node_id = $1::uuid AND d.deleted_at IS NULL
+WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
 ORDER BY d.id, func->>'funcCode', response_element, element->>'id')sql",
                                                      service::common::dbParams(nodeId));
         for (const auto& row : elements.rows()) {

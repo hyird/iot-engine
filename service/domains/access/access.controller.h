@@ -34,19 +34,19 @@ inline std::string routeId(ruvia::Context& c) {
 
 class AccessAdminController final : public ruvia::Controller<AccessAdminController> {
   public:
-    RUVIA_CONTROLLER_GROUP("/v1/open-access", service::middleware::AuthMiddleware)
+    RUVIA_CONTROLLER_GROUP("/api", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
-    RUVIA_GET("/devices", devices);
-    RUVIA_GET("/keys", keys);
-    RUVIA_POST("/keys", createKey);
-    RUVIA_POST("/keys/:id/rotate", rotateKey);
-    RUVIA_PUT("/keys/:id", updateKey);
-    RUVIA_DELETE("/keys/:id", removeKey);
-    RUVIA_GET("/webhooks", webhooks);
-    RUVIA_POST("/webhooks", createWebhook);
-    RUVIA_PUT("/webhooks/:id", updateWebhook);
-    RUVIA_DELETE("/webhooks/:id", removeWebhook);
-    RUVIA_GET("/logs", logs);
+    RUVIA_GET("/device/options", devices);
+    RUVIA_GET("/open-access-key", keys);
+    RUVIA_POST("/open-access-key", createKey);
+    RUVIA_POST("/open-access-key/:id/rotate", rotateKey);
+    RUVIA_PUT("/open-access-key/:id", updateKey);
+    RUVIA_DELETE("/open-access-key/:id", removeKey);
+    RUVIA_GET("/open-webhook", webhooks);
+    RUVIA_POST("/open-webhook", createWebhook);
+    RUVIA_PUT("/open-webhook/:id", updateWebhook);
+    RUVIA_DELETE("/open-webhook/:id", removeWebhook);
+    RUVIA_GET("/open-access-log", logs);
     RUVIA_ROUTES_END
 
   private:
@@ -116,13 +116,13 @@ class AccessAdminController final : public ruvia::Controller<AccessAdminControll
 
 class AccessController final : public ruvia::Controller<AccessController> {
   public:
-    RUVIA_CONTROLLER_GROUP("/open")
+    RUVIA_CONTROLLER_GROUP("/open-api/device")
     RUVIA_ROUTES_BEGIN
-    RUVIA_GET("/devices", devices);
-    RUVIA_GET("/devices/:id/realtime", realtime);
-    RUVIA_GET("/devices/:id/history", history);
-    RUVIA_POST("/devices/:id/commands", command);
-    RUVIA_GET("/alerts", alerts);
+    RUVIA_GET("/list", devices);
+    RUVIA_GET("/realtime", realtime);
+    RUVIA_GET("/history", history);
+    RUVIA_POST("/command", command);
+    RUVIA_GET("/alert", alerts);
     RUVIA_ROUTES_END
 
   private:
@@ -147,7 +147,7 @@ class AccessController final : public ruvia::Controller<AccessController> {
 
     ruvia::Task<ruvia::HttpResponse> realtime(ruvia::Context& c) {
         const auto session = co_await accessService().authenticate(c, kScopeRealtime);
-        const auto id = routeId(c);
+        const auto id = trim(c.req().query("deviceId").value_or(""));
         const auto data = co_await accessService().publicRealtime(c, session, id);
         co_await logSafe(c, "realtime", session, id);
         co_return jsonData(c, data);
@@ -155,7 +155,7 @@ class AccessController final : public ruvia::Controller<AccessController> {
 
     ruvia::Task<ruvia::HttpResponse> history(ruvia::Context& c) {
         const auto session = co_await accessService().authenticate(c, kScopeHistory);
-        const auto id = routeId(c);
+        const auto id = trim(c.req().query("deviceId").value_or(""));
         const auto data = co_await accessService().publicHistory(c, session, id);
         co_await logSafe(c, "history", session, id);
         co_return jsonData(c, data);
@@ -163,11 +163,12 @@ class AccessController final : public ruvia::Controller<AccessController> {
 
     ruvia::Task<ruvia::HttpResponse> command(ruvia::Context& c) {
         const auto session = co_await accessService().authenticate(c, kScopeCommand);
-        const auto id = routeId(c);
+        const auto body = co_await c.req().json<service::device::DeviceCommandBody>();
+        const auto id =
+            body.deviceId() ? std::string(body.deviceId()->view()) : std::string{};
+        requireUuid(id, "设备 ID 无效");
         if (!session.allowsDevice(id))
             service::common::fail(19011, "AccessKey 无权控制该设备", 403);
-        requireUuid(id, "设备 ID 无效");
-        const auto body = co_await c.req().json<service::device::DeviceCommandBody>();
         auto result = co_await service::command::commandService().createExternal(
             c, id, body, session.id);
         co_await logSafe(c, "command", session, id);

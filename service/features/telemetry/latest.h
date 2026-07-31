@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -282,7 +283,8 @@ return 0
 
 template <typename Context>
 ruvia::Task<void> project(Context& context, std::string filter,
-                          std::vector<ruvia::DbValue> params, bool resetRuntime) {
+                          std::vector<ruvia::DbValue> params, bool resetRuntime,
+                          bool preserveExisting = false) {
     const auto redis = context.redis();
     const auto now = std::to_string(service::message::utcNowMilliseconds());
     const auto devices = co_await context.db().query(
@@ -300,9 +302,62 @@ WHERE d.deleted_at IS NULL)sql" +
     if (devices.rows().empty())
         co_return;
 
+    std::set<std::string, std::less<>> recoveryDeviceIds;
+    std::set<std::string, std::less<>> recoveryDeviceCodes;
+    std::map<std::string, std::string, std::less<>> preservedDeadlines;
+    if (preserveExisting) {
+        auto existencePipeline = redis.pipeline();
+        std::vector<std::vector<std::string>> existenceCommands;
+        existenceCommands.reserve(devices.rows().size() * 2);
+        for (const auto& row : devices.rows()) {
+            existenceCommands.push_back(
+                {"HMGET", latestKey(row[1].text()), "_device_id", "_element_ids"});
+            std::vector<std::string_view> views(existenceCommands.back().begin(),
+                                                existenceCommands.back().end());
+            existencePipeline.command(views);
+            existenceCommands.push_back(
+                {"HMGET", runtimeKey(row[1].text()), "device_id", "online_until_ms"});
+            std::vector<std::string_view> runtimeViews(existenceCommands.back().begin(),
+                                                       existenceCommands.back().end());
+            existencePipeline.command(runtimeViews);
+        }
+        const auto replies = co_await std::move(existencePipeline).exec();
+        for (std::size_t index = 0; index < devices.rows().size(); ++index) {
+            const auto& row = devices.rows()[index];
+            const auto latestIndex = index * 2;
+            const auto runtimeIndex = latestIndex + 1;
+            const bool matches =
+                runtimeIndex < replies.size() &&
+                replies[latestIndex].kind() == ruvia::RedisValue::Kind::kArray &&
+                replies[latestIndex].array().size() == 2 &&
+                replies[latestIndex].array()[0].kind() == ruvia::RedisValue::Kind::kString &&
+                replies[latestIndex].array()[0].string() == row[0].text() &&
+                replies[latestIndex].array()[1].kind() == ruvia::RedisValue::Kind::kString &&
+                !replies[latestIndex].array()[1].string().empty() &&
+                replies[runtimeIndex].kind() == ruvia::RedisValue::Kind::kArray &&
+                replies[runtimeIndex].array().size() == 2 &&
+                replies[runtimeIndex].array()[0].kind() == ruvia::RedisValue::Kind::kString &&
+                replies[runtimeIndex].array()[0].string() == row[0].text();
+            if (!matches) {
+                recoveryDeviceIds.emplace(row[0].text());
+                recoveryDeviceCodes.emplace(row[1].text());
+            } else if (replies[runtimeIndex].array()[1].kind() ==
+                       ruvia::RedisValue::Kind::kString) {
+                preservedDeadlines.insert_or_assign(
+                    std::string(row[1].text()),
+                    std::string(replies[runtimeIndex].array()[1].string()));
+            }
+        }
+    } else {
+        for (const auto& row : devices.rows()) {
+            recoveryDeviceIds.emplace(row[0].text());
+            recoveryDeviceCodes.emplace(row[1].text());
+        }
+    }
+
     auto metaPipeline = redis.pipeline();
     std::vector<std::vector<std::string>> metaCommands;
-    metaCommands.reserve(devices.rows().size() * 3);
+    metaCommands.reserve(devices.rows().size() * 6);
     std::map<std::string, std::int64_t, std::less<>> onlineWindows;
     std::map<std::string, std::vector<std::string>, std::less<>> elementIds;
     for (const auto& row : devices.rows()) {
@@ -310,16 +365,25 @@ WHERE d.deleted_at IS NULL)sql" +
         const std::string deviceCode(row[1].text());
         onlineWindows.insert_or_assign(deviceCode, std::stoll(std::string(row[2].text())));
         elementIds.insert_or_assign(deviceCode, std::vector<std::string>{});
-        metaCommands.push_back({"DEL", latestKey(deviceCode)});
+        if (recoveryDeviceIds.contains(deviceId)) {
+            metaCommands.push_back({"DEL", latestKey(deviceCode)});
+            std::vector<std::string_view> views(metaCommands.back().begin(),
+                                                metaCommands.back().end());
+            metaPipeline.command(views);
+            metaCommands.push_back({"DEL", runtimeKey(deviceCode)});
+            std::vector<std::string_view> runtimeViews(metaCommands.back().begin(),
+                                                       metaCommands.back().end());
+            metaPipeline.command(runtimeViews);
+        }
+        metaCommands.push_back({"HSET", latestKey(deviceCode), "_device_id", deviceId,
+                                "_device_code", deviceCode, "_updated_at_ms", now});
         {
             std::vector<std::string_view> views(metaCommands.back().begin(),
                                                 metaCommands.back().end());
             metaPipeline.command(views);
         }
-        metaCommands.push_back({"HSET", latestKey(deviceCode), "_device_id", deviceId,
-                                "_device_code", deviceCode, "_state",
-                                stateJson("offline", "no_data", {}, {}, now), "_updated_at_ms",
-                                now});
+        metaCommands.push_back({"HSETNX", latestKey(deviceCode), "_state",
+                                stateJson("offline", "no_data", {}, {}, now)});
         {
             std::vector<std::string_view> views(metaCommands.back().begin(),
                                                 metaCommands.back().end());
@@ -327,19 +391,44 @@ WHERE d.deleted_at IS NULL)sql" +
         }
         metaCommands.push_back({"HSET", runtimeKey(deviceCode), "device_id", deviceId,
                                 "device_code", deviceCode, "updated_at_ms", now});
-        if (resetRuntime) {
+        if (resetRuntime || recoveryDeviceIds.contains(deviceId)) {
             metaCommands.back().push_back("state");
             metaCommands.back().push_back("offline");
             metaCommands.back().push_back("state_reason");
-            metaCommands.back().push_back("startup");
+            metaCommands.back().push_back(recoveryDeviceIds.contains(deviceId)
+                                              ? "no_data"
+                                              : "startup");
         }
         {
             std::vector<std::string_view> views(metaCommands.back().begin(),
                                                 metaCommands.back().end());
             metaPipeline.command(views);
         }
+        if (recoveryDeviceIds.contains(deviceId)) {
+            metaCommands.push_back(
+                {"ZREM", std::string(kOnlineDeadlinesKey), deviceCode});
+            std::vector<std::string_view> views(metaCommands.back().begin(),
+                                                metaCommands.back().end());
+            metaPipeline.command(views);
+        } else if (preservedDeadlines.contains(deviceCode)) {
+            metaCommands.push_back({"ZADD", std::string(kOnlineDeadlinesKey),
+                                    preservedDeadlines.at(deviceCode), deviceCode});
+            std::vector<std::string_view> views(metaCommands.back().begin(),
+                                                metaCommands.back().end());
+            metaPipeline.command(views);
+        }
     }
     (void)co_await std::move(metaPipeline).exec();
+
+    std::string recoveryArray = "{";
+    for (const auto& deviceId : recoveryDeviceIds) {
+        if (recoveryArray.size() != 1)
+            recoveryArray.push_back(',');
+        recoveryArray += deviceId;
+    }
+    recoveryArray.push_back('}');
+    params.emplace_back(std::string_view(recoveryArray));
+    const auto recoveryParam = params.size();
 
     const auto elements = co_await context.db().query(R"sql(
 WITH configured AS (
@@ -409,14 +498,17 @@ SELECT numbered.device_id::text, numbered.device_code, numbered.protocol,
                 ELSE (EXTRACT(EPOCH FROM point.observed_at) * 1000)::bigint END,
          'updatedAt', (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint,
          'source', CASE WHEN point.observed_at IS NULL THEN 'empty' ELSE 'database' END
-       )::text
+        )::text
 FROM numbered
 LEFT JOIN LATERAL (
   SELECT telemetry.report_time AS observed_at,
          telemetry.data->'values'->(numbered.element->>'id')->>'value' AS value_text,
          telemetry.data->'values'->(numbered.element->>'id')->'value' AS value_json
   FROM device_data telemetry
-  WHERE telemetry.device_id = numbered.device_id
+  WHERE numbered.device_id = ANY($)sql" +
+                                                           std::to_string(recoveryParam) +
+                                                           R"sql(::uuid[])
+    AND telemetry.device_id = numbered.device_id
     AND telemetry.data->'values'->(numbered.element->>'id') IS NOT NULL
   ORDER BY telemetry.report_time DESC, telemetry.id DESC
   LIMIT 1
@@ -432,7 +524,9 @@ ORDER BY numbered.device_id, numbered.protocol_order,
         const std::string deviceCode(row[1].text());
         const std::string elementId(row[3].text());
         elementIds[deviceCode].push_back(elementId);
-        commands.push_back({"HSET", latestKey(deviceCode), elementId, std::string(row[13].text())});
+        commands.push_back(
+            {recoveryDeviceCodes.contains(deviceCode) ? "HSET" : "HSETNX",
+             latestKey(deviceCode), elementId, std::string(row[13].text())});
         std::vector<std::string_view> views;
         views.reserve(commands.back().size());
         for (const auto& argument : commands.back())
@@ -493,21 +587,20 @@ ORDER BY numbered.device_id, numbered.protocol_order,
 }
 
 template <typename Context> ruvia::Task<void> projectDevice(Context& context, std::string_view id) {
-    co_await project(context, " AND d.id = $1::uuid", service::common::dbParams(id), false);
+    co_await project(context, " AND d.id = $1::uuid", service::common::dbParams(id), false, true);
 }
 
 template <typename Context>
 ruvia::Task<void> projectProtocol(Context& context, std::string_view id) {
     co_await project(context, " AND d.protocol_config_id = $1::uuid",
-                     service::common::dbParams(id), false);
+                     service::common::dbParams(id), false, true);
 }
 
 inline ruvia::Task<void> hydrate(ruvia::WebWorkerContext& context) {
-    const auto redis = context.redis();
-    co_await service::message::redis::eraseMatching(redis, "iot:device:*:latest");
-    co_await service::message::redis::eraseMatching(redis, "iot:runtime:device:*");
-    co_await service::message::redis::erase(redis, kOnlineDeadlinesKey);
-    co_await project(context, "", {}, true);
+    // Redis is the realtime read model. Keep its persisted hashes across a
+    // service restart; PostgreSQL repairs metadata and is consulted only for
+    // devices whose Redis projection is missing or incomplete.
+    co_await project(context, "", {}, false, true);
 }
 
 } // namespace service::telemetry::latest

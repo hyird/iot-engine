@@ -70,8 +70,8 @@ export interface DeviceItem extends EdgeConnection {
     name: string;
     /** 全局唯一设备编码 */
     device_code: string;
-    /** 本地采集时关联的链路 ID；边缘采集设备为空 */
-    link_id?: string;
+    /** 统一链路 ID；中心与边缘采集设备均必有 */
+    link_id: string;
     /** TCP Client 链路中的目标 ID */
     target_id?: string;
     /** 关联协议配置 ID */
@@ -201,7 +201,7 @@ export interface DeviceStaticData extends EdgeConnection {
     name: string;
     /** 全局唯一设备编码 */
     device_code: string;
-    link_id?: string;
+    link_id: string;
     target_id?: string;
     protocol_config_id: string;
     status: DeviceStatus;

@@ -270,8 +270,8 @@ occurred_at, data, raw_payload_hex, storage_interval) AS (VALUES )sql";
                 sql.push_back(',');
             const auto base = index * 11;
             sql += "(to_timestamp($" + std::to_string(base + 1) + "::double precision / 1000.0),$" +
-                   std::to_string(base + 2) + "::uuid,$" + std::to_string(base + 3) + "::uuid,NULLIF($" +
-                   std::to_string(base + 4) + ",'')::uuid,$" + std::to_string(base + 5) + "::uuid,$" +
+                   std::to_string(base + 2) + "::uuid,$" + std::to_string(base + 3) + "::uuid,$" +
+                   std::to_string(base + 4) + "::uuid,$" + std::to_string(base + 5) + "::uuid,$" +
                    std::to_string(base + 6) + ",$" + std::to_string(base + 7) + ",to_timestamp($" +
                    std::to_string(base + 8) + "::double precision / 1000.0),$" +
                    std::to_string(base + 9) + "::jsonb,$" + std::to_string(base + 10) +
@@ -292,12 +292,23 @@ occurred_at, data, raw_payload_hex, storage_interval) AS (VALUES )sql";
   SELECT incoming.*
   FROM incoming
   JOIN device current_device ON current_device.id = incoming.device_id
+                            AND current_device.link_id = incoming.link_id
+), device_last_stored AS (
+  SELECT requested.device_id, stored.report_time AS last_stored
+  FROM (SELECT DISTINCT device_id FROM valid_incoming) requested
+  LEFT JOIN LATERAL (
+    SELECT history.report_time
+    FROM device_data history
+    WHERE history.device_id = requested.device_id
+    ORDER BY history.report_time DESC, history.id DESC
+    LIMIT 1
+  ) stored ON TRUE
 ), ordered AS (
   SELECT incoming.*,
          row_number() OVER (PARTITION BY device_id ORDER BY report_time, id) AS sequence,
-         (SELECT max(stored.report_time) FROM device_data stored
-          WHERE stored.device_id = incoming.device_id) AS last_stored
+         device_last_stored.last_stored
   FROM valid_incoming incoming
+  JOIN device_last_stored USING (device_id)
 ), filtered AS (
   SELECT ordered.*,
          (storage_interval <= 1 OR last_stored IS NULL OR

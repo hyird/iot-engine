@@ -9,6 +9,7 @@
 #include <iostream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -22,9 +23,11 @@
 #include "service/features/collector/command.h"
 #include "service/features/collector/modbus.h"
 #include "service/features/collector/engine.h"
+#include "service/features/collector/reconcile.h"
 #include "service/features/collector/s7.h"
 #include "service/features/collector/sl651.h"
 #include "service/features/collector/config.h"
+#include "service/features/collector/tcp.h"
 #include "service/features/collector/timer.h"
 
 namespace collector = service::collector;
@@ -465,9 +468,11 @@ void testCapabilities() {
             "SL651 must reject TCP Client");
     require(!registry.require("SL651").capabilities().has(collector::ProtocolCapability::Polling),
             "SL651 must not expose polling");
-    require(registry.require("SL651").capabilities().has(collector::ProtocolCapability::Registration) &&
-                registry.require("SL651").capabilities().has(collector::ProtocolCapability::Heartbeat),
-            "SL651 registration or heartbeat capability missing");
+    require(!registry.require("SL651").capabilities().has(
+                collector::ProtocolCapability::Registration) &&
+                !registry.require("SL651").capabilities().has(
+                    collector::ProtocolCapability::Heartbeat),
+            "SL651 must derive identity from protocol frames without registration or heartbeat");
     require(registry.require("Modbus").capabilities().has(collector::ProtocolCapability::Discovery),
             "Modbus discovery capability missing");
     require(registry.require("S7").capabilities().has(collector::ProtocolCapability::Polling),
@@ -604,74 +609,6 @@ void testSl651() {
     require(first(commandActions, collector::ProtocolActionKind::FailCommand).reason ==
                 "sl651_negative_ack",
             "SL651 negative ACK did not fail with a precise reason");
-}
-
-void testSl651Registration() {
-    collector::RuntimeSnapshot snapshot;
-    snapshot.links.push_back({.id = "sl-registration-link",
-                              .name = "SL registration",
-                              .mode = "TCP Server",
-                              .protocol = "SL651",
-                              .status = "enabled"});
-    for (std::uint8_t index = 1; index <= 2; ++index) {
-        collector::DeviceDefinition device;
-        device.id = "sl-registration-device-" + std::to_string(index);
-        device.code = index == 1 ? "0000000001" : "0000000002";
-        device.linkId = "sl-registration-link";
-        device.linkMode = "TCP Server";
-        device.protocol = "SL651";
-        device.registrationMode = "ASCII";
-        device.registrationBytes = {'R', 'E', 'G'};
-        device.heartbeatMode = "ASCII";
-        device.heartbeatBytes = {'H', 'B'};
-        snapshot.devices.push_back(std::move(device));
-    }
-
-    collector::ProtocolEngine engine(runtimes());
-    engine.reload(snapshot);
-    (void)engine.connected({.connectionId = "sl-registration-connection",
-                            .linkId = "sl-registration-link",
-                            .sessionEpoch = 1});
-    service::message::IngressPacket packet{.messageId = "sl-registration",
-                                          .linkId = "sl-registration-link",
-                                          .connectionId = "sl-registration-connection",
-                                          .occurredAtMs = 1500,
-                                          .payload = slFrame(0x32)};
-    auto commandActions = engine.execute(
-        "sl-registration-connection",
-        {.id = "sl-before-registration",
-         .deviceId = "sl-registration-device-1",
-         .deviceCode = "0000000001",
-         .kind = "command"});
-    require(first(commandActions, collector::ProtocolActionKind::FailCommand).reason ==
-                "sl651_device_offline",
-            "SL651 accepted a command before the registration bound the device");
-    auto actions = engine.consume(packet);
-    require(actions.empty(), "SL651 parsed a frame before required registration");
-
-    packet.payload = {'R', 'E', 'G'};
-    actions = engine.consume(packet);
-    require(std::count_if(actions.begin(), actions.end(), [](const auto& action) {
-                return action.kind == collector::ProtocolActionKind::BindDevice;
-            }) == 2,
-            "SL651 standalone registration did not bind every device in the DTU group");
-    actions = engine.consume(packet);
-    require(!has(actions, collector::ProtocolActionKind::Close),
-            "SL651 repeated registration closed its own DTU connection");
-    packet.payload = {'H', 'B'};
-    require(engine.consume(packet).empty(), "SL651 heartbeat leaked into frame parsing");
-
-    (void)engine.connected({.connectionId = "sl-prefixed-registration",
-                            .linkId = "sl-registration-link",
-                            .sessionEpoch = 2});
-    packet.connectionId = "sl-prefixed-registration";
-    packet.payload = {'R', 'E', 'G'};
-    const auto report = slFrame(0x32);
-    packet.payload.insert(packet.payload.end(), report.begin(), report.end());
-    actions = engine.consume(packet);
-    require(has(actions, collector::ProtocolActionKind::BindDevice) &&
-                has(actions, collector::ProtocolActionKind::PublishParsed),
-            "SL651 registration prefix did not preserve the report payload");
 }
 
 void testSl651AllEncodingsAndFunctionCodes() {
@@ -1797,10 +1734,166 @@ void testPacketLog() {
     std::filesystem::remove_all(directory, ignored);
 }
 
+collector::RuntimeSnapshot clientReconcileSnapshot() {
+    collector::RuntimeSnapshot snapshot;
+    collector::LinkDefinition link{.id = "client-link",
+                                   .name = "Client",
+                                   .mode = "TCP Client",
+                                   .protocol = "Modbus",
+                                   .status = "enabled"};
+    link.targets.push_back(
+        {.id = "target-a", .name = "A", .ip = "127.0.0.1", .port = 15001,
+         .status = "enabled"});
+    link.targets.push_back(
+        {.id = "target-b", .name = "B", .ip = "127.0.0.1", .port = 15002,
+         .status = "enabled"});
+    snapshot.links.push_back(link);
+
+    collector::DeviceDefinition first;
+    first.id = "device-a";
+    first.code = "A";
+    first.linkId = link.id;
+    first.linkMode = link.mode;
+    first.targetId = "target-a";
+    first.protocol = link.protocol;
+    first.modbusMode = "TCP";
+    first.slaveId = 1;
+    snapshot.devices.push_back(first);
+
+    auto second = first;
+    second.id = "device-b";
+    second.code = "B";
+    second.targetId = "target-b";
+    snapshot.devices.push_back(second);
+    return snapshot;
+}
+
+void testRuntimeReconcile() {
+    const auto previous = clientReconcileSnapshot();
+
+    auto deviceUpdate = previous;
+    deviceUpdate.devices.front().pollInterval = 10;
+    const auto devicePlan = collector::planRuntimeReconcile(previous, deviceUpdate);
+    require(devicePlan.affectedLinks.contains("client-link"),
+            "device update did not affect its link");
+    require(devicePlan.restartClientTargets.contains({"client-link", "target-a"}),
+            "changed device target was not scheduled for restart");
+    require(!devicePlan.restartClientTargets.contains({"client-link", "target-b"}),
+            "unchanged sibling target was scheduled for restart");
+    require(devicePlan.restartLinks.empty(),
+            "TCP Client device update incorrectly restarted the whole link");
+
+    auto metadataUpdate = previous;
+    metadataUpdate.links.front().name = "Renamed client";
+    metadataUpdate.links.front().targets.back().name = "Renamed B";
+    const auto metadataPlan = collector::planRuntimeReconcile(previous, metadataUpdate);
+    require(metadataPlan.affectedLinks.contains("client-link"),
+            "link metadata update was not observed");
+    require(metadataPlan.restartClientTargets.empty() && metadataPlan.restartLinks.empty(),
+            "metadata-only update restarted a TCP Client transport");
+
+    auto serverPrevious = previous;
+    serverPrevious.links.front().mode = "TCP Server";
+    serverPrevious.links.front().targets.clear();
+    serverPrevious.devices.front().linkMode = "TCP Server";
+    serverPrevious.devices.back().linkMode = "TCP Server";
+    auto serverNext = serverPrevious;
+    serverNext.devices.front().pollInterval = 10;
+    const auto serverPlan = collector::planRuntimeReconcile(serverPrevious, serverNext);
+    require(serverPlan.restartLinks.contains("client-link"),
+            "TCP Server device update did not restart the server link");
+
+    collector::ProtocolEngine engine(runtimes());
+    engine.reload(previous);
+    (void)engine.connected({.connectionId = "preserved-connection",
+                            .linkId = "client-link",
+                            .remoteAddress = "127.0.0.1:15002",
+                            .targetId = "target-b",
+                            .sessionEpoch = 1});
+    engine.reload(metadataUpdate, metadataPlan.affectedLinks);
+    require(engine.contains("preserved-connection"),
+            "metadata reload discarded a preserved TCP Client session");
+}
+
+void testTcpClientTargetReconcile() {
+    asio::io_context io;
+    collector::Timer scheduler(io);
+    asio::ip::tcp::acceptor firstServer(
+        io, {asio::ip::make_address("127.0.0.1"), 0});
+    asio::ip::tcp::acceptor secondServer(
+        io, {asio::ip::make_address("127.0.0.1"), 0});
+    std::vector<std::shared_ptr<asio::ip::tcp::socket>> firstAccepted;
+    std::vector<std::shared_ptr<asio::ip::tcp::socket>> secondAccepted;
+    const auto acceptOne = [&io](
+                               asio::ip::tcp::acceptor& server,
+                               std::vector<std::shared_ptr<asio::ip::tcp::socket>>& accepted) {
+        auto socket = std::make_shared<asio::ip::tcp::socket>(io);
+        server.async_accept(*socket, [socket, &accepted](const std::error_code& error) {
+            if (!error)
+                accepted.push_back(socket);
+        });
+    };
+    acceptOne(firstServer, firstAccepted);
+    acceptOne(secondServer, secondAccepted);
+
+    std::map<std::string, std::vector<std::string>, std::less<>> connectedByTarget;
+    std::vector<std::string> disconnected;
+    collector::Tcp tcp(
+        io, scheduler, 0, 1,
+        [&connectedByTarget](collector::ProtocolConnectionInfo info) {
+            connectedByTarget[info.targetId].push_back(std::move(info.connectionId));
+        },
+        [](service::message::IngressPacket) {},
+        [&disconnected](std::string connectionId, std::string) {
+            disconnected.push_back(std::move(connectionId));
+        },
+        [](collector::LinkState) {}, false,
+        [](std::string, collector::Tcp::NativeSocket handle, std::string) {
+            collector::Tcp::closeNative(handle);
+        });
+
+    auto previous = clientReconcileSnapshot();
+    previous.links.front().targets.front().port = firstServer.local_endpoint().port();
+    previous.links.front().targets.back().port = secondServer.local_endpoint().port();
+    tcp.reload(previous);
+    io.run_for(std::chrono::milliseconds(250));
+    require(connectedByTarget["target-a"].size() == 1 &&
+                connectedByTarget["target-b"].size() == 1,
+            "initial TCP Client targets did not both connect");
+    const auto originalFirst = connectedByTarget["target-a"].front();
+    const auto originalSecond = connectedByTarget["target-b"].front();
+
+    auto next = previous;
+    next.devices.front().pollInterval = 10;
+    const auto plan = collector::planRuntimeReconcile(previous, next);
+    acceptOne(firstServer, firstAccepted);
+    tcp.reconcile(next, plan);
+    io.restart();
+    io.run_for(std::chrono::milliseconds(250));
+
+    require(connectedByTarget["target-a"].size() == 2,
+            "changed target did not reconnect");
+    require(connectedByTarget["target-a"].back() != originalFirst,
+            "changed target reused its retired connection");
+    require(connectedByTarget["target-b"].size() == 1 &&
+                connectedByTarget["target-b"].front() == originalSecond,
+            "unchanged sibling target was disconnected");
+    require(std::ranges::find(disconnected, originalFirst) != disconnected.end() &&
+                std::ranges::find(disconnected, originalSecond) == disconnected.end(),
+            "target-level disconnect notifications were incorrect");
+
+    tcp.stop();
+    firstServer.close();
+    secondServer.close();
+    scheduler.stop();
+    io.stop();
+}
+
 void testEdgeParsedMessageContract() {
     service::message::ParsedDeviceMessage parsed;
     parsed.messageId = "019f91c9-4087-7e6c-88c0-c431b0dc15d8";
     parsed.causationId = parsed.messageId;
+    parsed.linkId = "019f91bf-6f83-7491-8a53-cd4fde034b73";
     parsed.deviceId = "019f91bf-6f83-7491-8a53-cd4fde034b72";
     parsed.deviceCode = "PCS7";
     parsed.protocol = "S7";
@@ -1813,7 +1906,7 @@ void testEdgeParsedMessageContract() {
     service::message::StreamMessage streamMessage{.id = "1-0",
                                                   .fields = service::message::parsedFields(parsed)};
     const auto roundTrip = service::message::parsedFrom(streamMessage);
-    require(roundTrip.linkId.empty(), "edge parsed message required a link id");
+    require(roundTrip.linkId == parsed.linkId, "edge parsed message lost its link identity");
     require(roundTrip.rawPayloads.empty(), "edge parsed message changed empty raw payloads");
     require(roundTrip.deviceCode == "PCS7" && roundTrip.source == "edge",
             "edge parsed message did not round-trip required fields");
@@ -1828,8 +1921,9 @@ int main() {
             test();
         };
         run("capabilities", testCapabilities);
+        run("runtime reconcile", testRuntimeReconcile);
+        run("TCP Client target reconcile", testTcpClientTargetReconcile);
         run("sl651", testSl651);
-        run("sl651 registration", testSl651Registration);
         run("sl651 encodings", testSl651AllEncodingsAndFunctionCodes);
         run("sl651 multi-packet images", testSl651MultiPacketImages);
         run("modbus", testModbus);

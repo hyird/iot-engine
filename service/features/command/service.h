@@ -105,16 +105,19 @@ class CommandService final {
                   const service::device::DeviceCommandBody& body, std::string submittedBy) {
 
         const auto edge = co_await context.db().query(R"sql(
-SELECT COALESCE(d.edge_node_id::text, ''), d.protocol_params->>'device_code', p.protocol,
+SELECT COALESCE(l.edge_node_id::text, ''), d.protocol_params->>'device_code', p.protocol,
        COALESCE((d.protocol_params->>'remote_control')::boolean, true),
-       COALESCE(n.enrollment_status = 'approved'
+       COALESCE(l.status = 'enabled'
+                AND n.enrollment_status = 'approved'
                 AND COALESCE((n.capability->>'deviceConfig')::boolean, false)
                 AND COALESCE(n.status->'config'->>'state', 'idle') = 'applied'
                 AND COALESCE((n.status->'config'->>'activeVersion')::bigint, 0)
                     = COALESCE((n.status->'config'->>'desiredVersion')::bigint, 0), false)
-FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id
+FROM device d
+JOIN link l ON l.id = d.link_id AND l.deleted_at IS NULL
+JOIN protocol_config p ON p.id = d.protocol_config_id
              AND p.deleted_at IS NULL AND p.enabled
-LEFT JOIN edge_node n ON n.id = d.edge_node_id
+LEFT JOIN edge_node n ON n.id = l.edge_node_id
 WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)sql",
                                                       service::common::dbParams(deviceId));
         if (!edge.rows().empty() && !edge.rows().front()[0].text().empty()) {
@@ -299,24 +302,30 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
             sql = R"sql(
 SELECT item->>'id', item->>'name', COALESCE(item->>'unit', ''), item->>'dataType',
        '', 0, 0, COALESCE((item->>'writable')::boolean, false), false, '', ''
-FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id
+FROM device d
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
+JOIN protocol_config p ON p.id = d.protocol_config_id
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]')) item
-WHERE d.id = $1::uuid AND d.edge_node_id IS NOT NULL AND p.protocol = 'Modbus')sql";
+WHERE d.id = $1::uuid AND p.protocol = 'Modbus')sql";
         } else if (device.protocol == "S7") {
             sql = R"sql(
 SELECT item->>'id', item->>'name', COALESCE(item->>'unit', ''),
        COALESCE(item->>'dataType', 'BOOL'), '', COALESCE((item->>'size')::integer, 1), 0,
        COALESCE((item->>'writable')::boolean, false), false, '', ''
-FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id
+FROM device d
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
+JOIN protocol_config p ON p.id = d.protocol_config_id
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]')) item
-WHERE d.id = $1::uuid AND d.edge_node_id IS NOT NULL AND p.protocol = 'S7')sql";
+WHERE d.id = $1::uuid AND p.protocol = 'S7')sql";
         } else if (device.protocol == "SL651") {
             sql = R"sql(
 SELECT item->>'id', item->>'name', COALESCE(item->>'unit', ''), '',
        func->>'dir', COALESCE((item->>'length')::integer, 1),
        COALESCE((item->>'digits')::integer, 0), func->>'dir' = 'DOWN', response_element,
        func->>'funcCode', item->>'encode'
-FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id
+FROM device d
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
+JOIN protocol_config p ON p.id = d.protocol_config_id
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]')) func
 CROSS JOIN LATERAL (
   SELECT value AS item, false AS response_element
@@ -325,7 +334,7 @@ CROSS JOIN LATERAL (
   SELECT value AS item, true AS response_element
   FROM jsonb_array_elements(COALESCE(func->'responseElements', '[]'))
 ) configured
-WHERE d.id = $1::uuid AND d.edge_node_id IS NOT NULL AND p.protocol = 'SL651')sql";
+WHERE d.id = $1::uuid AND p.protocol = 'SL651')sql";
         } else {
             service::common::fail(18010, "边缘节点不支持该设备协议", 400);
         }

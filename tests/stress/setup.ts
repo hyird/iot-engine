@@ -92,13 +92,14 @@ function addLink(
     targets: unknown[],
 ) {
     const endpoint = {
+        transport: 'tcp',
         mode,
         ip: mode === 'TCP Server' ? ip : '',
         port: mode === 'TCP Server' ? port : 0,
         targets: mode === 'TCP Client' ? targets : [],
     };
     statements.push(
-        `INSERT INTO link(id,name,protocol,endpoint,status,created_by) VALUES (${quote(id)},${quote(name)},${quote(protocol)},${json(endpoint)},'enabled',${quote(adminId)})`,
+        `INSERT INTO link(id,name,protocol,endpoint,status,created_by,execution) VALUES (${quote(id)},${quote(name)},${quote(protocol)},${json(endpoint)},'enabled',${quote(adminId)},'collector')`,
     );
 }
 

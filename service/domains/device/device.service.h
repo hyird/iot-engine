@@ -260,7 +260,7 @@ class DeviceService {
         const auto rows = co_await c.db().query(
             DeviceAccessService::scopedDevicesCte() + "SELECT " + itemColumns() +
                 " FROM scoped_device d LEFT JOIN link l ON l.id = d.link_id "
-                "LEFT JOIN edge_node en ON en.id = d.edge_node_id "
+                "LEFT JOIN edge_node en ON en.id = l.edge_node_id "
                 "JOIN protocol_config p ON p.id = d.protocol_config_id "
                 "WHERE d.access_rank > 0 ORDER BY d.group_id NULLS LAST, d.created_at, d.id",
             service::common::dbParams(actor.userId, actor.departmentId,
@@ -311,7 +311,7 @@ class DeviceService {
         const auto rows = co_await c.db().query(
             DeviceAccessService::scopedDevicesCte() + "SELECT " + itemColumns() +
                 " FROM scoped_device d LEFT JOIN link l ON l.id = d.link_id "
-                "LEFT JOIN edge_node en ON en.id = d.edge_node_id "
+                "LEFT JOIN edge_node en ON en.id = l.edge_node_id "
                 "JOIN protocol_config p ON p.id = d.protocol_config_id "
                 "WHERE d.id = $4 AND d.access_rank > 0 LIMIT 1",
             service::common::dbParams(actor.userId, actor.departmentId,
@@ -346,8 +346,15 @@ class DeviceService {
         try {
             const auto rows = co_await c.db().query(
                 R"sql(
-WITH filtered AS (
-  SELECT record.*, COUNT(*) OVER () AS total
+WITH counted AS (
+  SELECT COUNT(*) AS total
+  FROM device_data record
+  WHERE record.device_id = $1::uuid
+    AND record.report_time >= $2::timestamptz
+    AND record.report_time <= $3::timestamptz
+    AND jsonb_typeof(record.data->'values') = 'object'
+), filtered AS (
+  SELECT record.id, record.protocol, record.report_time, record.source, record.data
   FROM device_data record
   WHERE record.device_id = $1::uuid
     AND record.report_time >= $2::timestamptz
@@ -365,10 +372,11 @@ SELECT jsonb_build_object(
     'functionCode', data->>'function_code',
     'values', COALESCE(data->'values', '{}'::jsonb)
   ) ORDER BY report_time DESC, id DESC), '[]'::jsonb),
-  'total', COALESCE(MAX(total), 0),
+  'total', COALESCE((SELECT total FROM counted), 0),
   'page', $6::bigint,
   'pageSize', $4::bigint,
-  'totalPages', CEIL(COALESCE(MAX(total), 0)::numeric / $4::numeric)::bigint
+  'totalPages',
+    CEIL(COALESCE((SELECT total FROM counted), 0)::numeric / $4::numeric)::bigint
 )::text
 FROM filtered)sql",
                 service::common::dbParams(id, start, end, pageSize, offset, page));
@@ -413,8 +421,9 @@ FROM filtered)sql",
         const auto id = service::common::nextUuidV7();
         const std::string name(body.name()->view());
         const std::string deviceCode(body.deviceCode()->view());
-        const std::string linkId = str(body.linkId());
         const std::string edgeNodeId = str(body.edgeNodeId());
+        const std::string linkId =
+            edgeNodeId.empty() ? str(body.linkId()) : service::common::nextUuidV7();
         const std::string edgeEndpoint = edgeEndpointJson(body);
         const std::string targetId = str(body.targetId());
         const std::string protocolConfigId(body.protocolConfigId()->view());
@@ -435,11 +444,19 @@ FROM filtered)sql",
         const std::string remark = str(body.remark());
         (void)co_await c.db().execute(
             R"sql(
+WITH inserted_edge_link AS (
+  INSERT INTO link(
+    id, name, protocol, endpoint, status, created_by, execution, edge_node_id)
+  SELECT $4::uuid, 'edge:' || $1::text, protocol, $6::jsonb, $10, $19::uuid,
+         'edge', $5::uuid
+  FROM protocol_config
+  WHERE id = $8::uuid AND deleted_at IS NULL AND NULLIF($5, '') IS NOT NULL
+  RETURNING id
+)
 INSERT INTO device(
-  id, name, link_id, edge_node_id, edge_endpoint, protocol_config_id, group_id, status,
+  id, name, link_id, protocol_config_id, group_id, status,
   protocol_params, remark, created_by)
-VALUES ($1::uuid, $2, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
-  COALESCE(NULLIF($6, '')::jsonb, '{}'::jsonb), $8::uuid, NULLIF($9, '')::uuid, $10,
+VALUES ($1::uuid, $2, $4::uuid, $8::uuid, NULLIF($9, '')::uuid, $10,
   jsonb_strip_nulls(jsonb_build_object(
     'device_code', $3::text,
     'target_id', NULLIF($7::text, ''),
@@ -469,10 +486,11 @@ VALUES ($1::uuid, $2, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
 
     ruvia::Task<void> update(ruvia::Context& c, std::string_view id, const SaveDeviceBody& body) {
         (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner);
-        const auto rows = co_await c.db().query(
-            "SELECT COALESCE(link_id::text, ''), COALESCE(edge_node_id::text, ''), "
-            "protocol_config_id::text, protocol_params->>'device_code' FROM device WHERE id = $1 "
-            "AND deleted_at IS NULL",
+        const auto rows = co_await c.db().query(R"sql(
+SELECT d.link_id::text, COALESCE(l.edge_node_id::text, ''),
+       d.protocol_config_id::text, d.protocol_params->>'device_code'
+FROM device d JOIN link l ON l.id = d.link_id
+WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
                                                 service::common::dbParams(id));
         if (rows.rows().empty())
             service::common::fail(18001, "设备不存在", 404);
@@ -513,8 +531,6 @@ VALUES ($1::uuid, $2, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
             body.edgePort() || body.serialBaudRate() || body.serialDataBits() ||
             body.serialStopBits() || body.serialParity() || body.serialRs485()) {
             edgeEndpointUpdate = edgeEndpointJson(body);
-            raw("edge_endpoint = $", ruvia::DbValue{std::string_view(edgeEndpointUpdate)}),
-                set += "::jsonb";
         }
         std::string protocolParams = "protocol_params";
         const auto jsonValue = [&](std::string_view key, ruvia::DbValue value,
@@ -565,12 +581,36 @@ VALUES ($1::uuid, $2, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
         if (body.remark())
             raw("remark = NULLIF($", ruvia::DbValue{body.remark()->view()}), set += ", '')";
 
-        if (!set.empty()) {
-            params.emplace_back(id);
-            (void)co_await c.db().execute("UPDATE device SET " + set +
-                                              ", updated_at = NOW() WHERE id = $" +
-                                              std::to_string(params.size()),
-                                          params);
+        const bool updateEdgeLink =
+            !rows.rows().front()[1].text().empty() &&
+            (!edgeEndpointUpdate.empty() || body.status());
+        if (!set.empty() || updateEdgeLink) {
+            auto transaction = co_await c.db().beginTransaction();
+            if (!set.empty()) {
+                params.emplace_back(id);
+                (void)co_await transaction.execute("UPDATE device SET " + set +
+                                                       ", updated_at = NOW() WHERE id = $" +
+                                                       std::to_string(params.size()),
+                                                   params);
+            }
+            if (updateEdgeLink) {
+                const auto edgeStatus =
+                    body.status() ? std::string(body.status()->view()) : std::string{};
+                (void)co_await transaction.execute(R"sql(
+UPDATE link
+SET endpoint = CASE WHEN NULLIF($1, '') IS NULL THEN endpoint ELSE $1::jsonb END,
+    status = COALESCE(NULLIF($2, '')::status_enum, status),
+    updated_at = NOW()
+WHERE id = $3::uuid AND execution = 'edge'
+  AND (
+    (NULLIF($1, '') IS NOT NULL AND endpoint IS DISTINCT FROM $1::jsonb)
+    OR (NULLIF($2, '') IS NOT NULL AND status IS DISTINCT FROM $2::status_enum)
+  ))sql",
+                                                   service::common::dbParams(
+                                                       edgeEndpointUpdate, edgeStatus,
+                                                       rows.rows().front()[0].text()));
+            }
+            co_await transaction.commit();
         }
         try {
             if (body.deviceCode() && body.deviceCode()->view() != rows.rows().front()[3].text())
@@ -588,15 +628,25 @@ VALUES ($1::uuid, $2, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
 
     ruvia::Task<void> remove(ruvia::Context& c, std::string_view id) {
         (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner);
-        const auto rows = co_await c.db().query(
-            "SELECT protocol_params->>'device_code', COALESCE(edge_node_id::text, '') "
-            "FROM device WHERE id = $1 AND deleted_at IS NULL",
-            service::common::dbParams(id));
+        const auto rows = co_await c.db().query(R"sql(
+SELECT d.protocol_params->>'device_code', COALESCE(l.edge_node_id::text, ''),
+       d.link_id::text, l.execution
+FROM device d JOIN link l ON l.id = d.link_id
+WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
+                                                service::common::dbParams(id));
         if (rows.rows().empty())
             service::common::fail(18001, "设备不存在", 404);
-        (void)co_await c.db().execute(
+        auto transaction = co_await c.db().beginTransaction();
+        (void)co_await transaction.execute(
             "UPDATE device SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1",
             service::common::dbParams(id));
+        if (rows.rows().front()[3].text() == "edge") {
+            (void)co_await transaction.execute(
+                "UPDATE link SET deleted_at = NOW(), updated_at = NOW() "
+                "WHERE id = $1::uuid AND execution = 'edge'",
+                service::common::dbParams(rows.rows().front()[2].text()));
+        }
+        co_await transaction.commit();
         try {
             co_await service::telemetry::latest::eraseDevice(
                 c.redis(), rows.rows().front()[0].text());
@@ -773,12 +823,18 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
           jsonb_array_length(COALESCE(func->'responseElements', '[]'::jsonb)))
         FROM jsonb_array_elements(COALESCE(p.config->'funcs', '[]'::jsonb)) func), 0) END,
   d.access_rank,
-  d.edge_node_id::text, COALESCE(en.name, ''), COALESCE(en.imei, ''),
-  NULLIF(d.edge_endpoint->>'transport', ''), NULLIF(d.edge_endpoint->>'interface', ''),
-  NULLIF(d.edge_endpoint->>'mode', ''), NULLIF(d.edge_endpoint->>'ip', ''),
-  (d.edge_endpoint->>'port')::integer, (d.edge_endpoint->>'baud_rate')::integer,
-  (d.edge_endpoint->>'data_bits')::integer, (d.edge_endpoint->>'stop_bits')::integer,
-  NULLIF(d.edge_endpoint->>'parity', ''), (d.edge_endpoint->>'rs485')::boolean)sql";
+  CASE WHEN l.execution = 'edge' THEN l.edge_node_id::text END,
+  COALESCE(en.name, ''), COALESCE(en.imei, ''),
+  CASE WHEN l.execution = 'edge' THEN NULLIF(l.endpoint->>'transport', '') END,
+  CASE WHEN l.execution = 'edge' THEN NULLIF(l.endpoint->>'interface', '') END,
+  CASE WHEN l.execution = 'edge' THEN NULLIF(l.endpoint->>'mode', '') END,
+  CASE WHEN l.execution = 'edge' THEN NULLIF(l.endpoint->>'ip', '') END,
+  CASE WHEN l.execution = 'edge' THEN (l.endpoint->>'port')::integer END,
+  CASE WHEN l.execution = 'edge' THEN (l.endpoint->>'baud_rate')::integer END,
+  CASE WHEN l.execution = 'edge' THEN (l.endpoint->>'data_bits')::integer END,
+  CASE WHEN l.execution = 'edge' THEN (l.endpoint->>'stop_bits')::integer END,
+  CASE WHEN l.execution = 'edge' THEN NULLIF(l.endpoint->>'parity', '') END,
+  CASE WHEN l.execution = 'edge' THEN (l.endpoint->>'rs485')::boolean END)sql";
     }
 
     template <typename Row>
@@ -885,10 +941,10 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
             bindings.push_back({ReplyKind::runtime, item});
             pipeline.hgetAll(service::telemetry::latest::latestKey(item->deviceCode()->view()));
             bindings.push_back({ReplyKind::latest, item});
-            if (item->edgeNodeId() && item->id() && item->edgeTransport() &&
+            if (item->edgeNodeId() && item->linkId() && item->edgeTransport() &&
                 item->edgeTransport()->view() == "tcp") {
                 pipeline.hgetAll(
-                    edgeEndpointStatusKey(item->edgeNodeId()->view(), item->id()->view()));
+                    edgeEndpointStatusKey(item->edgeNodeId()->view(), item->linkId()->view()));
                 bindings.push_back({ReplyKind::endpoint, item});
             }
         }
@@ -1468,15 +1524,16 @@ WHERE n.id = $1::uuid AND n.enrollment_status = 'approved'
             if (relation.rows().empty())
                 service::common::fail(18003, "边缘节点未批准或设备类型不存在", 400);
             configProtocol = std::string(relation.rows().front()[0].text());
-            if (configProtocol != "Modbus" && configProtocol != "S7")
-                service::common::fail(18003,
-                                      "OpenWrt 边缘采集当前仅支持 Modbus 和 S7", 400);
+            if (configProtocol != "Modbus" && configProtocol != "S7" &&
+                configProtocol != "SL651")
+                service::common::fail(18003, "边缘采集协议不受支持", 400);
             co_await validateEdgeEndpoint(c, body, edgeNodeId, configProtocol);
         } else {
             const auto relation = co_await c.db().query(R"sql(
 SELECT l.protocol, l.endpoint->>'mode', p.protocol
 FROM link l CROSS JOIN protocol_config p
-WHERE l.id = $1 AND l.deleted_at IS NULL AND p.id = $2 AND p.deleted_at IS NULL LIMIT 1)sql",
+WHERE l.id = $1 AND l.deleted_at IS NULL AND l.execution = 'collector'
+  AND p.id = $2 AND p.deleted_at IS NULL LIMIT 1)sql",
                                                       service::common::dbParams(linkId, configId));
             if (relation.rows().empty())
                 service::common::fail(18003, "链路或设备类型不存在", 400);
@@ -1485,6 +1542,9 @@ WHERE l.id = $1 AND l.deleted_at IS NULL AND p.id = $2 AND p.deleted_at IS NULL 
             if (linkProtocol != configProtocol)
                 service::common::fail(18003, "链路协议与设备类型不一致", 409);
         }
+        if (configProtocol == "SL651" &&
+            (packetEnabled(body.heartbeat()) || packetEnabled(body.registration())))
+            service::common::fail(18002, "SL651 设备不支持配置注册包或心跳包", 400);
         if (configProtocol == "SL651" && code) {
             if (code->view().size() > 10)
                 service::common::fail(18002, "SL651 遥测站地址最多 10 位数字", 400);
@@ -1527,6 +1587,8 @@ WHERE l.id = $1 AND l.deleted_at IS NULL AND p.id = $2 AND p.deleted_at IS NULL 
             service::common::fail(18003, "请选择边缘节点的串口或网口", 400);
         if (interfaceName.empty())
             service::common::fail(18003, "请选择边缘节点已上报的接口", 400);
+        if (protocol == "SL651" && transport != "tcp")
+            service::common::fail(18003, "SL651 仅支持边缘 TCP Server 端点", 400);
         if (transport == "serial") {
             if (protocol == "S7")
                 service::common::fail(18003, "S7 仅支持边缘节点 TCP Client 端点", 400);
@@ -1557,6 +1619,8 @@ LIMIT 1)sql",
             service::common::fail(18003, "边缘 TCP 模式、IPv4 或端口无效", 400);
         if (protocol == "S7" && mode != "TCP Client")
             service::common::fail(18003, "S7 仅支持边缘节点主动连接 PLC", 400);
+        if (protocol == "SL651" && mode != "TCP Server")
+            service::common::fail(18003, "SL651 仅支持边缘 TCP Server 端点", 400);
         if (mode == "TCP Server") {
             if (ip != "0.0.0.0" && ip != interfaceIp)
                 service::common::fail(18003, "TCP Server 监听地址必须是所选网口地址", 400);
@@ -1602,9 +1666,10 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL LIMIT 1)sql",
             const auto rows = co_await c.db().query(R"sql(
 SELECT d.name
 FROM device d
-WHERE d.edge_node_id = $1::uuid AND d.id <> $2::uuid AND d.deleted_at IS NULL
-  AND d.edge_endpoint->>'transport' = 'serial'
-  AND d.edge_endpoint->>'interface' = $3
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge'
+WHERE l.edge_node_id = $1::uuid AND d.id <> $2::uuid AND d.deleted_at IS NULL
+  AND l.endpoint->>'transport' = 'serial'
+  AND l.endpoint->>'interface' = $3
 ORDER BY d.id LIMIT 1)sql",
                                                     service::common::dbParams(
                                                         body.edgeNodeId()->view(), excluded,
@@ -1624,13 +1689,14 @@ ORDER BY d.id LIMIT 1)sql",
             const auto rows = co_await c.db().query(R"sql(
 SELECT d.name
 FROM device d
-WHERE d.edge_node_id = $1::uuid AND d.id <> $2::uuid AND d.deleted_at IS NULL
-  AND d.edge_endpoint->>'transport' = 'tcp'
-  AND d.edge_endpoint->>'mode' = 'TCP Server'
-  AND COALESCE((d.edge_endpoint->>'port')::integer, 0) = $3
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge'
+WHERE l.edge_node_id = $1::uuid AND d.id <> $2::uuid AND d.deleted_at IS NULL
+  AND l.endpoint->>'transport' = 'tcp'
+  AND l.endpoint->>'mode' = 'TCP Server'
+  AND COALESCE((l.endpoint->>'port')::integer, 0) = $3
   AND (
-    d.edge_endpoint->>'ip' = $4
-    OR d.edge_endpoint->>'ip' = '0.0.0.0'
+    l.endpoint->>'ip' = $4
+    OR l.endpoint->>'ip' = '0.0.0.0'
     OR $4 = '0.0.0.0'
   )
 ORDER BY d.id LIMIT 1)sql",
@@ -1653,12 +1719,13 @@ ORDER BY d.id LIMIT 1)sql",
 SELECT d.name, COALESCE((d.protocol_params->>'slave_id')::integer, 1)
 FROM device d
 JOIN protocol_config p ON p.id = d.protocol_config_id AND p.deleted_at IS NULL
-WHERE d.edge_node_id = $1::uuid AND d.id <> $2::uuid AND d.deleted_at IS NULL
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge'
+WHERE l.edge_node_id = $1::uuid AND d.id <> $2::uuid AND d.deleted_at IS NULL
   AND p.protocol = $3
-  AND d.edge_endpoint->>'transport' = 'tcp'
-  AND d.edge_endpoint->>'mode' = 'TCP Client'
-  AND d.edge_endpoint->>'ip' = $4
-  AND COALESCE((d.edge_endpoint->>'port')::integer, 0) = $5
+  AND l.endpoint->>'transport' = 'tcp'
+  AND l.endpoint->>'mode' = 'TCP Client'
+  AND l.endpoint->>'ip' = $4
+  AND COALESCE((l.endpoint->>'port')::integer, 0) = $5
 ORDER BY d.id)sql",
                                                 service::common::dbParams(
                                                     body.edgeNodeId()->view(), excluded, protocol,
@@ -1722,7 +1789,8 @@ SELECT candidate.link_id, link.endpoint->>'mode', protocol.protocol, candidate.t
        END,
        upper(COALESCE(candidate.heartbeat->>'mode', 'OFF'))
 FROM candidate
-JOIN link link ON link.id = candidate.link_id AND link.deleted_at IS NULL
+JOIN link link ON link.id = candidate.link_id
+  AND link.deleted_at IS NULL AND link.execution = 'collector'
 JOIN protocol_config protocol
   ON protocol.id = candidate.protocol_config_id AND protocol.deleted_at IS NULL
 LIMIT 1)sql",

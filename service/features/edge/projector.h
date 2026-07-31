@@ -722,11 +722,14 @@ WHERE id = $3::uuid)sql",
                 continue;
             const auto deviceId = protocol::uuidText(record.device_id());
             const auto metadata = co_await context.db().query(R"sql(
-SELECT d.protocol_params->>'device_code',
+SELECT d.link_id::text, d.protocol_params->>'device_code',
        GREATEST(1, CEIL(COALESCE((p.config->>'storageInterval')::numeric, 1)))::bigint,
        COALESCE((d.protocol_params->>'online_timeout')::integer, 300), p.protocol
-FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id
-WHERE d.id = $1::uuid AND d.edge_node_id = $2::uuid AND d.deleted_at IS NULL LIMIT 1)sql",
+FROM device d
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
+JOIN protocol_config p ON p.id = d.protocol_config_id
+WHERE d.id = $1::uuid AND l.edge_node_id = $2::uuid
+  AND d.deleted_at IS NULL LIMIT 1)sql",
                                                               service::common::dbParams(deviceId,
                                                                                         nodeId));
             if (metadata.rows().empty())
@@ -735,17 +738,17 @@ WHERE d.id = $1::uuid AND d.edge_node_id = $2::uuid AND d.deleted_at IS NULL LIM
             message::ParsedDeviceMessage parsed;
             parsed.messageId = protocol::uuidText(record.record_id());
             parsed.causationId = parsed.messageId;
-            parsed.linkId = "";
+            parsed.linkId = std::string(row[0].text());
             parsed.deviceId = deviceId;
-            parsed.deviceCode = std::string(row[0].text());
+            parsed.deviceCode = std::string(row[1].text());
             parsed.protocol = protocolName(record.protocol());
             if (parsed.protocol.empty())
-                parsed.protocol = std::string(row[3].text());
+                parsed.protocol = std::string(row[4].text());
             parsed.connectionId = std::string(nodeId);
             parsed.occurredAtMs = record.observed_at_ms();
             parsed.observedAtMs = record.observed_at_ms();
-            parsed.storageInterval = std::stoll(std::string(row[1].text()));
-            parsed.onlineWindowMs = std::stoll(std::string(row[2].text())) * 1000;
+            parsed.storageInterval = std::stoll(std::string(row[2].text()));
+            parsed.onlineWindowMs = std::stoll(std::string(row[3].text())) * 1000;
             parsed.source = "edge";
             parsed.valuesJson = telemetryJson(record);
             if (!record.raw_payload().empty())
@@ -765,8 +768,11 @@ WHERE d.id = $1::uuid AND d.edge_node_id = $2::uuid AND d.deleted_at IS NULL LIM
         const auto deviceId = protocol::uuidText(result.device_id());
         const auto device = co_await context.db().query(R"sql(
 SELECT d.protocol_params->>'device_code', p.protocol
-FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id
-WHERE d.id = $1::uuid AND d.edge_node_id = $2::uuid AND d.deleted_at IS NULL LIMIT 1)sql",
+FROM device d
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
+JOIN protocol_config p ON p.id = d.protocol_config_id
+WHERE d.id = $1::uuid AND l.edge_node_id = $2::uuid
+  AND d.deleted_at IS NULL LIMIT 1)sql",
                                                         service::common::dbParams(deviceId,
                                                                                   nodeId));
         if (device.rows().empty())

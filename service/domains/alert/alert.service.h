@@ -315,16 +315,21 @@ SELECT jsonb_build_object(
         const auto limit = addPageParams(params, pagination);
         co_return firstJson(co_await c.db().query(
             R"sql(
-WITH filtered AS (
-  SELECT record.*, rule.name AS rule_name, device.name AS device_name
+WITH counted AS (
+  SELECT COUNT(*) AS total
   FROM open_alert_record record
-  LEFT JOIN alert_rule rule ON rule.id = record.rule_id
-  JOIN device ON device.id = record.device_id
 )sql" + where + R"sql(
-), counted AS (SELECT COUNT(*) AS total FROM filtered), listed AS (
-  SELECT * FROM filtered ORDER BY triggered_at DESC, id DESC
+), page_rows AS (
+  SELECT record.* FROM open_alert_record record
+)sql" + where + R"sql(
+  ORDER BY record.triggered_at DESC, record.id DESC
   LIMIT $)sql" + std::to_string(limit.first) + "::bigint OFFSET $" +
-                std::to_string(limit.second) + R"sql(::bigint
+                 std::to_string(limit.second) + R"sql(::bigint
+), listed AS (
+  SELECT page_rows.*, rule.name AS rule_name, device.name AS device_name
+  FROM page_rows
+  LEFT JOIN alert_rule rule ON rule.id = page_rows.rule_id
+  JOIN device ON device.id = page_rows.device_id
 )
 SELECT jsonb_build_object(
   'list', COALESCE((SELECT jsonb_agg(jsonb_build_object(
@@ -373,18 +378,37 @@ WHERE id = ANY($1::uuid[]) AND status = 'active')sql",
 
     ruvia::Task<std::string> stats(ruvia::Context& c) {
         co_return firstJson(co_await c.db().query(R"sql(
+WITH unresolved AS (
+  SELECT COUNT(*) AS total,
+         COUNT(*) FILTER (WHERE severity = 'critical') AS critical,
+         COUNT(*) FILTER (WHERE severity = 'warning') AS warning,
+         COUNT(*) FILTER (WHERE severity = 'info') AS info,
+         COUNT(DISTINCT device_id) AS affected_devices
+  FROM open_alert_record
+  WHERE status IN ('active', 'acknowledged')
+), today_new AS (
+  SELECT COUNT(*) AS total
+  FROM open_alert_record
+  WHERE triggered_at >= CURRENT_DATE
+), acknowledged_summary AS (
+  SELECT COUNT(*) AS total
+  FROM open_alert_record
+  WHERE status = 'acknowledged'
+), today_resolved AS (
+  SELECT COUNT(*) AS total
+  FROM open_alert_record
+  WHERE status = 'resolved' AND resolved_at >= CURRENT_DATE
+)
 SELECT jsonb_build_object(
-  'total', COUNT(*) FILTER (WHERE status IN ('active','acknowledged')),
-  'critical', COUNT(*) FILTER (WHERE status IN ('active','acknowledged') AND severity = 'critical'),
-  'warning', COUNT(*) FILTER (WHERE status IN ('active','acknowledged') AND severity = 'warning'),
-  'info', COUNT(*) FILTER (WHERE status IN ('active','acknowledged') AND severity = 'info'),
-  'today_new', COUNT(*) FILTER (WHERE triggered_at >= CURRENT_DATE),
-  'acknowledged', COUNT(*) FILTER (WHERE status = 'acknowledged'),
-  'today_resolved', COUNT(*) FILTER (
-    WHERE status = 'resolved' AND resolved_at >= CURRENT_DATE),
-  'affected_devices', COUNT(DISTINCT device_id) FILTER (
-    WHERE status IN ('active','acknowledged')))::text
-FROM open_alert_record)sql"));
+  'total', unresolved.total,
+  'critical', unresolved.critical,
+  'warning', unresolved.warning,
+  'info', unresolved.info,
+  'today_new', today_new.total,
+  'acknowledged', acknowledged_summary.total,
+  'today_resolved', today_resolved.total,
+  'affected_devices', unresolved.affected_devices)::text
+FROM unresolved, today_new, acknowledged_summary, today_resolved)sql"));
     }
 
     ruvia::Task<std::string> grouped(ruvia::Context& c) {

@@ -48,16 +48,17 @@ class ProtocolEngine final {
             const auto& runtime = registry_.require(link.protocol);
             validateProtocolLink(runtime, link);
         }
-        for (auto current = sessions_.begin(); current != sessions_.end();) {
-            if (affectedLinks.contains(current->second.info.linkId))
-                current = sessions_.erase(current);
-            else
-                ++current;
-        }
+        (void)affectedLinks;
         snapshot_ = std::move(snapshot);
         links_.clear();
         for (const auto& link : snapshot_.links)
             links_.emplace(link.id, &link);
+
+        // Tcp owns transport reconciliation. Unchanged TCP Client targets keep
+        // their sockets and therefore must keep their protocol sessions too.
+        // Restarted targets emit a real disconnected event, which removes the
+        // old session only after its deadlines, commands, and routes have been
+        // cleaned up in the normal order.
     }
 
     [[nodiscard]] std::vector<ProtocolAction> connected(ProtocolConnectionInfo info) {

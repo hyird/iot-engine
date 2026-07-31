@@ -5,7 +5,17 @@
 
 namespace service::config {
 
-inline constexpr std::array<ruvia::DbMigration, 15> kSchemaMigrations{{
+inline constexpr std::array<ruvia::DbMigration, 18> kSchemaMigrations{{
+    {"0000_require_fresh_database", R"sql(
+DO $schema$
+BEGIN
+IF EXISTS (SELECT 1 FROM sys_schema_migrations) THEN
+    RAISE EXCEPTION
+        'this iot-engine schema is incompatible with existing databases; drop and recreate the database';
+END IF;
+END
+$schema$;
+)sql"},
     {"0001_initial_schema", R"sql(
 DO $schema$
 BEGIN
@@ -83,38 +93,65 @@ CREATE INDEX idx_sys_user_role_user ON sys_user_role(user_id);
 CREATE INDEX idx_sys_user_role_role ON sys_user_role(role_id);
 
 CREATE TABLE link (
-    id          UUID PRIMARY KEY,
-    name        VARCHAR(100) NOT NULL,
-    mode        VARCHAR(20) NOT NULL CHECK (mode IN ('TCP Server', 'TCP Client')),
-    protocol    VARCHAR(20) NOT NULL CHECK (protocol IN ('SL651', 'Modbus', 'S7')),
-    ip          VARCHAR(50) NOT NULL DEFAULT '',
-    port        INTEGER NOT NULL DEFAULT 0 CHECK (port BETWEEN 0 AND 65535),
-    targets     JSONB NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(targets) = 'array'),
-    usage       VARCHAR(20) NOT NULL DEFAULT 'device',
-    status      status_enum NOT NULL DEFAULT 'enabled',
-    agent_id            UUID,
-    agent_interface     VARCHAR(100),
-    agent_bind_ip       VARCHAR(50),
-    agent_prefix_length INTEGER,
-    agent_gateway       VARCHAR(50),
-    created_by  UUID NOT NULL REFERENCES sys_user(id) ON DELETE RESTRICT,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at  TIMESTAMPTZ,
+    id           UUID PRIMARY KEY,
+    name         VARCHAR(100) NOT NULL,
+    protocol     VARCHAR(20) NOT NULL CHECK (protocol IN ('SL651', 'Modbus', 'S7')),
+    endpoint     JSONB NOT NULL CHECK (jsonb_typeof(endpoint) = 'object'),
+    execution    VARCHAR(16) NOT NULL CHECK (execution IN ('collector', 'edge')),
+    edge_node_id UUID,
+    status       status_enum NOT NULL DEFAULT 'enabled',
+    created_by   UUID NOT NULL REFERENCES sys_user(id) ON DELETE RESTRICT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at   TIMESTAMPTZ,
     CONSTRAINT ck_link_endpoint CHECK (
-        (mode = 'TCP Server' AND ip = '0.0.0.0' AND port BETWEEN 1 AND 65535
-         AND jsonb_array_length(targets) = 0)
-        OR
-        (mode = 'TCP Client' AND ip = '' AND port = 0
-         AND jsonb_array_length(targets) > 0)
+        (
+            execution = 'collector'
+            AND edge_node_id IS NULL
+            AND endpoint->>'transport' = 'tcp'
+            AND endpoint->>'mode' IN ('TCP Server', 'TCP Client')
+            AND COALESCE(jsonb_typeof(endpoint->'targets'), 'array') = 'array'
+            AND (
+                (
+                    endpoint->>'mode' = 'TCP Server'
+                    AND endpoint->>'ip' = '0.0.0.0'
+                    AND COALESCE(endpoint->>'port', '') ~ '^[0-9]+$'
+                    AND (endpoint->>'port')::integer BETWEEN 1 AND 65535
+                    AND jsonb_array_length(COALESCE(endpoint->'targets', '[]'::jsonb)) = 0
+                )
+                OR
+                (
+                    endpoint->>'mode' = 'TCP Client'
+                    AND COALESCE(endpoint->>'ip', '') = ''
+                    AND COALESCE((endpoint->>'port')::integer, 0) = 0
+                    AND jsonb_array_length(COALESCE(endpoint->'targets', '[]'::jsonb)) > 0
+                )
+            )
+        )
+        OR (
+            execution = 'edge'
+            AND edge_node_id IS NOT NULL
+            AND COALESCE(endpoint->>'interface', '') <> ''
+            AND (
+                endpoint->>'transport' = 'serial'
+                OR (
+                    endpoint->>'transport' = 'tcp'
+                    AND endpoint->>'mode' IN ('TCP Server', 'TCP Client')
+                    AND COALESCE(endpoint->>'ip', '') <> ''
+                    AND COALESCE(endpoint->>'port', '') ~ '^[0-9]+$'
+                    AND (endpoint->>'port')::integer BETWEEN 1 AND 65535
+                )
+            )
+        )
     )
 );
-CREATE INDEX idx_link_mode ON link(mode);
 CREATE INDEX idx_link_deleted ON link(deleted_at);
 CREATE UNIQUE INDEX idx_link_name ON link(name) WHERE deleted_at IS NULL;
 CREATE INDEX idx_link_status_active ON link(status) WHERE deleted_at IS NULL;
 CREATE INDEX idx_link_protocol ON link(protocol);
-CREATE INDEX idx_link_usage ON link(usage);
+CREATE INDEX idx_link_execution ON link(execution) WHERE deleted_at IS NULL;
+CREATE INDEX idx_link_endpoint_mode ON link((endpoint->>'mode')) WHERE deleted_at IS NULL;
+CREATE INDEX idx_link_endpoint_gin ON link USING GIN(endpoint);
 
 CREATE TABLE protocol_config (
     id          UUID PRIMARY KEY,
@@ -454,6 +491,10 @@ CREATE TABLE edge_node (
 );
 CREATE UNIQUE INDEX idx_edge_node_platform_imei ON edge_node(platform_id, imei);
 CREATE INDEX idx_edge_node_status_seen ON edge_node(enrollment_status, last_seen_at DESC);
+ALTER TABLE link ADD CONSTRAINT fk_link_edge_node
+    FOREIGN KEY (edge_node_id) REFERENCES edge_node(id) ON DELETE RESTRICT;
+CREATE INDEX idx_link_edge_node ON link(edge_node_id)
+    WHERE execution = 'edge' AND deleted_at IS NULL;
 
 CREATE TABLE edge_node_interface (
     node_id       UUID NOT NULL REFERENCES edge_node(id) ON DELETE CASCADE,
@@ -532,19 +573,6 @@ $schema$;
     {"0007_edge_device_assignment", R"sql(
 DO $schema$
 BEGIN
-ALTER TABLE device ALTER COLUMN link_id DROP NOT NULL;
-ALTER TABLE device_data ALTER COLUMN link_id DROP NOT NULL;
-ALTER TABLE device
-    ADD COLUMN edge_node_id UUID REFERENCES edge_node(id) ON DELETE RESTRICT,
-    ADD COLUMN edge_endpoint JSONB NOT NULL DEFAULT '{}'::jsonb
-        CHECK (jsonb_typeof(edge_endpoint) = 'object');
-ALTER TABLE device ADD CONSTRAINT ck_device_connection_source CHECK (
-    (edge_node_id IS NULL AND link_id IS NOT NULL AND edge_endpoint = '{}'::jsonb)
-    OR
-    (edge_node_id IS NOT NULL AND link_id IS NULL AND edge_endpoint <> '{}'::jsonb)
-);
-CREATE INDEX idx_device_edge_node ON device(edge_node_id) WHERE deleted_at IS NULL;
-
 ALTER TABLE edge_node
     ADD COLUMN desired_config_version BIGINT NOT NULL DEFAULT 0,
     ADD COLUMN supports_device_config BOOLEAN NOT NULL DEFAULT FALSE,
@@ -627,47 +655,6 @@ $schema$;
     {"0010_unified_json_runtime_design", R"sql(
 DO $schema$
 BEGIN
-ALTER TABLE link
-    ADD COLUMN endpoint JSONB NOT NULL DEFAULT '{}'::jsonb
-        CHECK (jsonb_typeof(endpoint) = 'object');
-
-UPDATE link
-SET endpoint = jsonb_strip_nulls(jsonb_build_object(
-    'mode', mode,
-    'ip', CASE WHEN mode = 'TCP Server' THEN ip ELSE '' END,
-    'port', CASE WHEN mode = 'TCP Server' THEN port ELSE 0 END,
-    'targets', CASE WHEN mode = 'TCP Client' THEN targets ELSE '[]'::jsonb END
-));
-
-ALTER TABLE link DROP CONSTRAINT IF EXISTS ck_link_endpoint;
-DROP INDEX IF EXISTS idx_link_mode;
-
-ALTER TABLE link
-    DROP COLUMN mode,
-    DROP COLUMN ip,
-    DROP COLUMN port,
-    DROP COLUMN targets;
-
-ALTER TABLE link ADD CONSTRAINT ck_link_endpoint CHECK (
-    jsonb_typeof(endpoint) = 'object'
-    AND endpoint->>'mode' IN ('TCP Server', 'TCP Client')
-    AND COALESCE(jsonb_typeof(endpoint->'targets'), 'array') = 'array'
-    AND (
-        (endpoint->>'mode' = 'TCP Server'
-         AND endpoint->>'ip' = '0.0.0.0'
-         AND COALESCE(endpoint->>'port', '') ~ '^[0-9]+$'
-         AND (endpoint->>'port')::integer BETWEEN 1 AND 65535
-         AND jsonb_array_length(COALESCE(endpoint->'targets', '[]'::jsonb)) = 0)
-        OR
-        (endpoint->>'mode' = 'TCP Client'
-         AND COALESCE(endpoint->>'ip', '') = ''
-         AND COALESCE((endpoint->>'port')::integer, 0) = 0
-         AND jsonb_array_length(COALESCE(endpoint->'targets', '[]'::jsonb)) > 0)
-    )
-);
-CREATE INDEX idx_link_endpoint_mode ON link((endpoint->>'mode')) WHERE deleted_at IS NULL;
-CREATE INDEX idx_link_endpoint_gin ON link USING GIN(endpoint);
-
 ALTER TABLE edge_node
     ADD COLUMN status JSONB NOT NULL DEFAULT
         '{"config":{"activeVersion":0,"desiredVersion":0,"state":"idle","message":""},"outbox":{"records":0,"bytes":0}}'::jsonb
@@ -944,6 +931,28 @@ CREATE INDEX idx_alert_rule_enabled_device
 
 CREATE INDEX idx_gb28181_record_device_time
     ON gb28181_record(device_id, start_time DESC);
+)sql"},
+    {"0016_mass_data_query_optimization", R"sql(
+CREATE INDEX idx_open_access_log_time
+    ON open_access_log(created_at DESC, id DESC);
+
+CREATE INDEX idx_open_alert_time
+    ON open_alert_record(triggered_at DESC, id DESC);
+
+CREATE INDEX idx_open_alert_unresolved_summary
+    ON open_alert_record(severity, device_id)
+    WHERE status IN ('active', 'acknowledged');
+
+CREATE INDEX idx_open_alert_resolved_time
+    ON open_alert_record(resolved_at DESC)
+    WHERE status = 'resolved';
+)sql"},
+    {"0017_device_data_compression_layout", R"sql(
+ALTER TABLE device_data SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'device_id',
+    timescaledb.compress_orderby = 'report_time DESC, id DESC'
+);
 )sql"},
 }};
 

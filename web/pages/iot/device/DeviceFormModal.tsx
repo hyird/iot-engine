@@ -120,8 +120,7 @@ const DeviceFormModal = ({
         connectionMode === 'edge' ? edgeNodeId : undefined
     );
     const edgeInterfacesWithIp = useMemo(
-        () =>
-            (edgeNode?.interfaces ?? []).filter((network) => network.ipv4?.trim()),
+        () => (edgeNode?.interfaces ?? []).filter((network) => network.ipv4?.trim()),
         [edgeNode?.interfaces]
     );
 
@@ -226,8 +225,9 @@ const DeviceFormModal = ({
         form.setFieldsValue({
             protocol_config_id: undefined,
             modbus_mode: undefined,
-            edge_transport: protocol === 'S7' ? 'tcp' : undefined,
-            edge_mode: protocol === 'S7' ? 'TCP Client' : undefined,
+            edge_transport: protocol === 'S7' || protocol === 'SL651' ? 'tcp' : undefined,
+            edge_mode:
+                protocol === 'S7' ? 'TCP Client' : protocol === 'SL651' ? 'TCP Server' : undefined,
             edge_interface: undefined,
         });
     };
@@ -442,6 +442,7 @@ const DeviceFormModal = ({
                                 >
                                     <Select.Option value="Modbus">Modbus</Select.Option>
                                     <Select.Option value="S7">S7</Select.Option>
+                                    <Select.Option value="SL651">SL651</Select.Option>
                                 </Select>
                             </Form.Item>
                             <Form.Item
@@ -452,9 +453,13 @@ const DeviceFormModal = ({
                                 <Select
                                     placeholder="选择串口或 TCP"
                                     onChange={handleEdgeTransportChange}
-                                    disabled={!edgeNodeId || edgeProtocol === 'S7'}
+                                    disabled={
+                                        !edgeNodeId ||
+                                        edgeProtocol === 'S7' ||
+                                        edgeProtocol === 'SL651'
+                                    }
                                 >
-                                    {edgeProtocol !== 'S7' && (
+                                    {edgeProtocol === 'Modbus' && (
                                         <Select.Option value="serial">串口</Select.Option>
                                     )}
                                     <Select.Option value="tcp">TCP</Select.Option>
@@ -511,7 +516,11 @@ const DeviceFormModal = ({
                                     rules={[{ required: true, message: '请选择 TCP 模式' }]}
                                 >
                                     <Select onChange={handleEdgeModeChange}>
-                                        <Select.Option value="TCP Client">TCP Client</Select.Option>
+                                        {edgeProtocol !== 'SL651' && (
+                                            <Select.Option value="TCP Client">
+                                                TCP Client
+                                            </Select.Option>
+                                        )}
                                         {edgeProtocol !== 'S7' && (
                                             <Select.Option value="TCP Server">
                                                 TCP Server

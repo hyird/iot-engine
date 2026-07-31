@@ -138,8 +138,9 @@ struct DeviceCommandElementBody final {
 };
 
 struct DeviceCommandBody final {
+    RUVIA_OPTIONAL_FIELD_NAME("deviceId", deviceId, ruvia::String);
     RUVIA_OPTIONAL_FIELD(elements, ruvia::Array<DeviceCommandElementBody>);
-    RUVIA_MODEL(DeviceCommandBody, elements);
+    RUVIA_MODEL(DeviceCommandBody, deviceId, elements);
 };
 
 struct DeviceCommandCreateDto final {
