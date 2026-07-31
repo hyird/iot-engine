@@ -40,6 +40,11 @@ endif()
 
 include(FetchContent)
 
+# CMAKE_COMPILE_WARNING_AS_ERROR is a CI policy for targets owned by this
+# repository. Do not propagate it into fetched third-party targets.
+set(IOT_ENGINE_COMPILE_WARNING_AS_ERROR "${CMAKE_COMPILE_WARNING_AS_ERROR}")
+set(CMAKE_COMPILE_WARNING_AS_ERROR OFF)
+
 set(RUVIA_ENABLE_POSTGRESQL ON CACHE BOOL "" FORCE)
 set(RUVIA_ENABLE_REDIS ON CACHE BOOL "" FORCE)
 set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
@@ -141,6 +146,9 @@ FetchContent_Declare(zlmediakit
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch-zlmediakit.cmake")
 
 FetchContent_MakeAvailable(zlmediakit)
+
+set(CMAKE_COMPILE_WARNING_AS_ERROR "${IOT_ENGINE_COMPILE_WARNING_AS_ERROR}")
+unset(IOT_ENGINE_COMPILE_WARNING_AS_ERROR)
 
 get_target_property(IOT_ENGINE_ZLM_DEFINITIONS zlmediakit COMPILE_DEFINITIONS)
 foreach(IOT_ENGINE_ZLM_FEATURE

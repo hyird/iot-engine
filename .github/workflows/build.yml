@@ -40,7 +40,7 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-18 ninja-build curl zip unzip tar xz-utils
+          sudo apt-get install -y clang-18 ninja-build nasm curl zip unzip tar xz-utils
           clang-18 --version
           clang++-18 --version
 
