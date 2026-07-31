@@ -308,7 +308,7 @@ export default function AdminLayout() {
                         defaultOpenKeys={['/iot/protocol', '/system']}
                         items={menuItems}
                         onClick={({ key }) => navigate(key)}
-                        className="min-h-0 flex-1 overflow-y-auto border-none py-1"
+                        className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto border-none py-1"
                         style={{ background: '#001529' }}
                     />
                     {!collapsed && (
