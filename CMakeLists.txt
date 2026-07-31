@@ -38,6 +38,7 @@ if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
+include(CheckIncludeFile)
 include(FetchContent)
 
 # CMAKE_COMPILE_WARNING_AS_ERROR is a CI policy for targets owned by this
@@ -89,6 +90,10 @@ target_include_directories(faac
     PUBLIC "${faac_source_SOURCE_DIR}/include"
     PRIVATE "${faac_source_SOURCE_DIR}/libfaac")
 target_compile_definitions(faac PRIVATE PACKAGE_VERSION="1.31.1")
+check_include_file("immintrin.h" IOT_ENGINE_HAVE_IMMINTRIN_H)
+if(IOT_ENGINE_HAVE_IMMINTRIN_H)
+    target_compile_definitions(faac PRIVATE HAVE_IMMINTRIN_H=1)
+endif()
 set_property(TARGET faac PROPERTY COMPILE_WARNING_AS_ERROR OFF)
 if(MSVC)
     target_compile_definitions(faac PRIVATE _CRT_SECURE_NO_WARNINGS)
