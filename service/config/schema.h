@@ -85,6 +85,8 @@ FROM iot_edge_link_migration AS migration
 JOIN device ON device.id = migration.device_id
 JOIN protocol_config ON protocol_config.id = device.protocol_config_id;
 
+ALTER TABLE device DROP CONSTRAINT IF EXISTS ck_device_connection_source;
+
 UPDATE device
 SET link_id = migration.link_id
 FROM iot_edge_link_migration AS migration
@@ -151,7 +153,6 @@ CREATE INDEX idx_link_execution ON link(execution) WHERE deleted_at IS NULL;
 CREATE INDEX idx_link_edge_node ON link(edge_node_id)
     WHERE execution = 'edge' AND deleted_at IS NULL;
 
-ALTER TABLE device DROP CONSTRAINT IF EXISTS ck_device_connection_source;
 DROP INDEX IF EXISTS idx_device_edge_node;
 ALTER TABLE device
     ALTER COLUMN link_id SET NOT NULL,
