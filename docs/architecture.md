@@ -54,8 +54,8 @@ ZLMediaKit 的两组内部线程，因此媒体面实际占用 `2N` 个线程。
 
 `SERVICE_WORKERS` 和 `COLLECTOR_WORKERS` 可以显式覆盖自动分配结果，范围均为 1-64。
 每个 Worker 都会增加线程、Redis 连接及对应运行时内存；中小规模部署建议从 `2+2`
-开始，再根据连接数、报文吞吐和处理延迟压测结果扩容。多个逻辑 Stream 共用 Worker 的
-异步 Redis 连接，空闲轮询统一为 50ms，避免无消息时形成高频 `XREADGROUP` 空转。
+开始，再根据连接数、报文吞吐和处理延迟压测结果扩容。Stream 消费使用独立阻塞连接，
+由 `XREADGROUP BLOCK` 在消息到达时唤醒，不允许通过固定间隔空读 Redis。
 
 每个 Worker 是一个完整、独立的事件循环线程。Worker 内可以并发运行多个协程，但同一时刻只在所属线程上访问本地运行状态。
 
@@ -64,7 +64,7 @@ ZLMediaKit 的两组内部线程，因此媒体面实际占用 `2N` 个线程。
 每个北桥 Worker 拥有：
 
 - 一个事件循环线程；
-- 一个 Redis 连接；
+- 一个 Redis 业务连接池和一个 Stream 阻塞等待池；
 - 一个 PostgreSQL 连接；
 - HTTP 请求处理能力；
 - Redis Stream 消费能力；
@@ -75,7 +75,7 @@ ZLMediaKit 的两组内部线程，因此媒体面实际占用 `2N` 个线程。
 每个南桥 Worker 拥有：
 
 - 一个事件循环线程；
-- 一个 Redis 连接；
+- 一个 Redis 业务连接和一个 Stream 阻塞连接；
 - 分配给该 Worker 的 TCP socket；
 - socket、设备和协议运行状态；
 - 一个只负责触发 deadline 的 `TimerScheduler`；
@@ -414,8 +414,9 @@ Pending 恢复、最大尝试次数和死信策略必须明确。
 | 最终失败 | Worker N 的任一消费者 | `dead-letter:worker:N` | 运维、审计或人工处理消费者 |
 
 TCP Runtime 收到字节后只能 `XADD packet:raw:worker:N`，不能把同一个内存对象直接交给
-协议 Session 形成绕过 Redis 的快速路径。协议消费者通过 `XREADGROUP` 先恢复自己的
-Pending，再读取新消息；协议动作和下游消息生产成功后才允许 `XACK + XDEL`。同样，
+协议 Session 形成绕过 Redis 的快速路径。协议消费者通过非阻塞 `XREADGROUP` 先恢复
+自己的 Pending，再由独立连接以 `XREADGROUP BLOCK` 等待新消息；协议动作和下游消息
+生产成功后才允许 `XACK + XDEL`。同样，
 协议 Session 不能直接调用 `tcp.send()`，必须生产 `socket:egress:worker:N`，由本 Worker
 的网络消费者完成实际发送。
 
@@ -500,8 +501,9 @@ Service CRUD
 HTTP 请求各自重建完整快照；对账协程在 100ms 内合并并串行投影，空闲时每 5 秒以
 PostgreSQL 为真源校验一次。新版本完成原子切换后，投影器为每个南桥 Worker 分别向
 `iot:channel:config:worker:N` 生产轻量通知。即时 Redis 通知失败时 CRUD 已提交结果仍然
-成功返回，dirty 标记保证 Redis 恢复后补齐快照。南桥同时轮询 active-version，因此
-配置通知 Stream 只是低延迟通知，消费后必须 `XACK + XDEL`，不能成为唯一可靠来源。
+成功返回，dirty 标记保证 Redis 恢复后补齐快照。对账协程只有在通知成功写入每个 Worker
+的可靠 Stream 后才记录已通知版本；南桥由该 Stream 唤醒并加载 active-version，消费后
+必须 `XACK + XDEL`，不再轮询 active-version。
 Redis 配置丢失时由北桥重建，南桥不得绕过边界直接查询数据库。
 
 设备、链路、协议变更只重载内容发生变化的链路，不能重启无关协议或无关 socket。被任一未删除设备引用的链路或协议配置禁止删除，API 返回明确的 409；必须先删除关联设备。

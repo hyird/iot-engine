@@ -79,49 +79,56 @@ class ResultRuntime final {
                           std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
-            std::vector<std::size_t> partitions;
+            const auto readRedis = context.redis(message::redis::kBlockingRedisAlias);
+            std::vector<std::string> streams;
+            std::map<std::string, std::size_t, std::less<>> streamPartitions;
             for (auto partition = index; partition < collectorWorkerCount_;
-                 partition += workers_.size()) {
-                partitions.push_back(partition);
+                  partition += workers_.size()) {
+                streams.push_back(message::commandResultStream(partition));
+                streamPartitions.emplace(streams.back(), partition);
                 co_await message::redis::ensureGroup(
-                    redis, message::commandResultStream(partition), kGroup);
+                    redis, streams.back(), kGroup);
             }
-            std::map<std::size_t, bool> recovering;
-            for (const auto partition : partitions)
-                recovering.emplace(partition, true);
+            bool recovering = true;
             ready->set_value();
             const auto consumer = "service-" + std::to_string(index);
             while (running_.load() && !context.stopToken().stopRequested()) {
-                bool handled = false;
+                if (streams.empty()) {
+                    (void)co_await ruvia::sleepFor(context.worker(), std::chrono::seconds(1));
+                    continue;
+                }
+                const auto batches = recovering
+                    ? co_await message::redis::readGroupMany(
+                          readRedis, streams, kGroup, consumer, "0", 100)
+                    : co_await message::redis::readGroupManyBlocking(
+                          readRedis, streams, kGroup, consumer,
+                          message::redis::kBlockingReadHeartbeat, 100);
+                if (recovering && batches.empty()) {
+                    recovering = false;
+                    continue;
+                }
                 bool failed = false;
-                for (const auto partition : partitions) {
-                    const auto stream = message::commandResultStream(partition);
-                    auto& partitionRecovering = recovering.at(partition);
-                    const auto messages = co_await message::redis::readGroup(
-                        redis, stream, kGroup, consumer, partitionRecovering ? "0" : ">",
-                        std::chrono::milliseconds(0), 100);
-                    if (partitionRecovering && messages.empty())
-                        partitionRecovering = false;
-                    if (messages.empty())
+                for (const auto& batch : batches) {
+                    const auto partitionEntry = streamPartitions.find(batch.stream);
+                    if (partitionEntry == streamPartitions.end())
                         continue;
-                    handled = true;
+                    const auto partition = partitionEntry->second;
                     try {
-                        for (const auto& message : messages) {
+                        for (const auto& message : batch.messages) {
                             co_await project(redis, partition, message);
-                            co_await message::redis::acknowledgeAndDelete(redis, stream,
+                            co_await message::redis::acknowledgeAndDelete(redis, batch.stream,
                                                                                kGroup, message.id);
                         }
                     } catch (const std::exception& error) {
                         std::cerr << "command result projection failed for collector worker "
                                   << partition << ": " << error.what() << '\n';
-                        partitionRecovering = true;
+                        recovering = true;
                         failed = true;
                     }
                 }
-                if (!handled || failed)
-                    (void)co_await ruvia::sleepFor(
-                        context.worker(), failed ? std::chrono::milliseconds(250)
-                                                 : message::redis::kIdlePollInterval);
+                if (failed)
+                    (void)co_await ruvia::sleepFor(context.worker(),
+                                                   std::chrono::milliseconds(250));
             }
         } catch (...) {
             try {

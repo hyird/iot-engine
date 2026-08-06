@@ -1,7 +1,7 @@
 #pragma once
 
-// 基于 ruvia RedisHandle 的南桥 Redis Stream helper。消费者和生产者都在同一个
-// worker 上通过 co_await 调用，不创建额外同步连接。
+// 基于 ruvia RedisHandle 的南桥 Redis Stream helper。消费者和生产者都在 worker
+// 所属的异步连接上通过 co_await 调用。
 
 #include <chrono>
 #include <cstddef>
@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <ruvia/core/Task.h>
@@ -24,10 +25,10 @@ namespace service::message::redis {
 using ruvia::RedisHandle;
 using ruvia::RedisValue;
 
-// Multiple logical streams share one asynchronous Redis connection per worker, so blocking on
-// one stream would starve the others. Keep polling bounded, but avoid the former 10 ms empty-loop
-// cadence which multiplied into thousands of XREADGROUP calls per second on an idle instance.
-inline constexpr auto kIdlePollInterval = std::chrono::milliseconds(50);
+// Blocking readers use a separate Redis pool from ACK, publish, and state commands. A finite
+// heartbeat lets Service consumers observe shutdown; Collector owns its reader and blocks forever.
+inline constexpr std::string_view kBlockingRedisAlias = "stream-wait";
+inline constexpr auto kBlockingReadHeartbeat = std::chrono::seconds(1);
 
 // ---- 通用命令封装：把 std::string 参数列表转成 string_view span 后 co_await ----
 
@@ -124,30 +125,45 @@ inline ruvia::Task<void> ensureGroup(const Redis& redis, std::string_view stream
         throwValue("XGROUP CREATE", reply);
 }
 
+struct StreamBatch final {
+    std::string stream;
+    std::vector<StreamMessage> messages;
+};
+
 template <typename Redis>
-inline ruvia::Task<std::vector<StreamMessage>>
-readGroup(const Redis& redis, std::string_view stream, std::string_view group,
-          std::string_view consumer, std::string_view id, std::chrono::milliseconds block,
-          std::size_t count = 100) {
+inline ruvia::Task<std::vector<StreamBatch>>
+readGroupManyImpl(const Redis& redis, std::span<const std::string> streams,
+                  std::string_view group, std::string_view consumer, std::string_view id,
+                  std::optional<std::chrono::milliseconds> block, std::size_t count) {
+    if (streams.empty())
+        co_return std::vector<StreamBatch>{};
     std::vector<std::string> args{"XREADGROUP",          "GROUP", std::string(group),
                                   std::string(consumer), "COUNT", std::to_string(count)};
-    if (block.count() > 0) {
+    if (block.has_value()) {
         args.emplace_back("BLOCK");
-        args.push_back(std::to_string(block.count()));
+        args.push_back(std::to_string(block->count()));
     }
-    args.insert(args.end(), {"STREAMS", std::string(stream), std::string(id)});
+    args.emplace_back("STREAMS");
+    args.insert(args.end(), streams.begin(), streams.end());
+    for (std::size_t index = 0; index < streams.size(); ++index)
+        args.emplace_back(id);
     const auto reply = co_await command(redis, args);
-    std::vector<StreamMessage> messages;
+    std::vector<StreamBatch> batches;
     if (reply.null())
-        co_return messages;
+        co_return batches;
     if (reply.kind() != RedisValue::Kind::kArray)
         throwValue("XREADGROUP", reply);
     for (const auto& streamReply : reply.array()) {
         if (streamReply.kind() != RedisValue::Kind::kArray || streamReply.array().size() != 2)
             continue;
+        const auto& streamName = streamReply.array()[0];
         const auto& entries = streamReply.array()[1];
-        if (entries.kind() != RedisValue::Kind::kArray)
+        if (streamName.kind() != RedisValue::Kind::kString ||
+            entries.kind() != RedisValue::Kind::kArray)
             continue;
+        StreamBatch batch;
+        batch.stream.assign(streamName.string());
+        batch.messages.reserve(entries.array().size());
         for (const auto& entry : entries.array()) {
             if (entry.kind() != RedisValue::Kind::kArray || entry.array().size() != 2)
                 continue;
@@ -167,10 +183,59 @@ readGroup(const Redis& redis, std::string_view stream, std::string_view group,
                     continue;
                 message.fields.push_back({std::string(name.string()), std::string(value.string())});
             }
-            messages.push_back(std::move(message));
+            batch.messages.push_back(std::move(message));
         }
+        if (!batch.messages.empty())
+            batches.push_back(std::move(batch));
     }
-    co_return messages;
+    co_return batches;
+}
+
+template <typename Redis>
+inline ruvia::Task<std::vector<StreamBatch>>
+readGroupMany(const Redis& redis, std::span<const std::string> streams,
+              std::string_view group, std::string_view consumer, std::string_view id,
+              std::size_t count = 100) {
+    co_return co_await readGroupManyImpl(redis, streams, group, consumer, id, std::nullopt,
+                                         count);
+}
+
+template <typename Redis>
+inline ruvia::Task<std::vector<StreamBatch>>
+readGroupManyBlocking(const Redis& redis, std::span<const std::string> streams,
+                      std::string_view group, std::string_view consumer,
+                      std::chrono::milliseconds timeout = std::chrono::milliseconds(0),
+                      std::size_t count = 100) {
+    co_return co_await readGroupManyImpl(redis, streams, group, consumer, ">", timeout, count);
+}
+
+template <typename Redis>
+inline ruvia::Task<std::vector<StreamMessage>>
+readGroup(const Redis& redis, std::string_view stream, std::string_view group,
+          std::string_view consumer, std::string_view id, std::chrono::milliseconds block,
+          std::size_t count = 100) {
+    const std::vector<std::string> streams{std::string(stream)};
+    auto batches = co_await readGroupManyImpl(
+        redis, streams, group, consumer, id,
+        block.count() > 0 ? std::optional<std::chrono::milliseconds>(block) : std::nullopt,
+        count);
+    if (batches.empty())
+        co_return std::vector<StreamMessage>{};
+    co_return std::move(batches.front().messages);
+}
+
+template <typename Redis>
+inline ruvia::Task<std::vector<StreamMessage>>
+readGroupBlocking(const Redis& redis, std::string_view stream, std::string_view group,
+                  std::string_view consumer,
+                  std::chrono::milliseconds timeout = std::chrono::milliseconds(0),
+                  std::size_t count = 100) {
+    const std::vector<std::string> streams{std::string(stream)};
+    auto batches =
+        co_await readGroupManyBlocking(redis, streams, group, consumer, timeout, count);
+    if (batches.empty())
+        co_return std::vector<StreamMessage>{};
+    co_return std::move(batches.front().messages);
 }
 
 // ---- ACK / 删除 ----

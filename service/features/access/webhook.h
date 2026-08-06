@@ -307,20 +307,22 @@ public:
                           std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
+            const auto readRedis = context.redis(message::redis::kBlockingRedisAlias);
             co_await message::redis::ensureGroup(redis, event::kStream, kGroup);
             ready->set_value();
             bool recovering = true;
             while (running_.load() && !context.stopToken().stopRequested()) {
-                const auto messages = co_await message::redis::readGroup(
-                    redis, event::kStream, kGroup, "service-0", recovering ? "0" : ">",
-                    std::chrono::milliseconds(0), 50);
+                const auto messages = recovering
+                    ? co_await message::redis::readGroup(
+                          readRedis, event::kStream, kGroup, "service-0", "0",
+                          std::chrono::milliseconds(0), 50)
+                    : co_await message::redis::readGroupBlocking(
+                          readRedis, event::kStream, kGroup, "service-0",
+                          message::redis::kBlockingReadHeartbeat, 50);
                 if (recovering && messages.empty())
                     recovering = false;
-                if (messages.empty()) {
-                    (void)co_await ruvia::sleepFor(context.worker(),
-                                                   message::redis::kIdlePollInterval);
+                if (messages.empty())
                     continue;
-                }
                 bool failed = false;
                 try {
                     for (const auto& message : messages) {

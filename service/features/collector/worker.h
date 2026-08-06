@@ -8,6 +8,7 @@
 #include <deque>
 #include <exception>
 #include <future>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <memory_resource>
@@ -47,7 +48,9 @@ class Worker final {
                       ServerSocketRouter serverSocketRouter)
         : loop_(std::move(loop)), resource_(), scope_(loop_.handle(), &resource_),
           scheduler_(loop_.ioContext()),
-          redis_(loop_.ioContext(), std::move(redisConfig), scheduler_), engine_(protocols()),
+          redis_(loop_.ioContext(), redisConfig, scheduler_),
+          blockingRedis_(loop_.ioContext(), std::move(redisConfig), scheduler_),
+          engine_(protocols()),
           tcp_(
               loop_.ioContext(), scheduler_, workerIndex, workerCount,
               [this](ProtocolConnectionInfo info) { enqueueConnected(std::move(info)); },
@@ -79,6 +82,7 @@ class Worker final {
         if (tickToken_ != 0)
             scheduler_.cancel(tickToken_);
         tcp_.stop();
+        blockingRedis_.close();
         scope_.requestStop();
         try {
             co_await scope_.join();
@@ -148,13 +152,15 @@ class Worker final {
         return result;
     }
 
-    [[nodiscard]] std::string configGroup() const { return "iot-engine:config"; }
+    [[nodiscard]] std::string collectorGroup() const { return "iot-engine:collector"; }
 
-    [[nodiscard]] std::string ingressGroup() const { return "iot-engine:protocol-ingress"; }
+    [[nodiscard]] std::string configGroup() const { return collectorGroup(); }
 
-    [[nodiscard]] std::string egressGroup() const { return "iot-engine:socket-egress"; }
+    [[nodiscard]] std::string ingressGroup() const { return collectorGroup(); }
 
-    [[nodiscard]] std::string linkEventGroup() const { return "iot-engine:link-state"; }
+    [[nodiscard]] std::string egressGroup() const { return collectorGroup(); }
+
+    [[nodiscard]] std::string linkEventGroup() const { return collectorGroup(); }
 
     [[nodiscard]] std::string configStream() const { return message::configStream(workerIndex_); }
 
@@ -162,7 +168,7 @@ class Worker final {
         return message::commandStream(workerIndex_, high);
     }
 
-    [[nodiscard]] std::string commandGroup() const { return "iot-engine:command"; }
+    [[nodiscard]] std::string commandGroup() const { return collectorGroup(); }
 
     [[nodiscard]] std::string controlStream() const { return message::controlStream(workerIndex_); }
 
@@ -333,14 +339,14 @@ class Worker final {
     ruvia::Task<void> initialize(std::shared_ptr<std::promise<void>> ready) {
         try {
             co_await redis_.connect();
+            co_await blockingRedis_.connect();
             co_await message::redis::ensureGroup(redis_, configStream(), configGroup());
             co_await message::redis::ensureGroup(redis_, ingressStream(), ingressGroup());
             co_await message::redis::ensureGroup(redis_, egressStream(), egressGroup());
             co_await message::redis::ensureGroup(redis_, linkEventStream(), linkEventGroup());
             co_await message::redis::ensureGroup(redis_, commandStream(true), commandGroup());
             co_await message::redis::ensureGroup(redis_, commandStream(false), commandGroup());
-            co_await message::redis::ensureGroup(redis_, controlStream(),
-                                                      "iot-engine:control");
+            co_await message::redis::ensureGroup(redis_, controlStream(), collectorGroup());
             // Runtime state is a projection owned by this worker. Remove leftovers from an
             // unclean previous process before publishing the freshly loaded snapshot.
             co_await message::redis::eraseMatching(redis_, "iot:runtime:link:*:worker:" +
@@ -361,11 +367,12 @@ class Worker final {
             } catch (...) {
             }
             stopping_ = true;
+            blockingRedis_.close();
             redis_.close();
         }
     }
 
-    void scheduleTick(std::chrono::milliseconds delay = kTickInterval) {
+    void scheduleTick(std::chrono::milliseconds delay = std::chrono::milliseconds(0)) {
         if (stopping_)
             return;
         tickToken_ = scheduler_.scheduleAfter(delay, [this] {
@@ -388,7 +395,10 @@ class Worker final {
             handled = co_await consumeCommand(true) || handled;
             handled = co_await consumeCommand(false) || handled;
             handled = co_await consumeEgress() || handled;
-            scheduleTick(handled ? std::chrono::milliseconds(0) : kTickInterval);
+            if (handled)
+                scheduleTick();
+            else
+                scope_.spawn(waitForWork());
         } catch (const std::exception& error) {
             lastCoordinatorError_ = error.what();
             scheduleTick(kFailureDelay);
@@ -396,10 +406,11 @@ class Worker final {
     }
 
     ruvia::Task<bool> consumeConfig() {
+        const auto stream = configStream();
+        const auto group = configGroup();
+        const auto messages = co_await readAvailable(stream, group, configRecovering_, 16);
         bool changed = false;
-        const auto now = std::chrono::steady_clock::now();
-        if (now - lastConfigCheck_ >= kConfigCheckInterval) {
-            lastConfigCheck_ = now;
+        if (!messages.empty()) {
             const auto version = co_await config::activeVersion(redis_);
             if (version != loadedConfigVersion_) {
                 auto snapshot = co_await config::load(redis_, version);
@@ -435,28 +446,16 @@ class Worker final {
                 changed = true;
             }
         }
-        const auto stream = configStream();
-        const auto group = configGroup();
-        const auto messages = co_await message::redis::readGroup(
-            redis_, stream, group, consumer_, configRecovering_ ? "0" : ">",
-            std::chrono::milliseconds(0), 16);
-        if (configRecovering_ && messages.empty())
-            configRecovering_ = false;
-        if (messages.empty())
-            co_return changed;
         for (const auto& message : messages)
             co_await message::redis::acknowledgeAndDelete(redis_, stream, group, message.id);
-        co_return true;
+        co_return changed || !messages.empty();
     }
 
     ruvia::Task<bool> consumeCommand(bool high) {
         const auto stream = commandStream(high);
         auto& recovering = high ? highRecovering_ : normalRecovering_;
-        const auto messages = co_await message::redis::readGroup(
-            redis_, stream, commandGroup(), consumer_, recovering ? "0" : ">",
-            std::chrono::milliseconds(0), kCommandConsumeBatch);
-        if (recovering && messages.empty())
-            recovering = false;
+        const auto messages =
+            co_await readAvailable(stream, commandGroup(), recovering, kCommandConsumeBatch);
         if (messages.empty())
             co_return false;
         for (const auto& message : messages) {
@@ -561,18 +560,15 @@ class Worker final {
 
     ruvia::Task<bool> consumeControl() {
         const auto stream = controlStream();
-        const auto messages = co_await message::redis::readGroup(
-            redis_, stream, "iot-engine:control", consumer_, controlRecovering_ ? "0" : ">",
-            std::chrono::milliseconds(0), 32);
-        if (controlRecovering_ && messages.empty())
-            controlRecovering_ = false;
+        const auto messages =
+            co_await readAvailable(stream, collectorGroup(), controlRecovering_, 32);
         for (const auto& message : messages) {
             const auto connectionId = message.get("connection_id");
             if (!connectionId.empty())
                 tcp_.close(connectionId, message.get("reason").empty()
                                              ? "device_re_registered"
                                              : std::string(message.get("reason")));
-            co_await message::redis::acknowledgeAndDelete(redis_, stream, "iot-engine:control",
+            co_await message::redis::acknowledgeAndDelete(redis_, stream, collectorGroup(),
                                                                message.id);
         }
         co_return !messages.empty();
@@ -689,11 +685,8 @@ class Worker final {
         try {
             const auto stream = ingressStream();
             const auto group = ingressGroup();
-            const auto messages = co_await message::redis::readGroup(
-                redis_, stream, group, consumer_, ingressRecovering_ ? "0" : ">",
-                std::chrono::milliseconds(0), 32);
-            if (ingressRecovering_ && messages.empty())
-                ingressRecovering_ = false;
+            const auto messages =
+                co_await readAvailable(stream, group, ingressRecovering_, 32);
             for (const auto& message : messages) {
                 const auto eventType = message.get("event_type");
                 if (eventType == "connected" || eventType == "disconnected") {
@@ -830,11 +823,8 @@ class Worker final {
             co_return false;
         const auto stream = egressStream();
         const auto group = egressGroup();
-        const auto messages = co_await message::redis::readGroup(
-            redis_, stream, group, consumer_, egressRecovering_ ? "0" : ">",
-            std::chrono::milliseconds(0), 1);
-        if (egressRecovering_ && messages.empty())
-            egressRecovering_ = false;
+        const auto messages =
+            co_await readAvailable(stream, group, egressRecovering_, 1);
         if (messages.empty())
             co_return false;
         const auto& message = messages.front();
@@ -1083,6 +1073,46 @@ class Worker final {
             return;
         scheduler_.cancel(current->second);
         protocolDeadlines_.erase(current);
+    }
+
+    ruvia::Task<void> waitForWork() {
+        try {
+            const std::vector<std::string> streams{
+                configStream(),       controlStream(), commandStream(true),
+                commandStream(false), ingressStream(), egressStream(),
+                linkEventStream()};
+            auto batches = co_await message::redis::readGroupManyBlocking(
+                blockingRedis_, streams, collectorGroup(), consumer_,
+                std::chrono::milliseconds(0), 1);
+            for (auto& batch : batches) {
+                auto& ready = readyMessages_[batch.stream];
+                ready.insert(ready.end(), std::make_move_iterator(batch.messages.begin()),
+                             std::make_move_iterator(batch.messages.end()));
+            }
+            if (!stopping_)
+                scheduleTick();
+        } catch (const std::exception& error) {
+            if (!stopping_) {
+                lastCoordinatorError_ = error.what();
+                scheduleTick(kFailureDelay);
+            }
+        }
+    }
+
+    ruvia::Task<std::vector<message::StreamMessage>>
+    readAvailable(std::string_view stream, std::string_view group, bool& recovering,
+                  std::size_t count) {
+        if (auto ready = readyMessages_.find(stream); ready != readyMessages_.end()) {
+            auto messages = std::move(ready->second);
+            readyMessages_.erase(ready);
+            co_return messages;
+        }
+        auto messages = co_await message::redis::readGroup(
+            redis_, stream, group, consumer_, recovering ? "0" : ">",
+            std::chrono::milliseconds(0), count);
+        if (recovering && messages.empty())
+            recovering = false;
+        co_return messages;
     }
 
     void cancelProtocolDeadlinesForConnection(std::string_view connectionId) {
@@ -1413,11 +1443,8 @@ return 1
     ruvia::Task<bool> consumeLinkEvent() {
         const auto stream = linkEventStream();
         const auto group = linkEventGroup();
-        const auto messages = co_await message::redis::readGroup(
-            redis_, stream, group, consumer_, linkEventRecovering_ ? "0" : ">",
-            std::chrono::milliseconds(0), 32);
-        if (linkEventRecovering_ && messages.empty())
-            linkEventRecovering_ = false;
+        const auto messages =
+            co_await readAvailable(stream, group, linkEventRecovering_, 32);
         for (const auto& message : messages) {
             const auto linkId = message.get("link_id");
             const auto workerId = message.get("worker_id");
@@ -1469,10 +1496,8 @@ return 1
              {"applied_at_ms", now}});
     }
 
-    static constexpr auto kTickInterval = message::redis::kIdlePollInterval;
     static constexpr std::size_t kRawIngressCapacity = 100000;
     static constexpr auto kFailureDelay = std::chrono::milliseconds(250);
-    static constexpr auto kConfigCheckInterval = std::chrono::milliseconds(250);
     static constexpr std::size_t kCommandStreamCapacity = 10000;
     static constexpr std::size_t kCommandConsumeBatch = 16;
     static constexpr std::size_t kEgressStreamCapacity = 10000;
@@ -1484,6 +1509,7 @@ return 1
     ruvia::TaskScope scope_;
     Timer scheduler_;
     Client redis_;
+    Client blockingRedis_;
     ProtocolEngine engine_;
     Tcp tcp_;
     std::size_t workerIndex_ = 0;
@@ -1497,11 +1523,11 @@ return 1
     std::map<std::string, PendingCommand, std::less<>> pendingCommands_;
     std::map<std::string, BroadcastCommand, std::less<>> broadcasts_;
     std::map<std::string, std::string, std::less<>> broadcastParents_;
+    std::map<std::string, std::vector<message::StreamMessage>, std::less<>> readyMessages_;
     Timer::Token tickToken_ = 0;
     std::string lastCoordinatorError_;
     std::string loadedConfigVersion_;
     RuntimeSnapshot loadedSnapshot_;
-    std::chrono::steady_clock::time_point lastConfigCheck_{};
     bool configRecovering_ = true;
     bool highRecovering_ = true;
     bool normalRecovering_ = true;

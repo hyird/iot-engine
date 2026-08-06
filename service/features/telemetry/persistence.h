@@ -140,44 +140,55 @@ class PersistenceRuntime final {
                           std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
-            std::vector<std::size_t> partitions;
+            const auto readRedis = context.redis(message::redis::kBlockingRedisAlias);
+            std::vector<std::string> streams;
+            std::map<std::string, std::size_t, std::less<>> streamPartitions;
             for (auto partition = index; partition < collectorWorkerCount_;
-                 partition += workers_.size()) {
-                partitions.push_back(partition);
+                  partition += workers_.size()) {
+                streams.push_back(message::parsedStream(partition));
+                streamPartitions.emplace(streams.back(), partition);
                 co_await message::redis::ensureGroup(
-                    redis, message::parsedStream(partition), kGroup);
+                    redis, streams.back(), kGroup);
             }
             ready->set_value();
-            std::map<std::size_t, bool> recovering;
-            for (const auto partition : partitions)
-                recovering.emplace(partition, true);
+            bool recovering = true;
             const auto consumer = "service-" + std::to_string(index);
             auto lastFreshnessCheck = std::chrono::steady_clock::time_point{};
             while (running_.load() && !context.stopToken().stopRequested()) {
+                if (streams.empty()) {
+                    (void)co_await ruvia::sleepFor(context.worker(), std::chrono::seconds(1));
+                    continue;
+                }
                 const auto now = std::chrono::steady_clock::now();
                 if (index == 0 && now - lastFreshnessCheck >= std::chrono::milliseconds(250)) {
                     lastFreshnessCheck = now;
                     co_await latest::expireStale(redis);
                 }
-                bool handled = false;
+                const auto wait = index == 0
+                    ? std::chrono::milliseconds(250)
+                    : std::chrono::duration_cast<std::chrono::milliseconds>(
+                          message::redis::kBlockingReadHeartbeat);
+                const auto batches = recovering
+                    ? co_await message::redis::readGroupMany(
+                          readRedis, streams, kGroup, consumer, "0", 100)
+                    : co_await message::redis::readGroupManyBlocking(
+                          readRedis, streams, kGroup, consumer, wait, 100);
+                if (recovering && batches.empty()) {
+                    recovering = false;
+                    continue;
+                }
                 bool failed = false;
-                for (const auto partition : partitions) {
-                    const auto stream = message::parsedStream(partition);
-                    auto& partitionRecovering = recovering.at(partition);
-                    const auto messages = co_await message::redis::readGroup(
-                        redis, stream, kGroup, consumer,
-                        partitionRecovering ? "0" : ">", std::chrono::milliseconds(0), 100);
-                    if (partitionRecovering && messages.empty())
-                        partitionRecovering = false;
-                    if (messages.empty())
+                for (const auto& batch : batches) {
+                    const auto partitionEntry = streamPartitions.find(batch.stream);
+                    if (partitionEntry == streamPartitions.end())
                         continue;
-                    handled = true;
+                    const auto partition = partitionEntry->second;
                     try {
-                        co_await persist(context, messages);
-                        co_await latest::update(redis, messages);
+                        co_await persist(context, batch.messages);
+                        co_await latest::update(redis, batch.messages);
                         std::vector<message::ParsedDeviceMessage> alertMessages;
-                        alertMessages.reserve(messages.size());
-                        for (const auto& message : messages)
+                        alertMessages.reserve(batch.messages.size());
+                        for (const auto& message : batch.messages)
                             alertMessages.push_back(message::parsedFrom(message));
                         try {
                             co_await service::alert::Runtime::evaluateTelemetry(context,
@@ -188,7 +199,7 @@ class PersistenceRuntime final {
                             std::cerr << "alert telemetry evaluation failed: " << error.what()
                                       << '\n';
                         }
-                        for (const auto& message : messages) {
+                        for (const auto& message : batch.messages) {
                             const auto parsed = message::parsedFrom(message);
                             const auto eventType =
                                 parsed.valuesJson.find("\"type\":\"JPEG\"") != std::string::npos
@@ -198,19 +209,14 @@ class PersistenceRuntime final {
                                 redis, parsed.messageId, eventType, parsed.deviceId,
                                 parsed.deviceCode, parsed.observedAtMs, parsed.valuesJson);
                             co_await message::redis::acknowledgeAndDelete(
-                                redis, stream, kGroup, message.id);
+                                redis, batch.stream, kGroup, message.id);
                         }
                     } catch (const std::exception& error) {
                         std::cerr << "telemetry persistence failed for collector worker " << partition
                                   << ": " << error.what() << '\n';
-                        partitionRecovering = true;
+                        recovering = true;
                         failed = true;
                     }
-                }
-                if (!handled) {
-                    (void)co_await ruvia::sleepFor(context.worker(),
-                                                   message::redis::kIdlePollInterval);
-                    continue;
                 }
                 if (failed)
                     (void)co_await ruvia::sleepFor(context.worker(),

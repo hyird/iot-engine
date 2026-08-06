@@ -66,22 +66,24 @@ class Projector final {
                           std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
+            const auto readRedis = context.redis(service::message::redis::kBlockingRedisAlias);
             co_await service::message::redis::ensureGroup(
                 redis, kEdgeIngressStream, kEdgeIngressGroup);
             co_await hydrateAuth(context);
             ready->set_value();
             bool recovering = true;
             while (running_.load() && !context.stopToken().stopRequested()) {
-                const auto messages = co_await service::message::redis::readGroup(
-                    redis, kEdgeIngressStream, kEdgeIngressGroup, "edge-projector",
-                    recovering ? "0" : ">", std::chrono::milliseconds(0), 100);
+                const auto messages = recovering
+                    ? co_await service::message::redis::readGroup(
+                          readRedis, kEdgeIngressStream, kEdgeIngressGroup, "edge-projector",
+                          "0", std::chrono::milliseconds(0), 100)
+                    : co_await service::message::redis::readGroupBlocking(
+                          readRedis, kEdgeIngressStream, kEdgeIngressGroup, "edge-projector",
+                          service::message::redis::kBlockingReadHeartbeat, 100);
                 if (recovering && messages.empty())
                     recovering = false;
-                if (messages.empty()) {
-                    (void)co_await ruvia::sleepFor(
-                        context.worker(), service::message::redis::kIdlePollInterval);
+                if (messages.empty())
                     continue;
-                }
                 bool projectionFailed = false;
                 try {
                     for (const auto& message : messages) {

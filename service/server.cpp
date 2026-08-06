@@ -296,6 +296,11 @@ int main(int argc, char *argv[])
                   << ", gb28181=" << gb28181WorkerCount << '\n';
         auto serviceRedis = redisConfig(app.env());
         auto collectorRedis = serviceRedis;
+        auto blockingRedis = serviceRedis;
+        // Telemetry, command results, edge ingress, and webhook delivery may all wait on
+        // Streams on service worker 0. They use this separate pool so blocked reads never
+        // consume the connection used by HTTP handlers, ACKs, and publishers.
+        blockingRedis.poolSizePerWorker = 4;
         auto collector = std::make_shared<service::collector::Runtime>();
         auto telemetry = std::make_shared<service::telemetry::PersistenceRuntime>();
         auto commandResults = std::make_shared<service::command::ResultRuntime>();
@@ -306,6 +311,8 @@ int main(int argc, char *argv[])
         auto alerts = std::make_shared<service::alert::Runtime>();
         app.useDb(std::move(db))
             .useRedis(std::move(serviceRedis))
+            .useRedis(service::message::redis::kBlockingRedisAlias,
+                      std::move(blockingRedis))
             .onStart([collector, telemetry, commandResults, openWebhooks, configReconciler,
                       edgeProjector, gb28181Projector, alerts,
                       collectorRedis = std::move(collectorRedis),

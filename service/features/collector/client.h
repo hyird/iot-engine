@@ -16,8 +16,8 @@ namespace service::collector {
 
 // Ruvia 0.1.5 exposes a generic EventLoopPool but not a public Redis context for
 // non-HTTP workers. This worker-affine adapter keeps that limitation contained in
-// one file. Every Collector Worker owns exactly one adapter and its Redis pool size is
-// forced to one connection.
+// one file. Collector Workers use one adapter for business commands and another for blocking
+// Stream reads; each adapter is deliberately forced to one connection.
 class Client final {
   public:
     Client(asio::io_context& ioContext, ruvia::RedisConfig config,
@@ -32,7 +32,8 @@ class Client final {
 
     [[nodiscard]] ruvia::Task<void> connect() {
         co_await pool_.connect();
-        scheduleDeadlineScan();
+        if (pool_.hasAnyTimeout())
+            scheduleDeadlineScan();
     }
 
     void close() noexcept {
