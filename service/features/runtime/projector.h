@@ -16,7 +16,7 @@ inline ruvia::Task<std::string> projectLocked(Context& context) {
     auto transaction = co_await context.db().beginTransaction();
     // Every Service Worker shares this transaction-scoped lock. The snapshot is loaded only after
     // earlier projections finish, so a slower request can never overwrite a newer DB state.
-    (void)co_await transaction.execute(
+    (void)co_await transaction.query(
         "SELECT pg_advisory_xact_lock(5282804697543808067::bigint)");
     auto snapshot =
         co_await service::runtime::repository::loadRuntimeSnapshot(transaction);

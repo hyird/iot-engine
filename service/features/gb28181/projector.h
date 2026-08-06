@@ -371,7 +371,7 @@ WHERE stored.device_id = $1
     auto transaction = co_await context.db().beginTransaction();
     // Observer callbacks are fire-and-forget, but every snapshot for the
     // same SIP device must reach PostgreSQL in actor order.
-    (void)co_await transaction.execute(
+    (void)co_await transaction.query(
         "SELECT pg_advisory_xact_lock(hashtextextended($1, 28181))",
         service::common::dbParams(device.id));
     co_await saveDeviceBase(transaction, device);

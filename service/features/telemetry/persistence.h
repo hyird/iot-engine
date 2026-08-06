@@ -299,7 +299,7 @@ class PersistenceRuntime final {
             lockParams.emplace_back(std::string_view(deviceId));
         }
         lockSql += ") ORDER BY id";
-        (void)co_await transaction.execute(lockSql, lockParams);
+        (void)co_await transaction.query(lockSql, lockParams);
 
         std::string sql = R"sql(WITH RECURSIVE incoming(
 report_time, id, device_id, link_id, connection_id, protocol, source,
