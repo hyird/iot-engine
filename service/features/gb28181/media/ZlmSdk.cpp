@@ -286,9 +286,12 @@ ZlmSdk::openRtpServer(const std::string& deviceId, const std::string& channelId,
     const auto streamId = makeStreamId(deviceId, channelId, ssrc, mode);
     const auto randomPort =
         config_.rtpPortRangeStart == 0 && config_.rtpPortRangeEnd == 0;
+    // ZLMediaKit resolves port zero to a random even RTP port before binding.
+    // That selection can race another process, so random mode needs the same
+    // bounded retry behavior as an explicit port range.
     const auto attempts =
         randomPort
-            ? 1U
+            ? 32U
             : std::max(
                   1U,
                   static_cast<unsigned int>(
