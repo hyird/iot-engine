@@ -139,7 +139,9 @@ set(DISABLE_REPORT ON CACHE BOOL "" FORCE)
 FetchContent_Declare(zlmediakit
     GIT_REPOSITORY https://github.com/ZLMediaKit/ZLMediaKit.git
     GIT_TAG 79d795a767da85bbba821b871265fd87d853d808
-    GIT_SHALLOW TRUE
+    # A fixed commit stops being the shallow clone tip as upstream advances. Fetch the complete
+    # history so clean CI checkouts can continue resolving this reproducible pin.
+    GIT_SHALLOW FALSE
     GIT_SUBMODULES
         3rdpart/ZLToolKit
         3rdpart/jsoncpp
