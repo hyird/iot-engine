@@ -10,6 +10,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -227,6 +228,11 @@ int main(int argc, char *argv[])
 {
     try
     {
+        const bool migrateOnly =
+            argc == 2 && std::string_view(argv[1]) == "--migrate-only";
+        if (argc > 1 && !migrateOnly)
+            throw std::invalid_argument("usage: server [--migrate-only]");
+
         auto &app = ruvia::app();
         app.loadDotenv();
         if (!service::edge::protocol::configurePlatform(
@@ -261,6 +267,8 @@ int main(int argc, char *argv[])
                           ? std::to_string(storagePolicy.compressionAfterHours) + "h"
                           : "disabled")
                   << ", mutable-window=" << storagePolicy.mutableWindowHours << "h\n";
+        if (migrateOnly)
+            return 0;
 
         configureWeb(app, runtime);
         const auto cpu = std::max(2U, std::thread::hardware_concurrency());

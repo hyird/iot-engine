@@ -6,13 +6,165 @@
 namespace service::config {
 
 inline constexpr std::array<ruvia::DbMigration, 18> kSchemaMigrations{{
-    {"0000_require_fresh_database", R"sql(
+    {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
-IF EXISTS (SELECT 1 FROM sys_schema_migrations) THEN
-    RAISE EXCEPTION
-        'this iot-engine schema is incompatible with existing databases; drop and recreate the database';
+IF NOT EXISTS (SELECT 1 FROM sys_schema_migrations) THEN
+    RETURN;
 END IF;
+
+IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'link'
+      AND column_name = 'execution'
+) AND NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'device'
+      AND column_name = 'edge_node_id'
+) THEN
+    RETURN;
+END IF;
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'link'
+      AND column_name = 'usage'
+) OR NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'device'
+      AND column_name = 'edge_node_id'
+) OR NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'device'
+      AND column_name = 'edge_endpoint'
+) THEN
+    RAISE EXCEPTION
+        'this iot-engine schema is neither the supported legacy layout nor the unified layout';
+END IF;
+
+ALTER TABLE link
+    ADD COLUMN execution VARCHAR(16),
+    ADD COLUMN edge_node_id UUID;
+
+UPDATE link
+SET execution = 'collector',
+    endpoint = jsonb_set(endpoint, '{transport}', '"tcp"'::jsonb, true);
+
+CREATE TEMP TABLE iot_edge_link_migration ON COMMIT DROP AS
+SELECT id AS device_id, gen_random_uuid() AS link_id
+FROM device
+WHERE edge_node_id IS NOT NULL AND link_id IS NULL;
+
+INSERT INTO link(
+    id, name, protocol, endpoint, execution, edge_node_id, status,
+    created_by, created_at, updated_at, deleted_at)
+SELECT migration.link_id,
+       left(device.name, 70) || ' [edge ' || left(device.id::text, 8) || ']',
+       protocol_config.protocol,
+       device.edge_endpoint,
+       'edge',
+       device.edge_node_id,
+       device.status,
+       device.created_by,
+       device.created_at,
+       device.updated_at,
+       device.deleted_at
+FROM iot_edge_link_migration AS migration
+JOIN device ON device.id = migration.device_id
+JOIN protocol_config ON protocol_config.id = device.protocol_config_id;
+
+UPDATE device
+SET link_id = migration.link_id
+FROM iot_edge_link_migration AS migration
+WHERE device.id = migration.device_id;
+
+UPDATE device_data
+SET link_id = device.link_id
+FROM device
+WHERE device.id = device_data.device_id AND device_data.link_id IS NULL;
+
+IF EXISTS (SELECT 1 FROM device WHERE link_id IS NULL) OR
+   EXISTS (SELECT 1 FROM device_data WHERE link_id IS NULL) THEN
+    RAISE EXCEPTION 'legacy device linkage could not be migrated completely';
+END IF;
+
+ALTER TABLE link
+    ALTER COLUMN execution SET NOT NULL,
+    ADD CONSTRAINT fk_link_edge_node
+        FOREIGN KEY (edge_node_id) REFERENCES edge_node(id) ON DELETE RESTRICT;
+
+ALTER TABLE link DROP CONSTRAINT IF EXISTS ck_link_endpoint;
+ALTER TABLE link ADD CONSTRAINT ck_link_endpoint CHECK (
+    (
+        execution = 'collector'
+        AND edge_node_id IS NULL
+        AND endpoint->>'transport' = 'tcp'
+        AND endpoint->>'mode' IN ('TCP Server', 'TCP Client')
+        AND COALESCE(jsonb_typeof(endpoint->'targets'), 'array') = 'array'
+        AND (
+            (
+                endpoint->>'mode' = 'TCP Server'
+                AND endpoint->>'ip' = '0.0.0.0'
+                AND COALESCE(endpoint->>'port', '') ~ '^[0-9]+$'
+                AND (endpoint->>'port')::integer BETWEEN 1 AND 65535
+                AND jsonb_array_length(COALESCE(endpoint->'targets', '[]'::jsonb)) = 0
+            )
+            OR
+            (
+                endpoint->>'mode' = 'TCP Client'
+                AND COALESCE(endpoint->>'ip', '') = ''
+                AND COALESCE((endpoint->>'port')::integer, 0) = 0
+                AND jsonb_array_length(COALESCE(endpoint->'targets', '[]'::jsonb)) > 0
+            )
+        )
+    )
+    OR (
+        execution = 'edge'
+        AND edge_node_id IS NOT NULL
+        AND COALESCE(endpoint->>'interface', '') <> ''
+        AND (
+            endpoint->>'transport' = 'serial'
+            OR (
+                endpoint->>'transport' = 'tcp'
+                AND endpoint->>'mode' IN ('TCP Server', 'TCP Client')
+                AND COALESCE(endpoint->>'ip', '') <> ''
+                AND COALESCE(endpoint->>'port', '') ~ '^[0-9]+$'
+                AND (endpoint->>'port')::integer BETWEEN 1 AND 65535
+            )
+        )
+    )
+);
+
+DROP INDEX IF EXISTS idx_link_usage;
+CREATE INDEX idx_link_execution ON link(execution) WHERE deleted_at IS NULL;
+CREATE INDEX idx_link_edge_node ON link(edge_node_id)
+    WHERE execution = 'edge' AND deleted_at IS NULL;
+
+ALTER TABLE device DROP CONSTRAINT IF EXISTS ck_device_connection_source;
+DROP INDEX IF EXISTS idx_device_edge_node;
+ALTER TABLE device
+    ALTER COLUMN link_id SET NOT NULL,
+    DROP COLUMN edge_node_id,
+    DROP COLUMN edge_endpoint;
+ALTER TABLE device_data ALTER COLUMN link_id SET NOT NULL;
+
+ALTER TABLE link
+    DROP COLUMN usage,
+    DROP COLUMN agent_id,
+    DROP COLUMN agent_interface,
+    DROP COLUMN agent_bind_ip,
+    DROP COLUMN agent_prefix_length,
+    DROP COLUMN agent_gateway;
 END
 $schema$;
 )sql"},
@@ -850,9 +1002,7 @@ EXECUTE format('ALTER DATABASE %I SET timezone TO %L', current_database(), 'UTC'
 EXECUTE format('ALTER DATABASE %I SET datestyle TO %L', current_database(), 'ISO, YMD');
 PERFORM set_config('TimeZone', 'UTC', false);
 PERFORM set_config('DateStyle', 'ISO, YMD', false);
-END
-$schema$;
-
+EXECUTE $definition$
 CREATE OR REPLACE FUNCTION iot_utc_timestamp(value TIMESTAMPTZ)
 RETURNS TEXT
 LANGUAGE SQL
@@ -861,12 +1011,18 @@ PARALLEL SAFE
 RETURNS NULL ON NULL INPUT
 AS $function$
 SELECT to_char(value AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
-$function$;
-
+$function$
+$definition$;
+EXECUTE $definition$
 COMMENT ON FUNCTION iot_utc_timestamp(TIMESTAMPTZ) IS
-    'Serializes typed timestamps at the public API boundary as UTC RFC 3339 seconds';
+    'Serializes typed timestamps at the public API boundary as UTC RFC 3339 seconds'
+$definition$;
+END
+$schema$;
 )sql"},
     {"0014_gb28181_projection", R"sql(
+DO $schema$
+BEGIN
 CREATE TABLE gb28181_device (
     id                  VARCHAR(128) PRIMARY KEY,
     name                VARCHAR(255) NOT NULL DEFAULT '',
@@ -923,16 +1079,24 @@ CREATE TABLE gb28181_stream (
 );
 CREATE INDEX idx_gb28181_stream_online
     ON gb28181_stream(online, updated_at DESC);
+END
+$schema$;
 )sql"},
     {"0015_sql_query_optimization", R"sql(
+DO $schema$
+BEGIN
 CREATE INDEX idx_alert_rule_enabled_device
     ON alert_rule(device_id)
     WHERE deleted_at IS NULL AND status = 'enabled';
 
 CREATE INDEX idx_gb28181_record_device_time
     ON gb28181_record(device_id, start_time DESC);
+END
+$schema$;
 )sql"},
     {"0016_mass_data_query_optimization", R"sql(
+DO $schema$
+BEGIN
 CREATE INDEX idx_open_access_log_time
     ON open_access_log(created_at DESC, id DESC);
 
@@ -946,6 +1110,8 @@ CREATE INDEX idx_open_alert_unresolved_summary
 CREATE INDEX idx_open_alert_resolved_time
     ON open_alert_record(resolved_at DESC)
     WHERE status = 'resolved';
+END
+$schema$;
 )sql"},
     {"0017_device_data_compression_layout", R"sql(
 ALTER TABLE device_data SET (

@@ -1,7 +1,11 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
+#include <ruvia/web/detail/db/DbMigrationValidation.h>
+
+#include "service/config/schema.h"
 #include "service/config/storage.h"
 
 namespace storage = service::config;
@@ -76,6 +80,23 @@ int main() {
         require(disabledMigration.sql.find("add_compression_policy") ==
                     std::string::npos,
                 "disabled policy must not add a compression job");
+
+        std::vector<ruvia::DbMigration> migrations;
+        migrations.reserve(storage::kSchemaMigrations.size() + 1);
+        migrations.insert(migrations.end(), storage::kSchemaMigrations.begin(),
+                          storage::kSchemaMigrations.end());
+        migrations.emplace_back(enabled.id, enabled.sql);
+        for (const auto& migration : migrations) {
+            try {
+                ruvia::detail::validateMigrationList(
+                    std::span<const ruvia::DbMigration>(&migration, 1));
+            } catch (const std::invalid_argument& error) {
+                throw std::runtime_error("invalid migration " +
+                                         std::string(migration.id()) + ": " +
+                                         error.what());
+            }
+        }
+        ruvia::detail::validateMigrationList(migrations);
 
         std::cout << "storage policy tests passed\n";
         return 0;

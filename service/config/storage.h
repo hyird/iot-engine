@@ -109,12 +109,14 @@ deviceDataStoragePolicyMigration(const DeviceDataStoragePolicy& policy) {
     migration.id += "_mutable_" + std::to_string(policy.mutableWindowHours);
 
     migration.sql = R"sql(
+DO $storage_policy$
+BEGIN
 DELETE FROM sys_schema_migrations
 WHERE starts_with(migration_id, 'runtime_device_data_storage_policy_v1_');
 
-SELECT remove_compression_policy('device_data', if_exists => TRUE);
+PERFORM remove_compression_policy('device_data', if_exists => TRUE);
 
-SELECT set_chunk_time_interval(
+PERFORM set_chunk_time_interval(
     'device_data',
     make_interval(hours => )sql";
     migration.sql += std::to_string(policy.chunkIntervalHours);
@@ -124,7 +126,7 @@ SELECT set_chunk_time_interval(
 
     if (policy.compressionEnabled) {
         migration.sql += R"sql(
-SELECT add_compression_policy(
+PERFORM add_compression_policy(
     'device_data',
     compress_after => make_interval(hours => )sql";
         migration.sql += std::to_string(policy.compressionAfterHours);
@@ -133,6 +135,10 @@ SELECT add_compression_policy(
 );
 )sql";
     }
+    migration.sql += R"sql(
+END
+$storage_policy$;
+)sql";
     return migration;
 }
 
