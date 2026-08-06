@@ -56,6 +56,8 @@ ALTER TABLE link
     ADD COLUMN execution VARCHAR(16),
     ADD COLUMN edge_node_id UUID;
 
+ALTER TABLE link DROP CONSTRAINT IF EXISTS ck_link_endpoint;
+
 UPDATE link
 SET execution = 'collector',
     endpoint = jsonb_set(endpoint, '{transport}', '"tcp"'::jsonb, true);
@@ -103,7 +105,6 @@ ALTER TABLE link
     ADD CONSTRAINT fk_link_edge_node
         FOREIGN KEY (edge_node_id) REFERENCES edge_node(id) ON DELETE RESTRICT;
 
-ALTER TABLE link DROP CONSTRAINT IF EXISTS ck_link_endpoint;
 ALTER TABLE link ADD CONSTRAINT ck_link_endpoint CHECK (
     (
         execution = 'collector'
