@@ -10,6 +10,7 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -23,6 +24,7 @@
 #include "service/features/collector/command.h"
 #include "service/features/collector/modbus.h"
 #include "service/features/collector/engine.h"
+#include "service/features/collector/poll.h"
 #include "service/features/collector/reconcile.h"
 #include "service/features/collector/s7.h"
 #include "service/features/collector/sl651.h"
@@ -1776,10 +1778,12 @@ void testRuntimeReconcile() {
     const auto devicePlan = collector::planRuntimeReconcile(previous, deviceUpdate);
     require(devicePlan.affectedLinks.contains("client-link"),
             "device update did not affect its link");
-    require(devicePlan.restartClientTargets.contains({"client-link", "target-a"}),
-            "changed device target was not scheduled for restart");
-    require(!devicePlan.restartClientTargets.contains({"client-link", "target-b"}),
-            "unchanged sibling target was scheduled for restart");
+    require(devicePlan.refreshClientSessions.contains({"client-link", "target-a"}),
+            "changed Modbus device target was not scheduled for a session refresh");
+    require(!devicePlan.refreshClientSessions.contains({"client-link", "target-b"}),
+            "unchanged sibling target was scheduled for a session refresh");
+    require(devicePlan.restartClientTargets.empty(),
+            "Modbus device update incorrectly restarted its TCP Client transport");
     require(devicePlan.restartLinks.empty(),
             "TCP Client device update incorrectly restarted the whole link");
 
@@ -1789,8 +1793,29 @@ void testRuntimeReconcile() {
     const auto metadataPlan = collector::planRuntimeReconcile(previous, metadataUpdate);
     require(metadataPlan.affectedLinks.contains("client-link"),
             "link metadata update was not observed");
-    require(metadataPlan.restartClientTargets.empty() && metadataPlan.restartLinks.empty(),
+    require(metadataPlan.refreshClientSessions.empty() &&
+                metadataPlan.restartClientTargets.empty() && metadataPlan.restartLinks.empty(),
             "metadata-only update restarted a TCP Client transport");
+
+    auto s7Previous = previous;
+    s7Previous.links.front().protocol = "S7";
+    for (auto& device : s7Previous.devices)
+        device.protocol = "S7";
+    auto s7Next = s7Previous;
+    s7Next.devices.front().pollInterval = 10;
+    const auto s7Plan = collector::planRuntimeReconcile(s7Previous, s7Next);
+    require(s7Plan.restartClientTargets.contains({"client-link", "target-a"}) &&
+                s7Plan.refreshClientSessions.empty(),
+            "stateful S7 session update did not retain transport restart semantics");
+
+    auto rtuPrevious = previous;
+    rtuPrevious.devices.front().modbusMode = "RTU";
+    auto rtuNext = rtuPrevious;
+    rtuNext.devices.front().pollInterval = 10;
+    const auto rtuPlan = collector::planRuntimeReconcile(rtuPrevious, rtuNext);
+    require(rtuPlan.restartClientTargets.contains({"client-link", "target-a"}) &&
+                rtuPlan.refreshClientSessions.empty(),
+            "Modbus RTU-over-TCP update did not retain transport restart semantics");
 
     auto serverPrevious = previous;
     serverPrevious.links.front().mode = "TCP Server";
@@ -1813,6 +1838,76 @@ void testRuntimeReconcile() {
     engine.reload(metadataUpdate, metadataPlan.affectedLinks);
     require(engine.contains("preserved-connection"),
             "metadata reload discarded a preserved TCP Client session");
+
+    auto pollingPrevious = previous;
+    pollingPrevious.devices.front().elements.push_back(
+        {.id = "holding-0",
+         .name = "Holding 0",
+         .dataType = "UINT16",
+         .registerType = "HOLDING_REGISTER",
+         .quantity = 1});
+    auto pollingUpdate = pollingPrevious;
+    pollingUpdate.devices.front().pollInterval = 10;
+    const auto pollingPlan =
+        collector::planRuntimeReconcile(pollingPrevious, pollingUpdate);
+
+    collector::ProtocolEngine refreshEngine(runtimes());
+    refreshEngine.reload(pollingPrevious);
+    const auto initialActions =
+        refreshEngine.connected({.connectionId = "refreshed-connection",
+                                 .linkId = "client-link",
+                                 .remoteAddress = "127.0.0.1:15001",
+                                 .targetId = "target-a",
+                                 .sessionEpoch = 2});
+    require(has(initialActions, collector::ProtocolActionKind::BindDevice) &&
+                has(initialActions, collector::ProtocolActionKind::Send),
+            "initial Modbus client session was not active");
+    refreshEngine.reload(pollingUpdate, pollingPlan.affectedLinks);
+    const auto refreshes =
+        refreshEngine.refreshClientSessions(pollingPlan.refreshClientSessions);
+    require(refreshes.size() == 1 &&
+                refreshes.front().connectionId == "refreshed-connection",
+            "changed Modbus target did not rebuild its protocol session");
+    require(has(refreshes.front().retiredActions,
+                collector::ProtocolActionKind::CancelDeadline) &&
+                has(refreshes.front().startedActions,
+                    collector::ProtocolActionKind::BindDevice) &&
+                has(refreshes.front().startedActions, collector::ProtocolActionKind::Send),
+            "protocol session refresh did not retire old work and start the new definition");
+    const auto& initialSend = first(initialActions, collector::ProtocolActionKind::Send);
+    const auto& refreshedSend =
+        first(refreshes.front().startedActions, collector::ProtocolActionKind::Send);
+    require(initialSend.bytes.size() >= 2 && refreshedSend.bytes.size() >= 2 &&
+                (initialSend.bytes[0] != refreshedSend.bytes[0] ||
+                 initialSend.bytes[1] != refreshedSend.bytes[1]),
+            "refreshed Modbus TCP session reused an in-flight transaction id");
+    require(refreshEngine.contains("refreshed-connection"),
+            "protocol session refresh discarded the live TCP connection identity");
+}
+
+void testPollStagger() {
+    const auto now = std::chrono::steady_clock::time_point(std::chrono::seconds(12345));
+    const auto interval = std::chrono::seconds(997);
+    const auto delay = collector::staggeredPollDelay("device-a", interval, now);
+    require(delay > std::chrono::milliseconds::zero() && delay <= interval,
+            "staggered poll delay escaped its configured interval");
+    require(delay == collector::staggeredPollDelay("device-a", interval, now),
+            "poll phase was not stable for the same device");
+    const auto nextEpoch =
+        std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch() + delay).count();
+    require(nextEpoch % interval.count() ==
+                collector::stablePollHash("device-a") %
+                    static_cast<std::uint64_t>(interval.count()),
+            "poll deadline did not land on the device's stable phase");
+
+    std::set<std::chrono::milliseconds> phases;
+    for (int index = 0; index < 32; ++index)
+        phases.insert(collector::staggeredPollDelay(
+            "device-" + std::to_string(index), interval, now));
+    require(phases.size() > 1, "different devices collapsed onto one polling phase");
+    require(collector::staggeredPollDelay("device-a", std::chrono::seconds(1), now) ==
+                std::chrono::seconds(1),
+            "one-second polling interval was changed by staggering");
 }
 
 void testTcpClientTargetReconcile() {
@@ -1866,21 +1961,21 @@ void testTcpClientTargetReconcile() {
     auto next = previous;
     next.devices.front().pollInterval = 10;
     const auto plan = collector::planRuntimeReconcile(previous, next);
-    acceptOne(firstServer, firstAccepted);
     tcp.reconcile(next, plan);
     io.restart();
     io.run_for(std::chrono::milliseconds(250));
 
-    require(connectedByTarget["target-a"].size() == 2,
-            "changed target did not reconnect");
-    require(connectedByTarget["target-a"].back() != originalFirst,
-            "changed target reused its retired connection");
+    require(connectedByTarget["target-a"].size() == 1 &&
+                connectedByTarget["target-a"].front() == originalFirst,
+            "Modbus device update reconnected its unchanged TCP Client target");
     require(connectedByTarget["target-b"].size() == 1 &&
                 connectedByTarget["target-b"].front() == originalSecond,
             "unchanged sibling target was disconnected");
-    require(std::ranges::find(disconnected, originalFirst) != disconnected.end() &&
+    require(std::ranges::find(disconnected, originalFirst) == disconnected.end() &&
                 std::ranges::find(disconnected, originalSecond) == disconnected.end(),
-            "target-level disconnect notifications were incorrect");
+            "device-only update emitted a TCP disconnect notification");
+    require(tcp.advanceSessionEpoch(originalFirst) != 0,
+            "live TCP connection could not rotate its protocol session epoch");
 
     tcp.stop();
     firstServer.close();
@@ -1922,6 +2017,7 @@ int main() {
         };
         run("capabilities", testCapabilities);
         run("runtime reconcile", testRuntimeReconcile);
+        run("poll stagger", testPollStagger);
         run("TCP Client target reconcile", testTcpClientTargetReconcile);
         run("sl651", testSl651);
         run("sl651 encodings", testSl651AllEncodingsAndFunctionCodes);

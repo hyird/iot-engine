@@ -21,6 +21,7 @@
 
 #include "service/features/collector/protocol.h"
 #include "service/features/collector/command.h"
+#include "service/features/collector/poll.h"
 
 namespace service::collector::modbus {
 
@@ -206,6 +207,12 @@ class Session final : public ProtocolSession,
         }
         if (link_.mode == "TCP Client")
             bindClientTarget();
+    }
+
+    void inheritTransportState(const ProtocolSession& previous) override {
+        const auto* session = dynamic_cast<const Session*>(&previous);
+        if (session)
+            nextTransactionId_ = session->nextTransactionId_;
     }
 
     [[nodiscard]] std::vector<ProtocolAction> connected() override {
@@ -617,13 +624,14 @@ class Session final : public ProtocolSession,
         const auto token = nextDeadlineToken_++;
         pollDeadlines_[token] = &device;
         pollDevices_.insert(device.id);
+        const auto interval = std::chrono::seconds(
+            std::clamp<std::int64_t>(device.pollInterval, 1, 86400));
         actions.push_back({.kind = ProtocolActionKind::ScheduleDeadline,
                            .connectionId = connectionId_,
                            .deviceId = device.id,
                            .deviceCode = device.code,
                            .deadlineToken = token,
-                           .deadlineAfter = std::chrono::seconds(
-                               std::clamp<std::int64_t>(device.pollInterval, 1, 86400))});
+                           .deadlineAfter = staggeredPollDelay(device.id, interval)});
     }
 
     void enqueuePollNow(const DeviceDefinition& device) {

@@ -406,6 +406,21 @@ class Worker final {
                 const auto plan = planRuntimeReconcile(loadedSnapshot_, snapshot);
                 tcp_.reconcile(snapshot, plan);
                 engine_.reload(snapshot, plan.affectedLinks);
+                auto sessionRefreshes =
+                    engine_.refreshClientSessions(plan.refreshClientSessions);
+                std::erase_if(sessionRefreshes, [this](const auto& refresh) {
+                    const auto sessionEpoch = tcp_.advanceSessionEpoch(refresh.connectionId);
+                    if (sessionEpoch == 0)
+                        return true;
+                    connectionEpochs_[refresh.connectionId] = sessionEpoch;
+                    if (const auto network = networkConnections_.find(refresh.connectionId);
+                        network != networkConnections_.end())
+                        network->second.sessionEpoch = sessionEpoch;
+                    cancelProtocolDeadlinesForConnection(refresh.connectionId);
+                    return false;
+                });
+                for (auto& refresh : sessionRefreshes)
+                    co_await applySessionRefresh(std::move(refresh));
                 for (const auto& link : loadedSnapshot_.links) {
                     if (std::none_of(
                             snapshot.links.begin(), snapshot.links.end(),
@@ -1070,7 +1085,7 @@ class Worker final {
         protocolDeadlines_.erase(current);
     }
 
-    ruvia::Task<void> cleanupConnection(std::string_view connectionId, std::string_view reason) {
+    void cancelProtocolDeadlinesForConnection(std::string_view connectionId) {
         for (auto current = protocolDeadlines_.begin(); current != protocolDeadlines_.end();) {
             if (current->first.first == connectionId) {
                 scheduler_.cancel(current->second);
@@ -1078,6 +1093,31 @@ class Worker final {
             } else
                 ++current;
         }
+    }
+
+    ruvia::Task<void> applySessionRefresh(ProtocolSessionRefresh refresh) {
+        std::set<std::string, std::less<>> nextDeviceCodes;
+        for (const auto& action : refresh.startedActions)
+            if (action.kind == ProtocolActionKind::BindDevice)
+                nextDeviceCodes.insert(action.deviceCode);
+
+        const auto bound = routes_.find(refresh.connectionId);
+        if (bound != routes_.end()) {
+            for (const auto& deviceCode : bound->second) {
+                if (!nextDeviceCodes.contains(deviceCode))
+                    co_await markDeviceOffline(deviceCode, refresh.connectionId,
+                                               "configuration_reloaded");
+            }
+            routes_.erase(bound);
+        }
+
+        co_await applyActions(refresh.connectionId, std::move(refresh.retiredActions));
+        co_await failPendingForConnection(refresh.connectionId, "configuration_reloaded");
+        co_await applyActions(refresh.connectionId, std::move(refresh.startedActions));
+    }
+
+    ruvia::Task<void> cleanupConnection(std::string_view connectionId, std::string_view reason) {
+        cancelProtocolDeadlinesForConnection(connectionId);
         const auto bound = routes_.find(connectionId);
         if (bound != routes_.end()) {
             for (const auto& deviceCode : bound->second) {

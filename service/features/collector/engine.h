@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "service/features/collector/reconcile.h"
 #include "service/features/collector/registry.h"
 
 namespace service::collector {
@@ -19,6 +20,12 @@ struct ProtocolConnectionInfo {
     std::string remoteAddress;
     std::string targetId;
     std::uint64_t sessionEpoch = 0;
+};
+
+struct ProtocolSessionRefresh {
+    std::string connectionId;
+    std::vector<ProtocolAction> retiredActions;
+    std::vector<ProtocolAction> startedActions;
 };
 
 // Worker-affine protocol engine. It owns every socket's protocol session and is the only layer
@@ -54,11 +61,47 @@ class ProtocolEngine final {
         for (const auto& link : snapshot_.links)
             links_.emplace(link.id, &link);
 
-        // Tcp owns transport reconciliation. Unchanged TCP Client targets keep
-        // their sockets and therefore must keep their protocol sessions too.
-        // Restarted targets emit a real disconnected event, which removes the
-        // old session only after its deadlines, commands, and routes have been
-        // cleaned up in the normal order.
+        // Tcp owns transport reconciliation. Sessions are retained here until either the target
+        // emits a real disconnected event or Worker selectively refreshes an eligible Modbus TCP
+        // session after rotating its transport epoch.
+    }
+
+    [[nodiscard]] std::vector<ProtocolSessionRefresh>
+    refreshClientSessions(const std::set<ClientTargetKey>& targets) {
+        std::vector<ProtocolSessionRefresh> refreshed;
+        for (auto& [connectionId, entry] : sessions_) {
+            if (entry.info.targetId.empty() ||
+                !targets.contains({entry.info.linkId, entry.info.targetId}))
+                continue;
+
+            const auto link = links_.find(entry.info.linkId);
+            if (link == links_.end() || link->second->mode != "TCP Client" ||
+                link->second->status != "enabled")
+                continue;
+            const auto target = std::find_if(
+                link->second->targets.begin(), link->second->targets.end(),
+                [&entry](const auto& candidate) {
+                    return candidate.id == entry.info.targetId && candidate.status == "enabled";
+                });
+            // A removed or disabled target is being closed by Tcp. Let its real disconnected
+            // event retire the protocol session and connection epoch in the normal order.
+            if (target == link->second->targets.end())
+                continue;
+
+            const auto& runtime = registry_.require(link->second->protocol);
+            auto nextSession = runtime.createSession(*link->second, connectionId,
+                                                     entry.info.targetId, snapshot_);
+            if (!nextSession)
+                throw std::runtime_error("protocol runtime returned a null session");
+            nextSession->inheritTransportState(*entry.session);
+            auto startedActions = nextSession->connected();
+            auto retiredActions = entry.session->disconnected("configuration_reloaded");
+            entry.session = std::move(nextSession);
+            refreshed.push_back({.connectionId = connectionId,
+                                 .retiredActions = std::move(retiredActions),
+                                 .startedActions = std::move(startedActions)});
+        }
+        return refreshed;
     }
 
     [[nodiscard]] std::vector<ProtocolAction> connected(ProtocolConnectionInfo info) {

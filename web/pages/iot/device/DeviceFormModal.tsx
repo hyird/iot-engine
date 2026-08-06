@@ -324,6 +324,32 @@ const DeviceFormModal = ({
                 >
                     <Input placeholder="设备名称" maxLength={100} />
                 </Form.Item>
+                <Form.Item
+                    label="设备编码"
+                    name="device_code"
+                    rules={[
+                        { required: true, message: '请输入设备编码' },
+                        protocolType === 'SL651'
+                            ? {
+                                  pattern: /^\d{1,10}$/,
+                                  message: 'SL651 设备编码必须是 1-10 位数字遥测站地址',
+                              }
+                            : {
+                                  pattern: /^[A-Za-z0-9]+$/,
+                                  message: '设备编码只能包含字母和数字',
+                              },
+                    ]}
+                    extra={
+                        protocolType === 'SL651'
+                            ? '遥测站地址，用于从 SL651 报文中识别设备'
+                            : '每台设备必填且唯一，用于跨协议统一识别'
+                    }
+                >
+                    <Input
+                        placeholder={protocolType === 'SL651' ? '如: 12345678' : '如: DEVICE001'}
+                        maxLength={protocolType === 'SL651' ? 10 : 100}
+                    />
+                </Form.Item>
                 <Form.Item label="所属分组" name="group_id">
                     <TreeSelect
                         allowClear
@@ -633,32 +659,6 @@ const DeviceFormModal = ({
                         <InputNumber min={1} max={247} placeholder="默认 1" className="!w-full" />
                     </Form.Item>
                 )}
-                <Form.Item
-                    label="设备编码"
-                    name="device_code"
-                    rules={[
-                        { required: true, message: '请输入设备编码' },
-                        protocolType === 'SL651'
-                            ? {
-                                  pattern: /^\d{1,10}$/,
-                                  message: 'SL651 设备编码必须是 1-10 位数字遥测站地址',
-                              }
-                            : {
-                                  pattern: /^[A-Za-z0-9]+$/,
-                                  message: '设备编码只能包含字母和数字',
-                              },
-                    ]}
-                    extra={
-                        protocolType === 'SL651'
-                            ? '遥测站地址，用于从 SL651 报文中识别设备'
-                            : '每台设备必填且唯一，用于跨协议统一识别'
-                    }
-                >
-                    <Input
-                        placeholder={protocolType === 'SL651' ? '如: 12345678' : '如: DEVICE001'}
-                        maxLength={protocolType === 'SL651' ? 10 : 100}
-                    />
-                </Form.Item>
                 <Form.Item label="状态" name="status" rules={[{ required: true }]}>
                     <Select>
                         <Select.Option value="enabled">启用</Select.Option>

@@ -21,6 +21,7 @@
 
 #include "service/features/collector/protocol.h"
 #include "service/features/collector/command.h"
+#include "service/features/collector/poll.h"
 
 namespace service::collector::s7 {
 
@@ -1217,8 +1218,10 @@ class Session final : public ProtocolSession,
         if (!device_ || device_->elements.empty() || pollDeadlineToken_ != 0)
             return;
         pollDeadlineToken_ = nextDeadlineToken_++;
-        const auto deadlineAfter = delay.value_or(std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::seconds(std::clamp<std::int64_t>(device_->pollInterval, 1, 86400))));
+        const auto interval = std::chrono::seconds(
+            std::clamp<std::int64_t>(device_->pollInterval, 1, 86400));
+        const auto deadlineAfter =
+            delay.value_or(staggeredPollDelay(device_->id, interval));
         actions.push_back({.kind = ProtocolActionKind::ScheduleDeadline,
                            .connectionId = connectionId_,
                            .deviceId = device_->id,

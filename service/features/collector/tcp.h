@@ -168,6 +168,16 @@ class Tcp final {
         }
     }
 
+    [[nodiscard]] std::uint64_t advanceSessionEpoch(std::string_view connectionId) {
+        if (!connections_.contains(connectionId))
+            return 0;
+        const auto current = connectionEpochs_.find(connectionId);
+        if (current == connectionEpochs_.end())
+            return 0;
+        current->second = ++sessionEpoch_;
+        return current->second;
+    }
+
     void send(std::string_view connectionId, std::vector<std::uint8_t> bytes,
               WriteHandler onDone = {}) {
         const auto current = connections_.find(connectionId);

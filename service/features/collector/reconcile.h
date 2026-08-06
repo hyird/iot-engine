@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <map>
 #include <set>
 #include <string>
@@ -15,6 +16,7 @@ using ClientTargetKey = std::pair<std::string, std::string>;
 struct RuntimeReconcilePlan {
     std::set<std::string, std::less<>> affectedLinks;
     std::set<std::string, std::less<>> restartLinks;
+    std::set<ClientTargetKey> refreshClientSessions;
     std::set<ClientTargetKey> restartClientTargets;
 };
 
@@ -25,6 +27,17 @@ inline const LinkDefinition* findLink(
     std::string_view id) {
     const auto current = links.find(id);
     return current == links.end() ? nullptr : &current->second;
+}
+
+inline bool targetAllowsSessionRefresh(const RuntimeSnapshot& snapshot,
+                                       const ClientTargetKey& target) {
+    return std::none_of(snapshot.devices.begin(), snapshot.devices.end(),
+                        [&target](const auto& device) {
+                            return device.linkId == target.first &&
+                                   device.targetId == target.second &&
+                                   (device.protocol != "Modbus" ||
+                                    device.modbusMode != "TCP");
+                        });
 }
 
 inline void addChangedDeviceTransport(
@@ -41,7 +54,10 @@ inline void addChangedDeviceTransport(
         plan.restartLinks.insert(device.linkId);
         return;
     }
-    plan.restartClientTargets.emplace(device.linkId, device.targetId);
+    if (link->protocol == "Modbus" && device.modbusMode == "TCP")
+        plan.refreshClientSessions.emplace(device.linkId, device.targetId);
+    else
+        plan.restartClientTargets.emplace(device.linkId, device.targetId);
 }
 
 } // namespace detail
@@ -85,6 +101,15 @@ planRuntimeReconcile(const RuntimeSnapshot& previous, const RuntimeSnapshot& nex
     for (const auto& [id, device] : nextDevices) {
         if (!previousDevices.contains(id))
             detail::addChangedDeviceTransport(plan, nextLinks, device);
+    }
+    for (auto current = plan.refreshClientSessions.begin();
+         current != plan.refreshClientSessions.end();) {
+        if (!detail::targetAllowsSessionRefresh(previous, *current) ||
+            !detail::targetAllowsSessionRefresh(next, *current)) {
+            plan.restartClientTargets.insert(*current);
+            current = plan.refreshClientSessions.erase(current);
+        } else
+            ++current;
     }
     return plan;
 }

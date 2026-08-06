@@ -110,6 +110,7 @@ class ProtocolSession {
   public:
     virtual ~ProtocolSession() = default;
 
+    virtual void inheritTransportState(const ProtocolSession&) {}
     [[nodiscard]] virtual std::vector<ProtocolAction> connected() { return {}; }
     [[nodiscard]] virtual std::vector<ProtocolAction> consume(const ProtocolInput& input) = 0;
     [[nodiscard]] virtual std::vector<ProtocolAction> disconnected(std::string_view reason) = 0;
