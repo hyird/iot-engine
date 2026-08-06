@@ -208,7 +208,8 @@ class PersistenceRuntime final {
                     }
                 }
                 if (!handled) {
-                    (void)co_await ruvia::sleepFor(context.worker(), std::chrono::milliseconds(10));
+                    (void)co_await ruvia::sleepFor(context.worker(),
+                                                   message::redis::kIdlePollInterval);
                     continue;
                 }
                 if (failed)

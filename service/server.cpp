@@ -277,10 +277,19 @@ int main(int argc, char *argv[])
             std::max(2U, cpu > gb28181WorkerCount
                              ? cpu - gb28181WorkerCount
                              : 0U);
-        const auto serviceWorkerCount =
-            static_cast<std::size_t>((businessCpu + 1U) / 2U);
-        const auto collectorWorkerCount =
-            static_cast<std::size_t>(businessCpu / 2U);
+        const auto resolveWorkerCount = [](std::optional<unsigned> configured,
+                                           unsigned automatic, const char* name) {
+            const auto count = configured.value_or(automatic);
+            if (count == 0U || count > 64U)
+                throw std::runtime_error(std::string(name) + " must be between 1 and 64");
+            return static_cast<std::size_t>(count);
+        };
+        const auto serviceWorkerCount = resolveWorkerCount(
+            app.env().get<unsigned>("SERVICE_WORKERS"), (businessCpu + 1U) / 2U,
+            "SERVICE_WORKERS");
+        const auto collectorWorkerCount = resolveWorkerCount(
+            app.env().get<unsigned>("COLLECTOR_WORKERS"), businessCpu / 2U,
+            "COLLECTOR_WORKERS");
         std::cout << "worker budget: cpu=" << cpu
                   << ", service=" << serviceWorkerCount
                   << ", collector=" << collectorWorkerCount

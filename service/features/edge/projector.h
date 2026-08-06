@@ -78,8 +78,8 @@ class Projector final {
                 if (recovering && messages.empty())
                     recovering = false;
                 if (messages.empty()) {
-                    (void)co_await ruvia::sleepFor(context.worker(),
-                                                   std::chrono::milliseconds(20));
+                    (void)co_await ruvia::sleepFor(
+                        context.worker(), service::message::redis::kIdlePollInterval);
                     continue;
                 }
                 bool projectionFailed = false;

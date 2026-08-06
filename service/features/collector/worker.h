@@ -1469,7 +1469,7 @@ return 1
              {"applied_at_ms", now}});
     }
 
-    static constexpr auto kTickInterval = std::chrono::milliseconds(10);
+    static constexpr auto kTickInterval = message::redis::kIdlePollInterval;
     static constexpr std::size_t kRawIngressCapacity = 100000;
     static constexpr auto kFailureDelay = std::chrono::milliseconds(250);
     static constexpr auto kConfigCheckInterval = std::chrono::milliseconds(250);

@@ -24,6 +24,11 @@ namespace service::message::redis {
 using ruvia::RedisHandle;
 using ruvia::RedisValue;
 
+// Multiple logical streams share one asynchronous Redis connection per worker, so blocking on
+// one stream would starve the others. Keep polling bounded, but avoid the former 10 ms empty-loop
+// cadence which multiplied into thousands of XREADGROUP calls per second on an idle instance.
+inline constexpr auto kIdlePollInterval = std::chrono::milliseconds(50);
+
 // ---- 通用命令封装：把 std::string 参数列表转成 string_view span 后 co_await ----
 
 template <typename Redis>

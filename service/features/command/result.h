@@ -119,9 +119,9 @@ class ResultRuntime final {
                     }
                 }
                 if (!handled || failed)
-                    (void)co_await ruvia::sleepFor(context.worker(),
-                                                   failed ? std::chrono::milliseconds(250)
-                                                          : std::chrono::milliseconds(10));
+                    (void)co_await ruvia::sleepFor(
+                        context.worker(), failed ? std::chrono::milliseconds(250)
+                                                 : message::redis::kIdlePollInterval);
             }
         } catch (...) {
             try {

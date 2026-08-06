@@ -317,7 +317,8 @@ public:
                 if (recovering && messages.empty())
                     recovering = false;
                 if (messages.empty()) {
-                    (void)co_await ruvia::sleepFor(context.worker(), std::chrono::milliseconds(20));
+                    (void)co_await ruvia::sleepFor(context.worker(),
+                                                   message::redis::kIdlePollInterval);
                     continue;
                 }
                 bool failed = false;
