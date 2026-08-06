@@ -142,6 +142,12 @@ FetchContent_Declare(zlmediakit
     # A fixed commit stops being the shallow clone tip as upstream advances. Fetch the complete
     # history so clean CI checkouts can continue resolving this reproducible pin.
     GIT_SHALLOW FALSE
+    # The pinned revision still records Gitee submodule URLs. Override only the selected
+    # submodules at clone time so CI uses their GitHub mirrors without changing any pinned SHA.
+    GIT_CONFIG
+        submodule.ZLToolKit.url=https://github.com/ZLMediaKit/ZLToolKit.git
+        submodule.3rdpart/jsoncpp.url=https://github.com/open-source-parsers/jsoncpp.git
+        submodule.3rdpart/media-server.url=https://github.com/ireader/media-server.git
     GIT_SUBMODULES
         3rdpart/ZLToolKit
         3rdpart/jsoncpp
