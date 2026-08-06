@@ -60,7 +60,7 @@ class EdgeService {
             nodeSelect() + where + " ORDER BY created_at DESC LIMIT $" +
                 std::to_string(limit) + " OFFSET $" + std::to_string(offset),
             listParams);
-        ruvia::List<EdgeNodeDto> nodes(c.resource());
+        ruvia::BoxedArray<EdgeNodeDto> nodes(c.resource());
         for (const auto& row : rows.rows()) {
             auto& node = nodes.emplace(c);
             fillNode(c, node, row);
@@ -392,11 +392,11 @@ FROM edge_firmware WHERE id = $1::uuid LIMIT 1)sql",
         co_await createTaskAndQueue(c, nodeId, taskId, "firmware", json, envelope);
     }
 
-    ruvia::Task<ruvia::List<FirmwareDto>> firmwares(ruvia::Context& c) {
+    ruvia::Task<ruvia::BoxedArray<FirmwareDto>> firmwares(ruvia::Context& c) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT id::text, version, file_name, sha256, size_bytes, iot_utc_timestamp(created_at)
 FROM edge_firmware ORDER BY created_at DESC LIMIT 100)sql");
-        ruvia::List<FirmwareDto> result(c.resource());
+        ruvia::BoxedArray<FirmwareDto> result(c.resource());
         for (const auto& row : rows.rows()) {
             auto& item = result.emplace(c);
             item.id(row[0].text())
@@ -496,7 +496,7 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
                 if (!result.success())
                     service::common::fail(17020, result.message(), 502);
                 LogsDto output(c);
-                ruvia::List<LogLineDto> lines(c.resource());
+                ruvia::BoxedArray<LogLineDto> lines(c.resource());
                 for (const auto& line : result.lines()) {
                     auto& item = lines.emplace(c);
                     item.time(service::common::utcTimestampFromMilliseconds(line.time_ms()))
@@ -691,7 +691,7 @@ FROM edge_node)sql";
         return result;
     }
 
-    static ruvia::Task<ruvia::List<InterfaceDto>> interfaces(ruvia::Context& c,
+    static ruvia::Task<ruvia::BoxedArray<InterfaceDto>> interfaces(ruvia::Context& c,
                                                              std::string_view id) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT name, display_name, COALESCE(mac, ''), is_up, is_bridge, COALESCE(ipv4, ''),
@@ -700,10 +700,10 @@ SELECT name, display_name, COALESCE(mac, ''), is_up, is_bridge, COALESCE(ipv4, '
                  FROM jsonb_array_elements_text(bridge_ports) AS values(value)), '')
 FROM edge_node_interface WHERE node_id = $1::uuid ORDER BY name)sql",
                                                 service::common::dbParams(id));
-        ruvia::List<InterfaceDto> result(c.resource());
+        ruvia::BoxedArray<InterfaceDto> result(c.resource());
         for (const auto& row : rows.rows()) {
             auto& item = result.emplace(c);
-            ruvia::List<ruvia::String> ports(c.resource());
+            ruvia::BoxedArray<ruvia::String> ports(c.resource());
             for (const auto& port : split(row[8].text()))
                 if (!port.empty())
                     ports.emplace(port, c.resource());
@@ -720,7 +720,7 @@ FROM edge_node_interface WHERE node_id = $1::uuid ORDER BY name)sql",
         co_return result;
     }
 
-    static ruvia::Task<ruvia::List<NetworkDto>> networks(ruvia::Context& c,
+    static ruvia::Task<ruvia::BoxedArray<NetworkDto>> networks(ruvia::Context& c,
                                                          std::string_view id) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT name, address_mode, device, is_up, is_bridge, COALESCE(ipv4, ''),
@@ -729,10 +729,10 @@ SELECT name, address_mode, device, is_up, is_bridge, COALESCE(ipv4, ''),
                  FROM jsonb_array_elements_text(bridge_ports) AS values(value)), '')
 FROM edge_node_network WHERE node_id = $1::uuid ORDER BY name)sql",
                                                 service::common::dbParams(id));
-        ruvia::List<NetworkDto> result(c.resource());
+        ruvia::BoxedArray<NetworkDto> result(c.resource());
         for (const auto& row : rows.rows()) {
             auto& item = result.emplace(c);
-            ruvia::List<ruvia::String> ports(c.resource());
+            ruvia::BoxedArray<ruvia::String> ports(c.resource());
             for (const auto& port : split(row[8].text()))
                 if (!port.empty())
                     ports.emplace(port, c.resource());
@@ -749,13 +749,13 @@ FROM edge_node_network WHERE node_id = $1::uuid ORDER BY name)sql",
         co_return result;
     }
 
-    static ruvia::Task<ruvia::List<SerialDto>> serialPorts(ruvia::Context& c,
+    static ruvia::Task<ruvia::BoxedArray<SerialDto>> serialPorts(ruvia::Context& c,
                                                            std::string_view id) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT path, display_name, available, rs485 FROM edge_node_serial
 WHERE node_id = $1::uuid ORDER BY path)sql",
                                                 service::common::dbParams(id));
-        ruvia::List<SerialDto> result(c.resource());
+        ruvia::BoxedArray<SerialDto> result(c.resource());
         for (const auto& row : rows.rows()) {
             auto& item = result.emplace(c);
             item.path(row[0].text())
@@ -766,14 +766,14 @@ WHERE node_id = $1::uuid ORDER BY path)sql",
         co_return result;
     }
 
-    static ruvia::Task<ruvia::List<PlatformDto>> platforms(ruvia::Context& c,
+    static ruvia::Task<ruvia::BoxedArray<PlatformDto>> platforms(ruvia::Context& c,
                                                            std::string_view id) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT platform_id::text, name, base_url, enabled, priority, reconnect_interval_sec,
        outbox_max_bytes, COALESCE(status->>'state', 'pending'), COALESCE(status->>'message', '')
 FROM edge_node_platform WHERE node_id = $1::uuid ORDER BY priority, name)sql",
                                                 service::common::dbParams(id));
-        ruvia::List<PlatformDto> result(c.resource());
+        ruvia::BoxedArray<PlatformDto> result(c.resource());
         for (const auto& row : rows.rows()) {
             auto& item = result.emplace(c);
             PlatformStatusDto status(c);
@@ -790,7 +790,7 @@ FROM edge_node_platform WHERE node_id = $1::uuid ORDER BY priority, name)sql",
         co_return result;
     }
 
-    static ruvia::Task<ruvia::List<TaskDto>> tasks(ruvia::Context& c, std::string_view id) {
+    static ruvia::Task<ruvia::BoxedArray<TaskDto>> tasks(ruvia::Context& c, std::string_view id) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT id::text, task_type, status, COALESCE(result->>'message', ''),
        COALESCE((result->>'progressPercent')::bigint, 0),
@@ -799,7 +799,7 @@ SELECT id::text, task_type, status, COALESCE(result->>'message', ''),
        iot_utc_timestamp(created_at), iot_utc_timestamp(updated_at)
 FROM edge_task WHERE node_id = $1::uuid ORDER BY created_at DESC LIMIT 50)sql",
                                                 service::common::dbParams(id));
-        ruvia::List<TaskDto> result(c.resource());
+        ruvia::BoxedArray<TaskDto> result(c.resource());
         for (const auto& row : rows.rows()) {
             auto& item = result.emplace(c);
             item.id(row[0].text())

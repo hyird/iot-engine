@@ -68,7 +68,7 @@ class Gb28181Service final {
 
     ruvia::Task<GbDeviceListDto> devices(ruvia::Context& c) const {
         const auto values = co_await runtime().devices(c);
-        ruvia::List<GbDeviceDto> items(c.resource());
+        ruvia::BoxedArray<GbDeviceDto> items(c.resource());
         for (const auto& value : values)
             items.emplace(deviceDto(c, value));
         GbDeviceListDto result(c);
@@ -85,7 +85,7 @@ class Gb28181Service final {
 
     ruvia::Task<GbStreamListDto> streams(ruvia::Context& c) const {
         const auto values = co_await runtime().streams(c);
-        ruvia::List<GbStreamDto> items(c.resource());
+        ruvia::BoxedArray<GbStreamDto> items(c.resource());
         for (const auto& value : values)
             items.emplace(streamDto(c, value));
         GbStreamListDto result(c);
@@ -218,7 +218,7 @@ class Gb28181Service final {
 
     [[nodiscard]] static GbDeviceDto deviceDto(ruvia::Context& c, const Device& value) {
         const auto [remoteIp, remotePort] = splitRemoteAddress(value.remoteAddress);
-        ruvia::List<GbChannelDto> channels(c.resource());
+        ruvia::BoxedArray<GbChannelDto> channels(c.resource());
         for (const auto& channel : value.channels) {
             auto& dto = channels.emplace(c);
             dto.id(channel.id)
@@ -228,7 +228,7 @@ class Gb28181Service final {
                 .ptzType(channel.ptzType)
                 .ptzCapable(channel.ptzType > 0);
         }
-        ruvia::List<GbRecordDto> records(c.resource());
+        ruvia::BoxedArray<GbRecordDto> records(c.resource());
         for (const auto& record : value.records) {
             auto& dto = records.emplace(c);
             dto.deviceId(record.deviceId)

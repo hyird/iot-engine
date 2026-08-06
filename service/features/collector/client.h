@@ -7,23 +7,24 @@
 #include <vector>
 
 #include <ruvia/core/Task.h>
-#include <ruvia/web/detail/redis/RedisInternal.h>
+#include <ruvia/web/detail/redis/RedisRegistry.h>
 #include <ruvia/web/redis/Redis.h>
 
 #include "service/features/collector/timer.h"
 
 namespace service::collector {
 
-// Ruvia 0.1.5 exposes a generic EventLoopPool but not a public Redis context for
-// non-HTTP workers. This worker-affine adapter keeps that limitation contained in
-// one file. Collector Workers use one adapter for business commands and another for blocking
-// Stream reads; each adapter is deliberately forced to one connection.
+// Collector's protocol actor already owns its EventLoop and keeps Redis operations
+// inside the same structured TaskScope. This worker-affine adapter provides one
+// connection for business commands and one dedicated connection for blocking reads.
 class Client final {
   public:
     Client(asio::io_context& ioContext, ruvia::RedisConfig config,
-                      Timer& scheduler)
-        : resource_(), scheduler_(scheduler), pool_(ioContext, oneConnection(std::move(config)),
-                                                       &resource_) {}
+           Timer& scheduler)
+        : resource_(), scheduler_(scheduler),
+          pool_(ioContext,
+                ruvia::detail::RedisConfigStorage(oneConnection(std::move(config)), &resource_),
+                &resource_) {}
 
     Client(const Client&) = delete;
     Client& operator=(const Client&) = delete;

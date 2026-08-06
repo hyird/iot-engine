@@ -48,7 +48,8 @@
 namespace
 {
 
-    void assign(std::pmr::string &target, std::optional<std::string_view> value)
+    template <typename String>
+    void assign(String &target, std::optional<std::string_view> value)
     {
         if (value)
             target.assign(*value);
@@ -297,10 +298,11 @@ int main(int argc, char *argv[])
         auto serviceRedis = redisConfig(app.env());
         auto collectorRedis = serviceRedis;
         auto blockingRedis = serviceRedis;
-        // Telemetry, command results, edge ingress, and webhook delivery may all wait on
-        // Streams on service worker 0. They use this separate pool so blocked reads never
-        // consume the connection used by HTTP handlers, ACKs, and publishers.
-        blockingRedis.poolSizePerWorker = 4;
+        // Each worker has telemetry and command-result readers. Edge ingress stays on the
+        // first worker and webhook delivery moves to the last, so a multi-worker deployment
+        // needs at most three blocking sockets per worker. A single worker still needs four.
+        blockingRedis.poolSizePerWorker = serviceWorkerCount == 1 ? 4 : 3;
+        blockingRedis.usage = ruvia::RedisPoolUsage::kBlocking;
         auto collector = std::make_shared<service::collector::Runtime>();
         auto telemetry = std::make_shared<service::telemetry::PersistenceRuntime>();
         auto commandResults = std::make_shared<service::command::ResultRuntime>();
@@ -356,11 +358,11 @@ int main(int argc, char *argv[])
                 commandResults->stop();
                 openWebhooks->stop(); })
             .onError(&handleError)
-            .setListenAddress(app.env().get("HOST").value_or("0.0.0.0"))
+            .setListeners({ruvia::ListenerConfig::http(
+                app.env().get("HOST").value_or("0.0.0.0"),
+                app.env().get<std::uint16_t>("PORT").value_or(1102))})
             .setMaxStreamBodyBytes(129U * 1024U * 1024U)
             .setMaxWebSocketMessageBytes(16U * 1024U)
-            .setServerTopology(
-                ruvia::ServerTopology::http(app.env().get<std::uint16_t>("PORT").value_or(1102)))
             .setWorkersPerListener(serviceWorkerCount)
             .run();
         service::common::packet_log::shutdown();

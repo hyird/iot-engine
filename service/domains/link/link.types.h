@@ -49,7 +49,7 @@ struct RuntimeDto final {
     RUVIA_OPTIONAL_FIELD(reason, ruvia::String);
     RUVIA_OPTIONAL_FIELD(error, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("clientCount", clientCount, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(clients, ruvia::List<ruvia::String>);
+    RUVIA_OPTIONAL_FIELD(clients, ruvia::BoxedArray<ruvia::String>);
     RUVIA_OPTIONAL_FIELD_NAME("lastActivityAt", lastActivityAt, ruvia::String);
     RUVIA_MODEL(RuntimeDto, state, reason, error, clientCount, clients, lastActivityAt);
 };
@@ -68,7 +68,7 @@ struct LinkEndpointDto final {
     RUVIA_OPTIONAL_FIELD(mode, ruvia::String);
     RUVIA_OPTIONAL_FIELD(ip, ruvia::String);
     RUVIA_OPTIONAL_FIELD(port, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(targets, ruvia::List<LinkTargetDto>);
+    RUVIA_OPTIONAL_FIELD(targets, ruvia::BoxedArray<LinkTargetDto>);
     RUVIA_MODEL(LinkEndpointDto, mode, ip, port, targets);
 };
 
@@ -95,14 +95,14 @@ struct LinkOptionDto final {
 };
 
 struct LinkEnumsDto final {
-    RUVIA_OPTIONAL_FIELD(modes, ruvia::List<ruvia::String>);
-    RUVIA_OPTIONAL_FIELD(protocols, ruvia::List<ruvia::String>);
-    RUVIA_OPTIONAL_FIELD(statuses, ruvia::List<ruvia::String>);
+    RUVIA_OPTIONAL_FIELD(modes, ruvia::BoxedArray<ruvia::String>);
+    RUVIA_OPTIONAL_FIELD(protocols, ruvia::BoxedArray<ruvia::String>);
+    RUVIA_OPTIONAL_FIELD(statuses, ruvia::BoxedArray<ruvia::String>);
     RUVIA_MODEL(LinkEnumsDto, modes, protocols, statuses);
 };
 
 struct LinkPageDataDto final {
-    RUVIA_OPTIONAL_FIELD(list, ruvia::List<LinkItemDto>);
+    RUVIA_OPTIONAL_FIELD(list, ruvia::BoxedArray<LinkItemDto>);
     RUVIA_OPTIONAL_FIELD(total, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD(page, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64);
@@ -125,7 +125,7 @@ struct LinkDetailResponse final {
 struct LinkOptionsResponse final {
     RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, ruvia::List<LinkOptionDto>);
+    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<LinkOptionDto>);
     RUVIA_MODEL(LinkOptionsResponse, code, message, data);
 };
 struct LinkEnumsResponse final {

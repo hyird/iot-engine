@@ -261,8 +261,12 @@ public:
         auto stopped = std::make_shared<std::promise<void>>();
         auto readiness = ready->get_future();
         stopped_ = stopped->get_future().share();
+        // Keep the two singleton blocking consumers on different workers when
+        // possible: the edge projector uses the first worker, so webhooks use
+        // the last. This reduces the dedicated blocking pool from four sockets
+        // per worker to three on multi-worker deployments.
         const auto posted =
-            workers.front().post([this, ready, stopped](ruvia::WebWorkerContext& context) {
+            workers.back().post([this, ready, stopped](ruvia::WebWorkerContext& context) {
                 return run(context, ready, stopped);
             });
         if (!posted.accepted()) {
@@ -314,11 +318,11 @@ public:
             while (running_.load() && !context.stopToken().stopRequested()) {
                 const auto messages = recovering
                     ? co_await message::redis::readGroup(
-                          readRedis, event::kStream, kGroup, "service-0", "0",
+                          redis, event::kStream, kGroup, "service-0", "0",
                           std::chrono::milliseconds(0), 50)
                     : co_await message::redis::readGroupBlocking(
                           readRedis, event::kStream, kGroup, "service-0",
-                          message::redis::kBlockingReadHeartbeat, 50);
+                          context.stopToken(), 50);
                 if (recovering && messages.empty())
                     recovering = false;
                 if (messages.empty())

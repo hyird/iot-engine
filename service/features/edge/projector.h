@@ -75,11 +75,11 @@ class Projector final {
             while (running_.load() && !context.stopToken().stopRequested()) {
                 const auto messages = recovering
                     ? co_await service::message::redis::readGroup(
-                          readRedis, kEdgeIngressStream, kEdgeIngressGroup, "edge-projector",
+                          redis, kEdgeIngressStream, kEdgeIngressGroup, "edge-projector",
                           "0", std::chrono::milliseconds(0), 100)
                     : co_await service::message::redis::readGroupBlocking(
                           readRedis, kEdgeIngressStream, kEdgeIngressGroup, "edge-projector",
-                          service::message::redis::kBlockingReadHeartbeat, 100);
+                          context.stopToken(), 100);
                 if (recovering && messages.empty())
                     recovering = false;
                 if (messages.empty())

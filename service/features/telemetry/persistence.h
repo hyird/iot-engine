@@ -118,6 +118,20 @@ class PersistenceRuntime final {
                 throw std::runtime_error("service worker rejected telemetry consumer");
             }
         }
+        {
+            auto ready = std::make_shared<std::promise<void>>();
+            auto stopped = std::make_shared<std::promise<void>>();
+            readiness.push_back(ready->get_future());
+            stopped_.push_back(stopped->get_future().share());
+            const auto posted = workers_.front().post(
+                [this, ready, stopped](ruvia::WebWorkerContext& context) {
+                    return maintainFreshness(context, ready, stopped);
+                });
+            if (!posted.accepted()) {
+                running_.store(false);
+                throw std::runtime_error("service worker rejected telemetry freshness task");
+            }
+        }
         for (auto& ready : readiness)
             ready.get();
     }
@@ -134,6 +148,36 @@ class PersistenceRuntime final {
 
   private:
     static constexpr std::string_view kGroup = "iot-engine:telemetry-persistence";
+
+    ruvia::Task<void> maintainFreshness(
+        ruvia::WebWorkerContext& context, std::shared_ptr<std::promise<void>> ready,
+        std::shared_ptr<std::promise<void>> stopped) {
+        try {
+            const auto redis = context.redis();
+            ready->set_value();
+            while (running_.load() && !context.stopToken().stopRequested()) {
+                try {
+                    co_await latest::expireStale(redis);
+                } catch (const std::exception& error) {
+                    if (context.stopToken().stopRequested())
+                        break;
+                    std::cerr << "telemetry freshness maintenance failed: " << error.what()
+                              << '\n';
+                }
+                (void)co_await ruvia::sleepFor(context.worker(),
+                                               std::chrono::milliseconds(250));
+            }
+        } catch (...) {
+            try {
+                ready->set_exception(std::current_exception());
+            } catch (...) {
+            }
+        }
+        try {
+            stopped->set_value();
+        } catch (...) {
+        }
+    }
 
     ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t index,
                           std::shared_ptr<std::promise<void>> ready,
@@ -153,26 +197,17 @@ class PersistenceRuntime final {
             ready->set_value();
             bool recovering = true;
             const auto consumer = "service-" + std::to_string(index);
-            auto lastFreshnessCheck = std::chrono::steady_clock::time_point{};
             while (running_.load() && !context.stopToken().stopRequested()) {
                 if (streams.empty()) {
                     (void)co_await ruvia::sleepFor(context.worker(), std::chrono::seconds(1));
                     continue;
                 }
-                const auto now = std::chrono::steady_clock::now();
-                if (index == 0 && now - lastFreshnessCheck >= std::chrono::milliseconds(250)) {
-                    lastFreshnessCheck = now;
-                    co_await latest::expireStale(redis);
-                }
-                const auto wait = index == 0
-                    ? std::chrono::milliseconds(250)
-                    : std::chrono::duration_cast<std::chrono::milliseconds>(
-                          message::redis::kBlockingReadHeartbeat);
                 const auto batches = recovering
                     ? co_await message::redis::readGroupMany(
-                          readRedis, streams, kGroup, consumer, "0", 100)
+                          redis, streams, kGroup, consumer, "0", 100)
                     : co_await message::redis::readGroupManyBlocking(
-                          readRedis, streams, kGroup, consumer, wait, 100);
+                          readRedis, streams, kGroup, consumer,
+                          context.stopToken(), 100);
                 if (recovering && batches.empty()) {
                     recovering = false;
                     continue;

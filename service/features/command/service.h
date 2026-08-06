@@ -160,7 +160,7 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
                 tasks.push_back({std::move(element)});
         }
 
-        ruvia::List<ruvia::String> commandIds(context.resource());
+        ruvia::BoxedArray<ruvia::String> commandIds(context.resource());
         for (const auto& elements : tasks) {
             message::ProtocolTask task;
             task.messageId = service::common::nextUuidV7();
@@ -234,7 +234,7 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
                 tasks.push_back({std::move(element)});
         }
 
-        ruvia::List<ruvia::String> commandIds(context.resource());
+        ruvia::BoxedArray<ruvia::String> commandIds(context.resource());
         for (const auto& elements : tasks) {
             message::ProtocolTask task;
             task.messageId = service::common::nextUuidV7();

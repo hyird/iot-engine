@@ -62,7 +62,7 @@ struct DeptItemDto final {
 };
 
 struct DeptPageDataDto final {
-    RUVIA_OPTIONAL_FIELD(list, ruvia::List<DeptItemDto>);
+    RUVIA_OPTIONAL_FIELD(list, ruvia::BoxedArray<DeptItemDto>);
     RUVIA_OPTIONAL_FIELD(total, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD(page, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64);
@@ -87,7 +87,7 @@ struct DeptDetailResponse final {
 struct DeptOptionsResponse final {
     RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, ruvia::List<DeptOptionDto>);
+    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<DeptOptionDto>);
     RUVIA_MODEL(DeptOptionsResponse, code, message, data);
 };
 

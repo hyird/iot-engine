@@ -14,6 +14,10 @@
 #include <google/protobuf/message.h>
 #include <nanopb.pb.h>
 
+#ifdef GetMessage
+#undef GetMessage
+#endif
+
 namespace service::edge {
 namespace pb = ::iot::edge::v1;
 }

@@ -48,8 +48,8 @@ class Worker final {
                       ServerSocketRouter serverSocketRouter)
         : loop_(std::move(loop)), resource_(), scope_(loop_.handle(), &resource_),
           scheduler_(loop_.ioContext()),
-          redis_(loop_.ioContext(), redisConfig, scheduler_),
-          blockingRedis_(loop_.ioContext(), std::move(redisConfig), scheduler_),
+          redis_(loop_.ioContext(), generalRedis(redisConfig), scheduler_),
+          blockingRedis_(loop_.ioContext(), blockingRedis(std::move(redisConfig)), scheduler_),
           engine_(protocols()),
           tcp_(
               loop_.ioContext(), scheduler_, workerIndex, workerCount,
@@ -113,6 +113,16 @@ class Worker final {
     }
 
   private:
+    static ruvia::RedisConfig generalRedis(ruvia::RedisConfig config) {
+        config.usage = ruvia::RedisPoolUsage::kGeneral;
+        return config;
+    }
+
+    static ruvia::RedisConfig blockingRedis(ruvia::RedisConfig config) {
+        config.usage = ruvia::RedisPoolUsage::kBlocking;
+        return config;
+    }
+
     struct PendingCommand {
         std::string stream;
         std::string entryId;

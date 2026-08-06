@@ -69,7 +69,7 @@ class DeptService {
                 where + " ORDER BY d.sort_order, d.id LIMIT $" + std::to_string(limitIndex) +
                 " OFFSET $" + std::to_string(offsetIndex),
             listParams);
-        ruvia::List<DeptItemDto> departments(c.resource());
+        ruvia::BoxedArray<DeptItemDto> departments(c.resource());
         for (const auto& row : rows.rows()) {
             auto& item = departments.emplace(c);
             fill(item, row);
@@ -101,12 +101,12 @@ WHERE d.id = $1 AND d.deleted_at IS NULL LIMIT 1)sql",
         co_return item;
     }
 
-    ruvia::Task<ruvia::List<DeptOptionDto>> options(ruvia::Context& c) {
+    ruvia::Task<ruvia::BoxedArray<DeptOptionDto>> options(ruvia::Context& c) {
         const auto rows = co_await c.db().query(
             "SELECT id::text, name, COALESCE(parent_id::text, '') FROM sys_department "
             "WHERE deleted_at IS NULL "
             "ORDER BY sort_order, id");
-        ruvia::List<DeptOptionDto> result(c.resource());
+        ruvia::BoxedArray<DeptOptionDto> result(c.resource());
         for (const auto& row : rows.rows()) {
             auto& item = result.emplace(c);
             item.id(row[0].text()).name(row[1].text()).parentId(row[2].text());

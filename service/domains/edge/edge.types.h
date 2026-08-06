@@ -103,7 +103,7 @@ struct InterfaceDto final {
     RUVIA_OPTIONAL_FIELD(ipv4, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("prefixLength", prefixLength, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD(gateway, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("bridgePorts", bridgePorts, ruvia::List<ruvia::String>);
+    RUVIA_OPTIONAL_FIELD_NAME("bridgePorts", bridgePorts, ruvia::BoxedArray<ruvia::String>);
     RUVIA_MODEL(InterfaceDto, name, displayName, mac, up, bridge, ipv4, prefixLength, gateway,
                 bridgePorts);
 };
@@ -128,7 +128,7 @@ struct NetworkDto final {
     RUVIA_OPTIONAL_FIELD(device, ruvia::String);
     RUVIA_OPTIONAL_FIELD(up, ruvia::Bool);
     RUVIA_OPTIONAL_FIELD(bridge, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("bridgePorts", bridgePorts, ruvia::List<ruvia::String>);
+    RUVIA_OPTIONAL_FIELD_NAME("bridgePorts", bridgePorts, ruvia::BoxedArray<ruvia::String>);
     RUVIA_OPTIONAL_FIELD(ipv4, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("prefixLength", prefixLength, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD(gateway, ruvia::String);
@@ -264,18 +264,18 @@ struct EdgeNodeDto final {
     RUVIA_OPTIONAL_FIELD(mobile, MobileDto);
     RUVIA_OPTIONAL_FIELD(firmware, FirmwareStatusDto);
     RUVIA_OPTIONAL_FIELD_NAME("createdAt", createdAt, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(interfaces, ruvia::List<InterfaceDto>);
-    RUVIA_OPTIONAL_FIELD(networks, ruvia::List<NetworkDto>);
-    RUVIA_OPTIONAL_FIELD_NAME("serialPorts", serialPorts, ruvia::List<SerialDto>);
-    RUVIA_OPTIONAL_FIELD(platforms, ruvia::List<PlatformDto>);
-    RUVIA_OPTIONAL_FIELD(tasks, ruvia::List<TaskDto>);
+    RUVIA_OPTIONAL_FIELD(interfaces, ruvia::BoxedArray<InterfaceDto>);
+    RUVIA_OPTIONAL_FIELD(networks, ruvia::BoxedArray<NetworkDto>);
+    RUVIA_OPTIONAL_FIELD_NAME("serialPorts", serialPorts, ruvia::BoxedArray<SerialDto>);
+    RUVIA_OPTIONAL_FIELD(platforms, ruvia::BoxedArray<PlatformDto>);
+    RUVIA_OPTIONAL_FIELD(tasks, ruvia::BoxedArray<TaskDto>);
     RUVIA_MODEL(EdgeNodeDto, id, imei, name, model, softwareVersion, hostname, architecture,
                 openwrtRelease, enrollmentStatus, status, capability, mobile, firmware, createdAt,
                 interfaces, networks, serialPorts, platforms, tasks);
 };
 
 struct EdgePageDto final {
-    RUVIA_OPTIONAL_FIELD(list, ruvia::List<EdgeNodeDto>);
+    RUVIA_OPTIONAL_FIELD(list, ruvia::BoxedArray<EdgeNodeDto>);
     RUVIA_OPTIONAL_FIELD(total, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD(page, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64);
@@ -308,7 +308,7 @@ struct LogLineDto final {
 };
 
 struct LogsDto final {
-    RUVIA_OPTIONAL_FIELD(lines, ruvia::List<LogLineDto>);
+    RUVIA_OPTIONAL_FIELD(lines, ruvia::BoxedArray<LogLineDto>);
     RUVIA_MODEL(LogsDto, lines);
 };
 
@@ -322,7 +322,7 @@ struct LogsDto final {
 
 EDGE_RESPONSE(EdgePageResponse, EdgePageDto);
 EDGE_RESPONSE(EdgeDetailResponse, EdgeNodeDto);
-EDGE_RESPONSE(FirmwareListResponse, ruvia::List<FirmwareDto>);
+EDGE_RESPONSE(FirmwareListResponse, ruvia::BoxedArray<FirmwareDto>);
 EDGE_RESPONSE(TerminalTicketResponse, TerminalTicketDto);
 EDGE_RESPONSE(LogsResponse, LogsDto);
 

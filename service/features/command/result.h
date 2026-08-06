@@ -99,10 +99,10 @@ class ResultRuntime final {
                 }
                 const auto batches = recovering
                     ? co_await message::redis::readGroupMany(
-                          readRedis, streams, kGroup, consumer, "0", 100)
+                          redis, streams, kGroup, consumer, "0", 100)
                     : co_await message::redis::readGroupManyBlocking(
                           readRedis, streams, kGroup, consumer,
-                          message::redis::kBlockingReadHeartbeat, 100);
+                          context.stopToken(), 100);
                 if (recovering && batches.empty()) {
                     recovering = false;
                     continue;

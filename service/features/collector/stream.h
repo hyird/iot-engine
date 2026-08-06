@@ -25,10 +25,10 @@ namespace service::message::redis {
 using ruvia::RedisHandle;
 using ruvia::RedisValue;
 
-// Blocking readers use a separate Redis pool from ACK, publish, and state commands. A finite
-// heartbeat lets Service consumers observe shutdown; Collector owns its reader and blocks forever.
+// Blocking readers use a separate Redis pool from ACK, publish, and state commands.
+// Service consumers use Ruvia's typed cancellable BLOCK 0 API; Collector owns its
+// reader connection and closes that connection to cancel its indefinite wait.
 inline constexpr std::string_view kBlockingRedisAlias = "stream-wait";
-inline constexpr auto kBlockingReadHeartbeat = std::chrono::seconds(1);
 
 // ---- 通用命令封装：把 std::string 参数列表转成 string_view span 后 co_await ----
 
@@ -209,6 +209,47 @@ readGroupManyBlocking(const Redis& redis, std::span<const std::string> streams,
     co_return co_await readGroupManyImpl(redis, streams, group, consumer, ">", timeout, count);
 }
 
+inline ruvia::Task<std::vector<StreamBatch>>
+readGroupManyBlocking(const RedisHandle& redis, std::span<const std::string> streams,
+                      std::string_view group, std::string_view consumer,
+                      ruvia::StopToken stopToken, std::size_t count = 100) {
+    if (streams.empty())
+        co_return std::vector<StreamBatch>{};
+
+    std::vector<ruvia::RedisStreamReadView> reads;
+    reads.reserve(streams.size());
+    for (const auto& stream : streams)
+        reads.push_back({.stream = stream, .id = ">"});
+
+    ruvia::RedisXReadGroupOptions options;
+    options.count = count;
+    options.block = ruvia::RedisBlockWait::indefinitely();
+    options.operation.stopToken = std::move(stopToken);
+    auto result = co_await redis.xreadGroup(group, consumer, reads, std::move(options));
+
+    std::vector<StreamBatch> batches;
+    if (!result.has_value())
+        co_return batches;
+    batches.reserve(result->streams().size());
+    for (const auto& stream : result->streams()) {
+        StreamBatch batch;
+        batch.stream.assign(stream.stream());
+        batch.messages.reserve(stream.entries().size());
+        for (const auto& entry : stream.entries()) {
+            StreamMessage message;
+            message.id.assign(entry.id());
+            message.fields.reserve(entry.fields().size());
+            for (const auto& field : entry.fields())
+                message.fields.push_back(
+                    {std::string(field.key()), std::string(field.value())});
+            batch.messages.push_back(std::move(message));
+        }
+        if (!batch.messages.empty())
+            batches.push_back(std::move(batch));
+    }
+    co_return batches;
+}
+
 template <typename Redis>
 inline ruvia::Task<std::vector<StreamMessage>>
 readGroup(const Redis& redis, std::string_view stream, std::string_view group,
@@ -233,6 +274,18 @@ readGroupBlocking(const Redis& redis, std::string_view stream, std::string_view 
     const std::vector<std::string> streams{std::string(stream)};
     auto batches =
         co_await readGroupManyBlocking(redis, streams, group, consumer, timeout, count);
+    if (batches.empty())
+        co_return std::vector<StreamMessage>{};
+    co_return std::move(batches.front().messages);
+}
+
+inline ruvia::Task<std::vector<StreamMessage>>
+readGroupBlocking(const RedisHandle& redis, std::string_view stream, std::string_view group,
+                  std::string_view consumer, ruvia::StopToken stopToken,
+                  std::size_t count = 100) {
+    const std::vector<std::string> streams{std::string(stream)};
+    auto batches = co_await readGroupManyBlocking(
+        redis, streams, group, consumer, std::move(stopToken), count);
     if (batches.empty())
         co_return std::vector<StreamMessage>{};
     co_return std::move(batches.front().messages);

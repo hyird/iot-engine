@@ -90,15 +90,15 @@ struct GbDeviceDto final {
     RUVIA_OPTIONAL_FIELD_NAME("mapped_device_id", mappedDeviceId, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("last_seen_at", lastSeenAt, ruvia::String);
     RUVIA_OPTIONAL_FIELD(online, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD(channels, ruvia::List<GbChannelDto>);
-    RUVIA_OPTIONAL_FIELD(records, ruvia::List<GbRecordDto>);
+    RUVIA_OPTIONAL_FIELD(channels, ruvia::BoxedArray<GbChannelDto>);
+    RUVIA_OPTIONAL_FIELD(records, ruvia::BoxedArray<GbRecordDto>);
     RUVIA_MODEL(GbDeviceDto, id, name, manufacturer, remoteAddress, remoteIp, remotePort,
                 registrationSource, mappedDeviceId, lastSeenAt, online, channels,
                 records);
 };
 
 struct GbDeviceListDto final {
-    RUVIA_OPTIONAL_FIELD(items, ruvia::List<GbDeviceDto>);
+    RUVIA_OPTIONAL_FIELD(items, ruvia::BoxedArray<GbDeviceDto>);
     RUVIA_MODEL(GbDeviceListDto, items);
 };
 
@@ -113,7 +113,7 @@ struct GbStreamDto final {
 };
 
 struct GbStreamListDto final {
-    RUVIA_OPTIONAL_FIELD(items, ruvia::List<GbStreamDto>);
+    RUVIA_OPTIONAL_FIELD(items, ruvia::BoxedArray<GbStreamDto>);
     RUVIA_MODEL(GbStreamListDto, items);
 };
 

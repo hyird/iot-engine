@@ -55,7 +55,7 @@ struct RoleItemDto final {
 };
 
 struct RolePageDataDto final {
-    RUVIA_OPTIONAL_FIELD(list, ruvia::List<RoleItemDto>);
+    RUVIA_OPTIONAL_FIELD(list, ruvia::BoxedArray<RoleItemDto>);
     RUVIA_OPTIONAL_FIELD(total, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD(page, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64);
@@ -80,7 +80,7 @@ struct RoleDetailResponse final {
 struct RoleOptionsResponse final {
     RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
     RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, ruvia::List<RoleOptionDto>);
+    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<RoleOptionDto>);
     RUVIA_MODEL(RoleOptionsResponse, code, message, data);
 };
 

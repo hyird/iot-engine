@@ -62,7 +62,7 @@ class UserService {
                 std::to_string(offsetIndex),
             listParams);
 
-        ruvia::List<UserItemDto> users(c.resource());
+        ruvia::BoxedArray<UserItemDto> users(c.resource());
         for (const auto& row : rows.rows()) {
             auto& item = users.emplace(c);
             fillBase(item, row);
@@ -94,7 +94,7 @@ WHERE u.id = $1 AND u.deleted_at IS NULL LIMIT 1)sql",
         co_return item;
     }
 
-    ruvia::Task<ruvia::List<UserOptionDto>> options(ruvia::Context& c,
+    ruvia::Task<ruvia::BoxedArray<UserOptionDto>> options(ruvia::Context& c,
                                                     std::optional<std::string> keyword) {
         std::string sql = "SELECT id, username, COALESCE(nickname, '') FROM sys_user WHERE "
                           "deleted_at IS NULL AND status = 'enabled'";
@@ -107,7 +107,7 @@ WHERE u.id = $1 AND u.deleted_at IS NULL LIMIT 1)sql",
         }
         sql += " ORDER BY username LIMIT 100";
         const auto rows = co_await c.db().query(sql, params);
-        ruvia::List<UserOptionDto> result(c.resource());
+        ruvia::BoxedArray<UserOptionDto> result(c.resource());
         for (const auto& row : rows.rows()) {
             auto& item = result.emplace(c);
             item.id(row[0].text()).username(row[1].text()).nickname(row[2].text());
@@ -134,7 +134,7 @@ WHERE u.id = $1 AND u.deleted_at IS NULL LIMIT 1)sql",
             body.departmentId() ? std::string(body.departmentId()->view()) : "";
         const auto id = service::common::nextUuidV7();
         auto tx = co_await c.db().beginTransaction();
-        const auto inserted = co_await tx.execute(
+        const auto inserted = co_await tx.query(
             R"sql(
 INSERT INTO sys_user(
     id, username, password_hash, nickname, phone, email, status, department_id)
@@ -237,14 +237,14 @@ RETURNING id)sql",
             .updatedAt(row[9].text());
     }
 
-    ruvia::Task<ruvia::List<service::role::RoleOptionDto>> loadRoles(ruvia::Context& c,
+    ruvia::Task<ruvia::BoxedArray<service::role::RoleOptionDto>> loadRoles(ruvia::Context& c,
                                                                      std::string_view userId) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT r.id, r.name, r.code FROM sys_role r
 JOIN sys_user_role ur ON ur.role_id = r.id
 WHERE ur.user_id = $1 AND r.deleted_at IS NULL ORDER BY r.id)sql",
                                                 service::common::dbParams(userId));
-        ruvia::List<service::role::RoleOptionDto> roles(c.resource());
+        ruvia::BoxedArray<service::role::RoleOptionDto> roles(c.resource());
         for (const auto& row : rows.rows()) {
             auto& role = roles.emplace(c);
             role.id(row[0].text()).name(row[1].text()).code(row[2].text());

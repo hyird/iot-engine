@@ -52,9 +52,7 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(ruvia
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    # Last commit verified by this repository's Windows/MSVC build. Newer main
-    # currently fails inside Ruvia's split database capability sources.
-    GIT_TAG 10263676ed08316b458de6e15ae29cb3ab6583f3)
+    GIT_TAG 0e2bee2a8b75c4632a53841c5c654eba6f6aa0fe)
 FetchContent_MakeAvailable(ruvia)
 
 FetchContent_Declare(nanopb

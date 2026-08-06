@@ -15,7 +15,7 @@
 #include <asio/detached.hpp>
 
 #include <ruvia/core/EventLoopPool.h>
-#include <ruvia/core/detail/AsioAwait.h>
+#include <ruvia/core/detail/io/AsioAwait.h>
 #include <ruvia/web/redis/Redis.h>
 
 #include "service/features/collector/worker.h"
