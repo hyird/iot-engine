@@ -71,7 +71,7 @@ OpenWrt 目标平台的可安装制品验证。
     └── Pending、重试和死信
 
 OpenWrt 节点 edgenode
-├── PlatformSession[platform_id]（固化引导平台 + 最多三个动态平台）
+├── PlatformSession[platform_id]（最多四个 LuCI/UCI 平台）
 ├── ConfigStore（分平台 tmpfs nanopb staging/active）
 ├── EndpointRuntime（TCP Server/TCP Client/Serial）
 ├── ProtocolRuntime（SL651/Modbus/S7）
@@ -239,8 +239,10 @@ S7 Setup Communication。不得在无响应后复用旧 TCP 会话，因为 PLC 
 
 ### 7.1 本地平台配置
 
-固化引导平台为 `https://i.a-z.xin`，不能通过 UCI 覆盖。其他平台由引导平台授权的命令
-使用 UCI CLI 新建或删除，每个平台连接是独立 section，包含：
+节点程序不编译平台 URL。所有平台都来自 `/etc/config/edgenode` 的独立 `platform`
+section，可由 LuCI 本地新增、编辑、启停和删除，也可由默认管理平台授权的远程命令使用
+UCI CLI 新建或删除。新安装默认创建 `https://i.a-z.xin`，但该地址可修改。最多同时启用
+四个平台，每个平台连接包含：
 
 - 本地 `platform_id`；
 - HTTP/HTTPS `url` 和启用状态；当前部署明确不校验 HTTPS 服务端证书；
@@ -248,7 +250,10 @@ S7 Setup Communication。不得在无响应后复用旧 TCP 会话，因为 PLC 
 - `priority`；
 - outbox 容量和重连策略。
 
-节点全局网络、固件和平台配置命令只接受固化引导平台；动态平台不能取得这些权限。
+每个 `iot-engine` 实例通过 `EDGE_PLATFORM_ID` 声明稳定平台 ID，LuCI 中的平台 ID 必须与
+目标实例一致且在节点内唯一。默认 ID
+`00000000-0000-7000-8000-000000000001` 的会话拥有节点全局网络、固件和远程平台管理权限；
+修改它的 URL 不改变权限，其他平台不能取得这些权限。
 
 动态端点与设备配置不写入 UCI 或数据库，只以 nanopb 消息写入分平台 tmpfs 目录；进程
 重启恢复 active 配置，设备重启后平台根据 IMEI 重新下发完整配置。
@@ -291,7 +296,7 @@ terminal-writer
 
 ### 7.4 节点全局操作
 
-网络配置只接受固化引导平台的请求。其他平台只能读取脱敏后的接口
+网络配置只接受默认管理平台的请求。其他平台只能读取脱敏后的接口
 能力。在线终端同一时刻只允许一个写会话，按平台权限和显式抢占策略仲裁；默认不允许
 抢占。升级、重启、恢复出厂设置等节点全局操作后续使用相同所有权模型，不能采用“最后
 下发者获胜”。
@@ -307,6 +312,8 @@ OpenWrt 安装包、进程、服务和 UCI 配置名统一为 `edgenode`：
 /etc/edgenode/credentials/
 /usr/share/edgenode/NOTICE
 ```
+
+配套 LuCI 包为 `luci-app-edgenode`，入口位于“服务 → 边缘节点”。
 
 - 使用标准 OpenWrt package `Makefile`，由 OpenWrt SDK 为目标架构生成 `.ipk`；
 - 使用 procd 监督，支持 respawn、reload、资源限制和干净停止；

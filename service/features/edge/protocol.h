@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -19,12 +20,26 @@ namespace pb = ::iot::edge::v1;
 
 namespace service::edge::protocol {
 
-inline constexpr std::uint32_t kProtocolVersion = 2;
+inline constexpr std::uint32_t kProtocolVersion = 3;
 
-inline constexpr std::string_view kBootstrapPlatformId{
+inline constexpr std::string_view kDefaultPlatformId{
     "00000000-0000-7000-8000-000000000001"};
-inline constexpr std::string_view kPublicPlatformUrl{"https://i.a-z.xin"};
+inline constexpr std::string_view kDefaultPublicBaseUrl{"https://i.a-z.xin"};
 inline constexpr std::size_t kMaxMessageSize{16U * 1024U};
+
+inline std::string& platformIdStorage() {
+    static std::string value(kDefaultPlatformId);
+    return value;
+}
+
+inline std::string& publicBaseUrlStorage() {
+    static std::string value(kDefaultPublicBaseUrl);
+    return value;
+}
+
+inline std::string_view platformId() { return platformIdStorage(); }
+
+inline std::string_view publicBaseUrl() { return publicBaseUrlStorage(); }
 
 inline std::string authKey(std::string_view imei) {
     return "iot:edge:auth:" + std::string(imei);
@@ -59,7 +74,8 @@ inline int hexDigit(char value) {
 }
 
 inline bool uuidBytes(std::string_view value, std::uint8_t output[16]) {
-    if (value.size() != 36)
+    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+        value[18] != '-' || value[23] != '-')
         return false;
     std::size_t byte = 0;
     for (std::size_t index = 0; index < value.size();) {
@@ -77,6 +93,25 @@ inline bool uuidBytes(std::string_view value, std::uint8_t output[16]) {
         index += 2;
     }
     return byte == 16;
+}
+
+inline bool configurePlatform(std::string_view id, std::string_view publicBaseUrl) {
+    std::uint8_t idBytes[16]{};
+    const std::size_t schemeSize = publicBaseUrl.starts_with("https://")
+                                       ? 8
+                                   : publicBaseUrl.starts_with("http://") ? 7
+                                                                            : 0;
+    if (!uuidBytes(id, idBytes) || publicBaseUrl.size() > 255 || schemeSize == 0 ||
+        publicBaseUrl.size() <= schemeSize || publicBaseUrl[schemeSize] == '/')
+        return false;
+    for (const unsigned char character : publicBaseUrl)
+        if (std::iscntrl(character) || std::isspace(character))
+            return false;
+    while (publicBaseUrl.ends_with('/'))
+        publicBaseUrl.remove_suffix(1);
+    platformIdStorage().assign(id);
+    publicBaseUrlStorage().assign(publicBaseUrl);
+    return true;
 }
 
 inline std::string uuidText(std::string_view value) {
@@ -175,7 +210,7 @@ inline pb::Envelope outbound(std::string_view nodeId, std::uint64_t epoch = 0,
     result.set_message_id(bytes(messageId.data(), messageId.size()));
     std::uint8_t platform[16]{};
     std::uint8_t node[16]{};
-    if (uuidBytes(kBootstrapPlatformId, platform))
+    if (uuidBytes(platformId(), platform))
         result.set_platform_id(bytes(platform, 16));
     if (uuidBytes(nodeId, node))
         result.set_node_id(bytes(node, 16));

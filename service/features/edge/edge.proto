@@ -91,7 +91,7 @@ enum ModemSimState {
 
 enum ModemControlAction {
   MODEM_CONTROL_UNSPECIFIED = 0;
-  MODEM_CONTROL_SET_APN = 1;
+  MODEM_CONTROL_APPLY_PROFILE = 1;
   MODEM_CONTROL_REDIAL = 2;
 }
 
@@ -101,6 +101,21 @@ enum ModemControlState {
   MODEM_CONTROL_RUNNING = 2;
   MODEM_CONTROL_SUCCEEDED = 3;
   MODEM_CONTROL_FAILED = 4;
+}
+
+enum ModemPdpType {
+  MODEM_PDP_UNSPECIFIED = 0;
+  MODEM_PDP_IPV4 = 1;
+  MODEM_PDP_IPV6 = 2;
+  MODEM_PDP_IPV4V6 = 3;
+}
+
+enum ModemAuthType {
+  MODEM_AUTH_UNSPECIFIED = 0;
+  MODEM_AUTH_NONE = 1;
+  MODEM_AUTH_PAP = 2;
+  MODEM_AUTH_CHAP = 3;
+  MODEM_AUTH_PAP_OR_CHAP = 4;
 }
 
 enum PlatformConfigOperation {
@@ -138,7 +153,7 @@ message Hello {
   uint32 network_config_version = 24;
   bool modem_available = 25;
   ModemSimState sim_state = 26;
-  string apn = 27 [(nanopb).max_length = 63];
+  string apn = 27 [(nanopb).max_length = 100];
   string mobile_operator = 28 [(nanopb).max_length = 64];
   bool mobile_connected = 29;
   string mobile_ipv4 = 30 [(nanopb).max_length = 15];
@@ -218,7 +233,7 @@ message Heartbeat {
   int32 mobile_registration_status = 15;
   bool modem_available = 16;
   ModemSimState sim_state = 17;
-  string apn = 18 [(nanopb).max_length = 63];
+  string apn = 18 [(nanopb).max_length = 100];
   string mobile_operator = 19 [(nanopb).max_length = 64];
   bool mobile_connected = 20;
   string mobile_ipv4 = 21 [(nanopb).max_length = 15];
@@ -556,7 +571,15 @@ message FirmwareUpdateResult {
 message ModemControlRequest {
   bytes request_id = 1 [(nanopb).max_size = 16];
   ModemControlAction action = 2;
-  string apn = 3 [(nanopb).max_length = 63];
+  string apn = 3 [(nanopb).max_length = 100];
+  bool automatic_apn = 4;
+  string username = 5 [(nanopb).max_length = 64];
+  // Credentials and PIN are transport-only secrets. The server must not persist them in task JSON.
+  string password = 6 [(nanopb).max_length = 128];
+  ModemPdpType pdp_type = 7;
+  ModemAuthType auth_type = 8;
+  string pin_code = 9 [(nanopb).max_length = 8];
+  bool redial_after_apply = 10;
 }
 
 message ModemControlResult {
@@ -564,7 +587,7 @@ message ModemControlResult {
   ModemControlAction action = 2;
   ModemControlState state = 3;
   string message = 4 [(nanopb).max_length = 256];
-  string apn = 5 [(nanopb).max_length = 63];
+  string apn = 5 [(nanopb).max_length = 100];
 }
 
 message PlatformConfigRequest {

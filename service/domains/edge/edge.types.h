@@ -111,7 +111,15 @@ struct InterfaceDto final {
 struct ModemControlBody final {
     RUVIA_OPTIONAL_FIELD(action, ruvia::String);
     RUVIA_OPTIONAL_FIELD(apn, ruvia::String);
-    RUVIA_MODEL(ModemControlBody, action, apn);
+    RUVIA_OPTIONAL_FIELD(automatic, ruvia::Bool);
+    RUVIA_OPTIONAL_FIELD_NAME("pdpType", pdpType, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("authType", authType, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(username, ruvia::String);
+    RUVIA_OPTIONAL_FIELD(password, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("pinCode", pinCode, ruvia::String);
+    RUVIA_OPTIONAL_FIELD_NAME("redialAfterApply", redialAfterApply, ruvia::Bool);
+    RUVIA_MODEL(ModemControlBody, action, apn, automatic, pdpType, authType, username, password,
+                pinCode, redialAfterApply);
 };
 
 struct NetworkDto final {

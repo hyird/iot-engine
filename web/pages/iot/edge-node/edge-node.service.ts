@@ -70,7 +70,7 @@ export function useModemControlMutation() {
     return useMutationWithMessage({
         mutationFn: (value: { id: string; data: Edge.ModemControlDto }) =>
             controlModem(value.id, value.data),
-        successMessage: '4G 操作已下发',
+        successMessage: '移动网络操作已下发',
         invalidateKeys: [edgeQueryKeys.all],
     });
 }

@@ -207,11 +207,41 @@ RETURNING id)sql",
 
     ruvia::Task<void> queueModem(ruvia::Context& c, std::string_view nodeId,
                                  const ModemControlBody& body) {
-        co_await requireNodeCapability(c, nodeId, "modemControl", "4G 控制");
+        co_await requireNodeCapability(c, nodeId, "modemControl", "移动网络控制");
         const std::string action(body.action()->view());
         const std::string apn = body.apn() ? std::string(body.apn()->view()) : std::string{};
-        if (action == "set_apn" && apn.empty())
-            service::common::fail(17012, "设置 APN 时不能为空", 400);
+        const bool automatic = body.automatic() && *body.automatic();
+        const std::string pdpType =
+            body.pdpType() ? std::string(body.pdpType()->view()) : "IP";
+        const std::string authType =
+            body.authType() ? std::string(body.authType()->view()) : "none";
+        const std::string username =
+            body.username() ? std::string(body.username()->view()) : std::string{};
+        const std::string password =
+            body.password() ? std::string(body.password()->view()) : std::string{};
+        const std::string pinCode =
+            body.pinCode() ? std::string(body.pinCode()->view()) : std::string{};
+        const bool redialAfterApply =
+            body.redialAfterApply() && *body.redialAfterApply();
+
+        if (action == "apply_profile") {
+            if (!body.apn() || !body.automatic() || !body.pdpType() || !body.authType() ||
+                !body.username() || !body.password() || !body.pinCode() ||
+                !body.redialAfterApply())
+                service::common::fail(17012, "移动网络配置参数不完整", 400);
+            if (automatic && !apn.empty())
+                service::common::fail(17012, "自动 APN 模式不能填写 APN", 400);
+            if (!automatic && apn.empty())
+                service::common::fail(17012, "手动 APN 模式必须填写 APN", 400);
+            if (authType == "none" && (!username.empty() || !password.empty()))
+                service::common::fail(17012, "无认证模式不能填写用户名或密码", 400);
+            if (authType != "none" && (username.empty() || password.empty()))
+                service::common::fail(17012, "启用 APN 认证时必须同时填写用户名和密码", 400);
+        } else if (body.apn() || body.automatic() || body.pdpType() || body.authType() ||
+                   body.username() || body.password() || body.pinCode() ||
+                   body.redialAfterApply()) {
+            service::common::fail(17012, "重新拨号不能携带 APN 配置参数", 400);
+        }
 
         const auto taskId = service::common::nextUuidV7();
         auto envelope = protocol::outbound(nodeId);
@@ -219,11 +249,37 @@ RETURNING id)sql",
         std::uint8_t requestId[16]{};
         protocol::uuidBytes(taskId, requestId);
         request->set_request_id(protocol::bytes(requestId, sizeof(requestId)));
-        request->set_action(action == "set_apn" ? pb::MODEM_CONTROL_SET_APN
-                                                  : pb::MODEM_CONTROL_REDIAL);
-        request->set_apn(apn);
-        const std::string json = "{\"action\":\"" + action + "\",\"apn\":\"" +
-                                 jsonEscape(apn) + "\"}";
+        request->set_action(action == "apply_profile" ? pb::MODEM_CONTROL_APPLY_PROFILE
+                                                       : pb::MODEM_CONTROL_REDIAL);
+        if (action == "apply_profile") {
+            request->set_apn(apn);
+            request->set_automatic_apn(automatic);
+            request->set_username(username);
+            request->set_password(password);
+            request->set_pdp_type(
+                pdpType == "IPV6"     ? pb::MODEM_PDP_IPV6
+                : pdpType == "IPV4V6" ? pb::MODEM_PDP_IPV4V6
+                                        : pb::MODEM_PDP_IPV4);
+            request->set_auth_type(
+                authType == "pap"    ? pb::MODEM_AUTH_PAP
+                : authType == "chap" ? pb::MODEM_AUTH_CHAP
+                : authType == "both" ? pb::MODEM_AUTH_PAP_OR_CHAP
+                                       : pb::MODEM_AUTH_NONE);
+            request->set_pin_code(pinCode);
+            request->set_redial_after_apply(redialAfterApply);
+        }
+        const std::string json =
+            action == "redial"
+                ? "{\"action\":\"redial\"}"
+                : "{\"action\":\"apply_profile\",\"automatic\":" +
+                      std::string(automatic ? "true" : "false") + ",\"apn\":\"" +
+                      jsonEscape(apn) + "\",\"pdpType\":\"" + pdpType +
+                      "\",\"authType\":\"" + authType +
+                      "\",\"hasCredentials\":" +
+                      std::string(username.empty() ? "false" : "true") +
+                      ",\"hasPin\":" + std::string(pinCode.empty() ? "false" : "true") +
+                      ",\"redialAfterApply\":" +
+                      std::string(redialAfterApply ? "true" : "false") + "}";
         co_await createTaskAndQueue(c, nodeId, taskId, "modem", json, envelope);
     }
 
@@ -233,8 +289,8 @@ RETURNING id)sql",
         const std::string platformId = body.platformId()
                                            ? std::string(body.platformId()->view())
                                            : service::common::nextUuidV7();
-        if (platformId == protocol::kBootstrapPlatformId)
-            service::common::fail(17007, "固化平台不能被修改", 400);
+        if (platformId == protocol::platformId())
+            service::common::fail(17007, "当前平台不能通过远程命令修改", 400);
         const std::string name(body.name()->view());
         const std::string baseUrl(body.baseUrl()->view());
         validatePlatformUrl(baseUrl);
@@ -283,8 +339,8 @@ SET name = EXCLUDED.name, base_url = EXCLUDED.base_url, enabled = EXCLUDED.enabl
     ruvia::Task<void> deletePlatform(ruvia::Context& c, std::string_view nodeId,
                                      std::string_view platformId) {
         co_await requireNodeCapability(c, nodeId, "platformConfig", "多平台配置");
-        if (platformId == protocol::kBootstrapPlatformId)
-            service::common::fail(17007, "固化平台不能被删除", 400);
+        if (platformId == protocol::platformId())
+            service::common::fail(17007, "当前平台不能通过远程命令删除", 400);
         const auto taskId = service::common::nextUuidV7();
         auto envelope = protocol::outbound(nodeId);
         auto* request = envelope.mutable_platform_config_request();
@@ -321,7 +377,7 @@ FROM edge_firmware WHERE id = $1::uuid LIMIT 1)sql",
         std::uint8_t bytes[32]{};
         protocol::uuidBytes(taskId, bytes);
         request->set_request_id(protocol::bytes(bytes, 16));
-        const auto download = std::string(protocol::kPublicPlatformUrl) +
+        const auto download = std::string(protocol::publicBaseUrl()) +
                               "/edge/v1/firmware/" + firmwareIdText + "/download?token=" +
                               std::string(row[3].text());
         request->set_download_url(download);

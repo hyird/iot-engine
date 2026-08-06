@@ -8,6 +8,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -227,6 +228,12 @@ int main(int argc, char *argv[])
     {
         auto &app = ruvia::app();
         app.loadDotenv();
+        if (!service::edge::protocol::configurePlatform(
+                app.env().get("EDGE_PLATFORM_ID")
+                    .value_or(service::edge::protocol::kDefaultPlatformId),
+                app.env().get("EDGE_PUBLIC_BASE_URL")
+                    .value_or(service::edge::protocol::kDefaultPublicBaseUrl)))
+            throw std::runtime_error("EDGE_PLATFORM_ID or EDGE_PUBLIC_BASE_URL is invalid");
         const auto runtime = runtimeDirectory(argc > 0 ? argv[0] : nullptr);
         service::common::packet_log::initialize(packetLogConfig(app.env(), runtime));
         const auto gb28181 = gb28181Config(app.env());

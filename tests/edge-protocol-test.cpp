@@ -102,6 +102,70 @@ void testEnvelopeRoundTrip() {
             "oversized envelope was accepted");
 }
 
+void testPlatformIdentityConfiguration() {
+    require(!service::edge::protocol::configurePlatform(
+                "not-a-uuid", "https://secondary.example"),
+            "invalid platform id was accepted");
+    require(!service::edge::protocol::configurePlatform(
+                "0000000-00000-7000-8000-000000000002", "https://secondary.example"),
+            "platform id with misplaced separators was accepted");
+    require(!service::edge::protocol::configurePlatform(
+                "00000000-0000-7000-8000-000000000002", "ftp://secondary.example"),
+            "invalid public platform URL was accepted");
+    require(service::edge::protocol::configurePlatform(
+                "00000000-0000-7000-8000-000000000002",
+                "https://secondary.example/"),
+            "valid platform identity was rejected");
+    require(service::edge::protocol::publicBaseUrl() == "https://secondary.example",
+            "public platform URL was not normalized");
+    std::uint8_t expected[16]{};
+    require(service::edge::protocol::uuidBytes(service::edge::protocol::platformId(), expected),
+            "configured platform id was lost");
+    const auto envelope = service::edge::protocol::outbound(
+        "00000000-0000-7000-8000-000000000003");
+    require(envelope.platform_id() == service::edge::protocol::bytes(expected, 16),
+            "outbound envelope ignored the configured platform id");
+    require(service::edge::protocol::configurePlatform(
+                service::edge::protocol::kDefaultPlatformId,
+                service::edge::protocol::kDefaultPublicBaseUrl),
+            "default platform identity could not be restored");
+}
+
+void testModemProfileRoundTrip() {
+    auto envelope = service::edge::protocol::outbound(
+        "00000000-0000-7000-8000-000000000002");
+    auto* request = envelope.mutable_modem_control_request();
+    request->set_request_id(std::string(16, '\1'));
+    request->set_action(service::edge::pb::MODEM_CONTROL_APPLY_PROFILE);
+    request->set_apn("private.mnc001.mcc460.gprs");
+    request->set_automatic_apn(false);
+    request->set_username("edge-user");
+    request->set_password("secret");
+    request->set_pdp_type(service::edge::pb::MODEM_PDP_IPV4V6);
+    request->set_auth_type(service::edge::pb::MODEM_AUTH_PAP_OR_CHAP);
+    request->set_pin_code("1234");
+    request->set_redial_after_apply(true);
+
+    const auto wire = service::edge::protocol::encode(envelope);
+    require(!wire.empty(), "modem profile serialization failed");
+    service::edge::pb::Envelope decoded;
+    require(service::edge::protocol::decode(wire, decoded),
+            "modem profile parse failed");
+    const auto& profile = decoded.modem_control_request();
+    require(profile.action() == service::edge::pb::MODEM_CONTROL_APPLY_PROFILE &&
+                profile.apn() == "private.mnc001.mcc460.gprs" &&
+                !profile.automatic_apn() && profile.username() == "edge-user" &&
+                profile.password() == "secret" &&
+                profile.pdp_type() == service::edge::pb::MODEM_PDP_IPV4V6 &&
+                profile.auth_type() == service::edge::pb::MODEM_AUTH_PAP_OR_CHAP &&
+                profile.pin_code() == "1234" && profile.redial_after_apply(),
+            "modem profile fields did not round-trip");
+
+    request->set_apn(std::string(101, 'a'));
+    require(service::edge::protocol::encode(envelope).empty(),
+            "oversized APN escaped the nanopb wire limit");
+}
+
 void testNanopbBounds() {
     auto envelope = service::edge::protocol::outbound(
         "00000000-0000-7000-8000-000000000002");
@@ -151,6 +215,8 @@ int main() {
     testNetworkNanopbWireContract();
     testConfigItemNanopbWireContract();
     testEnvelopeRoundTrip();
+    testPlatformIdentityConfiguration();
+    testModemProfileRoundTrip();
     testNanopbBounds();
     testWebTerminalProtobuf();
     std::cout << "edge protocol tests passed\n";

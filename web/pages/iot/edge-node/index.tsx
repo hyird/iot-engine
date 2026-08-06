@@ -89,7 +89,6 @@ type NetworkDraftItem = Edge.NetworkConfig & {
     up?: boolean;
 };
 
-const BOOTSTRAP_URL = 'https://i.a-z.xin';
 const EDGE_CARD_GRID_CLASS = 'grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-4';
 const EDGE_CARD_ACTION_BUTTON_CLASS =
     '!flex !h-8 !w-8 items-center justify-center !rounded-md text-slate-500 hover:!bg-slate-100 hover:!text-slate-900';
@@ -564,11 +563,12 @@ export default function EdgeNodePage() {
     const [networkForm] = Form.useForm<Edge.NetworkConfig>();
     const [platformForm] = Form.useForm<Edge.PlatformDto>();
     const [firmwareForm] = Form.useForm<Edge.FirmwareUpgradeDto>();
-    const [modemForm] = Form.useForm<Edge.ModemControlDto>();
+    const [modemForm] = Form.useForm<Edge.ModemProfileDto>();
     const [nameForm] = Form.useForm<Edge.NameDto>();
     const networkMode = Form.useWatch('mode', networkForm);
     const networkBridge = Form.useWatch('bridge', networkForm);
-    const modemAction = Form.useWatch('action', modemForm);
+    const modemAutomatic = Form.useWatch('automatic', modemForm);
+    const modemAuthType = Form.useWatch('authType', modemForm);
     const { message, modal } = App.useApp();
     const { run: search } = useDebounceFn((value: string) => {
         setKeyword(value);
@@ -746,9 +746,32 @@ export default function EdgeNodePage() {
     };
 
     const showModem = (node: Edge.Node) => {
-        modemForm.setFieldsValue({ action: 'set_apn', apn: node.mobile.apn || '' });
+        modemForm.setFieldsValue({
+            action: 'apply_profile',
+            automatic: !node.mobile.apn,
+            apn: node.mobile.apn || '',
+            pdpType: 'IP',
+            authType: 'none',
+            username: '',
+            password: '',
+            pinCode: '',
+            redialAfterApply: true,
+        });
         setModemNode(node);
         setModemOpen(true);
+    };
+
+    const redialModem = () => {
+        if (!modemNode) return;
+        modemControl.mutate(
+            { id: modemNode.id, data: { action: 'redial' } },
+            {
+                onSuccess: () => {
+                    setModemOpen(false);
+                    setModemNode(undefined);
+                },
+            }
+        );
     };
 
     const interfaceColumns: ColumnsType<Edge.NetworkInterface> = [
@@ -1034,7 +1057,7 @@ export default function EdgeNodePage() {
                     <div>
                         <h2 className="m-0 text-lg font-semibold text-slate-900">边缘节点</h2>
                         <p className="m-0 mt-1 text-xs text-slate-500">
-                            固化平台 {BOOTSTRAP_URL}，由此配置节点上报到其他 HTTP(S) 平台
+                            节点平台入口由 LuCI/UCI 管理，可同时连接多个 HTTP(S) 平台
                         </p>
                     </div>
                     <Space wrap>
@@ -1231,7 +1254,7 @@ export default function EdgeNodePage() {
                                             {node.enrollmentStatus === 'approved' &&
                                                 canConfig &&
                                                 capability.modemControl && (
-                                                    <Tooltip title="4G 设置与重拨">
+                                                    <Tooltip title="移动网络接入设置">
                                                         <Button
                                                             type="text"
                                                             size="small"
@@ -1855,12 +1878,13 @@ export default function EdgeNodePage() {
 
             <FormModal
                 open={modemOpen}
-                title={`4G 设置与重拨${modemNode ? ` · ${modemNode.name || modemNode.imei}` : ''}`}
+                title={`移动网络接入设置${modemNode ? ` · ${modemNode.name || modemNode.imei}` : ''}`}
                 onCancel={() => {
                     setModemOpen(false);
                     setModemNode(undefined);
                 }}
                 onOk={() => modemForm.submit()}
+                okText="应用配置"
                 confirmLoading={modemControl.isPending}
                 forceRender
                 destroyOnHidden
@@ -1882,24 +1906,97 @@ export default function EdgeNodePage() {
                             );
                     }}
                 >
-                    <Form.Item label="操作" name="action">
-                        <Select
-                            options={[
-                                { value: 'set_apn', label: '设置 APN' },
-                                { value: 'redial', label: '重新拨号' },
-                            ]}
+                    <Form.Item name="action" hidden>
+                        <Input />
+                    </Form.Item>
+                    <Form.Item
+                        label="自动获取 APN"
+                        name="automatic"
+                        valuePropName="checked"
+                        extra="由 SIM 卡和运营商自动选择接入点；专网卡通常需要关闭并手动填写"
+                    >
+                        <Switch
+                            onChange={(checked) => {
+                                if (checked) modemForm.setFieldValue('apn', '');
+                            }}
                         />
                     </Form.Item>
                     <Form.Item label="APN" name="apn">
                         <Input
-                            maxLength={63}
-                            disabled={modemAction === 'redial'}
-                            placeholder="例如 cmnet"
+                            maxLength={100}
+                            disabled={modemAutomatic}
+                            placeholder="例如 cmnet 或 private.example"
                         />
                     </Form.Item>
+                    <div className="grid grid-cols-1 gap-x-4 md:grid-cols-2">
+                        <Form.Item label="PDP 类型" name="pdpType">
+                            <Select
+                                options={[
+                                    { value: 'IP', label: 'IPv4' },
+                                    { value: 'IPV6', label: 'IPv6' },
+                                    { value: 'IPV4V6', label: 'IPv4 / IPv6 双栈' },
+                                ]}
+                            />
+                        </Form.Item>
+                        <Form.Item label="认证方式" name="authType">
+                            <Select
+                                onChange={(value) => {
+                                    if (value === 'none')
+                                        modemForm.setFieldsValue({ username: '', password: '' });
+                                }}
+                                options={[
+                                    { value: 'none', label: '无认证' },
+                                    { value: 'pap', label: 'PAP' },
+                                    { value: 'chap', label: 'CHAP' },
+                                    { value: 'both', label: 'PAP 或 CHAP' },
+                                ]}
+                            />
+                        </Form.Item>
+                    </div>
+                    {modemAuthType && modemAuthType !== 'none' && (
+                        <div className="grid grid-cols-1 gap-x-4 md:grid-cols-2">
+                            <Form.Item label="认证用户名" name="username">
+                                <Input maxLength={64} autoComplete="off" />
+                            </Form.Item>
+                            <Form.Item label="认证密码" name="password">
+                                <Input.Password maxLength={128} autoComplete="new-password" />
+                            </Form.Item>
+                        </div>
+                    )}
+                    <Form.Item
+                        label="SIM PIN"
+                        name="pinCode"
+                        extra="仅在 SIM 已启用 PIN 锁时填写，留空表示不解锁"
+                    >
+                        <Input.Password
+                            maxLength={8}
+                            inputMode="numeric"
+                            autoComplete="new-password"
+                        />
+                    </Form.Item>
+                    <Form.Item
+                        label="应用后重新拨号"
+                        name="redialAfterApply"
+                        valuePropName="checked"
+                    >
+                        <Switch />
+                    </Form.Item>
+                    <Popconfirm
+                        title="确认重新拨号？"
+                        description="移动网络会短暂中断，节点可能暂时离线。"
+                        onConfirm={redialModem}
+                    >
+                        <Button
+                            icon={<ReloadOutlined />}
+                            loading={modemControl.isPending}
+                            disabled={!modemNode?.mobile.available}
+                        >
+                            仅重新拨号
+                        </Button>
+                    </Popconfirm>
                     <p className="text-xs text-slate-500">
-                        SIM 插拔、注册状态和拨号结果由节点持续上报；设置 APN
-                        后可再执行一次重新拨号。
+                        APN 配置按 OpenWrt 移动网络参数下发；密码和 SIM PIN
+                        不写入任务审计记录。
                     </p>
                 </Form>
             </FormModal>

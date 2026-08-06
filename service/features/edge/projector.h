@@ -244,7 +244,7 @@ SET model = EXCLUDED.model, software_version = EXCLUDED.software_version,
     updated_at = NOW()
 RETURNING id::text, enrollment_status)sql",
                                                      service::common::dbParams(
-                                                         candidate, protocol::kBootstrapPlatformId,
+                                                         candidate, protocol::platformId(),
                                                          hello.imei(), hello.model(),
                                                          hello.software_version(), hello.hostname(),
                                                          hello.architecture(),

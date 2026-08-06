@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cctype>
 
 #include <ruvia/web/Controller.h>
@@ -32,13 +33,36 @@ inline bool isOptionalNetworkDevice(const ruvia::String& value) {
 
 inline bool isApn(const ruvia::String& value) {
     const auto text = value.view();
-    if (text.size() > 63)
+    if (text.empty())
+        return true;
+    if (text.size() > 100)
         return false;
-    for (const unsigned char character : text)
-        if (!std::isalnum(character) && character != '.' && character != '_' &&
-            character != '-')
+    std::size_t labelLength = 0;
+    for (std::size_t index = 0; index < text.size(); ++index) {
+        const auto character = static_cast<unsigned char>(text[index]);
+        if (character == '.') {
+            if (labelLength == 0 || labelLength > 63 || text[index - 1] == '-')
+                return false;
+            labelLength = 0;
+            continue;
+        }
+        if (!std::isalnum(character) && character != '-')
             return false;
-    return true;
+        if (labelLength == 0 && character == '-')
+            return false;
+        ++labelLength;
+    }
+    return labelLength != 0 && labelLength <= 63 && text.back() != '-';
+}
+
+inline bool isPinCode(const ruvia::String& value) {
+    const auto text = value.view();
+    if (text.empty())
+        return true;
+    if (text.size() < 4 || text.size() > 8)
+        return false;
+    return std::all_of(text.begin(), text.end(),
+                       [](const unsigned char character) { return std::isdigit(character); });
 }
 
 class EdgeListValidator final : public ruvia::Middleware<EdgeListValidator> {
@@ -144,10 +168,19 @@ class ModemControlValidator final : public ruvia::Middleware<ModemControlValidat
   public:
     RUVIA_VALIDATE_JSON(
         ModemControlBody,
-        RUVIA_RULE(action, RUVIA_REQUIRED("4G 操作不能为空"),
-                   RUVIA_ONE_OF("4G 操作无效", "set_apn", "redial")),
-        RUVIA_RULE(apn, RUVIA_CUSTOM("APN 只能包含字母、数字、点、下划线和连字符",
-                                     isApn)));
+        RUVIA_RULE(action, RUVIA_REQUIRED("移动网络操作不能为空"),
+                   RUVIA_ONE_OF("移动网络操作无效", "apply_profile", "redial")),
+        RUVIA_RULE(apn,
+                   RUVIA_CUSTOM("APN 必须是总长不超过 100、每段不超过 63 的字母数字域名",
+                                isApn)),
+        RUVIA_RULE_NAME("pdpType", pdpType,
+                        RUVIA_ONE_OF("PDP 类型无效", "IP", "IPV6", "IPV4V6")),
+        RUVIA_RULE_NAME("authType", authType,
+                        RUVIA_ONE_OF("认证方式无效", "none", "pap", "chap", "both")),
+        RUVIA_RULE(username, RUVIA_MAX(64, "认证用户名不能超过 64 个字符")),
+        RUVIA_RULE(password, RUVIA_MAX(128, "认证密码不能超过 128 个字符")),
+        RUVIA_RULE_NAME("pinCode", pinCode,
+                        RUVIA_CUSTOM("SIM PIN 必须是 4 - 8 位数字", isPinCode)));
 };
 
 class FirmwareDownloadValidator final : public ruvia::Middleware<FirmwareDownloadValidator> {

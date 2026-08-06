@@ -277,7 +277,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         Session result;
         result.nodeId = std::move(nodeId);
         protocol::uuidBytes(result.nodeId, result.nodeBytes.data());
-        protocol::uuidBytes(protocol::kBootstrapPlatformId, result.platformBytes.data());
+        protocol::uuidBytes(protocol::platformId(), result.platformBytes.data());
         result.epoch = randomEpoch();
         return result;
     }
@@ -301,7 +301,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
 
     static bool platformMatches(std::string_view value) {
         std::uint8_t expected[16]{};
-        return protocol::uuidBytes(protocol::kBootstrapPlatformId, expected) &&
+        return protocol::uuidBytes(protocol::platformId(), expected) &&
                value == protocol::bytes(expected, sizeof(expected));
     }
 
