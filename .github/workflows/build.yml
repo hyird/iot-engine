@@ -188,7 +188,17 @@ jobs:
         run: cmake --build build/ci --config "$BUILD_TYPE"
 
       - name: Test
-        run: ctest --test-dir build/ci --output-on-failure --build-config "$BUILD_TYPE"
+        run: |
+          set -o pipefail
+          if ctest --test-dir build/ci --output-on-failure --build-config "$BUILD_TYPE"; then
+            exit 0
+          fi
+          echo "CTest failed; collecting the GB28181 media process backtrace"
+          lldb --batch \
+            -o run \
+            -o "thread backtrace all" \
+            -- build/ci/gb28181-media-test || true
+          exit 1
 
       # UPX does not support the Mach-O executable format used by this artifact.
       - name: Package artifact
