@@ -442,15 +442,17 @@ FROM filtered)sql",
         const std::string heartbeat = packetJson(body.heartbeat());
         const std::string registration = packetJson(body.registration());
         const std::string remark = str(body.remark());
+        // Keep the optional edge-node parameter typed as text through NULLIF. If PostgreSQL
+        // infers it as uuid first, the empty-string sentinel is cast to uuid before NULLIF.
         (void)co_await c.db().execute(
             R"sql(
 WITH inserted_edge_link AS (
   INSERT INTO link(
     id, name, protocol, endpoint, status, created_by, execution, edge_node_id)
   SELECT $4::uuid, 'edge:' || $1::text, protocol, $6::jsonb, $10, $19::uuid,
-         'edge', $5::uuid
+         'edge', NULLIF($5::text, '')::uuid
   FROM protocol_config
-  WHERE id = $8::uuid AND deleted_at IS NULL AND NULLIF($5, '') IS NOT NULL
+  WHERE id = $8::uuid AND deleted_at IS NULL AND NULLIF($5::text, '') IS NOT NULL
   RETURNING id
 )
 INSERT INTO device(
