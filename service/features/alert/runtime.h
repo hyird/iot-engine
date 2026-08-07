@@ -68,11 +68,11 @@ public:
       co_return;
 
     const auto active = co_await metadata::activeDevices(context, messages);
-    std::vector<service::message::ParsedDeviceMessage> relevant;
+    std::vector<const service::message::ParsedDeviceMessage *> relevant;
     relevant.reserve(messages.size());
     for (std::size_t index = 0; index < messages.size(); ++index)
       if (index < active.size() && active[index])
-        relevant.push_back(messages[index]);
+        relevant.push_back(&messages[index]);
     if (relevant.empty())
       co_return;
 
@@ -86,11 +86,11 @@ public:
       if (sequence >= relevant.size())
         continue;
       evaluations[sequence].push_back(
-          evaluation(row, 1, relevant[sequence].valuesJson));
+          evaluation(row, 1, relevant[sequence]->valuesJson));
     }
     for (std::size_t sequence = 0; sequence < relevant.size(); ++sequence) {
       co_await applyEvaluations(context, evaluations[sequence],
-                                relevant[sequence].observedAtMs);
+                                relevant[sequence]->observedAtMs);
     }
   }
 
@@ -375,7 +375,7 @@ WITH rules AS (
   }
 
   static std::string telemetryEvaluationSql(
-      const std::vector<service::message::ParsedDeviceMessage> &messages,
+      const std::vector<const service::message::ParsedDeviceMessage *> &messages,
       std::vector<ruvia::DbValue> &params) {
     std::string sql =
         "WITH input(input_sequence, device_id, data, observed_at_ms) AS "
@@ -390,9 +390,9 @@ WITH rules AS (
              std::to_string(base + 1) + "::uuid,$" + std::to_string(base + 2) +
              "::jsonb,$" + std::to_string(base + 3) + "::bigint)";
       params.emplace_back(static_cast<std::int64_t>(index));
-      params.emplace_back(std::string_view(messages[index].deviceId));
-      params.emplace_back(std::string_view(messages[index].valuesJson));
-      params.emplace_back(messages[index].observedAtMs);
+      params.emplace_back(std::string_view(messages[index]->deviceId));
+      params.emplace_back(std::string_view(messages[index]->valuesJson));
+      params.emplace_back(messages[index]->observedAtMs);
     }
     sql += R"sql(), input_samples AS (
   SELECT input.*, previous.data AS previous_data
