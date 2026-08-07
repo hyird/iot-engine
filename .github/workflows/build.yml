@@ -190,7 +190,9 @@ jobs:
       - name: Test
         run: |
           set -o pipefail
-          if ctest --test-dir build/ci --output-on-failure --build-config "$BUILD_TYPE"; then
+          if ctest --test-dir build/ci --output-on-failure --build-config "$BUILD_TYPE" && \
+             ctest --test-dir build/ci --output-on-failure --build-config "$BUILD_TYPE" \
+               --repeat until-fail:20 -R '^gb28181-media$'; then
             exit 0
           fi
           echo "CTest failed; collecting the GB28181 media process backtrace"
