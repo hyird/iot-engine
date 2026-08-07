@@ -31,7 +31,7 @@ SELECT DISTINCT rule.device_id::text,
        )::text
 FROM alert_rule rule
 WHERE rule.deleted_at IS NULL AND rule.status = 'enabled'
-ORDER BY rule.device_id)sql");
+ORDER BY 1)sql");
     bool offline = false;
     std::vector<std::string> arguments;
     arguments.reserve(rows.rows().size() + 1);
