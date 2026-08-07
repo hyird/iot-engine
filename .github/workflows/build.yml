@@ -125,7 +125,7 @@ jobs:
 
   macos_build:
     name: macOS build
-    runs-on: macos-15
+    runs-on: macos-26
     env:
       CC: /usr/bin/clang
       CXX: /usr/bin/clang++
@@ -173,6 +173,7 @@ jobs:
         run: |
           cmake -S . -B build/ci -G Ninja \
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
             -DCMAKE_COMPILE_WARNING_AS_ERROR=ON \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
 
