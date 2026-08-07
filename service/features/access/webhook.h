@@ -311,7 +311,7 @@ public:
                           std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
-            const auto readRedis = context.redis(message::redis::kBlockingRedisAlias);
+            const auto readRedis = context.redis();
             co_await message::redis::ensureGroup(redis, event::kStream, kGroup);
             ready->set_value();
             bool recovering = true;

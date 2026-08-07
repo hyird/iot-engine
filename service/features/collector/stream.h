@@ -25,10 +25,9 @@ namespace service::message::redis {
 using ruvia::RedisHandle;
 using ruvia::RedisValue;
 
-// Blocking readers use a separate Redis pool from ACK, publish, and state commands.
-// Service consumers use Ruvia's typed cancellable BLOCK 0 API; Collector owns its
-// reader connection and closes that connection to cancel its indefinite wait.
-inline constexpr std::string_view kBlockingRedisAlias = "stream-wait";
+// Ruvia routes blocking commands to the alias's isolated blocking pool. Collector's
+// worker-local client still owns a dedicated reader connection and closes it to cancel
+// its indefinite wait.
 
 // ---- 通用命令封装：把 std::string 参数列表转成 string_view span 后 co_await ----
 

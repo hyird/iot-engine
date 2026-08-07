@@ -1,6 +1,5 @@
 #pragma once
 
-#include <chrono>
 #include <memory_resource>
 #include <span>
 #include <string_view>
@@ -10,21 +9,21 @@
 #include <ruvia/web/detail/redis/RedisRegistry.h>
 #include <ruvia/web/redis/Redis.h>
 
-#include "service/features/collector/timer.h"
-
 namespace service::collector {
 
 // Collector's protocol actor already owns its EventLoop and keeps Redis operations
 // inside the same structured TaskScope. This worker-affine adapter provides one
 // connection for business commands and one dedicated connection for blocking reads.
+// Passing the owning WorkerHandle lets Ruvia arm exact deadline timers instead of
+// relying on a periodic deadline scan.
 class Client final {
   public:
     Client(asio::io_context& ioContext, ruvia::RedisConfig config,
-           Timer& scheduler)
-        : resource_(), scheduler_(scheduler),
+           const ruvia::WorkerHandle& worker)
+        : resource_(),
           pool_(ioContext,
                 ruvia::detail::RedisConfigStorage(oneConnection(std::move(config)), &resource_),
-                &resource_) {}
+                1, &resource_, &worker) {}
 
     Client(const Client&) = delete;
     Client& operator=(const Client&) = delete;
@@ -33,16 +32,12 @@ class Client final {
 
     [[nodiscard]] ruvia::Task<void> connect() {
         co_await pool_.connect();
-        if (pool_.hasAnyTimeout())
-            scheduleDeadlineScan();
     }
 
     void close() noexcept {
         if (closed_)
             return;
         closed_ = true;
-        if (deadlineScanToken_ != 0)
-            scheduler_.cancel(deadlineScanToken_);
         pool_.closeNow();
     }
 
@@ -76,23 +71,8 @@ class Client final {
         return config;
     }
 
-    void scheduleDeadlineScan() {
-        if (closed_)
-            return;
-        deadlineScanToken_ = scheduler_.scheduleAfter(kScanInterval, [this] {
-            if (closed_)
-                return;
-            pool_.scanDeadlines(std::chrono::steady_clock::now());
-            scheduleDeadlineScan();
-        });
-    }
-
-    static constexpr auto kScanInterval = std::chrono::milliseconds(25);
-
     mutable std::pmr::unsynchronized_pool_resource resource_;
-    Timer& scheduler_;
     mutable ruvia::detail::RedisPool pool_;
-    Timer::Token deadlineScanToken_ = 0;
     bool closed_ = false;
 };
 

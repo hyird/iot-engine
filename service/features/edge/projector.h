@@ -66,7 +66,7 @@ class Projector final {
                           std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
-            const auto readRedis = context.redis(service::message::redis::kBlockingRedisAlias);
+            const auto readRedis = context.redis();
             co_await service::message::redis::ensureGroup(
                 redis, kEdgeIngressStream, kEdgeIngressGroup);
             co_await hydrateAuth(context);

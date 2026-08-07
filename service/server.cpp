@@ -305,12 +305,10 @@ int main(int argc, char *argv[])
                   << ", gb28181=" << gb28181WorkerCount << '\n';
         auto serviceRedis = redisConfig(app.env());
         auto collectorRedis = serviceRedis;
-        auto blockingRedis = serviceRedis;
         // Each worker has telemetry and command-result readers. Edge ingress stays on the
         // first worker and webhook delivery moves to the last, so a multi-worker deployment
         // needs at most three blocking sockets per worker. A single worker still needs four.
-        blockingRedis.poolSizePerWorker = serviceWorkerCount == 1 ? 4 : 3;
-        blockingRedis.usage = ruvia::RedisPoolUsage::kBlocking;
+        serviceRedis.blockingPoolSizePerWorker = serviceWorkerCount == 1 ? 4 : 3;
         auto collector = std::make_shared<service::collector::Runtime>();
         auto telemetry = std::make_shared<service::telemetry::PersistenceRuntime>();
         auto commandResults = std::make_shared<service::command::ResultRuntime>();
@@ -321,8 +319,6 @@ int main(int argc, char *argv[])
         auto alerts = std::make_shared<service::alert::Runtime>();
         app.useDb(std::move(db))
             .useRedis(std::move(serviceRedis))
-            .useRedis(service::message::redis::kBlockingRedisAlias,
-                      std::move(blockingRedis))
             .onStart([collector, telemetry, commandResults, openWebhooks, configReconciler,
                       edgeProjector, gb28181Projector, alerts,
                       collectorRedis = std::move(collectorRedis),

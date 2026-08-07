@@ -46,10 +46,12 @@ class Worker final {
     Worker(ruvia::EventLoop loop, ruvia::RedisConfig redisConfig,
                       std::size_t workerIndex, std::size_t workerCount,
                       ServerSocketRouter serverSocketRouter)
-        : loop_(std::move(loop)), resource_(), scope_(loop_.handle(), &resource_),
+        : loop_(std::move(loop)), workerHandle_(loop_.handle()), resource_(),
+          scope_(workerHandle_, &resource_),
           scheduler_(loop_.ioContext()),
-          redis_(loop_.ioContext(), generalRedis(redisConfig), scheduler_),
-          blockingRedis_(loop_.ioContext(), blockingRedis(std::move(redisConfig)), scheduler_),
+          redis_(loop_.ioContext(), redisConfig, workerHandle_),
+          blockingRedis_(loop_.ioContext(), blockingRedisConfig(std::move(redisConfig)),
+                         workerHandle_),
           engine_(protocols()),
           tcp_(
               loop_.ioContext(), scheduler_, workerIndex, workerCount,
@@ -113,13 +115,10 @@ class Worker final {
     }
 
   private:
-    static ruvia::RedisConfig generalRedis(ruvia::RedisConfig config) {
-        config.usage = ruvia::RedisPoolUsage::kGeneral;
-        return config;
-    }
-
-    static ruvia::RedisConfig blockingRedis(ruvia::RedisConfig config) {
-        config.usage = ruvia::RedisPoolUsage::kBlocking;
+    static ruvia::RedisConfig blockingRedisConfig(ruvia::RedisConfig config) {
+        // XREADGROUP BLOCK 0 is cancelled by closeNow() during worker shutdown.
+        // Do not wake and reconnect this dedicated reader on a command timer.
+        config.commandTimeout = std::nullopt;
         return config;
     }
 
@@ -1515,6 +1514,7 @@ return 1
     static constexpr std::size_t kDeadLetterCapacity = 1000;
 
     ruvia::EventLoop loop_;
+    ruvia::WorkerHandle workerHandle_;
     std::pmr::unsynchronized_pool_resource resource_;
     ruvia::TaskScope scope_;
     Timer scheduler_;

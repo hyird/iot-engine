@@ -184,7 +184,7 @@ class PersistenceRuntime final {
                           std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
-            const auto readRedis = context.redis(message::redis::kBlockingRedisAlias);
+            const auto readRedis = context.redis();
             std::vector<std::string> streams;
             std::map<std::string, std::size_t, std::less<>> streamPartitions;
             for (auto partition = index; partition < collectorWorkerCount_;
