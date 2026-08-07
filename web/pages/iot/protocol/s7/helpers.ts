@@ -3,7 +3,7 @@
  */
 
 import type { CSSProperties } from 'react';
-import type { S7 } from '../protocol.types';
+import type { Protocol, S7 } from '../protocol.types';
 
 export type DeviceTypeFormValues = {
     deviceType: string;
@@ -187,6 +187,28 @@ export const getConnectionFormValues = (plcModel: S7.PlcModel, connection?: S7.C
         probeMode: connection?.probeMode ?? 'STANDARD',
         handshakeTimeout: connection?.handshakeTimeout ?? 5000,
         directProbeTimeout: connection?.directProbeTimeout ?? 5000,
+    };
+};
+
+/** 设备类型表单默认值与编辑回填值。 */
+export const getDeviceTypeFormValues = (data?: Protocol.Item): DeviceTypeFormValues => {
+    const config = data?.config as S7.Config | undefined;
+    const plcModel = config?.plcModel ?? 'S7-1200';
+    const numberOrDefault = (value: unknown, fallback: number) => {
+        const numericValue = Number(value);
+        return Number.isFinite(numericValue) ? numericValue : fallback;
+    };
+
+    return {
+        deviceType: data?.name ?? '',
+        plcModel,
+        ...getConnectionFormValues(plcModel, config?.connection),
+        pollInterval: numberOrDefault(config?.pollInterval, 5),
+        storageInterval: numberOrDefault(config?.storageInterval, 1),
+        commandFastReadDuration: numberOrDefault(config?.commandFastReadDuration, 60),
+        commandFastReadInterval: numberOrDefault(config?.commandFastReadInterval, 1),
+        enabled: data?.enabled ?? true,
+        remark: data?.remark ?? '',
     };
 };
 

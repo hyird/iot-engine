@@ -24,7 +24,7 @@ import {
     Tooltip,
     Tree,
 } from 'antd';
-import { type ReactNode, useCallback, useMemo, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import { FormModal } from '@/components/FormModal';
 import { PageContainer } from '@/components/PageContainer';
 import { usePermissions } from '@/hooks/usePermission';
@@ -40,7 +40,7 @@ import {
     useProtocolConfigList,
     useProtocolConfigSave,
 } from './protocol.service';
-import type { S7 } from './protocol.types';
+import type { Protocol, S7 } from './protocol.types';
 import {
     SortableGroupItemList,
     SortableGroupSectionFrame,
@@ -64,6 +64,7 @@ import {
     getConnectionModeTip,
     getConnectionTypeLabel,
     getDataTypeSize,
+    getDeviceTypeFormValues,
     getPlcPreset,
     inferConnectionMode,
     normalizeAreaTypeForPlcModel,
@@ -95,6 +96,7 @@ const S7ConfigPage = () => {
     const [selectedTypeId, setSelectedTypeId] = useState<string>();
     const [deviceTypeModalOpen, setDeviceTypeModalOpen] = useState(false);
     const [editingDeviceType, setEditingDeviceType] = useState<boolean>(false);
+    const [editingDeviceTypeItem, setEditingDeviceTypeItem] = useState<Protocol.Item>();
     const [createForm] = Form.useForm<DeviceTypeFormValues>();
     const [areaModalOpen, setAreaModalOpen] = useState(false);
     const [editingAreaId, setEditingAreaId] = useState<string | null>(null);
@@ -123,6 +125,12 @@ const S7ConfigPage = () => {
         () => types.find((t) => t.id === activeTypeId),
         [activeTypeId, types]
     );
+
+    useEffect(() => {
+        if (!deviceTypeModalOpen) return;
+        createForm.resetFields();
+        createForm.setFieldsValue(getDeviceTypeFormValues(editingDeviceTypeItem));
+    }, [createForm, deviceTypeModalOpen, editingDeviceTypeItem]);
 
     const activeConfig = (activeType?.config as S7.Config) ?? null;
     const activeAreas = activeConfig?.areas ?? [];
@@ -288,39 +296,15 @@ const S7ConfigPage = () => {
 
     const handleOpenCreateType = () => {
         setEditingDeviceType(false);
+        setEditingDeviceTypeItem(undefined);
         setDeviceTypeModalOpen(true);
-        createForm.setFieldsValue({
-            deviceType: '',
-            plcModel: 'S7-1200',
-            ...getConnectionFormValues('S7-1200'),
-            pollInterval: 5,
-            storageInterval: 1,
-            commandFastReadDuration: 60,
-            commandFastReadInterval: 1,
-            enabled: true,
-            remark: '',
-        });
     };
 
     const handleOpenEditType = () => {
         if (!activeType) return;
-        const currentConfig = (activeType.config as S7.Config) ?? defaultConfig();
         setEditingDeviceType(true);
+        setEditingDeviceTypeItem(activeType);
         setDeviceTypeModalOpen(true);
-        createForm.setFieldsValue({
-            deviceType: activeType.name,
-            plcModel: currentConfig.plcModel ?? 'S7-1200',
-            ...getConnectionFormValues(
-                currentConfig.plcModel ?? 'S7-1200',
-                currentConfig.connection
-            ),
-            pollInterval: currentConfig.pollInterval ?? 5,
-            storageInterval: currentConfig.storageInterval ?? 1,
-            commandFastReadDuration: currentConfig.commandFastReadDuration ?? 60,
-            commandFastReadInterval: currentConfig.commandFastReadInterval ?? 1,
-            enabled: activeType.enabled,
-            remark: activeType.remark,
-        });
     };
 
     const handlePlcModelChange = (plcModel: S7.PlcModel) => {
@@ -414,6 +398,7 @@ const S7ConfigPage = () => {
         }
         setDeviceTypeModalOpen(false);
         setEditingDeviceType(false);
+        setEditingDeviceTypeItem(undefined);
         createForm.resetFields();
         await refetch();
     };
@@ -678,33 +663,16 @@ const S7ConfigPage = () => {
                 onCancel={() => {
                     setDeviceTypeModalOpen(false);
                     setEditingDeviceType(false);
+                    setEditingDeviceTypeItem(undefined);
                     createForm.resetFields();
                 }}
                 onOk={handleSaveDeviceType}
-                destroyOnHidden
+                forceRender
             >
                 <Form
                     form={createForm}
                     layout="vertical"
-                    initialValues={{
-                        deviceType: '',
-                        plcModel: 'S7-1200',
-                        connectionMode: 'RACK_SLOT',
-                        connectionType: 'PG',
-                        rack: 0,
-                        slot: 1,
-                        localTSAP: '0100',
-                        remoteTSAP: '0101',
-                        probeMode: 'STANDARD',
-                        handshakeTimeout: 5000,
-                        directProbeTimeout: 5000,
-                        pollInterval: 5,
-                        storageInterval: 1,
-                        commandFastReadDuration: 60,
-                        commandFastReadInterval: 1,
-                        enabled: true,
-                        remark: '',
-                    }}
+                    initialValues={getDeviceTypeFormValues()}
                 >
                     <Form.Item
                         name="deviceType"

@@ -3,15 +3,14 @@
  */
 
 import { Flex, Form, Input, InputNumber, Select, Space, Switch } from 'antd';
-import { forwardRef, useImperativeHandle, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useState } from 'react';
 import { FormModal } from '@/components/FormModal';
 import type { useProtocolConfigSave } from '../protocol.service';
 import type { Modbus, Protocol } from '../protocol.types';
 import {
     ByteOrderOptions,
-    DEFAULT_PACKET_MAX_QUANTITY,
-    DEFAULT_PACKET_MERGE_GAP,
     type DeviceTypeModalRef,
+    getDeviceTypeFormValues,
     normalizeModbusRegisters,
     normalizePacketConfig,
     numericInputClassName,
@@ -35,37 +34,15 @@ export const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalPro
             open(m, data) {
                 setMode(m);
                 setCurrent(data);
-                form.resetFields();
-                if (data) {
-                    const config = data.config as Modbus.Config;
-                    const packet = normalizePacketConfig(config?.packet);
-                    form.setFieldsValue({
-                        name: data.name,
-                        enabled: data.enabled,
-                        byteOrder: config?.byteOrder || 'BIG_ENDIAN',
-                        readInterval: Number(config?.readInterval) || 1,
-                        storageInterval: Number(config?.storageInterval) || 1,
-                        commandFastReadDuration: Number(config?.commandFastReadDuration ?? 60),
-                        commandFastReadInterval: Number(config?.commandFastReadInterval ?? 1),
-                        packetMergeGap: packet.mergeGap,
-                        packetMaxQuantity: packet.maxQuantity,
-                        remark: data.remark,
-                    });
-                } else {
-                    form.setFieldsValue({
-                        enabled: true,
-                        byteOrder: 'BIG_ENDIAN',
-                        readInterval: 1,
-                        storageInterval: 1,
-                        commandFastReadDuration: 60,
-                        commandFastReadInterval: 1,
-                        packetMergeGap: DEFAULT_PACKET_MERGE_GAP,
-                        packetMaxQuantity: DEFAULT_PACKET_MAX_QUANTITY,
-                    });
-                }
                 setOpen(true);
             },
         }));
+
+        useEffect(() => {
+            if (!open) return;
+            form.resetFields();
+            form.setFieldsValue(getDeviceTypeFormValues(current));
+        }, [current, form, open]);
 
         const handleOk = async () => {
             const values = await form.validateFields();
@@ -105,7 +82,11 @@ export const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalPro
                 confirmLoading={saveMutation.isPending}
                 forceRender
             >
-                <Form form={form} layout="vertical">
+                <Form
+                    form={form}
+                    layout="vertical"
+                    initialValues={getDeviceTypeFormValues()}
+                >
                     <Flex gap={16} align="start">
                         <Form.Item
                             label="名称"

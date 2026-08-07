@@ -3,7 +3,7 @@
  */
 
 import type { useProtocolConfigSave } from '../protocol.service';
-import type { SL651 } from '../protocol.types';
+import type { Protocol, SL651 } from '../protocol.types';
 
 /** 编码类型列表 */
 export const EncodeList: SL651.EncodeType[] = ['BCD', 'TIME_YYMMDDHHMMSS', 'JPEG', 'DICT', 'HEX'];
@@ -16,6 +16,20 @@ export const generateId = (): string =>
 
 /** SaveMutation 类型（避免每个 Modal 重复定义） */
 export type SaveMutation = ReturnType<typeof useProtocolConfigSave>;
+
+/** 设备类型表单默认值与编辑回填值。 */
+export const getDeviceTypeFormValues = (data?: Protocol.Item) => {
+    const config = data?.config as SL651.Config | undefined;
+    const storageInterval = Number(config?.storageInterval);
+
+    return {
+        name: data?.name ?? '',
+        enabled: data?.enabled ?? true,
+        responseMode: config?.responseMode ?? 'M1',
+        storageInterval: Number.isFinite(storageInterval) ? storageInterval : 1,
+        remark: data?.remark ?? '',
+    };
+};
 
 /** 表单中的条件数据（可能不完整） */
 export interface FormCondition {

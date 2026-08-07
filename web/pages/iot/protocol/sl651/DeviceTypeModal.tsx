@@ -3,10 +3,10 @@
  */
 
 import { Form, Input, InputNumber, Select, Switch } from 'antd';
-import { forwardRef, useImperativeHandle, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useState } from 'react';
 import { FormModal } from '@/components/FormModal';
 import type { Protocol, SL651 } from '../protocol.types';
-import type { SaveMutation } from './shared';
+import { getDeviceTypeFormValues, type SaveMutation } from './shared';
 
 export interface DeviceTypeModalRef {
     open: (mode: 'create' | 'edit', data?: Protocol.Item) => void;
@@ -28,22 +28,15 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
             open(m, data) {
                 setMode(m);
                 setCurrent(data);
-                form.resetFields();
-                const config = data?.config as SL651.Config | undefined;
-                form.setFieldsValue(
-                    data
-                        ? {
-                              name: data.name,
-                              enabled: data.enabled,
-                              responseMode: config?.responseMode || 'M1',
-                              storageInterval: config?.storageInterval ?? 1,
-                              remark: data.remark,
-                          }
-                        : { enabled: true, responseMode: 'M1', storageInterval: 1 }
-                );
                 setOpen(true);
             },
         }));
+
+        useEffect(() => {
+            if (!open) return;
+            form.resetFields();
+            form.setFieldsValue(getDeviceTypeFormValues(current));
+        }, [current, form, open]);
 
         const handleOk = async () => {
             const values = await form.validateFields();
@@ -75,7 +68,7 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
                 confirmLoading={saveMutation.isPending}
                 forceRender
             >
-                <Form form={form} layout="vertical">
+                <Form form={form} layout="vertical" initialValues={getDeviceTypeFormValues()}>
                     <Form.Item
                         label="名称"
                         name="name"

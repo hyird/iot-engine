@@ -37,6 +37,30 @@ export const ByteOrderOptions: { value: Modbus.ByteOrder; label: string }[] = [
 export const DEFAULT_PACKET_MERGE_GAP = 100;
 export const DEFAULT_PACKET_MAX_QUANTITY = 125;
 
+/** 设备类型表单的默认值，也用于兼容缺少新字段的历史配置。 */
+export const getDeviceTypeFormValues = (data?: Protocol.Item) => {
+    const config = data?.config as Modbus.Config | undefined;
+    const packet = normalizePacketConfig(config?.packet);
+
+    const numberOrDefault = (value: unknown, fallback: number) => {
+        const numericValue = Number(value);
+        return Number.isFinite(numericValue) ? numericValue : fallback;
+    };
+
+    return {
+        name: data?.name ?? '',
+        enabled: data?.enabled ?? true,
+        byteOrder: config?.byteOrder ?? 'BIG_ENDIAN',
+        readInterval: numberOrDefault(config?.readInterval, 1),
+        storageInterval: numberOrDefault(config?.storageInterval, 1),
+        commandFastReadDuration: numberOrDefault(config?.commandFastReadDuration, 60),
+        commandFastReadInterval: numberOrDefault(config?.commandFastReadInterval, 1),
+        packetMergeGap: packet.mergeGap,
+        packetMaxQuantity: packet.maxQuantity,
+        remark: data?.remark ?? '',
+    };
+};
+
 export const pairedFormItemClassName = 'min-w-0 flex-1';
 export const numericInputClassName = 'min-w-0 flex-1';
 export const numericUnitClassName = 'pointer-events-none !w-20 text-center';
