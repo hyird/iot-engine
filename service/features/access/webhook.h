@@ -34,7 +34,9 @@
 #include "service/common/http.h"
 #include "service/common/uuid.h"
 #include "service/features/access/contract.h"
+#include "service/features/access/audit.h"
 #include "service/features/access/event.h"
+#include "service/features/access/session.h"
 #include "service/features/collector/stream.h"
 #include "service/features/event/config.h"
 #include "service/features/telemetry/latest.h"
@@ -292,7 +294,8 @@ public:
     static constexpr std::string_view kDeliveryResultStream =
         "iot:channel:open-access:delivery-result";
     static constexpr std::size_t kBatchSize = 100;
-    static constexpr std::size_t kTargetConcurrency = 8;
+    static constexpr std::size_t kEventConcurrency = 4;
+    static constexpr std::size_t kTargetConcurrency = 4;
     static constexpr std::int64_t kDeliveryProgressTtlSeconds = 7 * 24 * 60 * 60;
 
     struct Target final {
@@ -339,9 +342,11 @@ public:
             const auto redis = context.redis();
             const std::vector<std::string> streams{
                 std::string(service::message::kWebhookCatalogChangesStream),
-                std::string(kDeliveryResultStream), std::string(event::kStream)};
+                std::string(kDeliveryResultStream), std::string(audit::kStream),
+                std::string(event::kStream)};
             for (const auto& stream : streams)
                 co_await message::redis::ensureGroup(redis, stream, kGroup);
+            co_await session::refresh(context);
             catalog_ = co_await loadCatalog(context);
             ready->set_value();
             bool recovering = true;
@@ -380,8 +385,10 @@ public:
                         for (const auto& message : batch.messages)
                             reloadCatalog = reloadCatalog || catalogChange(message);
                     }
-                    if (reloadCatalog)
+                    if (reloadCatalog) {
+                        co_await session::refresh(context);
                         catalog_ = co_await loadCatalog(context);
+                    }
                     for (const auto& batch : batches) {
                         if (batch.stream != service::message::kWebhookCatalogChangesStream)
                             continue;
@@ -396,13 +403,16 @@ public:
                             redis, batch.stream, kGroup, batch.messages);
                     }
                     for (const auto& batch : batches) {
+                        if (batch.stream != audit::kStream)
+                            continue;
+                        co_await persistAudits(context, batch.messages);
+                        co_await message::redis::acknowledgeAndDeleteMany(
+                            redis, batch.stream, kGroup, batch.messages);
+                    }
+                    for (const auto& batch : batches) {
                         if (batch.stream != event::kStream)
                             continue;
-                        for (const auto& message : batch.messages) {
-                            co_await deliver(context, message);
-                            co_await message::redis::acknowledgeAndDelete(
-                                redis, event::kStream, kGroup, message.id);
-                        }
+                        co_await deliverEvents(context, batch.messages);
                     }
                 } catch (const std::exception& error) {
                     std::cerr << "open webhook dispatch failed: " << error.what() << '\n';
@@ -429,6 +439,86 @@ public:
         const auto aggregate = message.get("aggregate");
         return aggregate == "access_key" || aggregate == "webhook" ||
                aggregate == "device" || aggregate == "protocol";
+    }
+
+    struct DeliveryAttempt final {
+        bool succeeded{false};
+        std::string error;
+    };
+
+    struct DeviceEventQueue final {
+        std::vector<std::size_t> indexes;
+        std::size_t next{0};
+        bool blocked{false};
+    };
+
+    ruvia::Task<void> deliverCaptured(ruvia::WebWorkerContext& context,
+                                      const message::StreamMessage& message,
+                                      DeliveryAttempt& attempt) {
+        try {
+            co_await deliver(context, message);
+            attempt.succeeded = true;
+        } catch (const std::exception& error) {
+            attempt.error = error.what();
+        } catch (...) {
+            attempt.error = "unknown webhook delivery failure";
+        }
+    }
+
+    ruvia::Task<void> deliverEvents(
+        ruvia::WebWorkerContext& context,
+        const std::vector<message::StreamMessage>& messages) {
+        if (messages.empty())
+            co_return;
+        std::map<std::string, DeviceEventQueue, std::less<>> queues;
+        for (std::size_t index = 0; index < messages.size(); ++index) {
+            auto key = std::string(messages[index].get("device_id"));
+            if (key.empty())
+                key = "invalid:" + std::to_string(index);
+            queues[key].indexes.push_back(index);
+        }
+
+        std::vector<message::StreamMessage> completed;
+        completed.reserve(messages.size());
+        std::string firstError;
+        while (true) {
+            std::vector<DeviceEventQueue*> selected;
+            selected.reserve(kEventConcurrency);
+            for (auto& [deviceId, queue] : queues) {
+                (void)deviceId;
+                if (!queue.blocked && queue.next < queue.indexes.size())
+                    selected.push_back(&queue);
+                if (selected.size() == kEventConcurrency)
+                    break;
+            }
+            if (selected.empty())
+                break;
+
+            std::vector<DeliveryAttempt> attempts(selected.size());
+            ruvia::TaskScope scope(context.worker(), context.resource());
+            for (std::size_t index = 0; index < selected.size(); ++index) {
+                const auto messageIndex = selected[index]->indexes[selected[index]->next];
+                scope.spawn(deliverCaptured(context, messages[messageIndex], attempts[index]));
+            }
+            co_await scope.join();
+            for (std::size_t index = 0; index < selected.size(); ++index) {
+                auto& queue = *selected[index];
+                const auto messageIndex = queue.indexes[queue.next];
+                if (attempts[index].succeeded) {
+                    completed.push_back(messages[messageIndex]);
+                    ++queue.next;
+                } else {
+                    queue.blocked = true;
+                    if (firstError.empty())
+                        firstError = std::move(attempts[index].error);
+                }
+            }
+        }
+        if (!completed.empty())
+            co_await message::redis::acknowledgeAndDeleteMany(
+                context.redis(), event::kStream, kGroup, completed);
+        if (!firstError.empty())
+            throw std::runtime_error(firstError);
     }
 
     static ruvia::Task<Catalog> loadCatalog(ruvia::WebWorkerContext& context) {
@@ -929,6 +1019,79 @@ SELECT log_id, access_key_id, webhook_id, 'push', 'webhook', event_type, status,
        'POST', target, NULLIF(http_status, 0), device_id, NULLIF(device_code, ''),
        NULLIF(message, ''), request_payload, response_payload
 FROM incoming
+ON CONFLICT (id) DO NOTHING)sql";
+        (void)co_await context.db().execute(sql, params);
+    }
+
+    static ruvia::Task<void> persistAudits(
+        ruvia::WebWorkerContext& context,
+        const std::vector<message::StreamMessage>& messages) {
+        if (messages.empty())
+            co_return;
+        std::string sql = R"sql(
+WITH incoming(
+  sequence, log_id, access_key_id, action, http_method, target, request_ip,
+  http_status, device_id, request_payload, response_payload, used_at_ms) AS (VALUES )sql";
+        std::vector<ruvia::DbValue> params;
+        params.reserve(messages.size() * 12);
+        for (std::size_t index = 0; index < messages.size(); ++index) {
+            if (index != 0)
+                sql.push_back(',');
+            const auto base = params.size() + 1;
+            sql += "($" + std::to_string(base) + "::bigint,$" +
+                   std::to_string(base + 1) + "::uuid,$" +
+                   std::to_string(base + 2) + "::uuid,$" +
+                   std::to_string(base + 3) + "::text,$" +
+                   std::to_string(base + 4) + "::text,$" +
+                   std::to_string(base + 5) + "::text,$" +
+                   std::to_string(base + 6) + "::text,$" +
+                   std::to_string(base + 7) + "::integer,NULLIF($" +
+                   std::to_string(base + 8) + ", '')::uuid,$" +
+                   std::to_string(base + 9) + "::jsonb,$" +
+                   std::to_string(base + 10) + "::jsonb,$" +
+                   std::to_string(base + 11) + "::bigint)";
+            const auto httpStatus = service::common::parseInt64(
+                std::optional<std::string_view>(messages[index].get("http_status")));
+            const auto usedAt = service::common::parseInt64(
+                std::optional<std::string_view>(messages[index].get("used_at_ms")));
+            params.emplace_back(static_cast<std::int64_t>(index));
+            params.emplace_back(messages[index].get("log_id"));
+            params.emplace_back(messages[index].get("access_key_id"));
+            params.emplace_back(messages[index].get("action"));
+            params.emplace_back(messages[index].get("http_method"));
+            params.emplace_back(messages[index].get("target"));
+            params.emplace_back(messages[index].get("request_ip"));
+            params.emplace_back(httpStatus.value_or(0));
+            params.emplace_back(messages[index].get("device_id"));
+            params.emplace_back(messages[index].get("request_payload"));
+            params.emplace_back(messages[index].get("response_payload"));
+            params.emplace_back(usedAt.value_or(service::message::utcNowMilliseconds()));
+        }
+        sql += R"sql(), latest_usage AS MATERIALIZED (
+  SELECT DISTINCT ON (access_key_id)
+         access_key_id, request_ip, used_at_ms
+  FROM incoming
+  ORDER BY access_key_id, used_at_ms DESC, sequence DESC
+), usage_updated AS (
+  UPDATE open_access_key key
+  SET last_used_at = to_timestamp(latest.used_at_ms::double precision / 1000.0),
+      last_used_ip = NULLIF(latest.request_ip, '')
+  FROM latest_usage latest
+  WHERE key.id = latest.access_key_id
+    AND (key.last_used_at IS NULL OR key.last_used_at <=
+         to_timestamp(latest.used_at_ms::double precision / 1000.0))
+  RETURNING key.id
+)
+INSERT INTO open_access_log(
+  id, access_key_id, direction, action, status, http_method, target,
+  request_ip, http_status, device_id, request_payload, response_payload)
+SELECT incoming.log_id, incoming.access_key_id, 'pull', incoming.action, 'success',
+       NULLIF(incoming.http_method, ''), NULLIF(incoming.target, ''),
+       NULLIF(incoming.request_ip, ''), NULLIF(incoming.http_status, 0),
+       incoming.device_id, incoming.request_payload, incoming.response_payload
+FROM incoming
+CROSS JOIN (SELECT count(*) AS updated_count FROM usage_updated) update_barrier
+WHERE update_barrier.updated_count >= 0
 ON CONFLICT (id) DO NOTHING)sql";
         (void)co_await context.db().execute(sql, params);
     }

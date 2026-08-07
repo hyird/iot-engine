@@ -90,6 +90,21 @@ struct DeviceDefinition {
     bool operator==(const DeviceDefinition&) const = default;
 };
 
+struct RealtimePointDefinition {
+    std::string id;
+    std::string name;
+    std::string unit;
+    bool operator==(const RealtimePointDefinition&) const = default;
+};
+
+struct RealtimeDeviceDefinition {
+    std::string id;
+    std::string code;
+    std::string name;
+    std::vector<RealtimePointDefinition> points;
+    bool operator==(const RealtimeDeviceDefinition&) const = default;
+};
+
 struct DtuDefinition {
     std::string key;
     std::string linkId;
@@ -102,6 +117,7 @@ struct DtuDefinition {
 struct RuntimeSnapshot {
     std::vector<LinkDefinition> links;
     std::vector<DeviceDefinition> devices;
+    std::vector<RealtimeDeviceDefinition> realtimeDevices;
 };
 
 } // namespace service::collector

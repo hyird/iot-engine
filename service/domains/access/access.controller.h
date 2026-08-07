@@ -12,6 +12,7 @@
 #include "service/features/command/service.h"
 #include "service/domains/device/device.types.h"
 #include "service/domains/access/access.service.h"
+#include "service/features/access/audit.h"
 
 namespace service::access {
 
@@ -131,9 +132,9 @@ class AccessController final : public ruvia::Controller<AccessController> {
                                      std::string_view requestPayload = "{}",
                                      std::string_view responsePayload = "{}") {
         try {
-            co_await accessService().writeLog(
-                c, "pull", action, "success", session.id, {}, {}, c.req().method(), c.req().path(),
-                clientIp(c), 200, deviceId, {}, {}, requestPayload, responsePayload);
+            co_await service::access::audit::publish(
+                c.redis(), action, session.id, c.req().method(), c.req().path(),
+                clientIp(c), 200, deviceId, requestPayload, responsePayload);
         } catch (...) {
         }
     }

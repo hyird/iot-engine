@@ -20,6 +20,8 @@
 #include "service/domains/device/device.service.h"
 #include "service/domains/access/access.schema.h"
 #include "service/domains/access/access.types.h"
+#include "service/features/collector/config.h"
+#include "service/features/access/session.h"
 #include "service/features/event/config.h"
 #include "service/features/telemetry/latest.h"
 
@@ -101,6 +103,7 @@ VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb,
         co_await replaceDevices(transaction, id, devices);
         co_await transaction.commit();
         co_await service::message::publishConfigEvent(c, "access_key", "created", id);
+        co_await service::access::session::refresh(c);
 
         co_return "{\"id\":" + jsonQuoted(id) + ",\"name\":" + jsonQuoted(name) +
             ",\"status\":" + jsonQuoted(status) + ",\"scopes\":" + scopeJson +
@@ -148,6 +151,7 @@ WHERE id = $1::uuid AND deleted_at IS NULL)sql",
             co_await replaceDevices(transaction, id, devices);
         co_await transaction.commit();
         co_await service::message::publishConfigEvent(c, "access_key", "updated", id);
+        co_await service::access::session::refresh(c);
     }
 
     ruvia::Task<std::string> rotateKey(ruvia::Context& c, std::string_view id) {
@@ -159,7 +163,9 @@ WHERE id = $1::uuid AND deleted_at IS NULL)sql",
         (void)co_await c.db().execute(R"sql(
 UPDATE open_access_key SET access_key_hash = $2, access_key_prefix = $3, updated_at = NOW()
 WHERE id = $1::uuid AND deleted_at IS NULL)sql",
-                                      service::common::dbParams(id, keyHash, prefix));
+                                       service::common::dbParams(id, keyHash, prefix));
+        co_await service::message::publishConfigEvent(c, "access_key", "rotated", id);
+        co_await service::access::session::refresh(c);
         co_return "{\"id\":" + jsonQuoted(id) + ",\"name\":" + jsonQuoted(existing.name) +
             ",\"accessKey\":" + jsonQuoted(rawKey) + ",\"accessKeyPrefix\":" + jsonQuoted(prefix) +
             "}";
@@ -179,6 +185,7 @@ WHERE id = $1::uuid AND deleted_at IS NULL)sql",
             service::common::dbParams(id));
         co_await transaction.commit();
         co_await service::message::publishConfigEvent(c, "access_key", "deleted", id);
+        co_await service::access::session::refresh(c);
     }
 
     ruvia::Task<std::string> listWebhooks(ruvia::Context& c) {
@@ -377,39 +384,23 @@ SELECT jsonb_build_object(
         const auto raw = accessKey(c.req());
         if (raw.empty())
             service::common::fail(19010, "缺少 X-Access-Key", 401);
-        const auto keyHash = sha256(raw);
-        const auto rows = co_await c.db().query(R"sql(
-SELECT id::text, name, status, scopes::text,
-       expires_at IS NOT NULL AND expires_at <= NOW()
-FROM open_access_key
-WHERE access_key_hash = $1 AND deleted_at IS NULL LIMIT 1)sql",
-                                                service::common::dbParams(keyHash));
-        if (rows.rows().empty())
+        const auto projected = co_await service::access::session::load(c.redis(), raw);
+        if (!projected)
             service::common::fail(19010, "AccessKey 无效", 401);
-        const auto& row = rows.rows().front();
-        if (row[2].text() != "enabled")
+        if (projected->status != "enabled")
             service::common::fail(19011, "AccessKey 已被禁用", 403);
-        if (row[4].text() == "t")
+        if (service::access::session::expired(
+                *projected, service::message::utcNowMilliseconds()))
             service::common::fail(19010, "AccessKey 已过期", 401);
         AccessSession session;
-        session.id = std::string(row[0].text());
-        session.name = std::string(row[1].text());
-        session.scopes = parseStringArray(row[3].text());
+        session.id = projected->id;
+        session.name = projected->name;
+        session.scopes = projected->scopes;
         if (!requiredScope.empty() && !session.allows(requiredScope))
             service::common::fail(19011, "AccessKey 未开通所需权限", 403);
-        const auto bindings =
-            co_await c.db().query("SELECT device_id::text FROM open_access_key_device "
-                                  "WHERE access_key_id = $1::uuid ORDER BY device_id",
-                                  service::common::dbParams(session.id));
-        for (const auto& binding : bindings.rows())
-            session.deviceIds.emplace(binding[0].text());
+        session.deviceIds = projected->deviceIds;
         if (session.deviceIds.empty())
             service::common::fail(19011, "AccessKey 未配置可访问设备", 403);
-        const auto remoteIp = clientIp(c);
-        (void)co_await c.db().execute(
-            "UPDATE open_access_key SET last_used_at = NOW(), last_used_ip = NULLIF($2, '') "
-            "WHERE id = $1::uuid",
-            service::common::dbParams(session.id, remoteIp));
         co_return session;
     }
 
@@ -441,7 +432,9 @@ SELECT jsonb_build_object(
 
     ruvia::Task<std::string> publicRealtime(ruvia::Context& c, const AccessSession& session,
                                             std::string_view deviceId) {
-        co_await requireSessionDevice(c, session, deviceId);
+        requireUuid(deviceId, "设备 ID 无效");
+        if (!session.allowsDevice(deviceId))
+            service::common::fail(19011, "AccessKey 无权访问该设备", 403);
         co_return co_await realtimeData(c, deviceId);
     }
 
@@ -523,56 +516,37 @@ SELECT jsonb_build_object(
         co_return firstJson(rows);
     }
 
-    ruvia::Task<void> writeLog(ruvia::Context& c, std::string_view direction,
-                               std::string_view action, std::string_view status,
-                               std::string_view accessKeyId = {}, std::string_view webhookId = {},
-                               std::string_view eventType = {}, std::string_view method = {},
-                               std::string_view target = {}, std::string_view requestIp = {},
-                               std::int64_t httpStatus = 0, std::string_view deviceId = {},
-                               std::string_view deviceCode = {}, std::string_view message = {},
-                               std::string_view requestPayload = "{}",
-                               std::string_view responsePayload = "{}") {
-        const auto id = service::common::nextUuidV7();
-        const auto safeMessage = sanitize(message);
-        (void)co_await c.db().execute(
-            R"sql(
-INSERT INTO open_access_log(
-  id, access_key_id, webhook_id, direction, action, event_type, status,
-  http_method, target, request_ip, http_status, device_id, device_code,
-  message, request_payload, response_payload)
-VALUES ($1::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, $4, $5,
-  NULLIF($6, ''), $7, NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''),
-  NULLIF($11, '0')::integer, NULLIF($12, '')::uuid, NULLIF($13, ''),
-  NULLIF($14, ''), $15::jsonb, $16::jsonb))sql",
-            service::common::dbParams(id, accessKeyId, webhookId, direction, action, eventType,
-                                      status, method, target, requestIp, httpStatus, deviceId,
-                                      deviceCode, safeMessage, requestPayload, responsePayload));
-    }
-
     template <typename Context>
     ruvia::Task<std::string> realtimeData(Context& c, std::string_view deviceId) {
-        const auto deviceRows = co_await c.db().query(R"sql(
-SELECT device.name, device.protocol_params->>'device_code'
-FROM device WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
-                                                      service::common::dbParams(deviceId));
-        if (deviceRows.rows().empty())
+        const auto device = co_await service::collector::config::loadRealtimeDevice(
+            c.redis(), deviceId);
+        if (!device)
             service::common::fail(19001, "设备不存在", 404);
-        const auto& device = deviceRows.rows().front();
-        const auto points = co_await configuredPoints(c, deviceId);
-        const auto latestKey = service::telemetry::latest::latestKey(device[1].text());
+        const auto latestKey = service::telemetry::latest::latestKey(device->code);
         const auto latest = co_await service::message::redis::command(
             c.redis(), std::vector<std::string>{"HGETALL", latestKey});
+        std::map<std::string_view, std::string_view, std::less<>> latestFields;
+        if (latest.kind() == ruvia::RedisValue::Kind::kArray) {
+            const auto values = latest.array();
+            for (std::size_t index = 0; index + 1 < values.size(); index += 2)
+                if (values[index].kind() == ruvia::RedisValue::Kind::kString &&
+                    values[index + 1].kind() == ruvia::RedisValue::Kind::kString)
+                    latestFields.insert_or_assign(values[index].string(),
+                                                  values[index + 1].string());
+        } else {
+            service::message::redis::throwValue("read realtime device values", latest);
+        }
         std::string body = "{\"device\":{\"id\":" + jsonQuoted(deviceId) +
-                           ",\"code\":" + jsonQuoted(device[1].text()) +
-                           ",\"name\":" + jsonQuoted(device[0].text()) + "},\"points\":[";
-        for (std::size_t index = 0; index < points.size(); ++index) {
+                           ",\"code\":" + jsonQuoted(device->code) +
+                           ",\"name\":" + jsonQuoted(device->name) + "},\"points\":[";
+        for (std::size_t index = 0; index < device->points.size(); ++index) {
             if (index != 0)
                 body.push_back(',');
-            const auto data = redisHashField(latest, points[index].id);
             std::string value = "null";
             std::string time = "null";
-            if (!data.empty()) {
-                if (const auto json = ruvia::JsonValue::parse(data)) {
+            if (const auto data = latestFields.find(device->points[index].id);
+                data != latestFields.end()) {
+                if (const auto json = ruvia::JsonValue::parse(data->second)) {
                     if (const auto current = jsonField(*json, "value"))
                         value.assign(current->view());
                     if (const auto observed =
@@ -580,9 +554,11 @@ FROM device WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
                         time = jsonQuoted(iso8601(static_cast<std::int64_t>(*observed)));
                 }
             }
-            body += "{\"id\":" + jsonQuoted(points[index].id) +
-                    ",\"name\":" + jsonQuoted(points[index].name) + ",\"value\":" + value +
-                    ",\"unit\":" + jsonQuoted(points[index].unit) + ",\"time\":" + time + "}";
+            body += "{\"id\":" + jsonQuoted(device->points[index].id) +
+                    ",\"name\":" + jsonQuoted(device->points[index].name) +
+                    ",\"value\":" + value +
+                    ",\"unit\":" + jsonQuoted(device->points[index].unit) +
+                    ",\"time\":" + time + "}";
         }
         body += "]}";
         co_return body;
@@ -607,12 +583,6 @@ FROM device WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
         std::set<std::string, std::less<>> events;
         std::optional<std::string> secret;
     };
-    struct Point final {
-        std::string id;
-        std::string name;
-        std::string unit;
-    };
-
     template <typename Rows> static std::string firstJson(const Rows& rows) {
         if (rows.rows().empty() || rows.rows().front().empty() || rows.rows().front()[0].isNull())
             return "[]";
@@ -910,56 +880,6 @@ FROM open_webhook WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
             service::common::dbParams(deviceId));
         if (rows.rows().front()[0].text() != "t")
             service::common::fail(19001, "设备不存在", 404);
-    }
-
-    static std::string redisHashField(const ruvia::RedisValue& value, std::string_view name) {
-        if (value.kind() != ruvia::RedisValue::Kind::kArray)
-            return {};
-        const auto values = value.array();
-        for (std::size_t index = 0; index + 1 < values.size(); index += 2)
-            if (values[index].kind() == ruvia::RedisValue::Kind::kString &&
-                values[index + 1].kind() == ruvia::RedisValue::Kind::kString &&
-                values[index].string() == name)
-                return std::string(values[index + 1].string());
-        return {};
-    }
-
-    template <typename Context>
-    static ruvia::Task<std::vector<Point>> configuredPoints(Context& c,
-                                                            std::string_view deviceId) {
-        const auto rows = co_await c.db().query(R"sql(
-WITH configured AS (
-  SELECT element, 1 AS protocol_order, position AS function_order, 0::bigint AS element_order
-  FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'Modbus'
-  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]'::jsonb))
-    WITH ORDINALITY AS entry(element, position)
-  WHERE d.id = $1::uuid AND d.deleted_at IS NULL
-  UNION ALL
-  SELECT element, 2, position, 0::bigint
-  FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'S7'
-  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]'::jsonb))
-    WITH ORDINALITY AS entry(element, position)
-  WHERE d.id = $1::uuid AND d.deleted_at IS NULL
-  UNION ALL
-  SELECT element, 3, function_position, element_position
-  FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'SL651'
-  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]'::jsonb))
-    WITH ORDINALITY AS functions(function, function_position)
-  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(function->'elements', '[]'::jsonb))
-    WITH ORDINALITY AS elements(element, element_position)
-  WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND function->>'dir' = 'UP'
-)
-SELECT element->>'id', COALESCE(element->>'name', element->>'id'),
-       COALESCE(element->>'unit', '')
-FROM configured WHERE COALESCE(element->>'encode', '') <> 'JPEG'
-ORDER BY protocol_order, function_order, element_order)sql",
-                                                service::common::dbParams(deviceId));
-        std::vector<Point> result;
-        result.reserve(rows.rows().size());
-        for (const auto& row : rows.rows())
-            result.push_back({std::string(row[0].text()), std::string(row[1].text()),
-                              std::string(row[2].text())});
-        co_return result;
     }
 
     static std::string historySql() {

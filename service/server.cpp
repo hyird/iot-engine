@@ -309,11 +309,12 @@ int main(int argc, char *argv[])
                   << ", gb28181=" << gb28181WorkerCount << '\n';
         auto serviceRedis = redisConfig(app.env());
         auto collectorRedis = serviceRedis;
-        // Each worker has telemetry and command-result readers. With at least three workers,
-        // edge ingress, config reconciliation and webhook delivery use first, second and last
-        // respectively, keeping the maximum at three worker-local blocking sockets.
+        // Each worker has telemetry and command-result readers. The first worker also owns
+        // edge ingress plus the shared telemetry/alert deadline coordinator; config
+        // reconciliation and webhook/audit delivery use the second and last workers when
+        // available. These exact maxima preserve worker-local blocking-connection ownership.
         serviceRedis.blockingPoolSizePerWorker =
-            serviceWorkerCount == 1 ? 5 : (serviceWorkerCount == 2 ? 4 : 3);
+            serviceWorkerCount == 1 ? 6 : (serviceWorkerCount == 2 ? 5 : 4);
         auto collector = std::make_shared<service::collector::Runtime>();
         auto telemetry = std::make_shared<service::telemetry::PersistenceRuntime>();
         auto commandResults = std::make_shared<service::command::ResultRuntime>();

@@ -17,6 +17,7 @@
 #include <ruvia/web/WebWorker.h>
 
 #include "service/common/message/contract.h"
+#include "service/features/alert/metadata.h"
 #include "service/features/event/config.h"
 #include "service/features/runtime/projector.h"
 #include "service/features/collector/stream.h"
@@ -67,6 +68,8 @@ class Reconciler final {
   private:
     static constexpr std::string_view kGroup{"iot-engine:runtime-reconciler"};
     static constexpr std::size_t kBatchSize = 256;
+    static constexpr std::size_t kCoalesceLimit = 4096;
+    static constexpr auto kCoalesceWindow = std::chrono::milliseconds(25);
 
     static bool requiresProjection(const service::message::StreamMessage& message) {
         const auto aggregate = message.get("aggregate");
@@ -111,18 +114,53 @@ class Reconciler final {
                 }
                 if (messages.empty())
                     continue;
+                std::vector<std::vector<service::message::StreamMessage>> batches;
+                batches.push_back(std::move(messages));
                 bool failed = false;
                 try {
-                    if (std::ranges::any_of(messages, requiresProjection)) {
+                    if (!recovering) {
+                        // Absorb the rest of a CRUD burst before taking the global projection
+                        // lock. Recovery already has a durable backlog and needs no delay.
+                        (void)co_await ruvia::sleepFor(context.worker(), kCoalesceWindow);
+                    }
+                    std::size_t messageCount = batches.front().size();
+                    std::string recoveryCursor = batches.front().back().id;
+                    while (messageCount < kCoalesceLimit) {
+                        const auto remaining = kCoalesceLimit - messageCount;
+                        auto next = co_await service::message::redis::readGroup(
+                            redis, service::message::kRuntimeConfigChangesStream, kGroup,
+                            "service-0", recovering ? std::string_view(recoveryCursor)
+                                                     : std::string_view(">"),
+                            std::chrono::milliseconds(0), std::min(kBatchSize, remaining));
+                        if (next.empty())
+                            break;
+                        messageCount += next.size();
+                        recoveryCursor = next.back().id;
+                        batches.push_back(std::move(next));
+                    }
+                    const auto projectionRequired = std::ranges::any_of(
+                        batches, [](const auto& batch) {
+                            return std::ranges::any_of(batch, requiresProjection);
+                        });
+                    const auto alertRefreshRequired = std::ranges::any_of(
+                        batches, [](const auto& batch) {
+                            return std::ranges::any_of(batch, [](const auto& message) {
+                                return message.get("aggregate") == "device";
+                            });
+                        });
+                    if (projectionRequired) {
                         const auto version = co_await project(context);
                         if (version != lastNotifiedVersion_) {
                             co_await publishWorkerNotifications(context, version);
                             lastNotifiedVersion_ = version;
                         }
                     }
-                    co_await service::message::redis::acknowledgeAndDeleteMany(
-                        redis, service::message::kRuntimeConfigChangesStream, kGroup,
-                        messages);
+                    if (alertRefreshRequired)
+                        co_await service::alert::metadata::refresh(context);
+                    for (const auto& batch : batches)
+                        co_await service::message::redis::acknowledgeAndDeleteMany(
+                            redis, service::message::kRuntimeConfigChangesStream, kGroup,
+                            batch);
                 } catch (const std::exception& error) {
                     if (context.stopToken().stopRequested())
                         break;

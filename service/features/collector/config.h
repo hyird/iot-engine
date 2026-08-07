@@ -5,6 +5,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -41,6 +42,15 @@ inline std::string targetKey(std::string_view version, std::string_view linkId,
 
 inline std::string deviceKey(std::string_view version, std::string_view deviceId) {
     return prefix(version) + ":device:" + std::string(deviceId);
+}
+
+inline std::string realtimeDeviceKey(std::string_view version, std::string_view deviceId) {
+    return prefix(version) + ":realtime-device:" + std::string(deviceId);
+}
+
+inline std::string realtimeDevicePointsKey(std::string_view version,
+                                           std::string_view deviceId) {
+    return realtimeDeviceKey(version, deviceId) + ":points";
 }
 
 inline std::string metadataKey(std::string_view version) { return prefix(version) + ":metadata"; }
@@ -142,6 +152,18 @@ inline std::string signature(const RuntimeSnapshot& snapshot) {
             integer(element.length);
             integer(element.digits);
             number(element.responseElement ? 1 : 0);
+        }
+    }
+    number(snapshot.realtimeDevices.size());
+    for (const auto& device : snapshot.realtimeDevices) {
+        text(device.id);
+        text(device.code);
+        text(device.name);
+        number(device.points.size());
+        for (const auto& point : device.points) {
+            text(point.id);
+            text(point.name);
+            text(point.unit);
         }
     }
     std::array<char, 16> output{};
@@ -271,6 +293,44 @@ inline void appendId(std::vector<std::vector<std::string>>& commands, std::strin
     appendRememberedKey(commands, version, key);
 }
 
+inline std::string encodeRealtimePoint(const RealtimePointDefinition& point) {
+    std::string value;
+    value.reserve(point.id.size() + point.name.size() + point.unit.size() + 2);
+    value.append(point.id);
+    value.push_back('\0');
+    value.append(point.name);
+    value.push_back('\0');
+    value.append(point.unit);
+    return value;
+}
+
+inline std::optional<RealtimePointDefinition> decodeRealtimePoint(std::string_view value) {
+    const auto first = value.find('\0');
+    if (first == std::string_view::npos)
+        return std::nullopt;
+    const auto second = value.find('\0', first + 1);
+    if (second == std::string_view::npos)
+        return std::nullopt;
+    return RealtimePointDefinition{std::string(value.substr(0, first)),
+                                   std::string(value.substr(first + 1, second - first - 1)),
+                                   std::string(value.substr(second + 1))};
+}
+
+inline void appendRealtimePoints(std::vector<std::vector<std::string>>& commands,
+                                 std::string_view version, std::string key,
+                                 const std::vector<RealtimePointDefinition>& points) {
+    constexpr std::size_t chunkSize = 256;
+    for (std::size_t offset = 0; offset < points.size(); offset += chunkSize) {
+        const auto end = std::min(points.size(), offset + chunkSize);
+        std::vector<std::string> command{"RPUSH", key};
+        command.reserve(2 + end - offset);
+        for (std::size_t index = offset; index < end; ++index)
+            command.push_back(encodeRealtimePoint(points[index]));
+        commands.push_back(std::move(command));
+        appendRememberedKey(commands, version, key);
+    }
+}
+
 inline std::string_view field(const std::vector<message::StreamField>& fields,
                               std::string_view name) noexcept {
     for (const auto& value : fields)
@@ -387,7 +447,7 @@ ruvia::Task<void> eraseSnapshot(const Redis& redis, std::string_view version) {
 } // namespace detail
 
 // Service projection. The version pointer is switched only after every readable
-// Hash/Set has been written, so Collector Workers never observe a partial snapshot.
+// Hash/Set/List has been written, so readers never observe a partial snapshot.
 template <typename Redis>
 ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snapshot) {
     const auto snapshotSignature = signature(snapshot);
@@ -510,6 +570,15 @@ ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
                 co_await detail::flush(redis, commands);
         }
     }
+
+    for (const auto& device : snapshot.realtimeDevices) {
+        detail::appendHash(commands, version, realtimeDeviceKey(version, device.id),
+                           {{"id", device.id}, {"code", device.code}, {"name", device.name}});
+        detail::appendRealtimePoints(commands, version,
+                                     realtimeDevicePointsKey(version, device.id), device.points);
+        if (commands.size() >= pipelineSize)
+            co_await detail::flush(redis, commands);
+    }
     co_await detail::flush(redis, commands);
 
     const auto previousReply =
@@ -544,6 +613,44 @@ template <typename Redis> ruvia::Task<std::string> activeVersion(const Redis& re
     if (versionReply.null())
         throw std::runtime_error("runtime is not ready");
     co_return detail::stringReply(versionReply, "GET active runtime");
+}
+
+template <typename Redis>
+ruvia::Task<std::optional<RealtimeDeviceDefinition>> loadRealtimeDevice(
+    const Redis& redis, std::string_view deviceId) {
+    // Completed snapshots remain available for the grace window, so reading the pointer
+    // before this pipeline still yields one coherent version if a projection swaps it.
+    const auto version = co_await activeVersion(redis);
+    const std::vector<std::vector<std::string>> commands{
+        {"HGETALL", realtimeDeviceKey(version, deviceId)},
+        {"LRANGE", realtimeDevicePointsKey(version, deviceId), "0", "-1"}};
+    auto pipeline = redis.pipeline();
+    for (const auto& command : commands) {
+        const std::vector<std::string_view> views(command.begin(), command.end());
+        pipeline.command(views);
+    }
+    const auto replies = co_await std::move(pipeline).exec();
+    if (replies.size() != 2)
+        throw std::runtime_error("incomplete realtime device projection reply");
+    if (replies[0].kind() != ruvia::RedisValue::Kind::kArray ||
+        replies[0].array().empty())
+        co_return std::nullopt;
+    const auto fields = detail::hashFields(replies[0], "read realtime device metadata");
+    RealtimeDeviceDefinition result;
+    result.id.assign(detail::field(fields, "id"));
+    result.code.assign(detail::field(fields, "code"));
+    result.name.assign(detail::field(fields, "name"));
+    if (result.id.empty())
+        co_return std::nullopt;
+    const auto points = detail::stringArray(replies[1], "read realtime device points");
+    result.points.reserve(points.size());
+    for (const auto& point : points) {
+        auto decoded = detail::decodeRealtimePoint(point);
+        if (!decoded)
+            throw std::runtime_error("invalid realtime point projection");
+        result.points.push_back(std::move(*decoded));
+    }
+    co_return result;
 }
 
 template <typename Redis>

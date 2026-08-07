@@ -5,7 +5,7 @@
 
 namespace service::config {
 
-inline constexpr std::array<ruvia::DbMigration, 18> kSchemaMigrations{{
+inline constexpr std::array<ruvia::DbMigration, 21> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
@@ -1121,6 +1121,83 @@ ALTER TABLE device_data SET (
     timescaledb.compress_segmentby = 'device_id',
     timescaledb.compress_orderby = 'report_time DESC, id DESC'
 );
+)sql"},
+    {"0018_device_data_ingest_state", R"sql(
+DO $schema$
+BEGIN
+CREATE TABLE device_data_ingest_state (
+    device_id          UUID PRIMARY KEY REFERENCES device(id) ON DELETE CASCADE,
+    last_stored_at     TIMESTAMPTZ,
+    last_observed_at   TIMESTAMPTZ,
+    last_observed_id   UUID,
+    last_data          JSONB,
+    previous_data      JSONB,
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_device_data_ingest_observed_pair CHECK (
+        (last_observed_at IS NULL) = (last_observed_id IS NULL)
+    )
+);
+
+INSERT INTO device_data_ingest_state(
+    device_id, last_stored_at, last_observed_at, last_observed_id,
+    last_data, previous_data)
+SELECT device.id, recent.last_report_time, recent.last_report_time,
+       recent.last_report_id, recent.last_data, recent.previous_data
+FROM device
+CROSS JOIN LATERAL (
+    SELECT
+        (array_agg(sample.report_time ORDER BY sample.report_time DESC, sample.id DESC))[1]
+            AS last_report_time,
+        (array_agg(sample.id ORDER BY sample.report_time DESC, sample.id DESC))[1]
+            AS last_report_id,
+        (jsonb_agg(sample.data ORDER BY sample.report_time DESC, sample.id DESC))->0
+            AS last_data,
+        (jsonb_agg(sample.data ORDER BY sample.report_time DESC, sample.id DESC))->1
+            AS previous_data
+    FROM (
+        SELECT history.report_time, history.id, history.data
+        FROM device_data history
+        WHERE history.device_id = device.id
+        ORDER BY history.report_time DESC, history.id DESC
+        LIMIT 2
+    ) sample
+) recent
+WHERE recent.last_report_time IS NOT NULL
+ON CONFLICT (device_id) DO NOTHING;
+END
+$schema$;
+)sql"},
+    {"0019_alert_event_outbox", R"sql(
+DO $schema$
+BEGIN
+CREATE TABLE alert_event_outbox (
+    event_id        UUID NOT NULL,
+    event_type      VARCHAR(64) NOT NULL,
+    rule_id         UUID NOT NULL,
+    device_id       UUID NOT NULL,
+    device_code     VARCHAR(255) NOT NULL DEFAULT '',
+    occurred_at_ms  BIGINT NOT NULL,
+    data             JSONB NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (event_id, event_type)
+);
+CREATE INDEX idx_alert_event_outbox_created
+    ON alert_event_outbox(created_at, event_id);
+END
+$schema$;
+)sql"},
+    {"0020_alert_evaluation_receipt", R"sql(
+DO $schema$
+BEGIN
+CREATE TABLE alert_evaluation_receipt (
+    message_id  UUID PRIMARY KEY,
+    device_id   UUID NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_alert_evaluation_receipt_created
+    ON alert_evaluation_receipt(created_at);
+END
+$schema$;
 )sql"},
 }};
 

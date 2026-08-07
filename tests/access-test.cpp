@@ -4,6 +4,7 @@
 
 #include "service/features/access/contract.h"
 #include "service/features/access/event.h"
+#include "service/features/access/session.h"
 #include "service/features/event/config.h"
 
 namespace access_contract = service::access;
@@ -57,6 +58,23 @@ int main() {
         require(service::message::kRuntimeConfigChangesStream !=
                     service::message::kWebhookCatalogChangesStream,
                 "independent config consumers must not XDEL from a shared Stream");
+        const auto encodedSession = service::access::session::encode(
+            "019fd9f6-4be5-7272-a194-9e571bce848d", "production key", "enabled",
+            "4102444800000", R"(["device:realtime","device:history"])",
+            R"(["019fd9f6-4be5-7272-a194-9e571bce848e"])");
+        const auto decodedSession = service::access::session::decode(encodedSession);
+        require(decodedSession.id == "019fd9f6-4be5-7272-a194-9e571bce848d" &&
+                    decodedSession.name == "production key" &&
+                    decodedSession.status == "enabled" &&
+                    decodedSession.expiresAtMs == 4102444800000LL &&
+                    decodedSession.scopes.contains("device:realtime") &&
+                    decodedSession.scopes.contains("device:history") &&
+                    decodedSession.deviceIds.contains(
+                        "019fd9f6-4be5-7272-a194-9e571bce848e"),
+                "projected AccessKey session round-trip changed");
+        require(!service::access::session::expired(decodedSession, 4102444799999LL) &&
+                    service::access::session::expired(decodedSession, 4102444800000LL),
+                "projected AccessKey expiration boundary changed");
         std::cout << "open access tests passed\n";
         return 0;
     } catch (const std::exception& error) {

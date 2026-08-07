@@ -31,6 +31,7 @@
 #include "service/features/collector/config.h"
 #include "service/features/collector/tcp.h"
 #include "service/features/collector/timer.h"
+#include "service/features/telemetry/latest.h"
 
 namespace collector = service::collector;
 
@@ -1676,6 +1677,44 @@ void testRuntimeWritableContract() {
     require(element.writable, "runtime did not deserialize writable state");
 }
 
+void testRealtimeProjectionContract() {
+    collector::RuntimeSnapshot original;
+    collector::RealtimeDeviceDefinition device;
+    device.id = "019fd9f6-4bd5-7ec3-80ff-0ba381987024";
+    device.code = "REMOTEIO01";
+    device.name = "远程IO";
+    device.points.push_back({"AI1", "模拟量输入1", "mA"});
+    original.realtimeDevices.push_back(device);
+
+    const auto packed = service::collector::config::detail::encodeRealtimePoint(
+        original.realtimeDevices.front().points.front());
+    const auto decoded = service::collector::config::detail::decodeRealtimePoint(packed);
+    require(decoded.has_value() && decoded->id == "AI1" &&
+                decoded->name == "模拟量输入1" && decoded->unit == "mA",
+            "realtime point projection encoding changed");
+    require(!service::collector::config::detail::decodeRealtimePoint("broken").has_value(),
+            "malformed realtime point projection was accepted");
+    require(service::collector::config::realtimeDeviceKey("version-1", device.id) ==
+                "iot:config:runtime:version-1:realtime-device:" + device.id,
+            "realtime device projection key changed");
+
+    auto renamed = original;
+    renamed.realtimeDevices.front().name = "远程IO-更新";
+    require(service::collector::config::signature(original) !=
+                service::collector::config::signature(renamed),
+            "runtime signature ignored realtime metadata changes");
+}
+
+void testFreshnessDeadlineWait() {
+    namespace latest = service::telemetry::latest;
+    require(!latest::deadlineWait(1000, std::nullopt).has_value(),
+            "missing deadline must block until a wake event");
+    require(latest::deadlineWait(1000, 999) == std::chrono::milliseconds::zero(),
+            "past deadline must run immediately");
+    require(latest::deadlineWait(1000, 1250) == std::chrono::milliseconds(250),
+            "future deadline wait changed");
+}
+
 void testCommandValueDecimalParsing() {
     namespace command = service::collector::command;
     require(command::decimal("1.5", "value") == 1.5,
@@ -2033,6 +2072,8 @@ int main() {
         run("s7 data types", testS7AllDataTypes);
         run("worker timer", testWorkerTimer);
         run("runtime writable contract", testRuntimeWritableContract);
+        run("realtime projection contract", testRealtimeProjectionContract);
+        run("freshness deadline wait", testFreshnessDeadlineWait);
         run("command value decimal parsing", testCommandValueDecimalParsing);
         run("edge parsed message contract", testEdgeParsedMessageContract);
         run("packet log", testPacketLog);

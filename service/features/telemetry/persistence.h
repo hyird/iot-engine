@@ -9,6 +9,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -158,39 +159,89 @@ class PersistenceRuntime final {
             parsedMessages.push_back(std::move(parsed));
         }
         const auto redis = context.redis();
-        co_await persist(context, parsedMessages);
+        const auto alertMetadata =
+            co_await service::alert::metadata::activity(context, parsedMessages);
+        auto previousData =
+            co_await persist(context, parsedMessages, alertMetadata.devices);
         co_await latest::update(redis, parsedMessages);
-        try {
-            co_await service::alert::Runtime::evaluateTelemetry(context, parsedMessages);
-        } catch (const std::exception& error) {
-            // A malformed rule must not block durable telemetry or queue acknowledgement.
-            // The next matching report retries evaluation against durable telemetry.
-            std::cerr << "alert telemetry evaluation failed: " << error.what() << '\n';
-        }
+        // Offline alert deadlines are part of durable ingestion. A Redis failure keeps
+        // the Stream entry pending so the schedule is rebuilt on retry.
+        if (alertMetadata.offlineRules)
+            co_await service::alert::metadata::schedule(redis, parsedMessages);
+        // Alert state and its transactional outbox must complete before acknowledging the
+        // telemetry Stream. Retries are idempotent at both PostgreSQL and Redis boundaries.
+        co_await service::alert::Runtime::evaluateTelemetry(
+            context, parsedMessages, previousData, alertMetadata.devices);
         co_await service::access::event::publishMany(redis, parsedMessages);
     }
 
   private:
     static constexpr std::string_view kGroup = "iot-engine:telemetry-persistence";
+    static constexpr std::string_view kFreshnessGroup =
+        "iot-engine:telemetry-freshness";
+    static constexpr std::string_view kFreshnessConsumer = "service-0";
     static constexpr std::size_t kBatchSize = 256;
+    static constexpr std::size_t kFreshnessWakeBatchSize = 128;
 
     ruvia::Task<void> maintainFreshness(
         ruvia::WebWorkerContext& context, std::shared_ptr<std::promise<void>> ready,
         std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
+            co_await service::message::redis::ensureGroup(
+                redis, latest::kFreshnessWakeStream, kFreshnessGroup);
             ready->set_value();
+            bool recovering = true;
             while (running_.load() && !context.stopToken().stopRequested()) {
+                bool failed = false;
                 try {
+                    if (recovering) {
+                        auto pending = co_await service::message::redis::readGroup(
+                            redis, latest::kFreshnessWakeStream, kFreshnessGroup,
+                            kFreshnessConsumer, "0", std::chrono::milliseconds(0),
+                            kFreshnessWakeBatchSize);
+                        if (!pending.empty()) {
+                            co_await service::message::redis::acknowledgeAndDeleteMany(
+                                redis, latest::kFreshnessWakeStream, kFreshnessGroup, pending);
+                            continue;
+                        }
+                        recovering = false;
+                    }
                     co_await latest::expireStale(redis);
+                    co_await service::alert::Runtime::evaluateOfflineDue(context);
+                    const auto onlineDeadline = co_await latest::nextDeadline(redis);
+                    const auto alertDeadline =
+                        co_await service::alert::metadata::nextOfflineDeadline(redis);
+                    auto deadline = onlineDeadline;
+                    if (alertDeadline && (!deadline || *alertDeadline < *deadline))
+                        deadline = alertDeadline;
+                    const auto wait = latest::deadlineWait(
+                        service::message::utcNowMilliseconds(),
+                        deadline);
+                    if (wait.has_value() && wait->count() == 0)
+                        continue;
+                    // A finite BLOCK ends at the nearest deadline; BLOCK 0 is used only when
+                    // there is no deadline. Earlier inserts publish to the wake Stream.
+                    auto signals =
+                        co_await service::message::redis::readGroupBlockingUntil(
+                            redis, latest::kFreshnessWakeStream, kFreshnessGroup,
+                            kFreshnessConsumer, context.stopToken(), wait,
+                            kFreshnessWakeBatchSize);
+                    if (!signals.empty())
+                        co_await service::message::redis::acknowledgeAndDeleteMany(
+                            redis, latest::kFreshnessWakeStream, kFreshnessGroup, signals);
                 } catch (const std::exception& error) {
                     if (context.stopToken().stopRequested())
                         break;
                     std::cerr << "telemetry freshness maintenance failed: " << error.what()
                               << '\n';
+                    recovering = true;
+                    failed = true;
                 }
-                (void)co_await ruvia::sleepFor(context.worker(),
-                                               std::chrono::milliseconds(250));
+                if (failed) {
+                    (void)co_await ruvia::sleepFor(context.worker(),
+                                                   std::chrono::milliseconds(250));
+                }
             }
         } catch (...) {
             try {
@@ -285,32 +336,39 @@ class PersistenceRuntime final {
         }
     }
 
-    static ruvia::Task<void> persist(ruvia::WebWorkerContext& context,
-                                     const std::vector<message::ParsedDeviceMessage>& messages) {
+    static ruvia::Task<std::vector<std::string>>
+    persist(ruvia::WebWorkerContext& context,
+            const std::vector<message::ParsedDeviceMessage>& messages,
+            const std::vector<bool>& alertActive) {
         if (messages.empty())
-            co_return;
+            co_return std::vector<std::string>{};
+        if (messages.size() != alertActive.size())
+            throw std::invalid_argument("telemetry alert-active batch size mismatch");
         std::vector<std::string> rawPayloadArrays;
         rawPayloadArrays.reserve(messages.size());
         for (const auto& message : messages)
             rawPayloadArrays.push_back(message::rawPayloadsJson(message.rawPayloads));
 
         std::string sql = R"sql(WITH RECURSIVE incoming(
-report_time, id, device_id, link_id, connection_id, protocol, source,
-occurred_at, data, raw_payload_hex, storage_interval) AS (VALUES )sql";
+input_sequence, report_time, id, device_id, link_id, connection_id, protocol, source,
+occurred_at, data, raw_payload_hex, storage_interval, needs_previous) AS (VALUES )sql";
         std::vector<ruvia::DbValue> params;
-        params.reserve(messages.size() * 11);
+        params.reserve(messages.size() * 13);
         for (std::size_t index = 0; index < messages.size(); ++index) {
             const auto& parsed = messages[index];
             if (index != 0)
                 sql.push_back(',');
-            const auto base = index * 11;
-            sql += "(to_timestamp($" + std::to_string(base + 1) + "::double precision / 1000.0),$" +
-                   std::to_string(base + 2) + "::uuid,$" + std::to_string(base + 3) + "::uuid,$" +
-                   std::to_string(base + 4) + "::uuid,$" + std::to_string(base + 5) + "::uuid,$" +
-                   std::to_string(base + 6) + ",$" + std::to_string(base + 7) + ",to_timestamp($" +
-                   std::to_string(base + 8) + "::double precision / 1000.0),$" +
-                   std::to_string(base + 9) + "::jsonb,$" + std::to_string(base + 10) +
-                   "::jsonb,$" + std::to_string(base + 11) + "::integer)";
+            const auto base = index * 13;
+            sql += "($" + std::to_string(base + 1) + "::bigint,to_timestamp($" +
+                   std::to_string(base + 2) + "::double precision / 1000.0),$" +
+                   std::to_string(base + 3) + "::uuid,$" + std::to_string(base + 4) + "::uuid,$" +
+                   std::to_string(base + 5) + "::uuid,$" + std::to_string(base + 6) + "::uuid,$" +
+                   std::to_string(base + 7) + ",$" + std::to_string(base + 8) + ",to_timestamp($" +
+                   std::to_string(base + 9) + "::double precision / 1000.0),$" +
+                   std::to_string(base + 10) + "::jsonb,$" + std::to_string(base + 11) +
+                   "::jsonb,$" + std::to_string(base + 12) + "::integer,$" +
+                   std::to_string(base + 13) + "::boolean)";
+            params.emplace_back(static_cast<std::int64_t>(index));
             params.emplace_back(parsed.observedAtMs);
             params.emplace_back(std::string_view(parsed.messageId));
             params.emplace_back(std::string_view(parsed.deviceId));
@@ -322,39 +380,67 @@ occurred_at, data, raw_payload_hex, storage_interval) AS (VALUES )sql";
             params.emplace_back(std::string_view(parsed.valuesJson));
             params.emplace_back(std::string_view(rawPayloadArrays[index]));
             params.emplace_back(std::clamp<std::int64_t>(parsed.storageInterval, 1, 86400));
+            params.emplace_back(alertActive[index]);
         }
-        sql += R"sql(), locks AS MATERIALIZED (
-  SELECT pg_advisory_xact_lock(hashtextextended(ordered.id::text, 734621))
-  FROM (
-    SELECT DISTINCT current_device.id
-    FROM incoming
-    JOIN device current_device ON current_device.id = incoming.device_id
-                               AND current_device.link_id = incoming.link_id
-    ORDER BY current_device.id
-  ) ordered
-), valid_incoming AS (
+        sql += R"sql(), valid_incoming AS MATERIALIZED (
   SELECT incoming.*
   FROM incoming
   JOIN device current_device ON current_device.id = incoming.device_id
                              AND current_device.link_id = incoming.link_id
-  CROSS JOIN (SELECT count(*) AS lock_count FROM locks) acquired
-  WHERE acquired.lock_count >= 0
-), device_last_stored AS (
-  SELECT requested.device_id, stored.report_time AS last_stored
-  FROM (SELECT DISTINCT device_id FROM valid_incoming) requested
-  LEFT JOIN LATERAL (
-    SELECT history.report_time
-    FROM device_data history
-    WHERE history.device_id = requested.device_id
-    ORDER BY history.report_time DESC, history.id DESC
-    LIMIT 1
-  ) stored ON TRUE
+), requested AS MATERIALIZED (
+  SELECT DISTINCT device_id FROM valid_incoming
+), locks AS MATERIALIZED (
+  SELECT pg_advisory_xact_lock(hashtextextended(device_id::text, 734621))
+  FROM requested
+  ORDER BY device_id
+), seeded AS (
+  INSERT INTO device_data_ingest_state(device_id)
+  SELECT requested.device_id
+  FROM requested
+  CROSS JOIN (SELECT count(*) AS lock_count FROM locks) lock_barrier
+  WHERE lock_barrier.lock_count >= 0
+  ON CONFLICT (device_id) DO NOTHING
+  RETURNING device_id
+), states AS MATERIALIZED (
+  SELECT state.device_id, state.last_stored_at, state.last_observed_at,
+         state.last_observed_id, state.last_data
+  FROM device_data_ingest_state state
+  JOIN requested USING (device_id)
+  CROSS JOIN (SELECT count(*) AS seeded_count FROM seeded) seeded_barrier
+  WHERE seeded_barrier.seeded_count >= 0
 ), ordered AS (
   SELECT incoming.*,
          row_number() OVER (PARTITION BY device_id ORDER BY report_time, id) AS sequence,
-         device_last_stored.last_stored
+         states.last_stored_at AS last_stored,
+         states.last_observed_at AS baseline_observed_at,
+         states.last_observed_id AS baseline_observed_id,
+         states.last_data AS baseline_data
   FROM valid_incoming incoming
-  JOIN device_last_stored USING (device_id)
+  JOIN states USING (device_id)
+), lagged AS MATERIALIZED (
+  SELECT ordered.*,
+         lag(report_time) OVER (
+           PARTITION BY device_id ORDER BY report_time, id) AS prior_report_time,
+         lag(id) OVER (
+           PARTITION BY device_id ORDER BY report_time, id) AS prior_id,
+         lag(data) OVER (
+           PARTITION BY device_id ORDER BY report_time, id) AS prior_data
+  FROM ordered
+), predecessors AS MATERIALIZED (
+  SELECT input_sequence,
+         CASE
+           WHEN baseline_observed_at IS NOT NULL
+             AND (report_time, id) <=
+                 (baseline_observed_at, baseline_observed_id)
+             THEN '{}'::jsonb
+           WHEN prior_report_time IS NOT NULL
+             AND (baseline_observed_at IS NULL OR
+                  (prior_report_time, prior_id) >
+                  (baseline_observed_at, baseline_observed_id))
+             THEN prior_data
+           ELSE COALESCE(baseline_data, '{}'::jsonb)
+         END AS previous_data
+  FROM lagged
 ), filtered AS (
   SELECT ordered.*,
          (storage_interval <= 1 OR last_stored IS NULL OR
@@ -379,15 +465,72 @@ occurred_at, data, raw_payload_hex, storage_interval) AS (VALUES )sql";
   FROM filtered previous
   JOIN ordered next ON next.device_id = previous.device_id
                    AND next.sequence = previous.sequence + 1
+), inserted AS (
+  INSERT INTO device_data(
+    report_time, id, device_id, link_id, connection_id, protocol, source,
+    occurred_at, data, raw_payload_hex)
+  SELECT report_time, id, device_id, link_id, connection_id, protocol, source,
+         occurred_at, data, raw_payload_hex
+  FROM filtered WHERE accepted
+  ON CONFLICT (id, report_time) DO NOTHING
+  RETURNING device_id
+), storage_summary AS MATERIALIZED (
+  SELECT device_id, max(last_accepted) AS last_stored_at
+  FROM filtered
+  GROUP BY device_id
+), new_observed AS MATERIALIZED (
+  SELECT incoming.*,
+         row_number() OVER (
+           PARTITION BY incoming.device_id
+           ORDER BY incoming.report_time DESC, incoming.id DESC) AS newest
+  FROM valid_incoming incoming
+  JOIN states USING (device_id)
+  WHERE states.last_observed_at IS NULL
+     OR (incoming.report_time, incoming.id) >
+        (states.last_observed_at, states.last_observed_id)
+), observed_summary AS MATERIALIZED (
+  SELECT newest.device_id, newest.report_time AS last_observed_at,
+         newest.id AS last_observed_id, newest.data AS last_data,
+         COALESCE(previous.data, states.last_data) AS previous_data
+  FROM new_observed newest
+  JOIN states USING (device_id)
+  LEFT JOIN new_observed previous
+    ON previous.device_id = newest.device_id AND previous.newest = 2
+  WHERE newest.newest = 1
+), state_updated AS (
+  UPDATE device_data_ingest_state state
+  SET last_stored_at = storage.last_stored_at,
+      last_observed_at = COALESCE(observed.last_observed_at, state.last_observed_at),
+      last_observed_id = COALESCE(observed.last_observed_id, state.last_observed_id),
+      last_data = COALESCE(observed.last_data, state.last_data),
+      previous_data = CASE WHEN observed.device_id IS NULL
+                           THEN state.previous_data ELSE observed.previous_data END,
+      updated_at = NOW()
+  FROM storage_summary storage
+  LEFT JOIN observed_summary observed USING (device_id)
+  CROSS JOIN (SELECT count(*) AS inserted_count FROM inserted) inserted_barrier
+  WHERE state.device_id = storage.device_id
+    AND inserted_barrier.inserted_count >= 0
+  RETURNING state.device_id
 )
-INSERT INTO device_data(
-report_time, id, device_id, link_id, connection_id, protocol, source,
-occurred_at, data, raw_payload_hex)
-SELECT report_time, id, device_id, link_id, connection_id, protocol, source,
-       occurred_at, data, raw_payload_hex
-FROM filtered WHERE accepted
-ON CONFLICT (id, report_time) DO NOTHING)sql";
-        (void)co_await context.db().execute(sql, params);
+SELECT incoming.input_sequence::text,
+       CASE WHEN incoming.needs_previous
+            THEN COALESCE(predecessors.previous_data, '{}'::jsonb)
+            ELSE '{}'::jsonb END::text
+FROM incoming
+LEFT JOIN predecessors USING (input_sequence)
+CROSS JOIN (SELECT count(*) AS updated_count FROM state_updated) update_barrier
+WHERE update_barrier.updated_count >= 0
+ORDER BY incoming.input_sequence)sql";
+        const auto rows = co_await context.db().query(sql, params);
+        std::vector<std::string> previous(messages.size(), "{}");
+        for (const auto& row : rows.rows()) {
+            const auto sequence = static_cast<std::size_t>(
+                std::stoull(std::string(row[0].text())));
+            if (sequence < previous.size() && !row[1].isNull())
+                previous[sequence].assign(row[1].text());
+        }
+        co_return previous;
     }
 
     std::vector<ruvia::WebWorkerHandle> workers_;

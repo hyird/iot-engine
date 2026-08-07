@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include <ruvia/core/Task.h>
@@ -23,6 +24,8 @@ using service::collector::DeviceDefinition;
 using service::collector::ElementDefinition;
 using service::collector::LinkDefinition;
 using service::collector::LinkTargetDefinition;
+using service::collector::RealtimeDeviceDefinition;
+using service::collector::RealtimePointDefinition;
 using service::collector::RuntimeSnapshot;
 
 // DTU 注册包/心跳包内容 → 字节。
@@ -111,6 +114,10 @@ ORDER BY id)sql");
         link.status = cell(row, 6);
         snapshot.links.push_back(std::move(link));
     }
+    std::unordered_map<std::string_view, std::size_t> linkIndexes;
+    linkIndexes.reserve(snapshot.links.size());
+    for (std::size_t index = 0; index < snapshot.links.size(); ++index)
+        linkIndexes.emplace(snapshot.links[index].id, index);
 
     const auto targets = co_await db.query(R"sql(
 SELECT l.id::text, target->>'id', target->>'name', target->>'ip', target->>'port',
@@ -122,10 +129,8 @@ WHERE l.deleted_at IS NULL AND l.execution = 'collector'
 ORDER BY l.id)sql");
     for (const auto& row : targets.rows()) {
         const auto linkId = cell(row, 0);
-        const auto link =
-            std::find_if(snapshot.links.begin(), snapshot.links.end(),
-                         [&linkId](const LinkDefinition& item) { return item.id == linkId; });
-        if (link == snapshot.links.end())
+        const auto link = linkIndexes.find(linkId);
+        if (link == linkIndexes.end())
             continue;
         LinkTargetDefinition target;
         target.id = cell(row, 1);
@@ -133,7 +138,7 @@ ORDER BY l.id)sql");
         target.ip = cell(row, 3);
         target.port = static_cast<std::uint16_t>(cellInt(row, 4));
         target.status = cell(row, 5);
-        link->targets.push_back(std::move(target));
+        snapshot.links[link->second].targets.push_back(std::move(target));
     }
 
     const auto devices = co_await db.query(R"sql(
@@ -211,13 +216,65 @@ ORDER BY d.link_id, d.id)sql");
         device.modbusMaxQuantity = cellInt(row, 29);
         snapshot.devices.push_back(std::move(device));
     }
-
-    const auto findDevice = [&snapshot](std::string_view id) -> DeviceDefinition* {
-        const auto device =
-            std::find_if(snapshot.devices.begin(), snapshot.devices.end(),
-                         [id](const DeviceDefinition& value) { return value.id == id; });
-        return device == snapshot.devices.end() ? nullptr : &*device;
+    std::unordered_map<std::string_view, std::size_t> deviceIndexes;
+    deviceIndexes.reserve(snapshot.devices.size());
+    for (std::size_t index = 0; index < snapshot.devices.size(); ++index)
+        deviceIndexes.emplace(snapshot.devices[index].id, index);
+    const auto findDevice = [&snapshot, &deviceIndexes](std::string_view id) -> DeviceDefinition* {
+        const auto device = deviceIndexes.find(id);
+        return device == deviceIndexes.end() ? nullptr : &snapshot.devices[device->second];
     };
+
+    // This read model covers every non-deleted device, including edge-executed and disabled
+    // devices. It replaces request-time PostgreSQL lookups in the Open Access realtime API.
+    const auto realtimeRows = co_await db.query(R"sql(
+WITH configured AS (
+  SELECT d.id AS device_id, element,
+         1 AS protocol_order, position AS function_order, 0::bigint AS element_order
+  FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'Modbus'
+  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]'::jsonb))
+    WITH ORDINALITY AS entry(element, position)
+  WHERE d.deleted_at IS NULL AND COALESCE(element->>'encode', '') <> 'JPEG'
+  UNION ALL
+  SELECT d.id, element, 2, position, 0::bigint
+  FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'S7'
+  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]'::jsonb))
+    WITH ORDINALITY AS entry(element, position)
+  WHERE d.deleted_at IS NULL AND COALESCE(element->>'encode', '') <> 'JPEG'
+  UNION ALL
+  SELECT d.id, element, 3, function_position, element_position
+  FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'SL651'
+  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]'::jsonb))
+    WITH ORDINALITY AS functions(function, function_position)
+  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(function->'elements', '[]'::jsonb))
+    WITH ORDINALITY AS elements(element, element_position)
+  WHERE d.deleted_at IS NULL AND function->>'dir' = 'UP'
+    AND COALESCE(element->>'encode', '') <> 'JPEG'
+)
+SELECT d.id::text, COALESCE(d.protocol_params->>'device_code', ''), d.name,
+       configured.element->>'id',
+       COALESCE(configured.element->>'name', configured.element->>'id'),
+       COALESCE(configured.element->>'unit', '')
+FROM device d
+LEFT JOIN configured ON configured.device_id = d.id
+WHERE d.deleted_at IS NULL
+ORDER BY d.id, configured.protocol_order, configured.function_order,
+         configured.element_order)sql");
+    RealtimeDeviceDefinition* realtimeDevice = nullptr;
+    for (const auto& row : realtimeRows.rows()) {
+        const auto deviceId = cell(row, 0);
+        if (!realtimeDevice || realtimeDevice->id != deviceId) {
+            RealtimeDeviceDefinition device;
+            device.id = deviceId;
+            device.code = cell(row, 1);
+            device.name = cell(row, 2);
+            snapshot.realtimeDevices.push_back(std::move(device));
+            realtimeDevice = &snapshot.realtimeDevices.back();
+        }
+        if (!row[3].isNull())
+            realtimeDevice->points.push_back(
+                RealtimePointDefinition{cell(row, 3), cell(row, 4), cell(row, 5)});
+    }
 
     const auto modbusElements = co_await db.query(R"sql(
 SELECT d.id::text, element->>'id', element->>'name', COALESCE(element->>'unit', ''),

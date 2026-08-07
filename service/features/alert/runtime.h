@@ -6,16 +6,15 @@
 #include <cstdint>
 #include <exception>
 #include <future>
-#include <iostream>
 #include <memory>
+#include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include <ruvia/core/Task.h>
-#include <ruvia/core/Timer.h>
 #include <ruvia/web/WebWorker.h>
 
 #include "service/common/message/contract.h"
@@ -63,22 +62,33 @@ public:
 
   static ruvia::Task<void> evaluateTelemetry(
       ruvia::WebWorkerContext &context,
-      const std::vector<service::message::ParsedDeviceMessage> &messages) {
+      const std::vector<service::message::ParsedDeviceMessage> &messages,
+      const std::vector<std::string> &previousData,
+      const std::vector<bool> &active) {
     if (messages.empty())
       co_return;
-
-    const auto active = co_await metadata::activeDevices(context, messages);
+    if (messages.size() != previousData.size() || messages.size() != active.size())
+      throw std::invalid_argument("alert telemetry batch size mismatch");
     std::vector<const service::message::ParsedDeviceMessage *> relevant;
+    std::vector<std::string_view> relevantPrevious;
     relevant.reserve(messages.size());
-    for (std::size_t index = 0; index < messages.size(); ++index)
-      if (index < active.size() && active[index])
+    relevantPrevious.reserve(messages.size());
+    for (std::size_t index = 0; index < messages.size(); ++index) {
+      if (index < active.size() && active[index]) {
         relevant.push_back(&messages[index]);
+        relevantPrevious.push_back(previousData[index]);
+      }
+    }
     if (relevant.empty())
       co_return;
 
     std::vector<ruvia::DbValue> params;
     const auto rules = co_await context.db().query(
-        telemetryEvaluationSql(relevant, params), params);
+        telemetryEvaluationSql(relevant, relevantPrevious, params), params);
+    if (rules.rows().empty()) {
+      co_await drainOutbox(context);
+      co_return;
+    }
     std::vector<std::vector<Evaluation>> evaluations(relevant.size());
     for (const auto &row : rules.rows()) {
       const auto sequence =
@@ -90,8 +100,32 @@ public:
     }
     for (std::size_t sequence = 0; sequence < relevant.size(); ++sequence) {
       co_await applyEvaluations(context, evaluations[sequence],
-                                relevant[sequence]->observedAtMs);
+                                relevant[sequence]->observedAtMs,
+                                relevant[sequence]->messageId);
     }
+    co_await drainOutbox(context);
+  }
+
+  static ruvia::Task<void>
+  evaluateOfflineDue(ruvia::WebWorkerContext &context) {
+    const auto now = nowMilliseconds();
+    const auto due = co_await metadata::dueOffline(context.redis(), now);
+    if (due.empty())
+      co_return;
+    std::set<std::string, std::less<>> uniqueRules;
+    for (const auto &member : due) {
+      const auto separator = member.find(':');
+      const auto ruleId = member.substr(0, separator);
+      if (separator != std::string::npos && service::common::isUuid(ruleId))
+        uniqueRules.emplace(ruleId);
+    }
+    if (!uniqueRules.empty()) {
+      std::vector<ruvia::DbValue> params;
+      const auto rules = co_await context.db().query(
+          offlineEvaluationSql(uniqueRules, params), params);
+      co_await apply(context, rules, "{}", now);
+    }
+    co_await metadata::removeOfflineDeadlines(context.redis(), due);
   }
 
 private:
@@ -115,21 +149,8 @@ private:
                         std::shared_ptr<std::promise<void>> stopped) {
     try {
       co_await metadata::refresh(context);
+      co_await drainOutbox(context);
       ready->set_value();
-      while (running_.load() && !context.stopToken().stopRequested()) {
-        try {
-          if (co_await metadata::hasOfflineRules(context)) {
-            const auto rules =
-                co_await context.db().query(offlineEvaluationSql());
-            co_await apply(context, rules, "{}", nowMilliseconds());
-          }
-        } catch (const std::exception &error) {
-          std::cerr << "alert offline evaluation failed: " << error.what()
-                    << '\n';
-        }
-        (void)co_await ruvia::sleepFor(context.worker(),
-                                       std::chrono::seconds(10));
-      }
     } catch (...) {
       try {
         ready->set_exception(std::current_exception());
@@ -150,19 +171,22 @@ private:
     evaluations.reserve(rows.rows().size());
     for (const auto &row : rows.rows())
       evaluations.push_back(evaluation(row, 1, fallbackData));
-    co_await applyEvaluations(context, evaluations, occurredAtMs);
+    co_await applyEvaluations(context, evaluations, occurredAtMs, {});
   }
 
   static ruvia::Task<void>
   applyEvaluations(ruvia::WebWorkerContext &context,
                    const std::vector<Evaluation> &evaluations,
-                   std::int64_t occurredAtMs) {
+                   std::int64_t occurredAtMs,
+                   std::string_view receiptId) {
     constexpr std::size_t kBatchSize = 256;
     for (std::size_t begin = 0; begin < evaluations.size();
          begin += kBatchSize) {
       co_await applyBatch(context, evaluations, begin,
                           std::min(begin + kBatchSize, evaluations.size()),
-                          occurredAtMs);
+                          occurredAtMs,
+                          begin + kBatchSize >= evaluations.size() ? receiptId
+                                                                   : std::string_view{});
     }
   }
 
@@ -191,18 +215,18 @@ private:
   static ruvia::Task<void>
   applyBatch(ruvia::WebWorkerContext &context,
              const std::vector<Evaluation> &evaluations, std::size_t begin,
-             std::size_t end, std::int64_t occurredAtMs) {
+             std::size_t end, std::int64_t occurredAtMs,
+             std::string_view receiptId) {
     if (begin >= end)
       co_return;
 
     std::string sql = R"sql(
 WITH incoming(
   rule_id, matched, record_id, device_id, severity, message, detail,
-  silence_duration, recovery_condition, recovery_wait_seconds) AS (VALUES )sql";
+  silence_duration, recovery_condition, recovery_wait_seconds,
+  rule_name, device_code, occurred_at_ms, receipt_id) AS (VALUES )sql";
     std::vector<ruvia::DbValue> params;
-    params.reserve((end - begin) * 10);
-    std::unordered_map<std::string_view, const Evaluation *> byRuleId;
-    byRuleId.reserve(end - begin);
+    params.reserve((end - begin) * 14);
     for (auto index = begin; index < end; ++index) {
       const auto &evaluation = evaluations[index];
       if (index != begin)
@@ -215,7 +239,10 @@ WITH incoming(
              std::to_string(base + 5) + "::text,$" + std::to_string(base + 6) +
              "::jsonb,$" + std::to_string(base + 7) + "::integer,$" +
              std::to_string(base + 8) + "::text,$" + std::to_string(base + 9) +
-             "::integer)";
+             "::integer,$" + std::to_string(base + 10) + "::text,$" +
+             std::to_string(base + 11) + "::text,$" +
+             std::to_string(base + 12) + "::bigint,$" +
+             std::to_string(base + 13) + "::text)";
       params.emplace_back(std::string_view(evaluation.ruleId));
       params.emplace_back(evaluation.matched);
       params.emplace_back(std::string_view(evaluation.recordId));
@@ -226,7 +253,10 @@ WITH incoming(
       params.emplace_back(std::string_view(evaluation.silence));
       params.emplace_back(std::string_view(evaluation.recovery));
       params.emplace_back(std::string_view(evaluation.recoveryWait));
-      byRuleId.emplace(evaluation.ruleId, &evaluation);
+      params.emplace_back(std::string_view(evaluation.ruleName));
+      params.emplace_back(std::string_view(evaluation.deviceCode));
+      params.emplace_back(occurredAtMs);
+      params.emplace_back(receiptId);
     }
     sql += R"sql(), states AS (
   INSERT INTO alert_rule_state(
@@ -286,43 +316,116 @@ WITH incoming(
              * interval '1 second'))
     )
   RETURNING record.id, incoming.rule_id
+), changes AS MATERIALIZED (
+  SELECT 'device.alert.triggered'::text AS event_type,
+         'active'::text AS status, id, rule_id FROM created
+  UNION ALL
+  SELECT 'device.alert.resolved'::text,
+         'resolved'::text, id, rule_id FROM resolved
+), queued AS (
+  INSERT INTO alert_event_outbox(
+    event_id, event_type, rule_id, device_id, device_code,
+    occurred_at_ms, data)
+  SELECT changes.id, changes.event_type, changes.rule_id, incoming.device_id,
+         incoming.device_code, incoming.occurred_at_ms,
+         jsonb_build_object(
+           'alert', jsonb_build_object(
+             'id', changes.id, 'ruleId', incoming.rule_id,
+             'ruleName', incoming.rule_name, 'severity', incoming.severity,
+             'status', changes.status),
+           'values', incoming.detail)
+  FROM changes JOIN incoming USING (rule_id)
+  ON CONFLICT (event_id, event_type) DO NOTHING
+  RETURNING event_id, event_type, rule_id, device_id, device_code,
+            occurred_at_ms, data, created_at
+), receipted AS (
+  INSERT INTO alert_evaluation_receipt(message_id, device_id)
+  SELECT DISTINCT NULLIF(incoming.receipt_id, '')::uuid, incoming.device_id
+  FROM incoming
+  CROSS JOIN (SELECT count(*) AS queued_count FROM queued) queued_barrier
+  WHERE incoming.receipt_id <> '' AND queued_barrier.queued_count >= 0
+  ON CONFLICT (message_id) DO NOTHING
+  RETURNING message_id
+), pruned AS (
+  DELETE FROM alert_evaluation_receipt
+  WHERE created_at < NOW() - interval '7 days'
+    AND (SELECT count(*) FROM receipted) >= 0
+  RETURNING message_id
+), relevant AS (
+  SELECT DISTINCT rule_id FROM incoming
+), deliverable AS (
+  SELECT event_id, event_type, rule_id, device_id, device_code,
+         occurred_at_ms, data, created_at
+  FROM queued
+  UNION ALL
+  SELECT outbox.event_id, outbox.event_type, outbox.rule_id,
+         outbox.device_id, outbox.device_code, outbox.occurred_at_ms,
+         outbox.data, outbox.created_at
+  FROM alert_event_outbox outbox
+  JOIN relevant USING (rule_id)
 )
-SELECT 'created', id::text, rule_id::text FROM created
-UNION ALL
-SELECT 'resolved', id::text, rule_id::text FROM resolved)sql";
+SELECT event_id::text, event_type, device_id::text, device_code,
+       occurred_at_ms::text, data::text
+FROM deliverable
+CROSS JOIN (SELECT count(*) AS pruned_count FROM pruned) prune_barrier
+WHERE prune_barrier.pruned_count >= 0
+ORDER BY created_at, event_id)sql";
 
     const auto events = co_await context.db().query(sql, params);
-    for (const auto &event : events.rows()) {
-      const auto action = event[0].text();
-      const auto recordId = std::string(event[1].text());
-      const auto ruleId = event[2].text();
-      const auto found = byRuleId.find(ruleId);
-      if (found == byRuleId.end())
-        continue;
-      const auto &evaluation = *found->second;
-      const auto created = action == "created";
-      const auto status =
-          created ? std::string_view("active") : std::string_view("resolved");
-      const auto payload =
-          alertEventJson(recordId, evaluation.ruleId, evaluation.ruleName,
-                         evaluation.severity, status, evaluation.data);
-      co_await service::access::event::publish(
-          context.redis(), recordId,
-          created ? "device.alert.triggered" : "device.alert.resolved",
-          evaluation.deviceId, evaluation.deviceCode, occurredAtMs, payload);
-    }
+    co_await publishOutboxRows(context, events);
   }
 
-  static std::string
-  alertEventJson(std::string_view recordId, std::string_view ruleId,
-                 std::string_view ruleName, std::string_view severity,
-                 std::string_view status, std::string_view data) {
-    return "{\"alert\":{\"id\":" + service::access::jsonQuoted(recordId) +
-           ",\"ruleId\":" + service::access::jsonQuoted(ruleId) +
-           ",\"ruleName\":" + service::access::jsonQuoted(ruleName) +
-           ",\"severity\":" + service::access::jsonQuoted(severity) +
-           ",\"status\":" + service::access::jsonQuoted(status) +
-           "},\"values\":" + std::string(data) + "}";
+  template <typename Rows>
+  static ruvia::Task<void> publishOutboxRows(
+      ruvia::WebWorkerContext &context, const Rows &events) {
+    if (events.rows().empty())
+      co_return;
+    const auto scriptSha = co_await context.redis().scriptLoad(
+        service::access::event::kPublishScript);
+    auto pipeline = context.redis().pipeline();
+    for (const auto &event : events.rows()) {
+      const auto occurredAt = service::common::parseInt64(
+          std::optional<std::string_view>(event[4].text()));
+      if (!occurredAt)
+        throw std::runtime_error("invalid alert outbox timestamp");
+      service::access::event::queue(
+          pipeline, scriptSha, event[0].text(), event[1].text(),
+          event[2].text(), event[3].text(), *occurredAt, event[5].text());
+    }
+    const auto replies = co_await std::move(pipeline).exec();
+    service::message::redis::requirePipelineSuccess("publish alert outbox", replies);
+
+    std::string remove = "DELETE FROM alert_event_outbox WHERE (event_id, event_type) IN (";
+    std::vector<ruvia::DbValue> params;
+    params.reserve(events.rows().size() * 2);
+    for (const auto &event : events.rows()) {
+      if (!params.empty())
+        remove.push_back(',');
+      const auto base = params.size() + 1;
+      remove += "($" + std::to_string(base) + "::uuid,$" +
+                std::to_string(base + 1) + "::text)";
+      params.emplace_back(event[0].text());
+      params.emplace_back(event[1].text());
+    }
+    remove.push_back(')');
+    (void)co_await context.db().execute(remove, params);
+  }
+
+  static ruvia::Task<void> drainOutbox(ruvia::WebWorkerContext &context) {
+    (void)co_await context.db().execute(
+        "DELETE FROM alert_evaluation_receipt "
+        "WHERE created_at < NOW() - interval '7 days'");
+    while (true) {
+      const auto events = co_await context.db().query(R"sql(
+SELECT event_id::text, event_type, device_id::text, device_code,
+       occurred_at_ms::text, data::text
+FROM alert_event_outbox
+ORDER BY created_at, event_id
+LIMIT 256)sql");
+      if (events.rows().empty())
+        co_return;
+      co_await publishOutboxRows(context, events);
+    }
   }
 
   static std::int64_t nowMilliseconds() {
@@ -331,44 +434,33 @@ SELECT 'resolved', id::text, rule_id::text FROM resolved)sql";
         .count();
   }
 
-  static std::string offlineEvaluationSql() {
-    const std::string input = R"sql(
-WITH rules AS (
+  static std::string offlineEvaluationSql(
+      const std::set<std::string, std::less<>> &ruleIds,
+      std::vector<ruvia::DbValue> &params) {
+    std::string input = "WITH requested(rule_id) AS (VALUES ";
+    params.clear();
+    params.reserve(ruleIds.size());
+    for (const auto &ruleId : ruleIds) {
+      if (!params.empty())
+        input.push_back(',');
+      params.emplace_back(std::string_view(ruleId));
+      input += "($" + std::to_string(params.size()) + "::uuid)";
+    }
+    input += R"sql(), rules AS (
   SELECT 0::bigint AS input_sequence, rule.*, device.name AS device_name,
-         device.protocol_params->>'device_code' AS device_code
-  FROM alert_rule rule JOIN device ON device.id = rule.device_id
+          device.protocol_params->>'device_code' AS device_code
+  FROM requested
+  JOIN alert_rule rule ON rule.id = requested.rule_id
+  JOIN device ON device.id = rule.device_id
   WHERE rule.deleted_at IS NULL AND rule.status = 'enabled'
     AND device.deleted_at IS NULL AND device.status = 'enabled'
-), rule_devices AS (
-  SELECT DISTINCT device_id FROM rules
-), device_samples AS (
-  SELECT rule_devices.device_id,
-         history.data,
-         history.observed_at,
-         history.previous_data
-  FROM rule_devices
-  LEFT JOIN LATERAL (
-    SELECT
-      (array_agg(recent.data ORDER BY recent.report_time DESC))[1] AS data,
-      (array_agg(recent.report_time ORDER BY recent.report_time DESC))[1]
-        AS observed_at,
-      (array_agg(recent.data ORDER BY recent.report_time DESC))[2]
-        AS previous_data
-    FROM (
-      SELECT data, report_time
-      FROM device_data
-      WHERE device_id = rule_devices.device_id
-      ORDER BY report_time DESC
-      LIMIT 2
-    ) recent
-  ) history ON TRUE
 ), samples AS (
   SELECT rules.*,
-         device_samples.data,
-         device_samples.observed_at,
-         device_samples.previous_data
+         state.last_data AS data,
+         state.last_observed_at AS observed_at,
+         state.previous_data
   FROM rules
-  JOIN device_samples ON device_samples.device_id = rules.device_id
+  LEFT JOIN device_data_ingest_state state ON state.device_id = rules.device_id
 )
 )sql";
     return input + evaluationTail();
@@ -376,45 +468,42 @@ WITH rules AS (
 
   static std::string telemetryEvaluationSql(
       const std::vector<const service::message::ParsedDeviceMessage *> &messages,
+      const std::vector<std::string_view> &previousData,
       std::vector<ruvia::DbValue> &params) {
     std::string sql =
-        "WITH input(input_sequence, device_id, data, observed_at_ms) AS "
+        "WITH input(input_sequence, message_id, device_id, data, previous_data, observed_at_ms) AS "
         "(VALUES ";
     params.clear();
-    params.reserve(messages.size() * 4);
+    params.reserve(messages.size() * 6);
     for (std::size_t index = 0; index < messages.size(); ++index) {
       if (index != 0)
         sql.push_back(',');
       const auto base = params.size() + 1;
       sql += "($" + std::to_string(base) + "::bigint,$" +
-             std::to_string(base + 1) + "::uuid,$" + std::to_string(base + 2) +
-             "::jsonb,$" + std::to_string(base + 3) + "::bigint)";
+             std::to_string(base + 1) + "::uuid,$" +
+             std::to_string(base + 2) + "::uuid,$" + std::to_string(base + 3) +
+             "::jsonb,$" + std::to_string(base + 4) + "::jsonb,$" +
+             std::to_string(base + 5) + "::bigint)";
       params.emplace_back(static_cast<std::int64_t>(index));
+      params.emplace_back(std::string_view(messages[index]->messageId));
       params.emplace_back(std::string_view(messages[index]->deviceId));
       params.emplace_back(std::string_view(messages[index]->valuesJson));
+      params.emplace_back(previousData[index]);
       params.emplace_back(messages[index]->observedAtMs);
     }
-    sql += R"sql(), input_samples AS (
-  SELECT input.*, previous.data AS previous_data
-  FROM input
-  LEFT JOIN LATERAL (
-    SELECT data FROM device_data
-    WHERE device_id = input.device_id
-      AND report_time <
-          to_timestamp(input.observed_at_ms::double precision / 1000.0)
-    ORDER BY report_time DESC LIMIT 1
-  ) previous ON TRUE
-), rules AS (
-  SELECT input_samples.input_sequence, rule.*, device.name AS device_name,
+    sql += R"sql(), rules AS (
+  SELECT input.input_sequence, rule.*, device.name AS device_name,
          device.protocol_params->>'device_code' AS device_code,
-         input_samples.data AS input_data,
-         input_samples.observed_at_ms,
-         input_samples.previous_data
-  FROM input_samples
-  JOIN alert_rule rule ON rule.device_id = input_samples.device_id
+         input.data AS input_data,
+         input.observed_at_ms,
+         input.previous_data
+  FROM input
+  JOIN alert_rule rule ON rule.device_id = input.device_id
   JOIN device ON device.id = rule.device_id
+  LEFT JOIN alert_evaluation_receipt receipt ON receipt.message_id = input.message_id
   WHERE rule.deleted_at IS NULL AND rule.status = 'enabled'
     AND device.deleted_at IS NULL AND device.status = 'enabled'
+    AND receipt.message_id IS NULL
 ), samples AS (
   SELECT rules.*, rules.input_data AS data,
          to_timestamp(rules.observed_at_ms::double precision / 1000.0)

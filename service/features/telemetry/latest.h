@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <set>
 #include <span>
 #include <string>
@@ -21,6 +23,9 @@
 namespace service::telemetry::latest {
 
 inline constexpr std::string_view kOnlineDeadlinesKey = "iot:schedule:device:online-deadlines";
+inline constexpr std::string_view kFreshnessWakeStream =
+    "iot:channel:telemetry:freshness-wake";
+inline constexpr std::size_t kFreshnessWakeCapacity = 128;
 
 inline std::string latestKey(std::string_view deviceCode) {
     return "iot:device:" + std::string(deviceCode) + ":latest";
@@ -115,6 +120,16 @@ template <typename Redis>
 ruvia::Task<void> eraseDevice(const Redis& redis, std::string_view deviceCode) {
     co_await service::message::redis::eraseHash(redis, runtimeKey(deviceCode));
     co_await service::message::redis::eraseHash(redis, latestKey(deviceCode));
+    (void)co_await service::message::redis::command(
+        redis, {"ZREM", std::string(kOnlineDeadlinesKey), std::string(deviceCode)});
+}
+
+template <typename Redis>
+ruvia::Task<void> signalFreshness(const Redis& redis, std::string_view deadline = {}) {
+    (void)co_await service::message::redis::command(
+        redis, {"XADD", std::string(kFreshnessWakeStream), "MAXLEN", "~",
+                std::to_string(kFreshnessWakeCapacity), "*", "deadline_ms",
+                std::string(deadline)});
 }
 
 template <typename Redis>
@@ -149,6 +164,9 @@ local online_until = observed_at + number_or(ARGV[7], 300000)
 local now = number_or(ARGV[5], observed_at)
 local current_report = number_or(redis.call('HGET', runtime_key, 'last_report_at_ms'), -1)
 if observed_at >= current_report then
+  local deadlines_key = 'iot:schedule:device:online-deadlines'
+  local earliest = redis.call('ZRANGE', deadlines_key, 0, 0, 'WITHSCORES')
+  local wake = #earliest == 0 or online_until < number_or(earliest[2], online_until + 1)
   local state = 'online'
   local reason = ''
   if online_until < now then
@@ -169,7 +187,11 @@ if observed_at >= current_report then
   redis.call('HSET', latest_key,
     '_device_id', ARGV[1], '_device_code', ARGV[2],
     '_state', state_json, '_updated_at_ms', ARGV[5])
-  redis.call('ZADD', 'iot:schedule:device:online-deadlines', online_until, ARGV[2])
+  redis.call('ZADD', deadlines_key, online_until, ARGV[2])
+  if wake then
+    redis.call('XADD', 'iot:channel:telemetry:freshness-wake',
+               'MAXLEN', '~', '128', '*', 'deadline_ms', tostring(online_until))
+  end
 end
 local count = 0
 for element_id, point in pairs(payload.values or {}) do
@@ -268,15 +290,49 @@ end
 redis.call('ZADD', KEYS[1], expected, ARGV[1])
 return 0
 )lua";
+    if (due.array().empty())
+        co_return;
+    const auto scriptSha = co_await redis.scriptLoad(script);
+    auto pipeline = redis.pipeline();
+    const std::string deadlineKey(kOnlineDeadlinesKey);
     for (const auto& code : due.array()) {
         if (code.kind() != ruvia::RedisValue::Kind::kString)
             continue;
-        const std::string deadlineKey(kOnlineDeadlinesKey);
-        const std::string deviceCode(code.string());
-        const std::string_view keys[]{deadlineKey};
-        const std::string_view args[]{deviceCode, now};
-        (void)co_await redis.eval(script, keys, args);
+        const std::array<std::string_view, 6> command{
+            "EVALSHA", scriptSha, "1", deadlineKey, code.string(), now};
+        pipeline.command(command);
     }
+    const auto replies = co_await std::move(pipeline).exec();
+    for (const auto& reply : replies)
+        if (reply.kind() == ruvia::RedisValue::Kind::kError)
+            service::message::redis::throwValue("expire device online deadline", reply);
+}
+
+template <typename Redis>
+ruvia::Task<std::optional<std::int64_t>> nextDeadline(const Redis& redis) {
+    const auto reply = co_await service::message::redis::command(
+        redis, {"ZRANGE", std::string(kOnlineDeadlinesKey), "0", "0", "WITHSCORES"});
+    if (reply.kind() != ruvia::RedisValue::Kind::kArray)
+        service::message::redis::throwValue("read next device online deadline", reply);
+    if (reply.array().empty())
+        co_return std::nullopt;
+    if (reply.array().size() != 2 ||
+        reply.array()[1].kind() != ruvia::RedisValue::Kind::kString)
+        service::message::redis::throwValue("parse next device online deadline", reply);
+    try {
+        co_return std::stoll(std::string(reply.array()[1].string()));
+    } catch (const std::exception&) {
+        throw std::runtime_error("invalid device online deadline score");
+    }
+}
+
+inline std::optional<std::chrono::milliseconds>
+deadlineWait(std::int64_t now, std::optional<std::int64_t> deadline) {
+    if (!deadline.has_value())
+        return std::nullopt;
+    if (*deadline <= now)
+        return std::chrono::milliseconds::zero();
+    return std::chrono::milliseconds(*deadline - now);
 }
 
 template <typename Context>
@@ -582,6 +638,7 @@ ORDER BY numbered.device_id, numbered.protocol_order,
         }
         (void)co_await std::move(reportPipeline).exec();
     }
+    co_await signalFreshness(redis);
 }
 
 template <typename Context> ruvia::Task<void> projectDevice(Context& context, std::string_view id) {
