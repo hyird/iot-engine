@@ -190,16 +190,23 @@ jobs:
       - name: Test
         run: |
           set -o pipefail
-          if ctest --test-dir build/ci --output-on-failure --build-config "$BUILD_TYPE" && \
-             ctest --test-dir build/ci --output-on-failure --build-config "$BUILD_TYPE" \
-               --repeat until-fail:20 -R '^gb28181-media$'; then
+          ctest --test-dir build/ci --output-on-failure --build-config "$BUILD_TYPE"
+          diagnostic_marker="$(mktemp)"
+          if ctest --test-dir build/ci --output-on-failure --build-config "$BUILD_TYPE" \
+              --repeat until-fail:20 -R '^gb28181-media$'; then
             exit 0
           fi
-          echo "CTest failed; collecting the GB28181 media process backtrace"
-          lldb --batch \
-            -o run \
-            -o "thread backtrace all" \
-            -- build/ci/gb28181-media-test || true
+          echo "Media stress failed; printing macOS crash reports and retrying under LLDB"
+          find "$HOME/Library/Logs/DiagnosticReports" -type f -newer "$diagnostic_marker" \
+            -print -exec cat {} \; 2>/dev/null || true
+          for attempt in $(seq 1 20); do
+            echo "LLDB diagnostic attempt ${attempt}/20"
+            lldb --batch \
+              -o run \
+              -k "thread backtrace all" \
+              -k "quit 1" \
+              -- build/ci/gb28181-media-test
+          done
           exit 1
 
       # UPX does not support the Mach-O executable format used by this artifact.

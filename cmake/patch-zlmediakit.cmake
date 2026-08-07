@@ -226,3 +226,48 @@ else()
     file(WRITE "${MK_RTP_SERVER_SOURCE}" "${PATCHED_MK_RTP_SERVER_CONTENT}")
     message(STATUS "Patched ZLMediaKit RTP C API exception ownership")
 endif()
+
+set(MK_COMMON_SOURCE "${SOURCE_DIR}/api/source/mk_common.cpp")
+file(READ "${MK_COMMON_SOURCE}" MK_COMMON_CONTENT)
+set(PATCHED_MK_COMMON_CONTENT "${MK_COMMON_CONTENT}")
+string(FIND
+    "${PATCHED_MK_COMMON_CONTENT}"
+    "Drain asynchronous server destruction before returning"
+    MK_COMMON_DRAIN_INDEX)
+if(MK_COMMON_DRAIN_INDEX EQUAL -1)
+    string(REPLACE
+        "    stopAllTcpServer();\n}"
+        [=[    stopAllTcpServer();
+
+    // Drain asynchronous server destruction before returning. TcpServer and
+    // UdpServer clone deleters post their final delete to the owning poller;
+    // returning before those tasks run lets process shutdown race live objects.
+    const auto drain = [](TaskExecutorGetterImp &pool) {
+        pool.for_each([](const TaskExecutor::Ptr &executor) {
+            const auto poller = std::static_pointer_cast<EventPoller>(executor);
+            if (!poller->isCurrentThread())
+                poller->sync([]() {});
+        });
+    };
+    drain(EventPollerPool::Instance());
+    drain(WorkThreadPool::Instance());
+    // Destructors executed by the first barrier can enqueue cross-pool cleanup.
+    drain(EventPollerPool::Instance());
+    drain(WorkThreadPool::Instance());
+}]=]
+        PATCHED_MK_COMMON_CONTENT
+        "${PATCHED_MK_COMMON_CONTENT}")
+endif()
+string(FIND
+    "${PATCHED_MK_COMMON_CONTENT}"
+    "Drain asynchronous server destruction before returning"
+    PATCHED_MK_COMMON_DRAIN_INDEX)
+if(PATCHED_MK_COMMON_DRAIN_INDEX EQUAL -1)
+    message(FATAL_ERROR "Unable to patch ZLMediaKit synchronous server shutdown")
+endif()
+if(PATCHED_MK_COMMON_CONTENT STREQUAL MK_COMMON_CONTENT)
+    message(STATUS "ZLMediaKit synchronous server shutdown already patched")
+else()
+    file(WRITE "${MK_COMMON_SOURCE}" "${PATCHED_MK_COMMON_CONTENT}")
+    message(STATUS "Patched ZLMediaKit synchronous server shutdown")
+endif()
