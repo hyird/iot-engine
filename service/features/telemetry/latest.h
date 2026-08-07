@@ -119,7 +119,7 @@ ruvia::Task<void> eraseDevice(const Redis& redis, std::string_view deviceCode) {
 
 template <typename Redis>
 ruvia::Task<void> update(const Redis& redis,
-                         const std::vector<service::message::StreamMessage>& messages) {
+                         const std::vector<service::message::ParsedDeviceMessage>& messages) {
     if (messages.empty())
         co_return;
     static constexpr std::string_view script = R"lua(
@@ -214,21 +214,18 @@ for element_id, point in pairs(payload.values or {}) do
   end
 end
 return count
-)lua";
+    )lua";
     auto pipeline = redis.pipeline();
-    std::vector<std::vector<std::string>> commands;
-    commands.reserve(messages.size());
-    for (const auto& message : messages) {
-        const auto parsed = service::message::parsedFrom(message);
-        commands.push_back({"EVAL", std::string(script), "0", parsed.deviceId, parsed.deviceCode,
-                            parsed.protocol, std::to_string(parsed.observedAtMs),
-                            std::to_string(service::message::utcNowMilliseconds()), parsed.source,
-                            std::to_string(parsed.onlineWindowMs), parsed.valuesJson});
-        std::vector<std::string_view> views;
-        views.reserve(commands.back().size());
-        for (const auto& argument : commands.back())
-            views.push_back(argument);
-        pipeline.command(views);
+    for (const auto& parsed : messages) {
+        const auto observedAt = std::to_string(parsed.observedAtMs);
+        const auto updatedAt = std::to_string(service::message::utcNowMilliseconds());
+        const auto onlineWindow = std::to_string(parsed.onlineWindowMs);
+        const std::array<std::string_view, 11> command{
+            "EVAL",       script,            "0",          parsed.deviceId,
+            parsed.deviceCode, parsed.protocol,    observedAt,   updatedAt,
+            parsed.source, onlineWindow,      parsed.valuesJson};
+        // RedisPipeline copies every argument synchronously.
+        pipeline.command(command);
     }
     const auto replies = co_await std::move(pipeline).exec();
     for (const auto& reply : replies)

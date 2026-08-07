@@ -150,21 +150,24 @@ class PersistenceRuntime final {
         const std::vector<message::StreamMessage>& messages) {
         if (messages.empty())
             co_return;
+        std::vector<message::ParsedDeviceMessage> parsedMessages;
+        parsedMessages.reserve(messages.size());
+        for (const auto& message : messages) {
+            auto parsed = message::parsedFrom(message);
+            parsed.valuesJson = detail::sanitizeJsonUtf8(parsed.valuesJson);
+            parsedMessages.push_back(std::move(parsed));
+        }
         const auto redis = context.redis();
-        co_await persist(context, messages);
-        co_await latest::update(redis, messages);
-        std::vector<message::ParsedDeviceMessage> alertMessages;
-        alertMessages.reserve(messages.size());
-        for (const auto& message : messages)
-            alertMessages.push_back(message::parsedFrom(message));
+        co_await persist(context, parsedMessages);
+        co_await latest::update(redis, parsedMessages);
         try {
-            co_await service::alert::Runtime::evaluateTelemetry(context, alertMessages);
+            co_await service::alert::Runtime::evaluateTelemetry(context, parsedMessages);
         } catch (const std::exception& error) {
             // A malformed rule must not block durable telemetry or queue acknowledgement.
             // The next matching report retries evaluation against durable telemetry.
             std::cerr << "alert telemetry evaluation failed: " << error.what() << '\n';
         }
-        co_await service::access::event::publishMany(redis, messages);
+        co_await service::access::event::publishMany(redis, parsedMessages);
     }
 
   private:
@@ -283,19 +286,13 @@ class PersistenceRuntime final {
     }
 
     static ruvia::Task<void> persist(ruvia::WebWorkerContext& context,
-                                     const std::vector<message::StreamMessage>& messages) {
+                                     const std::vector<message::ParsedDeviceMessage>& messages) {
         if (messages.empty())
             co_return;
-        std::vector<message::ParsedDeviceMessage> parsedMessages;
-        parsedMessages.reserve(messages.size());
         std::vector<std::string> rawPayloadArrays;
         rawPayloadArrays.reserve(messages.size());
-        for (const auto& message : messages) {
-            parsedMessages.push_back(message::parsedFrom(message));
-            parsedMessages.back().valuesJson =
-                detail::sanitizeJsonUtf8(parsedMessages.back().valuesJson);
-            rawPayloadArrays.push_back(message::rawPayloadsJson(parsedMessages.back().rawPayloads));
-        }
+        for (const auto& message : messages)
+            rawPayloadArrays.push_back(message::rawPayloadsJson(message.rawPayloads));
 
         std::string sql = R"sql(WITH RECURSIVE incoming(
 report_time, id, device_id, link_id, connection_id, protocol, source,
@@ -303,7 +300,7 @@ occurred_at, data, raw_payload_hex, storage_interval) AS (VALUES )sql";
         std::vector<ruvia::DbValue> params;
         params.reserve(messages.size() * 11);
         for (std::size_t index = 0; index < messages.size(); ++index) {
-            const auto& parsed = parsedMessages[index];
+            const auto& parsed = messages[index];
             if (index != 0)
                 sql.push_back(',');
             const auto base = index * 11;

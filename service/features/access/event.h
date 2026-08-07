@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -34,27 +35,26 @@ inline void queue(Pipeline& pipeline, std::string_view eventId,
                   std::string_view eventType, std::string_view deviceId,
                   std::string_view deviceCode, std::int64_t occurredAtMs,
                   std::string_view dataJson) {
-    const std::vector<std::string> keys{std::string(kStream),
-                                        publicationKey(eventId, eventType)};
-    const std::vector<std::string> arguments{
+    const auto publishedKey = publicationKey(eventId, eventType);
+    const auto occurredAt = std::to_string(occurredAtMs);
+    const std::array<std::string_view, 2> keys{kStream, publishedKey};
+    const std::array<std::string_view, 14> arguments{
         "100000",
-        std::to_string(kPublicationTtlSeconds),
+        "604800",
         "event_id",
-        std::string(eventId),
+        eventId,
         "event_type",
-        std::string(eventType),
+        eventType,
         "device_id",
-        std::string(deviceId),
+        deviceId,
         "device_code",
-        std::string(deviceCode),
+        deviceCode,
         "occurred_at_ms",
-        std::to_string(occurredAtMs),
+        occurredAt,
         "data_json",
-        std::string(dataJson),
+        dataJson,
     };
-    const std::vector<std::string_view> keyViews(keys.begin(), keys.end());
-    const std::vector<std::string_view> argumentViews(arguments.begin(), arguments.end());
-    message::redis::queueEval(pipeline, kPublishScript, keyViews, argumentViews);
+    message::redis::queueEval(pipeline, kPublishScript, keys, arguments);
 }
 
 template <typename Redis>
@@ -89,12 +89,11 @@ inline ruvia::Task<void> publish(const Redis& redis, std::string_view eventId,
 
 template <typename Redis>
 inline ruvia::Task<void> publishMany(
-    const Redis& redis, const std::vector<message::StreamMessage>& messages) {
+    const Redis& redis, const std::vector<message::ParsedDeviceMessage>& messages) {
     if (messages.empty())
         co_return;
     auto pipeline = redis.pipeline();
-    for (const auto& message : messages) {
-        const auto parsed = message::parsedFrom(message);
+    for (const auto& parsed : messages) {
         const auto eventType =
             parsed.valuesJson.find("\"type\":\"JPEG\"") != std::string::npos
                 ? "device.image.reported"

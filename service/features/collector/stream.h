@@ -361,40 +361,27 @@ return acknowledged
 template <typename Redis>
 inline ruvia::Task<void> acknowledgeAndDeleteMany(
     const Redis& redis, std::string_view stream, std::string_view group,
-    std::span<const std::string> ids) {
-    if (ids.empty())
+    const std::vector<StreamMessage>& messages) {
+    if (messages.empty())
         co_return;
     static constexpr std::string_view script = R"lua(
-local acknowledged = 0
-for index = 2, #ARGV do
-  acknowledged = acknowledged + redis.call('XACK', KEYS[1], ARGV[1], ARGV[index])
-  redis.call('XDEL', KEYS[1], ARGV[index])
-end
+local ids = {}
+for index = 2, #ARGV do ids[#ids + 1] = ARGV[index] end
+local acknowledged = redis.call('XACK', KEYS[1], ARGV[1], unpack(ids))
+redis.call('XDEL', KEYS[1], unpack(ids))
 return acknowledged
 )lua";
     const std::string streamKey(stream);
     const std::string groupValue(group);
     const std::string_view keys[]{streamKey};
     std::vector<std::string_view> arguments;
-    arguments.reserve(ids.size() + 1);
+    arguments.reserve(messages.size() + 1);
     arguments.push_back(groupValue);
-    for (const auto& id : ids)
-        arguments.push_back(id);
+    for (const auto& message : messages)
+        arguments.push_back(message.id);
     const auto reply = co_await redis.eval(script, keys, arguments);
     if (reply.kind() != RedisValue::Kind::kInteger)
         throwValue("batch XACK/XDEL", reply);
-}
-
-template <typename Redis>
-inline ruvia::Task<void> acknowledgeAndDeleteMany(
-    const Redis& redis, std::string_view stream, std::string_view group,
-    const std::vector<StreamMessage>& messages) {
-    std::vector<std::string> ids;
-    ids.reserve(messages.size());
-    for (const auto& message : messages)
-        ids.push_back(message.id);
-    co_await acknowledgeAndDeleteMany(redis, stream, group,
-                                      std::span<const std::string>(ids));
 }
 
 template <typename Redis>
