@@ -10,6 +10,7 @@
 #include <ranges>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <ruvia/core/Task.h>
 #include <ruvia/core/Timer.h>
@@ -82,13 +83,28 @@ class Reconciler final {
             ready->set_value();
             bool recovering = true;
             while (running_.load() && !context.stopToken().stopRequested()) {
-                const auto messages = recovering
-                    ? co_await service::message::redis::readGroup(
-                          redis, service::message::kRuntimeConfigChangesStream, kGroup,
-                          "service-0", "0", std::chrono::milliseconds(0), kBatchSize)
-                    : co_await service::message::redis::readGroupBlocking(
-                          redis, service::message::kRuntimeConfigChangesStream, kGroup,
-                          "service-0", context.stopToken(), kBatchSize);
+                std::vector<service::message::StreamMessage> messages;
+                bool readFailed = false;
+                try {
+                    messages = recovering
+                        ? co_await service::message::redis::readGroup(
+                              redis, service::message::kRuntimeConfigChangesStream, kGroup,
+                              "service-0", "0", std::chrono::milliseconds(0), kBatchSize)
+                        : co_await service::message::redis::readGroupBlocking(
+                              redis, service::message::kRuntimeConfigChangesStream, kGroup,
+                              "service-0", context.stopToken(), kBatchSize);
+                } catch (const std::exception& error) {
+                    if (context.stopToken().stopRequested())
+                        break;
+                    std::cerr << "runtime config stream read failed: " << error.what() << '\n';
+                    recovering = true;
+                    readFailed = true;
+                }
+                if (readFailed) {
+                    (void)co_await ruvia::sleepFor(context.worker(),
+                                                   std::chrono::milliseconds(250));
+                    continue;
+                }
                 if (recovering && messages.empty()) {
                     recovering = false;
                     continue;

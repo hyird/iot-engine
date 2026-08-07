@@ -346,12 +346,27 @@ public:
             ready->set_value();
             bool recovering = true;
             while (running_.load() && !context.stopToken().stopRequested()) {
-                const auto batches = recovering
-                    ? co_await message::redis::readGroupMany(
-                          redis, streams, kGroup, "service-0", "0", kBatchSize)
-                    : co_await message::redis::readGroupManyBlocking(
-                          redis, streams, kGroup, "service-0", context.stopToken(),
-                          kBatchSize);
+                std::vector<message::redis::StreamBatch> batches;
+                bool readFailed = false;
+                try {
+                    batches = recovering
+                        ? co_await message::redis::readGroupMany(
+                              redis, streams, kGroup, "service-0", "0", kBatchSize)
+                        : co_await message::redis::readGroupManyBlocking(
+                              redis, streams, kGroup, "service-0", context.stopToken(),
+                              kBatchSize);
+                } catch (const std::exception& error) {
+                    if (context.stopToken().stopRequested())
+                        break;
+                    std::cerr << "open webhook stream read failed: " << error.what() << '\n';
+                    recovering = true;
+                    readFailed = true;
+                }
+                if (readFailed) {
+                    (void)co_await ruvia::sleepFor(context.worker(),
+                                                   std::chrono::milliseconds(250));
+                    continue;
+                }
                 if (recovering && batches.empty())
                     recovering = false;
                 if (batches.empty())

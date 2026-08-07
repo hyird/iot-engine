@@ -97,12 +97,28 @@ class ResultRuntime final {
                     (void)co_await ruvia::sleepFor(context.worker(), std::chrono::seconds(1));
                     continue;
                 }
-                const auto batches = recovering
-                    ? co_await message::redis::readGroupMany(
-                          redis, streams, kGroup, consumer, "0", kBatchSize)
-                    : co_await message::redis::readGroupManyBlocking(
-                          redis, streams, kGroup, consumer,
-                          context.stopToken(), kBatchSize);
+                std::vector<message::redis::StreamBatch> batches;
+                bool readFailed = false;
+                try {
+                    batches = recovering
+                        ? co_await message::redis::readGroupMany(
+                              redis, streams, kGroup, consumer, "0", kBatchSize)
+                        : co_await message::redis::readGroupManyBlocking(
+                              redis, streams, kGroup, consumer,
+                              context.stopToken(), kBatchSize);
+                } catch (const std::exception& error) {
+                    if (context.stopToken().stopRequested())
+                        break;
+                    std::cerr << "command result stream read failed for service worker " << index
+                              << ": " << error.what() << '\n';
+                    recovering = true;
+                    readFailed = true;
+                }
+                if (readFailed) {
+                    (void)co_await ruvia::sleepFor(context.worker(),
+                                                   std::chrono::milliseconds(250));
+                    continue;
+                }
                 if (recovering && batches.empty()) {
                     recovering = false;
                     continue;
