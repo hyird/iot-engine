@@ -22,6 +22,18 @@ namespace {
 constexpr std::string_view kDefaultVhost{"__defaultVhost__"};
 constexpr std::string_view kRtpApp{"rtp"};
 constexpr std::string_view kWebRtcPath{"/index/api/webrtc"};
+constexpr unsigned int kAutomaticRtpPortStart{30000};
+constexpr unsigned int kAutomaticRtpPortEnd{35000};
+
+std::pair<unsigned int, unsigned int> rtpPortRange(const MediaConfig& config) {
+    const auto automatic = config.rtpPortRangeStart == 0 && config.rtpPortRangeEnd == 0;
+    const auto configuredStart =
+        automatic ? kAutomaticRtpPortStart : config.rtpPortRangeStart;
+    const auto configuredEnd = automatic ? kAutomaticRtpPortEnd : config.rtpPortRangeEnd;
+    const auto firstEven = configuredStart + configuredStart % 2U;
+    const auto lastEven = configuredEnd - configuredEnd % 2U;
+    return {firstEven, lastEven};
+}
 
 std::string trimTrailingSlash(std::string value) {
     while (!value.empty() && value.back() == '/')
@@ -160,7 +172,7 @@ ZlmSdk::ZlmSdk(MediaConfig config, Callbacks callbacks)
     callbacks_->callbacks = std::move(callbacks);
     callbacks_->playTokenSecret = config_.playTokenSecret;
     callbacks_->corsOrigin = config_.corsOrigin;
-    nextRtpPort_.store(config_.rtpPortRangeStart);
+    nextRtpPort_.store(rtpPortRange(config_).first);
 }
 
 ZlmSdk::~ZlmSdk() { stop(); }
@@ -183,6 +195,16 @@ void ZlmSdk::start() {
                 "GB28181 media token secret must contain at least 16 characters");
         if (config_.playTokenTtlSeconds <= 0)
             throw std::runtime_error("GB28181 media token TTL must be positive");
+        const auto automaticRtpPorts =
+            config_.rtpPortRangeStart == 0 && config_.rtpPortRangeEnd == 0;
+        if (!automaticRtpPorts &&
+            (config_.rtpPortRangeStart == 0 || config_.rtpPortRangeEnd == 0))
+            throw std::runtime_error(
+                "GB28181 RTP port range must set both bounds or leave both zero");
+        const auto [rtpPortStart, rtpPortEnd] = rtpPortRange(config_);
+        if (rtpPortStart > rtpPortEnd || rtpPortEnd >= 65535U)
+            throw std::runtime_error(
+                "GB28181 RTP port range must contain an even RTP/RTCP port pair");
         if (config_.tlsEnabled &&
             (config_.tlsPemPath.empty() ||
              !std::filesystem::is_regular_file(config_.tlsPemPath)))
@@ -284,22 +306,16 @@ ZlmSdk::openRtpServer(const std::string& deviceId, const std::string& channelId,
         return std::nullopt;
 
     const auto streamId = makeStreamId(deviceId, channelId, ssrc, mode);
-    const auto randomPort =
-        config_.rtpPortRangeStart == 0 && config_.rtpPortRangeEnd == 0;
-    // ZLMediaKit resolves port zero to a random even RTP port before binding.
-    // That selection can race another process, so random mode needs the same
-    // bounded retry behavior as an explicit port range.
-    const auto attempts =
-        randomPort
-            ? 32U
-            : std::max(
-                  1U,
-                  static_cast<unsigned int>(
-                      (config_.rtpPortRangeEnd - config_.rtpPortRangeStart) / 2U + 1U));
+    const auto [rtpPortStart, rtpPortEnd] = rtpPortRange(config_);
+    const auto attempts = (rtpPortEnd - rtpPortStart) / 2U + 1U;
 
     for (unsigned int attempt = 0; attempt < attempts; ++attempt) {
-        const auto requestedPort = randomPort ? 0 : allocateRtpPort();
+        const auto requestedPort = allocateRtpPort();
         try {
+            // Never delegate port-zero allocation to ZLMediaKit. Its allocator
+            // temporarily opens TCP probes before the passive RTP listener;
+            // an immediate rebind can therefore collide with those probes on
+            // macOS. Explicit ports take the direct UDP/TCP bind path instead.
             auto* raw = mk_rtp_server_create2(requestedPort, 1, kDefaultVhost.data(),
                                               kRtpApp.data(), streamId.c_str());
             if (raw == nullptr)
@@ -437,14 +453,15 @@ std::string ZlmSdk::makeStreamId(const std::string& deviceId,
 }
 
 std::uint16_t ZlmSdk::allocateRtpPort() {
-    auto port = nextRtpPort_.fetch_add(2);
-    if (port > config_.rtpPortRangeEnd || port < config_.rtpPortRangeStart) {
-        nextRtpPort_.store(config_.rtpPortRangeStart + 2U);
-        port = config_.rtpPortRangeStart;
+    const auto [rangeStart, rangeEnd] = rtpPortRange(config_);
+    auto current = nextRtpPort_.load();
+    while (true) {
+        const auto port =
+            current < rangeStart || current > rangeEnd ? rangeStart : current;
+        const auto next = port + 2U > rangeEnd ? rangeStart : port + 2U;
+        if (nextRtpPort_.compare_exchange_weak(current, next))
+            return static_cast<std::uint16_t>(port);
     }
-    if (port % 2U != 0)
-        ++port;
-    return static_cast<std::uint16_t>(port);
 }
 
 std::string ZlmSdk::sdkIni() const {

@@ -69,6 +69,8 @@ int main() {
                               "2000000001");
         require(opened.has_value(), "embedded ZLM RTP server did not open");
         require(opened->port != 0, "embedded ZLM RTP server returned port zero");
+        require(opened->port >= 30000 && opened->port <= 35000 && opened->port % 2 == 0,
+                "automatic RTP allocation did not return a managed even port");
         require(opened->playUrls.httpFlv.find(std::to_string(ports.http)) !=
                     std::string::npos,
                 "HTTP-FLV URL does not use the embedded HTTP server");

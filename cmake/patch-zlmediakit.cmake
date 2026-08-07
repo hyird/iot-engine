@@ -195,3 +195,34 @@ else()
     file(WRITE "${MK_RECORDER_SOURCE}" "${PATCHED_MK_RECORDER_CONTENT}")
     message(STATUS "Patched ZLMediaKit recorder includes for ENABLE_MP4=OFF")
 endif()
+
+set(MK_RTP_SERVER_SOURCE "${SOURCE_DIR}/api/source/mk_rtp_server.cpp")
+file(READ "${MK_RTP_SERVER_SOURCE}" MK_RTP_SERVER_CONTENT)
+set(PATCHED_MK_RTP_SERVER_CONTENT "${MK_RTP_SERVER_CONTENT}")
+string(FIND
+    "${PATCHED_MK_RTP_SERVER_CONTENT}"
+    "#include <memory>"
+    MK_RTP_MEMORY_INCLUDE_INDEX)
+if(MK_RTP_MEMORY_INCLUDE_INDEX EQUAL -1)
+    string(REPLACE
+        "#include \"Util/logger.h\""
+        "#include \"Util/logger.h\"\n#include <memory>"
+        PATCHED_MK_RTP_SERVER_CONTENT
+        "${PATCHED_MK_RTP_SERVER_CONTENT}")
+endif()
+string(REPLACE
+    "RtpServer::Ptr *server = new RtpServer::Ptr(new RtpServer);"
+    "std::unique_ptr<RtpServer::Ptr> server(new RtpServer::Ptr(new RtpServer));"
+    PATCHED_MK_RTP_SERVER_CONTENT
+    "${PATCHED_MK_RTP_SERVER_CONTENT}")
+string(REPLACE
+    "return (mk_rtp_server)server;"
+    "return (mk_rtp_server)server.release();"
+    PATCHED_MK_RTP_SERVER_CONTENT
+    "${PATCHED_MK_RTP_SERVER_CONTENT}")
+if(PATCHED_MK_RTP_SERVER_CONTENT STREQUAL MK_RTP_SERVER_CONTENT)
+    message(STATUS "ZLMediaKit RTP C API exception ownership already patched")
+else()
+    file(WRITE "${MK_RTP_SERVER_SOURCE}" "${PATCHED_MK_RTP_SERVER_CONTENT}")
+    message(STATUS "Patched ZLMediaKit RTP C API exception ownership")
+endif()
