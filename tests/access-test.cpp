@@ -3,6 +3,8 @@
 #include <string>
 
 #include "service/features/access/contract.h"
+#include "service/features/access/event.h"
+#include "service/features/event/config.h"
 
 namespace access_contract = service::access;
 
@@ -42,6 +44,19 @@ int main() {
         require(access_contract::supportedEvent("device.data.reported") &&
                     !access_contract::supportedEvent("device.deleted"),
                 "event allowlist contract changed");
+        const auto dataPublication = service::access::event::publicationKey(
+            "019fd9f6-4be5-7272-a194-9e571bce848d", "device.data.reported");
+        require(dataPublication ==
+                    "iot:open-access:event:published:device.data.reported:"
+                    "019fd9f6-4be5-7272-a194-9e571bce848d",
+                "open-access publication idempotency key changed");
+        require(dataPublication != service::access::event::publicationKey(
+                                       "019fd9f6-4be5-7272-a194-9e571bce848d",
+                                       "device.command.responded"),
+                "different event types incorrectly share an idempotency key");
+        require(service::message::kRuntimeConfigChangesStream !=
+                    service::message::kWebhookCatalogChangesStream,
+                "independent config consumers must not XDEL from a shared Stream");
         std::cout << "open access tests passed\n";
         return 0;
     } catch (const std::exception& error) {

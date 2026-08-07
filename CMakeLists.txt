@@ -324,6 +324,14 @@ if(MSVC)
 endif()
 add_test(NAME edge-protocol COMMAND edge-protocol-test)
 
+add_executable(edge-metadata-test tests/edge-metadata-test.cpp)
+target_include_directories(edge-metadata-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(edge-metadata-test PRIVATE ruvia::web)
+if(MSVC)
+    target_compile_options(edge-metadata-test PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
+endif()
+add_test(NAME edge-metadata COMMAND edge-metadata-test)
+
 add_executable(gb28181-media-test
     tests/gb28181-media-test.cpp
     service/features/gb28181/media/ZlmSdk.cpp)

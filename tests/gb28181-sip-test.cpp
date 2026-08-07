@@ -30,11 +30,34 @@ void require(bool condition, std::string_view message) {
 
 std::uint16_t reserveLocalPort() {
   asio::io_context context;
-  asio::ip::tcp::acceptor reservation(
-      context, asio::ip::tcp::endpoint(asio::ip::tcp::v4(), 0));
-  const auto port = reservation.local_endpoint().port();
-  reservation.close();
-  return port;
+  // The SIP test uses the same port for both transports. Reserving only TCP can
+  // select a Windows-excluded UDP port and makes repeated runs intermittently fail.
+  for (int attempt = 0; attempt < 32; ++attempt) {
+    std::error_code error;
+    asio::ip::tcp::acceptor tcpReservation(context);
+    tcpReservation.open(asio::ip::tcp::v4(), error);
+    if (error)
+      continue;
+    tcpReservation.bind(
+        asio::ip::tcp::endpoint(asio::ip::address_v4::loopback(), 0), error);
+    if (error)
+      continue;
+    const auto port = tcpReservation.local_endpoint(error).port();
+    if (error)
+      continue;
+    asio::ip::udp::socket udpReservation(context);
+    udpReservation.open(asio::ip::udp::v4(), error);
+    if (error)
+      continue;
+    udpReservation.bind(
+        asio::ip::udp::endpoint(asio::ip::address_v4::loopback(), port), error);
+    if (error)
+      continue;
+    udpReservation.close();
+    tcpReservation.close();
+    return port;
+  }
+  throw std::runtime_error("could not reserve a shared TCP/UDP loopback port");
 }
 
 std::string sipOptions(std::uint16_t clientPort, std::string_view transport) {

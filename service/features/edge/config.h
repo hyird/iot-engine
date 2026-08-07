@@ -18,6 +18,7 @@
 #include <ruvia/web/Controller.h>
 
 #include "service/common/http.h"
+#include "service/features/edge/metadata.h"
 #include "service/features/edge/protocol.h"
 #include "service/middleware/auth.h"
 
@@ -72,6 +73,7 @@ VALUES ($1::uuid, $2, $3, $4, $5::uuid))sql",
                                           static_cast<std::int64_t>(snapshot->itemCount),
                                           principal.userId));
         co_await replaceQueue(c, nodeId, revision, snapshot->wires);
+        co_await metadata::publishNode(c, nodeId);
         co_return revision;
     }
 
@@ -116,6 +118,7 @@ WHERE id = $1::uuid
                                       service::common::dbParams(
                                           nodeId, static_cast<std::int64_t>(revision)));
         co_await replaceQueue(c, nodeId, revision, snapshot->wires);
+        co_await metadata::publishNode(c, nodeId);
         co_return true;
     }
 

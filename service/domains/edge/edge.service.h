@@ -385,10 +385,8 @@ FROM edge_firmware WHERE id = $1::uuid LIMIT 1)sql",
             service::common::fail(17010, "固件摘要无效", 500);
         request->set_sha256(protocol::bytes(bytes, 32));
         request->set_size_bytes(static_cast<std::uint64_t>(integer(row[2].text())));
-        request->set_version(row[0].text());
         request->set_keep_settings(keepSettings);
-        const std::string json = "{\"firmware_id\":\"" + firmwareIdText +
-                                 "\",\"version\":\"" + jsonEscape(row[0].text()) + "\"}";
+        const std::string json = "{\"firmware_id\":\"" + firmwareIdText + "\"}";
         co_await createTaskAndQueue(c, nodeId, taskId, "firmware", json, envelope);
     }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -8,9 +9,11 @@
 #include <future>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <memory_resource>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -23,6 +26,7 @@
 #include <openssl/ssl.h>
 #include <ruvia/core/OneShot.h>
 #include <ruvia/core/Task.h>
+#include <ruvia/core/TaskScope.h>
 #include <ruvia/core/Timer.h>
 #include <ruvia/web/WebWorker.h>
 #include <ruvia/web/db/Db.h>
@@ -31,8 +35,9 @@
 #include "service/common/uuid.h"
 #include "service/features/access/contract.h"
 #include "service/features/access/event.h"
-#include "service/domains/access/access.service.h"
 #include "service/features/collector/stream.h"
+#include "service/features/event/config.h"
+#include "service/features/telemetry/latest.h"
 
 namespace service::access {
 
@@ -261,10 +266,8 @@ public:
         auto stopped = std::make_shared<std::promise<void>>();
         auto readiness = ready->get_future();
         stopped_ = stopped->get_future().share();
-        // Keep the two singleton blocking consumers on different workers when
-        // possible: the edge projector uses the first worker, so webhooks use
-        // the last. This reduces the dedicated blocking pool from four sockets
-        // per worker to three on multi-worker deployments.
+        // Keep event ordering global. Target HTTP requests inside one event are
+        // bounded-concurrent, while events themselves stay on this single consumer.
         const auto posted =
             workers.back().post([this, ready, stopped](ruvia::WebWorkerContext& context) {
                 return run(context, ready, stopped);
@@ -286,6 +289,11 @@ public:
 
   private:
     static constexpr std::string_view kGroup = "iot-engine:open-webhook";
+    static constexpr std::string_view kDeliveryResultStream =
+        "iot:channel:open-access:delivery-result";
+    static constexpr std::size_t kBatchSize = 100;
+    static constexpr std::size_t kTargetConcurrency = 8;
+    static constexpr std::int64_t kDeliveryProgressTtlSeconds = 7 * 24 * 60 * 60;
 
     struct Target final {
         std::string id;
@@ -293,9 +301,17 @@ public:
         std::string url;
         std::string secret;
         std::string headers;
-        std::string deviceName;
         std::int64_t timeout{5};
+        std::int64_t expiresAtMs{0};
     };
+
+    struct DeviceCatalog final {
+        std::string name;
+        std::string code;
+        std::map<std::string, std::vector<Target>, std::less<>> targets;
+    };
+
+    using Catalog = std::map<std::string, DeviceCatalog, std::less<>>;
 
     struct Delivery final {
         std::string id;
@@ -306,32 +322,72 @@ public:
         std::string body;
     };
 
+    struct LatestPoint final {
+        std::int64_t sort{0};
+        std::int64_t observedAt{0};
+        std::string id;
+        std::string name;
+        std::string value{"null"};
+        std::string unit;
+        std::string encode;
+    };
+
     ruvia::Task<void> run(ruvia::WebWorkerContext& context,
                           std::shared_ptr<std::promise<void>> ready,
                           std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
-            co_await message::redis::ensureGroup(redis, event::kStream, kGroup);
+            const std::vector<std::string> streams{
+                std::string(service::message::kWebhookCatalogChangesStream),
+                std::string(kDeliveryResultStream), std::string(event::kStream)};
+            for (const auto& stream : streams)
+                co_await message::redis::ensureGroup(redis, stream, kGroup);
+            catalog_ = co_await loadCatalog(context);
             ready->set_value();
             bool recovering = true;
             while (running_.load() && !context.stopToken().stopRequested()) {
-                const auto messages = recovering
-                    ? co_await message::redis::readGroup(
-                          redis, event::kStream, kGroup, "service-0", "0",
-                          std::chrono::milliseconds(0), 50)
-                    : co_await message::redis::readGroupBlocking(
-                          redis, event::kStream, kGroup, "service-0",
-                          context.stopToken(), 50);
-                if (recovering && messages.empty())
+                const auto batches = recovering
+                    ? co_await message::redis::readGroupMany(
+                          redis, streams, kGroup, "service-0", "0", kBatchSize)
+                    : co_await message::redis::readGroupManyBlocking(
+                          redis, streams, kGroup, "service-0", context.stopToken(),
+                          kBatchSize);
+                if (recovering && batches.empty())
                     recovering = false;
-                if (messages.empty())
+                if (batches.empty())
                     continue;
                 bool failed = false;
                 try {
-                    for (const auto& message : messages) {
-                        co_await deliver(context, message);
-                        co_await message::redis::acknowledgeAndDelete(redis, event::kStream,
-                                                                           kGroup, message.id);
+                    bool reloadCatalog = false;
+                    for (const auto& batch : batches) {
+                        if (batch.stream != service::message::kWebhookCatalogChangesStream)
+                            continue;
+                        for (const auto& message : batch.messages)
+                            reloadCatalog = reloadCatalog || catalogChange(message);
+                    }
+                    if (reloadCatalog)
+                        catalog_ = co_await loadCatalog(context);
+                    for (const auto& batch : batches) {
+                        if (batch.stream != service::message::kWebhookCatalogChangesStream)
+                            continue;
+                        co_await message::redis::acknowledgeAndDeleteMany(
+                            redis, batch.stream, kGroup, batch.messages);
+                    }
+                    for (const auto& batch : batches) {
+                        if (batch.stream != kDeliveryResultStream)
+                            continue;
+                        co_await persistResults(context, batch.messages);
+                        co_await message::redis::acknowledgeAndDeleteMany(
+                            redis, batch.stream, kGroup, batch.messages);
+                    }
+                    for (const auto& batch : batches) {
+                        if (batch.stream != event::kStream)
+                            continue;
+                        for (const auto& message : batch.messages) {
+                            co_await deliver(context, message);
+                            co_await message::redis::acknowledgeAndDelete(
+                                redis, event::kStream, kGroup, message.id);
+                        }
                     }
                 } catch (const std::exception& error) {
                     std::cerr << "open webhook dispatch failed: " << error.what() << '\n';
@@ -354,45 +410,102 @@ public:
         }
     }
 
+    static bool catalogChange(const message::StreamMessage& message) {
+        const auto aggregate = message.get("aggregate");
+        return aggregate == "access_key" || aggregate == "webhook" ||
+               aggregate == "device" || aggregate == "protocol";
+    }
+
+    static ruvia::Task<Catalog> loadCatalog(ruvia::WebWorkerContext& context) {
+        const auto rows = co_await context.db().query(R"sql(
+SELECT binding.device_id::text, device.name,
+       COALESCE(device.protocol_params->>'device_code', ''),
+       webhook.id::text, webhook.access_key_id::text, webhook.url,
+       COALESCE(webhook.secret, ''), webhook.headers::text,
+       webhook.timeout_seconds::text,
+       COALESCE((EXTRACT(EPOCH FROM key.expires_at) * 1000)::bigint, 0)::text,
+       event_type.value
+FROM open_webhook webhook
+JOIN open_access_key key ON key.id = webhook.access_key_id
+JOIN open_access_key_device binding ON binding.access_key_id = key.id
+JOIN device ON device.id = binding.device_id
+CROSS JOIN LATERAL jsonb_array_elements_text(
+  CASE WHEN jsonb_typeof(webhook.event_types) = 'array'
+       THEN webhook.event_types ELSE '[]'::jsonb END) event_type(value)
+WHERE webhook.deleted_at IS NULL AND webhook.status = 'enabled'
+  AND key.deleted_at IS NULL AND key.status = 'enabled'
+  AND (key.expires_at IS NULL OR key.expires_at > NOW())
+  AND device.deleted_at IS NULL
+ORDER BY binding.device_id, event_type.value, webhook.id)sql");
+        Catalog result;
+        for (const auto& row : rows.rows()) {
+            const std::string deviceId(row[0].text());
+            auto& device = result[deviceId];
+            device.name.assign(row[1].text());
+            device.code.assign(row[2].text());
+            device.targets[std::string(row[10].text())].push_back(
+                {std::string(row[3].text()), std::string(row[4].text()),
+                 std::string(row[5].text()), std::string(row[6].text()),
+                 std::string(row[7].text()), std::stoll(std::string(row[8].text())),
+                 std::stoll(std::string(row[9].text()))});
+        }
+        co_return result;
+    }
+
     ruvia::Task<void> deliver(ruvia::WebWorkerContext& context,
                               const message::StreamMessage& message) {
         const auto eventType = message.get("event_type");
         const auto deviceId = message.get("device_id");
         if (!supportedEvent(eventType) || !service::common::isUuid(deviceId))
             co_return;
-        const std::string deviceIdValue(deviceId);
-        const std::string eventTypeValue(eventType);
-        const auto rows =
-            co_await context.db().query(R"sql(
-SELECT webhook.id::text, webhook.access_key_id::text, webhook.url,
-       COALESCE(webhook.secret, ''), webhook.headers::text, webhook.timeout_seconds,
-       device.name
-FROM open_webhook webhook
-JOIN open_access_key key ON key.id = webhook.access_key_id
-JOIN open_access_key_device binding ON binding.access_key_id = key.id
-JOIN device ON device.id = binding.device_id
-WHERE webhook.deleted_at IS NULL AND webhook.status = 'enabled'
-  AND key.deleted_at IS NULL AND key.status = 'enabled'
-  AND (key.expires_at IS NULL OR key.expires_at > NOW())
-  AND device.deleted_at IS NULL
-  AND binding.device_id = $1::uuid AND webhook.event_types ? $2
-ORDER BY webhook.id)sql",
-                                        service::common::dbParams(deviceIdValue, eventTypeValue));
-        std::vector<Target> targets;
-        targets.reserve(rows.rows().size());
-        for (const auto& row : rows.rows())
-            targets.push_back({std::string(row[0].text()),
-                               std::string(row[1].text()),
-                               std::string(row[2].text()),
-                               std::string(row[3].text()),
-                               std::string(row[4].text()),
-                               std::string(row[6].text()),
-                               std::stoll(std::string(row[5].text()))});
+        const auto device = catalog_.find(deviceId);
+        if (device == catalog_.end())
+            co_return;
+        const auto targetEntry = device->second.targets.find(eventType);
+        if (targetEntry == device->second.targets.end())
+            co_return;
+        const auto now = service::message::utcNowMilliseconds();
+        std::vector<const Target*> targets;
+        targets.reserve(targetEntry->second.size());
+        for (const auto& target : targetEntry->second)
+            if (target.expiresAtMs == 0 || target.expiresAtMs > now)
+                targets.push_back(&target);
         if (targets.empty())
             co_return;
-        const auto delivery = co_await buildDelivery(context, message, targets.front().deviceName);
-        for (const auto& target : targets)
-            co_await deliverTarget(context, target, delivery);
+        const auto delivery = co_await buildDelivery(context, message, device->second);
+        const auto completed = co_await completedTargets(context.redis(), delivery);
+        std::erase_if(targets, [&completed](const Target* target) {
+            return completed.contains(target->id);
+        });
+        if (targets.empty())
+            co_return;
+        for (std::size_t offset = 0; offset < targets.size(); offset += kTargetConcurrency) {
+            const auto end = std::min(targets.size(), offset + kTargetConcurrency);
+            ruvia::TaskScope scope(context.worker(), context.resource());
+            for (auto index = offset; index < end; ++index)
+                scope.spawn(deliverTarget(context, *targets[index], delivery));
+            co_await scope.join();
+        }
+    }
+
+    static std::string deliveryProgressKey(const Delivery& delivery) {
+        return "iot:open-access:delivery-progress:" + delivery.eventType + ":" + delivery.id;
+    }
+
+    template <typename Redis>
+    static ruvia::Task<std::set<std::string, std::less<>>>
+    completedTargets(const Redis& redis, const Delivery& delivery) {
+        const auto reply = co_await message::redis::command(
+            redis, {"HKEYS", deliveryProgressKey(delivery)});
+        if (reply.kind() != ruvia::RedisValue::Kind::kArray)
+            message::redis::throwValue("read webhook delivery progress", reply);
+        std::set<std::string, std::less<>> result;
+        for (const auto& value : reply.array()) {
+            if (value.kind() != ruvia::RedisValue::Kind::kString)
+                throw std::runtime_error("webhook delivery progress contains a non-string target");
+            result.emplace(value.string());
+        }
+        co_return result;
     }
 
     static std::string deviceReference(std::string_view id, std::string_view code,
@@ -477,9 +590,92 @@ ORDER BY webhook.id)sql",
                ",\"reason\":" + jsonFieldOr(payload, "reason", "null") + "},\"points\":[]}";
     }
 
+    static ruvia::Task<std::string> realtimeData(ruvia::WebWorkerContext& context,
+                                                 std::string_view deviceId,
+                                                 const DeviceCatalog& device) {
+        const auto reply = co_await message::redis::command(
+            context.redis(),
+            std::vector<std::string>{"HGETALL", telemetry::latest::latestKey(device.code)});
+        std::set<std::string, std::less<>> configured;
+        std::map<std::string, LatestPoint, std::less<>> latest;
+        bool hasConfigured = false;
+        if (reply.kind() == ruvia::RedisValue::Kind::kArray) {
+            const auto& entries = reply.array();
+            for (std::size_t index = 0; index + 1 < entries.size(); index += 2) {
+                if (entries[index].kind() != ruvia::RedisValue::Kind::kString ||
+                    entries[index + 1].kind() != ruvia::RedisValue::Kind::kString)
+                    continue;
+                const auto field = entries[index].string();
+                const auto raw = entries[index + 1].string();
+                if (field == "_element_ids") {
+                    hasConfigured = true;
+                    const auto parsed = ruvia::JsonValue::parse(raw);
+                    if (parsed && parsed->isObject())
+                        (void)ruvia::detail::visitJsonObjectFields(
+                            ruvia::detail::ResolvedPmrResourceTag{}, parsed->view(),
+                            std::pmr::get_default_resource(),
+                            [&](std::string_view name, std::string_view) {
+                                if (!name.empty())
+                                    configured.emplace(name);
+                                return true;
+                            });
+                    continue;
+                }
+                if (field.empty() || field.front() == '_')
+                    continue;
+                const auto parsed = ruvia::JsonValue::parse(raw);
+                if (!parsed || !parsed->isObject())
+                    continue;
+                LatestPoint point;
+                point.id.assign(field);
+                if (const auto value = parsed->get<ruvia::String>("id"))
+                    point.id.assign(value->view());
+                point.name = point.id;
+                if (const auto value = parsed->get<ruvia::String>("name"))
+                    point.name.assign(value->view());
+                if (const auto value = parsed->get<ruvia::String>("unit"))
+                    point.unit.assign(value->view());
+                if (const auto value = parsed->get<ruvia::String>("encode"))
+                    point.encode.assign(value->view());
+                if (const auto value = parsed->get<ruvia::Int64>("sort"))
+                    point.sort = static_cast<std::int64_t>(*value);
+                if (const auto value = parsed->get<ruvia::Int64>("observedAt"))
+                    point.observedAt = static_cast<std::int64_t>(*value);
+                if (const auto value = jsonField(*parsed, "value"))
+                    point.value.assign(value->view());
+                latest.insert_or_assign(point.id, std::move(point));
+            }
+        }
+        std::vector<LatestPoint> points;
+        points.reserve(latest.size());
+        for (auto& [id, point] : latest) {
+            if ((!hasConfigured || configured.contains(id)) && point.encode != "JPEG")
+                points.push_back(std::move(point));
+        }
+        std::ranges::sort(points, [](const LatestPoint& left, const LatestPoint& right) {
+            return left.sort == right.sort ? left.id < right.id : left.sort < right.sort;
+        });
+        std::string body = "{\"device\":" + deviceReference(deviceId, device.code, device.name) +
+                           ",\"points\":[";
+        for (std::size_t index = 0; index < points.size(); ++index) {
+            if (index != 0)
+                body.push_back(',');
+            const auto time = points[index].observedAt > 0
+                                  ? jsonQuoted(iso8601(points[index].observedAt))
+                                  : std::string("null");
+            body += "{\"id\":" + jsonQuoted(points[index].id) +
+                    ",\"name\":" + jsonQuoted(points[index].name) +
+                    ",\"value\":" + points[index].value +
+                    ",\"unit\":" + jsonQuoted(points[index].unit) +
+                    ",\"time\":" + time + "}";
+        }
+        body += "]}";
+        co_return body;
+    }
+
     static ruvia::Task<Delivery> buildDelivery(ruvia::WebWorkerContext& context,
                                                 const message::StreamMessage& message,
-                                                std::string_view deviceName) {
+                                                const DeviceCatalog& catalog) {
         Delivery delivery;
         delivery.id = message.get("event_id").empty() ? service::common::nextUuidV7()
                                                        : std::string(message.get("event_id"));
@@ -491,11 +687,11 @@ ORDER BY webhook.id)sql",
         delivery.occurredAt = occurredAt ? iso8601(*occurredAt) : nowIso8601();
 
         const auto device =
-            deviceReference(delivery.deviceId, delivery.deviceCode, deviceName);
+            deviceReference(delivery.deviceId, delivery.deviceCode, catalog.name);
         const auto rawData = message.get("data_json");
         std::string data;
         if (delivery.eventType == "device.data.reported") {
-            data = co_await accessService().realtimeData(context, delivery.deviceId);
+            data = co_await realtimeData(context, delivery.deviceId, catalog);
         } else if (delivery.eventType == "device.image.reported") {
             data = imageEventData(device, rawData, delivery.occurredAt);
         } else if (delivery.eventType == "device.command.dispatched" ||
@@ -548,8 +744,7 @@ ORDER BY webhook.id)sql",
         if (!success && response.error.empty())
             response.error =
                 "HTTP " + std::to_string(response.status) + " " + sanitize(response.body, 500);
-        co_await record(context, target, delivery.eventType, delivery.deviceId,
-                        delivery.deviceCode, delivery.body, response, success);
+        co_await enqueueResult(context, target, delivery, response, success);
     }
 
     static std::vector<std::pair<std::string, std::string>> parseHeaders(std::string_view json) {
@@ -567,42 +762,164 @@ ORDER BY webhook.id)sql",
         return result;
     }
 
-    static ruvia::Task<void> record(ruvia::WebWorkerContext& context, const Target& target,
-                                    const std::string& eventType, const std::string& deviceId,
-                                    const std::string& deviceCode, const std::string& requestBody,
-                                    const WebhookHttpResponse& response, bool success) {
+    static ruvia::Task<void> enqueueResult(ruvia::WebWorkerContext& context,
+                                           const Target& target,
+                                           const Delivery& delivery,
+                                           const WebhookHttpResponse& response, bool success) {
         const auto error = sanitize(response.error, 1000);
         const auto status = success ? "success" : "failed";
         const auto logId = service::common::nextUuidV7();
         const auto responseJson = "{\"httpStatus\":" + std::to_string(response.status) +
                                   ",\"body\":" + jsonQuoted(sanitize(response.body, 2000)) +
                                   (error.empty() ? "" : ",\"error\":" + jsonQuoted(error)) + "}";
-        auto transaction = co_await context.db().beginTransaction();
-        (void)co_await transaction.execute(
-            R"sql(
-UPDATE open_webhook
-SET last_triggered_at = NOW(),
-    last_success_at = CASE WHEN $2 = 'success' THEN NOW() ELSE last_success_at END,
-    last_failure_at = CASE WHEN $2 = 'failed' THEN NOW() ELSE last_failure_at END,
-    last_http_status = NULLIF($3, 0), last_error = NULLIF($4, ''), updated_at = NOW()
-WHERE id = $1::uuid AND deleted_at IS NULL)sql",
-            service::common::dbParams(target.id, status, response.status, error));
-        (void)co_await transaction.execute(
-            R"sql(
+        static constexpr std::string_view script = R"lua(
+if redis.call('HEXISTS', KEYS[2], ARGV[1]) ~= 0 then return false end
+local arguments = {'MAXLEN', '~', ARGV[2], '*'}
+for index = 4, #ARGV do arguments[#arguments + 1] = ARGV[index] end
+local id = redis.call('XADD', KEYS[1], unpack(arguments))
+redis.call('HSET', KEYS[2], ARGV[1], '1')
+redis.call('EXPIRE', KEYS[2], ARGV[3])
+return id
+)lua";
+        const std::vector<std::string> keyStore{std::string(kDeliveryResultStream),
+                                                deliveryProgressKey(delivery)};
+        const std::vector<std::string> argumentStore{
+            target.id,
+            "100000",
+            std::to_string(kDeliveryProgressTtlSeconds),
+            "log_id",
+            logId,
+            "access_key_id",
+            target.accessKeyId,
+            "webhook_id",
+            target.id,
+            "event_type",
+            delivery.eventType,
+            "status",
+            status,
+            "target",
+            target.url,
+            "http_status",
+            std::to_string(response.status),
+            "device_id",
+            delivery.deviceId,
+            "device_code",
+            delivery.deviceCode,
+            "message",
+            error,
+            "request_payload",
+            delivery.body,
+            "response_payload",
+            responseJson,
+            "completed_at_ms",
+            std::to_string(service::message::utcNowMilliseconds()),
+        };
+        const std::vector<std::string_view> keys(keyStore.begin(), keyStore.end());
+        const std::vector<std::string_view> arguments(argumentStore.begin(),
+                                                       argumentStore.end());
+        const auto reply = co_await context.redis().eval(script, keys, arguments);
+        if (!reply.null() && reply.kind() != ruvia::RedisValue::Kind::kString)
+            message::redis::throwValue("enqueue webhook result", reply);
+    }
+
+    static ruvia::Task<void> persistResults(
+        ruvia::WebWorkerContext& context,
+        const std::vector<message::StreamMessage>& messages) {
+        if (messages.empty())
+            co_return;
+        std::string sql = R"sql(
+WITH incoming(
+  sequence, log_id, access_key_id, webhook_id, event_type, status, target,
+  http_status, device_id, device_code, message, request_payload,
+  response_payload, completed_at_ms) AS (VALUES )sql";
+        std::vector<ruvia::DbValue> params;
+        params.reserve(messages.size() * 14);
+        for (std::size_t index = 0; index < messages.size(); ++index) {
+            if (index != 0)
+                sql.push_back(',');
+            const auto base = params.size() + 1;
+            sql += "($" + std::to_string(base) + "::bigint,$" +
+                   std::to_string(base + 1) + "::uuid,$" +
+                   std::to_string(base + 2) + "::uuid,$" +
+                   std::to_string(base + 3) + "::uuid,$" +
+                   std::to_string(base + 4) + "::text,$" +
+                   std::to_string(base + 5) + "::text,$" +
+                   std::to_string(base + 6) + "::text,$" +
+                   std::to_string(base + 7) + "::bigint,$" +
+                   std::to_string(base + 8) + "::uuid,$" +
+                   std::to_string(base + 9) + "::text,$" +
+                   std::to_string(base + 10) + "::text,$" +
+                   std::to_string(base + 11) + "::jsonb,$" +
+                   std::to_string(base + 12) + "::jsonb,$" +
+                   std::to_string(base + 13) + "::bigint)";
+            const auto httpStatus = service::common::parseInt64(
+                std::optional<std::string_view>(messages[index].get("http_status")));
+            const auto completedAt = service::common::parseInt64(
+                std::optional<std::string_view>(messages[index].get("completed_at_ms")));
+            params.emplace_back(static_cast<std::int64_t>(index));
+            params.emplace_back(messages[index].get("log_id"));
+            params.emplace_back(messages[index].get("access_key_id"));
+            params.emplace_back(messages[index].get("webhook_id"));
+            params.emplace_back(messages[index].get("event_type"));
+            params.emplace_back(messages[index].get("status"));
+            params.emplace_back(messages[index].get("target"));
+            params.emplace_back(httpStatus.value_or(0));
+            params.emplace_back(messages[index].get("device_id"));
+            params.emplace_back(messages[index].get("device_code"));
+            params.emplace_back(messages[index].get("message"));
+            params.emplace_back(messages[index].get("request_payload"));
+            params.emplace_back(messages[index].get("response_payload"));
+            params.emplace_back(completedAt.value_or(service::message::utcNowMilliseconds()));
+        }
+        sql += R"sql(), latest AS (
+  SELECT DISTINCT ON (webhook_id) *
+  FROM incoming
+  ORDER BY webhook_id, completed_at_ms DESC, sequence DESC
+), summary AS (
+  SELECT webhook_id,
+         MAX(completed_at_ms) FILTER (WHERE status = 'success') AS last_success_ms,
+         MAX(completed_at_ms) FILTER (WHERE status = 'failed') AS last_failure_ms
+  FROM incoming GROUP BY webhook_id
+), updated AS (
+  UPDATE open_webhook webhook
+  SET last_triggered_at = GREATEST(
+        COALESCE(webhook.last_triggered_at, to_timestamp(0)),
+        to_timestamp(latest.completed_at_ms::double precision / 1000.0)),
+      last_success_at = CASE WHEN summary.last_success_ms IS NULL
+        THEN webhook.last_success_at ELSE GREATEST(
+          COALESCE(webhook.last_success_at, to_timestamp(0)),
+          to_timestamp(summary.last_success_ms::double precision / 1000.0)) END,
+      last_failure_at = CASE WHEN summary.last_failure_ms IS NULL
+        THEN webhook.last_failure_at ELSE GREATEST(
+          COALESCE(webhook.last_failure_at, to_timestamp(0)),
+          to_timestamp(summary.last_failure_ms::double precision / 1000.0)) END,
+      last_http_status = CASE
+        WHEN webhook.last_triggered_at IS NULL OR webhook.last_triggered_at <=
+             to_timestamp(latest.completed_at_ms::double precision / 1000.0)
+        THEN NULLIF(latest.http_status, 0) ELSE webhook.last_http_status END,
+      last_error = CASE
+        WHEN webhook.last_triggered_at IS NULL OR webhook.last_triggered_at <=
+             to_timestamp(latest.completed_at_ms::double precision / 1000.0)
+        THEN NULLIF(latest.message, '') ELSE webhook.last_error END,
+      updated_at = NOW()
+  FROM summary JOIN latest USING (webhook_id)
+  WHERE webhook.id = summary.webhook_id AND webhook.deleted_at IS NULL
+  RETURNING webhook.id
+)
 INSERT INTO open_access_log(
   id, access_key_id, webhook_id, direction, action, event_type, status,
   http_method, target, http_status, device_id, device_code, message,
   request_payload, response_payload)
-VALUES ($1::uuid, $2::uuid, $3::uuid, 'push', 'webhook', $4, $5,
-        'POST', $6, NULLIF($7, 0), $8::uuid, NULLIF($9, ''), NULLIF($10, ''),
-        $11::jsonb, $12::jsonb))sql",
-            service::common::dbParams(logId, target.accessKeyId, target.id, eventType, status,
-                                      target.url, response.status, deviceId, deviceCode, error,
-                                      requestBody, responseJson));
-        co_await transaction.commit();
+SELECT log_id, access_key_id, webhook_id, 'push', 'webhook', event_type, status,
+       'POST', target, NULLIF(http_status, 0), device_id, NULLIF(device_code, ''),
+       NULLIF(message, ''), request_payload, response_payload
+FROM incoming
+ON CONFLICT (id) DO NOTHING)sql";
+        (void)co_await context.db().execute(sql, params);
     }
 
     WebhookHttpClient http_;
+    Catalog catalog_;
     std::shared_future<void> stopped_;
     std::atomic_bool running_{false};
 };

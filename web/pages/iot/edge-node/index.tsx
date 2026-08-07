@@ -2040,8 +2040,8 @@ export default function EdgeNodePage() {
                         </Upload>
                     </Form.Item>
                     <p className="text-xs text-slate-500">
-                        最大 128 MiB。版本自动取固件文件名（不含扩展名）；上传完成后平台计算
-                        SHA-256，并立即只向当前节点下发。
+                        最大 128 MiB。文件名仅作为文件标识，不作为固件版本；上传完成后平台计算
+                        SHA-256，并立即只向当前节点下发。刷写重启后，版本以节点上报为准。
                     </p>
                     <Form.Item label="保留 UCI 配置" name="keepSettings" valuePropName="checked">
                         <Switch />

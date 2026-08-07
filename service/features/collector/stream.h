@@ -25,9 +25,9 @@ namespace service::message::redis {
 using ruvia::RedisHandle;
 using ruvia::RedisValue;
 
-// Ruvia routes blocking commands to the alias's isolated blocking pool. Collector's
-// worker-local client still owns a dedicated reader connection and closes it to cancel
-// its indefinite wait.
+// Ruvia routes blocking commands to the alias's isolated blocking pool. Cancellation
+// wakes BLOCK 0 reads through the worker StopToken without polling or a compatibility
+// connection alias.
 
 // ---- 通用命令封装：把 std::string 参数列表转成 string_view span 后 co_await ----
 
@@ -51,7 +51,44 @@ inline ruvia::Task<RedisValue> command(const Redis& redis,
     throw std::runtime_error(message);
 }
 
+template <typename Replies>
+inline void requirePipelineSuccess(std::string_view operation, const Replies& replies) {
+    for (const auto& reply : replies)
+        if (reply.kind() == RedisValue::Kind::kError)
+            throwValue(operation, reply);
+}
+
 // ---- Stream 写入 ----
+
+template <typename Pipeline>
+inline void queueAdd(Pipeline& pipeline, std::string_view stream,
+                     const std::vector<StreamField>& fields,
+                     std::size_t maxLength = 100000) {
+    if (fields.empty())
+        throw std::invalid_argument("Redis Stream message must contain fields");
+    const auto maximum = std::to_string(maxLength);
+    std::vector<std::string_view> args{"XADD", stream, "MAXLEN", "~", maximum, "*"};
+    args.reserve(args.size() + fields.size() * 2);
+    for (const auto& field : fields) {
+        args.push_back(field.name);
+        args.push_back(field.value);
+    }
+    // RedisPipeline copies every argument synchronously.
+    pipeline.command(args);
+}
+
+template <typename Pipeline>
+inline void queueEval(Pipeline& pipeline, std::string_view script,
+                      std::span<const std::string_view> keys,
+                      std::span<const std::string_view> arguments) {
+    const auto keyCount = std::to_string(keys.size());
+    std::vector<std::string_view> command{"EVAL", script, keyCount};
+    command.reserve(command.size() + keys.size() + arguments.size());
+    command.insert(command.end(), keys.begin(), keys.end());
+    command.insert(command.end(), arguments.begin(), arguments.end());
+    // RedisPipeline copies every argument synchronously.
+    pipeline.command(command);
+}
 
 template <typename Redis>
 inline ruvia::Task<std::string> add(const Redis& redis, std::string_view stream,
@@ -306,10 +343,58 @@ inline ruvia::Task<void> acknowledge(const Redis& redis, std::string_view stream
 template <typename Redis>
 inline ruvia::Task<void> acknowledgeAndDelete(const Redis& redis, std::string_view stream,
                                               std::string_view group, std::string_view id) {
-    co_await acknowledge(redis, stream, group, id);
-    const auto reply = co_await command(redis, {"XDEL", std::string(stream), std::string(id)});
+    static constexpr std::string_view script = R"lua(
+local acknowledged = redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
+redis.call('XDEL', KEYS[1], ARGV[2])
+return acknowledged
+)lua";
+    const std::string streamKey(stream);
+    const std::string groupValue(group);
+    const std::string idValue(id);
+    const std::string_view keys[]{streamKey};
+    const std::string_view arguments[]{groupValue, idValue};
+    const auto reply = co_await redis.eval(script, keys, arguments);
     if (reply.kind() != RedisValue::Kind::kInteger)
-        throwValue("XDEL", reply);
+        throwValue("XACK/XDEL", reply);
+}
+
+template <typename Redis>
+inline ruvia::Task<void> acknowledgeAndDeleteMany(
+    const Redis& redis, std::string_view stream, std::string_view group,
+    std::span<const std::string> ids) {
+    if (ids.empty())
+        co_return;
+    static constexpr std::string_view script = R"lua(
+local acknowledged = 0
+for index = 2, #ARGV do
+  acknowledged = acknowledged + redis.call('XACK', KEYS[1], ARGV[1], ARGV[index])
+  redis.call('XDEL', KEYS[1], ARGV[index])
+end
+return acknowledged
+)lua";
+    const std::string streamKey(stream);
+    const std::string groupValue(group);
+    const std::string_view keys[]{streamKey};
+    std::vector<std::string_view> arguments;
+    arguments.reserve(ids.size() + 1);
+    arguments.push_back(groupValue);
+    for (const auto& id : ids)
+        arguments.push_back(id);
+    const auto reply = co_await redis.eval(script, keys, arguments);
+    if (reply.kind() != RedisValue::Kind::kInteger)
+        throwValue("batch XACK/XDEL", reply);
+}
+
+template <typename Redis>
+inline ruvia::Task<void> acknowledgeAndDeleteMany(
+    const Redis& redis, std::string_view stream, std::string_view group,
+    const std::vector<StreamMessage>& messages) {
+    std::vector<std::string> ids;
+    ids.reserve(messages.size());
+    for (const auto& message : messages)
+        ids.push_back(message.id);
+    co_await acknowledgeAndDeleteMany(redis, stream, group,
+                                      std::span<const std::string>(ids));
 }
 
 template <typename Redis>

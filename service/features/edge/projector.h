@@ -2,10 +2,12 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <exception>
 #include <future>
 #include <iostream>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -18,8 +20,10 @@
 #include "service/common/message/contract.h"
 #include "service/common/http.h"
 #include "service/common/uuid.h"
+#include "service/features/edge/metadata.h"
 #include "service/features/edge/protocol.h"
 #include "service/features/collector/stream.h"
+#include "service/features/telemetry/persistence.h"
 
 namespace service::edge {
 
@@ -61,34 +65,69 @@ class Projector final {
     }
 
   private:
+    static constexpr std::size_t kBatchSize = 512;
+
     ruvia::Task<void> run(ruvia::WebWorkerContext& context,
                           std::shared_ptr<std::promise<void>> ready,
                           std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
-            co_await service::message::redis::ensureGroup(
-                redis, kEdgeIngressStream, kEdgeIngressGroup);
+            const std::vector<std::string> streams{std::string(metadata::kChangesStream),
+                                                   std::string(kEdgeIngressStream)};
+            for (const auto& stream : streams)
+                co_await service::message::redis::ensureGroup(redis, stream,
+                                                               kEdgeIngressGroup);
             co_await hydrateAuth(context);
+            metadata_ = co_await metadata::hydrate(context);
             ready->set_value();
             bool recovering = true;
             while (running_.load() && !context.stopToken().stopRequested()) {
-                const auto messages = recovering
-                    ? co_await service::message::redis::readGroup(
-                          redis, kEdgeIngressStream, kEdgeIngressGroup, "edge-projector",
-                          "0", std::chrono::milliseconds(0), 100)
-                    : co_await service::message::redis::readGroupBlocking(
-                          redis, kEdgeIngressStream, kEdgeIngressGroup, "edge-projector",
-                          context.stopToken(), 100);
-                if (recovering && messages.empty())
+                const auto batches = recovering
+                    ? co_await service::message::redis::readGroupMany(
+                          redis, streams, kEdgeIngressGroup, "edge-projector", "0", kBatchSize)
+                    : co_await service::message::redis::readGroupManyBlocking(
+                          redis, streams, kEdgeIngressGroup, "edge-projector",
+                          context.stopToken(), kBatchSize);
+                if (recovering && batches.empty())
                     recovering = false;
-                if (messages.empty())
+                if (batches.empty())
                     continue;
                 bool projectionFailed = false;
                 try {
-                    for (const auto& message : messages) {
-                        co_await project(context, message.get("wire"));
-                        co_await service::message::redis::acknowledgeAndDelete(
-                            redis, kEdgeIngressStream, kEdgeIngressGroup, message.id);
+                    // Update the worker-local immutable read model before telemetry from
+                    // the same read. Device changes never require a per-record DB query.
+                    for (const auto& batch : batches) {
+                        if (batch.stream != metadata::kChangesStream)
+                            continue;
+                        std::set<std::string, std::less<>> nodes;
+                        for (const auto& message : batch.messages) {
+                            const auto nodeId = message.get("node_id");
+                            if (!nodeId.empty())
+                                nodes.emplace(nodeId);
+                        }
+                        for (const auto& nodeId : nodes) {
+                            // Concurrent CRUD requests can publish Redis snapshots out of
+                            // commit order. Re-read the durable final state in this single
+                            // consumer so the last applied projection cannot move backwards.
+                            auto snapshot =
+                                co_await metadata::loadNodeFromDatabase(context, nodeId);
+                            co_await metadata::storeNode(redis, nodeId, snapshot, false);
+                            metadata_[nodeId] = std::move(snapshot);
+                        }
+                        co_await service::message::redis::acknowledgeAndDeleteMany(
+                            redis, batch.stream, kEdgeIngressGroup, batch.messages);
+                    }
+                    for (const auto& batch : batches) {
+                        if (batch.stream != kEdgeIngressStream)
+                            continue;
+                        std::vector<service::message::StreamMessage> telemetry;
+                        telemetry.reserve(batch.messages.size());
+                        for (const auto& message : batch.messages)
+                            co_await project(context, message.get("wire"), telemetry);
+                        co_await service::telemetry::PersistenceRuntime::ingest(context,
+                                                                                telemetry);
+                        co_await service::message::redis::acknowledgeAndDeleteMany(
+                            redis, batch.stream, kEdgeIngressGroup, batch.messages);
                     }
                 } catch (const std::exception& error) {
                     recovering = true;
@@ -115,15 +154,21 @@ class Projector final {
     static ruvia::Task<void> hydrateAuth(ruvia::WebWorkerContext& context) {
         const auto rows = co_await context.db().query(
             "SELECT imei, id::text, enrollment_status FROM edge_node");
+        if (rows.rows().empty())
+            co_return;
+        auto pipeline = context.redis().pipeline();
         for (const auto& row : rows.rows()) {
             const auto key = protocol::authKey(row[0].text());
             const auto value = std::string(row[1].text()) + "|" + std::string(row[2].text());
-            co_await context.redis().set(key, value);
+            pipeline.set(key, value);
         }
+        const auto replies = co_await std::move(pipeline).exec();
+        service::message::redis::requirePipelineSuccess("hydrate edge authorization", replies);
     }
 
-    static ruvia::Task<void> project(ruvia::WebWorkerContext& context,
-                                     std::string_view wire) {
+    ruvia::Task<void> project(
+        ruvia::WebWorkerContext& context, std::string_view wire,
+        std::vector<service::message::StreamMessage>& telemetry) {
         pb::Envelope envelope;
         if (!protocol::decode(wire, envelope))
             co_return;
@@ -160,9 +205,14 @@ class Projector final {
             co_await saveConfigRejected(context, nodeId, envelope.config_rejected());
             break;
         case pb::Envelope::kTelemetryBatch:
-            co_await saveTelemetry(context, nodeId, envelope.telemetry_batch());
+            co_await ensureMetadata(context, nodeId, envelope.telemetry_batch());
+            collectTelemetry(nodeId, envelope.telemetry_batch(), telemetry);
             break;
         case pb::Envelope::kCommandResult:
+            if (envelope.command_result().device_id().size() == 16)
+                co_await ensureMetadata(
+                    context, nodeId,
+                    protocol::uuidText(envelope.command_result().device_id()));
             co_await saveCommandResult(context, nodeId, envelope.command_result());
             break;
         case pb::Envelope::kEndpointStatusReport:
@@ -171,6 +221,43 @@ class Projector final {
         default:
             break;
         }
+    }
+
+    ruvia::Task<void> ensureMetadata(ruvia::WebWorkerContext& context,
+                                     std::string_view nodeId,
+                                     std::string_view deviceId) {
+        const auto existingNode = metadata_.find(std::string(nodeId));
+        if (existingNode != metadata_.end() &&
+            existingNode->second.contains(std::string(deviceId)))
+            co_return;
+        auto snapshot = co_await metadata::loadNode(context.redis(), nodeId);
+        if (!snapshot.contains(std::string(deviceId))) {
+            snapshot = co_await metadata::loadNodeFromDatabase(context, nodeId);
+            co_await metadata::storeNode(context.redis(), nodeId, snapshot, false);
+        }
+        metadata_[std::string(nodeId)] = std::move(snapshot);
+    }
+
+    ruvia::Task<void> ensureMetadata(ruvia::WebWorkerContext& context,
+                                     std::string_view nodeId,
+                                     const pb::TelemetryBatch& batch) {
+        const auto containsAll = [&batch](const metadata::NodeSnapshot& snapshot) {
+            for (const auto& record : batch.records()) {
+                if (record.device_id().size() == 16 &&
+                    !snapshot.contains(protocol::uuidText(record.device_id())))
+                    return false;
+            }
+            return true;
+        };
+        const auto existingNode = metadata_.find(std::string(nodeId));
+        if (existingNode != metadata_.end() && containsAll(existingNode->second))
+            co_return;
+        auto snapshot = co_await metadata::loadNode(context.redis(), nodeId);
+        if (!containsAll(snapshot)) {
+            snapshot = co_await metadata::loadNodeFromDatabase(context, nodeId);
+            co_await metadata::storeNode(context.redis(), nodeId, snapshot, false);
+        }
+        metadata_[std::string(nodeId)] = std::move(snapshot);
     }
 
     static std::string_view simState(pb::ModemSimState state) {
@@ -276,10 +363,8 @@ RETURNING id::text, enrollment_status)sql",
         if (enrollmentStatus == "approved") {
             (void)co_await context.db().execute(R"sql(
 WITH target AS (
-    SELECT task.id,
-           COALESCE(firmware.version, task.request->>'version', '') AS target_version
+    SELECT task.id
     FROM edge_task task
-    LEFT JOIN edge_firmware firmware ON firmware.id::text = task.request->>'firmware_id'
     WHERE task.node_id = $2::uuid
       AND task.task_type = 'firmware'
       AND task.status = 'running'
@@ -288,20 +373,10 @@ WITH target AS (
     LIMIT 1
 )
 UPDATE edge_task task
-SET status = CASE
-        WHEN target.target_version = $1::text THEN 'succeeded'
-        ELSE 'failed'
-    END,
+SET status = 'succeeded',
     result = task.result || jsonb_build_object(
-        'state', CASE
-            WHEN target.target_version = $1::text THEN 'rebooted'
-            ELSE 'versionMismatch'
-        END,
-        'message', CASE
-            WHEN target.target_version = $1::text THEN 'firmware reboot confirmed'
-            ELSE 'firmware rebooted but version mismatch'
-        END,
-        'targetVersion', target.target_version,
+        'state', 'rebooted',
+        'message', 'firmware reboot confirmed',
         'softwareVersion', $1::text),
     updated_at = NOW(),
     completed_at = NOW()
@@ -715,68 +790,55 @@ WHERE id = $3::uuid)sql",
         return output;
     }
 
-    static ruvia::Task<void> saveTelemetry(ruvia::WebWorkerContext& context,
-                                            std::string_view nodeId,
-                                            const pb::TelemetryBatch& batch) {
+    void collectTelemetry(std::string_view nodeId, const pb::TelemetryBatch& batch,
+                          std::vector<service::message::StreamMessage>& messages) {
+        const auto node = metadata_.find(std::string(nodeId));
+        if (node == metadata_.end())
+            return;
         for (const auto& record : batch.records()) {
             if (record.record_id().size() != 16 || record.device_id().size() != 16)
                 continue;
             const auto deviceId = protocol::uuidText(record.device_id());
-            const auto metadata = co_await context.db().query(R"sql(
-SELECT d.link_id::text, d.protocol_params->>'device_code',
-       GREATEST(1, CEIL(COALESCE((p.config->>'storageInterval')::numeric, 1)))::bigint,
-       COALESCE((d.protocol_params->>'online_timeout')::integer, 300), p.protocol
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN protocol_config p ON p.id = d.protocol_config_id
-WHERE d.id = $1::uuid AND l.edge_node_id = $2::uuid
-  AND d.deleted_at IS NULL LIMIT 1)sql",
-                                                              service::common::dbParams(deviceId,
-                                                                                        nodeId));
-            if (metadata.rows().empty())
+            const auto device = node->second.find(deviceId);
+            if (device == node->second.end())
                 continue;
-            const auto& row = metadata.rows().front();
             message::ParsedDeviceMessage parsed;
             parsed.messageId = protocol::uuidText(record.record_id());
             parsed.causationId = parsed.messageId;
-            parsed.linkId = std::string(row[0].text());
+            parsed.linkId = device->second.linkId;
             parsed.deviceId = deviceId;
-            parsed.deviceCode = std::string(row[1].text());
+            parsed.deviceCode = device->second.deviceCode;
             parsed.protocol = protocolName(record.protocol());
             if (parsed.protocol.empty())
-                parsed.protocol = std::string(row[4].text());
+                parsed.protocol = device->second.protocol;
             parsed.connectionId = std::string(nodeId);
             parsed.occurredAtMs = record.observed_at_ms();
             parsed.observedAtMs = record.observed_at_ms();
-            parsed.storageInterval = std::stoll(std::string(row[2].text()));
-            parsed.onlineWindowMs = std::stoll(std::string(row[3].text())) * 1000;
+            parsed.storageInterval = device->second.storageInterval;
+            parsed.onlineWindowMs = device->second.onlineWindowMs;
             parsed.source = "edge";
             parsed.valuesJson = telemetryJson(record);
             if (!record.raw_payload().empty())
                 parsed.rawPayloads.emplace_back(record.raw_payload().begin(),
                                                 record.raw_payload().end());
-            (void)co_await message::redis::publish(context.redis(), message::parsedStream(0),
-                                                        message::parsedFields(parsed), 100000);
+            service::message::StreamMessage streamMessage;
+            streamMessage.fields = message::parsedFields(parsed);
+            messages.push_back(std::move(streamMessage));
         }
     }
 
-    static ruvia::Task<void> saveCommandResult(ruvia::WebWorkerContext& context,
-                                                std::string_view nodeId,
-                                                const pb::CommandResult& result) {
+    ruvia::Task<void> saveCommandResult(ruvia::WebWorkerContext& context,
+                                        std::string_view nodeId,
+                                        const pb::CommandResult& result) {
         if (result.command_id().size() != 16 || result.device_id().size() != 16)
             co_return;
         const auto commandId = protocol::uuidText(result.command_id());
         const auto deviceId = protocol::uuidText(result.device_id());
-        const auto device = co_await context.db().query(R"sql(
-SELECT d.protocol_params->>'device_code', p.protocol
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN protocol_config p ON p.id = d.protocol_config_id
-WHERE d.id = $1::uuid AND l.edge_node_id = $2::uuid
-  AND d.deleted_at IS NULL LIMIT 1)sql",
-                                                        service::common::dbParams(deviceId,
-                                                                                  nodeId));
-        if (device.rows().empty())
+        const auto node = metadata_.find(std::string(nodeId));
+        if (node == metadata_.end())
+            co_return;
+        const auto device = node->second.find(deviceId);
+        if (device == node->second.end())
             co_return;
         const bool success = result.state() == pb::COMMAND_STATE_SUCCEEDED;
         (void)co_await message::redis::publish(
@@ -785,8 +847,8 @@ WHERE d.id = $1::uuid AND l.edge_node_id = $2::uuid
              {"causation_id", commandId},
              {"command_id", commandId},
              {"device_id", deviceId},
-             {"device_code", std::string(device.rows().front()[0].text())},
-             {"protocol", std::string(device.rows().front()[1].text())},
+             {"device_code", device->second.deviceCode},
+             {"protocol", device->second.protocol},
              {"attempt", "1"},
              {"success", success ? "1" : "0"},
              {"reason", result.message()},
@@ -845,6 +907,7 @@ WHERE d.id = $1::uuid AND l.edge_node_id = $2::uuid
 
     ruvia::WebWorkerHandle worker_;
     std::shared_future<void> stopped_;
+    metadata::Catalog metadata_;
     std::atomic_bool running_{false};
 };
 

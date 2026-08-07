@@ -7,6 +7,7 @@
 #include <future>
 #include <iostream>
 #include <memory>
+#include <ranges>
 #include <string>
 #include <utility>
 
@@ -15,20 +16,14 @@
 #include <ruvia/web/WebWorker.h>
 
 #include "service/common/message/contract.h"
+#include "service/features/event/config.h"
 #include "service/features/runtime/projector.h"
 #include "service/features/collector/stream.h"
 
 namespace service::runtime {
 
-inline std::atomic_bool projectionRequested{false};
-
-inline void requestProjection() noexcept {
-    projectionRequested.store(true, std::memory_order_release);
-}
-
-// PostgreSQL is the configuration source of truth. One Service coroutine periodically
-// reconciles it to Redis so a transient Redis failure after a committed CRUD request heals
-// automatically without allowing Collector to read PostgreSQL.
+// PostgreSQL is the configuration source of truth. CRUD commits enqueue durable change events;
+// this single Service coroutine blocks on that stream and projects a versioned Redis snapshot.
 class Reconciler final {
   public:
     Reconciler() = default;
@@ -69,46 +64,59 @@ class Reconciler final {
     }
 
   private:
+    static constexpr std::string_view kGroup{"iot-engine:runtime-reconciler"};
+    static constexpr std::size_t kBatchSize = 256;
+
+    static bool requiresProjection(const service::message::StreamMessage& message) {
+        const auto aggregate = message.get("aggregate");
+        return aggregate == "link" || aggregate == "device" || aggregate == "protocol";
+    }
+
     ruvia::Task<void> run(ruvia::WebWorkerContext& context,
                           std::shared_ptr<std::promise<void>> ready,
                           std::shared_ptr<std::promise<void>> stopped) {
         try {
-            // Startup already projected the first snapshot. Signal readiness immediately so
-            // the application lifecycle never waits on an unavailable Redis a second time.
+            const auto redis = context.redis();
+            co_await service::message::redis::ensureGroup(
+                redis, service::message::kRuntimeConfigChangesStream, kGroup);
             ready->set_value();
-            auto nextPeriodicProjection =
-                std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            bool recovering = true;
             while (running_.load() && !context.stopToken().stopRequested()) {
-                auto delay = std::chrono::milliseconds(100);
-                const auto now = std::chrono::steady_clock::now();
-                const auto requested =
-                    projectionRequested.exchange(false, std::memory_order_acq_rel);
-                if (requested || now >= nextPeriodicProjection) {
-                    try {
+                const auto messages = recovering
+                    ? co_await service::message::redis::readGroup(
+                          redis, service::message::kRuntimeConfigChangesStream, kGroup,
+                          "service-0", "0", std::chrono::milliseconds(0), kBatchSize)
+                    : co_await service::message::redis::readGroupBlocking(
+                          redis, service::message::kRuntimeConfigChangesStream, kGroup,
+                          "service-0", context.stopToken(), kBatchSize);
+                if (recovering && messages.empty()) {
+                    recovering = false;
+                    continue;
+                }
+                if (messages.empty())
+                    continue;
+                bool failed = false;
+                try {
+                    if (std::ranges::any_of(messages, requiresProjection)) {
                         const auto version = co_await project(context);
                         if (version != lastNotifiedVersion_) {
                             co_await publishWorkerNotifications(context, version);
                             lastNotifiedVersion_ = version;
                         }
-                        nextPeriodicProjection =
-                            std::chrono::steady_clock::now() + std::chrono::seconds(5);
-                    } catch (const std::exception& error) {
-                        std::cerr << "runtime reconciliation failed: " << error.what()
-                                  << '\n';
-                        requestProjection();
-                        delay = std::chrono::milliseconds(500);
                     }
+                    co_await service::message::redis::acknowledgeAndDeleteMany(
+                        redis, service::message::kRuntimeConfigChangesStream, kGroup,
+                        messages);
+                } catch (const std::exception& error) {
+                    if (context.stopToken().stopRequested())
+                        break;
+                    std::cerr << "runtime reconciliation failed: " << error.what() << '\n';
+                    recovering = true;
+                    failed = true;
                 }
-                // Sleep in short interruptible slices. ruvia timers are coroutine based, but a
-                // single five-second sleep would still make Ctrl-C wait for that timer before the
-                // reconciler can release its worker handle.
-                constexpr auto stopPollInterval = std::chrono::milliseconds(100);
-                for (auto remaining = delay; remaining.count() > 0 && running_.load() &&
-                                             !context.stopToken().stopRequested();) {
-                    const auto slice = std::min(remaining, stopPollInterval);
-                    (void)co_await ruvia::sleepFor(context.worker(), slice);
-                    remaining -= slice;
-                }
+                if (failed)
+                    (void)co_await ruvia::sleepFor(context.worker(),
+                                                   std::chrono::milliseconds(250));
             }
         } catch (...) {
             try {

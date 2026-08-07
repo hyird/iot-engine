@@ -22,6 +22,7 @@
 #include "service/common/uuid.h"
 #include "service/features/access/contract.h"
 #include "service/features/access/event.h"
+#include "service/features/alert/metadata.h"
 
 namespace service::alert {
 
@@ -66,21 +67,30 @@ public:
     if (messages.empty())
       co_return;
 
+    const auto active = co_await metadata::activeDevices(context, messages);
+    std::vector<service::message::ParsedDeviceMessage> relevant;
+    relevant.reserve(messages.size());
+    for (std::size_t index = 0; index < messages.size(); ++index)
+      if (index < active.size() && active[index])
+        relevant.push_back(messages[index]);
+    if (relevant.empty())
+      co_return;
+
     std::vector<ruvia::DbValue> params;
     const auto rules = co_await context.db().query(
-        telemetryEvaluationSql(messages, params), params);
-    std::vector<std::vector<Evaluation>> evaluations(messages.size());
+        telemetryEvaluationSql(relevant, params), params);
+    std::vector<std::vector<Evaluation>> evaluations(relevant.size());
     for (const auto &row : rules.rows()) {
       const auto sequence =
           static_cast<std::size_t>(std::stoull(std::string(row[0].text())));
-      if (sequence >= messages.size())
+      if (sequence >= relevant.size())
         continue;
       evaluations[sequence].push_back(
-          evaluation(row, 1, messages[sequence].valuesJson));
+          evaluation(row, 1, relevant[sequence].valuesJson));
     }
-    for (std::size_t sequence = 0; sequence < messages.size(); ++sequence) {
+    for (std::size_t sequence = 0; sequence < relevant.size(); ++sequence) {
       co_await applyEvaluations(context, evaluations[sequence],
-                                messages[sequence].observedAtMs);
+                                relevant[sequence].observedAtMs);
     }
   }
 
@@ -104,12 +114,15 @@ private:
                         std::shared_ptr<std::promise<void>> ready,
                         std::shared_ptr<std::promise<void>> stopped) {
     try {
+      co_await metadata::refresh(context);
       ready->set_value();
       while (running_.load() && !context.stopToken().stopRequested()) {
         try {
-          const auto rules =
-              co_await context.db().query(offlineEvaluationSql());
-          co_await apply(context, rules, "{}", nowMilliseconds());
+          if (co_await metadata::hasOfflineRules(context)) {
+            const auto rules =
+                co_await context.db().query(offlineEvaluationSql());
+            co_await apply(context, rules, "{}", nowMilliseconds());
+          }
         } catch (const std::exception &error) {
           std::cerr << "alert offline evaluation failed: " << error.what()
                     << '\n';

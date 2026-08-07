@@ -77,7 +77,11 @@ namespace
         assign(config.password, env.get("REDIS_PASSWORD"));
         config.port = env.get<std::uint16_t>("REDIS_PORT").value_or(6379);
         config.database = env.get<std::uint32_t>("REDIS_DATABASE").value_or(0);
-        config.poolSizePerWorker = 1;
+        const auto poolSize = env.get<unsigned>("REDIS_POOL_SIZE_PER_WORKER").value_or(2U);
+        if (poolSize == 0U || poolSize > 16U)
+            throw std::runtime_error(
+                "REDIS_POOL_SIZE_PER_WORKER must be between 1 and 16");
+        config.poolSizePerWorker = poolSize;
         return config;
     }
 
@@ -305,10 +309,11 @@ int main(int argc, char *argv[])
                   << ", gb28181=" << gb28181WorkerCount << '\n';
         auto serviceRedis = redisConfig(app.env());
         auto collectorRedis = serviceRedis;
-        // Each worker has telemetry and command-result readers. Edge ingress stays on the
-        // first worker and webhook delivery moves to the last, so a multi-worker deployment
-        // needs at most three blocking sockets per worker. A single worker still needs four.
-        serviceRedis.blockingPoolSizePerWorker = serviceWorkerCount == 1 ? 4 : 3;
+        // Each worker has telemetry and command-result readers. With at least three workers,
+        // edge ingress, config reconciliation and webhook delivery use first, second and last
+        // respectively, keeping the maximum at three worker-local blocking sockets.
+        serviceRedis.blockingPoolSizePerWorker =
+            serviceWorkerCount == 1 ? 5 : (serviceWorkerCount == 2 ? 4 : 3);
         auto collector = std::make_shared<service::collector::Runtime>();
         auto telemetry = std::make_shared<service::telemetry::PersistenceRuntime>();
         auto commandResults = std::make_shared<service::command::ResultRuntime>();
@@ -348,7 +353,9 @@ int main(int argc, char *argv[])
                 if (!posted.accepted())
                     throw std::runtime_error("service rejected runtime projection");
                 ready.get();
-                configReconciler->start(workers.front(), collectorWorkerCount); })
+                configReconciler->start(
+                    workers.size() > 2 ? workers[1] : workers.front(),
+                    collectorWorkerCount); })
             .onStop([collector, telemetry, commandResults, openWebhooks, configReconciler,
                      edgeProjector, gb28181Projector, alerts]
                     {

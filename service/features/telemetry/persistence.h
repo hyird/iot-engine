@@ -9,7 +9,6 @@
 #include <iostream>
 #include <map>
 #include <memory>
-#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -146,8 +145,31 @@ class PersistenceRuntime final {
         workers_.clear();
     }
 
+    static ruvia::Task<void> ingest(
+        ruvia::WebWorkerContext& context,
+        const std::vector<message::StreamMessage>& messages) {
+        if (messages.empty())
+            co_return;
+        const auto redis = context.redis();
+        co_await persist(context, messages);
+        co_await latest::update(redis, messages);
+        std::vector<message::ParsedDeviceMessage> alertMessages;
+        alertMessages.reserve(messages.size());
+        for (const auto& message : messages)
+            alertMessages.push_back(message::parsedFrom(message));
+        try {
+            co_await service::alert::Runtime::evaluateTelemetry(context, alertMessages);
+        } catch (const std::exception& error) {
+            // A malformed rule must not block durable telemetry or queue acknowledgement.
+            // The next matching report retries evaluation against durable telemetry.
+            std::cerr << "alert telemetry evaluation failed: " << error.what() << '\n';
+        }
+        co_await service::access::event::publishMany(redis, messages);
+    }
+
   private:
     static constexpr std::string_view kGroup = "iot-engine:telemetry-persistence";
+    static constexpr std::size_t kBatchSize = 256;
 
     ruvia::Task<void> maintainFreshness(
         ruvia::WebWorkerContext& context, std::shared_ptr<std::promise<void>> ready,
@@ -203,10 +225,10 @@ class PersistenceRuntime final {
                 }
                 const auto batches = recovering
                     ? co_await message::redis::readGroupMany(
-                          redis, streams, kGroup, consumer, "0", 100)
+                          redis, streams, kGroup, consumer, "0", kBatchSize)
                     : co_await message::redis::readGroupManyBlocking(
                           redis, streams, kGroup, consumer,
-                          context.stopToken(), 100);
+                          context.stopToken(), kBatchSize);
                 if (recovering && batches.empty()) {
                     recovering = false;
                     continue;
@@ -218,33 +240,9 @@ class PersistenceRuntime final {
                         continue;
                     const auto partition = partitionEntry->second;
                     try {
-                        co_await persist(context, batch.messages);
-                        co_await latest::update(redis, batch.messages);
-                        std::vector<message::ParsedDeviceMessage> alertMessages;
-                        alertMessages.reserve(batch.messages.size());
-                        for (const auto& message : batch.messages)
-                            alertMessages.push_back(message::parsedFrom(message));
-                        try {
-                            co_await service::alert::Runtime::evaluateTelemetry(context,
-                                                                               alertMessages);
-                        } catch (const std::exception& error) {
-                            // A malformed rule must not block telemetry persistence or ACK.
-                            // The periodic evaluator will retry against the persisted latest data.
-                            std::cerr << "alert telemetry evaluation failed: " << error.what()
-                                      << '\n';
-                        }
-                        for (const auto& message : batch.messages) {
-                            const auto parsed = message::parsedFrom(message);
-                            const auto eventType =
-                                parsed.valuesJson.find("\"type\":\"JPEG\"") != std::string::npos
-                                    ? "device.image.reported"
-                                    : "device.data.reported";
-                            co_await service::access::event::publish(
-                                redis, parsed.messageId, eventType, parsed.deviceId,
-                                parsed.deviceCode, parsed.observedAtMs, parsed.valuesJson);
-                            co_await message::redis::acknowledgeAndDelete(
-                                redis, batch.stream, kGroup, message.id);
-                        }
+                        co_await ingest(context, batch.messages);
+                        co_await message::redis::acknowledgeAndDeleteMany(
+                            redis, batch.stream, kGroup, batch.messages);
                     } catch (const std::exception& error) {
                         std::cerr << "telemetry persistence failed for collector worker " << partition
                                   << ": " << error.what() << '\n';
@@ -276,29 +274,12 @@ class PersistenceRuntime final {
         parsedMessages.reserve(messages.size());
         std::vector<std::string> rawPayloadArrays;
         rawPayloadArrays.reserve(messages.size());
-        std::set<std::string, std::less<>> deviceIds;
         for (const auto& message : messages) {
             parsedMessages.push_back(message::parsedFrom(message));
             parsedMessages.back().valuesJson =
                 detail::sanitizeJsonUtf8(parsedMessages.back().valuesJson);
             rawPayloadArrays.push_back(message::rawPayloadsJson(parsedMessages.back().rawPayloads));
-            deviceIds.insert(parsedMessages.back().deviceId);
         }
-
-        auto transaction = co_await context.db().beginTransaction();
-        std::string lockSql =
-            "SELECT pg_advisory_xact_lock(hashtextextended(id::text, 734621)) FROM device "
-            "WHERE id IN (";
-        std::vector<ruvia::DbValue> lockParams;
-        lockParams.reserve(deviceIds.size());
-        for (const auto& deviceId : deviceIds) {
-            if (!lockParams.empty())
-                lockSql.push_back(',');
-            lockSql += "$" + std::to_string(lockParams.size() + 1) + "::uuid";
-            lockParams.emplace_back(std::string_view(deviceId));
-        }
-        lockSql += ") ORDER BY id";
-        (void)co_await transaction.query(lockSql, lockParams);
 
         std::string sql = R"sql(WITH RECURSIVE incoming(
 report_time, id, device_id, link_id, connection_id, protocol, source,
@@ -329,11 +310,22 @@ occurred_at, data, raw_payload_hex, storage_interval) AS (VALUES )sql";
             params.emplace_back(std::string_view(rawPayloadArrays[index]));
             params.emplace_back(std::clamp<std::int64_t>(parsed.storageInterval, 1, 86400));
         }
-        sql += R"sql(), valid_incoming AS (
+        sql += R"sql(), locks AS MATERIALIZED (
+  SELECT pg_advisory_xact_lock(hashtextextended(ordered.id::text, 734621))
+  FROM (
+    SELECT DISTINCT current_device.id
+    FROM incoming
+    JOIN device current_device ON current_device.id = incoming.device_id
+                               AND current_device.link_id = incoming.link_id
+    ORDER BY current_device.id
+  ) ordered
+), valid_incoming AS (
   SELECT incoming.*
   FROM incoming
   JOIN device current_device ON current_device.id = incoming.device_id
-                            AND current_device.link_id = incoming.link_id
+                             AND current_device.link_id = incoming.link_id
+  CROSS JOIN (SELECT count(*) AS lock_count FROM locks) acquired
+  WHERE acquired.lock_count >= 0
 ), device_last_stored AS (
   SELECT requested.device_id, stored.report_time AS last_stored
   FROM (SELECT DISTINCT device_id FROM valid_incoming) requested
@@ -382,8 +374,7 @@ SELECT report_time, id, device_id, link_id, connection_id, protocol, source,
        occurred_at, data, raw_payload_hex
 FROM filtered WHERE accepted
 ON CONFLICT (id, report_time) DO NOTHING)sql";
-        (void)co_await transaction.execute(sql, params);
-        co_await transaction.commit();
+        (void)co_await context.db().execute(sql, params);
     }
 
     std::vector<ruvia::WebWorkerHandle> workers_;

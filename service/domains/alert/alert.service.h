@@ -16,6 +16,7 @@
 #include "service/common/http.h"
 #include "service/common/uuid.h"
 #include "service/features/access/contract.h"
+#include "service/features/alert/metadata.h"
 #include "service/middleware/auth.h"
 
 namespace service::alert {
@@ -104,6 +105,7 @@ VALUES ($1::uuid, $2, $3::uuid, $4, $5::jsonb, $6, $7::integer,
                                           input.silenceDuration, input.recoveryCondition,
                                           input.recoveryWaitSeconds, input.status, input.remark,
                                           principal.userId));
+        co_await service::alert::metadata::refresh(c);
     }
 
     ruvia::Task<void> updateRule(ruvia::Context& c, std::string_view id,
@@ -125,6 +127,7 @@ WHERE id = $1::uuid AND deleted_at IS NULL)sql",
                                           input.conditions, input.logic, input.silenceDuration,
                                           input.recoveryCondition, input.recoveryWaitSeconds,
                                           input.status, input.remark));
+        co_await service::alert::metadata::refresh(c);
     }
 
     ruvia::Task<void> removeRule(ruvia::Context& c, std::string_view id) {
@@ -140,6 +143,7 @@ WHERE id = $1::uuid AND deleted_at IS NULL)sql",
             "WHERE id = $1::uuid AND deleted_at IS NULL",
             service::common::dbParams(id));
         co_await transaction.commit();
+        co_await service::alert::metadata::refresh(c);
     }
 
     ruvia::Task<void> batchRemoveRules(ruvia::Context& c, const ruvia::JsonValue& payload) {
@@ -156,6 +160,7 @@ WHERE id = $1::uuid AND deleted_at IS NULL)sql",
             "WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL",
             service::common::dbParams(array));
         co_await transaction.commit();
+        co_await service::alert::metadata::refresh(c);
     }
 
     ruvia::Task<std::string> listTemplates(ruvia::Context& c) {
@@ -301,6 +306,7 @@ SELECT jsonb_build_object(
   'createdIds', COALESCE((SELECT jsonb_agg(id) FROM created), '[]'::jsonb))::text)sql",
                                                   service::common::dbParams(
                                                       templateId, deviceIdArray, principal.userId));
+        co_await service::alert::metadata::refresh(c);
         co_return firstJson(result);
     }
 

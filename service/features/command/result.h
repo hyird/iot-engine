@@ -73,6 +73,7 @@ class ResultRuntime final {
   private:
     static constexpr std::string_view kGroup = "iot-engine:command-result";
     static constexpr auto kStateTtl = std::chrono::hours(24);
+    static constexpr std::size_t kBatchSize = 256;
 
     ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t index,
                           std::shared_ptr<std::promise<void>> ready,
@@ -98,10 +99,10 @@ class ResultRuntime final {
                 }
                 const auto batches = recovering
                     ? co_await message::redis::readGroupMany(
-                          redis, streams, kGroup, consumer, "0", 100)
+                          redis, streams, kGroup, consumer, "0", kBatchSize)
                     : co_await message::redis::readGroupManyBlocking(
                           redis, streams, kGroup, consumer,
-                          context.stopToken(), 100);
+                          context.stopToken(), kBatchSize);
                 if (recovering && batches.empty()) {
                     recovering = false;
                     continue;
@@ -113,11 +114,8 @@ class ResultRuntime final {
                         continue;
                     const auto partition = partitionEntry->second;
                     try {
-                        for (const auto& message : batch.messages) {
-                            co_await project(redis, partition, message);
-                            co_await message::redis::acknowledgeAndDelete(redis, batch.stream,
-                                                                               kGroup, message.id);
-                        }
+                        co_await projectAndAcknowledgeMany(
+                            redis, partition, batch.stream, batch.messages);
                     } catch (const std::exception& error) {
                         std::cerr << "command result projection failed for collector worker "
                                   << partition << ": " << error.what() << '\n';
@@ -142,41 +140,95 @@ class ResultRuntime final {
     }
 
     template <typename Redis>
-    static ruvia::Task<void> project(const Redis& redis, std::size_t partition,
-                                     const message::StreamMessage& message) {
-        const auto commandId = message.get("command_id");
-        if (commandId.empty()) {
-            auto fields = message.fields;
-            fields.push_back({"source_entry_id", message.id});
-            fields.push_back({"failure_reason", "command_result_invalid"});
-            fields.push_back({"failed_at_ms", std::to_string(message::utcNowMilliseconds())});
-            (void)co_await message::redis::publish(redis, message::deadLetterStream(partition),
-                                                        fields, 1000);
+    static ruvia::Task<void>
+    projectAndAcknowledgeMany(const Redis& redis, std::size_t partition,
+                              std::string_view sourceStream,
+                              const std::vector<message::StreamMessage>& messages) {
+        if (messages.empty())
             co_return;
-        }
-        std::vector<message::StreamField> fields;
-        fields.reserve(message.fields.size() + 2);
-        for (const auto& field : message.fields) {
-            if (field.name == "message_id" || field.name == "causation_id" ||
-                field.name == "command_id")
+        static constexpr std::string_view invalidScript = R"lua(
+local values = {'*'}
+for index = 3, #ARGV do values[#values + 1] = ARGV[index] end
+redis.call('XADD', KEYS[1], 'MAXLEN', '~', 1000, unpack(values))
+redis.call('XACK', KEYS[2], ARGV[1], ARGV[2])
+redis.call('XDEL', KEYS[2], ARGV[2])
+return 1
+)lua";
+        static constexpr std::string_view validScript = R"lua(
+local hash = {}
+for index = 9, #ARGV do hash[#hash + 1] = ARGV[index] end
+redis.call('HSET', KEYS[1], unpack(hash))
+redis.call('PEXPIRE', KEYS[1], ARGV[3])
+redis.call('XADD', KEYS[2], 'MAXLEN', '~', 100000, '*',
+  'event_id', ARGV[4], 'event_type', 'device.command.responded',
+  'device_id', ARGV[5], 'device_code', ARGV[6],
+  'occurred_at_ms', ARGV[7], 'data_json', ARGV[8])
+redis.call('XACK', KEYS[3], ARGV[1], ARGV[2])
+redis.call('XDEL', KEYS[3], ARGV[2])
+return 1
+)lua";
+        auto pipeline = redis.pipeline();
+        const auto ttl = std::to_string(
+            std::chrono::duration_cast<std::chrono::milliseconds>(kStateTtl).count());
+        for (const auto& message : messages) {
+            const auto commandId = message.get("command_id");
+            if (commandId.empty()) {
+                auto fields = message.fields;
+                fields.push_back({"source_entry_id", message.id});
+                fields.push_back({"failure_reason", "command_result_invalid"});
+                fields.push_back({"failed_at_ms", std::to_string(message::utcNowMilliseconds())});
+                const auto deadLetter = message::deadLetterStream(partition);
+                const std::string source(sourceStream);
+                const std::string_view keys[]{deadLetter, source};
+                std::vector<std::string_view> arguments{kGroup, message.id};
+                arguments.reserve(arguments.size() + fields.size() * 2);
+                for (const auto& field : fields) {
+                    arguments.push_back(field.name);
+                    arguments.push_back(field.value);
+                }
+                message::redis::queueEval(pipeline, invalidScript, keys, arguments);
                 continue;
-            fields.push_back(field);
+            }
+
+            std::vector<message::StreamField> fields;
+            fields.reserve(message.fields.size() + 2);
+            for (const auto& field : message.fields) {
+                if (field.name == "message_id" || field.name == "causation_id" ||
+                    field.name == "command_id")
+                    continue;
+                fields.push_back(field);
+            }
+            fields.push_back({"command_id", std::string(commandId)});
+            fields.push_back(
+                {"status", message.get("success") == "1" ? "SUCCESS" : "FAILED"});
+            const auto key = "iot:state:command:" + std::string(commandId);
+            const auto completedAt = std::to_string(message::utcNowMilliseconds());
+            const std::string data =
+                "{\"commandId\":" + service::access::jsonQuoted(commandId) +
+                ",\"status\":" +
+                service::access::jsonQuoted(message.get("success") == "1" ? "SUCCESS"
+                                                                          : "FAILED") +
+                ",\"reason\":" + service::access::jsonQuoted(message.get("reason")) + "}";
+            const std::string source(sourceStream);
+            const std::string eventStream(service::access::event::kStream);
+            const std::string_view keys[]{key, eventStream, source};
+            std::vector<std::string_view> arguments{
+                kGroup, message.id, ttl, message.get("message_id"),
+                message.get("device_id"), message.get("device_code"), completedAt, data};
+            arguments.reserve(arguments.size() + fields.size() * 2);
+            for (const auto& field : fields) {
+                arguments.push_back(field.name);
+                arguments.push_back(field.value);
+            }
+            message::redis::queueEval(pipeline, validScript, keys, arguments);
         }
-        fields.push_back({"command_id", std::string(commandId)});
-        fields.push_back({"status", message.get("success") == "1" ? "SUCCESS" : "FAILED"});
-        const auto key = "iot:state:command:" + std::string(commandId);
-        co_await message::redis::setHash(redis, key, fields);
-        (void)co_await message::redis::command(
-            redis, {"PEXPIRE", key,
-                    std::to_string(
-                        std::chrono::duration_cast<std::chrono::milliseconds>(kStateTtl).count())});
-        std::string data =
-            "{\"commandId\":" + service::access::jsonQuoted(commandId) + ",\"status\":" +
-            service::access::jsonQuoted(message.get("success") == "1" ? "SUCCESS" : "FAILED") +
-            ",\"reason\":" + service::access::jsonQuoted(message.get("reason")) + "}";
-        co_await service::access::event::publish(
-            redis, message.get("message_id"), "device.command.responded", message.get("device_id"),
-            message.get("device_code"), message::utcNowMilliseconds(), data);
+        const auto replies = co_await std::move(pipeline).exec();
+        message::redis::requirePipelineSuccess(
+            "project and acknowledge command result batch", replies);
+        for (const auto& reply : replies)
+            if (reply.kind() != ruvia::RedisValue::Kind::kInteger)
+                message::redis::throwValue(
+                    "project and acknowledge command result batch", reply);
     }
 
     std::vector<ruvia::WebWorkerHandle> workers_;

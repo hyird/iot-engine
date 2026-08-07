@@ -135,6 +135,11 @@ async function route(code: string) {
     return hash(`iot:runtime:device:${code}`);
 }
 
+async function streamState(key: string, group: string) {
+    const pending = (await redis.send('XPENDING', [key, group])) as unknown[];
+    return { depth: Number(await redis.send('XLEN', [key])), pending: Number(pending[0]) };
+}
+
 function track(socket: net.Socket) {
     sockets.add(socket);
     socket.setNoDelay(true);
@@ -440,6 +445,16 @@ try {
         'config notification stream cleanup',
         () => streamDepth('iot:channel:config:worker:*'),
         (depth) => depth === 0,
+    );
+    await waitFor(
+        'runtime config event acknowledgement',
+        () => streamState('iot:channel:runtime:config-change', 'iot-engine:runtime-reconciler'),
+        (state) => state.depth === 0 && state.pending === 0,
+    );
+    await waitFor(
+        'webhook catalog event acknowledgement',
+        () => streamState('iot:channel:open-access:config-change', 'iot-engine:open-webhook'),
+        (state) => state.depth === 0 && state.pending === 0,
     );
     const s7Final = await route('SS000');
     const sl651Final = await route('0000000001');

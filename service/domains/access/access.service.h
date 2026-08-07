@@ -20,6 +20,7 @@
 #include "service/domains/device/device.service.h"
 #include "service/domains/access/access.schema.h"
 #include "service/domains/access/access.types.h"
+#include "service/features/event/config.h"
 #include "service/features/telemetry/latest.h"
 
 namespace service::access {
@@ -99,6 +100,7 @@ VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb,
                                       remarkValue, principal.userId));
         co_await replaceDevices(transaction, id, devices);
         co_await transaction.commit();
+        co_await service::message::publishConfigEvent(c, "access_key", "created", id);
 
         co_return "{\"id\":" + jsonQuoted(id) + ",\"name\":" + jsonQuoted(name) +
             ",\"status\":" + jsonQuoted(status) + ",\"scopes\":" + scopeJson +
@@ -145,6 +147,7 @@ WHERE id = $1::uuid AND deleted_at IS NULL)sql",
         if (deviceField)
             co_await replaceDevices(transaction, id, devices);
         co_await transaction.commit();
+        co_await service::message::publishConfigEvent(c, "access_key", "updated", id);
     }
 
     ruvia::Task<std::string> rotateKey(ruvia::Context& c, std::string_view id) {
@@ -175,6 +178,7 @@ WHERE id = $1::uuid AND deleted_at IS NULL)sql",
             "WHERE id = $1::uuid AND deleted_at IS NULL",
             service::common::dbParams(id));
         co_await transaction.commit();
+        co_await service::message::publishConfigEvent(c, "access_key", "deleted", id);
     }
 
     ruvia::Task<std::string> listWebhooks(ruvia::Context& c) {
@@ -234,6 +238,7 @@ VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8::jsonb, NULLIF($9, '')
                                       service::common::dbParams(id, accessKeyId, name, url, status,
                                                                 timeout, headers, eventJson,
                                                                 secretValue));
+        co_await service::message::publishConfigEvent(c, "webhook", "created", id);
         co_return "{\"id\":" + jsonQuoted(id) + ",\"accessKeyId\":" + jsonQuoted(accessKeyId) +
             ",\"name\":" + jsonQuoted(name) + ",\"url\":" + jsonQuoted(url) +
             ",\"status\":" + jsonQuoted(status) + ",\"timeoutSeconds\":" + std::to_string(timeout) +
@@ -280,6 +285,7 @@ WHERE id = $1::uuid AND deleted_at IS NULL)sql",
                                       service::common::dbParams(id, accessKeyId, name, url, status,
                                                                 timeout, headers, eventJson,
                                                                 secretValue));
+        co_await service::message::publishConfigEvent(c, "webhook", "updated", id);
     }
 
     ruvia::Task<void> removeWebhook(ruvia::Context& c, std::string_view id) {
@@ -289,6 +295,7 @@ WHERE id = $1::uuid AND deleted_at IS NULL)sql",
             "UPDATE open_webhook SET deleted_at = NOW(), updated_at = NOW() "
             "WHERE id = $1::uuid AND deleted_at IS NULL",
             service::common::dbParams(id));
+        co_await service::message::publishConfigEvent(c, "webhook", "deleted", id);
     }
 
     ruvia::Task<std::string> listLogs(ruvia::Context& c) {
