@@ -405,8 +405,7 @@ WITH rules AS (
 ), samples AS (
   SELECT rules.*, rules.input_data AS data,
          to_timestamp(rules.observed_at_ms::double precision / 1000.0)
-           AS observed_at,
-         rules.previous_data
+           AS observed_at
   FROM rules
 )
 )sql";

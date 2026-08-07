@@ -42,6 +42,12 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
     RUVIA_ROUTES_END
 
   private:
+    struct TelemetryReceipt {
+        std::array<std::uint8_t, 16> recordId{};
+        std::uint64_t acknowledgedAtMs{};
+        bool occupied{};
+    };
+
     struct Session {
         std::string nodeId;
         std::array<std::uint8_t, 16> nodeBytes{};
@@ -51,6 +57,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         std::uint64_t outboundSequence{};
         std::uint64_t configSentAtMs{};
         std::uint64_t onlineMarkedAtMs{};
+        std::array<TelemetryReceipt, 64> telemetryReceipts{};
+        std::size_t nextTelemetryReceipt{};
         bool capabilitySeen{};
     };
 
@@ -150,9 +158,11 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 co_return;
             }
             session.inboundSequence = input.sequence();
-            if (shouldProject(input))
+            const auto telemetry = telemetryDecision(session, input);
+            if (shouldProject(input) && telemetry.publish)
                 co_await publishIngress(c, message->payload());
-            co_await handle(c, socket, session, input);
+            if (telemetry.acknowledge)
+                co_await handle(c, socket, session, input);
             co_await markOnline(c, session);
             co_await drain(c, socket, session);
         }
@@ -331,6 +341,38 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         default:
             return false;
         }
+    }
+
+    struct TelemetryDecision {
+        bool publish{true};
+        bool acknowledge{true};
+    };
+
+    static TelemetryDecision telemetryDecision(Session& session,
+                                                const pb::Envelope& input) {
+        if (input.payload_case() != pb::Envelope::kTelemetryBatch ||
+            input.telemetry_batch().records().empty() ||
+            input.telemetry_batch().records(0).record_id().size() != 16)
+            return {};
+        constexpr std::uint64_t retryAckIntervalMs = 1000;
+        const auto recordId = input.telemetry_batch().records(0).record_id();
+        const auto now = protocol::nowMs();
+        for (auto& receipt : session.telemetryReceipts) {
+            if (!receipt.occupied ||
+                std::memcmp(receipt.recordId.data(), recordId.data(), 16) != 0)
+                continue;
+            if (now - receipt.acknowledgedAtMs < retryAckIntervalMs)
+                return {.publish = false, .acknowledge = false};
+            receipt.acknowledgedAtMs = now;
+            return {.publish = false, .acknowledge = true};
+        }
+        auto& receipt = session.telemetryReceipts[session.nextTelemetryReceipt];
+        std::memcpy(receipt.recordId.data(), recordId.data(), 16);
+        receipt.acknowledgedAtMs = now;
+        receipt.occupied = true;
+        session.nextTelemetryReceipt =
+            (session.nextTelemetryReceipt + 1) % session.telemetryReceipts.size();
+        return {};
     }
 
     static pb::Envelope makeEnvelope(Session& session) {
