@@ -111,7 +111,7 @@ template <typename Context> ruvia::Task<void> refresh(Context& context) {
     // Serialize the database snapshot and Redis pointer swap across service instances.
     // The lock is held only by cold-path configuration projection, never by API reads.
     auto transaction = co_await context.db().beginTransaction();
-    (void)co_await transaction.execute(
+    (void)co_await transaction.query(
         "SELECT pg_advisory_xact_lock(734622::bigint)");
     const auto rows = co_await transaction.query(R"sql(
 SELECT key.access_key_hash, key.id::text, key.name, key.status::text,

@@ -35,7 +35,7 @@ inline ruvia::Task<void> refresh(Context& context) {
     // Serialize the authoritative snapshot and Redis replacement across instances.
     // Telemetry reads never take this cold-path configuration lock.
     auto transaction = co_await context.db().beginTransaction();
-    (void)co_await transaction.execute(
+    (void)co_await transaction.query(
         "SELECT pg_advisory_xact_lock(734623::bigint)");
     const auto rows = co_await transaction.query(R"sql(
 SELECT DISTINCT rule.device_id::text, rule.id::text,
