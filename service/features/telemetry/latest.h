@@ -215,13 +215,14 @@ for element_id, point in pairs(payload.values or {}) do
 end
 return count
     )lua";
+    const auto scriptSha = co_await redis.scriptLoad(script);
     auto pipeline = redis.pipeline();
     for (const auto& parsed : messages) {
         const auto observedAt = std::to_string(parsed.observedAtMs);
         const auto updatedAt = std::to_string(service::message::utcNowMilliseconds());
         const auto onlineWindow = std::to_string(parsed.onlineWindowMs);
         const std::array<std::string_view, 11> command{
-            "EVAL",       script,            "0",          parsed.deviceId,
+            "EVALSHA",    scriptSha,         "0",          parsed.deviceId,
             parsed.deviceCode, parsed.protocol,    observedAt,   updatedAt,
             parsed.source, onlineWindow,      parsed.valuesJson};
         // RedisPipeline copies every argument synchronously.

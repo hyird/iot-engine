@@ -90,6 +90,19 @@ inline void queueEval(Pipeline& pipeline, std::string_view script,
     pipeline.command(command);
 }
 
+template <typename Pipeline>
+inline void queueEvalSha(Pipeline& pipeline, std::string_view sha,
+                         std::span<const std::string_view> keys,
+                         std::span<const std::string_view> arguments) {
+    const auto keyCount = std::to_string(keys.size());
+    std::vector<std::string_view> command{"EVALSHA", sha, keyCount};
+    command.reserve(command.size() + keys.size() + arguments.size());
+    command.insert(command.end(), keys.begin(), keys.end());
+    command.insert(command.end(), arguments.begin(), arguments.end());
+    // RedisPipeline copies every argument synchronously.
+    pipeline.command(command);
+}
+
 template <typename Redis>
 inline ruvia::Task<std::string> add(const Redis& redis, std::string_view stream,
                                     const std::vector<StreamField>& fields,

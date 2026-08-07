@@ -31,7 +31,8 @@ return id
 )lua";
 
 template <typename Pipeline>
-inline void queue(Pipeline& pipeline, std::string_view eventId,
+inline void queue(Pipeline& pipeline, std::string_view scriptSha,
+                  std::string_view eventId,
                   std::string_view eventType, std::string_view deviceId,
                   std::string_view deviceCode, std::int64_t occurredAtMs,
                   std::string_view dataJson) {
@@ -54,7 +55,7 @@ inline void queue(Pipeline& pipeline, std::string_view eventId,
         "data_json",
         dataJson,
     };
-    message::redis::queueEval(pipeline, kPublishScript, keys, arguments);
+    message::redis::queueEvalSha(pipeline, scriptSha, keys, arguments);
 }
 
 template <typename Redis>
@@ -92,13 +93,14 @@ inline ruvia::Task<void> publishMany(
     const Redis& redis, const std::vector<message::ParsedDeviceMessage>& messages) {
     if (messages.empty())
         co_return;
+    const auto scriptSha = co_await redis.scriptLoad(kPublishScript);
     auto pipeline = redis.pipeline();
     for (const auto& parsed : messages) {
         const auto eventType =
             parsed.valuesJson.find("\"type\":\"JPEG\"") != std::string::npos
                 ? "device.image.reported"
                 : "device.data.reported";
-        queue(pipeline, parsed.messageId, eventType, parsed.deviceId,
+        queue(pipeline, scriptSha, parsed.messageId, eventType, parsed.deviceId,
               parsed.deviceCode, parsed.observedAtMs, parsed.valuesJson);
     }
     const auto replies = co_await std::move(pipeline).exec();
