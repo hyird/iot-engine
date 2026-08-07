@@ -1,9 +1,12 @@
 #pragma once
 
+#include <array>
+#include <chrono>
 #include <memory_resource>
+#include <optional>
 #include <span>
+#include <string>
 #include <string_view>
-#include <vector>
 
 #include <ruvia/core/Task.h>
 #include <ruvia/web/detail/redis/RedisRegistry.h>
@@ -14,16 +17,16 @@ namespace service::collector {
 // Collector's protocol actor already owns its EventLoop and keeps Redis operations
 // inside the same structured TaskScope. This worker-affine adapter provides one
 // connection for business commands and one dedicated connection for blocking reads.
-// Passing the owning WorkerHandle lets Ruvia arm exact deadline timers instead of
-// relying on a periodic deadline scan.
+// Ruvia's worker-local registry owns one logical alias with an ordinary pool and
+// a lazy blocking pool. Passing the owning WorkerHandle lets both pools arm exact
+// deadline and cancellation timers without a periodic scan.
 class Client final {
   public:
     Client(asio::io_context& ioContext, ruvia::RedisConfig config,
            const ruvia::WorkerHandle& worker)
-        : resource_(),
-          pool_(ioContext,
-                ruvia::detail::RedisConfigStorage(oneConnection(std::move(config)), &resource_),
-                1, &resource_, &worker) {}
+        : resource_(), operationScope_(),
+          definitions_{makeDefinition(std::move(config), &resource_)},
+          registry_(ioContext, &resource_, definitions_, &worker) {}
 
     Client(const Client&) = delete;
     Client& operator=(const Client&) = delete;
@@ -31,48 +34,59 @@ class Client final {
     ~Client() { close(); }
 
     [[nodiscard]] ruvia::Task<void> connect() {
-        co_await pool_.connect();
+        co_await registry_.connect();
     }
 
     void close() noexcept {
         if (closed_)
             return;
         closed_ = true;
-        pool_.closeNow();
+        registry_.closeNow();
     }
 
     [[nodiscard]] ruvia::Task<ruvia::RedisValue>
     command(std::span<const std::string_view> args) const {
-        std::pmr::vector<std::pmr::string> owned(&resource_);
-        owned.reserve(args.size());
-        for (const auto argument : args)
-            owned.emplace_back(argument);
-        co_return co_await pool_.executeOwned(std::move(owned), &resource_);
+        auto redis = registry_.get(&resource_, operationScope_);
+        co_return co_await redis.command(
+            args, ruvia::RedisOperationOptions{.timeout = kCommandTimeout});
     }
 
     [[nodiscard]] ruvia::Task<ruvia::RedisValue>
     eval(std::string_view script, std::span<const std::string_view> keys = {},
          std::span<const std::string_view> args = {}) const {
-        std::pmr::vector<std::pmr::string> commandArgs(&resource_);
-        commandArgs.reserve(3 + keys.size() + args.size());
-        commandArgs.emplace_back("EVAL");
-        commandArgs.emplace_back(script);
-        commandArgs.emplace_back(std::to_string(keys.size()));
-        for (const auto key : keys)
-            commandArgs.emplace_back(key);
-        for (const auto argument : args)
-            commandArgs.emplace_back(argument);
-        co_return co_await pool_.executeOwned(std::move(commandArgs), &resource_);
+        auto redis = registry_.get(&resource_, operationScope_).withOptions(
+            ruvia::RedisOperationOptions{.timeout = kCommandTimeout});
+        co_return co_await redis.eval(script, keys, args);
+    }
+
+    [[nodiscard]] ruvia::Task<std::optional<ruvia::RedisXReadGroupResult>>
+    xreadGroup(std::string_view group, std::string_view consumer,
+               std::span<const ruvia::RedisStreamReadView> streams,
+               ruvia::RedisXReadGroupOptions options = {}) const {
+        auto redis = registry_.get(&resource_, operationScope_);
+        co_return co_await redis.xreadGroup(group, consumer, streams, std::move(options));
     }
 
   private:
-    static ruvia::RedisConfig oneConnection(ruvia::RedisConfig config) {
+    static ruvia::detail::RedisDefinition
+    makeDefinition(ruvia::RedisConfig config, std::pmr::memory_resource* resource) {
         config.poolSizePerWorker = 1;
-        return config;
+        config.blockingPoolSizePerWorker = 1;
+        // Ordinary commands carry an exact per-operation timeout below. The blocking
+        // pool stays on BLOCK 0 until its StopToken fires, with no timer wakeups.
+        config.commandTimeout = std::nullopt;
+        return {
+            std::pmr::string(ruvia::detail::kDefaultRedisAlias, resource),
+            ruvia::detail::RedisConfigStorage(config, resource),
+        };
     }
 
+    static constexpr auto kCommandTimeout = std::chrono::seconds(30);
+
     mutable std::pmr::unsynchronized_pool_resource resource_;
-    mutable ruvia::detail::RedisPool pool_;
+    mutable ruvia::detail::ScopedOperationScope operationScope_;
+    std::array<ruvia::detail::RedisDefinition, 1> definitions_;
+    ruvia::detail::RedisRegistry registry_;
     bool closed_ = false;
 };
 

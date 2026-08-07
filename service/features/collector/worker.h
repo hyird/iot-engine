@@ -49,9 +49,7 @@ class Worker final {
         : loop_(std::move(loop)), workerHandle_(loop_.handle()), resource_(),
           scope_(workerHandle_, &resource_),
           scheduler_(loop_.ioContext()),
-          redis_(loop_.ioContext(), redisConfig, workerHandle_),
-          blockingRedis_(loop_.ioContext(), blockingRedisConfig(std::move(redisConfig)),
-                         workerHandle_),
+          redis_(loop_.ioContext(), std::move(redisConfig), workerHandle_),
           engine_(protocols()),
           tcp_(
               loop_.ioContext(), scheduler_, workerIndex, workerCount,
@@ -84,7 +82,6 @@ class Worker final {
         if (tickToken_ != 0)
             scheduler_.cancel(tickToken_);
         tcp_.stop();
-        blockingRedis_.close();
         scope_.requestStop();
         try {
             co_await scope_.join();
@@ -115,13 +112,6 @@ class Worker final {
     }
 
   private:
-    static ruvia::RedisConfig blockingRedisConfig(ruvia::RedisConfig config) {
-        // XREADGROUP BLOCK 0 is cancelled by closeNow() during worker shutdown.
-        // Do not wake and reconnect this dedicated reader on a command timer.
-        config.commandTimeout = std::nullopt;
-        return config;
-    }
-
     struct PendingCommand {
         std::string stream;
         std::string entryId;
@@ -348,7 +338,6 @@ class Worker final {
     ruvia::Task<void> initialize(std::shared_ptr<std::promise<void>> ready) {
         try {
             co_await redis_.connect();
-            co_await blockingRedis_.connect();
             co_await message::redis::ensureGroup(redis_, configStream(), configGroup());
             co_await message::redis::ensureGroup(redis_, ingressStream(), ingressGroup());
             co_await message::redis::ensureGroup(redis_, egressStream(), egressGroup());
@@ -376,7 +365,6 @@ class Worker final {
             } catch (...) {
             }
             stopping_ = true;
-            blockingRedis_.close();
             redis_.close();
         }
     }
@@ -1091,8 +1079,7 @@ class Worker final {
                 commandStream(false), ingressStream(), egressStream(),
                 linkEventStream()};
             auto batches = co_await message::redis::readGroupManyBlocking(
-                blockingRedis_, streams, collectorGroup(), consumer_,
-                std::chrono::milliseconds(0), 1);
+                redis_, streams, collectorGroup(), consumer_, scope_.stopToken(), 1);
             for (auto& batch : batches) {
                 auto& ready = readyMessages_[batch.stream];
                 ready.insert(ready.end(), std::make_move_iterator(batch.messages.begin()),
@@ -1519,7 +1506,6 @@ return 1
     ruvia::TaskScope scope_;
     Timer scheduler_;
     Client redis_;
-    Client blockingRedis_;
     ProtocolEngine engine_;
     Tcp tcp_;
     std::size_t workerIndex_ = 0;

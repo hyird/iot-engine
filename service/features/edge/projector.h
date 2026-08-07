@@ -66,7 +66,6 @@ class Projector final {
                           std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
-            const auto readRedis = context.redis();
             co_await service::message::redis::ensureGroup(
                 redis, kEdgeIngressStream, kEdgeIngressGroup);
             co_await hydrateAuth(context);
@@ -78,7 +77,7 @@ class Projector final {
                           redis, kEdgeIngressStream, kEdgeIngressGroup, "edge-projector",
                           "0", std::chrono::milliseconds(0), 100)
                     : co_await service::message::redis::readGroupBlocking(
-                          readRedis, kEdgeIngressStream, kEdgeIngressGroup, "edge-projector",
+                          redis, kEdgeIngressStream, kEdgeIngressGroup, "edge-projector",
                           context.stopToken(), 100);
                 if (recovering && messages.empty())
                     recovering = false;

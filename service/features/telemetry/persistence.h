@@ -184,7 +184,6 @@ class PersistenceRuntime final {
                           std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
-            const auto readRedis = context.redis();
             std::vector<std::string> streams;
             std::map<std::string, std::size_t, std::less<>> streamPartitions;
             for (auto partition = index; partition < collectorWorkerCount_;
@@ -206,7 +205,7 @@ class PersistenceRuntime final {
                     ? co_await message::redis::readGroupMany(
                           redis, streams, kGroup, consumer, "0", 100)
                     : co_await message::redis::readGroupManyBlocking(
-                          readRedis, streams, kGroup, consumer,
+                          redis, streams, kGroup, consumer,
                           context.stopToken(), 100);
                 if (recovering && batches.empty()) {
                     recovering = false;

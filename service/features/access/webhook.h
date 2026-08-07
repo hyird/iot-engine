@@ -311,7 +311,6 @@ public:
                           std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
-            const auto readRedis = context.redis();
             co_await message::redis::ensureGroup(redis, event::kStream, kGroup);
             ready->set_value();
             bool recovering = true;
@@ -321,7 +320,7 @@ public:
                           redis, event::kStream, kGroup, "service-0", "0",
                           std::chrono::milliseconds(0), 50)
                     : co_await message::redis::readGroupBlocking(
-                          readRedis, event::kStream, kGroup, "service-0",
+                          redis, event::kStream, kGroup, "service-0",
                           context.stopToken(), 50);
                 if (recovering && messages.empty())
                     recovering = false;
