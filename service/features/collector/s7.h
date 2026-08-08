@@ -1631,7 +1631,8 @@ class Runtime final : public ProtocolRuntime {
                   std::string_view targetId, const RuntimeSnapshot& snapshot) const override {
         std::vector<DeviceDefinition> devices;
         for (const auto& device : snapshot.devices)
-            if (device.linkId == link.id && device.protocol == "S7")
+            if (device.linkId == link.id && device.protocol == "S7" &&
+                (targetId.empty() || device.targetId == targetId))
                 devices.push_back(device);
         return std::make_unique<Session>(link, std::string(connectionId), std::string(targetId),
                                          std::move(devices));
