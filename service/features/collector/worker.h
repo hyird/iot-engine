@@ -45,6 +45,8 @@ class Worker final {
 
     Worker(ruvia::EventLoop loop, ruvia::RedisConfig redisConfig,
                       std::size_t workerIndex, std::size_t workerCount,
+                      std::shared_ptr<std::promise<void>> runtimeResetOwner,
+                      std::shared_future<void> runtimeReset,
                       ServerSocketRouter serverSocketRouter)
         : loop_(std::move(loop)), workerHandle_(loop_.handle()), resource_(),
           scope_(workerHandle_, &resource_),
@@ -64,6 +66,8 @@ class Worker final {
               },
               workerIndex == 0, std::move(serverSocketRouter)),
           workerIndex_(workerIndex), workerCount_(workerCount),
+          runtimeResetOwner_(std::move(runtimeResetOwner)),
+          runtimeReset_(std::move(runtimeReset)),
           consumer_("collector-" + std::to_string(workerIndex)) {}
 
     Worker(const Worker&) = delete;
@@ -338,6 +342,26 @@ class Worker final {
     ruvia::Task<void> initialize(std::shared_ptr<std::promise<void>> ready) {
         try {
             co_await redis_.connect();
+            if (runtimeResetOwner_) {
+                try {
+                    // Runtime hashes are an ephemeral projection. Reset the complete namespace
+                    // once per process so an unclean exit or a reduced worker count cannot leave
+                    // authoritative-looking state owned by workers that no longer exist.
+                    co_await message::redis::eraseMatching(redis_, "iot:runtime:collector:*");
+                    co_await message::redis::eraseMatching(redis_, "iot:runtime:link:*");
+                    co_await message::redis::eraseMatching(redis_, "iot:runtime:device:*");
+                    runtimeResetOwner_->set_value();
+                    runtimeResetSettled_ = true;
+                } catch (...) {
+                    runtimeResetOwner_->set_exception(std::current_exception());
+                    runtimeResetSettled_ = true;
+                    throw;
+                }
+            } else {
+                // Each worker keeps its own Redis client and event loop. This startup-only
+                // barrier coordinates projection ownership without sharing either connection.
+                runtimeReset_.get();
+            }
             co_await message::redis::ensureGroup(redis_, configStream(), configGroup());
             co_await message::redis::ensureGroup(redis_, ingressStream(), ingressGroup());
             co_await message::redis::ensureGroup(redis_, egressStream(), egressGroup());
@@ -345,12 +369,6 @@ class Worker final {
             co_await message::redis::ensureGroup(redis_, commandStream(true), commandGroup());
             co_await message::redis::ensureGroup(redis_, commandStream(false), commandGroup());
             co_await message::redis::ensureGroup(redis_, controlStream(), collectorGroup());
-            // Runtime state is a projection owned by this worker. Remove leftovers from an
-            // unclean previous process before publishing the freshly loaded snapshot.
-            co_await message::redis::eraseMatching(redis_, "iot:runtime:link:*:worker:" +
-                                                                    std::to_string(workerIndex_));
-            co_await message::redis::eraseMatchingIfFieldValue(
-                redis_, "iot:runtime:device:*", "worker_id", std::to_string(workerIndex_));
             loadedConfigVersion_ = co_await config::activeVersion(redis_);
             auto snapshot = co_await config::load(redis_, loadedConfigVersion_);
             engine_.reload(snapshot);
@@ -360,6 +378,13 @@ class Worker final {
             ready->set_value();
             scheduleTick(std::chrono::milliseconds(0));
         } catch (...) {
+            if (runtimeResetOwner_ && !runtimeResetSettled_) {
+                try {
+                    runtimeResetOwner_->set_exception(std::current_exception());
+                } catch (...) {
+                }
+                runtimeResetSettled_ = true;
+            }
             try {
                 ready->set_exception(std::current_exception());
             } catch (...) {
@@ -1510,6 +1535,9 @@ return 1
     Tcp tcp_;
     std::size_t workerIndex_ = 0;
     std::size_t workerCount_ = 1;
+    std::shared_ptr<std::promise<void>> runtimeResetOwner_;
+    std::shared_future<void> runtimeReset_;
+    bool runtimeResetSettled_ = false;
     std::string workerInstanceId_ = message::nextMessageId();
     std::string consumer_;
     std::map<std::pair<std::string, std::uint64_t>, Timer::Token> protocolDeadlines_;

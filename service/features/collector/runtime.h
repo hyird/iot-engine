@@ -36,10 +36,13 @@ class Runtime final {
         try {
             pool_ = std::make_unique<ruvia::EventLoopPool>(
                 ruvia::EventLoopPoolOptions{.loopCount = workerCount, .mailboxCapacity = 8192});
+            auto runtimeResetOwner = std::make_shared<std::promise<void>>();
+            auto runtimeReset = runtimeResetOwner->get_future().share();
             workers_.reserve(workerCount);
             for (std::size_t index = 0; index < workerCount; ++index)
                 workers_.push_back(std::make_unique<Worker>(
                     pool_->loop(index), redisConfig, index, workerCount,
+                    index == 0 ? runtimeResetOwner : nullptr, runtimeReset,
                     [this](std::string linkId, Tcp::NativeSocket handle,
                            std::string remote) {
                         if (workers_.empty()) {
