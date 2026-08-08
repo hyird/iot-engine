@@ -1,12 +1,25 @@
 import net from 'node:net';
 
+process.on('uncaughtException', (error) => {
+    console.error(error);
+    process.exit(1);
+});
+process.on('unhandledRejection', (error) => {
+    console.error(error);
+    process.exit(1);
+});
+
 const fixture = await Bun.file('build/stress-fixture.json').json();
 const deviceCount = Number(fixture.deviceCount);
 const durationMs = Number(Bun.env.STRESS_DURATION_MS ?? '60000');
 const commandCooldownMs = Math.min(
     durationMs,
-    Number(Bun.env.STRESS_COMMAND_COOLDOWN_MS ?? '15000'),
+    Number(Bun.env.STRESS_COMMAND_COOLDOWN_MS ?? '30000'),
 );
+const collectorWorkerCount = Number(Bun.env.STRESS_COLLECTOR_WORKERS ?? '2');
+if (!Number.isInteger(collectorWorkerCount) || collectorWorkerCount < 1)
+    throw new Error(`invalid STRESS_COLLECTOR_WORKERS: ${collectorWorkerCount}`);
+const collectorWorkers = Array.from({ length: collectorWorkerCount }, (_, index) => String(index));
 const modbusClientPortBase = Number(Bun.env.STRESS_MODBUS_CLIENT_PORT_BASE ?? '16000');
 const s7ClientPortBase = Number(Bun.env.STRESS_S7_CLIENT_PORT_BASE ?? '16100');
 const host = '127.0.0.1';
@@ -18,7 +31,10 @@ const sockets = new Set<net.Socket>();
 const servers: net.Server[] = [];
 const timers = new Set<Timer>();
 const commandIssues = new Set<Promise<void>>();
-const commandCoverage = new Map<string, string>();
+const commandCoverage = new Map<string, string[]>();
+const commandResultSample = new Map<string, string>();
+const commandCoverageSamplesPerLabel = 512;
+const commandResultSampleCapacity = 1024;
 const serverDevices = new Map<string, net.Socket>();
 let stopped = false;
 let ingressFrames = 0;
@@ -32,6 +48,16 @@ let transaction = 1;
 let commandCursor = 0;
 let peakRouteCount = 0;
 const startedAtMs = Date.now();
+
+function trackCommandResult(commandId: string, label: string) {
+    const samples = commandCoverage.get(label) ?? [];
+    if (samples.length < commandCoverageSamplesPerLabel) samples.push(commandId);
+    commandCoverage.set(label, samples);
+    commandResultSample.set(commandId, label);
+    if (commandResultSample.size <= commandResultSampleCapacity) return;
+    const oldest = commandResultSample.keys().next().value;
+    if (oldest) commandResultSample.delete(oldest);
+}
 
 const pad = (value: number, width: number) => value.toString().padStart(width, '0');
 
@@ -374,15 +400,16 @@ async function hash(key: string) {
     );
 }
 
-async function scan(pattern: string) {
-    let cursor = '0';
-    const result: string[] = [];
-    do {
-        const page = (await redis.send('SCAN', [cursor, 'MATCH', pattern, 'COUNT', '10000'])) as [string, string[]];
-        cursor = page[0];
-        result.push(...page[1]);
-    } while (cursor !== '0');
-    return result;
+async function existingLinkWorkers(linkId: string) {
+    const present = await Promise.all(
+        collectorWorkers.map(async (worker) => ({
+            worker,
+            exists: Number(
+                await redis.send('EXISTS', [`iot:runtime:link:${linkId}:worker:${worker}`]),
+            ),
+        })),
+    );
+    return present.filter(({ exists }) => exists > 0).map(({ worker }) => worker);
 }
 
 const routeCodes = {
@@ -414,20 +441,19 @@ async function waitRuntimeReady() {
     const linkIds = Object.values(fixture.links) as string[];
     const deadline = Date.now() + 120_000;
     while (Date.now() < deadline) {
-        const counts = await Promise.all(
-            linkIds.map(async (linkId) => (await scan(`iot:runtime:link:${linkId}:worker:*`)).length),
-        );
+        const counts = await Promise.all(linkIds.map(async (linkId) => (await existingLinkWorkers(linkId)).length));
         if (counts.every((count) => count > 0)) return counts;
         await Bun.sleep(100);
     }
-    const counts = await Promise.all(
-        linkIds.map(async (linkId) => (await scan(`iot:runtime:link:${linkId}:worker:*`)).length),
-    );
+    const counts = await Promise.all(linkIds.map(async (linkId) => (await existingLinkWorkers(linkId)).length));
     throw new Error(`collector runtime not ready: ${JSON.stringify(counts)}`);
 }
 
 async function commandBacklog() {
-    const keys = await scan('iot:channel:command:worker:*');
+    const keys = collectorWorkers.flatMap((worker) => [
+        `iot:channel:command:worker:${worker}:high`,
+        `iot:channel:command:worker:${worker}:normal`,
+    ]);
     const depths = await Promise.all(keys.map((key) => redis.send('XLEN', [key])));
     return depths.reduce((total, depth) => total + Number(depth), 0);
 }
@@ -448,18 +474,18 @@ async function streamEntriesAdded(key: string) {
 }
 
 async function partitionStreamDepth(prefix: string) {
-    const keys = await scan(`${prefix}:worker:*`);
+    const keys = collectorWorkers.map((worker) => `${prefix}:worker:${worker}`);
     const depths = await Promise.all(keys.map((key) => redis.send('XLEN', [key])));
     return depths.reduce((total, depth) => total + Number(depth), 0);
 }
 
 async function partitionStreamDepths(prefix: string) {
-    const keys = await scan(`${prefix}:worker:*`);
+    const keys = collectorWorkers.map((worker) => `${prefix}:worker:${worker}`);
     return Promise.all(keys.map(async (key) => ({ key, depth: Number(await redis.send('XLEN', [key])) })));
 }
 
 async function partitionEntriesAdded(prefix: string) {
-    const keys = await scan(`${prefix}:worker:*`);
+    const keys = collectorWorkers.map((worker) => `${prefix}:worker:${worker}`);
     const entries = await Promise.all(keys.map(streamEntriesAdded));
     return entries.reduce((total, count) => total + count, 0);
 }
@@ -470,7 +496,7 @@ async function commandResultStatsSince(timestampMs: number) {
     const reasons = new Map<string, number>();
     const covered = new Set<string>();
     let sampled = 0;
-    const commands = [...commandCoverage];
+    const commands = [...commandResultSample];
     for (let offset = 0; offset < commands.length; offset += 256) {
         const states = await Promise.all(
             commands.slice(offset, offset + 256).map(async ([commandId, label]) => [
@@ -487,6 +513,25 @@ async function commandResultStatsSince(timestampMs: number) {
             } else failure++;
             const reason = value.reason || 'none';
             reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+        }
+    }
+    for (const [label, commandIds] of commandCoverage) {
+        if (covered.has(label)) continue;
+        for (let offset = 0; offset < commandIds.length; offset += 64) {
+            const states = await Promise.all(
+                commandIds
+                    .slice(offset, offset + 64)
+                    .map((commandId) => hash(`iot:state:command:${commandId}`)),
+            );
+            if (
+                states.some(
+                    (value) =>
+                        Number(value.completed_at_ms ?? 0) >= timestampMs && value.success === '1',
+                )
+            ) {
+                covered.add(label);
+                break;
+            }
         }
     }
     return {
@@ -521,8 +566,7 @@ function taskFields(id: string, protocol: string, linkId: string, deviceId: stri
 
 async function enqueueDiscovery(protocol: 'Modbus' | 'S7', payload: Buffer, transport = 'TCP') {
     const linkId = protocol === 'Modbus' ? fixture.links.modbusServer : fixture.links.s7Server;
-    const stateKeys = await scan(`iot:runtime:link:${linkId}:worker:*`);
-    const workers = new Set(stateKeys.map((key) => key.split(':').at(-1) as string));
+    const workers = await existingLinkWorkers(linkId);
     for (const worker of workers) {
         await enqueue(taskFields(uuidv7(), protocol, linkId, '', '', '', payload, 'discovery', Buffer.alloc(0), Buffer.alloc(0), transport), worker);
         discoveryCommands++;
@@ -567,7 +611,7 @@ async function issueDeviceCommands(index: number, attempt: number) {
                     : Buffer.from([0x12, 0x34])
                 : Buffer.alloc(0);
             const commandId = uuidv7();
-            commandCoverage.set(
+            trackCommandResult(
                 commandId,
                 `Modbus:${tcp ? 'TCP' : 'RTU'}:FC${functionCode.toString(16).toUpperCase().padStart(2, '0')}`,
             );
@@ -580,7 +624,7 @@ async function issueDeviceCommands(index: number, attempt: number) {
             const payload = write ? s7Write() : s7Read(index);
             const readback = write ? s7Read(index) : Buffer.alloc(0);
             const commandId = uuidv7();
-            commandCoverage.set(commandId, `S7:FC${write ? '05' : '04'}`);
+            trackCommandResult(commandId, `S7:FC${write ? '05' : '04'}`);
             await enqueue(taskFields(commandId, 'S7', fixture.links.s7Server, s7Route.device_id, s7Code, s7Route.connection_id, payload, write ? 'write' : 'read', readback, write ? Buffer.from([0x12, 0x34]) : Buffer.alloc(0), 'TCP', s7Route.session_epoch), s7Route.worker_id);
         }
         const slCode = pad(index + 1, 10);
@@ -588,7 +632,7 @@ async function issueDeviceCommands(index: number, attempt: number) {
         if (slRoute.connection_id) {
             const functionCode = 0x30 + (attempt % 0x20);
             const commandId = uuidv7();
-            commandCoverage.set(
+            trackCommandResult(
                 commandId,
                 `SL651:FC${functionCode.toString(16).toUpperCase().padStart(2, '0')}`,
             );
@@ -650,7 +694,13 @@ const metricsTimer = setInterval(async () => {
     peakRouteCount = Math.max(peakRouteCount, routeCount);
     const parsed = await partitionStreamDepth('iot:channel:packet:parsed');
     const results = await partitionStreamDepth('iot:channel:command:result');
-    const linkStates = (await scan('iot:runtime:link:*:worker:*')).length;
+    const linkStates = (
+        await Promise.all(
+            (Object.values(fixture.links) as string[]).map(
+                async (linkId) => (await existingLinkWorkers(linkId)).length,
+            ),
+        )
+    ).reduce((total, count) => total + count, 0);
     console.log(JSON.stringify({ routeCount, routeCounts, parsed, results, linkStates, ingressFrames, egressFrames, reconnects, commands, discoveryCommands, socketErrors, maxEventLoopLagMs }));
 }, 5000);
 timers.add(metricsTimer);
@@ -727,26 +777,43 @@ const missingLatestElementIds = latestSamples
     .map((sample) => sample.elementId);
 const stressDeviceIds = Object.values(fixture.devices).flat() as string[];
 const deviceIdList = stressDeviceIds.map((id) => `'${id.replaceAll("'", "''")}'`).join(',');
-const database = Bun.spawn([
-    'docker', 'exec', '-e', `PGPASSWORD=${Bun.env.DB_PASSWORD ?? ''}`, 'timescaledb', 'psql', '-U',
+const databaseQuery = `WITH telemetry AS (
+  SELECT data FROM device_data
+  WHERE device_id IN (${deviceIdList})
+    AND created_at >= to_timestamp(${startedAtMs} / 1000.0)
+), elements AS (
+  SELECT DISTINCT jsonb_object_keys(COALESCE(data->'values', '{}'::jsonb)) AS id
+  FROM telemetry
+)
+SELECT (SELECT COUNT(*) FROM telemetry) || '|' || (SELECT COUNT(*) FROM elements)`;
+const databaseArguments = [
+    'exec', '-e', `PGPASSWORD=${Bun.env.DB_PASSWORD ?? ''}`, 'timescaledb', 'psql', '-U',
     Bun.env.DB_USERNAME ?? 'postgres', '-d', Bun.env.DB_DATABASE ?? 'postgres', '-Atc',
-    `WITH telemetry AS (
-       SELECT data FROM device_data
-       WHERE device_id IN (${deviceIdList})
-         AND created_at >= to_timestamp(${startedAtMs} / 1000.0)
-     ), elements AS (
-       SELECT DISTINCT jsonb_object_keys(COALESCE(data->'values', '{}'::jsonb)) AS id
-       FROM telemetry
-     )
-     SELECT (SELECT COUNT(*) FROM telemetry) || '|' || (SELECT COUNT(*) FROM elements)`,
-], { stdout: 'pipe', stderr: 'inherit' });
+    databaseQuery,
+] as string[];
+const shellQuote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
+const databaseSshHost = Bun.env.STRESS_DATABASE_SSH_HOST;
+const remoteEnvFile = Bun.env.STRESS_DATABASE_REMOTE_ENV_FILE;
+if (databaseSshHost && !remoteEnvFile)
+    throw new Error('STRESS_DATABASE_REMOTE_ENV_FILE is required for remote database checks');
+const remoteDatabaseCommand = remoteEnvFile
+    ? [
+          'set -a',
+          `. ${shellQuote(remoteEnvFile)}`,
+          'set +a',
+          'export PGPASSWORD="$DB_PASSWORD"',
+          `exec /usr/bin/psql -h "\${DB_HOST:-127.0.0.1}" -p "\${DB_PORT:-5432}" -U "$DB_USERNAME" -d "$DB_DATABASE" -Atc ${shellQuote(databaseQuery)}`,
+      ].join('; ')
+    : '';
+const databaseCommand = databaseSshHost
+    ? ['ssh', '-o', 'BatchMode=yes', databaseSshHost, remoteDatabaseCommand]
+    : ['docker', ...databaseArguments];
+const database = Bun.spawn(databaseCommand, { stdout: 'pipe', stderr: 'inherit' });
 const [telemetryRows, persistedElementCount] = (await new Response(database.stdout).text())
     .trim()
     .split('|')
     .map(Number);
 if ((await database.exited) !== 0) throw new Error('telemetry count query failed');
-await redis.close();
-
 const expectedCommandCoverage = [
     ...(['TCP', 'RTU'] as const).flatMap((mode) =>
         modbusFunctionCodes.map(
