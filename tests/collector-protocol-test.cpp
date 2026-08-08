@@ -1677,6 +1677,40 @@ void testRuntimeWritableContract() {
     require(element.writable, "runtime did not deserialize writable state");
 }
 
+void testRuntimeSetOrderingContract() {
+    const auto first = service::collector::config::detail::sortedStrings(
+        {"element:c", "element:a", "element:b"});
+    const auto second = service::collector::config::detail::sortedStrings(
+        {"element:b", "element:c", "element:a"});
+    require(first == second &&
+                first == std::vector<std::string>{"element:a", "element:b", "element:c"},
+            "runtime Redis Set members were not canonicalized");
+
+    collector::RuntimeSnapshot previous;
+    collector::LinkDefinition link;
+    link.id = "s7-server";
+    link.mode = "TCP Server";
+    link.protocol = "S7";
+    previous.links.push_back(link);
+
+    collector::DeviceDefinition device;
+    device.id = "s7-device";
+    device.linkId = link.id;
+    device.linkMode = link.mode;
+    device.protocol = link.protocol;
+    for (const auto& id : first)
+        device.elements.push_back({.configKey = id, .id = id});
+    previous.devices.push_back(device);
+
+    auto next = previous;
+    next.devices.front().elements.clear();
+    for (const auto& id : second)
+        next.devices.front().elements.push_back({.configKey = id, .id = id});
+    const auto plan = collector::planRuntimeReconcile(previous, next);
+    require(plan.affectedLinks.empty() && plan.restartLinks.empty(),
+            "equivalent Redis Set order restarted an unrelated TCP Server link");
+}
+
 void testRealtimeProjectionContract() {
     collector::RuntimeSnapshot original;
     collector::RealtimeDeviceDefinition device;
@@ -2072,6 +2106,7 @@ int main() {
         run("s7 data types", testS7AllDataTypes);
         run("worker timer", testWorkerTimer);
         run("runtime writable contract", testRuntimeWritableContract);
+        run("runtime set ordering contract", testRuntimeSetOrderingContract);
         run("realtime projection contract", testRealtimeProjectionContract);
         run("freshness deadline wait", testFreshnessDeadlineWait);
         run("command value decimal parsing", testCommandValueDecimalParsing);

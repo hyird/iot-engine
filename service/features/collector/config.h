@@ -200,6 +200,11 @@ inline std::vector<std::string> stringArray(const ruvia::RedisValue& value,
     return result;
 }
 
+inline std::vector<std::string> sortedStrings(std::vector<std::string> values) {
+    std::ranges::sort(values);
+    return values;
+}
+
 inline std::vector<message::StreamField> hashFields(const ruvia::RedisValue& value,
                                                    std::string_view operation) {
     if (value.kind() != ruvia::RedisValue::Kind::kArray)
@@ -425,8 +430,9 @@ inline ElementDefinition element(const std::vector<message::StreamField>& fields
 
 template <typename Redis>
 ruvia::Task<std::vector<std::string>> members(const Redis& redis, std::string key) {
-    co_return stringArray(co_await redis::command(redis, {"SMEMBERS", std::move(key)}),
-                          "SMEMBERS runtime");
+    co_return sortedStrings(
+        stringArray(co_await redis::command(redis, {"SMEMBERS", std::move(key)}),
+                    "SMEMBERS runtime"));
 }
 
 template <typename Redis>
@@ -699,8 +705,8 @@ ruvia::Task<RuntimeSnapshot> load(const Redis& redis, std::string version) {
     for (std::size_t index = 0; index < deviceIds.size(); ++index) {
         snapshot.devices.push_back(
             detail::device(detail::hashFields(deviceReplies[index * 2], "device config")));
-        const auto elements =
-            detail::stringArray(deviceReplies[index * 2 + 1], "device element ids");
+        const auto elements = detail::sortedStrings(
+            detail::stringArray(deviceReplies[index * 2 + 1], "device element ids"));
         const auto deviceIndex = snapshot.devices.size() - 1;
         for (const auto& elementId : elements)
             elementLoads.push_back({deviceIndex, elementKey(version, deviceIds[index], elementId)});
