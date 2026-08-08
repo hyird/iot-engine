@@ -655,7 +655,36 @@ inline ruvia::Task<void> hydrate(ruvia::WebWorkerContext& context) {
     // Redis is the realtime read model. Keep its persisted hashes across a
     // service restart; PostgreSQL repairs metadata and is consulted only for
     // devices whose Redis projection is missing or incomplete.
-    co_await project(context, "", {}, false, true);
+    // A web worker owns exactly one PostgreSQL connection. Bound recovery result
+    // sets so a large protocol definition cannot monopolize that connection for
+    // the whole startup or retain every point JSON row in memory at once.
+    static constexpr std::size_t kHydrationBatchSize = 32;
+    std::string cursor = "00000000-0000-0000-0000-000000000000";
+    for (;;) {
+        const auto devices = co_await context.db().query(
+            R"sql(
+SELECT id::text
+FROM device
+WHERE deleted_at IS NULL AND id > $1::uuid
+ORDER BY id
+LIMIT 32)sql",
+            service::common::dbParams(std::string_view(cursor)));
+        if (devices.rows().empty())
+            break;
+
+        std::string ids = "{";
+        for (const auto& row : devices.rows()) {
+            if (ids.size() != 1)
+                ids.push_back(',');
+            ids.append(row[0].text());
+        }
+        ids.push_back('}');
+        cursor.assign(devices.rows().back()[0].text());
+        co_await project(context, " AND d.id = ANY($1::uuid[])",
+                         service::common::dbParams(std::string_view(ids)), false, true);
+        if (devices.rows().size() < kHydrationBatchSize)
+            break;
+    }
 }
 
 } // namespace service::telemetry::latest
