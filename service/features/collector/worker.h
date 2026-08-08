@@ -423,6 +423,18 @@ class Worker final {
                 scope_.spawn(waitForWork());
         } catch (const std::exception& error) {
             lastCoordinatorError_ = error.what();
+            // XREADGROUP assigns a whole batch to this worker before the individual messages
+            // are processed. If one item fails, the remaining items are already in the PEL and
+            // a subsequent `>` read cannot see them. Re-enter recovery for every local stream;
+            // each stream is partitioned by worker, so this only replays messages already owned
+            // by this worker and does not introduce cross-worker claiming or polling.
+            configRecovering_ = true;
+            highRecovering_ = true;
+            normalRecovering_ = true;
+            controlRecovering_ = true;
+            ingressRecovering_ = true;
+            egressRecovering_ = true;
+            linkEventRecovering_ = true;
             scheduleTick(kFailureDelay);
         }
     }

@@ -3,6 +3,10 @@ import net from 'node:net';
 const fixture = await Bun.file('build/stress-fixture.json').json();
 const deviceCount = Number(fixture.deviceCount);
 const durationMs = Number(Bun.env.STRESS_DURATION_MS ?? '60000');
+const commandCooldownMs = Math.min(
+    durationMs,
+    Number(Bun.env.STRESS_COMMAND_COOLDOWN_MS ?? '15000'),
+);
 const modbusClientPortBase = Number(Bun.env.STRESS_MODBUS_CLIENT_PORT_BASE ?? '16000');
 const s7ClientPortBase = Number(Bun.env.STRESS_S7_CLIENT_PORT_BASE ?? '16100');
 const host = '127.0.0.1';
@@ -595,8 +599,9 @@ async function issueDeviceCommands(index: number, attempt: number) {
     }
 }
 
+const commandStopAtMs = Date.now() + durationMs - commandCooldownMs;
 const commandTimer = setInterval(() => {
-    if (stopped || commandIssues.size >= 256) return;
+    if (stopped || Date.now() >= commandStopAtMs || commandIssues.size >= 256) return;
     for (let burst = 0; burst < 4; burst++) {
         const attempt = commandCursor++;
         const operation = issueDeviceCommands(attempt % deviceCount, attempt).finally(() =>
