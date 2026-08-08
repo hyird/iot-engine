@@ -474,16 +474,6 @@ WHERE d.deleted_at IS NULL)sql" +
     }
     (void)co_await std::move(metaPipeline).exec();
 
-    std::string recoveryArray = "{";
-    for (const auto& deviceId : recoveryDeviceIds) {
-        if (recoveryArray.size() != 1)
-            recoveryArray.push_back(',');
-        recoveryArray += deviceId;
-    }
-    recoveryArray.push_back('}');
-    params.emplace_back(std::string_view(recoveryArray));
-    const auto recoveryParam = params.size();
-
     const auto elements = co_await context.db().query(R"sql(
 WITH configured AS (
   SELECT d.id AS device_id, d.protocol_params->>'device_code' AS device_code,
@@ -527,7 +517,7 @@ WITH configured AS (
 )
 SELECT numbered.device_id::text, numbered.device_code, numbered.protocol,
        numbered.element->>'id', numbered.element->>'name',
-       COALESCE(numbered.element->>'unit', ''), COALESCE(point.value_text, '-'),
+       COALESCE(numbered.element->>'unit', ''), COALESCE(point.value->>'value', '-'),
        COALESCE((EXTRACT(EPOCH FROM point.observed_at) * 1000)::bigint::text, ''),
        COALESCE(NULLIF(numbered.element->>'scale', ''), '1'),
        COALESCE(NULLIF(COALESCE(numbered.element->>'decimals', numbered.element->>'digits'), ''), '-1'),
@@ -537,7 +527,7 @@ SELECT numbered.device_id::text, numbered.device_code, numbered.protocol,
        jsonb_build_object(
          'id', numbered.element->>'id',
          'name', numbered.element->>'name',
-         'value', COALESCE(point.value_text, '-'),
+         'value', COALESCE(point.value->>'value', '-'),
          'unit', COALESCE(numbered.element->>'unit', ''),
          'scale', COALESCE(NULLIF(numbered.element->>'scale', '')::numeric, 1),
          'decimals',
@@ -554,19 +544,9 @@ SELECT numbered.device_id::text, numbered.device_code, numbered.protocol,
          'source', CASE WHEN point.observed_at IS NULL THEN 'empty' ELSE 'database' END
         )::text
 FROM numbered
-LEFT JOIN LATERAL (
-  SELECT telemetry.report_time AS observed_at,
-         telemetry.data->'values'->(numbered.element->>'id')->>'value' AS value_text,
-         telemetry.data->'values'->(numbered.element->>'id')->'value' AS value_json
-  FROM device_data telemetry
-  WHERE numbered.device_id = ANY($)sql" +
-                                                           std::to_string(recoveryParam) +
-                                                           R"sql(::uuid[])
-    AND telemetry.device_id = numbered.device_id
-    AND telemetry.data->'values'->(numbered.element->>'id') IS NOT NULL
-  ORDER BY telemetry.report_time DESC, telemetry.id DESC
-  LIMIT 1
-) point ON TRUE
+LEFT JOIN device_latest_value point
+  ON point.device_id = numbered.device_id
+ AND point.element_id = numbered.element->>'id'
 ORDER BY numbered.device_id, numbered.protocol_order,
          numbered.function_order, numbered.element_order)sql",
                                                    params);

@@ -5,7 +5,7 @@
 
 namespace service::config {
 
-inline constexpr std::array<ruvia::DbMigration, 21> kSchemaMigrations{{
+inline constexpr std::array<ruvia::DbMigration, 22> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
@@ -1196,6 +1196,31 @@ CREATE TABLE alert_evaluation_receipt (
 );
 CREATE INDEX idx_alert_evaluation_receipt_created
     ON alert_evaluation_receipt(created_at);
+END
+$schema$;
+)sql"},
+    {"0021_device_latest_value", R"sql(
+DO $schema$
+BEGIN
+CREATE TABLE device_latest_value (
+    device_id    UUID NOT NULL REFERENCES device(id) ON DELETE CASCADE,
+    element_id   TEXT NOT NULL,
+    value        JSONB NOT NULL,
+    observed_at  TIMESTAMPTZ NOT NULL,
+    record_id    UUID NOT NULL,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (device_id, element_id)
+);
+
+INSERT INTO device_latest_value(
+    device_id, element_id, value, observed_at, record_id)
+SELECT DISTINCT ON (history.device_id, point.key)
+       history.device_id, point.key, point.value, history.report_time, history.id
+FROM device_data history
+CROSS JOIN LATERAL jsonb_each(
+    COALESCE(history.data->'values', '{}'::jsonb)) point
+ORDER BY history.device_id, point.key, history.report_time DESC, history.id DESC
+ON CONFLICT (device_id, element_id) DO NOTHING;
 END
 $schema$;
 )sql"},

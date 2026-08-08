@@ -497,6 +497,28 @@ occurred_at, data, raw_payload_hex, storage_interval, needs_previous) AS (VALUES
   LEFT JOIN new_observed previous
     ON previous.device_id = newest.device_id AND previous.newest = 2
   WHERE newest.newest = 1
+), latest_elements AS MATERIALIZED (
+  SELECT DISTINCT ON (incoming.device_id, point.key)
+         incoming.device_id, point.key AS element_id, point.value,
+         incoming.report_time AS observed_at, incoming.id AS record_id
+  FROM valid_incoming incoming
+  JOIN states USING (device_id)
+  CROSS JOIN LATERAL jsonb_each(
+    COALESCE(incoming.data->'values', '{}'::jsonb)) point
+  ORDER BY incoming.device_id, point.key, incoming.report_time DESC, incoming.id DESC
+), latest_values AS (
+  INSERT INTO device_latest_value(
+    device_id, element_id, value, observed_at, record_id, updated_at)
+  SELECT device_id, element_id, value, observed_at, record_id, NOW()
+  FROM latest_elements
+  ON CONFLICT (device_id, element_id) DO UPDATE SET
+    value = EXCLUDED.value,
+    observed_at = EXCLUDED.observed_at,
+    record_id = EXCLUDED.record_id,
+    updated_at = NOW()
+  WHERE (EXCLUDED.observed_at, EXCLUDED.record_id) >
+        (device_latest_value.observed_at, device_latest_value.record_id)
+  RETURNING device_id
 ), state_updated AS (
   UPDATE device_data_ingest_state state
   SET last_stored_at = storage.last_stored_at,
@@ -520,7 +542,8 @@ SELECT incoming.input_sequence::text,
 FROM incoming
 LEFT JOIN predecessors USING (input_sequence)
 CROSS JOIN (SELECT count(*) AS updated_count FROM state_updated) update_barrier
-WHERE update_barrier.updated_count >= 0
+CROSS JOIN (SELECT count(*) AS latest_count FROM latest_values) latest_barrier
+WHERE update_barrier.updated_count >= 0 AND latest_barrier.latest_count >= 0
 ORDER BY incoming.input_sequence)sql";
         const auto rows = co_await context.db().query(sql, params);
         std::vector<std::string> previous(messages.size(), "{}");

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -97,6 +98,19 @@ int main() {
             }
         }
         ruvia::detail::validateMigrationList(migrations);
+        const auto latestValueMigration = std::find_if(
+            storage::kSchemaMigrations.begin(), storage::kSchemaMigrations.end(),
+            [](const auto& migration) {
+                return migration.id() == "0021_device_latest_value";
+            });
+        require(latestValueMigration != storage::kSchemaMigrations.end(),
+                "latest-value projection migration is missing");
+        require(latestValueMigration->sql().find("PRIMARY KEY (device_id, element_id)") !=
+                    std::string::npos,
+                "latest-value projection must enforce one row per device element");
+        require(latestValueMigration->sql().find("ORDER BY history.device_id, point.key") !=
+                    std::string::npos,
+                "latest-value backfill must preserve per-element ordering");
 
         std::cout << "storage policy tests passed\n";
         return 0;
