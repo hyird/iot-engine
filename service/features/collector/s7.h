@@ -253,18 +253,20 @@ class Session final : public ProtocolSession,
                       public DeadlineCapabilitySession {
   public:
     Session(LinkDefinition link, std::string connectionId, std::string targetId,
-            std::vector<DeviceDefinition> devices)
+            std::shared_ptr<const RuntimeSnapshot> snapshot,
+            std::vector<const DeviceDefinition*> devices)
         : link_(std::move(link)), connectionId_(std::move(connectionId)),
-          targetId_(std::move(targetId)), devices_(std::move(devices)) {
-        for (const auto& device : devices_) {
-            devicesById_.emplace(device.id, &device);
-            devicesByCode_.emplace(device.code, &device);
-            queues_.try_emplace(device.id);
+          targetId_(std::move(targetId)), snapshot_(std::move(snapshot)),
+          devices_(std::move(devices)) {
+        for (const auto* device : devices_) {
+            devicesById_.emplace(device->id, device);
+            devicesByCode_.emplace(device->code, device);
+            queues_.try_emplace(device->id);
         }
         if (link_.mode == "TCP Client") {
-            for (const auto& device : devices_)
-                if (device.targetId == targetId_) {
-                    device_ = &device;
+            for (const auto* device : devices_)
+                if (device->targetId == targetId_) {
+                    device_ = device;
                     state_ = State::Idle;
                     break;
                 }
@@ -678,28 +680,28 @@ class Session final : public ProtocolSession,
         const DeviceDefinition* exact = nullptr;
         const DeviceDefinition* prefixed = nullptr;
         std::size_t prefixLength = 0;
-        for (const auto& device : devices_) {
-            if (device.registrationBytes.empty())
+        for (const auto* device : devices_) {
+            if (device->registrationBytes.empty())
                 continue;
-            if (bytes == device.registrationBytes) {
-                if (exact && exact->id != device.id) {
+            if (bytes == device->registrationBytes) {
+                if (exact && exact->id != device->id) {
                     result.conflict = true;
                     return result;
                 }
-                exact = &device;
+                exact = device;
                 continue;
             }
-            if (bytes.size() > device.registrationBytes.size() &&
-                std::equal(device.registrationBytes.begin(), device.registrationBytes.end(),
+            if (bytes.size() > device->registrationBytes.size() &&
+                std::equal(device->registrationBytes.begin(), device->registrationBytes.end(),
                            bytes.begin())) {
-                if (prefixed && device.registrationBytes.size() == prefixLength &&
-                    prefixed->id != device.id) {
+                if (prefixed && device->registrationBytes.size() == prefixLength &&
+                    prefixed->id != device->id) {
                     result.conflict = true;
                     return result;
                 }
-                if (!prefixed || device.registrationBytes.size() > prefixLength) {
-                    prefixed = &device;
-                    prefixLength = device.registrationBytes.size();
+                if (!prefixed || device->registrationBytes.size() > prefixLength) {
+                    prefixed = device;
+                    prefixLength = device->registrationBytes.size();
                 }
             }
         }
@@ -718,8 +720,8 @@ class Session final : public ProtocolSession,
     [[nodiscard]] bool isHeartbeat(const std::vector<std::uint8_t>& bytes) const {
         if (device_)
             return !device_->heartbeatBytes.empty() && bytes == device_->heartbeatBytes;
-        return std::any_of(devices_.begin(), devices_.end(), [&](const auto& device) {
-            return !device.heartbeatBytes.empty() && bytes == device.heartbeatBytes;
+        return std::any_of(devices_.begin(), devices_.end(), [&](const auto* device) {
+            return !device->heartbeatBytes.empty() && bytes == device->heartbeatBytes;
         });
     }
 
@@ -1595,7 +1597,8 @@ class Session final : public ProtocolSession,
     LinkDefinition link_;
     std::string connectionId_;
     std::string targetId_;
-    std::vector<DeviceDefinition> devices_;
+    std::shared_ptr<const RuntimeSnapshot> snapshot_;
+    std::vector<const DeviceDefinition*> devices_;
     std::map<std::string, const DeviceDefinition*, std::less<>> devicesById_;
     std::map<std::string, const DeviceDefinition*, std::less<>> devicesByCode_;
     std::map<std::string, DeviceQueues, std::less<>> queues_;
@@ -1628,14 +1631,15 @@ class Runtime final : public ProtocolRuntime {
 
     [[nodiscard]] std::unique_ptr<ProtocolSession>
     createSession(const LinkDefinition& link, std::string_view connectionId,
-                  std::string_view targetId, const RuntimeSnapshot& snapshot) const override {
-        std::vector<DeviceDefinition> devices;
-        for (const auto& device : snapshot.devices)
+                  std::string_view targetId,
+                  const std::shared_ptr<const RuntimeSnapshot>& snapshot) const override {
+        std::vector<const DeviceDefinition*> devices;
+        for (const auto& device : snapshot->devices)
             if (device.linkId == link.id && device.protocol == "S7" &&
                 (targetId.empty() || device.targetId == targetId))
-                devices.push_back(device);
+                devices.push_back(&device);
         return std::make_unique<Session>(link, std::string(connectionId), std::string(targetId),
-                                         std::move(devices));
+                                         snapshot, std::move(devices));
     }
 };
 

@@ -3,6 +3,8 @@ import net from 'node:net';
 const fixture = await Bun.file('build/stress-fixture.json').json();
 const deviceCount = Number(fixture.deviceCount);
 const durationMs = Number(Bun.env.STRESS_DURATION_MS ?? '60000');
+const modbusClientPortBase = Number(Bun.env.STRESS_MODBUS_CLIENT_PORT_BASE ?? '16000');
+const s7ClientPortBase = Number(Bun.env.STRESS_S7_CLIENT_PORT_BASE ?? '16100');
 const host = '127.0.0.1';
 const redisUrl = Bun.env.REDIS_PASSWORD
     ? `redis://:${encodeURIComponent(Bun.env.REDIS_PASSWORD)}@${Bun.env.REDIS_HOST ?? host}:${Bun.env.REDIS_PORT ?? '6379'}/${Bun.env.REDIS_DATABASE ?? '0'}`
@@ -279,7 +281,7 @@ function track(socket: net.Socket) {
 }
 
 function createTargetServer(protocol: 'Modbus' | 'S7', index: number) {
-    const port = (protocol === 'Modbus' ? 16000 : 16100) + index;
+    const port = (protocol === 'Modbus' ? modbusClientPortBase : s7ClientPortBase) + index;
     const server = net.createServer((socket) => {
         track(socket);
         if (protocol === 'Modbus') attachModbus(socket, index);

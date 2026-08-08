@@ -208,7 +208,8 @@ const result = (await response.json()) as {
 if (!response.ok || result.code !== 0) throw new Error(`device API failed: ${result.message}`);
 const apiDevice = result.data?.list.find((device) => device.device_code === deviceCode);
 const apiElement = apiDevice?.elements.find((item) => item.id === elementId);
-if (apiElement?.value !== String(newerValue) || apiDevice?.reportTime !== String(newerObservedAt))
+const expectedReportTime = new Date(newerObservedAt).toISOString().replace(/\.\d{3}Z$/, 'Z');
+if (apiElement?.value !== String(newerValue) || apiDevice?.reportTime !== expectedReportTime)
     throw new Error('device API did not return the Redis latest read model');
 
 console.log(

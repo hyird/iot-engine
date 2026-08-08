@@ -98,8 +98,13 @@ async function streamDepth(pattern: string) {
     return depths.reduce((total, depth) => total + Number(depth), 0);
 }
 
-async function waitFor<T>(label: string, read: () => Promise<T>, accept: (value: T) => boolean) {
-    const deadline = Date.now() + 10000;
+async function waitFor<T>(
+    label: string,
+    read: () => Promise<T>,
+    accept: (value: T) => boolean,
+    timeoutMs = 10000,
+) {
+    const deadline = Date.now() + timeoutMs;
     let value = await read();
     while (!accept(value) && Date.now() < deadline) {
         await Bun.sleep(25);
@@ -138,6 +143,15 @@ async function route(code: string) {
 async function streamState(key: string, group: string) {
     const pending = (await redis.send('XPENDING', [key, group])) as unknown[];
     return { depth: Number(await redis.send('XLEN', [key])), pending: Number(pending[0]) };
+}
+
+async function waitForRuntimeIdle(label: string) {
+    await waitFor(
+        label,
+        () => streamState('iot:channel:runtime:config-change', 'iot-engine:runtime-reconciler'),
+        (state) => state.depth === 0 && state.pending === 0,
+        30000,
+    );
 }
 
 function track(socket: net.Socket) {
@@ -413,6 +427,7 @@ try {
         (devices) => devices.size === batchCodes.length,
     );
     for (const id of createdBatch.values()) batchDeviceIds.add(id);
+    await waitForRuntimeIdle('concurrent create runtime event acknowledgement');
     version = await activeVersion(version);
     await waitForWorkers(version);
     for (const [code, id] of createdBatch) {
@@ -426,6 +441,7 @@ try {
             api('PUT', `/v1/device/${id}`, body('disabled', 'TCP', code, 120 + index)),
         ),
     );
+    await waitForRuntimeIdle('concurrent disable runtime event acknowledgement');
     version = await activeVersion(version);
     await waitForWorkers(version);
     for (const id of createdBatch.values()) {
@@ -446,11 +462,7 @@ try {
         () => streamDepth('iot:channel:config:worker:*'),
         (depth) => depth === 0,
     );
-    await waitFor(
-        'runtime config event acknowledgement',
-        () => streamState('iot:channel:runtime:config-change', 'iot-engine:runtime-reconciler'),
-        (state) => state.depth === 0 && state.pending === 0,
-    );
+    await waitForRuntimeIdle('runtime config event acknowledgement');
     await waitFor(
         'webhook catalog event acknowledgement',
         () => streamState('iot:channel:open-access:config-change', 'iot-engine:open-webhook'),

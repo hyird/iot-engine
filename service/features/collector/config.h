@@ -438,7 +438,8 @@ ruvia::Task<std::vector<std::string>> members(const Redis& redis, std::string ke
 template <typename Redis>
 ruvia::Task<void> eraseSnapshot(const Redis& redis, std::string_view version) {
     const auto keysSet = prefix(version) + ":keys";
-    auto keys = co_await members(redis, keysSet);
+    auto keys = stringArray(co_await redis::command(redis, {"SMEMBERS", keysSet}),
+                            "SMEMBERS runtime snapshot keys");
     keys.push_back(keysSet);
     constexpr std::size_t batchSize = 128;
     for (std::size_t offset = 0; offset < keys.size(); offset += batchSize) {
@@ -451,6 +452,32 @@ ruvia::Task<void> eraseSnapshot(const Redis& redis, std::string_view version) {
 }
 
 } // namespace detail
+
+template <typename Redis>
+ruvia::Task<void> eraseExpiredSnapshots(const Redis& redis, std::int64_t nowMilliseconds,
+                                        std::string_view preserveVersion) {
+    const auto expired = detail::stringArray(
+        co_await redis::command(
+            redis, {"ZRANGEBYSCORE", std::string(kVersionsKey), "-inf",
+                    std::to_string(nowMilliseconds - kSnapshotGraceMilliseconds)}),
+        "ZRANGEBYSCORE runtime versions");
+    for (const auto& candidate : expired) {
+        if (candidate == preserveVersion)
+            continue;
+        co_await detail::eraseSnapshot(redis, candidate);
+        (void)co_await redis::command(redis, {"ZREM", std::string(kVersionsKey), candidate});
+    }
+}
+
+template <typename Redis>
+ruvia::Task<void> cleanupExpiredSnapshots(const Redis& redis, std::int64_t nowMilliseconds) {
+    const auto activeReply =
+        co_await redis::command(redis, {"GET", std::string(kActiveVersionKey)});
+    if (activeReply.null())
+        co_return;
+    co_await eraseExpiredSnapshots(
+        redis, nowMilliseconds, detail::stringReply(activeReply, "GET active runtime"));
+}
 
 // Service projection. The version pointer is switched only after every readable
 // Hash/Set/List has been written, so readers never observe a partial snapshot.
@@ -599,17 +626,7 @@ ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
 
     // A worker may have read the previous pointer just before this switch. Keep completed
     // snapshots for a bounded grace window so its multi-key load cannot be torn down midway.
-    const auto expired =
-        detail::stringArray(co_await redis::command(
-                                redis, {"ZRANGEBYSCORE", std::string(kVersionsKey), "-inf",
-                                        std::to_string(createdAt - kSnapshotGraceMilliseconds)}),
-                            "ZRANGEBYSCORE runtime versions");
-    for (const auto& candidate : expired) {
-        if (candidate == version)
-            continue;
-        co_await detail::eraseSnapshot(redis, candidate);
-        (void)co_await redis::command(redis, {"ZREM", std::string(kVersionsKey), candidate});
-    }
+    co_await eraseExpiredSnapshots(redis, createdAt, version);
     co_return version;
 }
 

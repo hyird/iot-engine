@@ -268,11 +268,13 @@ class Session final : public ProtocolSession,
                       public CommandCapabilitySession,
                       public DeadlineCapabilitySession {
   public:
-    Session(LinkDefinition link, std::string connectionId, std::vector<DeviceDefinition> devices)
+    Session(LinkDefinition link, std::string connectionId,
+            std::shared_ptr<const RuntimeSnapshot> snapshot,
+            std::vector<const DeviceDefinition*> devices)
         : link_(std::move(link)), connectionId_(std::move(connectionId)),
-          devices_(std::move(devices)) {
-        for (const auto& device : devices_)
-            devicesByCode_.emplace(normalizeCode(device.code), &device);
+          snapshot_(std::move(snapshot)), devices_(std::move(devices)) {
+        for (const auto* device : devices_)
+            devicesByCode_.emplace(normalizeCode(device->code), device);
     }
 
     [[nodiscard]] std::vector<ProtocolAction> consume(const ProtocolInput& input) override {
@@ -462,9 +464,9 @@ class Session final : public ProtocolSession,
         if (!command.deviceId.empty()) {
             const auto current =
                 std::find_if(devices_.begin(), devices_.end(),
-                             [&](const auto& item) { return item.id == command.deviceId; });
+                             [&](const auto* item) { return item->id == command.deviceId; });
             if (current != devices_.end())
-                return &*current;
+                return *current;
         }
         const auto current = devicesByCode_.find(normalizeCode(command.deviceCode));
         return current == devicesByCode_.end() ? nullptr : current->second;
@@ -772,7 +774,8 @@ class Session final : public ProtocolSession,
 
     LinkDefinition link_;
     std::string connectionId_;
-    std::vector<DeviceDefinition> devices_;
+    std::shared_ptr<const RuntimeSnapshot> snapshot_;
+    std::vector<const DeviceDefinition*> devices_;
     std::map<std::string, const DeviceDefinition*, std::less<>> devicesByCode_;
     std::set<std::string, std::less<>> boundDeviceIds_;
     std::vector<std::uint8_t> receiveBuffer_;
@@ -793,14 +796,16 @@ class Runtime final : public ProtocolRuntime {
 
     [[nodiscard]] std::unique_ptr<ProtocolSession>
     createSession(const LinkDefinition& link, std::string_view connectionId,
-                  std::string_view targetId, const RuntimeSnapshot& snapshot) const override {
+                  std::string_view targetId,
+                  const std::shared_ptr<const RuntimeSnapshot>& snapshot) const override {
         if (!targetId.empty())
             throw std::invalid_argument("SL651 cannot create a TCP Client target session");
-        std::vector<DeviceDefinition> devices;
-        for (const auto& device : snapshot.devices)
+        std::vector<const DeviceDefinition*> devices;
+        for (const auto& device : snapshot->devices)
             if (device.linkId == link.id && device.protocol == "SL651")
-                devices.push_back(device);
-        return std::make_unique<Session>(link, std::string(connectionId), std::move(devices));
+                devices.push_back(&device);
+        return std::make_unique<Session>(link, std::string(connectionId), snapshot,
+                                         std::move(devices));
     }
 };
 

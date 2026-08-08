@@ -136,7 +136,8 @@ class ProtocolRuntime {
     [[nodiscard]] virtual ProtocolCapabilities capabilities() const noexcept = 0;
     [[nodiscard]] virtual std::unique_ptr<ProtocolSession>
     createSession(const LinkDefinition& link, std::string_view connectionId,
-                  std::string_view targetId, const RuntimeSnapshot& snapshot) const = 0;
+                  std::string_view targetId,
+                  const std::shared_ptr<const RuntimeSnapshot>& snapshot) const = 0;
 };
 
 inline void validateProtocolLink(const ProtocolRuntime& runtime, const LinkDefinition& link) {

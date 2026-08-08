@@ -7,6 +7,7 @@
 #include <future>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <ranges>
 #include <string>
 #include <utility>
@@ -85,17 +86,41 @@ class Reconciler final {
                 redis, service::message::kRuntimeConfigChangesStream, kGroup);
             ready->set_value();
             bool recovering = true;
+            std::optional<std::chrono::steady_clock::time_point> cleanupDeadline =
+                std::chrono::steady_clock::now();
             while (running_.load() && !context.stopToken().stopRequested()) {
+                if (!recovering && cleanupDeadline &&
+                    std::chrono::steady_clock::now() >= *cleanupDeadline) {
+                    try {
+                        co_await service::collector::config::cleanupExpiredSnapshots(
+                            redis, service::message::utcNowMilliseconds());
+                        cleanupDeadline.reset();
+                    } catch (const std::exception& error) {
+                        std::cerr << "runtime config cleanup failed: " << error.what() << '\n';
+                        cleanupDeadline = std::chrono::steady_clock::now() +
+                                          std::chrono::milliseconds(250);
+                    }
+                    continue;
+                }
                 std::vector<service::message::StreamMessage> messages;
                 bool readFailed = false;
                 try {
-                    messages = recovering
-                        ? co_await service::message::redis::readGroup(
-                              redis, service::message::kRuntimeConfigChangesStream, kGroup,
-                              "service-0", "0", std::chrono::milliseconds(0), kBatchSize)
-                        : co_await service::message::redis::readGroupBlocking(
-                              redis, service::message::kRuntimeConfigChangesStream, kGroup,
-                              "service-0", context.stopToken(), kBatchSize);
+                    if (recovering) {
+                        messages = co_await service::message::redis::readGroup(
+                            redis, service::message::kRuntimeConfigChangesStream, kGroup,
+                            "service-0", "0", std::chrono::milliseconds(0), kBatchSize);
+                    } else {
+                        std::optional<std::chrono::milliseconds> timeout;
+                        if (cleanupDeadline) {
+                            timeout = std::max(
+                                std::chrono::milliseconds(1),
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    *cleanupDeadline - std::chrono::steady_clock::now()));
+                        }
+                        messages = co_await service::message::redis::readGroupBlockingUntil(
+                            redis, service::message::kRuntimeConfigChangesStream, kGroup,
+                            "service-0", context.stopToken(), timeout, kBatchSize);
+                    }
                 } catch (const std::exception& error) {
                     if (context.stopToken().stopRequested())
                         break;
@@ -150,6 +175,10 @@ class Reconciler final {
                         });
                     if (projectionRequired) {
                         const auto version = co_await project(context);
+                        cleanupDeadline = std::chrono::steady_clock::now() +
+                                          std::chrono::milliseconds(
+                                              service::collector::config::
+                                                  kSnapshotGraceMilliseconds);
                         if (version != lastNotifiedVersion_) {
                             co_await publishWorkerNotifications(context, version);
                             lastNotifiedVersion_ = version;

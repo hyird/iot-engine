@@ -39,9 +39,9 @@ class ProtocolEngine final {
             const auto& runtime = registry_.require(link.protocol);
             validateProtocolLink(runtime, link);
         }
-        snapshot_ = std::move(snapshot);
+        snapshot_ = std::make_shared<RuntimeSnapshot>(std::move(snapshot));
         links_.clear();
-        for (const auto& link : snapshot_.links)
+        for (const auto& link : snapshot_->links)
             links_.emplace(link.id, &link);
 
         // Configuration generations are immutable for an established connection. Close/recreate
@@ -56,9 +56,9 @@ class ProtocolEngine final {
             validateProtocolLink(runtime, link);
         }
         (void)affectedLinks;
-        snapshot_ = std::move(snapshot);
+        snapshot_ = std::make_shared<RuntimeSnapshot>(std::move(snapshot));
         links_.clear();
-        for (const auto& link : snapshot_.links)
+        for (const auto& link : snapshot_->links)
             links_.emplace(link.id, &link);
 
         // Tcp owns transport reconciliation. Sessions are retained here until either the target
@@ -193,7 +193,7 @@ class ProtocolEngine final {
     };
 
     ProtocolRuntimeRegistry registry_;
-    RuntimeSnapshot snapshot_;
+    std::shared_ptr<const RuntimeSnapshot> snapshot_ = std::make_shared<RuntimeSnapshot>();
     std::map<std::string, const LinkDefinition*, std::less<>> links_;
     std::map<std::string, SessionEntry, std::less<>> sessions_;
 };
