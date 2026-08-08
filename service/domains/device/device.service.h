@@ -449,7 +449,8 @@ FROM filtered)sql",
 WITH inserted_edge_link AS (
   INSERT INTO link(
     id, name, protocol, endpoint, status, created_by, execution, edge_node_id)
-  SELECT $4::uuid, 'edge:' || $1::text, protocol, $6::jsonb, $10, $19::uuid,
+  SELECT $4::uuid, 'edge:' || $1::text, protocol, NULLIF($6::text, '')::jsonb,
+         $10, $19::uuid,
          'edge', NULLIF($5::text, '')::uuid
   FROM protocol_config
   WHERE id = $8::uuid AND deleted_at IS NULL AND NULLIF($5::text, '') IS NOT NULL
@@ -600,12 +601,14 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
                     body.status() ? std::string(body.status()->view()) : std::string{};
                 (void)co_await transaction.execute(R"sql(
 UPDATE link
-SET endpoint = CASE WHEN NULLIF($1, '') IS NULL THEN endpoint ELSE $1::jsonb END,
+SET endpoint = CASE WHEN NULLIF($1::text, '') IS NULL THEN endpoint
+                    ELSE NULLIF($1::text, '')::jsonb END,
     status = COALESCE(NULLIF($2, '')::status_enum, status),
     updated_at = NOW()
 WHERE id = $3::uuid AND execution = 'edge'
   AND (
-    (NULLIF($1, '') IS NOT NULL AND endpoint IS DISTINCT FROM $1::jsonb)
+    (NULLIF($1::text, '') IS NOT NULL
+     AND endpoint IS DISTINCT FROM NULLIF($1::text, '')::jsonb)
     OR (NULLIF($2, '') IS NOT NULL AND status IS DISTINCT FROM $2::status_enum)
   ))sql",
                                                    service::common::dbParams(
