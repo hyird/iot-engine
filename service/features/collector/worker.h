@@ -1335,7 +1335,7 @@ return 1
                 ? (success ? "DISCOVERY_RESULT" : "DISCOVERY_FAILED")
                 : (success ? "COMMAND_RESULT" : "COMMAND_FAILED"),
             taskLogContext(pending.task), {}, reason);
-        (void)co_await message::redis::publish(
+        co_await message::redis::publishAndAcknowledge(
             redis_, commandResultStream(),
             {{"message_id", message::nextMessageId()},
              {"causation_id", std::string(commandId)},
@@ -1349,9 +1349,7 @@ return 1
              {"worker_id", std::to_string(workerIndex_)},
              {"created_at_ms", std::to_string(message::utcNowMilliseconds())},
              {"completed_at_ms", std::to_string(message::utcNowMilliseconds())}},
-            10000);
-        co_await message::redis::acknowledgeAndDelete(redis_, pending.stream, commandGroup(),
-                                                           pending.entryId);
+            10000, pending.stream, commandGroup(), pending.entryId);
     }
 
     [[nodiscard]] static bool retryableFailure(std::string_view reason) {
@@ -1384,10 +1382,9 @@ return 1
                 service::common::packet_log::Level::Warn,
                 task.kind == "discovery" ? "DISCOVERY_RETRY" : "COMMAND_RETRY",
                 taskLogContext(task), {}, retryReason);
-            (void)co_await message::redis::publish(
-                redis_, stream, message::protocolTaskFields(task), kCommandStreamCapacity);
-            co_await message::redis::acknowledgeAndDelete(redis_, stream, commandGroup(),
-                                                               entryId);
+            co_await message::redis::publishAndAcknowledge(
+                redis_, stream, message::protocolTaskFields(task), kCommandStreamCapacity,
+                stream, commandGroup(), entryId);
             co_return true;
         }
         auto fields = message::protocolTaskFields(task);
@@ -1408,7 +1405,7 @@ return 1
                                         const message::ProtocolTask& task, std::string_view reason) {
         if (co_await retryOrDeadLetter(stream, entryId, task, reason))
             co_return;
-        (void)co_await message::redis::publish(
+        co_await message::redis::publishAndAcknowledge(
             redis_, commandResultStream(),
             {{"message_id", message::nextMessageId()},
              {"causation_id", std::string(commandId)},
@@ -1422,8 +1419,7 @@ return 1
              {"worker_id", std::to_string(workerIndex_)},
              {"created_at_ms", std::to_string(message::utcNowMilliseconds())},
              {"completed_at_ms", std::to_string(message::utcNowMilliseconds())}},
-            10000);
-        co_await message::redis::acknowledgeAndDelete(redis_, stream, commandGroup(), entryId);
+            10000, stream, commandGroup(), entryId);
     }
 
     [[nodiscard]] std::vector<message::StreamField> linkStateFields(const LinkState& state) {

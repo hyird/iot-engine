@@ -171,7 +171,7 @@ function attachModbus(socket: net.Socket, index: number, allowMany = false) {
     });
 }
 
-const cotpConfirm = Buffer.from([3, 0, 0, 7, 2, 0xd0, 0]);
+const cotpConfirm = Buffer.from([3, 0, 0, 0x0b, 6, 0xd0, 0, 1, 0, 6, 0]);
 function setupResponse(reference: number) {
     return Buffer.from([3, 0, 0, 0x1b, 2, 0xf0, 0x80, 0x32, 3, 0, 0, reference >> 8, reference & 0xff, 0, 8, 0, 0, 0, 0, 0xf0, 0, 0, 1, 0, 1, 1, 0xe0]);
 }
@@ -374,19 +374,36 @@ async function scan(pattern: string) {
     let cursor = '0';
     const result: string[] = [];
     do {
-        const page = (await redis.send('SCAN', [cursor, 'MATCH', pattern, 'COUNT', '500'])) as [string, string[]];
+        const page = (await redis.send('SCAN', [cursor, 'MATCH', pattern, 'COUNT', '10000'])) as [string, string[]];
         cursor = page[0];
         result.push(...page[1]);
     } while (cursor !== '0');
     return result;
 }
 
-async function onlineRouteCount() {
-    const keys = await scan('iot:runtime:device:*');
-    const connections = await Promise.all(
-        keys.map((key) => redis.send('HGET', [key, 'connection_id'])),
+const routeCodes = {
+    modbusServer: Array.from({ length: deviceCount }, (_, index) => `MS${pad(index, 3)}`),
+    modbusClient: Array.from({ length: deviceCount }, (_, index) => `MC${pad(index, 3)}`),
+    s7Server: Array.from({ length: deviceCount }, (_, index) => `SS${pad(index, 3)}`),
+    s7Client: Array.from({ length: deviceCount }, (_, index) => `SC${pad(index, 3)}`),
+    sl651Server: Array.from({ length: deviceCount }, (_, index) => pad(index + 1, 10)),
+};
+
+async function onlineRouteCounts() {
+    const entries = await Promise.all(
+        Object.entries(routeCodes).map(async ([group, codes]) => {
+            const connections = await Promise.all(
+                codes.map((code) => redis.send('HGET', [`iot:runtime:device:${code}`, 'connection_id'])),
+            );
+            return [group, connections.filter(Boolean).length] as const;
+        }),
     );
-    return connections.filter(Boolean).length;
+    return Object.fromEntries(entries) as Record<keyof typeof routeCodes, number>;
+}
+
+async function onlineRouteCount() {
+    const counts = await onlineRouteCounts();
+    return Object.values(counts).reduce((total, count) => total + count, 0);
 }
 
 async function waitRuntimeReady() {
@@ -444,23 +461,29 @@ async function partitionEntriesAdded(prefix: string) {
 }
 
 async function commandResultStatsSince(timestampMs: number) {
-    const keys = await scan('iot:state:command:*');
     let success = 0;
     let failure = 0;
     const reasons = new Map<string, number>();
     const covered = new Set<string>();
     let sampled = 0;
-    for (const key of keys) {
-        const value = await hash(key);
-        if (Number(value.completed_at_ms ?? 0) < timestampMs) continue;
-        sampled++;
-        if (value.success === '1') {
-            success++;
-            const label = commandCoverage.get(value.command_id);
-            if (label) covered.add(label);
-        } else failure++;
-        const reason = value.reason || 'none';
-        reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+    const commands = [...commandCoverage];
+    for (let offset = 0; offset < commands.length; offset += 256) {
+        const states = await Promise.all(
+            commands.slice(offset, offset + 256).map(async ([commandId, label]) => [
+                label,
+                await hash(`iot:state:command:${commandId}`),
+            ] as const),
+        );
+        for (const [label, value] of states) {
+            if (Number(value.completed_at_ms ?? 0) < timestampMs) continue;
+            sampled++;
+            if (value.success === '1') {
+                success++;
+                covered.add(label);
+            } else failure++;
+            const reason = value.reason || 'none';
+            reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+        }
     }
     return {
         sampled,
@@ -617,12 +640,13 @@ const lagTimer = setInterval(() => {
 timers.add(lagTimer);
 
 const metricsTimer = setInterval(async () => {
-    const routeCount = await onlineRouteCount();
+    const routeCounts = await onlineRouteCounts();
+    const routeCount = Object.values(routeCounts).reduce((total, count) => total + count, 0);
     peakRouteCount = Math.max(peakRouteCount, routeCount);
     const parsed = await partitionStreamDepth('iot:channel:packet:parsed');
     const results = await partitionStreamDepth('iot:channel:command:result');
     const linkStates = (await scan('iot:runtime:link:*:worker:*')).length;
-    console.log(JSON.stringify({ routeCount, parsed, results, linkStates, ingressFrames, egressFrames, reconnects, commands, discoveryCommands, socketErrors, maxEventLoopLagMs }));
+    console.log(JSON.stringify({ routeCount, routeCounts, parsed, results, linkStates, ingressFrames, egressFrames, reconnects, commands, discoveryCommands, socketErrors, maxEventLoopLagMs }));
 }, 5000);
 timers.add(metricsTimer);
 
@@ -638,8 +662,12 @@ while (remainingCommandBacklog > 0 && Date.now() < commandSettleDeadline) {
 }
 const liveRouteCount = await onlineRouteCount();
 peakRouteCount = Math.max(peakRouteCount, liveRouteCount);
+for (const server of servers) {
+    server.unref();
+    server.close();
+}
 for (const socket of sockets) socket.destroy();
-await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+await Bun.sleep(0);
 const cleanupDeadline = Date.now() + 10000;
 let remainingRouteCount = await onlineRouteCount();
 while (remainingRouteCount > 0 && Date.now() < cleanupDeadline) {
@@ -750,3 +778,4 @@ if (maxDeadLetterWorkerDepth > 1100)
     throw new Error(`a worker dead-letter stream is unbounded: ${maxDeadLetterWorkerDepth}`);
 if (remainingRouteCount !== 0) throw new Error(`stale device routes remained: ${remainingRouteCount}`);
 if (maxEventLoopLagMs > 1000) throw new Error(`stress driver event loop stalled: ${maxEventLoopLagMs}ms`);
+process.exit(0);

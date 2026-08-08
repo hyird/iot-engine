@@ -645,6 +645,40 @@ inline ruvia::Task<std::string> publish(const Redis& redis, std::string_view str
 }
 
 template <typename Redis>
+inline ruvia::Task<void> publishAndAcknowledge(
+    const Redis& redis, std::string_view outputStream,
+    const std::vector<StreamField>& outputFields, std::size_t outputMaxLength,
+    std::string_view inputStream, std::string_view inputGroup, std::string_view inputId) {
+    if (outputFields.empty())
+        throw std::invalid_argument("Redis Stream message must contain fields");
+    static constexpr std::string_view script = R"lua(
+local fields = {}
+for index = 4, #ARGV do fields[#fields + 1] = ARGV[index] end
+local output_id = redis.call('XADD', KEYS[1], 'MAXLEN', '~', ARGV[1], '*', unpack(fields))
+local acknowledged = redis.call('XACK', KEYS[2], ARGV[2], ARGV[3])
+redis.call('XDEL', KEYS[2], ARGV[3])
+return {output_id, acknowledged}
+)lua";
+    const std::string outputKey(outputStream);
+    const std::string inputKey(inputStream);
+    const std::string maxLength = std::to_string(outputMaxLength == 0 ? 10000 : outputMaxLength);
+    const std::string group(inputGroup);
+    const std::string id(inputId);
+    const std::string_view keys[]{outputKey, inputKey};
+    std::vector<std::string_view> arguments{maxLength, group, id};
+    arguments.reserve(arguments.size() + outputFields.size() * 2);
+    for (const auto& field : outputFields) {
+        arguments.push_back(field.name);
+        arguments.push_back(field.value);
+    }
+    const auto reply = co_await redis.eval(script, keys, arguments);
+    if (reply.kind() != RedisValue::Kind::kArray || reply.array().size() != 2 ||
+        reply.array()[0].kind() != RedisValue::Kind::kString ||
+        reply.array()[1].kind() != RedisValue::Kind::kInteger)
+        throwValue("atomic XADD/XACK/XDEL", reply);
+}
+
+template <typename Redis>
 inline ruvia::Task<void> updateSession(const Redis& redis, std::string_view connectionId,
                                        const std::vector<StreamField>& fields) {
     const auto key = sessionStateKey(connectionId);
