@@ -644,38 +644,96 @@ inline ruvia::Task<std::string> publish(const Redis& redis, std::string_view str
     co_return co_await add(redis, stream, fields, maxLength);
 }
 
+struct StreamPublication {
+    std::string_view stream;
+    std::span<const StreamField> fields;
+    std::size_t maxLength = 0;
+};
+
 template <typename Redis>
-inline ruvia::Task<void> publishAndAcknowledge(
+inline ruvia::Task<bool> publishAllAndAcknowledge(
+    const Redis& redis, std::span<const StreamPublication> publications,
+    std::string_view inputStream, std::string_view inputGroup,
+    std::string_view inputConsumer, std::string_view inputId) {
+    if (publications.empty())
+        throw std::invalid_argument("Redis Stream transaction must contain publications");
+    for (const auto& publication : publications)
+        if (publication.fields.empty())
+            throw std::invalid_argument("Redis Stream message must contain fields");
+    static constexpr std::string_view script = R"lua(
+local input_key = KEYS[#KEYS]
+local pending = redis.call('XPENDING', input_key, ARGV[1], ARGV[2], ARGV[2], 1)
+if #pending == 0 or pending[1][2] ~= ARGV[3] then return 0 end
+for output = 1, #KEYS - 1 do
+  local output_type = redis.call('TYPE', KEYS[output]).ok
+  if output_type ~= 'none' and output_type ~= 'stream' then
+    return redis.error_reply('output key is not a stream')
+  end
+end
+
+local argument = 4
+for output = 1, #KEYS - 1 do
+  local maximum = ARGV[argument]
+  local field_count = tonumber(ARGV[argument + 1])
+  argument = argument + 2
+  local fields = {}
+  for field = 1, field_count do
+    fields[#fields + 1] = ARGV[argument]
+    fields[#fields + 1] = ARGV[argument + 1]
+    argument = argument + 2
+  end
+  redis.call('XADD', KEYS[output], 'MAXLEN', '~', maximum, '*', unpack(fields))
+end
+
+local acknowledged = redis.call('XACK', input_key, ARGV[1], ARGV[2])
+if acknowledged ~= 1 then
+  return redis.error_reply('input stream entry was not pending')
+end
+redis.call('XDEL', input_key, ARGV[2])
+return 1
+)lua";
+
+    std::vector<std::string> ownedKeys;
+    ownedKeys.reserve(publications.size() + 1);
+    for (const auto& publication : publications)
+        ownedKeys.emplace_back(publication.stream);
+    ownedKeys.emplace_back(inputStream);
+    const std::vector<std::string_view> keys(ownedKeys.begin(), ownedKeys.end());
+
+    std::size_t argumentCount = 3;
+    for (const auto& publication : publications)
+        argumentCount += 2 + publication.fields.size() * 2;
+    std::vector<std::string> ownedArguments;
+    ownedArguments.reserve(argumentCount);
+    ownedArguments.emplace_back(inputGroup);
+    ownedArguments.emplace_back(inputId);
+    ownedArguments.emplace_back(inputConsumer);
+    for (const auto& publication : publications) {
+        ownedArguments.push_back(
+            std::to_string(publication.maxLength == 0 ? 10000 : publication.maxLength));
+        ownedArguments.push_back(std::to_string(publication.fields.size()));
+        for (const auto& field : publication.fields) {
+            ownedArguments.push_back(field.name);
+            ownedArguments.push_back(field.value);
+        }
+    }
+    const std::vector<std::string_view> arguments(ownedArguments.begin(), ownedArguments.end());
+    const auto reply = co_await redis.eval(script, keys, arguments);
+    if (reply.kind() != RedisValue::Kind::kInteger)
+        throwValue("atomic XPENDING/XADD/XACK/XDEL", reply);
+    co_return reply.integer() == 1;
+}
+
+template <typename Redis>
+inline ruvia::Task<bool> publishAndAcknowledge(
     const Redis& redis, std::string_view outputStream,
     const std::vector<StreamField>& outputFields, std::size_t outputMaxLength,
-    std::string_view inputStream, std::string_view inputGroup, std::string_view inputId) {
-    if (outputFields.empty())
-        throw std::invalid_argument("Redis Stream message must contain fields");
-    static constexpr std::string_view script = R"lua(
-local fields = {}
-for index = 4, #ARGV do fields[#fields + 1] = ARGV[index] end
-local output_id = redis.call('XADD', KEYS[1], 'MAXLEN', '~', ARGV[1], '*', unpack(fields))
-local acknowledged = redis.call('XACK', KEYS[2], ARGV[2], ARGV[3])
-redis.call('XDEL', KEYS[2], ARGV[3])
-return {output_id, acknowledged}
-)lua";
-    const std::string outputKey(outputStream);
-    const std::string inputKey(inputStream);
-    const std::string maxLength = std::to_string(outputMaxLength == 0 ? 10000 : outputMaxLength);
-    const std::string group(inputGroup);
-    const std::string id(inputId);
-    const std::string_view keys[]{outputKey, inputKey};
-    std::vector<std::string_view> arguments{maxLength, group, id};
-    arguments.reserve(arguments.size() + outputFields.size() * 2);
-    for (const auto& field : outputFields) {
-        arguments.push_back(field.name);
-        arguments.push_back(field.value);
-    }
-    const auto reply = co_await redis.eval(script, keys, arguments);
-    if (reply.kind() != RedisValue::Kind::kArray || reply.array().size() != 2 ||
-        reply.array()[0].kind() != RedisValue::Kind::kString ||
-        reply.array()[1].kind() != RedisValue::Kind::kInteger)
-        throwValue("atomic XADD/XACK/XDEL", reply);
+    std::string_view inputStream, std::string_view inputGroup,
+    std::string_view inputConsumer, std::string_view inputId) {
+    const StreamPublication publication{outputStream, outputFields, outputMaxLength};
+    co_return co_await publishAllAndAcknowledge(
+        redis, std::span<const StreamPublication>(&publication, 1), inputStream, inputGroup,
+        inputConsumer, inputId);
 }
 
 template <typename Redis>

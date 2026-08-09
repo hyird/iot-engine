@@ -117,6 +117,8 @@ inline std::string signature(const RuntimeSnapshot& snapshot) {
         bytes(device.registrationBytes);
         text(device.modbusMode);
         number(device.slaveId);
+        integer(device.modbusMergeGap);
+        integer(device.modbusMaxQuantity);
         text(device.s7ConnectionMode);
         text(device.s7ConnectionType);
         integer(device.s7Rack);
@@ -127,8 +129,12 @@ inline std::string signature(const RuntimeSnapshot& snapshot) {
         integer(device.s7DirectProbeTimeoutMs);
         text(device.s7ProbeMode);
         integer(device.pollInterval);
+        integer(device.storageInterval);
+        integer(device.commandFastReadDuration);
+        integer(device.commandFastReadInterval);
         number(device.elements.size());
         for (const auto& element : device.elements) {
+            text(element.configKey);
             text(element.id);
             text(element.name);
             text(element.unit);
@@ -184,6 +190,18 @@ inline std::string stringReply(const ruvia::RedisValue& value, std::string_view 
     if (value.kind() != ruvia::RedisValue::Kind::kString)
         redis::throwValue(operation, value);
     return std::string(value.string());
+}
+
+inline std::int64_t integerReply(const ruvia::RedisValue& value,
+                                 std::string_view operation) {
+    if (value.kind() != ruvia::RedisValue::Kind::kInteger)
+        redis::throwValue(operation, value);
+    return value.integer();
+}
+
+inline void requireOk(const ruvia::RedisValue& value, std::string_view operation) {
+    if (stringReply(value, operation) != "OK")
+        throw std::runtime_error(std::string(operation) + " returned an unexpected status");
 }
 
 inline std::vector<std::string> stringArray(const ruvia::RedisValue& value,
@@ -447,7 +465,8 @@ ruvia::Task<void> eraseSnapshot(const Redis& redis, std::string_view version) {
         const auto end = std::min(keys.size(), offset + batchSize);
         args.insert(args.end(), keys.begin() + static_cast<std::ptrdiff_t>(offset),
                     keys.begin() + static_cast<std::ptrdiff_t>(end));
-        (void)co_await redis::command(redis, args);
+        (void)integerReply(co_await redis::command(redis, args),
+                           "UNLINK runtime snapshot keys");
     }
 }
 
@@ -465,7 +484,9 @@ ruvia::Task<void> eraseExpiredSnapshots(const Redis& redis, std::int64_t nowMill
         if (candidate == preserveVersion)
             continue;
         co_await detail::eraseSnapshot(redis, candidate);
-        (void)co_await redis::command(redis, {"ZREM", std::string(kVersionsKey), candidate});
+        (void)detail::integerReply(
+            co_await redis::command(redis, {"ZREM", std::string(kVersionsKey), candidate}),
+            "ZREM runtime version");
     }
 }
 
@@ -498,8 +519,10 @@ ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
 
     const auto version = message::nextMessageId();
     const auto createdAt = message::utcNowMilliseconds();
-    (void)co_await redis::command(
-        redis, {"ZADD", std::string(kVersionsKey), std::to_string(createdAt), version});
+    (void)detail::integerReply(
+        co_await redis::command(
+            redis, {"ZADD", std::string(kVersionsKey), std::to_string(createdAt), version}),
+        "ZADD runtime version");
     const auto snapshotPrefix = prefix(version);
     const auto linksKey = snapshotPrefix + ":links";
     const auto devicesKey = snapshotPrefix + ":devices";
@@ -619,10 +642,17 @@ ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
     if (!previousReply.null()) {
         const auto previous = detail::stringReply(previousReply, "GET active runtime");
         if (!previous.empty() && previous != version)
-            (void)co_await redis::command(redis, {"ZADD", std::string(kVersionsKey), "NX",
-                                                        std::to_string(createdAt), previous});
+            (void)detail::integerReply(
+                // The score is the time this version stopped being active, not its creation
+                // time. Refresh it on every switch so readers that captured the old pointer
+                // receive the complete grace window even after a long-lived generation.
+                co_await redis::command(redis, {"ZADD", std::string(kVersionsKey),
+                                                std::to_string(createdAt), previous}),
+                "ZADD previous runtime version");
     }
-    (void)co_await redis::command(redis, {"SET", std::string(kActiveVersionKey), version});
+    detail::requireOk(
+        co_await redis::command(redis, {"SET", std::string(kActiveVersionKey), version}),
+        "SET active runtime version");
 
     // A worker may have read the previous pointer just before this switch. Keep completed
     // snapshots for a bounded grace window so its multi-key load cannot be torn down midway.

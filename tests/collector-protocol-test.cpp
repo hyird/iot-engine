@@ -10,6 +10,8 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <memory_resource>
+#include <optional>
 #include <set>
 #include <span>
 #include <stdexcept>
@@ -19,6 +21,8 @@
 #include <vector>
 
 #include <asio.hpp>
+#include <ruvia/core/detail/io/AsioAwait.h>
+#include <ruvia/web/detail/redis/RedisTypesAccess.h>
 
 #include "service/common/packet-log.h"
 #include "service/features/collector/command.h"
@@ -28,6 +32,7 @@
 #include "service/features/collector/reconcile.h"
 #include "service/features/collector/s7.h"
 #include "service/features/collector/sl651.h"
+#include "service/features/collector/stream.h"
 #include "service/features/collector/config.h"
 #include "service/features/collector/tcp.h"
 #include "service/features/collector/timer.h"
@@ -36,6 +41,110 @@
 namespace collector = service::collector;
 
 namespace {
+
+template <typename Result> Result runTask(ruvia::Task<Result> task) {
+    asio::io_context context;
+    std::optional<Result> result;
+    std::exception_ptr exception;
+    asio::co_spawn(
+        context,
+        [task = std::move(task), &result, &exception]() mutable -> asio::awaitable<void> {
+            try {
+                result.emplace(co_await ruvia::detail::taskAsAwaitable(std::move(task)));
+            } catch (...) {
+                exception = std::current_exception();
+            }
+        },
+        asio::detached);
+    context.run();
+    if (exception)
+        std::rethrow_exception(exception);
+    if (!result)
+        throw std::runtime_error("task produced no result");
+    return std::move(*result);
+}
+
+struct RecordingRedis {
+    explicit RecordingRedis(std::int64_t result)
+        : reply(ruvia::detail::RedisTypesAccess::integerValue(
+              result, std::pmr::get_default_resource())) {}
+
+    ruvia::Task<ruvia::RedisValue>
+    eval(std::string_view value, std::span<const std::string_view> inputKeys,
+         std::span<const std::string_view> inputArguments) const {
+        script.assign(value);
+        keys.assign(inputKeys.begin(), inputKeys.end());
+        arguments.assign(inputArguments.begin(), inputArguments.end());
+        co_return reply;
+    }
+
+    mutable std::string script;
+    mutable std::vector<std::string> keys;
+    mutable std::vector<std::string> arguments;
+    ruvia::RedisValue reply;
+};
+
+struct FailingConfigRedis {
+    explicit FailingConfigRedis(bool failSet = true, bool activeVersion = false)
+        : failActiveSet(failSet), hasActiveVersion(activeVersion) {}
+
+    struct Pipeline {
+        const FailingConfigRedis* owner;
+        std::vector<std::vector<std::string>> commands;
+
+        void command(std::span<const std::string_view> arguments) {
+            commands.emplace_back(arguments.begin(), arguments.end());
+        }
+
+        ruvia::Task<std::pmr::vector<ruvia::RedisValue>> exec() && {
+            owner->pipelineCommands.insert(owner->pipelineCommands.end(), commands.begin(),
+                                           commands.end());
+            std::pmr::vector<ruvia::RedisValue> replies;
+            replies.reserve(commands.size());
+            for (std::size_t index = 0; index < commands.size(); ++index)
+                replies.push_back(ruvia::detail::RedisTypesAccess::integerValue(
+                    1, std::pmr::get_default_resource()));
+            co_return replies;
+        }
+    };
+
+    [[nodiscard]] Pipeline pipeline() const { return Pipeline{this}; }
+
+    ruvia::Task<ruvia::RedisValue>
+    command(std::span<const std::string_view> arguments) const {
+        if (arguments.empty())
+            co_return ruvia::detail::RedisTypesAccess::errorValue(
+                "empty command", std::pmr::get_default_resource());
+        commands.emplace_back(arguments.begin(), arguments.end());
+        if (arguments.front() == "GET" && !hasActiveVersion)
+            co_return ruvia::detail::RedisTypesAccess::nullValue(
+                std::pmr::get_default_resource());
+        if (arguments.front() == "GET")
+            co_return ruvia::detail::RedisTypesAccess::stringValue(
+                "previous-version", std::pmr::get_default_resource());
+        if (arguments.front() == "HGET")
+            co_return ruvia::detail::RedisTypesAccess::stringValue(
+                "different-signature", std::pmr::get_default_resource());
+        if (arguments.front() == "SET" && failActiveSet)
+            co_return ruvia::detail::RedisTypesAccess::errorValue(
+                "injected active pointer failure", std::pmr::get_default_resource());
+        if (arguments.front() == "SET")
+            co_return ruvia::detail::RedisTypesAccess::stringValue(
+                "OK", std::pmr::get_default_resource());
+        if (arguments.front() == "ZRANGEBYSCORE") {
+            std::pmr::vector<ruvia::RedisValue> values;
+            co_return ruvia::detail::RedisTypesAccess::arrayValue(
+                std::move(values), std::pmr::get_default_resource());
+        }
+        co_return ruvia::detail::RedisTypesAccess::integerValue(
+            1, std::pmr::get_default_resource());
+    }
+
+    mutable std::vector<std::vector<std::string>> commands;
+    mutable std::vector<std::vector<std::string>> pipelineCommands;
+    bool failActiveSet;
+    bool hasActiveVersion;
+};
 
 void require(bool condition, std::string_view message) {
     if (!condition)
@@ -1672,9 +1781,102 @@ void testRuntimeWritableContract() {
                 service::collector::config::signature(writable),
             "runtime signature ignored writable changes");
 
+    const auto expectSignatureChange = [&readOnly](std::string_view field, auto mutate) {
+        auto changed = readOnly;
+        mutate(changed.devices.front(), changed.devices.front().elements.front());
+        require(service::collector::config::signature(readOnly) !=
+                    service::collector::config::signature(changed),
+                std::string("runtime signature ignored ") + std::string(field));
+    };
+    expectSignatureChange("Modbus merge gap", [](auto& changed, auto&) {
+        changed.modbusMergeGap += 1;
+    });
+    expectSignatureChange("Modbus maximum quantity", [](auto& changed, auto&) {
+        changed.modbusMaxQuantity -= 1;
+    });
+    expectSignatureChange("storage interval", [](auto& changed, auto&) {
+        changed.storageInterval += 1;
+    });
+    expectSignatureChange("command fast-read duration", [](auto& changed, auto&) {
+        changed.commandFastReadDuration += 1;
+    });
+    expectSignatureChange("command fast-read interval", [](auto& changed, auto&) {
+        changed.commandFastReadInterval += 1;
+    });
+    expectSignatureChange("element config key", [](auto&, auto& changed) {
+        changed.configKey = "element:replacement";
+    });
+
     const auto element = service::collector::config::detail::element(
         {{"id", "runtime-config-element"}, {"writable", "1"}});
     require(element.writable, "runtime did not deserialize writable state");
+}
+
+void testAtomicStreamFinalizationContract() {
+    const std::vector<service::message::StreamField> deadLetterFields{
+        {"source_entry_id", "10-0"}};
+    const std::vector<service::message::StreamField> resultFields{
+        {"command_id", "command-1"}};
+    const std::array publications{
+        service::message::redis::StreamPublication{"dead-letter", deadLetterFields, 100},
+        service::message::redis::StreamPublication{"command-result", resultFields, 200}};
+
+    RecordingRedis committed(1);
+    require(runTask(service::message::redis::publishAllAndAcknowledge(
+                committed, publications, "command-input", "collector-group", "collector-0",
+                "10-0")),
+            "pending stream finalization did not report a commit");
+    require(committed.keys ==
+                std::vector<std::string>{"dead-letter", "command-result", "command-input"},
+            "atomic stream finalization changed Redis key order");
+    require(committed.arguments ==
+                std::vector<std::string>{"collector-group", "10-0", "collector-0", "100",
+                                         "1", "source_entry_id", "10-0", "200", "1",
+                                         "command_id", "command-1"},
+            "atomic stream finalization encoded invalid arguments");
+    const auto pendingCheck = committed.script.find("XPENDING");
+    const auto typeCheck = committed.script.find("TYPE");
+    const auto firstWrite = committed.script.find("XADD");
+    require(pendingCheck != std::string::npos && typeCheck != std::string::npos &&
+                firstWrite != std::string::npos && pendingCheck < firstWrite &&
+                typeCheck < firstWrite,
+            "atomic stream finalization writes before validating ownership and key types");
+    require(committed.script.find("pending[1][2] ~= ARGV[3]") != std::string::npos,
+            "atomic stream finalization did not enforce consumer ownership");
+
+    RecordingRedis missingPending(0);
+    require(!runTask(service::message::redis::publishAllAndAcknowledge(
+                missingPending, publications, "command-input", "collector-group", "collector-0",
+                "10-0")),
+            "missing PEL entry was reported as atomically finalized");
+}
+
+void testRuntimeProjectionRejectsRedisErrors() {
+    FailingConfigRedis redis;
+    bool rejected = false;
+    try {
+        (void)runTask(service::collector::config::project(
+            redis, service::collector::RuntimeSnapshot{}));
+    } catch (const std::runtime_error& error) {
+        rejected = std::string_view(error.what()).find("active runtime") !=
+                   std::string_view::npos;
+    }
+    require(rejected,
+            "runtime projection reported success after the active-version SET failed");
+}
+
+void testRuntimeProjectionRefreshesPreviousGrace() {
+    FailingConfigRedis redis(false, true);
+    (void)runTask(service::collector::config::project(
+        redis, service::collector::RuntimeSnapshot{}));
+    const auto refresh = std::ranges::find_if(redis.commands, [](const auto& command) {
+        return command.size() >= 4 && command.front() == "ZADD" &&
+               command.back() == "previous-version";
+    });
+    require(refresh != redis.commands.end(),
+            "runtime projection did not retain the previous snapshot");
+    require(refresh->size() == 4 && (*refresh)[2] != "NX",
+            "runtime projection did not restart the previous snapshot grace window");
 }
 
 void testRuntimeSetOrderingContract() {
@@ -2057,6 +2259,50 @@ void testTcpClientTargetReconcile() {
     io.stop();
 }
 
+void testTcpCloseDuringPendingWrite() {
+    asio::io_context io;
+    collector::Timer scheduler(io);
+    asio::ip::tcp::acceptor server(io, {asio::ip::make_address("127.0.0.1"), 0});
+    auto accepted = std::make_shared<asio::ip::tcp::socket>(io);
+    server.async_accept(*accepted, [](const std::error_code&) {});
+
+    std::string connectionId;
+    int writeCompletions = 0;
+    collector::Tcp tcp(
+        io, scheduler, 0, 1,
+        [&connectionId](collector::ProtocolConnectionInfo info) {
+            connectionId = std::move(info.connectionId);
+        },
+        [](service::message::IngressPacket) {}, [](std::string, std::string) {},
+        [](collector::LinkState) {}, false,
+        [](std::string, collector::Tcp::NativeSocket handle, std::string) {
+            collector::Tcp::closeNative(handle);
+        });
+
+    auto snapshot = clientReconcileSnapshot();
+    snapshot.links.front().targets.resize(1);
+    snapshot.links.front().targets.front().port = server.local_endpoint().port();
+    snapshot.devices.resize(1);
+    snapshot.devices.front().targetId = snapshot.links.front().targets.front().id;
+    tcp.reload(snapshot);
+    io.run_for(std::chrono::milliseconds(250));
+    require(!connectionId.empty(), "pending-write fixture did not connect");
+
+    io.restart();
+    tcp.send(connectionId, std::vector<std::uint8_t>(8 * 1024 * 1024, 0x5A),
+             [&writeCompletions](bool) { ++writeCompletions; });
+    tcp.close(connectionId, "test_close_during_write");
+    io.run_for(std::chrono::milliseconds(250));
+    require(writeCompletions == 1,
+            "closing a pending TCP write completed its callback more than once");
+
+    tcp.stop();
+    server.close();
+    accepted->close();
+    scheduler.stop();
+    io.stop();
+}
+
 void testEdgeParsedMessageContract() {
     service::message::ParsedDeviceMessage parsed;
     parsed.messageId = "019f91c9-4087-7e6c-88c0-c431b0dc15d8";
@@ -2092,6 +2338,7 @@ int main() {
         run("runtime reconcile", testRuntimeReconcile);
         run("poll stagger", testPollStagger);
         run("TCP Client target reconcile", testTcpClientTargetReconcile);
+        run("TCP close during pending write", testTcpCloseDuringPendingWrite);
         run("sl651", testSl651);
         run("sl651 encodings", testSl651AllEncodingsAndFunctionCodes);
         run("sl651 multi-packet images", testSl651MultiPacketImages);
@@ -2106,6 +2353,9 @@ int main() {
         run("s7 data types", testS7AllDataTypes);
         run("worker timer", testWorkerTimer);
         run("runtime writable contract", testRuntimeWritableContract);
+        run("atomic stream finalization contract", testAtomicStreamFinalizationContract);
+        run("runtime projection Redis errors", testRuntimeProjectionRejectsRedisErrors);
+        run("runtime projection previous grace", testRuntimeProjectionRefreshesPreviousGrace);
         run("runtime set ordering contract", testRuntimeSetOrderingContract);
         run("realtime projection contract", testRealtimeProjectionContract);
         run("freshness deadline wait", testFreshnessDeadlineWait);

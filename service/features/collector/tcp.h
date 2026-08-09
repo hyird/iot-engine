@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <set>
@@ -292,6 +293,8 @@ class Tcp final {
             socket_.async_read_some(asio::buffer(readBuffer_), [self = shared_from_this()](
                                                                    const std::error_code& error,
                                                                    std::size_t size) {
+                if (self->closed_)
+                    return;
                 if (error) {
                     self->finish(std::string(classify(error).reason));
                     return;
@@ -313,10 +316,17 @@ class Tcp final {
             asio::async_write(socket_, asio::buffer(writes_.front().bytes),
                               [self = shared_from_this()](const std::error_code& error,
                                                           std::size_t) {
+                if (self->writes_.empty()) {
+                    self->writing_ = false;
+                    return;
+                }
                 auto handler = std::move(self->writes_.front().handler);
                 self->writes_.pop_front();
                 if (handler)
-                    handler(!error);
+                    handler(!error && !self->closed_);
+                self->writing_ = false;
+                if (self->closed_)
+                    return;
                 if (error) {
                     self->finish(std::string(classify(error).reason));
                     return;
@@ -333,10 +343,15 @@ class Tcp final {
             socket_.cancel(ignored);
             socket_.shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
             socket_.close(ignored);
-            for (auto& pending : writes_)
-                if (pending.handler)
-                    pending.handler(false);
-            writes_.clear();
+            // The active async_write borrows the first buffer until its completion callback.
+            // Keep that entry alive and let the callback fail it exactly once; queued entries
+            // after it have not started and can be failed immediately.
+            const auto firstQueued = writing_ && !writes_.empty() ? std::next(writes_.begin())
+                                                                  : writes_.begin();
+            for (auto pending = firstQueued; pending != writes_.end(); ++pending)
+                if (pending->handler)
+                    pending->handler(false);
+            writes_.erase(firstQueued, writes_.end());
             onClose_(id_, reason);
         }
 

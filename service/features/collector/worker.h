@@ -404,6 +404,21 @@ class Worker final {
         });
     }
 
+    void recoverClaimedMessages(std::string error) {
+        lastCoordinatorError_ = std::move(error);
+        // A successful XREADGROUP can assign messages to this consumer before a broken
+        // connection prevents the reply from reaching us. Every local stream must therefore
+        // drain its own PEL after either a blocking or non-blocking read fails.
+        configRecovering_ = true;
+        highRecovering_ = true;
+        normalRecovering_ = true;
+        controlRecovering_ = true;
+        ingressRecovering_ = true;
+        egressRecovering_ = true;
+        linkEventRecovering_ = true;
+        scheduleTick(kFailureDelay);
+    }
+
     ruvia::Task<void> tick() {
         try {
             bool handled = co_await consumeConfig();
@@ -422,20 +437,14 @@ class Worker final {
             else
                 scope_.spawn(waitForWork());
         } catch (const std::exception& error) {
-            lastCoordinatorError_ = error.what();
             // XREADGROUP assigns a whole batch to this worker before the individual messages
             // are processed. If one item fails, the remaining items are already in the PEL and
             // a subsequent `>` read cannot see them. Re-enter recovery for every local stream;
             // each stream is partitioned by worker, so this only replays messages already owned
             // by this worker and does not introduce cross-worker claiming or polling.
-            configRecovering_ = true;
-            highRecovering_ = true;
-            normalRecovering_ = true;
-            controlRecovering_ = true;
-            ingressRecovering_ = true;
-            egressRecovering_ = true;
-            linkEventRecovering_ = true;
-            scheduleTick(kFailureDelay);
+            recoverClaimedMessages(error.what());
+        } catch (...) {
+            recoverClaimedMessages("unknown_collector_exception");
         }
     }
 
@@ -501,9 +510,8 @@ class Worker final {
                 parseError = error.what();
             }
             if (!parseError.empty()) {
-                co_await deadLetterMessage(message, "protocol_task_invalid", parseError);
-                co_await message::redis::acknowledgeAndDelete(redis_, stream, commandGroup(),
-                                                                   message.id);
+                co_await deadLetterAndAcknowledge(message, "protocol_task_invalid", parseError,
+                                                  stream, commandGroup());
                 continue;
             }
             const auto makeCommand = [&](std::string id) {
@@ -732,22 +740,22 @@ class Worker final {
                         parseError = error.what();
                     }
                     if (!parseError.empty()) {
-                        co_await deadLetterMessage(message, "connection_event_invalid", parseError);
-                        co_await message::redis::acknowledgeAndDelete(redis_, stream, group,
-                                                                           message.id);
+                        co_await deadLetterAndAcknowledge(
+                            message, "connection_event_invalid", parseError, stream, group);
                         continue;
                     }
                     if (event.workerInstanceId != workerInstanceId_) {
-                        co_await deadLetterMessage(message, "stale_worker_instance");
-                        co_await message::redis::acknowledgeAndDelete(redis_, stream, group,
-                                                                           message.id);
+                        co_await deadLetterAndAcknowledge(
+                            message, "stale_worker_instance", {}, stream, group);
                         continue;
                     }
                     if (event.eventType == "connected") {
                         const auto current = connectionEpochs_.find(event.connectionId);
                         if (current != connectionEpochs_.end() &&
                             current->second >= event.sessionEpoch) {
-                            co_await deadLetterMessage(message, "stale_session_epoch");
+                            co_await deadLetterAndAcknowledge(
+                                message, "stale_session_epoch", {}, stream, group);
+                            continue;
                         } else {
                             connectionEpochs_[event.connectionId] = event.sessionEpoch;
                             co_await applyActions(
@@ -793,9 +801,8 @@ class Worker final {
                     service::common::packet_log::write(
                         service::common::packet_log::Level::Error, "PARSE_ERROR", logContext, raw,
                         parseError);
-                    co_await deadLetterMessage(message, "raw_ingress_invalid", parseError);
-                    co_await message::redis::acknowledgeAndDelete(redis_, stream, group,
-                                                                       message.id);
+                    co_await deadLetterAndAcknowledge(message, "raw_ingress_invalid", parseError,
+                                                      stream, group);
                     continue;
                 }
                 if (packet.workerInstanceId != workerInstanceId_) {
@@ -804,9 +811,8 @@ class Worker final {
                         service::common::packet_log::Level::Warn, "RX_REJECTED",
                         ingressLogContext(packet, deviceCodes), packet.payload,
                         "stale_worker_instance");
-                    co_await deadLetterMessage(message, "stale_worker_instance");
-                    co_await message::redis::acknowledgeAndDelete(redis_, stream, group,
-                                                                       message.id);
+                    co_await deadLetterAndAcknowledge(
+                        message, "stale_worker_instance", {}, stream, group);
                     continue;
                 }
                 const auto epoch = connectionEpochs_.find(packet.connectionId);
@@ -817,9 +823,8 @@ class Worker final {
                         service::common::packet_log::Level::Warn, "RX_REJECTED",
                         ingressLogContext(packet, deviceCodes), packet.payload,
                         "stale_session_epoch");
-                    co_await deadLetterMessage(message, "stale_session_epoch");
-                    co_await message::redis::acknowledgeAndDelete(redis_, stream, group,
-                                                                       message.id);
+                    co_await deadLetterAndAcknowledge(
+                        message, "stale_session_epoch", {}, stream, group);
                     continue;
                 }
                 try {
@@ -881,8 +886,8 @@ class Worker final {
             service::common::packet_log::write(
                 service::common::packet_log::Level::Error, "TX_REJECTED", logContext, raw,
                 parseError);
-            co_await deadLetterMessage(message, "socket_egress_invalid", parseError);
-            co_await message::redis::acknowledgeAndDelete(redis_, stream, group, message.id);
+            co_await deadLetterAndAcknowledge(message, "socket_egress_invalid", parseError,
+                                              stream, group);
             co_return true;
         }
         if (packet.workerInstanceId != workerInstanceId_) {
@@ -897,8 +902,8 @@ class Worker final {
             service::common::packet_log::write(
                 service::common::packet_log::Level::Warn, "TX_REJECTED", logContext,
                 packet.payload, "stale_worker_instance");
-            co_await deadLetterMessage(message, "stale_worker_instance");
-            co_await message::redis::acknowledgeAndDelete(redis_, stream, group, message.id);
+            co_await deadLetterAndAcknowledge(message, "stale_worker_instance", {}, stream,
+                                              group);
             co_return true;
         }
         const auto epoch = connectionEpochs_.find(packet.connectionId);
@@ -914,8 +919,8 @@ class Worker final {
             service::common::packet_log::write(
                 service::common::packet_log::Level::Warn, "TX_REJECTED", logContext,
                 packet.payload, "stale_session_epoch");
-            co_await deadLetterMessage(message, "stale_session_epoch");
-            co_await message::redis::acknowledgeAndDelete(redis_, stream, group, message.id);
+            co_await deadLetterAndAcknowledge(message, "stale_session_epoch", {}, stream,
+                                              group);
             co_return true;
         }
         egressWritePending_ = true;
@@ -963,13 +968,16 @@ class Worker final {
             success ? "TX_SUCCESS" : "TX_FAILED", egressLogContext(egressLog), {},
             success ? std::string_view{} : std::string_view("socket_write_failed"));
         try {
+            const auto stream = egressStream();
+            const auto group = egressGroup();
             if (!success) {
                 message::StreamMessage message;
                 message.id = entryId;
-                co_await deadLetterMessage(message, "socket_write_failed");
+                co_await deadLetterAndAcknowledge(message, "socket_write_failed", {},
+                                                  stream, group);
+            } else {
+                co_await message::redis::acknowledgeAndDelete(redis_, stream, group, entryId);
             }
-            co_await message::redis::acknowledgeAndDelete(redis_, egressStream(),
-                                                               egressGroup(), entryId);
         } catch (const std::exception& error) {
             lastCoordinatorError_ = std::string("socket_egress_complete_failed: ") + error.what();
             egressRecovering_ = true;
@@ -1125,10 +1133,11 @@ class Worker final {
             if (!stopping_)
                 scheduleTick();
         } catch (const std::exception& error) {
-            if (!stopping_) {
-                lastCoordinatorError_ = error.what();
-                scheduleTick(kFailureDelay);
-            }
+            if (!stopping_)
+                recoverClaimedMessages(error.what());
+        } catch (...) {
+            if (!stopping_)
+                recoverClaimedMessages("unknown_blocking_read_exception");
         }
     }
 
@@ -1338,7 +1347,7 @@ return 1
         auto pending = std::move(current->second);
         pendingCommands_.erase(current);
         if (!success &&
-            co_await retryOrDeadLetter(pending.stream, pending.entryId, pending.task, reason))
+            co_await retryCommand(pending.stream, pending.entryId, pending.task, reason))
             co_return;
         service::common::packet_log::write(
             success ? service::common::packet_log::Level::Info
@@ -1347,21 +1356,8 @@ return 1
                 ? (success ? "DISCOVERY_RESULT" : "DISCOVERY_FAILED")
                 : (success ? "COMMAND_RESULT" : "COMMAND_FAILED"),
             taskLogContext(pending.task), {}, reason);
-        co_await message::redis::publishAndAcknowledge(
-            redis_, commandResultStream(),
-            {{"message_id", message::nextMessageId()},
-             {"causation_id", std::string(commandId)},
-             {"command_id", std::string(commandId)},
-             {"device_id", pending.task.deviceId},
-             {"device_code", pending.task.deviceCode},
-             {"protocol", pending.task.protocol},
-             {"attempt", std::to_string(pending.task.attempt)},
-             {"success", success ? "1" : "0"},
-             {"reason", std::string(reason)},
-             {"worker_id", std::to_string(workerIndex_)},
-             {"created_at_ms", std::to_string(message::utcNowMilliseconds())},
-             {"completed_at_ms", std::to_string(message::utcNowMilliseconds())}},
-            10000, pending.stream, commandGroup(), pending.entryId);
+        co_await finalizeCommand(pending.stream, pending.entryId, commandId, pending.task,
+                                 success, reason);
     }
 
     [[nodiscard]] static bool retryableFailure(std::string_view reason) {
@@ -1384,8 +1380,8 @@ return 1
         return contains("timeout") || contains("temporarily_unavailable") || contains("redis");
     }
 
-    ruvia::Task<bool> retryOrDeadLetter(std::string_view stream, std::string_view entryId,
-                                        message::ProtocolTask task, std::string_view reason) {
+    ruvia::Task<bool> retryCommand(std::string_view stream, std::string_view entryId,
+                                  message::ProtocolTask task, std::string_view reason) {
         if (retryableFailure(reason) && task.attempt < task.maxAttempts) {
             ++task.attempt;
             const auto retryReason = "attempt=" + std::to_string(task.attempt) + " reason=" +
@@ -1394,44 +1390,20 @@ return 1
                 service::common::packet_log::Level::Warn,
                 task.kind == "discovery" ? "DISCOVERY_RETRY" : "COMMAND_RETRY",
                 taskLogContext(task), {}, retryReason);
-            co_await message::redis::publishAndAcknowledge(
+            (void)co_await message::redis::publishAndAcknowledge(
                 redis_, stream, message::protocolTaskFields(task), kCommandStreamCapacity,
-                stream, commandGroup(), entryId);
+                stream, commandGroup(), consumer_, entryId);
             co_return true;
         }
-        auto fields = message::protocolTaskFields(task);
-        fields.push_back({"failure_reason", std::string(reason)});
-        fields.push_back({"source_entry_id", std::string(entryId)});
-        fields.push_back({"worker_id", std::to_string(workerIndex_)});
-        fields.push_back({"failed_at_ms", std::to_string(message::utcNowMilliseconds())});
-        service::common::packet_log::write(
-            service::common::packet_log::Level::Error, "DEAD_LETTER", taskLogContext(task), {},
-            reason);
-        (void)co_await message::redis::publish(redis_, deadLetterStream(), fields,
-                                                    kDeadLetterCapacity);
         co_return false;
     }
 
     ruvia::Task<void> failUndeliverable(std::string_view stream, std::string_view entryId,
                                         std::string_view commandId,
                                         const message::ProtocolTask& task, std::string_view reason) {
-        if (co_await retryOrDeadLetter(stream, entryId, task, reason))
+        if (co_await retryCommand(stream, entryId, task, reason))
             co_return;
-        co_await message::redis::publishAndAcknowledge(
-            redis_, commandResultStream(),
-            {{"message_id", message::nextMessageId()},
-             {"causation_id", std::string(commandId)},
-             {"command_id", std::string(commandId)},
-             {"device_id", task.deviceId},
-             {"device_code", task.deviceCode},
-             {"protocol", task.protocol},
-             {"attempt", std::to_string(task.attempt)},
-             {"success", "0"},
-             {"reason", std::string(reason)},
-             {"worker_id", std::to_string(workerIndex_)},
-             {"created_at_ms", std::to_string(message::utcNowMilliseconds())},
-             {"completed_at_ms", std::to_string(message::utcNowMilliseconds())}},
-            10000, stream, commandGroup(), entryId);
+        co_await finalizeCommand(stream, entryId, commandId, task, false, reason);
     }
 
     [[nodiscard]] std::vector<message::StreamField> linkStateFields(const LinkState& state) {
@@ -1480,9 +1452,8 @@ return 1
             const auto workerInstanceId = message.get("worker_instance_id");
             if (linkId.empty() || workerId != std::to_string(workerIndex_) ||
                 workerInstanceId != workerInstanceId_) {
-                co_await deadLetterMessage(message, "link_event_invalid");
-                co_await message::redis::acknowledgeAndDelete(redis_, stream, group,
-                                                                   message.id);
+                co_await deadLetterAndAcknowledge(message, "link_event_invalid", {}, stream,
+                                                  group);
                 continue;
             }
             std::vector<message::StreamField> fields;
@@ -1503,16 +1474,71 @@ return 1
         co_return !messages.empty();
     }
 
-    ruvia::Task<void> deadLetterMessage(const message::StreamMessage& message,
-                                        std::string_view reason, std::string_view detail = {}) {
-        auto fields = message.fields;
-        fields.push_back({"source_entry_id", message.id});
+    [[nodiscard]] std::vector<message::StreamField>
+    deadLetterFields(std::vector<message::StreamField> fields, std::string_view sourceEntryId,
+                     std::string_view reason, std::string_view detail = {}) const {
+        fields.push_back({"source_entry_id", std::string(sourceEntryId)});
         fields.push_back({"failure_reason", std::string(reason)});
         fields.push_back({"failure_detail", std::string(detail)});
         fields.push_back({"worker_id", std::to_string(workerIndex_)});
         fields.push_back({"failed_at_ms", std::to_string(message::utcNowMilliseconds())});
-        (void)co_await message::redis::publish(redis_, deadLetterStream(), fields,
-                                                    kDeadLetterCapacity);
+        return fields;
+    }
+
+    [[nodiscard]] std::vector<message::StreamField>
+    commandResultFields(std::string_view commandId, const message::ProtocolTask& task,
+                        bool success, std::string_view reason) const {
+        const auto completedAt = std::to_string(message::utcNowMilliseconds());
+        return {{"message_id", message::nextMessageId()},
+                {"causation_id", std::string(commandId)},
+                {"command_id", std::string(commandId)},
+                {"device_id", task.deviceId},
+                {"device_code", task.deviceCode},
+                {"protocol", task.protocol},
+                {"attempt", std::to_string(task.attempt)},
+                {"success", success ? "1" : "0"},
+                {"reason", std::string(reason)},
+                {"worker_id", std::to_string(workerIndex_)},
+                {"created_at_ms", completedAt},
+                {"completed_at_ms", completedAt}};
+    }
+
+    ruvia::Task<void> deadLetterAndAcknowledge(
+        const message::StreamMessage& streamMessage, std::string_view reason,
+        std::string_view detail, std::string_view inputStream, std::string_view inputGroup) {
+        auto fields = deadLetterFields(streamMessage.fields, streamMessage.id, reason, detail);
+        const auto outputStream = deadLetterStream();
+        (void)co_await message::redis::publishAndAcknowledge(
+            redis_, outputStream, fields, kDeadLetterCapacity, inputStream, inputGroup,
+            consumer_, streamMessage.id);
+    }
+
+    ruvia::Task<void> finalizeCommand(std::string_view inputStream,
+                                      std::string_view inputEntryId,
+                                      std::string_view commandId,
+                                      const message::ProtocolTask& task, bool success,
+                                      std::string_view reason) {
+        auto resultFields = commandResultFields(commandId, task, success, reason);
+        const auto resultStream = commandResultStream();
+        if (success) {
+            (void)co_await message::redis::publishAndAcknowledge(
+                redis_, resultStream, resultFields, 10000, inputStream, commandGroup(),
+                consumer_, inputEntryId);
+            co_return;
+        }
+
+        service::common::packet_log::write(
+            service::common::packet_log::Level::Error, "DEAD_LETTER", taskLogContext(task), {},
+            reason);
+        auto deadFields = deadLetterFields(message::protocolTaskFields(task), inputEntryId,
+                                           reason);
+        const auto deadStream = deadLetterStream();
+        const std::array publications{
+            message::redis::StreamPublication{deadStream, deadFields,
+                                               kDeadLetterCapacity},
+            message::redis::StreamPublication{resultStream, resultFields, 10000}};
+        (void)co_await message::redis::publishAllAndAcknowledge(
+            redis_, publications, inputStream, commandGroup(), consumer_, inputEntryId);
     }
 
     ruvia::Task<void> publishRuntimeState() {
