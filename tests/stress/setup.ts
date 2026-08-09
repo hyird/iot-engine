@@ -290,13 +290,11 @@ statements.push('COMMIT');
 
 const databaseProcess = Bun.spawn(
     [
-        'docker',
-        'exec',
-        '-i',
-        '-e',
-        `PGPASSWORD=${Bun.env.DB_PASSWORD ?? ''}`,
-        'timescaledb',
         'psql',
+        '-h',
+        Bun.env.DB_HOST ?? '127.0.0.1',
+        '-p',
+        Bun.env.DB_PORT ?? '5432',
         '-v',
         'ON_ERROR_STOP=1',
         '-U',
@@ -304,7 +302,12 @@ const databaseProcess = Bun.spawn(
         '-d',
         Bun.env.DB_DATABASE ?? 'postgres',
     ],
-    { stdin: new Blob([`${statements.join(';\n')};\n`]), stdout: 'inherit', stderr: 'inherit' },
+    {
+        env: { ...Bun.env, PGPASSWORD: Bun.env.DB_PASSWORD ?? '' },
+        stdin: new Blob([`${statements.join(';\n')};\n`]),
+        stdout: 'inherit',
+        stderr: 'inherit',
+    },
 );
 if ((await databaseProcess.exited) !== 0) throw new Error('stress fixture database setup failed');
 

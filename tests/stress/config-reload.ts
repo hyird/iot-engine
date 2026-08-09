@@ -2,6 +2,7 @@ import net from 'node:net';
 
 const fixture = await Bun.file('build/stress-fixture.json').json();
 const host = '127.0.0.1';
+const httpPort = Bun.env.STRESS_HTTP_PORT ?? Bun.env.PORT ?? '1102';
 const redisUrl = Bun.env.REDIS_PASSWORD
     ? `redis://:${encodeURIComponent(Bun.env.REDIS_PASSWORD)}@${Bun.env.REDIS_HOST ?? host}:${Bun.env.REDIS_PORT ?? '6379'}/${Bun.env.REDIS_DATABASE ?? '0'}`
     : `redis://${Bun.env.REDIS_HOST ?? host}:${Bun.env.REDIS_PORT ?? '6379'}/${Bun.env.REDIS_DATABASE ?? '0'}`;
@@ -47,7 +48,7 @@ async function accessToken() {
 
 const token = await accessToken();
 async function api(method: string, path: string, body?: unknown) {
-    const response = await fetch(`http://${host}:1102${path}`, {
+    const response = await fetch(`http://${host}:${httpPort}${path}`, {
         method,
         headers: {
             Authorization: `Bearer ${token}`,
@@ -62,7 +63,7 @@ async function api(method: string, path: string, body?: unknown) {
 }
 
 async function expectConflict(path: string, message: string) {
-    const response = await fetch(`http://${host}:1102${path}`, {
+    const response = await fetch(`http://${host}:${httpPort}${path}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
     });
@@ -234,23 +235,32 @@ function attachS7(socket: net.Socket) {
     });
 }
 
-async function databaseDeviceId() {
-    const process = Bun.spawn(
+function psql(...arguments_: string[]) {
+    return Bun.spawn(
         [
-            'docker',
-            'exec',
-            '-e',
-            `PGPASSWORD=${Bun.env.DB_PASSWORD ?? ''}`,
-            'timescaledb',
             'psql',
+            '-h',
+            Bun.env.DB_HOST ?? '127.0.0.1',
+            '-p',
+            Bun.env.DB_PORT ?? '5432',
             '-U',
             Bun.env.DB_USERNAME ?? 'postgres',
             '-d',
             Bun.env.DB_DATABASE ?? 'postgres',
-            '-Atc',
-            `SELECT id::text FROM device WHERE protocol_params->>'device_code' = '${deviceCode}' AND deleted_at IS NULL`,
+            ...arguments_,
         ],
-        { stdout: 'pipe', stderr: 'inherit' },
+        {
+            env: { ...Bun.env, PGPASSWORD: Bun.env.DB_PASSWORD ?? '' },
+            stdout: 'pipe',
+            stderr: 'inherit',
+        },
+    );
+}
+
+async function databaseDeviceId() {
+    const process = psql(
+        '-Atc',
+        `SELECT id::text FROM device WHERE protocol_params->>'device_code' = '${deviceCode}' AND deleted_at IS NULL`,
     );
     const id = (await new Response(process.stdout).text()).trim();
     if ((await process.exited) !== 0 || !id) throw new Error('created device was not committed');
@@ -258,46 +268,20 @@ async function databaseDeviceId() {
 }
 
 async function databaseDeviceDeleted(id: string) {
-    const process = Bun.spawn(
-        [
-            'docker',
-            'exec',
-            '-e',
-            `PGPASSWORD=${Bun.env.DB_PASSWORD ?? ''}`,
-            'timescaledb',
-            'psql',
-            '-U',
-            Bun.env.DB_USERNAME ?? 'postgres',
-            '-d',
-            Bun.env.DB_DATABASE ?? 'postgres',
-            '-Atc',
-            `SELECT (deleted_at IS NOT NULL)::text FROM device WHERE id = '${id}'::uuid`,
-        ],
-        { stdout: 'pipe', stderr: 'inherit' },
+    const process = psql(
+        '-Atc',
+        `SELECT (deleted_at IS NOT NULL)::text FROM device WHERE id = '${id}'::uuid`,
     );
     const deleted = (await new Response(process.stdout).text()).trim();
     return (await process.exited) === 0 && deleted === 'true';
 }
 
 async function databaseBatchDevices() {
-    const process = Bun.spawn(
-        [
-            'docker',
-            'exec',
-            '-e',
-            `PGPASSWORD=${Bun.env.DB_PASSWORD ?? ''}`,
-            'timescaledb',
-            'psql',
-            '-U',
-            Bun.env.DB_USERNAME ?? 'postgres',
-            '-d',
-            Bun.env.DB_DATABASE ?? 'postgres',
-            '-AtF',
-            '|',
-            '-c',
-            `SELECT protocol_params->>'device_code', id::text FROM device WHERE protocol_params->>'device_code' LIKE '${batchPrefix}%' AND deleted_at IS NULL ORDER BY protocol_params->>'device_code'`,
-        ],
-        { stdout: 'pipe', stderr: 'inherit' },
+    const process = psql(
+        '-AtF',
+        '|',
+        '-c',
+        `SELECT protocol_params->>'device_code', id::text FROM device WHERE protocol_params->>'device_code' LIKE '${batchPrefix}%' AND deleted_at IS NULL ORDER BY protocol_params->>'device_code'`,
     );
     const rows = (await new Response(process.stdout).text()).trim();
     if ((await process.exited) !== 0) throw new Error('batch device query failed');

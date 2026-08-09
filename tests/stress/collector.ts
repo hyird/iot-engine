@@ -786,29 +786,26 @@ const databaseQuery = `WITH telemetry AS (
   FROM telemetry
 )
 SELECT (SELECT COUNT(*) FROM telemetry) || '|' || (SELECT COUNT(*) FROM elements)`;
-const databaseArguments = [
-    'exec', '-e', `PGPASSWORD=${Bun.env.DB_PASSWORD ?? ''}`, 'timescaledb', 'psql', '-U',
-    Bun.env.DB_USERNAME ?? 'postgres', '-d', Bun.env.DB_DATABASE ?? 'postgres', '-Atc',
-    databaseQuery,
-] as string[];
-const shellQuote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
-const databaseSshHost = Bun.env.STRESS_DATABASE_SSH_HOST;
-const remoteEnvFile = Bun.env.STRESS_DATABASE_REMOTE_ENV_FILE;
-if (databaseSshHost && !remoteEnvFile)
-    throw new Error('STRESS_DATABASE_REMOTE_ENV_FILE is required for remote database checks');
-const remoteDatabaseCommand = remoteEnvFile
-    ? [
-          'set -a',
-          `. ${shellQuote(remoteEnvFile)}`,
-          'set +a',
-          'export PGPASSWORD="$DB_PASSWORD"',
-          `exec /usr/bin/psql -h "\${DB_HOST:-127.0.0.1}" -p "\${DB_PORT:-5432}" -U "$DB_USERNAME" -d "$DB_DATABASE" -Atc ${shellQuote(databaseQuery)}`,
-      ].join('; ')
-    : '';
-const databaseCommand = databaseSshHost
-    ? ['ssh', '-o', 'BatchMode=yes', databaseSshHost, remoteDatabaseCommand]
-    : ['docker', ...databaseArguments];
-const database = Bun.spawn(databaseCommand, { stdout: 'pipe', stderr: 'inherit' });
+const database = Bun.spawn(
+    [
+        'psql',
+        '-h',
+        Bun.env.DB_HOST ?? '127.0.0.1',
+        '-p',
+        Bun.env.DB_PORT ?? '5432',
+        '-U',
+        Bun.env.DB_USERNAME ?? 'postgres',
+        '-d',
+        Bun.env.DB_DATABASE ?? 'postgres',
+        '-Atc',
+        databaseQuery,
+    ],
+    {
+        env: { ...Bun.env, PGPASSWORD: Bun.env.DB_PASSWORD ?? '' },
+        stdout: 'pipe',
+        stderr: 'inherit',
+    },
+);
 const [telemetryRows, persistedElementCount] = (await new Response(database.stdout).text())
     .trim()
     .split('|')

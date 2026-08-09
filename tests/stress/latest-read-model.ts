@@ -7,6 +7,7 @@ const fixture = (await Bun.file('build/stress-fixture.json').json()) as {
     };
 };
 const host = '127.0.0.1';
+const httpPort = Bun.env.STRESS_HTTP_PORT ?? Bun.env.PORT ?? '1102';
 const deviceCode = 'MS000';
 const deviceId = fixture.devices.modbusServer[0];
 const parsedStream = 'iot:channel:packet:parsed:worker:0';
@@ -191,7 +192,7 @@ const state = await hash(`iot:runtime:device:${deviceCode}`);
 if (state.last_report_at_ms !== String(newerObservedAt))
     throw new Error('late telemetry moved the device report timestamp backwards');
 
-const response = await fetch(`http://${host}:1102/v1/device`, {
+const response = await fetch(`http://${host}:${httpPort}/v1/device`, {
     headers: { Authorization: `Bearer ${await accessToken()}` },
 });
 const result = (await response.json()) as {
