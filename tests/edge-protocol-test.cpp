@@ -102,6 +102,40 @@ void testEnvelopeRoundTrip() {
             "oversized envelope was accepted");
 }
 
+void testProtocolVersionNegotiation() {
+    require(service::edge::protocol::supportsProtocolVersion(
+                service::edge::protocol::kLegacyProtocolVersion),
+            "protocol v2 was not supported");
+    require(service::edge::protocol::supportsProtocolVersion(
+                service::edge::protocol::kProtocolVersion),
+            "current protocol version was not supported");
+    require(!service::edge::protocol::supportsProtocolVersion(1) &&
+                !service::edge::protocol::supportsProtocolVersion(4),
+            "unknown protocol version was supported");
+
+    auto envelope = service::edge::protocol::outbound(
+        "00000000-0000-7000-8000-000000000002");
+    envelope.mutable_heartbeat_ack()->set_platform_time_ms(1234);
+    const std::string platform(16, '\x01');
+    const std::string node(16, '\x02');
+    service::edge::protocol::bindSession(
+        envelope, service::edge::protocol::kLegacyProtocolVersion, platform, node, 42, 7);
+    const auto wire = service::edge::protocol::encode(envelope);
+    require(!wire.empty(), "protocol v2 envelope serialization failed");
+
+    service::edge::pb::Envelope decoded;
+    require(service::edge::protocol::decode(wire, decoded),
+            "protocol v2 envelope parse failed");
+    require(decoded.protocol_version() == service::edge::protocol::kLegacyProtocolVersion,
+            "protocol v2 session was rewritten as current");
+    require(decoded.platform_id() == platform && decoded.node_id() == node &&
+                decoded.session_epoch() == 42 && decoded.sequence() == 7,
+            "protocol v2 session binding changed identity");
+    require(decoded.payload_case() == service::edge::pb::Envelope::kHeartbeatAck &&
+                decoded.heartbeat_ack().platform_time_ms() == 1234,
+            "protocol v2 session binding changed payload");
+}
+
 void testPlatformIdentityConfiguration() {
     require(!service::edge::protocol::configurePlatform(
                 "not-a-uuid", "https://secondary.example"),
@@ -215,6 +249,7 @@ int main() {
     testNetworkNanopbWireContract();
     testConfigItemNanopbWireContract();
     testEnvelopeRoundTrip();
+    testProtocolVersionNegotiation();
     testPlatformIdentityConfiguration();
     testModemProfileRoundTrip();
     testNanopbBounds();

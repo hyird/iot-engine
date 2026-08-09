@@ -52,6 +52,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         std::string nodeId;
         std::array<std::uint8_t, 16> nodeBytes{};
         std::array<std::uint8_t, 16> platformBytes{};
+        std::uint32_t protocolVersion{protocol::kProtocolVersion};
         std::uint64_t epoch{};
         std::uint64_t inboundSequence{};
         std::uint64_t outboundSequence{};
@@ -71,7 +72,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         }
         pb::Envelope input;
         if (!protocol::decode(first->payload(), input) ||
-            input.protocol_version() != protocol::kProtocolVersion ||
+            !protocol::supportsProtocolVersion(input.protocol_version()) ||
             input.payload_case() != pb::Envelope::kHello || input.platform_id().size() != 16 ||
             !platformMatches(input.platform_id()) || !protocol::validImei(input.hello().imei())) {
             co_await socket.close(1002, "invalid hello");
@@ -89,7 +90,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             auth && separator != std::string_view::npos
                 ? std::string(auth->substr(separator + 1))
                 : "pending";
-        auto session = makeSession(nodeId);
+        auto session = makeSession(nodeId, input.protocol_version());
         if (status != "approved") {
             co_await sendEnrollment(socket, session, status);
             if (status == "rejected") {
@@ -100,7 +101,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             session.inboundSequence = input.sequence();
             while (auto message = co_await socket.read()) {
                 if (!message->binary() || !protocol::decode(message->payload(), input) ||
-                    input.protocol_version() != protocol::kProtocolVersion ||
+                    input.protocol_version() != session.protocolVersion ||
                     input.payload_case() != pb::Envelope::kHeartbeat ||
                     !input.node_id().empty() || input.session_epoch() != 0 ||
                     input.sequence() <= session.inboundSequence ||
@@ -135,7 +136,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             }
             if (status != "approved")
                 co_return;
-            session = makeSession(nodeId);
+            session = makeSession(nodeId, session.protocolVersion);
         }
 
         auto ack = makeEnvelope(session);
@@ -143,7 +144,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         helloAck->set_assigned_node_id(
             protocol::bytes(session.nodeBytes.data(), session.nodeBytes.size()));
         helloAck->set_session_epoch(session.epoch);
-        helloAck->set_negotiated_protocol_version(protocol::kProtocolVersion);
+        helloAck->set_negotiated_protocol_version(session.protocolVersion);
         helloAck->set_heartbeat_interval_sec(5);
         helloAck->set_max_message_size(static_cast<std::uint32_t>(protocol::kMaxMessageSize));
         helloAck->set_platform_time_ms(protocol::nowMs());
@@ -283,9 +284,10 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             std::rethrow_exception(failure);
     }
 
-    static Session makeSession(std::string nodeId) {
+    static Session makeSession(std::string nodeId, std::uint32_t protocolVersion) {
         Session result;
         result.nodeId = std::move(nodeId);
+        result.protocolVersion = protocolVersion;
         protocol::uuidBytes(result.nodeId, result.nodeBytes.data());
         protocol::uuidBytes(protocol::platformId(), result.platformBytes.data());
         result.epoch = randomEpoch();
@@ -316,7 +318,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
     }
 
     static bool validInbound(const pb::Envelope& input, const Session& session) {
-        return input.protocol_version() == protocol::kProtocolVersion &&
+        return input.protocol_version() == session.protocolVersion &&
                input.node_id().size() == 16 &&
                input.platform_id().size() == 16 && input.session_epoch() == session.epoch &&
                input.sequence() > session.inboundSequence &&
@@ -376,7 +378,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
     }
 
     static pb::Envelope makeEnvelope(Session& session) {
-        return protocol::outbound(session.nodeId, session.epoch, ++session.outboundSequence);
+        return protocol::outbound(session.nodeId, session.epoch, ++session.outboundSequence,
+                                  session.protocolVersion);
     }
 
     static ruvia::Task<void> send(ruvia::WebSocket& socket, const pb::Envelope& envelope) {
@@ -428,10 +431,11 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             pb::Envelope envelope;
             if (!protocol::decode(*item, envelope))
                 continue;
-            envelope.set_session_epoch(session.epoch);
-            envelope.set_sequence(++session.outboundSequence);
-            envelope.set_platform_id(protocol::bytes(session.platformBytes.data(), 16));
-            envelope.set_node_id(protocol::bytes(session.nodeBytes.data(), 16));
+            protocol::bindSession(
+                envelope, session.protocolVersion,
+                protocol::bytes(session.platformBytes.data(), session.platformBytes.size()),
+                protocol::bytes(session.nodeBytes.data(), session.nodeBytes.size()), session.epoch,
+                ++session.outboundSequence);
             co_await send(socket, envelope);
             ++sent;
         }
