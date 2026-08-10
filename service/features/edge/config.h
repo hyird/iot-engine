@@ -357,7 +357,7 @@ WHERE id = $2::uuid
         const auto devices = co_await c.db().query(R"sql(
 SELECT d.id::text, d.name, d.protocol_params->>'device_code', p.protocol,
        COALESCE(NULLIF(d.protocol_params->>'timezone', ''), '+08:00'),
-       GREATEST(1, CEIL(COALESCE((p.config->>'storageInterval')::numeric, 1)))::bigint,
+       GREATEST(1, CEIL(COALESCE((p.config->>'readInterval')::numeric, 1)))::bigint,
        COALESCE((d.protocol_params->>'online_timeout')::integer, 300),
        COALESCE((d.protocol_params->>'slave_id')::integer, 1),
        COALESCE(d.protocol_params->>'modbus_mode', 'TCP'),
@@ -433,6 +433,9 @@ ORDER BY d.id)sql",
             deviceValue->set_name(row[1].text());
             deviceValue->set_protocol(protocol);
             deviceValue->set_timezone(row[4].text());
+            // Southbound acquisition is fixed at one second. readInterval controls
+            // edge-to-platform reporting; storageInterval remains a platform-only
+            // persistence policy carried by telemetry metadata.
             deviceValue->set_io_interval_ms(1000);
             deviceValue->set_report_interval_sec(
                 static_cast<std::uint32_t>(integer(row[5].text(), 1)));

@@ -210,8 +210,11 @@ namespace
         try
         {
             (void)co_await service::runtime::project(context);
-            co_await service::telemetry::latest::hydrate(context);
             collector->start(std::move(redis), workerCount);
+            // Collector startup clears the shared ephemeral device runtime namespace.
+            // Rehydrate telemetry only after that reset so live updates retain the
+            // device identity required by the Redis projection script.
+            co_await service::telemetry::latest::hydrate(context);
             started->set_value();
         }
         catch (...)
