@@ -82,11 +82,7 @@ export const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalPro
                 confirmLoading={saveMutation.isPending}
                 forceRender
             >
-                <Form
-                    form={form}
-                    layout="vertical"
-                    initialValues={getDeviceTypeFormValues()}
-                >
+                <Form form={form} layout="vertical" initialValues={getDeviceTypeFormValues()}>
                     <Flex gap={16} align="start">
                         <Form.Item
                             label="名称"
@@ -109,12 +105,17 @@ export const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalPro
                     <Flex gap={16} align="start">
                         <Form.Item
                             label="读取间隔（秒）"
-                            name="readInterval"
                             extra="数值越小采集越频繁，建议按设备负载设置间隔"
                             className={pairedFormItemClassName}
                         >
                             <Space.Compact block>
-                                <InputNumber min={1} max={3600} className={numericInputClassName} />
+                                <Form.Item name="readInterval" noStyle>
+                                    <InputNumber
+                                        min={1}
+                                        max={3600}
+                                        className={numericInputClassName}
+                                    />
+                                </Form.Item>
                                 <Input
                                     value="秒"
                                     readOnly
@@ -126,16 +127,17 @@ export const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalPro
                         </Form.Item>
                         <Form.Item
                             label="存储间隔（秒）"
-                            name="storageInterval"
                             extra="历史数据入库的最小间隔，1 表示每次读取都存储"
                             className={pairedFormItemClassName}
                         >
                             <Space.Compact block>
-                                <InputNumber
-                                    min={1}
-                                    max={86400}
-                                    className={numericInputClassName}
-                                />
+                                <Form.Item name="storageInterval" noStyle>
+                                    <InputNumber
+                                        min={1}
+                                        max={86400}
+                                        className={numericInputClassName}
+                                    />
+                                </Form.Item>
                                 <Input
                                     value="秒"
                                     readOnly
@@ -149,12 +151,17 @@ export const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalPro
                     <Flex gap={16} align="start">
                         <Form.Item
                             label="下发快读窗口"
-                            name="commandFastReadDuration"
                             className={pairedFormItemClassName}
                             extra="下发成功后保持快读的时长，0 表示关闭"
                         >
                             <Space.Compact block>
-                                <InputNumber min={0} max={3600} className={numericInputClassName} />
+                                <Form.Item name="commandFastReadDuration" noStyle>
+                                    <InputNumber
+                                        min={0}
+                                        max={3600}
+                                        className={numericInputClassName}
+                                    />
+                                </Form.Item>
                                 <Input
                                     value="秒"
                                     readOnly
@@ -166,12 +173,17 @@ export const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalPro
                         </Form.Item>
                         <Form.Item
                             label="快读间隔"
-                            name="commandFastReadInterval"
                             className={pairedFormItemClassName}
                             extra="快读窗口内的读取间隔"
                         >
                             <Space.Compact block>
-                                <InputNumber min={1} max={60} className={numericInputClassName} />
+                                <Form.Item name="commandFastReadInterval" noStyle>
+                                    <InputNumber
+                                        min={1}
+                                        max={60}
+                                        className={numericInputClassName}
+                                    />
+                                </Form.Item>
                                 <Input
                                     value="秒"
                                     readOnly
@@ -185,12 +197,17 @@ export const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalPro
                     <Flex gap={16} align="start">
                         <Form.Item
                             label="组包地址间隙"
-                            name="packetMergeGap"
                             className={pairedFormItemClassName}
                             extra="地址间隙 <= 该值时会合并成同一读包，0 表示只合并连续地址"
                         >
                             <Space.Compact block>
-                                <InputNumber min={0} max={2000} className={numericInputClassName} />
+                                <Form.Item name="packetMergeGap" noStyle>
+                                    <InputNumber
+                                        min={0}
+                                        max={2000}
+                                        className={numericInputClassName}
+                                    />
+                                </Form.Item>
                                 <Input
                                     value="寄存器"
                                     readOnly
@@ -202,12 +219,17 @@ export const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalPro
                         </Form.Item>
                         <Form.Item
                             label="单包最大寄存器数"
-                            name="packetMaxQuantity"
                             className={pairedFormItemClassName}
                             extra="每个读包最多读取的字寄存器数量"
                         >
                             <Space.Compact block>
-                                <InputNumber min={1} max={125} className={numericInputClassName} />
+                                <Form.Item name="packetMaxQuantity" noStyle>
+                                    <InputNumber
+                                        min={1}
+                                        max={125}
+                                        className={numericInputClassName}
+                                    />
+                                </Form.Item>
                                 <Input
                                     value="个"
                                     readOnly
