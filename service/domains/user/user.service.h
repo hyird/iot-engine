@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -45,7 +46,10 @@ class UserService {
 
         const auto countRows =
             co_await c.db().query("SELECT COUNT(*) FROM sys_user u" + where, filterParams);
-        const auto total = std::stoll(std::string(countRows.rows().front()[0].text()));
+        const auto total =
+            service::common::parseInt64(
+                std::optional<std::string_view>{countRows.rows().front()[0].text()})
+                .value_or(0);
 
         auto listParams = filterParams;
         listParams.emplace_back(pageSize);
@@ -253,13 +257,17 @@ WHERE ur.user_id = $1 AND r.deleted_at IS NULL ORDER BY r.id)sql",
     }
 
     ruvia::Task<void> validateRoles(ruvia::Context& c, const ruvia::Array<ruvia::String>& roleIds) {
+        std::set<std::string, std::less<>> seenRoleIds;
         for (const auto& roleId : roleIds) {
             if (!service::common::isUuid(roleId.view()))
                 service::common::fail(12005, "角色 ID 必须是 UUID", 400);
+            const std::string roleIdValue(roleId.view());
+            if (!seenRoleIds.emplace(roleIdValue).second)
+                service::common::fail(12005, "角色不能重复", 400);
             const auto rows =
                 co_await c.db().query("SELECT 1 FROM sys_role WHERE id = $1 AND status = 'enabled' "
                                       "AND deleted_at IS NULL",
-                                      service::common::dbParams(roleId.view()));
+                                      service::common::dbParams(roleIdValue));
             if (rows.rows().empty())
                 service::common::fail(12005, "包含无效角色", 400);
         }

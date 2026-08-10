@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -24,24 +25,79 @@
 
 namespace service::edge {
 
-class ConfigService final {
-  public:
-    static ConfigService& instance() {
-        static ConfigService value;
-        return value;
+namespace config::detail {
+inline std::vector<std::uint8_t> packetBytes(std::string_view mode, std::string_view content,
+                                             std::string_view name) {
+    std::vector<std::uint8_t> output;
+    if (mode == "OFF" || content.empty())
+        return output;
+    if (mode == "ASCII") {
+        output.assign(content.begin(), content.end());
+        return output;
     }
+    if (mode != "HEX")
+        throw std::runtime_error("invalid edge config packet mode: " + std::string(name));
 
-    ruvia::Task<std::uint64_t> queueSnapshot(ruvia::Context& c, std::string_view nodeId) {
-        const auto version = co_await c.db().query(R"sql(
+    int high = -1;
+    for (const char character : content) {
+        if (character == ' ' || character == '\t' || character == '\r' || character == '\n')
+            continue;
+        const int digit = protocol::hexDigit(character);
+        if (digit < 0)
+            throw std::runtime_error("invalid edge config hex: " + std::string(name));
+        if (high < 0)
+            high = digit;
+        else {
+            output.push_back(static_cast<std::uint8_t>((high << 4U) | digit));
+            high = -1;
+        }
+    }
+    if (high >= 0)
+        throw std::runtime_error("invalid edge config hex: " + std::string(name));
+    return output;
+}
+
+inline void packet(std::string* output, std::string_view mode, std::string_view content,
+                   std::string_view name) {
+    const auto value = packetBytes(mode, content, name);
+    output->assign(protocol::bytes(value.data(), value.size()));
+}
+
+inline double number(std::string_view value, double fallback = 0.0) {
+    if (value.empty())
+        return fallback;
+    double result = 0.0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
+    if (error != std::errc{} || end != value.data() + value.size() || !std::isfinite(result))
+        return fallback;
+    return result;
+}
+
+inline constexpr std::string_view kReplaceQueueScript = R"lua(
+local incoming = tonumber(ARGV[1]) or 0
+local current = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
+if current > incoming then return 0 end
+redis.call('DEL', KEYS[1])
+for index = 2, #ARGV do redis.call('RPUSH', KEYS[1], ARGV[index]) end
+redis.call('EXPIRE', KEYS[1], 604800)
+redis.call('SETEX', KEYS[2], 604800, ARGV[1])
+return #ARGV - 1
+)lua";
+
+inline constexpr std::string_view kQueueSnapshotSql = R"sql(
 WITH next AS (
     SELECT id,
            GREATEST(
                (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint,
-               COALESCE((status->'config'->>'desiredVersion')::bigint, 0) + 1,
-               COALESCE((status->'config'->>'activeVersion')::bigint, 0) + 1) AS revision
+               COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
+                             THEN (status->'config'->>'desiredVersion')::bigint END, 0) + 1,
+               COALESCE(CASE WHEN status->'config'->>'activeVersion' ~ '^-?[0-9]{1,18}$'
+                             THEN (status->'config'->>'activeVersion')::bigint END, 0) + 1) AS revision
     FROM edge_node
     WHERE id = $1::uuid AND enrollment_status = 'approved'
-      AND COALESCE((capability->>'deviceConfig')::boolean, false)
+      AND CASE lower(COALESCE(capability->>'deviceConfig', ''))
+              WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+              ELSE false END
 )
 UPDATE edge_node node
 SET status = jsonb_set(
@@ -52,7 +108,151 @@ SET status = jsonb_set(
     updated_at = NOW()
 FROM next
 WHERE node.id = next.id
-RETURNING next.revision)sql",
+RETURNING next.revision)sql";
+
+inline constexpr std::string_view kRequeueDesiredSql = R"sql(
+SELECT COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
+                     THEN (status->'config'->>'desiredVersion')::bigint END, 0),
+       COALESCE(status->'config'->>'state', 'idle')
+FROM edge_node
+WHERE id = $1::uuid AND enrollment_status = 'approved'
+  AND CASE lower(COALESCE(capability->>'deviceConfig', ''))
+          WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+          ELSE false END)sql";
+
+inline constexpr std::string_view kRequeuePendingSql = R"sql(
+UPDATE edge_node
+SET status = jsonb_set(
+        jsonb_set(status, '{config,state}', to_jsonb('pending'::text), true),
+        '{config,message}', to_jsonb(''::text), true),
+    updated_at = NOW()
+WHERE id = $1::uuid
+  AND COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
+                    THEN (status->'config'->>'desiredVersion')::bigint END, 0) = $2
+  AND COALESCE(status->'config'->>'state', 'idle') <> 'rejected')sql";
+
+inline constexpr std::string_view kRejectBuildSql = R"sql(
+UPDATE edge_node
+SET status = jsonb_set(
+        jsonb_set(status, '{config,state}', to_jsonb('rejected'::text), true),
+        '{config,message}', to_jsonb($1::text), true),
+    updated_at = NOW()
+WHERE id = $2::uuid
+  AND COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
+                    THEN (status->'config'->>'desiredVersion')::bigint END, 0) = $3)sql";
+
+inline constexpr std::string_view kBuildItemsSql = R"sql(
+SELECT d.id::text, d.name, d.protocol_params->>'device_code', p.protocol,
+       COALESCE(NULLIF(d.protocol_params->>'timezone', ''), '+08:00'),
+       COALESCE(NULLIF(p.config->>'readInterval', ''), '1'),
+       COALESCE(NULLIF(d.protocol_params->>'online_timeout', ''), '300'),
+       COALESCE(NULLIF(d.protocol_params->>'slave_id', ''), '1'),
+       COALESCE(d.protocol_params->>'modbus_mode', 'TCP'),
+       l.endpoint->>'transport', l.endpoint->>'interface',
+       COALESCE(l.endpoint->>'mode', ''), COALESCE(l.endpoint->>'ip', ''),
+       COALESCE(NULLIF(l.endpoint->>'port', ''), '0'),
+       COALESCE(NULLIF(l.endpoint->>'baud_rate', ''), '9600'),
+       COALESCE(NULLIF(l.endpoint->>'data_bits', ''), '8'),
+       COALESCE(NULLIF(l.endpoint->>'stop_bits', ''), '1'),
+       COALESCE(l.endpoint->>'parity', 'none'),
+       CASE lower(COALESCE(l.endpoint->>'rs485', ''))
+            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+            ELSE false END,
+       COALESCE(NULLIF(p.config->'packet'->>'mergeGap', ''), '0'),
+       COALESCE(NULLIF(p.config->'packet'->>'maxQuantity', ''), '125'),
+       COALESCE(p.config->'connection'->>'mode', 'RACK_SLOT'),
+       COALESCE(p.config->'connection'->>'connectionType', 'PG'),
+       COALESCE(NULLIF(p.config->'connection'->>'rack', ''), '0'),
+       COALESCE(NULLIF(p.config->'connection'->>'slot', ''), '1'),
+       COALESCE(p.config->'connection'->>'localTSAP', ''),
+       COALESCE(p.config->'connection'->>'remoteTSAP', ''),
+       COALESCE(d.protocol_params->'heartbeat'->>'mode', 'OFF'),
+       COALESCE(d.protocol_params->'heartbeat'->>'content', ''),
+       COALESCE(d.protocol_params->'registration'->>'mode', 'OFF'),
+       COALESCE(d.protocol_params->'registration'->>'content', ''),
+       d.status = 'enabled' AND p.enabled AND l.status = 'enabled',
+       d.link_id::text
+FROM device d
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
+JOIN protocol_config p ON p.id = d.protocol_config_id AND p.deleted_at IS NULL
+WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
+ORDER BY d.id)sql";
+
+inline constexpr std::string_view kAppendModbusSql = R"sql(
+SELECT d.id::text, item->>'id', item->>'name', COALESCE(item->>'unit', ''),
+       item->>'registerType', item->>'dataType',
+       COALESCE(item->>'byteOrder', p.config->>'byteOrder', 'BIG_ENDIAN'),
+       COALESCE(NULLIF(item->>'address', ''), '0'),
+       COALESCE(NULLIF(item->>'quantity', ''), '1'),
+       COALESCE(NULLIF(item->>'scale', ''), '1'),
+       COALESCE(NULLIF(item->>'decimals', ''), '-1'),
+       CASE lower(COALESCE(item->>'writable', ''))
+            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+            ELSE false END
+FROM device d
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
+JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'Modbus'
+CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]')) item
+WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
+ORDER BY d.id, item->>'id')sql";
+
+inline constexpr std::string_view kAppendS7Sql = R"sql(
+SELECT d.id::text, item->>'id', item->>'name', COALESCE(item->>'unit', ''),
+       item->>'area', COALESCE(NULLIF(item->>'dbNumber', ''), '0'),
+       COALESCE(NULLIF(item->>'start', ''), '0'),
+       COALESCE(NULLIF(item->>'startBit', ''), '0'),
+       COALESCE(NULLIF(item->>'size', ''), '1'), COALESCE(item->>'dataType', 'BOOL'),
+       COALESCE(NULLIF(item->>'decimals', ''), '-1'),
+       CASE lower(COALESCE(item->>'writable', ''))
+            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+            ELSE false END
+FROM device d
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
+JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'S7'
+CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]')) item
+WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
+ORDER BY d.id, item->>'id')sql";
+
+inline constexpr std::string_view kAppendSl651FunctionsSql = R"sql(
+SELECT d.id::text, func->>'funcCode', func->>'name', func->>'dir'
+FROM device d
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
+JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'SL651'
+CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]')) func
+WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
+ORDER BY d.id, func->>'funcCode')sql";
+
+inline constexpr std::string_view kAppendSl651ElementsSql = R"sql(
+SELECT d.id::text, func->>'funcCode', element->>'id', element->>'name',
+       COALESCE(element->>'unit', ''), element->>'encode',
+       COALESCE(NULLIF(element->>'length', ''), '0'),
+       COALESCE(NULLIF(element->>'digits', ''), '0'),
+       COALESCE(element->>'guideHex', ''), response_element,
+       func->>'dir' = 'DOWN'
+FROM device d
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
+JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'SL651'
+CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]')) func
+CROSS JOIN LATERAL (
+  SELECT value AS element, false AS response_element
+  FROM jsonb_array_elements(COALESCE(func->'elements', '[]'))
+  UNION ALL
+  SELECT value AS element, true AS response_element
+  FROM jsonb_array_elements(COALESCE(func->'responseElements', '[]'))
+) values
+WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
+ORDER BY d.id, func->>'funcCode', response_element, element->>'id')sql";
+} // namespace config::detail
+
+class ConfigService final {
+  public:
+    static ConfigService& instance() {
+        static ConfigService value;
+        return value;
+    }
+
+    ruvia::Task<std::uint64_t> queueSnapshot(ruvia::Context& c, std::string_view nodeId) {
+        const auto version = co_await c.db().query(config::detail::kQueueSnapshotSql,
                                                    service::common::dbParams(nodeId));
         if (version.rows().empty())
             service::common::fail(17011, "边缘节点未批准或不支持设备配置", 409);
@@ -79,12 +279,7 @@ VALUES ($1::uuid, $2, $3, $4, $5::uuid))sql",
 
     ruvia::Task<bool> requeueIfStale(ruvia::Context& c, std::string_view nodeId,
                                      std::uint64_t activeRevision) {
-        const auto desired = co_await c.db().query(R"sql(
-SELECT COALESCE((status->'config'->>'desiredVersion')::bigint, 0),
-       COALESCE(status->'config'->>'state', 'idle')
-FROM edge_node
-WHERE id = $1::uuid AND enrollment_status = 'approved'
-  AND COALESCE((capability->>'deviceConfig')::boolean, false))sql",
+        const auto desired = co_await c.db().query(config::detail::kRequeueDesiredSql,
                                                    service::common::dbParams(nodeId));
         if (desired.rows().empty())
             co_return false;
@@ -106,15 +301,7 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
                                           nodeId, static_cast<std::int64_t>(revision),
                                           snapshot->digest,
                                           static_cast<std::int64_t>(snapshot->itemCount)));
-        (void)co_await c.db().execute(R"sql(
-UPDATE edge_node
-SET status = jsonb_set(
-        jsonb_set(status, '{config,state}', to_jsonb('pending'::text), true),
-        '{config,message}', to_jsonb(''::text), true),
-    updated_at = NOW()
-WHERE id = $1::uuid
-  AND COALESCE((status->'config'->>'desiredVersion')::bigint, 0) = $2
-  AND COALESCE(status->'config'->>'state', 'idle') <> 'rejected')sql",
+        (void)co_await c.db().execute(config::detail::kRequeuePendingSql,
                                       service::common::dbParams(
                                           nodeId, static_cast<std::int64_t>(revision)));
         co_await replaceQueue(c, nodeId, revision, snapshot->wires);
@@ -147,14 +334,14 @@ WHERE id = $1::uuid
         return error == std::errc{} && end == value.data() + value.size() ? result : fallback;
     }
 
-    static double number(std::string_view value, double fallback = 0.0) {
-        if (value.empty())
-            return fallback;
-        try {
-            return std::stod(std::string(value));
-        } catch (...) {
-            return fallback;
-        }
+    static std::uint32_t positiveCeil(std::string_view value, double fallback = 1.0) {
+        double parsed = config::detail::number(value, fallback);
+        if (parsed < 1.0)
+            parsed = 1.0;
+        const auto maximum = static_cast<double>(std::numeric_limits<std::uint32_t>::max());
+        if (parsed > maximum)
+            return std::numeric_limits<std::uint32_t>::max();
+        return static_cast<std::uint32_t>(std::ceil(parsed));
     }
 
     static pb::Protocol protocolValue(std::string_view value) {
@@ -175,34 +362,9 @@ WHERE id = $1::uuid
         return true;
     }
 
-    static std::vector<std::uint8_t> bytes(std::string_view mode, std::string_view content) {
-        std::vector<std::uint8_t> output;
-        if (mode == "OFF" || content.empty())
-            return output;
-        if (mode == "ASCII") {
-            output.assign(content.begin(), content.end());
-            return output;
-        }
-        int high = -1;
-        for (const char character : content) {
-            if (character == ' ' || character == '\t' || character == '\r' || character == '\n')
-                continue;
-            const int digit = protocol::hexDigit(character);
-            if (digit < 0)
-                return {};
-            if (high < 0)
-                high = digit;
-            else {
-                output.push_back(static_cast<std::uint8_t>((high << 4U) | digit));
-                high = -1;
-            }
-        }
-        return high < 0 ? output : std::vector<std::uint8_t>{};
-    }
-
-    static void packet(std::string* output, std::string_view mode, std::string_view content) {
-        const auto value = bytes(mode, content);
-        output->assign(protocol::bytes(value.data(), value.size()));
+    static void packet(std::string* output, std::string_view mode, std::string_view content,
+                       std::string_view name) {
+        config::detail::packet(output, mode, content, name);
     }
 
     static bool encodeItem(const pb::ConfigItem& item, std::string& output) {
@@ -314,16 +476,6 @@ WHERE id = $1::uuid
     static ruvia::Task<void> replaceQueue(ruvia::Context& c, std::string_view nodeId,
                                           std::uint64_t revision,
                                           const std::vector<std::string>& wires) {
-        static constexpr std::string_view script = R"lua(
-local incoming = tonumber(ARGV[1])
-local current = tonumber(redis.call('GET', KEYS[2]) or '0')
-if current > incoming then return 0 end
-redis.call('DEL', KEYS[1])
-for index = 2, #ARGV do redis.call('RPUSH', KEYS[1], ARGV[index]) end
-redis.call('EXPIRE', KEYS[1], 604800)
-redis.call('SETEX', KEYS[2], 604800, ARGV[1])
-return #ARGV - 1
-)lua";
         const std::string key = "iot:edge:config:" + std::string(nodeId);
         const std::string revisionKey = "iot:edge:config-revision:" + std::string(nodeId);
         const std::array<std::string_view, 2> keys{key, revisionKey};
@@ -333,20 +485,14 @@ return #ARGV - 1
         values.push_back(revisionText);
         for (const auto& wire : wires)
             values.push_back(wire);
-        (void)co_await c.redis().eval(script, std::span<const std::string_view>(keys),
-                                     std::span<const std::string_view>(values));
+        (void)co_await c.redis().eval(config::detail::kReplaceQueueScript,
+                                      std::span<const std::string_view>(keys),
+                                      std::span<const std::string_view>(values));
     }
 
     static ruvia::Task<void> rejectBuild(ruvia::Context& c, std::string_view nodeId,
                                          std::uint64_t revision, std::string_view message) {
-        (void)co_await c.db().execute(R"sql(
-UPDATE edge_node
-SET status = jsonb_set(
-        jsonb_set(status, '{config,state}', to_jsonb('rejected'::text), true),
-        '{config,message}', to_jsonb($1::text), true),
-    updated_at = NOW()
-WHERE id = $2::uuid
-  AND COALESCE((status->'config'->>'desiredVersion')::bigint, 0) = $3)sql",
+        (void)co_await c.db().execute(config::detail::kRejectBuildSql,
                                       service::common::dbParams(
                                           message, nodeId, static_cast<std::int64_t>(revision)));
     }
@@ -354,40 +500,7 @@ WHERE id = $2::uuid
     static ruvia::Task<std::vector<pb::ConfigItem>>
     buildItems(ruvia::Context& c, std::string_view nodeId) {
         std::vector<pb::ConfigItem> items;
-        const auto devices = co_await c.db().query(R"sql(
-SELECT d.id::text, d.name, d.protocol_params->>'device_code', p.protocol,
-       COALESCE(NULLIF(d.protocol_params->>'timezone', ''), '+08:00'),
-       GREATEST(1, CEIL(COALESCE((p.config->>'readInterval')::numeric, 1)))::bigint,
-       COALESCE((d.protocol_params->>'online_timeout')::integer, 300),
-       COALESCE((d.protocol_params->>'slave_id')::integer, 1),
-       COALESCE(d.protocol_params->>'modbus_mode', 'TCP'),
-       l.endpoint->>'transport', l.endpoint->>'interface',
-       COALESCE(l.endpoint->>'mode', ''), COALESCE(l.endpoint->>'ip', ''),
-       COALESCE((l.endpoint->>'port')::integer, 0),
-       COALESCE((l.endpoint->>'baud_rate')::integer, 9600),
-       COALESCE((l.endpoint->>'data_bits')::integer, 8),
-       COALESCE((l.endpoint->>'stop_bits')::integer, 1),
-       COALESCE(l.endpoint->>'parity', 'none'),
-       COALESCE((l.endpoint->>'rs485')::boolean, false),
-       COALESCE((p.config->'packet'->>'mergeGap')::integer, 0),
-       COALESCE((p.config->'packet'->>'maxQuantity')::integer, 125),
-       COALESCE(p.config->'connection'->>'mode', 'RACK_SLOT'),
-       COALESCE(p.config->'connection'->>'connectionType', 'PG'),
-       COALESCE((p.config->'connection'->>'rack')::integer, 0),
-       COALESCE((p.config->'connection'->>'slot')::integer, 1),
-       COALESCE(p.config->'connection'->>'localTSAP', ''),
-       COALESCE(p.config->'connection'->>'remoteTSAP', ''),
-       COALESCE(d.protocol_params->'heartbeat'->>'mode', 'OFF'),
-       COALESCE(d.protocol_params->'heartbeat'->>'content', ''),
-       COALESCE(d.protocol_params->'registration'->>'mode', 'OFF'),
-       COALESCE(d.protocol_params->'registration'->>'content', ''),
-       d.status = 'enabled' AND p.enabled AND l.status = 'enabled',
-       d.link_id::text
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN protocol_config p ON p.id = d.protocol_config_id AND p.deleted_at IS NULL
-WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
-ORDER BY d.id)sql",
+        const auto devices = co_await c.db().query(config::detail::kBuildItemsSql,
                                                      service::common::dbParams(nodeId));
         for (const auto& row : devices.rows()) {
             const auto protocol = protocolValue(row[3].text());
@@ -437,8 +550,7 @@ ORDER BY d.id)sql",
             // edge-to-platform reporting; storageInterval remains a platform-only
             // persistence policy carried by telemetry metadata.
             deviceValue->set_io_interval_ms(1000);
-            deviceValue->set_report_interval_sec(
-                static_cast<std::uint32_t>(integer(row[5].text(), 1)));
+            deviceValue->set_report_interval_sec(positiveCeil(row[5].text()));
             deviceValue->set_online_timeout_sec(
                 static_cast<std::uint32_t>(integer(row[6].text(), 300)));
             deviceValue->set_modbus_slave_id(
@@ -458,9 +570,10 @@ ORDER BY d.id)sql",
             deviceValue->set_s7_remote_tsap(row[26].text());
             deviceValue->set_command_fast_read_duration_sec(10);
             deviceValue->set_command_fast_read_interval_sec(1);
-            packet(deviceValue->mutable_heartbeat_payload(), row[27].text(), row[28].text());
+            packet(deviceValue->mutable_heartbeat_payload(), row[27].text(), row[28].text(),
+                   "heartbeat_payload");
             packet(deviceValue->mutable_registration_payload(), row[29].text(),
-                   row[30].text());
+                   row[30].text(), "registration_payload");
             deviceValue->set_enabled(row[31].text() == "t");
             items.push_back(std::move(device));
         }
@@ -473,20 +586,7 @@ ORDER BY d.id)sql",
 
     static ruvia::Task<void> appendModbus(ruvia::Context& c, std::string_view nodeId,
                                           std::vector<pb::ConfigItem>& items) {
-        const auto rows = co_await c.db().query(R"sql(
-SELECT d.id::text, item->>'id', item->>'name', COALESCE(item->>'unit', ''),
-       item->>'registerType', item->>'dataType',
-       COALESCE(item->>'byteOrder', p.config->>'byteOrder', 'BIG_ENDIAN'),
-       (item->>'address')::integer, (item->>'quantity')::integer,
-       COALESCE((item->>'scale')::numeric, 1)::text,
-       COALESCE((item->>'decimals')::integer, -1),
-       COALESCE((item->>'writable')::boolean, false)
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'Modbus'
-CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]')) item
-WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
-ORDER BY d.id, item->>'id')sql",
+        const auto rows = co_await c.db().query(config::detail::kAppendModbusSql,
                                                  service::common::dbParams(nodeId));
         for (const auto& row : rows.rows()) {
             pb::ConfigItem item;
@@ -502,7 +602,7 @@ ORDER BY d.id, item->>'id')sql",
             value->set_address(static_cast<std::uint32_t>(integer(row[7].text())));
             value->set_quantity(
                 static_cast<std::uint32_t>(integer(row[8].text(), 1)));
-            value->set_scale(number(row[9].text(), 1.0));
+            value->set_scale(config::detail::number(row[9].text(), 1.0));
             value->set_decimals(
                 static_cast<std::int32_t>(integer(row[10].text(), -1)));
             value->set_writable(row[11].text() == "t");
@@ -512,19 +612,7 @@ ORDER BY d.id, item->>'id')sql",
 
     static ruvia::Task<void> appendS7(ruvia::Context& c, std::string_view nodeId,
                                       std::vector<pb::ConfigItem>& items) {
-        const auto rows = co_await c.db().query(R"sql(
-SELECT d.id::text, item->>'id', item->>'name', COALESCE(item->>'unit', ''),
-       item->>'area', COALESCE((item->>'dbNumber')::integer, 0),
-       (item->>'start')::integer, COALESCE((item->>'startBit')::integer, 0),
-       (item->>'size')::integer, COALESCE(item->>'dataType', 'BOOL'),
-       COALESCE((item->>'decimals')::integer, -1),
-       COALESCE((item->>'writable')::boolean, false)
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'S7'
-CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]')) item
-WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
-ORDER BY d.id, item->>'id')sql",
+        const auto rows = co_await c.db().query(config::detail::kAppendS7Sql,
                                                  service::common::dbParams(nodeId));
         for (const auto& row : rows.rows()) {
             pb::ConfigItem item;
@@ -553,14 +641,7 @@ ORDER BY d.id, item->>'id')sql",
 
     static ruvia::Task<void> appendSl651(ruvia::Context& c, std::string_view nodeId,
                                          std::vector<pb::ConfigItem>& items) {
-        const auto functions = co_await c.db().query(R"sql(
-SELECT d.id::text, func->>'funcCode', func->>'name', func->>'dir'
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'SL651'
-CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]')) func
-WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
-ORDER BY d.id, func->>'funcCode')sql",
+        const auto functions = co_await c.db().query(config::detail::kAppendSl651FunctionsSql,
                                                       service::common::dbParams(nodeId));
         for (const auto& row : functions.rows()) {
             pb::ConfigItem item;
@@ -573,25 +654,7 @@ ORDER BY d.id, func->>'funcCode')sql",
             items.push_back(std::move(item));
         }
 
-        const auto elements = co_await c.db().query(R"sql(
-SELECT d.id::text, func->>'funcCode', element->>'id', element->>'name',
-       COALESCE(element->>'unit', ''), element->>'encode',
-       (element->>'length')::integer, (element->>'digits')::integer,
-       COALESCE(element->>'guideHex', ''), response_element,
-       func->>'dir' = 'DOWN'
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'SL651'
-CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]')) func
-CROSS JOIN LATERAL (
-  SELECT value AS element, false AS response_element
-  FROM jsonb_array_elements(COALESCE(func->'elements', '[]'))
-  UNION ALL
-  SELECT value AS element, true AS response_element
-  FROM jsonb_array_elements(COALESCE(func->'responseElements', '[]'))
-) values
-WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
-ORDER BY d.id, func->>'funcCode', response_element, element->>'id')sql",
+        const auto elements = co_await c.db().query(config::detail::kAppendSl651ElementsSql,
                                                      service::common::dbParams(nodeId));
         for (const auto& row : elements.rows()) {
             pb::ConfigItem item;
@@ -607,7 +670,8 @@ ORDER BY d.id, func->>'funcCode', response_element, element->>'id')sql",
                 static_cast<std::uint32_t>(integer(row[6].text())));
             value->set_digits(
                 static_cast<std::uint32_t>(integer(row[7].text())));
-            const auto guide = bytes("HEX", row[8].text());
+            const auto guide =
+                config::detail::packetBytes("HEX", row[8].text(), "sl651_guide");
             value->set_guide(protocol::bytes(guide.data(), guide.size()));
             value->set_response_element(row[9].text() == "t");
             value->set_writable(row[10].text() == "t" && !value->response_element());

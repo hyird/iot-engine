@@ -1,9 +1,9 @@
 #pragma once
 
-#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -41,8 +41,7 @@ inline std::string requiredUtcQuery(ruvia::Context& c, std::string_view name,
     return canonical;
 }
 
-inline std::uint8_t ptzSpeed(ruvia::Context& c) {
-    const auto input = c.req().query("speed");
+inline std::uint8_t parsePtzSpeed(std::optional<std::string_view> input) {
     if (!input || input->empty())
         return 80;
     int value{};
@@ -50,7 +49,13 @@ inline std::uint8_t ptzSpeed(ruvia::Context& c) {
         std::from_chars(input->data(), input->data() + input->size(), value);
     if (error != std::errc{} || ptr != input->data() + input->size())
         service::common::fail(10001, "speed 必须是 0 - 255 的整数", 400);
-    return static_cast<std::uint8_t>(std::clamp(value, 0, 255));
+    if (value < 0 || value > 255)
+        service::common::fail(10001, "speed 必须是 0 - 255 的整数", 400);
+    return static_cast<std::uint8_t>(value);
+}
+
+inline std::uint8_t ptzSpeed(ruvia::Context& c) {
+    return parsePtzSpeed(c.req().query("speed"));
 }
 
 inline double finiteQuery(ruvia::Context& c, std::string_view name, double minimum,

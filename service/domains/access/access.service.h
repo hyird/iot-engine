@@ -65,7 +65,14 @@ FROM (
 SELECT COALESCE(jsonb_agg(jsonb_build_object(
   'id', id, 'name', name, 'deviceCode', protocol_params->>'device_code',
   'canCommand', access_rank >= 2 AND
-    COALESCE((protocol_params->>'remote_control')::boolean, TRUE))
+    CASE
+      WHEN protocol_params IS NULL OR NOT (protocol_params ? 'remote_control') THEN TRUE
+      WHEN jsonb_typeof(protocol_params->'remote_control') = 'boolean'
+        THEN protocol_params->>'remote_control' = 'true'
+      WHEN jsonb_typeof(protocol_params->'remote_control') = 'string'
+        THEN lower(btrim(protocol_params->>'remote_control')) = 'true'
+      ELSE FALSE
+    END)
   ORDER BY name, id), '[]'::jsonb)::text
 FROM scoped_device WHERE access_rank > 0)sql",
                                   service::common::dbParams(actor.userId, actor.departmentId,
@@ -120,9 +127,8 @@ VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb,
         if (name.empty())
             service::common::fail(19002, "调用配置名称不能为空", 400);
         const auto status = optionalStatus(payload, existing.status);
-        const auto scopes = payload.get<ruvia::Array<ruvia::String>>("scopes")
-                                ? requiredScopes(payload)
-                                : existing.scopes;
+        const auto scopes = jsonField(payload, "scopes") ? requiredScopes(payload)
+                                                         : existing.scopes;
         const auto deviceField = jsonField(payload, "deviceIds");
         const auto devices = deviceField
                                  ? requiredUuids(payload, "deviceIds", "至少选择一个设备", 10000)
@@ -257,7 +263,7 @@ VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8::jsonb, NULLIF($9, '')
                                     const ruvia::JsonValue& payload) {
         requireUuid(id, "Webhook ID 无效");
         const auto existing = co_await requireWebhook(c, id);
-        const auto accessKeyId = payload.get<ruvia::String>("accessKeyId")
+        const auto accessKeyId = jsonField(payload, "accessKeyId")
                                      ? requiredUuid(payload, "accessKeyId", "请选择调用配置")
                                      : existing.accessKeyId;
         (void)co_await requireKey(c, accessKeyId);
@@ -268,15 +274,14 @@ VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8::jsonb, NULLIF($9, '')
         validateWebhookUrl(url);
         const auto status = optionalStatus(payload, existing.status);
         const auto timeout =
-            payload.get<ruvia::Int64>("timeoutSeconds")
+            jsonField(payload, "timeoutSeconds")
                 ? optionalInteger(payload, "timeoutSeconds", existing.timeout, 1, 30)
                 : existing.timeout;
         const auto headers =
             jsonField(payload, "headers") ? objectJson(payload, "headers", "{}") : existing.headers;
         co_await validateHeaders(c, headers);
-        const auto events = payload.get<ruvia::Array<ruvia::String>>("eventTypes")
-                                ? eventTypes(payload)
-                                : existing.events;
+        const auto events = jsonField(payload, "eventTypes") ? eventTypes(payload)
+                                                             : existing.events;
         const auto secret = jsonField(payload, "secret")
                                 ? optionalNullableString(payload, "secret", 255)
                                 : existing.secret;
@@ -602,9 +607,12 @@ SELECT jsonb_build_object(
 
     static std::optional<std::string> optionalString(const ruvia::JsonValue& payload,
                                                      std::string_view field, std::size_t maximum) {
+        const auto raw = jsonField(payload, field);
+        if (!raw)
+            return std::nullopt;
         const auto value = payload.get<ruvia::String>(field);
         if (!value)
-            return std::nullopt;
+            service::common::fail(19002, std::string(field) + " 必须是字符串", 400);
         auto result = trim(value->view());
         if (result.size() > maximum)
             service::common::fail(19002, std::string(field) + " 长度超出限制", 400);
@@ -636,8 +644,13 @@ SELECT jsonb_build_object(
     static std::int64_t optionalInteger(const ruvia::JsonValue& payload, std::string_view field,
                                         std::int64_t fallback, std::int64_t minimum,
                                         std::int64_t maximum) {
+        const auto raw = jsonField(payload, field);
+        if (!raw)
+            return fallback;
         const auto value = payload.get<ruvia::Int64>(field);
-        const auto result = value ? static_cast<std::int64_t>(*value) : fallback;
+        if (!value)
+            service::common::fail(19002, std::string(field) + " 必须是整数", 400);
+        const auto result = static_cast<std::int64_t>(*value);
         if (result < minimum || result > maximum)
             service::common::fail(19002, std::string(field) + " 超出允许范围", 400);
         return result;
@@ -718,9 +731,12 @@ SELECT jsonb_build_object(
     }
 
     static std::set<std::string, std::less<>> eventTypes(const ruvia::JsonValue& payload) {
+        const auto raw = jsonField(payload, "eventTypes");
+        if (!raw)
+            return {"device.data.reported"};
         const auto values = payload.get<ruvia::Array<ruvia::String>>("eventTypes");
         if (!values || values->empty())
-            return {"device.data.reported"};
+            service::common::fail(19002, "eventTypes 必须是非空字符串数组", 400);
         std::set<std::string, std::less<>> result;
         for (const auto& value : *values) {
             if (!supportedEvent(value.view()))
@@ -750,7 +766,8 @@ SELECT NOT EXISTS (
      OR value #>> '{}' ~ E'[\\r\\n]'
      OR lower(key) IN ('host', 'content-length', 'connection', 'x-iot-event',
                        'x-iot-timestamp', 'x-iot-delivery', 'x-iot-signature',
-                       'content-type', 'user-agent')
+                       'content-type', 'user-agent', 'transfer-encoding', 'trailer',
+                       'te', 'upgrade', 'expect', 'proxy-connection')
 ))sql",
                                                 service::common::dbParams(headers));
         if (rows.rows().front()[0].text() != "t")
@@ -775,8 +792,11 @@ SELECT NOT EXISTS (
                                       " SELECT COUNT(*) FROM scoped_device WHERE id IN (" + in +
                                       ") AND access_rank >= " + (requireOperate ? "2" : "1"),
                                   params);
-        if (std::stoll(std::string(rows.rows().front()[0].text())) !=
-            static_cast<std::int64_t>(ids.size()))
+        const auto visible =
+            service::common::parseInt64(
+                std::optional<std::string_view>{rows.rows().front()[0].text()})
+                .value_or(-1);
+        if (visible != static_cast<std::int64_t>(ids.size()))
             service::common::fail(19011,
                                   requireOperate ? "所选设备中包含无控制权限的设备"
                                                  : "所选设备中包含无访问权限的设备",
@@ -862,7 +882,9 @@ FROM open_webhook WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
         state.name = std::string(row[1].text());
         state.url = std::string(row[2].text());
         state.status = std::string(row[3].text());
-        state.timeout = std::stoll(std::string(row[4].text()));
+        state.timeout =
+            service::common::parseInt64(std::optional<std::string_view>{row[4].text()})
+                .value_or(state.timeout);
         state.headers = std::string(row[5].text());
         state.events = parseStringArray(row[6].text());
         if (!row[7].isNull())

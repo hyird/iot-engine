@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <exception>
 #include <future>
@@ -56,7 +57,59 @@ struct WebhookUrl final {
     std::string target;
 };
 
+inline bool webhookHeaderNameEquals(std::string_view left, std::string_view right) {
+    return left.size() == right.size() &&
+           std::equal(left.begin(), left.end(), right.begin(), [](char a, char b) {
+               return std::tolower(static_cast<unsigned char>(a)) ==
+                      std::tolower(static_cast<unsigned char>(b));
+           });
+}
+
+inline bool validWebhookHeaderSyntax(std::string_view name, std::string_view value) {
+    if (name.empty())
+        return false;
+    for (const auto ch : name) {
+        const auto token = std::isalnum(static_cast<unsigned char>(ch)) || ch == '!' ||
+                           ch == '#' || ch == '$' || ch == '%' || ch == '&' || ch == '\'' ||
+                           ch == '*' || ch == '+' || ch == '-' || ch == '.' || ch == '^' ||
+                           ch == '_' || ch == '`' || ch == '|' || ch == '~';
+        if (!token)
+            return false;
+    }
+    return std::none_of(value.begin(), value.end(), [](char ch) {
+        const auto byte = static_cast<unsigned char>(ch);
+        return byte < 0x20 || byte == 0x7f;
+    });
+}
+
+inline bool managedWebhookHeader(std::string_view name, bool includeApplicationHeaders) {
+    static constexpr std::array<std::string_view, 11> transportHeaders{
+        "host",          "content-length", "transfer-encoding", "connection",
+        "proxy-connection", "trailer",        "te",                "upgrade",
+        "expect",        "content-type",   "user-agent"};
+    if (std::any_of(transportHeaders.begin(), transportHeaders.end(), [&](auto reserved) {
+            return webhookHeaderNameEquals(name, reserved);
+        }))
+        return true;
+    if (!includeApplicationHeaders)
+        return false;
+    static constexpr std::array<std::string_view, 4> applicationHeaders{
+        "x-iot-event", "x-iot-timestamp", "x-iot-delivery", "x-iot-signature"};
+    return std::any_of(applicationHeaders.begin(), applicationHeaders.end(), [&](auto reserved) {
+        return webhookHeaderNameEquals(name, reserved);
+    });
+}
+
+inline void validateWebhookHeader(std::string_view name, std::string_view value,
+                                  bool customHeader) {
+    if (!validWebhookHeaderSyntax(name, value) || managedWebhookHeader(name, customHeader))
+        throw std::invalid_argument("Webhook header is invalid or reserved");
+}
+
 inline WebhookUrl parseWebhookUrl(std::string_view value) {
+    if (value.find_first_of("\r\n") != std::string_view::npos ||
+        value.find('#') != std::string_view::npos)
+        throw std::invalid_argument("Webhook URL contains invalid request characters");
     WebhookUrl result;
     if (value.starts_with("https://")) {
         result.tls = true;
@@ -71,6 +124,8 @@ inline WebhookUrl parseWebhookUrl(std::string_view value) {
     const auto path = value.find_first_of("/?");
     auto authority = value.substr(0, path);
     result.target = path == std::string_view::npos ? "/" : std::string(value.substr(path));
+    if (result.target.starts_with('?'))
+        result.target.insert(result.target.begin(), '/');
     if (authority.empty() || authority.find('@') != std::string_view::npos)
         throw std::invalid_argument("Webhook URL authority is invalid");
     if (authority.front() == '[') {
@@ -155,29 +210,49 @@ class WebhookHttpClient final {
         co_return response;
     }
 
+  public:
     static WebhookHttpResponse parseResponse(std::string response) {
-        WebhookHttpResponse result;
-        const auto lineEnd = response.find("\r\n");
-        if (lineEnd == std::string::npos)
-            throw std::runtime_error("Webhook returned an invalid HTTP response");
-        const auto line = std::string_view(response).substr(0, lineEnd);
-        const auto firstSpace = line.find(' ');
-        if (firstSpace == std::string_view::npos || firstSpace + 4 > line.size())
-            throw std::runtime_error("Webhook returned an invalid HTTP status");
-        const auto status = service::common::parseInt64(
-            std::optional<std::string_view>(line.substr(firstSpace + 1, 3)));
-        if (!status)
-            throw std::runtime_error("Webhook returned an invalid HTTP status");
-        result.status = *status;
-        const auto body = response.find("\r\n\r\n");
-        if (body != std::string::npos)
+        std::size_t offset = 0;
+        for (int informational = 0; informational < 8; ++informational) {
+            const auto body = response.find("\r\n\r\n", offset);
+            if (body == std::string::npos)
+                throw std::runtime_error("Webhook returned incomplete HTTP headers");
+            const auto lineEnd = response.find("\r\n", offset);
+            if (lineEnd == std::string::npos || lineEnd > body)
+                throw std::runtime_error("Webhook returned an invalid HTTP response");
+            const auto line = std::string_view(response).substr(offset, lineEnd - offset);
+            const auto firstSpace = line.find(' ');
+            const auto version = line.substr(0, firstSpace);
+            if ((version != "HTTP/1.0" && version != "HTTP/1.1") ||
+                firstSpace == std::string_view::npos || firstSpace + 4 > line.size() ||
+                (line.size() > firstSpace + 4 && line[firstSpace + 4] != ' '))
+                throw std::runtime_error("Webhook returned an invalid HTTP status");
+            const auto statusText = line.substr(firstSpace + 1, 3);
+            if (!std::ranges::all_of(statusText, [](unsigned char character) {
+                    return std::isdigit(character) != 0;
+                }))
+                throw std::runtime_error("Webhook returned an invalid HTTP status");
+            const auto status = service::common::parseInt64(
+                std::optional<std::string_view>(statusText));
+            if (!status || *status < 100 || *status > 599)
+                throw std::runtime_error("Webhook returned an invalid HTTP status");
+            if (*status >= 100 && *status < 200 && *status != 101) {
+                offset = body + 4;
+                continue;
+            }
+            WebhookHttpResponse result;
+            result.status = *status;
             result.body = response.substr(body + 4, 8192);
-        return result;
+            return result;
+        }
+        throw std::runtime_error("Webhook returned too many informational responses");
     }
 
+  private:
     static std::string hostHeader(const WebhookUrl& url) {
         const bool defaultPort = (url.tls && url.port == "443") || (!url.tls && url.port == "80");
-        return url.host + (defaultPort ? "" : ":" + url.port);
+        const auto host = url.host.find(':') == std::string::npos ? url.host : '[' + url.host + ']';
+        return host + (defaultPort ? "" : ":" + url.port);
     }
 
     asio::awaitable<WebhookHttpResponse>
@@ -234,8 +309,10 @@ class WebhookHttpClient final {
                                const std::vector<std::pair<std::string, std::string>>& headers) {
         std::string result = "POST " + url.target + " HTTP/1.1\r\nHost: " + hostHeader(url) +
                              "\r\nUser-Agent: iot-engine-webhook/1.0\r\n";
-        for (const auto& [name, value] : headers)
+        for (const auto& [name, value] : headers) {
+            validateWebhookHeader(name, value, false);
             result += name + ": " + value + "\r\n";
+        }
         result +=
             "Content-Type: application/json\r\nContent-Length: " + std::to_string(body.size()) +
             "\r\nConnection: close\r\n\r\n";
@@ -548,11 +625,17 @@ ORDER BY binding.device_id, event_type.value, webhook.id)sql");
             auto& device = result[deviceId];
             device.name.assign(row[1].text());
             device.code.assign(row[2].text());
+            const auto timeout =
+                service::common::parseInt64(std::optional<std::string_view>{row[8].text()})
+                    .value_or(5);
+            const auto expiresAtMs =
+                service::common::parseInt64(std::optional<std::string_view>{row[9].text()})
+                    .value_or(0);
             device.targets[std::string(row[10].text())].push_back(
                 {std::string(row[3].text()), std::string(row[4].text()),
                  std::string(row[5].text()), std::string(row[6].text()),
-                 std::string(row[7].text()), std::stoll(std::string(row[8].text())),
-                 std::stoll(std::string(row[9].text()))});
+                 std::string(row[7].text()), timeout > 0 ? timeout : std::int64_t{5},
+                 expiresAtMs});
         }
         co_return result;
     }
@@ -860,8 +943,10 @@ ORDER BY binding.device_id, event_type.value, webhook.id)sql");
                 auto input = raw;
                 const auto value = ruvia::detail::parseJsonValue<ruvia::String>(
                     input, std::pmr::get_default_resource());
-                if (value)
+                if (value) {
+                    validateWebhookHeader(name, value->view(), true);
                     result.emplace_back(name, value->view());
+                }
                 return true;
             });
         return result;

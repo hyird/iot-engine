@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "service/features/edge/protocol.h"
+#include "service/features/edge/firmware.h"
 #include <terminal.pb.h>
 
 namespace {
@@ -136,33 +137,32 @@ void testProtocolVersionNegotiation() {
             "protocol v2 session binding changed payload");
 }
 
-void testPlatformIdentityConfiguration() {
-    require(!service::edge::protocol::configurePlatform(
-                "not-a-uuid", "https://secondary.example"),
-            "invalid platform id was accepted");
-    require(!service::edge::protocol::configurePlatform(
-                "0000000-00000-7000-8000-000000000002", "https://secondary.example"),
-            "platform id with misplaced separators was accepted");
-    require(!service::edge::protocol::configurePlatform(
-                "00000000-0000-7000-8000-000000000002", "ftp://secondary.example"),
+void testPublicBaseUrlConfiguration() {
+    require(!service::edge::protocol::configurePublicBaseUrl("ftp://secondary.example"),
             "invalid public platform URL was accepted");
-    require(service::edge::protocol::configurePlatform(
-                "00000000-0000-7000-8000-000000000002",
-                "https://secondary.example/"),
-            "valid platform identity was rejected");
+    require(service::edge::protocol::configurePublicBaseUrl("https://secondary.example/"),
+            "valid public platform URL was rejected");
     require(service::edge::protocol::publicBaseUrl() == "https://secondary.example",
             "public platform URL was not normalized");
     std::uint8_t expected[16]{};
     require(service::edge::protocol::uuidBytes(service::edge::protocol::platformId(), expected),
-            "configured platform id was lost");
+            "internal platform id is invalid");
     const auto envelope = service::edge::protocol::outbound(
         "00000000-0000-7000-8000-000000000003");
     require(envelope.platform_id() == service::edge::protocol::bytes(expected, 16),
-            "outbound envelope ignored the configured platform id");
-    require(service::edge::protocol::configurePlatform(
-                service::edge::protocol::kDefaultPlatformId,
+            "outbound envelope ignored the internal platform id");
+    require(service::edge::protocol::configurePublicBaseUrl(
                 service::edge::protocol::kDefaultPublicBaseUrl),
-            "default platform identity could not be restored");
+            "default public platform URL could not be restored");
+}
+
+void testSessionPlatformIdentityIsInternal() {
+    require(!service::edge::protocol::validSessionPlatformId({}),
+            "empty session platform id was accepted");
+    require(!service::edge::protocol::validSessionPlatformId(std::string(16, '\0')),
+            "zero session platform id was accepted");
+    require(service::edge::protocol::validSessionPlatformId(std::string(16, '\1')),
+            "generated session platform id was rejected");
 }
 
 void testModemProfileRoundTrip() {
@@ -241,6 +241,42 @@ void testWebTerminalProtobuf() {
             "web terminal resize payload changed");
 }
 
+void testFirmwareRequestIncludesTargetVersion() {
+    service::edge::pb::FirmwareUpdateRequest request;
+    require(service::edge::firmware::populateUpdateRequest(
+                request, std::string(16, '\1'), "https://example.test/firmware.bin",
+                std::string(32, '\2'), 1024, "v1.2.3", true),
+            "valid firmware request metadata was rejected");
+    require(request.version() == "v1.2.3",
+            "firmware request dropped the configured target version");
+}
+
+void testFirmwareRebootRequiresTargetVersion() {
+    require(service::edge::firmware::rebootConfirmsTarget("v1.2.3", "v1.2.3"),
+            "matching device-reported firmware version was rejected");
+    require(!service::edge::firmware::rebootConfirmsTarget("v1.2.2", "v1.2.3"),
+            "a reboot on the previous firmware version confirmed the update");
+    require(!service::edge::firmware::rebootConfirmsTarget("", "v1.2.3"),
+            "an empty device-reported firmware version confirmed the update");
+}
+
+void testCommandResultRequiresTerminalState() {
+    require(!service::edge::protocol::terminalCommandResultState(
+                service::edge::pb::COMMAND_STATE_UNSPECIFIED) &&
+                !service::edge::protocol::terminalCommandResultState(
+                    service::edge::pb::COMMAND_STATE_ACCEPTED) &&
+                !service::edge::protocol::terminalCommandResultState(
+                    service::edge::pb::COMMAND_STATE_RUNNING),
+            "non-terminal command progress completed the command");
+    require(service::edge::protocol::terminalCommandResultState(
+                service::edge::pb::COMMAND_STATE_SUCCEEDED) &&
+                service::edge::protocol::terminalCommandResultState(
+                    service::edge::pb::COMMAND_STATE_TIMED_OUT) &&
+                service::edge::protocol::terminalCommandResultState(
+                    service::edge::pb::COMMAND_STATE_FAILED),
+            "terminal command result state was rejected");
+}
+
 } // namespace
 
 int main() {
@@ -250,9 +286,13 @@ int main() {
     testConfigItemNanopbWireContract();
     testEnvelopeRoundTrip();
     testProtocolVersionNegotiation();
-    testPlatformIdentityConfiguration();
+    testPublicBaseUrlConfiguration();
+    testSessionPlatformIdentityIsInternal();
     testModemProfileRoundTrip();
     testNanopbBounds();
     testWebTerminalProtobuf();
+    testFirmwareRequestIncludesTargetVersion();
+    testFirmwareRebootRequiresTargetVersion();
+    testCommandResultRequiresTerminalState();
     std::cout << "edge protocol tests passed\n";
 }

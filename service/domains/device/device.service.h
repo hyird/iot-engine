@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -191,7 +192,8 @@ GROUP BY actor.id, department.id)sql",
     }
 
     static DeviceAccessLevel rank(std::string_view value) {
-        const auto parsed = std::stoll(std::string(value));
+        const auto parsed =
+            service::common::parseInt64(std::optional<std::string_view>{value}).value_or(0);
         if (parsed >= rankValueOf(DeviceAccessLevel::owner))
             return DeviceAccessLevel::owner;
         if (parsed == rankValueOf(DeviceAccessLevel::operate))
@@ -282,8 +284,14 @@ class DeviceService {
         const auto actor = co_await deviceAccessService().actor(c);
         const auto rows = co_await c.db().query(
             DeviceAccessService::scopedDevicesCte() +
-                "SELECT id::text, COALESCE((protocol_params->>'remote_control')::boolean, true), "
-                "access_rank FROM scoped_device WHERE access_rank > 0 ORDER BY id",
+                R"sql(SELECT id::text,
+                       CASE WHEN protocol_params ? 'remote_control' THEN
+                         CASE lower(COALESCE(protocol_params->>'remote_control', ''))
+                           WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE
+                           WHEN 'yes' THEN TRUE WHEN 'y' THEN TRUE WHEN 'on' THEN TRUE
+                           ELSE FALSE END
+                       ELSE TRUE END,
+                       access_rank FROM scoped_device WHERE access_rank > 0 ORDER BY id)sql",
             service::common::dbParams(actor.userId, actor.departmentId,
                                       actor.superadmin ? "true" : "false"));
         ruvia::BoxedArray<DeviceRealtimeDto> items(c.resource());
@@ -392,7 +400,12 @@ FROM filtered)sql",
         const auto rows = co_await c.db().query(
             DeviceAccessService::scopedDevicesCte() +
                 "SELECT id::text, name, protocol_params->>'device_code', "
-                "COALESCE((protocol_params->>'remote_control')::boolean, true), access_rank "
+                R"sql(CASE WHEN protocol_params ? 'remote_control' THEN
+                         CASE lower(COALESCE(protocol_params->>'remote_control', ''))
+                           WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE
+                           WHEN 'yes' THEN TRUE WHEN 'y' THEN TRUE WHEN 'on' THEN TRUE
+                           ELSE FALSE END
+                       ELSE TRUE END, access_rank )sql"
                 "FROM scoped_device WHERE access_rank > 0 AND status = 'enabled' ORDER BY name",
             service::common::dbParams(actor.userId, actor.departmentId,
                                       actor.superadmin ? "true" : "false"));
@@ -796,7 +809,30 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
     }
 
   private:
-    static std::int64_t toInt(std::string_view value) { return std::stoll(std::string(value)); }
+    static std::int64_t toInt(std::string_view value, std::int64_t fallback = 0) {
+        return service::common::parseInt64(std::optional<std::string_view>{value})
+            .value_or(fallback);
+    }
+
+    static std::optional<double> parseDouble(std::string_view value) {
+        while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())))
+            value.remove_prefix(1);
+        while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())))
+            value.remove_suffix(1);
+        if (value.empty())
+            return std::nullopt;
+        double output = 0;
+        const auto [end, error] =
+            std::from_chars(value.data(), value.data() + value.size(), output);
+        if (error != std::errc{} || end != value.data() + value.size() ||
+            !std::isfinite(output))
+            return std::nullopt;
+        return output;
+    }
+
+    static double toDouble(std::string_view value, double fallback = 0) {
+        return parseDouble(value).value_or(fallback);
+    }
 
     static std::string edgeEndpointStatusKey(std::string_view nodeId, std::string_view endpointId) {
         return "iot:runtime:edge:" + std::string(nodeId) + ":endpoint:" +
@@ -808,18 +844,25 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
         return R"sql(d.id::text, d.name, d.protocol_params->>'device_code', d.link_id::text,
   NULLIF(d.protocol_params->>'target_id', ''),
   d.protocol_config_id::text, d.group_id::text, d.status,
-  COALESCE((d.protocol_params->>'online_timeout')::integer, 300),
-  COALESCE((d.protocol_params->>'remote_control')::boolean, true),
+  COALESCE(
+    CASE WHEN COALESCE(d.protocol_params->>'online_timeout', '') ~ '^-?[0-9]{1,18}$'
+         THEN (d.protocol_params->>'online_timeout')::integer END, 300),
+  CASE WHEN d.protocol_params ? 'remote_control' THEN
+    CASE lower(COALESCE(d.protocol_params->>'remote_control', ''))
+      WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE
+      WHEN 'yes' THEN TRUE WHEN 'y' THEN TRUE WHEN 'on' THEN TRUE
+      ELSE FALSE END
+    ELSE TRUE END,
   NULLIF(d.protocol_params->>'modbus_mode', ''),
-  (d.protocol_params->>'slave_id')::integer,
+  NULLIF(d.protocol_params->>'slave_id', ''),
   COALESCE(NULLIF(d.protocol_params->>'timezone', ''), '+08:00'),
   d.protocol_params->'heartbeat'->>'mode', d.protocol_params->'heartbeat'->>'content',
   d.protocol_params->'registration'->>'mode', d.protocol_params->'registration'->>'content',
   COALESCE(d.remark, ''), d.created_by::text,
   iot_utc_timestamp(d.created_at), iot_utc_timestamp(d.updated_at),
   COALESCE(l.name, ''), COALESCE(l.endpoint->>'mode', ''), COALESCE(l.protocol, ''), p.name, p.protocol,
-  COALESCE((p.config->>'readInterval')::numeric, (p.config->>'pollInterval')::numeric)::text,
-  (p.config->>'storageInterval')::numeric::text,
+  COALESCE(NULLIF(p.config->>'readInterval', ''), NULLIF(p.config->>'pollInterval', '')),
+  NULLIF(p.config->>'storageInterval', ''),
   CASE p.protocol
       WHEN 'Modbus' THEN jsonb_array_length(COALESCE(p.config->'registers', '[]'::jsonb))
       WHEN 'S7' THEN jsonb_array_length(COALESCE(p.config->'areas', '[]'::jsonb))
@@ -834,12 +877,17 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
   CASE WHEN l.execution = 'edge' THEN NULLIF(l.endpoint->>'interface', '') END,
   CASE WHEN l.execution = 'edge' THEN NULLIF(l.endpoint->>'mode', '') END,
   CASE WHEN l.execution = 'edge' THEN NULLIF(l.endpoint->>'ip', '') END,
-  CASE WHEN l.execution = 'edge' THEN (l.endpoint->>'port')::integer END,
-  CASE WHEN l.execution = 'edge' THEN (l.endpoint->>'baud_rate')::integer END,
-  CASE WHEN l.execution = 'edge' THEN (l.endpoint->>'data_bits')::integer END,
-  CASE WHEN l.execution = 'edge' THEN (l.endpoint->>'stop_bits')::integer END,
+  CASE WHEN l.execution = 'edge' THEN NULLIF(l.endpoint->>'port', '') END,
+  CASE WHEN l.execution = 'edge' THEN NULLIF(l.endpoint->>'baud_rate', '') END,
+  CASE WHEN l.execution = 'edge' THEN NULLIF(l.endpoint->>'data_bits', '') END,
+  CASE WHEN l.execution = 'edge' THEN NULLIF(l.endpoint->>'stop_bits', '') END,
   CASE WHEN l.execution = 'edge' THEN NULLIF(l.endpoint->>'parity', '') END,
-  CASE WHEN l.execution = 'edge' THEN (l.endpoint->>'rs485')::boolean END)sql";
+  CASE WHEN l.execution = 'edge' THEN
+    CASE lower(COALESCE(l.endpoint->>'rs485', ''))
+      WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE
+      WHEN 'yes' THEN TRUE WHEN 'y' THEN TRUE WHEN 'on' THEN TRUE
+      ELSE FALSE END
+    END)sql";
     }
 
     template <typename Row>
@@ -886,10 +934,14 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
             .linkProtocol(row[23].text())
             .protocolName(row[24].text())
             .protocolType(row[25].text());
-        if (!row[26].isNull())
-            item.readInterval(std::stod(std::string(row[26].text())));
-        if (!row[27].isNull())
-            item.storageInterval(std::stod(std::string(row[27].text())));
+        if (!row[26].isNull()) {
+            if (const auto value = parseDouble(row[26].text()))
+                item.readInterval(*value);
+        }
+        if (!row[27].isNull()) {
+            if (const auto value = parseDouble(row[27].text()))
+                item.storageInterval(*value);
+        }
         const auto capabilities = DeviceAccessService::capabilities(
             actor, DeviceAccessService::rank(row[29].text()), row[9].text() == "t");
         item.elementCount(toInt(row[28].text()))
@@ -1004,7 +1056,10 @@ WITH command_element AS (
     ELSE '[]'::jsonb END)
     WITH ORDINALITY AS presets(preset, preset_position) ON TRUE
   WHERE d.deleted_at IS NULL AND p.deleted_at IS NULL AND p.enabled = TRUE
-    AND COALESCE((element->>'writable')::boolean, FALSE))sql" +
+    AND CASE lower(COALESCE(element->>'writable', ''))
+          WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE
+          WHEN 'yes' THEN TRUE WHEN 'y' THEN TRUE WHEN 'on' THEN TRUE
+          ELSE FALSE END)sql" +
                                 filter + R"sql(
   UNION ALL
   SELECT d.id, 'S7_WRITE', '写寄存器', element, 2, element_position,
@@ -1019,7 +1074,10 @@ WITH command_element AS (
          ELSE '[]'::jsonb END)
     WITH ORDINALITY AS presets(preset, preset_position) ON TRUE
   WHERE d.deleted_at IS NULL AND p.deleted_at IS NULL AND p.enabled = TRUE
-    AND COALESCE((element->>'writable')::boolean, FALSE))sql" +
+    AND CASE lower(COALESCE(element->>'writable', ''))
+          WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE
+          WHEN 'yes' THEN TRUE WHEN 'y' THEN TRUE WHEN 'on' THEN TRUE
+          ELSE FALSE END)sql" +
                                 filter + R"sql(
   UNION ALL
   SELECT d.id, function->>'funcCode',
@@ -1194,11 +1252,8 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         const auto raw = jsonField(object, field);
         if (!raw)
             return fallback;
-        try {
-            return std::stoll(std::string(raw->view()));
-        } catch (...) {
-            return fallback;
-        }
+        return service::common::parseInt64(std::optional<std::string_view>{raw->view()})
+            .value_or(fallback);
     }
 
     static double jsonDouble(const ruvia::JsonValue& object, std::string_view field,
@@ -1206,11 +1261,7 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         const auto raw = jsonField(object, field);
         if (!raw)
             return fallback;
-        try {
-            return std::stod(std::string(raw->view()));
-        } catch (...) {
-            return fallback;
-        }
+        return toDouble(raw->view(), fallback);
     }
 
     static void applyRuntime(DeviceItemDto& item, const ruvia::RedisValue& reply) {
@@ -1522,7 +1573,10 @@ ORDER BY device_id, operation_position, operation_key, element_position,
 SELECT p.protocol
 FROM edge_node n CROSS JOIN protocol_config p
 WHERE n.id = $1::uuid AND n.enrollment_status = 'approved'
-  AND COALESCE((n.capability->>'deviceConfig')::boolean, false)
+  AND CASE lower(COALESCE(n.capability->>'deviceConfig', ''))
+        WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE
+        WHEN 'yes' THEN TRUE WHEN 'y' THEN TRUE WHEN 'on' THEN TRUE
+        ELSE FALSE END
   AND p.id = $2::uuid AND p.deleted_at IS NULL LIMIT 1)sql",
                                                         service::common::dbParams(edgeNodeId,
                                                                                   configId));
@@ -1698,7 +1752,9 @@ JOIN link l ON l.id = d.link_id AND l.execution = 'edge'
 WHERE l.edge_node_id = $1::uuid AND d.id <> $2::uuid AND d.deleted_at IS NULL
   AND l.endpoint->>'transport' = 'tcp'
   AND l.endpoint->>'mode' = 'TCP Server'
-  AND COALESCE((l.endpoint->>'port')::integer, 0) = $3
+  AND COALESCE(
+        CASE WHEN COALESCE(l.endpoint->>'port', '') ~ '^[0-9]{1,5}$'
+             THEN NULLIF(l.endpoint->>'port', '')::integer END, 0) = $3
   AND (
     l.endpoint->>'ip' = $4
     OR l.endpoint->>'ip' = '0.0.0.0'
@@ -1721,7 +1777,10 @@ ORDER BY d.id LIMIT 1)sql",
             co_return;
 
         const auto rows = co_await c.db().query(R"sql(
-SELECT d.name, COALESCE((d.protocol_params->>'slave_id')::integer, 1)
+SELECT d.name,
+       COALESCE(
+         CASE WHEN COALESCE(d.protocol_params->>'slave_id', '') ~ '^-?[0-9]{1,18}$'
+              THEN NULLIF(d.protocol_params->>'slave_id', '')::integer END, 1)
 FROM device d
 JOIN protocol_config p ON p.id = d.protocol_config_id AND p.deleted_at IS NULL
 JOIN link l ON l.id = d.link_id AND l.execution = 'edge'
@@ -1730,7 +1789,9 @@ WHERE l.edge_node_id = $1::uuid AND d.id <> $2::uuid AND d.deleted_at IS NULL
   AND l.endpoint->>'transport' = 'tcp'
   AND l.endpoint->>'mode' = 'TCP Client'
   AND l.endpoint->>'ip' = $4
-  AND COALESCE((l.endpoint->>'port')::integer, 0) = $5
+  AND COALESCE(
+        CASE WHEN COALESCE(l.endpoint->>'port', '') ~ '^[0-9]{1,5}$'
+             THEN NULLIF(l.endpoint->>'port', '')::integer END, 0) = $5
 ORDER BY d.id)sql",
                                                 service::common::dbParams(
                                                     body.edgeNodeId()->view(), excluded, protocol,
@@ -1775,8 +1836,12 @@ candidate AS (
     COALESCE(NULLIF($1, '')::uuid, current_device.link_id) AS link_id,
     COALESCE(NULLIF($3, ''), current_device.protocol_params->>'target_id', '') AS target_id,
     COALESCE(NULLIF($4, '')::uuid, current_device.protocol_config_id) AS protocol_config_id,
-    COALESCE(NULLIF($5, '')::integer,
-             (current_device.protocol_params->>'slave_id')::integer, 1) AS slave_id,
+    COALESCE(
+      CASE WHEN COALESCE(NULLIF($5, ''), '') ~ '^-?[0-9]{1,18}$'
+           THEN NULLIF($5, '')::integer END,
+      CASE WHEN COALESCE(current_device.protocol_params->>'slave_id', '') ~ '^-?[0-9]{1,18}$'
+           THEN (current_device.protocol_params->>'slave_id')::integer END,
+      1) AS slave_id,
     COALESCE(NULLIF($6, '')::jsonb, current_device.protocol_params->'registration',
              '{"mode":"OFF"}'::jsonb) AS registration,
     COALESCE(NULLIF($7, '')::jsonb, current_device.protocol_params->'heartbeat',
@@ -1826,7 +1891,10 @@ LIMIT 1)sql",
 
         const auto siblings =
             co_await c.db().query(R"sql(
-SELECT device.name, COALESCE((device.protocol_params->>'slave_id')::integer, 1),
+SELECT device.name,
+       COALESCE(
+         CASE WHEN COALESCE(device.protocol_params->>'slave_id', '') ~ '^-?[0-9]{1,18}$'
+              THEN (device.protocol_params->>'slave_id')::integer END, 1),
        COALESCE(device.protocol_params->>'target_id', ''),
        upper(COALESCE(device.protocol_params->'registration'->>'mode', 'OFF')),
        CASE upper(COALESCE(device.protocol_params->'registration'->>'mode', 'OFF'))

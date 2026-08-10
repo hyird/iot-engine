@@ -23,6 +23,7 @@
 #include "service/common/timestamp.h"
 #include "service/common/uuid.h"
 #include "service/middleware/auth.h"
+#include "service/features/edge/firmware.h"
 #include "service/features/edge/protocol.h"
 #include "service/domains/edge/edge.types.h"
 
@@ -92,7 +93,12 @@ class EdgeService {
     ruvia::Task<void> setEnrollment(ruvia::Context& c, std::string_view id,
                                     const EnrollmentBody& body) {
         const auto principal = service::middleware::requireAuth(c);
-        const std::string status(body.status()->view());
+        const auto& maybeStatus = body.status();
+        if (!maybeStatus || maybeStatus->view().empty())
+            service::common::fail(17003, "注册状态不能为空", 400);
+        const std::string status(maybeStatus->view());
+        if (status != "approved" && status != "rejected")
+            service::common::fail(17003, "注册状态无效", 400);
         const std::string name = body.name() ? std::string(body.name()->view()) : std::string{};
         std::string_view stage = "database";
         try {
@@ -119,7 +125,10 @@ RETURNING imei)sql",
 
     ruvia::Task<void> renameNode(ruvia::Context& c, std::string_view id,
                                  const NodeNameBody& body) {
-        const std::string name(body.name()->view());
+        const auto& maybeName = body.name();
+        if (!maybeName || maybeName->view().empty())
+            service::common::fail(17003, "节点名称不能为空", 400);
+        const std::string name(maybeName->view());
         const auto updated = co_await c.db().query(R"sql(
 UPDATE edge_node SET name = $1::text, updated_at = NOW()
 WHERE id = $2::uuid
@@ -132,7 +141,10 @@ RETURNING id)sql",
     ruvia::Task<void> queueNetwork(ruvia::Context& c, std::string_view nodeId,
                                    const NetworkBody& body) {
         const auto networkConfigVersion = co_await requireNetworkManagement(c, nodeId);
-        const auto& configs = *body.interfaces();
+        const auto& maybeConfigs = body.interfaces();
+        if (!maybeConfigs || maybeConfigs->empty())
+            service::common::fail(17003, "至少配置一个网络接口", 400);
+        const auto& configs = *maybeConfigs;
         const auto available = co_await manageableInterfaces(c, nodeId);
         std::unordered_set<std::string> names;
         std::unordered_set<std::string> previousNames;
@@ -144,8 +156,14 @@ RETURNING id)sql",
         protocol::uuidBytes(taskId, requestId);
         request->set_request_id(protocol::bytes(requestId, 16));
         for (const auto& config : configs) {
+            if (!config.operation() || config.operation()->view().empty())
+                service::common::fail(17003, "网络接口操作不能为空", 400);
+            if (!config.name() || config.name()->view().empty())
+                service::common::fail(17003, "逻辑接口名称不能为空", 400);
             const std::string operation(config.operation()->view());
             const std::string name(config.name()->view());
+            if (operation != "upsert" && operation != "delete")
+                service::common::fail(17003, "网络接口操作只支持 upsert 或 delete", 400);
             const std::string previousName =
                 config.previousName() ? std::string(config.previousName()->view())
                                       : std::string{};
@@ -200,21 +218,33 @@ RETURNING id)sql",
                 item->set_gateway(gateway);
             }
         }
-        request->set_rollback_timeout_sec(
-            static_cast<std::uint32_t>(*body.rollbackTimeoutSec()));
+        const auto rollbackTimeoutSec = body.rollbackTimeoutSec().value_or(60);
+        if (rollbackTimeoutSec < 30 || rollbackTimeoutSec > 300)
+            service::common::fail(17003, "回滚等待时间必须在 30 - 300 秒之间", 400);
+        request->set_rollback_timeout_sec(static_cast<std::uint32_t>(rollbackTimeoutSec));
         co_await createNetworkTaskAndQueue(c, nodeId, taskId, configs.size(), envelope);
     }
 
     ruvia::Task<void> queueModem(ruvia::Context& c, std::string_view nodeId,
                                  const ModemControlBody& body) {
         co_await requireNodeCapability(c, nodeId, "modemControl", "移动网络控制");
-        const std::string action(body.action()->view());
+        const auto& maybeAction = body.action();
+        if (!maybeAction || maybeAction->view().empty())
+            service::common::fail(17012, "移动网络操作不能为空", 400);
+        const std::string action(maybeAction->view());
+        if (action != "apply_profile" && action != "redial")
+            service::common::fail(17012, "移动网络操作无效", 400);
         const std::string apn = body.apn() ? std::string(body.apn()->view()) : std::string{};
         const bool automatic = body.automatic() && *body.automatic();
         const std::string pdpType =
             body.pdpType() ? std::string(body.pdpType()->view()) : "IP";
         const std::string authType =
             body.authType() ? std::string(body.authType()->view()) : "none";
+        if (body.pdpType() && pdpType != "IP" && pdpType != "IPV6" && pdpType != "IPV4V6")
+            service::common::fail(17012, "PDP 类型无效", 400);
+        if (body.authType() && authType != "none" && authType != "pap" && authType != "chap" &&
+            authType != "both")
+            service::common::fail(17012, "认证方式无效", 400);
         const std::string username =
             body.username() ? std::string(body.username()->view()) : std::string{};
         const std::string password =
@@ -291,9 +321,25 @@ RETURNING id)sql",
                                            : service::common::nextUuidV7();
         if (platformId == protocol::platformId())
             service::common::fail(17007, "当前平台不能通过远程命令修改", 400);
-        const std::string name(body.name()->view());
-        const std::string baseUrl(body.baseUrl()->view());
+        const auto& maybeName = body.name();
+        const auto& maybeBaseUrl = body.baseUrl();
+        if (!maybeName || maybeName->view().empty())
+            service::common::fail(17003, "平台名称不能为空", 400);
+        if (!maybeBaseUrl || maybeBaseUrl->view().empty())
+            service::common::fail(17003, "平台地址不能为空", 400);
+        const std::string name(maybeName->view());
+        const std::string baseUrl(maybeBaseUrl->view());
         validatePlatformUrl(baseUrl);
+        const bool enabled = body.enabled().value_or(true);
+        const auto priority = body.priority().value_or(100);
+        const auto reconnectIntervalSec = body.reconnectIntervalSec().value_or(5);
+        const auto outboxMaxBytes = body.outboxMaxBytes().value_or(262144);
+        if (priority < 0 || priority > 65535)
+            service::common::fail(17003, "优先级必须在 0 - 65535 之间", 400);
+        if (reconnectIntervalSec < 1 || reconnectIntervalSec > 3600)
+            service::common::fail(17003, "重连间隔必须在 1 - 3600 秒之间", 400);
+        if (outboxMaxBytes < 16384 || outboxMaxBytes > 8388608)
+            service::common::fail(17003, "缓存上限必须在 16 KiB - 8 MiB 之间", 400);
         const auto taskId = service::common::nextUuidV7();
         auto envelope = protocol::outbound(nodeId);
         auto* request = envelope.mutable_platform_config_request();
@@ -306,13 +352,10 @@ RETURNING id)sql",
         request->set_operation(pb::PLATFORM_CONFIG_UPSERT);
         request->set_name(name);
         request->set_url(baseUrl);
-        if (body.enrollmentToken())
-            request->set_enrollment_token(body.enrollmentToken()->view());
-        request->set_enabled(*body.enabled());
-        request->set_priority(static_cast<std::uint32_t>(*body.priority()));
-        request->set_reconnect_interval_sec(
-            static_cast<std::uint32_t>(*body.reconnectIntervalSec()));
-        request->set_outbox_max_bytes(static_cast<std::uint32_t>(*body.outboxMaxBytes()));
+        request->set_enabled(enabled);
+        request->set_priority(static_cast<std::uint32_t>(priority));
+        request->set_reconnect_interval_sec(static_cast<std::uint32_t>(reconnectIntervalSec));
+        request->set_outbox_max_bytes(static_cast<std::uint32_t>(outboxMaxBytes));
         const std::string json = "{\"platform_id\":\"" + platformId +
                                  "\",\"name\":\"" + jsonEscape(name) +
                                  "\",\"base_url\":\"" + jsonEscape(baseUrl) + "\"}";
@@ -328,9 +371,8 @@ SET name = EXCLUDED.name, base_url = EXCLUDED.base_url, enabled = EXCLUDED.enabl
     outbox_max_bytes = EXCLUDED.outbox_max_bytes,
     status = jsonb_build_object('state', 'pending', 'message', ''), updated_at = NOW())sql",
                                       service::common::dbParams(
-                                          nodeId, platformId, name, baseUrl, *body.enabled(),
-                                          *body.priority(), *body.reconnectIntervalSec(),
-                                          *body.outboxMaxBytes()));
+                                          nodeId, platformId, name, baseUrl, enabled, priority,
+                                          reconnectIntervalSec, outboxMaxBytes));
         co_await insertTask(c, nodeId, taskId, "platform_upsert", json, principal.userId);
         co_await push(c, nodeId, envelope);
         co_return platformId;
@@ -376,16 +418,16 @@ FROM edge_firmware WHERE id = $1::uuid LIMIT 1)sql",
         auto* request = envelope.mutable_firmware_update_request();
         std::uint8_t bytes[32]{};
         protocol::uuidBytes(taskId, bytes);
-        request->set_request_id(protocol::bytes(bytes, 16));
+        const auto requestId = protocol::bytes(bytes, 16);
         const auto download = std::string(protocol::publicBaseUrl()) +
                               "/edge/v1/firmware/" + firmwareIdText + "/download?token=" +
                               std::string(row[3].text());
-        request->set_download_url(download);
         if (!hex(row[1].text(), bytes, 32))
             service::common::fail(17010, "固件摘要无效", 500);
-        request->set_sha256(protocol::bytes(bytes, 32));
-        request->set_size_bytes(static_cast<std::uint64_t>(integer(row[2].text())));
-        request->set_keep_settings(keepSettings);
+        if (!firmware::populateUpdateRequest(
+                *request, requestId, download, protocol::bytes(bytes, 32),
+                static_cast<std::uint64_t>(integer(row[2].text())), row[0].text(), keepSettings))
+            service::common::fail(17010, "固件请求元数据无效", 500);
         const std::string json = "{\"firmware_id\":\"" + firmwareIdText + "\"}";
         co_await createTaskAndQueue(c, nodeId, taskId, "firmware", json, envelope);
     }
@@ -439,7 +481,10 @@ WHERE id = $1::uuid AND download_token = $2 LIMIT 1)sql",
     ruvia::Task<TerminalTicketDto> terminalTicket(ruvia::Context& c,
                                                   std::string_view nodeId) {
         const auto rows = co_await c.db().query(R"sql(
-SELECT enrollment_status, COALESCE((capability->>'terminal')::boolean, false),
+SELECT enrollment_status,
+       CASE lower(COALESCE(capability->>'terminal', ''))
+            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+            ELSE false END,
        (last_seen_at IS NOT NULL AND last_seen_at > NOW() - INTERVAL '90 seconds')
 FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
                                                 service::common::dbParams(nodeId));
@@ -475,12 +520,22 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
         auto envelope = protocol::outbound(nodeId);
         auto* request = envelope.mutable_log_request();
         request->set_request_id(protocol::bytes(bytes, sizeof(bytes)));
-        request->set_limit(static_cast<std::uint32_t>(
-            std::clamp<std::int64_t>(*query.limit(), 1, 48)));
-        if (query.level())
-            request->set_level(query.level()->view());
-        if (query.source())
-            request->set_source(query.source()->view());
+        const auto limit = query.limit().value_or(48);
+        if (limit < 1 || limit > 48)
+            service::common::fail(17020, "日志条数必须在 1 - 48 之间", 400);
+        request->set_limit(static_cast<std::uint32_t>(limit));
+        if (query.level()) {
+            const auto level = std::string(query.level()->view());
+            if (level != "debug" && level != "info" && level != "warn" && level != "error")
+                service::common::fail(17020, "日志级别无效", 400);
+            request->set_level(level);
+        }
+        if (query.source()) {
+            const auto sourceValue = std::string(query.source()->view());
+            if (sourceValue.size() > 16)
+                service::common::fail(17020, "日志来源不能超过 16 个字符", 400);
+            request->set_source(sourceValue);
+        }
         co_await push(c, nodeId, envelope);
 
         const auto key = logResultKey(requestId);
@@ -518,7 +573,12 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
         if (!session)
             service::common::fail(17019, "节点当前离线", 409);
 
-        const auto level = std::string(body.level()->view());
+        const auto& maybeLevel = body.level();
+        if (!maybeLevel || maybeLevel->view().empty())
+            service::common::fail(17020, "日志级别不能为空", 400);
+        const auto level = std::string(maybeLevel->view());
+        if (level != "debug" && level != "info" && level != "warn" && level != "error")
+            service::common::fail(17020, "日志级别无效", 400);
         const auto requestId = service::common::nextUuidV7();
         std::uint8_t bytes[16]{};
         protocol::uuidBytes(requestId, bytes);
@@ -554,49 +614,86 @@ WHERE id = $2::uuid)sql",
         service::common::fail(17020, "节点日志等级请求超时", 504);
     }
 
+#ifdef IOT_ENGINE_TESTING
+    static std::string nodeSelectForTest() { return nodeSelect(); }
+    static std::string tasksQueryForTest() { return taskSelect(); }
+#endif
+
   private:
     static std::string nodeSelect() {
         return R"sql(SELECT id::text, imei, COALESCE(name, ''), model, software_version,
        hostname, architecture, openwrt_release, enrollment_status,
        (last_seen_at IS NOT NULL AND last_seen_at > NOW() - INTERVAL '90 seconds'),
        COALESCE(iot_utc_timestamp(last_seen_at), ''), iot_utc_timestamp(created_at),
-       COALESCE((status->'config'->>'activeVersion')::bigint, 0),
-       COALESCE((status->'config'->>'desiredVersion')::bigint, 0),
+       COALESCE(CASE WHEN status->'config'->>'activeVersion' ~ '^-?[0-9]{1,18}$'
+                     THEN (status->'config'->>'activeVersion')::bigint END, 0),
+       COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
+                     THEN (status->'config'->>'desiredVersion')::bigint END, 0),
        COALESCE(status->'config'->>'state', 'idle'),
        COALESCE(status->'config'->>'message', ''),
-       COALESCE((status->'outbox'->>'records')::bigint, 0),
-       COALESCE((status->'outbox'->>'bytes')::bigint, 0),
+       COALESCE(CASE WHEN status->'outbox'->>'records' ~ '^-?[0-9]{1,18}$'
+                     THEN (status->'outbox'->>'records')::bigint END, 0),
+       COALESCE(CASE WHEN status->'outbox'->>'bytes' ~ '^-?[0-9]{1,18}$'
+                     THEN (status->'outbox'->>'bytes')::bigint END, 0),
        COALESCE(status->'log'->>'level', 'info'),
-       COALESCE((capability->>'networkConfig')::boolean, false),
-       COALESCE((capability->>'networkConfigVersion')::bigint, 0),
-       COALESCE((capability->>'firmwareUpdate')::boolean, false),
-       COALESCE((capability->>'platformConfig')::boolean, false),
-       COALESCE((capability->>'deviceConfig')::boolean, false),
-       COALESCE((capability->>'modemControl')::boolean, false),
-       COALESCE((capability->>'terminal')::boolean, false),
-       COALESCE((capability->>'logs')::boolean, false),
-       COALESCE((mobile->>'available')::boolean, false),
+       CASE lower(COALESCE(capability->>'networkConfig', ''))
+            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+            ELSE false END,
+       COALESCE(CASE WHEN capability->>'networkConfigVersion' ~ '^-?[0-9]{1,18}$'
+                     THEN (capability->>'networkConfigVersion')::bigint END, 0),
+       CASE lower(COALESCE(capability->>'firmwareUpdate', ''))
+            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+            ELSE false END,
+       CASE lower(COALESCE(capability->>'platformConfig', ''))
+            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+            ELSE false END,
+       CASE lower(COALESCE(capability->>'deviceConfig', ''))
+            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+            ELSE false END,
+       CASE lower(COALESCE(capability->>'modemControl', ''))
+            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+            ELSE false END,
+       CASE lower(COALESCE(capability->>'terminal', ''))
+            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+            ELSE false END,
+       CASE lower(COALESCE(capability->>'logs', ''))
+            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+            ELSE false END,
+       CASE lower(COALESCE(mobile->>'available', ''))
+            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+            ELSE false END,
        COALESCE(mobile->>'simState', 'unknown'),
        COALESCE(mobile->>'iccid', ''),
-       COALESCE((mobile->'signal'->>'csq')::bigint, 99),
-       COALESCE((mobile->'signal'->>'rssiDbm')::bigint, -1),
-       COALESCE((mobile->'signal'->>'percent')::bigint, 0),
-       COALESCE((mobile->>'registered')::boolean, false),
-       COALESCE((mobile->>'registrationStatus')::bigint, -1),
+       COALESCE(CASE WHEN mobile->'signal'->>'csq' ~ '^-?[0-9]{1,18}$'
+                     THEN (mobile->'signal'->>'csq')::bigint END, 99),
+       COALESCE(CASE WHEN mobile->'signal'->>'rssiDbm' ~ '^-?[0-9]{1,18}$'
+                     THEN (mobile->'signal'->>'rssiDbm')::bigint END, -1),
+       COALESCE(CASE WHEN mobile->'signal'->>'percent' ~ '^-?[0-9]{1,18}$'
+                     THEN (mobile->'signal'->>'percent')::bigint END, 0),
+       CASE lower(COALESCE(mobile->>'registered', ''))
+            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+            ELSE false END,
+       COALESCE(CASE WHEN mobile->>'registrationStatus' ~ '^-?[0-9]{1,18}$'
+                     THEN (mobile->>'registrationStatus')::bigint END, -1),
        COALESCE(mobile->>'apn', ''),
        COALESCE(mobile->>'operator', ''),
-       COALESCE((mobile->>'connected')::boolean, false),
+       CASE lower(COALESCE(mobile->>'connected', ''))
+            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+            ELSE false END,
        COALESCE(mobile->>'ipv4', ''),
        COALESCE((SELECT task.status FROM edge_task task
                  WHERE task.node_id = edge_node.id AND task.task_type = 'firmware'
                  ORDER BY task.created_at DESC LIMIT 1), ''),
-       COALESCE((SELECT (task.result->>'progressPercent')::bigint FROM edge_task task
+       COALESCE((SELECT CASE WHEN task.result->>'progressPercent' ~ '^-?[0-9]{1,18}$'
+                             THEN (task.result->>'progressPercent')::bigint END FROM edge_task task
                  WHERE task.node_id = edge_node.id AND task.task_type = 'firmware'
                  ORDER BY task.created_at DESC LIMIT 1), 0),
-       COALESCE((SELECT (task.result->>'downloadedBytes')::bigint FROM edge_task task
+       COALESCE((SELECT CASE WHEN task.result->>'downloadedBytes' ~ '^-?[0-9]{1,18}$'
+                             THEN (task.result->>'downloadedBytes')::bigint END FROM edge_task task
                  WHERE task.node_id = edge_node.id AND task.task_type = 'firmware'
                  ORDER BY task.created_at DESC LIMIT 1), 0),
-       COALESCE((SELECT (task.result->>'totalBytes')::bigint FROM edge_task task
+       COALESCE((SELECT CASE WHEN task.result->>'totalBytes' ~ '^-?[0-9]{1,18}$'
+                             THEN (task.result->>'totalBytes')::bigint END FROM edge_task task
                  WHERE task.node_id = edge_node.id AND task.task_type = 'firmware'
                  ORDER BY task.created_at DESC LIMIT 1), 0),
        COALESCE((SELECT task.result->>'message' FROM edge_task task
@@ -687,6 +784,19 @@ FROM edge_node)sql";
             value.remove_prefix(comma + 1);
         }
         return result;
+    }
+
+    static std::string taskSelect() {
+        return R"sql(
+SELECT id::text, task_type, status, COALESCE(result->>'message', ''),
+       COALESCE(CASE WHEN result->>'progressPercent' ~ '^-?[0-9]{1,18}$'
+                     THEN (result->>'progressPercent')::bigint END, 0),
+       COALESCE(CASE WHEN result->>'downloadedBytes' ~ '^-?[0-9]{1,18}$'
+                     THEN (result->>'downloadedBytes')::bigint END, 0),
+       COALESCE(CASE WHEN result->>'totalBytes' ~ '^-?[0-9]{1,18}$'
+                     THEN (result->>'totalBytes')::bigint END, 0),
+       iot_utc_timestamp(created_at), iot_utc_timestamp(updated_at)
+FROM edge_task WHERE node_id = $1::uuid ORDER BY created_at DESC LIMIT 50)sql";
     }
 
     static ruvia::Task<ruvia::BoxedArray<InterfaceDto>> interfaces(ruvia::Context& c,
@@ -789,14 +899,7 @@ FROM edge_node_platform WHERE node_id = $1::uuid ORDER BY priority, name)sql",
     }
 
     static ruvia::Task<ruvia::BoxedArray<TaskDto>> tasks(ruvia::Context& c, std::string_view id) {
-        const auto rows = co_await c.db().query(R"sql(
-SELECT id::text, task_type, status, COALESCE(result->>'message', ''),
-       COALESCE((result->>'progressPercent')::bigint, 0),
-       COALESCE((result->>'downloadedBytes')::bigint, 0),
-       COALESCE((result->>'totalBytes')::bigint, 0),
-       iot_utc_timestamp(created_at), iot_utc_timestamp(updated_at)
-FROM edge_task WHERE node_id = $1::uuid ORDER BY created_at DESC LIMIT 50)sql",
-                                                service::common::dbParams(id));
+        const auto rows = co_await c.db().query(taskSelect(), service::common::dbParams(id));
         ruvia::BoxedArray<TaskDto> result(c.resource());
         for (const auto& row : rows.rows()) {
             auto& item = result.emplace(c);
@@ -924,8 +1027,12 @@ FROM edge_task WHERE node_id = $1::uuid ORDER BY created_at DESC LIMIT 50)sql",
     static ruvia::Task<std::int64_t> requireNetworkManagement(
         ruvia::Context& c, std::string_view nodeId) {
         const auto rows = co_await c.db().query(R"sql(
-SELECT enrollment_status, COALESCE((capability->>'networkConfig')::boolean, false),
-       COALESCE((capability->>'networkConfigVersion')::bigint, 0)
+SELECT enrollment_status,
+       CASE lower(COALESCE(capability->>'networkConfig', ''))
+            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+            ELSE false END,
+       COALESCE(CASE WHEN capability->>'networkConfigVersion' ~ '^-?[0-9]{1,18}$'
+                     THEN (capability->>'networkConfigVersion')::bigint END, 0)
 FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
                                                 service::common::dbParams(nodeId));
         if (rows.rows().empty())
@@ -982,7 +1089,9 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
                                                    std::string_view key,
                                                    std::string_view feature) {
         const auto rows = co_await c.db().query(
-            "SELECT enrollment_status, COALESCE((capability->>$1)::boolean, false) "
+            "SELECT enrollment_status, CASE lower(COALESCE(capability->>$1, '')) "
+            "WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true "
+            "ELSE false END "
             "FROM edge_node WHERE id = $2::uuid LIMIT 1",
             service::common::dbParams(key, nodeId));
         if (rows.rows().empty())

@@ -26,6 +26,30 @@ inline constexpr std::string_view kOfflineDurationKeys{"iot:alert:offline-durati
 inline constexpr std::string_view kOfflineDurationPrefix{"iot:alert:offline-duration:"};
 inline constexpr std::string_view kOfflineDeadlinesKey{"iot:schedule:alert:offline-deadlines"};
 
+namespace detail {
+
+inline constexpr std::string_view kRefreshQuery = R"sql(
+SELECT DISTINCT rule.device_id::text, rule.id::text,
+       CASE WHEN condition.value IS NULL THEN NULL ELSE
+         COALESCE(offline_duration.duration_seconds, 300)::text
+       END,
+       COALESCE((EXTRACT(EPOCH FROM state.last_observed_at) * 1000)::bigint, 0)::text,
+       COALESCE(device.protocol_params->>'device_code', '')
+FROM alert_rule rule
+JOIN device ON device.id = rule.device_id
+LEFT JOIN device_data_ingest_state state ON state.device_id = rule.device_id
+LEFT JOIN LATERAL jsonb_array_elements(rule.conditions) condition(value)
+  ON condition.value->>'type' = 'offline'
+LEFT JOIN LATERAL (
+  SELECT LEAST(GREATEST((condition.value->>'duration')::bigint, 1), 86400) AS duration_seconds
+  WHERE condition.value->>'duration' ~ '^[0-9]{1,10}$'
+) offline_duration ON TRUE
+WHERE rule.deleted_at IS NULL AND rule.status = 'enabled'
+  AND device.deleted_at IS NULL AND device.status = 'enabled'
+ORDER BY 1, 2, 3)sql";
+
+} // namespace detail
+
 inline std::string offlineDurationKey(std::string_view deviceId) {
     return std::string(kOfflineDurationPrefix) + std::string(deviceId);
 }
@@ -37,21 +61,7 @@ inline ruvia::Task<void> refresh(Context& context) {
     auto transaction = co_await context.db().beginTransaction();
     (void)co_await transaction.query(
         "SELECT pg_advisory_xact_lock(734623::bigint)");
-    const auto rows = co_await transaction.query(R"sql(
-SELECT DISTINCT rule.device_id::text, rule.id::text,
-       CASE WHEN condition.value IS NULL THEN NULL ELSE
-         GREATEST(1, COALESCE(NULLIF(condition.value->>'duration', '')::bigint, 300))::text
-       END,
-       COALESCE((EXTRACT(EPOCH FROM state.last_observed_at) * 1000)::bigint, 0)::text,
-       COALESCE(device.protocol_params->>'device_code', '')
-FROM alert_rule rule
-JOIN device ON device.id = rule.device_id
-LEFT JOIN device_data_ingest_state state ON state.device_id = rule.device_id
-LEFT JOIN LATERAL jsonb_array_elements(rule.conditions) condition(value)
-  ON condition.value->>'type' = 'offline'
-WHERE rule.deleted_at IS NULL AND rule.status = 'enabled'
-  AND device.deleted_at IS NULL AND device.status = 'enabled'
-ORDER BY 1, 2, 3)sql");
+    const auto rows = co_await transaction.query(detail::kRefreshQuery);
 
     struct OfflineEntry final {
         std::string durationKey;
@@ -68,8 +78,14 @@ ORDER BY 1, 2, 3)sql");
         devices.emplace(deviceId);
         if (row[2].isNull())
             continue;
-        const auto durationMs = std::stoll(std::string(row[2].text())) * 1000;
-        const auto observedAtMs = std::stoll(std::string(row[3].text()));
+        const auto durationSeconds =
+            service::common::parseInt64(std::optional<std::string_view>{row[2].text()});
+        if (!durationSeconds || *durationSeconds <= 0)
+            continue;
+        const auto observedAtMs =
+            service::common::parseInt64(std::optional<std::string_view>{row[3].text()})
+                .value_or(0);
+        const auto durationMs = *durationSeconds * 1000;
         offlineEntries.push_back(
             {offlineDurationKey(deviceId),
              std::string(row[1].text()) + ":" + std::to_string(durationMs),
@@ -109,8 +125,9 @@ for index = 1, offline_count do
   local deadline = tonumber(ARGV[cursor + 3])
   local runtime_observed = redis.call(
     'HGET', 'iot:runtime:device:' .. ARGV[cursor + 4], 'last_report_at_ms')
-  if runtime_observed then
-    deadline = math.max(deadline, tonumber(runtime_observed) + duration)
+  local runtime_observed_ms = runtime_observed and tonumber(runtime_observed) or nil
+  if runtime_observed_ms then
+    deadline = math.max(deadline, runtime_observed_ms + duration)
   end
   redis.call('HSET', duration_key, member, duration)
   redis.call('SADD', KEYS[4], duration_key)
@@ -153,13 +170,18 @@ local earliest = redis.call('ZRANGE', KEYS[2], 0, 0, 'WITHSCORES')
 local old_earliest = #earliest == 0 and nil or tonumber(earliest[2])
 local wake = false
 local changed = 0
+local observed = tonumber(ARGV[1])
+if not observed then return 0 end
 for index = 1, #values, 2 do
-  local deadline = tonumber(ARGV[1]) + tonumber(values[index + 1])
-  local current = redis.call('ZSCORE', KEYS[2], values[index])
-  if not current or deadline > tonumber(current) then
-    redis.call('ZADD', KEYS[2], deadline, values[index])
-    changed = changed + 1
-    if not old_earliest or deadline < old_earliest then wake = true end
+  local duration = tonumber(values[index + 1])
+  if duration then
+    local deadline = observed + duration
+    local current = redis.call('ZSCORE', KEYS[2], values[index])
+    if not current or deadline > tonumber(current) then
+      redis.call('ZADD', KEYS[2], deadline, values[index])
+      changed = changed + 1
+      if not old_earliest or deadline < old_earliest then wake = true end
+    end
   end
 end
 if wake then
@@ -193,9 +215,10 @@ inline ruvia::Task<std::optional<std::int64_t>> nextOfflineDeadline(const Redis&
     if (reply.array().size() != 2 ||
         reply.array()[1].kind() != ruvia::RedisValue::Kind::kString)
         service::message::redis::throwValue("parse next offline-alert deadline", reply);
-    try {
-        co_return std::stoll(std::string(reply.array()[1].string()));
-    } catch (const std::exception&) {
+    if (const auto score = service::common::parseInt64(
+            std::optional<std::string_view>{reply.array()[1].string()})) {
+        co_return *score;
+    } else {
         throw std::runtime_error("invalid offline-alert deadline score");
     }
 }

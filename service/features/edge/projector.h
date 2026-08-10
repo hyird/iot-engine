@@ -7,6 +7,7 @@
 #include <future>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -139,7 +140,8 @@ class Projector final {
                         std::vector<service::message::StreamMessage> telemetry;
                         telemetry.reserve(batch.messages.size());
                         for (const auto& message : batch.messages)
-                            co_await project(context, message.get("wire"), telemetry);
+                            co_await project(context, message.get("wire"),
+                                             message.get("received_at_ms"), telemetry);
                         co_await service::telemetry::PersistenceRuntime::ingest(context,
                                                                                 telemetry);
                         co_await service::message::redis::acknowledgeAndDeleteMany(
@@ -184,10 +186,15 @@ class Projector final {
 
     ruvia::Task<void> project(
         ruvia::WebWorkerContext& context, std::string_view wire,
+        std::string_view receivedAtText,
         std::vector<service::message::StreamMessage>& telemetry) {
         pb::Envelope envelope;
         if (!protocol::decode(wire, envelope))
             co_return;
+        const auto receivedAt = service::common::parseInt64(
+            receivedAtText.empty() ? std::nullopt
+                                   : std::optional<std::string_view>(receivedAtText));
+        const auto receivedAtMs = receivedAt.value_or(protocol::nowMs());
         if (envelope.payload_case() == pb::Envelope::kHello) {
             co_await saveHello(context, envelope.hello());
             co_return;
@@ -203,13 +210,13 @@ class Projector final {
             co_await saveCapabilities(context, nodeId, envelope.capability_report());
             break;
         case pb::Envelope::kNetworkConfigResult:
-            co_await saveNetworkResult(context, envelope.network_config_result());
+            co_await saveNetworkResult(context, nodeId, envelope.network_config_result());
             break;
         case pb::Envelope::kFirmwareUpdateResult:
-            co_await saveFirmwareResult(context, envelope.firmware_update_result());
+            co_await saveFirmwareResult(context, nodeId, envelope.firmware_update_result());
             break;
         case pb::Envelope::kModemControlResult:
-            co_await saveModemResult(context, envelope.modem_control_result());
+            co_await saveModemResult(context, nodeId, envelope.modem_control_result());
             break;
         case pb::Envelope::kPlatformConfigResult:
             co_await savePlatformResult(context, nodeId, envelope.platform_config_result());
@@ -222,14 +229,15 @@ class Projector final {
             break;
         case pb::Envelope::kTelemetryBatch:
             co_await ensureMetadata(context, nodeId, envelope.telemetry_batch());
-            collectTelemetry(nodeId, envelope.telemetry_batch(), telemetry);
+            collectTelemetry(nodeId, receivedAtMs, envelope.telemetry_batch(), telemetry);
             break;
         case pb::Envelope::kCommandResult:
             if (envelope.command_result().device_id().size() == 16)
                 co_await ensureMetadata(
                     context, nodeId,
                     protocol::uuidText(envelope.command_result().device_id()));
-            co_await saveCommandResult(context, nodeId, envelope.command_result());
+            co_await saveCommandResult(context, nodeId, receivedAtMs,
+                                       envelope.command_result());
             break;
         case pb::Envelope::kEndpointStatusReport:
             co_await saveEndpointStatus(context, nodeId, envelope.endpoint_status_report());
@@ -337,9 +345,11 @@ VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8,
 ON CONFLICT (platform_id, imei) DO UPDATE
 SET model = EXCLUDED.model, software_version = EXCLUDED.software_version,
     hostname = EXCLUDED.hostname, architecture = EXCLUDED.architecture,
-    openwrt_release = EXCLUDED.openwrt_release,
-    capability = EXCLUDED.capability || jsonb_build_object(
-        'terminal', COALESCE((edge_node.capability->>'terminal')::boolean, false)),
+	    openwrt_release = EXCLUDED.openwrt_release,
+	    capability = EXCLUDED.capability || jsonb_build_object(
+	        'terminal', CASE lower(COALESCE(edge_node.capability->>'terminal', ''))
+	                        WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+	                        ELSE false END),
     mobile = EXCLUDED.mobile,
     status = jsonb_set(
         jsonb_set(edge_node.status, '{log}',
@@ -381,10 +391,13 @@ RETURNING id::text, enrollment_status)sql",
 WITH target AS (
     SELECT task.id
     FROM edge_task task
+    JOIN edge_firmware firmware
+      ON firmware.id = (task.request->>'firmware_id')::uuid
     WHERE task.node_id = $2::uuid
       AND task.task_type = 'firmware'
       AND task.status = 'running'
       AND task.result->>'state' = 'flashing'
+      AND firmware.version = $1::text
     ORDER BY task.created_at DESC
     LIMIT 1
 )
@@ -410,18 +423,23 @@ WHERE task.id = target.id)sql",
 UPDATE edge_node
 SET status = jsonb_build_object(
         'config', jsonb_build_object(
-            'activeVersion', GREATEST(
-                COALESCE((status->'config'->>'activeVersion')::bigint, 0),
-                $1::bigint),
-            'desiredVersion', COALESCE((status->'config'->>'desiredVersion')::bigint, 0),
-            'state', CASE
-                WHEN COALESCE((status->'config'->>'desiredVersion')::bigint, 0) = $1
-                     AND $1 > 0 THEN 'applied'
-                ELSE COALESCE(status->'config'->>'state', 'idle') END,
-            'message', CASE
-                WHEN COALESCE((status->'config'->>'desiredVersion')::bigint, 0) = $1
-                     AND $1 > 0 THEN ''
-                ELSE COALESCE(status->'config'->>'message', '') END),
+	            'activeVersion', GREATEST(
+	                COALESCE(CASE WHEN status->'config'->>'activeVersion' ~ '^-?[0-9]{1,18}$'
+	                              THEN (status->'config'->>'activeVersion')::bigint END, 0),
+	                $1::bigint),
+	            'desiredVersion',
+	                COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
+	                              THEN (status->'config'->>'desiredVersion')::bigint END, 0),
+	            'state', CASE
+	                WHEN COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
+	                                   THEN (status->'config'->>'desiredVersion')::bigint END, 0) = $1
+	                     AND $1 > 0 THEN 'applied'
+	                ELSE COALESCE(status->'config'->>'state', 'idle') END,
+	            'message', CASE
+	                WHEN COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
+	                                   THEN (status->'config'->>'desiredVersion')::bigint END, 0) = $1
+	                     AND $1 > 0 THEN ''
+	                ELSE COALESCE(status->'config'->>'message', '') END),
         'outbox', jsonb_build_object('records', $2::bigint, 'bytes', $3::bigint),
         'log', jsonb_build_object('level', COALESCE(NULLIF($16::text, ''), 'info'))),
     mobile = jsonb_build_object(
@@ -462,8 +480,9 @@ UPDATE edge_config_revision revision
 SET status = 'applied', message = '', completed_at = COALESCE(completed_at, NOW())
 FROM edge_node node
 WHERE revision.node_id = node.id AND node.id = $1::uuid
-  AND revision.revision = $2
-  AND COALESCE((node.status->'config'->>'desiredVersion')::bigint, 0) = $2)sql",
+	  AND revision.revision = $2
+	  AND COALESCE(CASE WHEN node.status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
+	                    THEN (node.status->'config'->>'desiredVersion')::bigint END, 0) = $2)sql",
                                                 service::common::dbParams(
                                                     nodeId,
                                                     heartbeat.active_config_version()));
@@ -567,7 +586,8 @@ VALUES ($1::uuid, $2, $3, $4, $5))sql",
     }
 
     static ruvia::Task<void> saveNetworkResult(
-        ruvia::WebWorkerContext& context, const pb::NetworkConfigResult& result) {
+        ruvia::WebWorkerContext& context, std::string_view nodeId,
+        const pb::NetworkConfigResult& result) {
         if (result.request_id().size() != 16)
             co_return;
         const auto id = protocol::uuidText(result.request_id());
@@ -577,12 +597,14 @@ VALUES ($1::uuid, $2, $3, $4, $5))sql",
                                  (result.rolled_back() ? "true" : "false") + "}";
         (void)co_await context.db().execute(R"sql(
 UPDATE edge_task SET status = $1, result = $2::jsonb, updated_at = NOW(), completed_at = NOW()
-WHERE id = $3::uuid AND task_type = 'network')sql",
-                                            service::common::dbParams(status, json, id));
+WHERE id = $3::uuid AND node_id = $4::uuid AND task_type = 'network'
+  AND status NOT IN ('succeeded', 'failed'))sql",
+                                            service::common::dbParams(status, json, id, nodeId));
     }
 
     static ruvia::Task<void> saveFirmwareResult(
-        ruvia::WebWorkerContext& context, const pb::FirmwareUpdateResult& result) {
+        ruvia::WebWorkerContext& context, std::string_view nodeId,
+        const pb::FirmwareUpdateResult& result) {
         if (result.request_id().size() != 16)
             co_return;
         const auto id = protocol::uuidText(result.request_id());
@@ -614,12 +636,15 @@ WHERE id = $3::uuid AND task_type = 'network')sql",
         (void)co_await context.db().execute(R"sql(
 UPDATE edge_task SET status = $1, result = $2::jsonb, updated_at = NOW(),
     completed_at = CASE WHEN $3 THEN NOW() ELSE NULL END
-WHERE id = $4::uuid AND task_type = 'firmware')sql",
-                                             service::common::dbParams(status, json, completed, id));
+WHERE id = $4::uuid AND node_id = $5::uuid AND task_type = 'firmware'
+  AND status NOT IN ('succeeded', 'failed'))sql",
+                                             service::common::dbParams(status, json, completed, id,
+                                                                       nodeId));
     }
 
     static ruvia::Task<void> saveModemResult(
-        ruvia::WebWorkerContext& context, const pb::ModemControlResult& result) {
+        ruvia::WebWorkerContext& context, std::string_view nodeId,
+        const pb::ModemControlResult& result) {
         if (result.request_id().size() != 16)
             co_return;
         const auto id = protocol::uuidText(result.request_id());
@@ -639,8 +664,10 @@ WHERE id = $4::uuid AND task_type = 'firmware')sql",
         (void)co_await context.db().execute(R"sql(
 UPDATE edge_task SET status = $1, result = $2::jsonb, updated_at = NOW(),
     completed_at = CASE WHEN $3 THEN NOW() ELSE NULL END
-WHERE id = $4::uuid AND task_type = 'modem')sql",
-                                            service::common::dbParams(status, json, completed, id));
+WHERE id = $4::uuid AND node_id = $5::uuid AND task_type = 'modem'
+  AND status NOT IN ('succeeded', 'failed'))sql",
+                                            service::common::dbParams(status, json, completed, id,
+                                                                      nodeId));
     }
 
     static ruvia::Task<void> savePlatformResult(
@@ -652,26 +679,30 @@ WHERE id = $4::uuid AND task_type = 'modem')sql",
         const std::string status = result.success() ? "succeeded" : "failed";
         const std::string json = "{\"message\":\"" + jsonEscape(result.message()) + "\"}";
         (void)co_await context.db().execute(R"sql(
-UPDATE edge_task SET status = $1, result = $2::jsonb, updated_at = NOW(), completed_at = NOW()
-WHERE id = $3::uuid AND task_type IN ('platform_upsert', 'platform_delete'))sql",
-                                            service::common::dbParams(status, json, id));
-        (void)co_await context.db().execute(R"sql(
-UPDATE edge_node_platform
-SET status = jsonb_build_object('state', $1::text, 'message', $2::text),
-    updated_at = NOW()
-WHERE node_id = $3::uuid
-  AND platform_id = (SELECT (request->>'platform_id')::uuid FROM edge_task WHERE id = $4::uuid))sql",
+WITH transitioned AS (
+    UPDATE edge_task
+    SET status = $1, result = $2::jsonb, updated_at = NOW(), completed_at = NOW()
+    WHERE id = $3::uuid AND node_id = $4::uuid
+      AND task_type IN ('platform_upsert', 'platform_delete')
+      AND status NOT IN ('succeeded', 'failed')
+    RETURNING (request->>'platform_id')::uuid AS platform_id, task_type
+), updated AS (
+    UPDATE edge_node_platform target
+    SET status = jsonb_build_object('state', $5::text, 'message', $6::text),
+        updated_at = NOW()
+    FROM transitioned task
+    WHERE target.node_id = $4::uuid AND target.platform_id = task.platform_id
+      AND NOT ($7::boolean AND task.task_type = 'platform_delete')
+    RETURNING target.platform_id
+)
+DELETE FROM edge_node_platform target
+USING transitioned task
+WHERE $7::boolean AND task.task_type = 'platform_delete'
+  AND target.node_id = $4::uuid AND target.platform_id = task.platform_id)sql",
                                             service::common::dbParams(
+                                                status, json, id, nodeId,
                                                 result.success() ? "applied" : "failed",
-                                                result.message(), nodeId, id));
-        if (result.success()) {
-            (void)co_await context.db().execute(R"sql(
-DELETE FROM edge_node_platform
-WHERE node_id = $1::uuid
-  AND platform_id = (SELECT (request->>'platform_id')::uuid FROM edge_task
-                     WHERE id = $2::uuid AND task_type = 'platform_delete'))sql",
-                                                service::common::dbParams(nodeId, id));
-        }
+                                                result.message(), result.success()));
     }
 
     static std::string hex(std::string_view value) {
@@ -705,13 +736,17 @@ UPDATE edge_node
 SET status = jsonb_set(
         jsonb_set(
             jsonb_set(status, '{config,activeVersion}', to_jsonb(GREATEST(
-                COALESCE((status->'config'->>'activeVersion')::bigint, 0), $1::bigint)), true),
+                COALESCE(CASE WHEN status->'config'->>'activeVersion' ~ '^-?[0-9]{1,18}$'
+                              THEN (status->'config'->>'activeVersion')::bigint END, 0),
+                $1::bigint)), true),
             '{config,state}', to_jsonb(CASE
-                WHEN COALESCE((status->'config'->>'desiredVersion')::bigint, 0) = $1
+                WHEN COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
+                                   THEN (status->'config'->>'desiredVersion')::bigint END, 0) = $1
                 THEN 'applied'
                 ELSE COALESCE(status->'config'->>'state', 'idle') END::text), true),
         '{config,message}', to_jsonb(CASE
-            WHEN COALESCE((status->'config'->>'desiredVersion')::bigint, 0) = $1
+            WHEN COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
+                               THEN (status->'config'->>'desiredVersion')::bigint END, 0) = $1
             THEN ''
             ELSE COALESCE(status->'config'->>'message', '') END::text), true),
     updated_at = NOW()
@@ -738,11 +773,13 @@ WHERE node_id = $2::uuid AND revision = $3)sql",
 UPDATE edge_node
 SET status = jsonb_set(
         jsonb_set(status, '{config,state}', to_jsonb(CASE
-            WHEN COALESCE((status->'config'->>'desiredVersion')::bigint, 0) = $1
+            WHEN COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
+                               THEN (status->'config'->>'desiredVersion')::bigint END, 0) = $1
             THEN 'rejected'
             ELSE COALESCE(status->'config'->>'state', 'idle') END::text), true),
         '{config,message}', to_jsonb(CASE
-            WHEN COALESCE((status->'config'->>'desiredVersion')::bigint, 0) = $1
+            WHEN COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
+                               THEN (status->'config'->>'desiredVersion')::bigint END, 0) = $1
             THEN $2::text
             ELSE COALESCE(status->'config'->>'message', '') END::text), true),
     updated_at = NOW()
@@ -806,7 +843,8 @@ WHERE id = $3::uuid)sql",
         return output;
     }
 
-    void collectTelemetry(std::string_view nodeId, const pb::TelemetryBatch& batch,
+    void collectTelemetry(std::string_view nodeId, std::int64_t receivedAtMs,
+                          const pb::TelemetryBatch& batch,
                           std::vector<service::message::StreamMessage>& messages) {
         const auto node = metadata_.find(std::string(nodeId));
         if (node == metadata_.end())
@@ -828,7 +866,7 @@ WHERE id = $3::uuid)sql",
             if (parsed.protocol.empty())
                 parsed.protocol = device->second.protocol;
             parsed.connectionId = std::string(nodeId);
-            parsed.occurredAtMs = record.observed_at_ms();
+            parsed.occurredAtMs = receivedAtMs;
             parsed.observedAtMs = record.observed_at_ms();
             parsed.storageInterval = device->second.storageInterval;
             parsed.onlineWindowMs = device->second.onlineWindowMs;
@@ -845,8 +883,11 @@ WHERE id = $3::uuid)sql",
 
     ruvia::Task<void> saveCommandResult(ruvia::WebWorkerContext& context,
                                         std::string_view nodeId,
+                                        std::int64_t receivedAtMs,
                                         const pb::CommandResult& result) {
         if (result.command_id().size() != 16 || result.device_id().size() != 16)
+            co_return;
+        if (!protocol::terminalCommandResultState(result.state()))
             co_return;
         const auto commandId = protocol::uuidText(result.command_id());
         const auto deviceId = protocol::uuidText(result.device_id());
@@ -857,6 +898,8 @@ WHERE id = $3::uuid)sql",
         if (device == node->second.end())
             co_return;
         const bool success = result.state() == pb::COMMAND_STATE_SUCCEEDED;
+        const auto completedAtMs = message::effectiveObservedAt(
+            result.completed_at_ms(), receivedAtMs);
         (void)co_await message::redis::publish(
             context.redis(), message::commandResultStream(0),
             {{"message_id", message::nextMessageId()},
@@ -870,7 +913,7 @@ WHERE id = $3::uuid)sql",
              {"reason", result.message()},
              {"worker_id", "0"},
              {"created_at_ms", std::to_string(message::utcNowMilliseconds())},
-             {"completed_at_ms", std::to_string(result.completed_at_ms())}},
+             {"completed_at_ms", std::to_string(completedAtMs)}},
             10000);
     }
 

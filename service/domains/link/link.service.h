@@ -114,12 +114,12 @@ class LinkService {
         const auto limitIndex = listParams.size();
         listParams.emplace_back((page - 1) * pageSize);
         const auto offsetIndex = listParams.size();
-        const auto rows = co_await c.db().query(
-            "SELECT id::text, name, protocol, endpoint->>'mode', COALESCE(endpoint->>'ip', ''), "
-            "COALESCE((endpoint->>'port')::integer, 0), status, created_by::text, "
-            "iot_utc_timestamp(created_at), iot_utc_timestamp(updated_at) FROM link" +
-                where + " ORDER BY id DESC LIMIT $" + std::to_string(limitIndex) + " OFFSET $" +
-                std::to_string(offsetIndex),
+	        const auto rows = co_await c.db().query(
+	            "SELECT id::text, name, protocol, endpoint->>'mode', COALESCE(endpoint->>'ip', ''), "
+	            "COALESCE(NULLIF(endpoint->>'port', ''), '0'), status, created_by::text, "
+	            "iot_utc_timestamp(created_at), iot_utc_timestamp(updated_at) FROM link" +
+	                where + " ORDER BY id DESC LIMIT $" + std::to_string(limitIndex) + " OFFSET $" +
+	                std::to_string(offsetIndex),
             listParams);
 
         ruvia::BoxedArray<LinkItemDto> links(c.resource());
@@ -137,12 +137,12 @@ class LinkService {
     }
 
     ruvia::Task<LinkItemDto> detail(ruvia::Context& c, std::string_view id) {
-        const auto rows = co_await c.db().query(R"sql(
-SELECT id::text, name, protocol, endpoint->>'mode', COALESCE(endpoint->>'ip', ''),
-       COALESCE((endpoint->>'port')::integer, 0), status, created_by::text,
-       iot_utc_timestamp(created_at), iot_utc_timestamp(updated_at)
-FROM link
-WHERE id = $1 AND deleted_at IS NULL AND execution = 'collector'
+	        const auto rows = co_await c.db().query(R"sql(
+	SELECT id::text, name, protocol, endpoint->>'mode', COALESCE(endpoint->>'ip', ''),
+	       COALESCE(NULLIF(endpoint->>'port', ''), '0'), status, created_by::text,
+	       iot_utc_timestamp(created_at), iot_utc_timestamp(updated_at)
+	FROM link
+	WHERE id = $1 AND deleted_at IS NULL AND execution = 'collector'
 LIMIT 1)sql",
                                                 service::common::dbParams(id));
         if (rows.rows().empty())
@@ -152,12 +152,12 @@ LIMIT 1)sql",
         co_return item;
     }
 
-    ruvia::Task<ruvia::BoxedArray<LinkOptionDto>> options(ruvia::Context& c) {
-        const auto rows = co_await c.db().query(
-            "SELECT id::text, name, protocol, endpoint->>'mode', COALESCE(endpoint->>'ip', ''), "
-            "COALESCE((endpoint->>'port')::integer, 0) "
-            "FROM link WHERE deleted_at IS NULL AND execution = 'collector' AND "
-            "status = 'enabled' ORDER BY name");
+	    ruvia::Task<ruvia::BoxedArray<LinkOptionDto>> options(ruvia::Context& c) {
+	        const auto rows = co_await c.db().query(
+	            "SELECT id::text, name, protocol, endpoint->>'mode', COALESCE(endpoint->>'ip', ''), "
+	            "COALESCE(NULLIF(endpoint->>'port', ''), '0') "
+	            "FROM link WHERE deleted_at IS NULL AND execution = 'collector' AND "
+	            "status = 'enabled' ORDER BY name");
         ruvia::BoxedArray<LinkOptionDto> result(c.resource());
         for (const auto& row : rows.rows()) {
             auto& item = result.emplace(c);
@@ -228,6 +228,8 @@ LIMIT 1)sql",
         const auto ip = endpoint.ip() ? std::string(endpoint.ip()->view()) : "";
         const auto port = endpoint.port() ? static_cast<std::int64_t>(*endpoint.port()) : 0;
         const auto status = body.status() ? std::string(body.status()->view()) : "enabled";
+        if (status != "enabled" && status != "disabled")
+            service::common::fail(15002, "状态无效", 400);
         const auto& targets = requiredTargets(endpoint);
         validateConfiguration(mode, protocol, ip, port, targets);
         co_await ensureAvailable(c, name, mode, ip, port, std::nullopt);
@@ -259,6 +261,8 @@ VALUES ($1::uuid, $2, $3, $4::jsonb, $5, $6, 'collector'))sql",
         const auto ip = endpoint.ip() ? std::string(endpoint.ip()->view()) : "";
         const auto port = endpoint.port() ? static_cast<std::int64_t>(*endpoint.port()) : 0;
         const auto status = body.status() ? std::string(body.status()->view()) : "enabled";
+        if (status != "enabled" && status != "disabled")
+            service::common::fail(15002, "状态无效", 400);
         const auto& targets = requiredTargets(endpoint);
         validateConfiguration(mode, protocol, ip, port, targets);
         co_await ensureAvailable(c, name, mode, ip, port, std::string(id));
@@ -310,18 +314,14 @@ WHERE id = $4 AND execution = 'collector'
 
         [[nodiscard]] std::int64_t integer(std::string_view name) const {
             const auto value = text(name);
-            if (value.empty())
-                return 0;
-            try {
-                return std::stoll(value);
-            } catch (...) {
-                return 0;
-            }
+            return service::common::parseInt64(std::optional<std::string_view>{value})
+                .value_or(0);
         }
     };
 
     static ruvia::Int64 toInt(std::string_view value) {
-        return static_cast<ruvia::Int64>(std::stoll(std::string(value)));
+        return static_cast<ruvia::Int64>(
+            service::common::parseInt64(std::optional<std::string_view>{value}).value_or(0));
     }
 
     // sans-io：从 HTTP 响应原文解析公网 IP（校验 200、取 body、trim、字符白名单）。
@@ -347,7 +347,7 @@ WHERE id = $4 AND execution = 'collector'
 
     static std::string required(const std::optional<ruvia::String>& value,
                                 std::string_view message) {
-        if (!value)
+        if (!value || value->view().empty())
             service::common::fail(15002, std::string(message), 400);
         return std::string(value->view());
     }
@@ -539,6 +539,10 @@ WHERE link.id = $1 ORDER BY position)sql",
     static void validateConfiguration(std::string_view mode, std::string_view protocol,
                                       std::string_view ip, std::int64_t port,
                                       const Targets& targets) {
+        if (mode != "TCP Server" && mode != "TCP Client")
+            service::common::fail(15003, "链路模式无效", 400);
+        if (protocol != "SL651" && protocol != "Modbus" && protocol != "S7")
+            service::common::fail(15003, "协议无效", 400);
         if (protocol == "SL651" && mode != "TCP Server")
             service::common::fail(15003, "SL651 只支持 TCP Server 模式", 400);
         if (mode == "TCP Server") {
@@ -561,6 +565,10 @@ WHERE link.id = $1 ORDER BY position)sql",
             const auto name = required(target.name(), "目标名称不能为空");
             const auto targetIp = required(target.ip(), "目标 IP 不能为空");
             const auto targetPort = target.port() ? static_cast<std::int64_t>(*target.port()) : 0;
+            const auto targetStatus =
+                target.status() ? std::string(target.status()->view()) : "enabled";
+            if (targetStatus != "enabled" && targetStatus != "disabled")
+                service::common::fail(15003, "目标状态无效", 400);
             if (name.empty() || !isIpv4(targetIp) || targetPort < 1 || targetPort > 65535)
                 service::common::fail(15003, "目标地址配置无效", 400);
             if (!ids.emplace(id).second)
@@ -676,7 +684,9 @@ WHERE link.id = $1 ORDER BY position)sql",
             "(name = $1 OR "
                           "($2 = 'TCP Server' AND endpoint->>'mode' = $2 "
                           "AND endpoint->>'ip' = $3 "
-                          "AND COALESCE((endpoint->>'port')::integer, 0) = $4))";
+                          "AND COALESCE("
+                          "CASE WHEN COALESCE(endpoint->>'port', '') ~ '^[0-9]{1,5}$' "
+                          "THEN (endpoint->>'port')::integer END, 0) = $4))";
         auto params = service::common::dbParams(name, mode, ip, port);
         if (excludedId) {
             params.emplace_back(*excludedId);

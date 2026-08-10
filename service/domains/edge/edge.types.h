@@ -61,14 +61,13 @@ struct PlatformBody final {
     RUVIA_OPTIONAL_FIELD_NAME("platformId", platformId, ruvia::String);
     RUVIA_OPTIONAL_FIELD(name, ruvia::String);
     RUVIA_OPTIONAL_FIELD_NAME("baseUrl", baseUrl, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("enrollmentToken", enrollmentToken, ruvia::String);
     RUVIA_OPTIONAL_FIELD(enabled, ruvia::Bool, RUVIA_DEFAULT(true));
     RUVIA_OPTIONAL_FIELD(priority, ruvia::Int64, RUVIA_DEFAULT(100));
     RUVIA_OPTIONAL_FIELD_NAME("reconnectIntervalSec", reconnectIntervalSec, ruvia::Int64,
                               RUVIA_DEFAULT(5));
     RUVIA_OPTIONAL_FIELD_NAME("outboxMaxBytes", outboxMaxBytes, ruvia::Int64,
                               RUVIA_DEFAULT(262144));
-    RUVIA_MODEL(PlatformBody, platformId, name, baseUrl, enrollmentToken, enabled, priority,
+    RUVIA_MODEL(PlatformBody, platformId, name, baseUrl, enabled, priority,
                 reconnectIntervalSec, outboxMaxBytes);
 };
 

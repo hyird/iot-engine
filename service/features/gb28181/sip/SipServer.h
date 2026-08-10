@@ -134,6 +134,11 @@ private:
         unsigned int viewerCount{0};
     };
 
+    struct PendingRecordQuery {
+        std::string deviceId;
+        SipPeer remote;
+    };
+
     SipConfig sipConfig_;
     MediaConfig mediaConfig_;
     DeviceRegistry& deviceRegistry_;
@@ -149,7 +154,7 @@ private:
     std::unordered_map<std::string, TcpConnectionPtr> tcpConnections_;
     std::map<std::string, PreviewSession> previewSessions_;
     std::map<std::string, std::string> previewViewers_;
-    std::map<unsigned int, std::string> pendingRecordQueries_;
+    std::map<unsigned int, PendingRecordQuery> pendingRecordQueries_;
     std::unordered_map<std::string, std::uint32_t> digestNonceCounts_;
     std::unordered_map<std::string, std::uint64_t> deadlineGenerations_;
     std::priority_queue<Deadline, std::vector<Deadline>, DeadlineLater> deadlines_;

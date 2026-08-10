@@ -25,6 +25,7 @@
 #include <ruvia/web/detail/redis/RedisTypesAccess.h>
 
 #include "service/common/packet-log.h"
+#include "service/features/alert/metadata.h"
 #include "service/features/collector/command.h"
 #include "service/features/collector/modbus.h"
 #include "service/features/collector/engine.h"
@@ -36,6 +37,9 @@
 #include "service/features/collector/config.h"
 #include "service/features/collector/tcp.h"
 #include "service/features/collector/timer.h"
+#include "service/features/command/queue.h"
+#include "service/features/edge/session.h"
+#include "service/features/runtime/repository.h"
 #include "service/features/telemetry/latest.h"
 
 namespace collector = service::collector;
@@ -64,6 +68,83 @@ template <typename Result> Result runTask(ruvia::Task<Result> task) {
     return std::move(*result);
 }
 
+void runTask(ruvia::Task<void> task) {
+    asio::io_context context;
+    bool completed = false;
+    std::exception_ptr exception;
+    asio::co_spawn(
+        context,
+        [task = std::move(task), &completed, &exception]() mutable -> asio::awaitable<void> {
+            try {
+                co_await ruvia::detail::taskAsAwaitable(std::move(task));
+                completed = true;
+            } catch (...) {
+                exception = std::current_exception();
+            }
+        },
+        asio::detached);
+    context.run();
+    if (exception)
+        std::rethrow_exception(exception);
+    if (!completed)
+        throw std::runtime_error("task produced no completion");
+}
+
+struct FakeDbCell {
+    std::string value;
+    bool null = false;
+
+    [[nodiscard]] std::string_view text() const noexcept { return value; }
+    [[nodiscard]] bool isNull() const noexcept { return null; }
+};
+
+struct FakeDbRow {
+    std::vector<FakeDbCell> cells;
+
+    explicit FakeDbRow(std::initializer_list<std::string_view> values) {
+        cells.reserve(values.size());
+        for (const auto value : values)
+            cells.push_back({std::string(value), false});
+    }
+
+    [[nodiscard]] const FakeDbCell& operator[](std::size_t index) const {
+        return cells.at(index);
+    }
+};
+
+struct FakeDbResult {
+    std::vector<FakeDbRow> values;
+
+    [[nodiscard]] const std::vector<FakeDbRow>& rows() const noexcept {
+        return values;
+    }
+};
+
+struct RuntimeRepositoryScaleDb {
+    ruvia::Task<FakeDbResult> query(std::string_view sql) {
+        FakeDbResult result;
+        if (sql.find("FROM link\r\nWHERE deleted_at IS NULL AND execution = 'collector'") !=
+            std::string_view::npos) {
+            result.values.emplace_back(FakeDbRow{
+                "link-1", "collector link", "TCP Client", "Modbus", "127.0.0.1", "1502",
+                "enabled"});
+        } else if (sql.find("ORDER BY d.link_id, d.id") != std::string_view::npos) {
+            result.values.emplace_back(FakeDbRow{
+                "device-1", "MODBUS001", "modbus device", "link-1", "TCP Client", "",
+                "Modbus", "+08:00", "300", "OFF", "", "OFF", "", "TCP", "1",
+                "RACK_SLOT", "PG", "0", "1", "0100", "0101", "5000", "5000",
+                "STANDARD", "5", "1", "60", "1", "100", "125"});
+        } else if (sql.find("p.protocol = 'Modbus'") != std::string_view::npos &&
+                   sql.find("ORDER BY d.id, (element->>'address')::integer") !=
+                       std::string_view::npos) {
+            result.values.emplace_back(FakeDbRow{
+                "device-1", "temperature", "Temperature", "℃", "UINT16", "BIG_ENDIAN",
+                "HOLDING_REGISTER", "0", "1", "1x", "-1", "f"});
+        }
+        co_return result;
+    }
+};
+
 struct RecordingRedis {
     explicit RecordingRedis(std::int64_t result)
         : reply(ruvia::detail::RedisTypesAccess::integerValue(
@@ -82,6 +163,127 @@ struct RecordingRedis {
     mutable std::vector<std::string> keys;
     mutable std::vector<std::string> arguments;
     ruvia::RedisValue reply;
+};
+
+struct EdgeSessionRedis {
+    ruvia::Task<void> setEx(std::string_view, std::chrono::seconds,
+                            std::string_view epoch) const {
+        value = std::string(epoch);
+        co_return;
+    }
+
+    ruvia::Task<std::int64_t> del(std::string_view) const {
+        const auto removed = value.has_value();
+        value.reset();
+        co_return removed ? 1 : 0;
+    }
+
+    ruvia::Task<ruvia::RedisValue>
+    eval(std::string_view script, std::span<const std::string_view>,
+         std::span<const std::string_view> arguments) const {
+        if (arguments.empty() || !value || *value != arguments.front())
+            co_return ruvia::detail::RedisTypesAccess::integerValue(
+                0, std::pmr::get_default_resource());
+        if (script.find("redis.call('DEL'") != std::string_view::npos)
+            value.reset();
+        co_return ruvia::detail::RedisTypesAccess::integerValue(
+            1, std::pmr::get_default_resource());
+    }
+
+    mutable std::optional<std::string> value;
+};
+
+struct AlertScheduleRedisState {
+    std::string script;
+    std::vector<std::vector<std::string>> pipelineCommands;
+    bool invalidStoredDuration = true;
+};
+
+struct AlertScheduleRedis {
+    std::shared_ptr<AlertScheduleRedisState> state =
+        std::make_shared<AlertScheduleRedisState>();
+
+    struct Pipeline {
+        std::shared_ptr<AlertScheduleRedisState> state;
+        std::vector<std::vector<std::string>> commands;
+
+        void command(std::span<const std::string_view> arguments) {
+            commands.emplace_back(arguments.begin(), arguments.end());
+        }
+
+        ruvia::Task<std::pmr::vector<ruvia::RedisValue>> exec() && {
+            state->pipelineCommands.insert(state->pipelineCommands.end(), commands.begin(),
+                                           commands.end());
+            std::pmr::vector<ruvia::RedisValue> replies;
+            replies.reserve(commands.size());
+            for (const auto& command : commands) {
+                if (!command.empty() && command.front() == "EVALSHA" &&
+                    state->invalidStoredDuration &&
+                    state->script.find("if duration then") == std::string::npos) {
+                    replies.push_back(ruvia::detail::RedisTypesAccess::errorValue(
+                        "attempt to perform arithmetic on a nil value",
+                        std::pmr::get_default_resource()));
+                    continue;
+                }
+                replies.push_back(ruvia::detail::RedisTypesAccess::integerValue(
+                    1, std::pmr::get_default_resource()));
+            }
+            co_return replies;
+        }
+    };
+
+    ruvia::Task<std::string> scriptLoad(std::string_view script) const {
+        state->script = std::string(script);
+        co_return "alert-schedule-sha";
+    }
+
+    [[nodiscard]] Pipeline pipeline() const { return Pipeline{state}; }
+};
+
+struct GroupedBoundedRedis {
+    mutable std::string script;
+    bool invalidDepth = true;
+
+    ruvia::Task<ruvia::RedisValue>
+    eval(std::string_view value, std::span<const std::string_view>,
+         std::span<const std::string_view>) const {
+        script = std::string(value);
+        if (invalidDepth &&
+            script.find("local depth = tonumber(redis.call('GET', KEYS[2]) or '0')\n"
+                        "if depth >=") != std::string::npos) {
+            co_return ruvia::detail::RedisTypesAccess::errorValue(
+                "attempt to compare nil with number",
+                std::pmr::get_default_resource());
+        }
+        co_return ruvia::detail::RedisTypesAccess::stringValue(
+            "1-0", std::pmr::get_default_resource());
+    }
+};
+
+struct GroupedAckRedis {
+    mutable std::string script;
+    mutable int depth = 5;
+
+    ruvia::Task<ruvia::RedisValue>
+    eval(std::string_view value, std::span<const std::string_view>,
+         std::span<const std::string_view>) const {
+        script = std::string(value);
+        const bool removed = false;
+        if (script.find("if removed > 0 then") == std::string::npos || removed) {
+            --depth;
+        }
+        co_return ruvia::detail::RedisTypesAccess::integerValue(
+            0, std::pmr::get_default_resource());
+    }
+};
+
+struct FailingLatestPipeline {
+    ruvia::Task<std::pmr::vector<ruvia::RedisValue>> exec() && {
+        std::pmr::vector<ruvia::RedisValue> replies;
+        replies.push_back(ruvia::detail::RedisTypesAccess::errorValue(
+            "injected latest projection failure", std::pmr::get_default_resource()));
+        co_return replies;
+    }
 };
 
 struct FailingConfigRedis {
@@ -144,6 +346,114 @@ struct FailingConfigRedis {
     mutable std::vector<std::vector<std::string>> pipelineCommands;
     bool failActiveSet;
     bool hasActiveVersion;
+};
+
+struct RecordingLatestRedisState {
+    std::vector<std::vector<std::string>> pipelineCommands;
+    std::vector<std::vector<std::string>> directCommands;
+    std::string preservedOnlineUntilMs{"2000000000000"};
+};
+
+struct RecordingLatestRedis {
+    std::shared_ptr<RecordingLatestRedisState> state =
+        std::make_shared<RecordingLatestRedisState>();
+
+    struct Pipeline {
+        std::shared_ptr<RecordingLatestRedisState> state;
+        std::vector<std::vector<std::string>> commands;
+
+        void command(std::span<const std::string_view> arguments) {
+            commands.emplace_back(arguments.begin(), arguments.end());
+        }
+
+        static ruvia::RedisValue string(std::string_view value) {
+            return ruvia::detail::RedisTypesAccess::stringValue(
+                value, std::pmr::get_default_resource());
+        }
+
+        static ruvia::RedisValue existingLatestReply() {
+            std::pmr::vector<ruvia::RedisValue> values;
+            values.push_back(string("device-1"));
+            values.push_back(string("{\"temperature\":true}"));
+            return ruvia::detail::RedisTypesAccess::arrayValue(
+                std::move(values), std::pmr::get_default_resource());
+        }
+
+        ruvia::RedisValue existingRuntimeReply() const {
+            std::pmr::vector<ruvia::RedisValue> values;
+            values.push_back(string("device-1"));
+            values.push_back(string(state->preservedOnlineUntilMs));
+            return ruvia::detail::RedisTypesAccess::arrayValue(
+                std::move(values), std::pmr::get_default_resource());
+        }
+
+        ruvia::Task<std::pmr::vector<ruvia::RedisValue>> exec() && {
+            state->pipelineCommands.insert(state->pipelineCommands.end(), commands.begin(),
+                                           commands.end());
+            std::pmr::vector<ruvia::RedisValue> replies;
+            replies.reserve(commands.size());
+            for (const auto& command : commands) {
+                if (command.size() >= 3 && command[0] == "HMGET" &&
+                    command[1] == "iot:device:D1:latest")
+                    replies.push_back(existingLatestReply());
+                else if (command.size() >= 3 && command[0] == "HMGET" &&
+                         command[1] == "iot:runtime:device:D1")
+                    replies.push_back(existingRuntimeReply());
+                else
+                    replies.push_back(ruvia::detail::RedisTypesAccess::integerValue(
+                        1, std::pmr::get_default_resource()));
+            }
+            co_return replies;
+        }
+    };
+
+    [[nodiscard]] Pipeline pipeline() const { return Pipeline{state}; }
+
+    ruvia::Task<ruvia::RedisValue>
+    command(std::span<const std::string_view> arguments) const {
+        state->directCommands.emplace_back(arguments.begin(), arguments.end());
+        co_return ruvia::detail::RedisTypesAccess::integerValue(
+            1, std::pmr::get_default_resource());
+    }
+};
+
+struct LatestProjectionDb {
+    template <typename Sql, typename Params> ruvia::Task<FakeDbResult> query(const Sql& sql,
+                                                                             const Params&) {
+        const std::string text(sql);
+        FakeDbResult result;
+        if (text.find("CASE WHEN p.protocol = 'SL651'") != std::string::npos) {
+            result.values.emplace_back(FakeDbRow{"device-1", "D1", "300000"});
+        } else if (text.find("WITH configured AS") != std::string::npos) {
+            result.values.emplace_back(FakeDbRow{
+                "device-1",
+                "D1",
+                "Modbus",
+                "temperature",
+                "New Name",
+                "℃",
+                "12.5",
+                "1700000000000",
+                "2",
+                "1",
+                "environment",
+                "",
+                "0",
+                "{\"id\":\"temperature\",\"name\":\"New Name\",\"value\":\"12.5\",\"unit\":\"℃\","
+                "\"scale\":2,\"decimals\":1,\"group\":\"environment\",\"encode\":\"\","
+                "\"sort\":0,\"protocol\":\"Modbus\",\"observedAt\":1700000000000,"
+                "\"updatedAt\":1700000001000,\"source\":\"database\"}"});
+        }
+        co_return result;
+    }
+};
+
+struct LatestProjectionContext {
+    LatestProjectionDb database;
+    RecordingLatestRedis redisClient;
+
+    LatestProjectionDb& db() noexcept { return database; }
+    RecordingLatestRedis redis() const noexcept { return redisClient; }
 };
 
 void require(bool condition, std::string_view message) {
@@ -1810,6 +2120,62 @@ void testRuntimeWritableContract() {
     const auto element = service::collector::config::detail::element(
         {{"id", "runtime-config-element"}, {"writable", "1"}});
     require(element.writable, "runtime did not deserialize writable state");
+    bool rejectedInvalidScale = false;
+    try {
+        (void)service::collector::config::detail::element(
+            {{"id", "runtime-config-element"}, {"scale", "1x"}});
+    } catch (const std::runtime_error& error) {
+        rejectedInvalidScale =
+            std::string_view(error.what()).find("invalid runtime decimal: scale") !=
+            std::string_view::npos;
+    }
+    require(rejectedInvalidScale,
+            "runtime accepted an element scale with trailing non-decimal bytes");
+    bool rejectedOutOfRangeSlave = false;
+    try {
+        (void)service::collector::config::detail::device(
+            {{"id", "runtime-config-device"}, {"slave_id", "300"}});
+    } catch (const std::runtime_error& error) {
+        rejectedOutOfRangeSlave =
+            std::string_view(error.what()).find("invalid runtime integer range: slave_id") !=
+            std::string_view::npos;
+    }
+    require(rejectedOutOfRangeSlave,
+            "runtime wrapped an out-of-range Modbus slave id");
+    bool rejectedInvalidWritable = false;
+    try {
+        (void)service::collector::config::detail::element(
+            {{"id", "runtime-config-element"}, {"writable", "2"}});
+    } catch (const std::runtime_error& error) {
+        rejectedInvalidWritable =
+            std::string_view(error.what()).find("invalid runtime boolean: writable") !=
+            std::string_view::npos;
+    }
+    require(rejectedInvalidWritable,
+            "runtime accepted a non-boolean writable flag");
+    bool rejectedInvalidHeartbeat = false;
+    try {
+        (void)service::collector::config::detail::device(
+            {{"id", "runtime-config-device"}, {"heartbeat_hex", "0G"}});
+    } catch (const std::runtime_error& error) {
+        rejectedInvalidHeartbeat =
+            std::string_view(error.what()).find("invalid runtime hex: heartbeat_hex") !=
+            std::string_view::npos;
+    }
+    require(rejectedInvalidHeartbeat,
+            "runtime silently dropped an invalid heartbeat HEX payload");
+}
+
+void testRuntimeRepositoryRejectsInvalidScale() {
+    RuntimeRepositoryScaleDb db;
+    bool rejected = false;
+    try {
+        (void)runTask(service::runtime::repository::loadRuntimeSnapshot(db));
+    } catch (const std::exception& error) {
+        rejected = std::string_view(error.what()).find(
+                       "invalid runtime repository decimal: scale") != std::string_view::npos;
+    }
+    require(rejected, "runtime repository accepted a Modbus scale with trailing bytes");
 }
 
 void testAtomicStreamFinalizationContract() {
@@ -1951,6 +2317,111 @@ void testFreshnessDeadlineWait() {
             "future deadline wait changed");
 }
 
+void testEdgeSessionOwnership() {
+    EdgeSessionRedis redis;
+    constexpr std::string_view nodeId = "00000000-0000-7000-8000-000000000002";
+    require(runTask(service::edge::session_state::claim(redis, nodeId, 11)),
+            "initial edge session claim failed");
+    require(runTask(service::edge::session_state::claim(redis, nodeId, 22)),
+            "replacement edge session claim failed");
+    require(!runTask(service::edge::session_state::refresh(redis, nodeId, 11)),
+            "stale edge session retained ownership");
+    require(redis.value == "22", "stale edge session overwrote the replacement epoch");
+    require(!runTask(service::edge::session_state::release(redis, nodeId, 11)),
+            "stale edge session reported replacement cleanup");
+    require(redis.value == "22", "stale edge session deleted the replacement epoch");
+    require(runTask(service::edge::session_state::refresh(redis, nodeId, 22)),
+            "active edge session failed to refresh ownership");
+    require(runTask(service::edge::session_state::release(redis, nodeId, 22)) && !redis.value,
+            "active edge session failed to release ownership");
+}
+
+void testLatestProjectionRejectsRedisErrors() {
+    bool rejected = false;
+    try {
+        runTask(service::telemetry::latest::executeProjectionPipeline(
+            FailingLatestPipeline{}, "test latest projection"));
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    require(rejected, "latest-value projection ignored a Redis pipeline error");
+}
+
+void testLatestProjectionRefreshesPreservedElementMetadata() {
+    LatestProjectionContext context;
+    runTask(service::telemetry::latest::projectDevice(context, "device-1"));
+
+    bool skippedExistingElement = false;
+    bool refreshesElementMetadata = false;
+    for (const auto& command : context.redisClient.state->pipelineCommands) {
+        if (command.size() >= 4 && command[0] == "HSETNX" &&
+            command[1] == "iot:device:D1:latest" && command[2] == "temperature")
+            skippedExistingElement = true;
+        if (!command.empty() && command[0] != "HSETNX") {
+            const auto hasElement = std::ranges::find(command, "temperature") != command.end();
+            const auto hasUpdatedName = std::ranges::any_of(command, [](const auto& argument) {
+                return argument.find("\"name\":\"New Name\"") != std::string::npos;
+            });
+            refreshesElementMetadata = refreshesElementMetadata || (hasElement && hasUpdatedName);
+        }
+    }
+    require(!skippedExistingElement,
+            "latest projection skipped existing element metadata refresh with HSETNX");
+    require(refreshesElementMetadata,
+            "latest projection did not write refreshed metadata for an existing element");
+}
+
+void testLatestProjectionRejectsInvalidPreservedDeadline() {
+    LatestProjectionContext context;
+    context.redisClient.state->preservedOnlineUntilMs = "not-a-number";
+    runTask(service::telemetry::latest::projectDevice(context, "device-1"));
+
+    bool emittedInvalidDeadline = false;
+    bool clearedDeadline = false;
+    for (const auto& command : context.redisClient.state->pipelineCommands) {
+        if (command.size() >= 4 && command[0] == "ZADD" &&
+            command[1] == "iot:schedule:device:online-deadlines" &&
+            command[2] == "not-a-number")
+            emittedInvalidDeadline = true;
+        if (command.size() >= 3 && command[0] == "ZREM" &&
+            command[1] == "iot:schedule:device:online-deadlines" && command[2] == "D1")
+            clearedDeadline = true;
+    }
+    require(!emittedInvalidDeadline,
+            "latest projection reused an invalid preserved online deadline");
+    require(clearedDeadline, "latest projection did not clear an invalid preserved deadline");
+}
+
+void testAlertScheduleSkipsInvalidStoredDuration() {
+    AlertScheduleRedis redis;
+    service::message::ParsedDeviceMessage message;
+    message.deviceId = "device-1";
+    message.deviceCode = "D1";
+    message.observedAtMs = 1700000000000;
+
+    runTask(service::alert::metadata::schedule(redis, std::vector{message}));
+    require(!redis.state->pipelineCommands.empty(),
+            "alert schedule did not issue a Redis pipeline command");
+}
+
+void testGroupedBoundedStreamSkipsInvalidDepth() {
+    GroupedBoundedRedis redis;
+    const auto id = runTask(service::message::redis::addGroupedBounded(
+        redis, "iot:test:stream",
+        std::vector<service::message::StreamField>{{"field", "value"}},
+        100, "iot:test:depth", 10));
+    require(id.has_value() && *id == "1-0",
+            "grouped bounded stream rejected a write when depth key was nonnumeric");
+}
+
+void testGroupedAckDoesNotDecrementStaleDepth() {
+    GroupedAckRedis redis;
+    runTask(service::message::redis::acknowledgeGroupedAndDelete(
+        redis, "iot:test:stream", "iot-engine:test", "stale-id", "iot:test:depth"));
+    require(redis.depth == 5,
+            "grouped stream stale ACK decremented the queued-depth counter");
+}
+
 void testCommandValueDecimalParsing() {
     namespace command = service::collector::command;
     require(command::decimal("1.5", "value") == 1.5,
@@ -1967,6 +2438,30 @@ void testCommandValueDecimalParsing() {
         }
         require(rejected, "command decimal parser accepted an invalid value");
     }
+
+    collector::ElementDefinition bcd;
+    bcd.id = "bcd-value";
+    bcd.name = "BCD value";
+    bcd.encoding = "BCD";
+    bcd.length = 2;
+    bcd.digits = 2;
+    bool rejectedNegativeBcd = false;
+    try {
+        command::validateValue(bcd, "-12.34");
+    } catch (const std::invalid_argument&) {
+        rejectedNegativeBcd = true;
+    }
+    require(rejectedNegativeBcd,
+            "command validation accepted a negative BCD value that encodes as positive");
+
+    bool rejectedNegativeBcdEncoding = false;
+    try {
+        (void)collector::sl651::detail::encodeValue(bcd, "-12.34");
+    } catch (const std::invalid_argument&) {
+        rejectedNegativeBcdEncoding = true;
+    }
+    require(rejectedNegativeBcdEncoding,
+            "SL651 encoded a negative BCD value as a positive wire value");
 }
 
 void testPacketLog() {
@@ -2324,6 +2819,49 @@ void testEdgeParsedMessageContract() {
     require(roundTrip.rawPayloads.empty(), "edge parsed message changed empty raw payloads");
     require(roundTrip.deviceCode == "PCS7" && roundTrip.source == "edge",
             "edge parsed message did not round-trip required fields");
+
+    parsed.occurredAtMs = 1784856700000;
+    parsed.observedAtMs = 4102444800000;
+    streamMessage.fields = service::message::parsedFields(parsed);
+    const auto future = service::message::parsedFrom(streamMessage);
+    require(future.observedAtMs == parsed.occurredAtMs,
+            "future device timestamp poisoned telemetry ordering");
+
+    parsed.observedAtMs = parsed.occurredAtMs - 60'000;
+    streamMessage.fields = service::message::parsedFields(parsed);
+    const auto historical = service::message::parsedFrom(streamMessage);
+    require(historical.observedAtMs == parsed.observedAtMs,
+            "valid historical device timestamp was replaced by receive time");
+}
+
+void testAtomicPendingCommandDispatch() {
+    service::message::ProtocolTask first;
+    first.messageId = "019f91c9-4087-7e6c-88c0-c431b0dc15d8";
+    first.deviceId = "019f91bf-6f83-7491-8a53-cd4fde034b72";
+    first.deviceCode = "D1";
+    first.protocol = "Modbus";
+    first.createdAtMs = 1000;
+    auto second = first;
+    second.messageId = "019f91c9-4087-7e6c-88c0-c431b0dc15d9";
+
+    std::vector<service::command::PendingDispatch> dispatches;
+    dispatches.push_back({.task = first,
+                          .streamFields = {{"message_id", first.messageId},
+                                           {"device_id", first.deviceId}}});
+    dispatches.push_back({.task = second,
+                          .streamFields = {{"message_id", second.messageId},
+                                           {"device_id", second.deviceId}}});
+
+    RecordingRedis redis(2);
+    runTask(service::command::dispatchPendingBatch(
+        redis, "iot:channel:command:worker:0:high",
+        service::command::PendingQueueKind::Stream, dispatches, "user-1", 10'000));
+    require(redis.keys.size() == 3 &&
+                redis.keys[1] == "iot:state:command:" + first.messageId &&
+                redis.keys[2] == "iot:state:command:" + second.messageId,
+            "pending command batch did not bind every state key to one Redis script");
+    require(redis.script.find("redis.call('XADD'") < redis.script.find("redis.call('HSET'"),
+            "pending state was written before the command queue entry");
 }
 
 } // namespace
@@ -2353,14 +2891,28 @@ int main() {
         run("s7 data types", testS7AllDataTypes);
         run("worker timer", testWorkerTimer);
         run("runtime writable contract", testRuntimeWritableContract);
+        run("runtime repository invalid scale", testRuntimeRepositoryRejectsInvalidScale);
         run("atomic stream finalization contract", testAtomicStreamFinalizationContract);
         run("runtime projection Redis errors", testRuntimeProjectionRejectsRedisErrors);
         run("runtime projection previous grace", testRuntimeProjectionRefreshesPreviousGrace);
         run("runtime set ordering contract", testRuntimeSetOrderingContract);
         run("realtime projection contract", testRealtimeProjectionContract);
         run("freshness deadline wait", testFreshnessDeadlineWait);
+        run("edge session ownership", testEdgeSessionOwnership);
+        run("latest projection Redis errors", testLatestProjectionRejectsRedisErrors);
+        run("latest projection metadata refresh",
+            testLatestProjectionRefreshesPreservedElementMetadata);
+        run("latest projection invalid preserved deadline",
+            testLatestProjectionRejectsInvalidPreservedDeadline);
+        run("alert schedule invalid stored duration",
+            testAlertScheduleSkipsInvalidStoredDuration);
+        run("grouped bounded stream invalid depth",
+            testGroupedBoundedStreamSkipsInvalidDepth);
+        run("grouped stream stale ACK depth",
+            testGroupedAckDoesNotDecrementStaleDepth);
         run("command value decimal parsing", testCommandValueDecimalParsing);
         run("edge parsed message contract", testEdgeParsedMessageContract);
+        run("atomic pending command dispatch", testAtomicPendingCommandDispatch);
         run("packet log", testPacketLog);
         std::cout << "collector protocol tests passed\n";
         return EXIT_SUCCESS;

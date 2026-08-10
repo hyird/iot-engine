@@ -127,13 +127,14 @@ enum PlatformConfigOperation {
 message Empty {}
 
 message Hello {
+  reserved 7;
+  reserved "enrollment_token";
   string imei = 1 [(nanopb).max_length = 15];
   string model = 2 [(nanopb).max_length = 128];
   string software_version = 3 [(nanopb).max_length = 32];
   string hostname = 4 [(nanopb).max_length = 64];
   string architecture = 5 [(nanopb).max_length = 32];
   string openwrt_release = 6 [(nanopb).max_length = 64];
-  string enrollment_token = 7 [(nanopb).max_length = 192];
   uint64 last_applied_config_version = 8;
   repeated uint32 supported_protocol_versions = 9 [(nanopb).max_count = 8];
   bool supports_tcp = 10;
@@ -591,12 +592,13 @@ message ModemControlResult {
 }
 
 message PlatformConfigRequest {
+  reserved 6;
+  reserved "enrollment_token";
   bytes request_id = 1 [(nanopb).max_size = 16];
   PlatformConfigOperation operation = 2;
   bytes target_platform_id = 3 [(nanopb).max_size = 16];
   string name = 4 [(nanopb).max_length = 32];
   string url = 5 [(nanopb).max_length = 255];
-  string enrollment_token = 6 [(nanopb).max_length = 192];
   bool enabled = 7;
   uint32 priority = 8;
   uint32 reconnect_interval_sec = 9;

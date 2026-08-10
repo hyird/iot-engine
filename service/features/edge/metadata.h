@@ -1,7 +1,9 @@
 #pragma once
 
 #include <charconv>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -29,6 +31,26 @@ if ARGV[1] == '1' then
 end
 return (#ARGV - 2) / 2
 )lua";
+
+inline constexpr std::string_view kLoadNodeSql = R"sql(
+SELECT d.id::text, d.link_id::text, d.protocol_params->>'device_code', p.protocol,
+       COALESCE(NULLIF(p.config->>'storageInterval', ''), '1'),
+       COALESCE(NULLIF(d.protocol_params->>'online_timeout', ''), '300')
+FROM device d
+JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
+JOIN protocol_config p ON p.id = d.protocol_config_id AND p.deleted_at IS NULL
+WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
+ORDER BY d.id)sql";
+
+inline constexpr std::string_view kLoadCatalogSql = R"sql(
+SELECT n.id::text, d.id::text, d.link_id::text, d.protocol_params->>'device_code', p.protocol,
+       COALESCE(NULLIF(p.config->>'storageInterval', ''), '1'),
+       COALESCE(NULLIF(d.protocol_params->>'online_timeout', ''), '300')
+FROM edge_node n
+LEFT JOIN link l ON l.edge_node_id = n.id AND l.execution = 'edge' AND l.deleted_at IS NULL
+LEFT JOIN device d ON d.link_id = l.id AND d.deleted_at IS NULL
+LEFT JOIN protocol_config p ON p.id = d.protocol_config_id AND p.deleted_at IS NULL
+ORDER BY n.id, d.id)sql";
 
 struct Device final {
     std::string linkId;
@@ -86,6 +108,37 @@ inline std::optional<std::int64_t> integer(std::string_view value) noexcept {
     return result;
 }
 
+inline double number(std::string_view value, double fallback = 0.0) noexcept {
+    if (value.empty())
+        return fallback;
+    double result{};
+    const auto [end, error] =
+        std::from_chars(value.data(), value.data() + value.size(), result);
+    if (error != std::errc{} || end != value.data() + value.size() || !std::isfinite(result))
+        return fallback;
+    return result;
+}
+
+inline std::int64_t positiveCeil(std::string_view value, double fallback = 1.0) noexcept {
+    double parsed = number(value, fallback);
+    if (parsed < 1.0)
+        parsed = 1.0;
+    const auto maximum = static_cast<double>(std::numeric_limits<std::int64_t>::max());
+    if (parsed > maximum)
+        return std::numeric_limits<std::int64_t>::max();
+    return static_cast<std::int64_t>(std::ceil(parsed));
+}
+
+inline std::int64_t onlineWindowMilliseconds(std::string_view value,
+                                             std::int64_t fallbackSeconds = 300) noexcept {
+    auto seconds = integer(value).value_or(fallbackSeconds);
+    if (seconds < 1)
+        seconds = fallbackSeconds;
+    if (seconds > std::numeric_limits<std::int64_t>::max() / 1000)
+        return std::numeric_limits<std::int64_t>::max();
+    return seconds * 1000;
+}
+
 inline std::optional<Device> decode(std::string_view value) {
     std::size_t offset{};
     const auto linkId = takeField(value, offset);
@@ -121,15 +174,7 @@ void queueStoreNode(Pipeline& pipeline, std::string_view nodeId,
 
 template <typename Context>
 ruvia::Task<NodeSnapshot> loadNodeFromDatabase(Context& context, std::string_view nodeId) {
-    const auto rows = co_await context.db().query(R"sql(
-SELECT d.id::text, d.link_id::text, d.protocol_params->>'device_code', p.protocol,
-       GREATEST(1, CEIL(COALESCE((p.config->>'storageInterval')::numeric, 1)))::bigint,
-       COALESCE((d.protocol_params->>'online_timeout')::bigint, 300) * 1000
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN protocol_config p ON p.id = d.protocol_config_id AND p.deleted_at IS NULL
-WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
-ORDER BY d.id)sql",
+    const auto rows = co_await context.db().query(kLoadNodeSql,
                                                     service::common::dbParams(nodeId));
     NodeSnapshot snapshot;
     snapshot.reserve(rows.rows().size());
@@ -137,23 +182,15 @@ ORDER BY d.id)sql",
         snapshot.emplace(
             std::string(row[0].text()),
             Device{std::string(row[1].text()), std::string(row[2].text()),
-                   std::string(row[3].text()), integer(row[4].text()).value_or(1),
-                   integer(row[5].text()).value_or(300000)});
+                   std::string(row[3].text()), positiveCeil(row[4].text()),
+                   onlineWindowMilliseconds(row[5].text())});
     }
     co_return snapshot;
 }
 
 template <typename Context>
 ruvia::Task<Catalog> loadCatalogFromDatabase(Context& context) {
-    const auto rows = co_await context.db().query(R"sql(
-SELECT n.id::text, d.id::text, d.link_id::text, d.protocol_params->>'device_code', p.protocol,
-       GREATEST(1, CEIL(COALESCE((p.config->>'storageInterval')::numeric, 1)))::bigint,
-       COALESCE((d.protocol_params->>'online_timeout')::bigint, 300) * 1000
-FROM edge_node n
-LEFT JOIN link l ON l.edge_node_id = n.id AND l.execution = 'edge' AND l.deleted_at IS NULL
-LEFT JOIN device d ON d.link_id = l.id AND d.deleted_at IS NULL
-LEFT JOIN protocol_config p ON p.id = d.protocol_config_id AND p.deleted_at IS NULL
-ORDER BY n.id, d.id)sql");
+    const auto rows = co_await context.db().query(kLoadCatalogSql);
     Catalog catalog;
     for (const auto& row : rows.rows()) {
         auto& snapshot = catalog[std::string(row[0].text())];
@@ -162,8 +199,8 @@ ORDER BY n.id, d.id)sql");
         snapshot.emplace(
             std::string(row[1].text()),
             Device{std::string(row[2].text()), std::string(row[3].text()),
-                   std::string(row[4].text()), integer(row[5].text()).value_or(1),
-                   integer(row[6].text()).value_or(300000)});
+                   std::string(row[4].text()), positiveCeil(row[5].text()),
+                   onlineWindowMilliseconds(row[6].text())});
     }
     co_return catalog;
 }

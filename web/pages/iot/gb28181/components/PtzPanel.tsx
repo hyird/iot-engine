@@ -195,6 +195,7 @@ export function PtzPanel({ speed, disabled, onSpeedChange, onAction, onPosition 
                     <InputNumber<number>
                         className="w-full"
                         min={1}
+                        max={1000}
                         precision={2}
                         value={zoom}
                         disabled={disabled}

@@ -715,11 +715,10 @@ export default function EdgeNodePage() {
     const showPlatform = (item?: Edge.Platform) => {
         platformForm.setFieldsValue(
             item
-                ? { ...item, enrollmentToken: '' }
+                ? { ...item }
                 : {
                       name: '',
                       baseUrl: 'https://',
-                      enrollmentToken: '',
                       enabled: true,
                       priority: 100,
                       reconnectIntervalSec: 5,
@@ -1852,9 +1851,6 @@ export default function EdgeNodePage() {
                     </Form.Item>
                     <Form.Item label="平台 HTTP(S) 地址" name="baseUrl">
                         <Input placeholder="https://example.com" />
-                    </Form.Item>
-                    <Form.Item label="注册凭据（可选）" name="enrollmentToken">
-                        <Input.Password maxLength={192} />
                     </Form.Item>
                     <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
                         <Form.Item label="优先级" name="priority">

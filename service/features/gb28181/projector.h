@@ -9,6 +9,7 @@
 #include <ruvia/web/WebWorker.h>
 
 #include <atomic>
+#include <charconv>
 #include <future>
 #include <iostream>
 #include <memory>
@@ -107,17 +108,25 @@ public:
       std::cerr << "GB28181 stream projection was rejected\n";
   }
 
+#ifdef IOT_ENGINE_TESTING
+  static int integerForTest(std::string_view value, int fallback = 0) {
+    return integer(value, fallback);
+  }
+#endif
+
 private:
   static bool boolean(std::string_view value) {
     return value == "t" || value == "true" || value == "1";
   }
 
   static int integer(std::string_view value, int fallback = 0) {
-    try {
-      return std::stoi(std::string(value));
-    } catch (...) {
+    int parsed = 0;
+    const auto *begin = value.data();
+    const auto *end = begin + value.size();
+    const auto result = std::from_chars(begin, end, parsed);
+    if (result.ec != std::errc{} || result.ptr != end)
       return fallback;
-    }
+    return parsed;
   }
 
   static ruvia::Task<Snapshot> hydrate(ruvia::WebWorkerContext &context) {

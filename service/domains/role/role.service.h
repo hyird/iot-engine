@@ -43,7 +43,10 @@ class RoleService {
 
         const auto countRows =
             co_await c.db().query("SELECT COUNT(*) FROM sys_role" + where, params);
-        const auto total = std::stoll(std::string(countRows.rows().front()[0].text()));
+        const auto total =
+            service::common::parseInt64(
+                std::optional<std::string_view>{countRows.rows().front()[0].text()})
+                .value_or(0);
         auto listParams = params;
         listParams.emplace_back(pageSize);
         const auto limitIndex = listParams.size();
@@ -201,6 +204,8 @@ VALUES ($1, $2, $3, NULLIF($4, ''), $5,
         std::string result;
         for (const auto& permission : *permissions) {
             const auto value = permission.view();
+            if (value.empty() || value.size() > 128)
+                service::common::fail(13005, "权限编码不能为空且不能超过 128 个字符", 400);
             if (value.find(',') != std::string_view::npos)
                 service::common::fail(13005, "权限编码不能包含逗号", 400);
             if (!result.empty())

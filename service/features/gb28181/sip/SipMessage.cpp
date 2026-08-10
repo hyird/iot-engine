@@ -1,6 +1,7 @@
 #include "sip/SipMessage.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <sstream>
 
@@ -29,7 +30,6 @@ std::optional<SipMessage> SipMessage::parse(const std::string& raw) {
     }
 
     SipMessage message;
-    message.body = raw.substr(headerEnd + 4);
 
     std::istringstream lines(raw.substr(0, headerEnd));
     if (!std::getline(lines, message.startLine)) {
@@ -42,17 +42,28 @@ std::optional<SipMessage> SipMessage::parse(const std::string& raw) {
     std::istringstream start(message.startLine);
     if (message.startLine.rfind("SIP/2.0", 0) == 0) {
         std::string version;
-        start >> version >> message.statusCode;
+        std::string status;
+        start >> version >> status;
+        const auto [end, error] =
+            std::from_chars(status.data(), status.data() + status.size(), message.statusCode);
+        if (version != "SIP/2.0" || error != std::errc{} || end != status.data() + status.size() ||
+            message.statusCode < 100 || message.statusCode > 699)
+            return std::nullopt;
         std::getline(start, message.reasonPhrase);
         message.reasonPhrase = trim(message.reasonPhrase);
     } else {
-        start >> message.method >> message.requestUri;
+        std::string version;
+        std::string extra;
+        start >> message.method >> message.requestUri >> version;
+        if (version != "SIP/2.0" || (start >> extra))
+            return std::nullopt;
     }
 
     if (message.method.empty() && message.statusCode == 0) {
         return std::nullopt;
     }
 
+    std::optional<std::size_t> contentLength;
     std::string line;
     while (std::getline(lines, line)) {
         if (!line.empty() && line.back() == '\r') {
@@ -64,8 +75,22 @@ std::optional<SipMessage> SipMessage::parse(const std::string& raw) {
         }
         auto name = lower(trim(line.substr(0, colon)));
         auto value = trim(line.substr(colon + 1));
+        if (name == "content-length" || name == "l") {
+            std::size_t parsed{};
+            const auto [end, error] =
+                std::from_chars(value.data(), value.data() + value.size(), parsed);
+            if (value.empty() || error != std::errc{} || end != value.data() + value.size() ||
+                (contentLength && *contentLength != parsed))
+                return std::nullopt;
+            contentLength = parsed;
+        }
         message.headers[name] = value;
     }
+
+    const auto body = std::string_view(raw).substr(headerEnd + 4);
+    if (contentLength && body.size() != *contentLength)
+        return std::nullopt;
+    message.body.assign(body);
 
     return message;
 }

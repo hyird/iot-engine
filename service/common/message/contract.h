@@ -173,6 +173,15 @@ inline std::int64_t utcNowMilliseconds() noexcept {
 
 inline std::string nextMessageId() { return service::common::nextUuidV7(); }
 
+inline std::int64_t effectiveObservedAt(std::int64_t observedAtMs,
+                                        std::int64_t occurredAtMs) noexcept {
+    if (occurredAtMs <= 0)
+        return std::max<std::int64_t>(observedAtMs, 0);
+    if (observedAtMs <= 0 || observedAtMs > occurredAtMs)
+        return occurredAtMs;
+    return observedAtMs;
+}
+
 inline std::string protocolTaskDepthKey(std::string_view groupKey) {
     return std::string(kProtocolTaskDepthPrefix) + std::string(groupKey);
 }
@@ -452,6 +461,7 @@ inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
     parsed.connectionId = std::string(require("connection_id"));
     parsed.occurredAtMs = integer("occurred_at_ms");
     parsed.observedAtMs = integer("observed_at_ms");
+    parsed.observedAtMs = effectiveObservedAt(parsed.observedAtMs, parsed.occurredAtMs);
     const auto storageInterval = message.get("storage_interval");
     if (!storageInterval.empty()) {
         std::int64_t result = 0;

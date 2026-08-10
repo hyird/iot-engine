@@ -2,11 +2,15 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <ruvia/core/Task.h>
 
@@ -26,6 +30,104 @@ class DeviceRouteError final : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
 };
+
+enum class PendingQueueKind { Stream, List };
+
+struct PendingDispatch {
+    message::ProtocolTask task;
+    std::vector<message::StreamField> streamFields;
+    std::string listPayload;
+};
+
+template <typename Redis>
+ruvia::Task<bool> dispatchPendingBatch(const Redis& redis, std::string_view queueKey,
+                                       PendingQueueKind kind,
+                                       const std::vector<PendingDispatch>& dispatches,
+                                       std::string_view submittedBy,
+                                       std::size_t maxLength) {
+    if (queueKey.empty() || dispatches.empty() || maxLength == 0)
+        throw std::invalid_argument("pending command batch is incomplete");
+    std::set<std::string, std::less<>> commandIds;
+    std::vector<std::string> keys;
+    keys.reserve(dispatches.size() + 1);
+    keys.emplace_back(queueKey);
+    std::vector<std::string> arguments{
+        kind == PendingQueueKind::Stream ? "stream" : "list",
+        std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::hours(24))
+                           .count()),
+        std::to_string(maxLength), std::to_string(dispatches.size())};
+    for (const auto& dispatch : dispatches) {
+        const auto& task = dispatch.task;
+        if (task.messageId.empty() || task.deviceId.empty() || task.deviceCode.empty() ||
+            task.protocol.empty() || !commandIds.emplace(task.messageId).second)
+            throw std::invalid_argument("pending command state is incomplete");
+        if ((kind == PendingQueueKind::Stream && dispatch.streamFields.empty()) ||
+            (kind == PendingQueueKind::List && dispatch.listPayload.empty()))
+            throw std::invalid_argument("pending command queue payload is incomplete");
+        keys.push_back("iot:state:command:" + task.messageId);
+        arguments.push_back(task.messageId);
+        arguments.push_back(task.deviceId);
+        arguments.push_back(task.deviceCode);
+        arguments.push_back(task.protocol);
+        arguments.emplace_back(submittedBy);
+        arguments.push_back(std::to_string(task.createdAtMs));
+        if (kind == PendingQueueKind::Stream) {
+            arguments.push_back(std::to_string(dispatch.streamFields.size()));
+            for (const auto& field : dispatch.streamFields) {
+                arguments.push_back(field.name);
+                arguments.push_back(field.value);
+            }
+        } else {
+            arguments.emplace_back("1");
+            arguments.push_back(dispatch.listPayload);
+        }
+    }
+
+    static constexpr std::string_view script = R"lua(
+local mode = ARGV[1]
+local ttl = ARGV[2]
+local maximum = ARGV[3]
+local count = tonumber(ARGV[4])
+local offset = 5
+for task = 1, count do
+  local command_id = ARGV[offset]
+  local device_id = ARGV[offset + 1]
+  local device_code = ARGV[offset + 2]
+  local protocol = ARGV[offset + 3]
+  local submitted_by = ARGV[offset + 4]
+  local created_at = ARGV[offset + 5]
+  local item_count = tonumber(ARGV[offset + 6])
+  offset = offset + 7
+  if mode == 'stream' then
+    local values = {'MAXLEN', '~', maximum, '*'}
+    for item = 1, item_count * 2 do
+      values[#values + 1] = ARGV[offset]
+      offset = offset + 1
+    end
+    redis.call('XADD', KEYS[1], unpack(values))
+  else
+    redis.call('RPUSH', KEYS[1], ARGV[offset])
+    offset = offset + item_count
+  end
+  redis.call('HSET', KEYS[task + 1],
+    'command_id', command_id, 'device_id', device_id,
+    'device_code', device_code, 'protocol', protocol,
+    'status', 'PENDING', 'submitted_by', submitted_by,
+    'created_at_ms', created_at)
+  redis.call('PEXPIRE', KEYS[task + 1], ttl)
+end
+if mode == 'list' then redis.call('LTRIM', KEYS[1], -tonumber(maximum), -1) end
+return count
+)lua";
+    std::vector<std::string_view> keyViews(keys.begin(), keys.end());
+    std::vector<std::string_view> argumentViews(arguments.begin(), arguments.end());
+    const auto reply = co_await redis.eval(script, keyViews, argumentViews);
+    if (reply.kind() != ruvia::RedisValue::Kind::kInteger ||
+        reply.integer() != static_cast<std::int64_t>(dispatches.size()))
+        message::redis::throwValue("dispatch pending command batch", reply);
+    co_return true;
+}
 
 inline std::string_view field(const std::vector<message::StreamField>& fields,
                               std::string_view name) noexcept {

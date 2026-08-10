@@ -184,7 +184,6 @@ export namespace Edge {
         platformId?: string;
         name: string;
         baseUrl: string;
-        enrollmentToken?: string;
         enabled: boolean;
         priority: number;
         reconnectIntervalSec: number;

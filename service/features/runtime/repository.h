@@ -5,8 +5,11 @@
 // 注意：M2 增量，被协程实例化前不会完整编译。
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -78,16 +81,57 @@ inline std::vector<std::uint8_t> packetBytes(std::string_view mode, std::string_
 }
 
 namespace detail {
+inline std::string_view trim(std::string_view value) noexcept {
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())))
+        value.remove_prefix(1);
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())))
+        value.remove_suffix(1);
+    return value;
+}
+
+inline std::int64_t integer(std::string_view value, std::int64_t fallback = 0) noexcept {
+    value = trim(value);
+    if (value.empty())
+        return fallback;
+    std::int64_t result = 0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
+    return error == std::errc{} && end == value.data() + value.size() ? result : fallback;
+}
+
+inline std::int64_t integerInRange(std::string_view value, std::int64_t minimum,
+                                   std::int64_t maximum, std::int64_t fallback) noexcept {
+    const auto parsed = integer(value, fallback);
+    return parsed < minimum || parsed > maximum ? fallback : parsed;
+}
+
 template <typename Row> std::string cell(const Row& row, std::size_t column) {
     return std::string(row[column].text());
 }
-template <typename Row> std::int64_t cellInt(const Row& row, std::size_t column) {
-    const auto value = row[column].text();
-    return value.empty() ? 0 : std::stoll(std::string(value));
+template <typename Row>
+std::int64_t cellInt(const Row& row, std::size_t column, std::int64_t fallback = 0) {
+    return integer(row[column].text(), fallback);
+}
+template <typename Row>
+std::uint16_t cellPort(const Row& row, std::size_t column, std::uint16_t fallback = 0) {
+    return static_cast<std::uint16_t>(integerInRange(
+        row[column].text(), 0, std::numeric_limits<std::uint16_t>::max(), fallback));
+}
+template <typename Row>
+std::uint8_t cellUInt8(const Row& row, std::size_t column, std::uint8_t fallback = 0) {
+    return static_cast<std::uint8_t>(integerInRange(
+        row[column].text(), 0, std::numeric_limits<std::uint8_t>::max(), fallback));
 }
 template <typename Row> bool cellBool(const Row& row, std::size_t column) {
     const auto value = row[column].text();
     return value == "t" || value == "true" || value == "1";
+}
+inline double decimal(std::string_view value, std::string_view name) {
+    double parsed = 0.0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (value.empty() || error != std::errc{} || end != value.data() + value.size() ||
+        !std::isfinite(parsed))
+        throw std::runtime_error("invalid runtime repository decimal: " + std::string(name));
+    return parsed;
 }
 } // namespace detail
 
@@ -95,11 +139,12 @@ template <typename Database> inline ruvia::Task<RuntimeSnapshot> loadRuntimeSnap
     using detail::cell;
     using detail::cellBool;
     using detail::cellInt;
+    using detail::decimal;
     RuntimeSnapshot snapshot;
 
     const auto links = co_await db.query(R"sql(
 SELECT id::text, name, endpoint->>'mode', protocol, COALESCE(endpoint->>'ip', ''),
-       COALESCE((endpoint->>'port')::integer, 0), status
+       COALESCE(NULLIF(endpoint->>'port', ''), '0'), status
 FROM link
 WHERE deleted_at IS NULL AND execution = 'collector'
 ORDER BY id)sql");
@@ -110,7 +155,7 @@ ORDER BY id)sql");
         link.mode = cell(row, 2);
         link.protocol = cell(row, 3);
         link.ip = cell(row, 4);
-        link.port = static_cast<std::uint16_t>(cellInt(row, 5));
+        link.port = detail::cellPort(row, 5);
         link.status = cell(row, 6);
         snapshot.links.push_back(std::move(link));
     }
@@ -120,7 +165,8 @@ ORDER BY id)sql");
         linkIndexes.emplace(snapshot.links[index].id, index);
 
     const auto targets = co_await db.query(R"sql(
-SELECT l.id::text, target->>'id', target->>'name', target->>'ip', target->>'port',
+SELECT l.id::text, target->>'id', target->>'name', target->>'ip',
+       COALESCE(NULLIF(target->>'port', ''), '0'),
        COALESCE(target->>'status', 'enabled')
 FROM link l
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(l.endpoint->'targets', '[]'::jsonb)) AS target
@@ -136,7 +182,7 @@ ORDER BY l.id)sql");
         target.id = cell(row, 1);
         target.name = cell(row, 2);
         target.ip = cell(row, 3);
-        target.port = static_cast<std::uint16_t>(cellInt(row, 4));
+        target.port = detail::cellPort(row, 4);
         target.status = cell(row, 5);
         snapshot.links[link->second].targets.push_back(std::move(target));
     }
@@ -146,13 +192,13 @@ SELECT d.id::text, d.protocol_params->>'device_code', d.name, d.link_id::text,
        l.endpoint->>'mode',
        COALESCE(d.protocol_params->>'target_id', ''), p.protocol,
        COALESCE(d.protocol_params->>'timezone', '+08:00'),
-       COALESCE((d.protocol_params->>'online_timeout')::integer, 300),
+       COALESCE(NULLIF(d.protocol_params->>'online_timeout', ''), '300'),
        COALESCE(d.protocol_params->'heartbeat'->>'mode', 'OFF'),
        COALESCE(d.protocol_params->'heartbeat'->>'content', ''),
        COALESCE(d.protocol_params->'registration'->>'mode', 'OFF'),
        COALESCE(d.protocol_params->'registration'->>'content', ''),
        COALESCE(d.protocol_params->>'modbus_mode', ''),
-       COALESCE((d.protocol_params->>'slave_id')::integer, 1),
+       COALESCE(NULLIF(d.protocol_params->>'slave_id', ''), '1'),
        COALESCE(p.config->'connection'->>'mode', 'RACK_SLOT'),
        COALESCE(p.config->'connection'->>'connectionType', 'PG'),
        COALESCE(p.config->'connection'->>'rack', '0'),
@@ -186,7 +232,7 @@ ORDER BY d.link_id, d.id)sql");
         device.targetId = cell(row, 5);
         device.protocol = cell(row, 6);
         device.timezone = cell(row, 7);
-        device.onlineTimeout = cellInt(row, 8);
+        device.onlineTimeout = cellInt(row, 8, 300);
         device.heartbeatMode = cell(row, 9);
         device.heartbeatBytes = packetBytes(device.heartbeatMode, row[10].text());
         device.registrationMode = cell(row, 11);
@@ -198,7 +244,7 @@ ORDER BY d.link_id, d.id)sql");
             device.registrationBytes.clear();
         }
         device.modbusMode = cell(row, 13);
-        device.slaveId = static_cast<std::uint8_t>(cellInt(row, 14));
+        device.slaveId = detail::cellUInt8(row, 14, 1);
         device.s7ConnectionMode = cell(row, 15);
         device.s7ConnectionType = cell(row, 16);
         device.s7Rack = cellInt(row, 17);
@@ -282,12 +328,15 @@ SELECT d.id::text, element->>'id', element->>'name', COALESCE(element->>'unit', 
        element->>'registerType',
        element->>'address', element->>'quantity',
        COALESCE(element->>'scale', '1'), COALESCE(element->>'decimals', '-1'),
-       COALESCE((element->>'writable')::boolean, FALSE)
+       CASE lower(COALESCE(element->>'writable', 'false'))
+         WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE ELSE FALSE END
 FROM device d
 JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'Modbus'
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]'::jsonb)) element
 WHERE d.deleted_at IS NULL AND d.status = 'enabled' AND p.deleted_at IS NULL AND p.enabled = TRUE
-ORDER BY d.id, (element->>'address')::integer)sql");
+ORDER BY d.id,
+         CASE WHEN COALESCE(element->>'address', '') ~ '^-?[0-9]{1,18}$'
+              THEN (element->>'address')::bigint ELSE 0 END)sql");
     for (const auto& row : modbusElements.rows()) {
         auto* device = findDevice(row[0].text());
         if (!device)
@@ -302,7 +351,7 @@ ORDER BY d.id, (element->>'address')::integer)sql");
         element.registerType = cell(row, 6);
         element.address = cellInt(row, 7);
         element.quantity = cellInt(row, 8);
-        element.scale = std::stod(cell(row, 9));
+        element.scale = decimal(row[9].text(), "scale");
         element.decimals = cellInt(row, 10);
         element.writable = cellBool(row, 11);
         device->elements.push_back(std::move(element));
@@ -314,12 +363,15 @@ SELECT d.id::text, element->>'id', element->>'name', COALESCE(element->>'unit', 
        COALESCE(element->>'dbNumber', '0'), element->>'start',
        COALESCE(element->>'startBit', '0'), element->>'size',
        COALESCE(element->>'decimals', '-1'),
-       COALESCE((element->>'writable')::boolean, FALSE)
+       CASE lower(COALESCE(element->>'writable', 'false'))
+         WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE ELSE FALSE END
 FROM device d
 JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'S7'
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]'::jsonb)) element
 WHERE d.deleted_at IS NULL AND d.status = 'enabled' AND p.deleted_at IS NULL AND p.enabled = TRUE
-ORDER BY d.id, (element->>'start')::integer)sql");
+ORDER BY d.id,
+         CASE WHEN COALESCE(element->>'start', '') ~ '^-?[0-9]{1,18}$'
+              THEN (element->>'start')::bigint ELSE 0 END)sql");
     for (const auto& row : s7Elements.rows()) {
         auto* device = findDevice(row[0].text());
         if (!device)

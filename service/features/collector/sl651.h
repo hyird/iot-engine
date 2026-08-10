@@ -147,9 +147,11 @@ inline std::vector<std::uint8_t> encodeValue(const ElementDefinition& element,
     const auto length = static_cast<std::size_t>(std::max<std::int64_t>(1, element.length));
     if (element.encoding == "BCD") {
         const auto parsed = command::decimal(value, element.name);
+        if (parsed < 0)
+            throw std::invalid_argument("command_invalid: SL651 BCD must not be negative");
         const auto digits = std::clamp<std::int64_t>(element.digits, 0, 8);
         const auto scaled = static_cast<std::uint64_t>(
-            std::llround(std::abs(parsed) * std::pow(10.0, static_cast<double>(digits))));
+            std::llround(parsed * std::pow(10.0, static_cast<double>(digits))));
         auto decimalValue = std::to_string(scaled);
         if (decimalValue.size() > length * 2)
             throw std::invalid_argument("command_invalid: SL651 BCD is too long");

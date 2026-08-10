@@ -97,6 +97,13 @@ inline std::string stateJson(std::string_view state, std::string_view reason,
     return result;
 }
 
+template <typename Pipeline>
+ruvia::Task<bool> executeProjectionPipeline(Pipeline pipeline, std::string_view operation) {
+    const auto replies = co_await std::move(pipeline).exec();
+    service::message::redis::requirePipelineSuccess(operation, replies);
+    co_return true;
+}
+
 template <typename Redis>
 ruvia::Task<void> initializeDevice(const Redis& redis, std::string_view deviceId,
                                    std::string_view deviceCode) {
@@ -319,11 +326,11 @@ ruvia::Task<std::optional<std::int64_t>> nextDeadline(const Redis& redis) {
     if (reply.array().size() != 2 ||
         reply.array()[1].kind() != ruvia::RedisValue::Kind::kString)
         service::message::redis::throwValue("parse next device online deadline", reply);
-    try {
-        co_return std::stoll(std::string(reply.array()[1].string()));
-    } catch (const std::exception&) {
+    const auto score = service::common::parseInt64(
+        std::optional<std::string_view>{reply.array()[1].string()});
+    if (!score)
         throw std::runtime_error("invalid device online deadline score");
-    }
+    co_return *score;
 }
 
 inline std::optional<std::chrono::milliseconds>
@@ -340,14 +347,24 @@ ruvia::Task<void> project(Context& context, std::string filter,
                           std::vector<ruvia::DbValue> params, bool resetRuntime,
                           bool preserveExisting = false) {
     const auto redis = context.redis();
-    const auto now = std::to_string(service::message::utcNowMilliseconds());
+    const auto nowMs = service::message::utcNowMilliseconds();
+    const auto now = std::to_string(nowMs);
     const auto devices = co_await context.db().query(
         R"sql(
 SELECT d.id::text, d.protocol_params->>'device_code',
        CASE WHEN p.protocol = 'SL651'
-            THEN COALESCE((d.protocol_params->>'online_timeout')::bigint, 300) * 1000
-            ELSE COALESCE((p.config->>'readInterval')::numeric,
-                          (p.config->>'pollInterval')::numeric, 5) * 3000 END::bigint
+            THEN COALESCE(
+                   CASE WHEN COALESCE(d.protocol_params->>'online_timeout', '') ~ '^-?[0-9]{1,18}$'
+                        THEN (d.protocol_params->>'online_timeout')::bigint END,
+                   300) * 1000
+            ELSE COALESCE(
+                   CASE WHEN COALESCE(p.config->>'readInterval', '') ~
+                             '^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$'
+                        THEN (p.config->>'readInterval')::numeric END,
+                   CASE WHEN COALESCE(p.config->>'pollInterval', '') ~
+                             '^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$'
+                        THEN (p.config->>'pollInterval')::numeric END,
+                   5) * 3000 END::bigint
 FROM device d
 JOIN protocol_config p ON p.id = d.protocol_config_id
 WHERE d.deleted_at IS NULL)sql" +
@@ -397,9 +414,15 @@ WHERE d.deleted_at IS NULL)sql" +
                 recoveryDeviceCodes.emplace(row[1].text());
             } else if (replies[runtimeIndex].array()[1].kind() ==
                        ruvia::RedisValue::Kind::kString) {
-                preservedDeadlines.insert_or_assign(
-                    std::string(row[1].text()),
-                    std::string(replies[runtimeIndex].array()[1].string()));
+                const auto deadline = service::common::parseInt64(
+                    std::optional<std::string_view>{replies[runtimeIndex].array()[1].string()});
+                if (deadline) {
+                    preservedDeadlines.insert_or_assign(std::string(row[1].text()),
+                                                        std::to_string(*deadline));
+                } else {
+                    recoveryDeviceIds.emplace(row[0].text());
+                    recoveryDeviceCodes.emplace(row[1].text());
+                }
             }
         }
     } else {
@@ -417,7 +440,10 @@ WHERE d.deleted_at IS NULL)sql" +
     for (const auto& row : devices.rows()) {
         const std::string deviceId(row[0].text());
         const std::string deviceCode(row[1].text());
-        onlineWindows.insert_or_assign(deviceCode, std::stoll(std::string(row[2].text())));
+        onlineWindows.insert_or_assign(
+            deviceCode,
+            service::common::parseInt64(std::optional<std::string_view>{row[2].text()})
+                .value_or(300000));
         elementIds.insert_or_assign(deviceCode, std::vector<std::string>{});
         if (recoveryDeviceIds.contains(deviceId)) {
             metaCommands.push_back({"DEL", latestKey(deviceCode)});
@@ -472,7 +498,7 @@ WHERE d.deleted_at IS NULL)sql" +
             metaPipeline.command(views);
         }
     }
-    (void)co_await std::move(metaPipeline).exec();
+    co_await executeProjectionPipeline(std::move(metaPipeline), "project latest metadata");
 
     const auto elements = co_await context.db().query(R"sql(
 WITH configured AS (
@@ -529,10 +555,19 @@ SELECT numbered.device_id::text, numbered.device_code, numbered.protocol,
          'name', numbered.element->>'name',
          'value', COALESCE(point.value->>'value', '-'),
          'unit', COALESCE(numbered.element->>'unit', ''),
-         'scale', COALESCE(NULLIF(numbered.element->>'scale', '')::numeric, 1),
+         'scale',
+           COALESCE(
+             CASE WHEN COALESCE(numbered.element->>'scale', '') ~
+                       '^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$'
+                  THEN (numbered.element->>'scale')::numeric END,
+             1),
          'decimals',
-           COALESCE(NULLIF(COALESCE(numbered.element->>'decimals',
-                                    numbered.element->>'digits'), '')::bigint, -1),
+           COALESCE(
+             CASE WHEN COALESCE(numbered.element->>'decimals',
+                                numbered.element->>'digits', '') ~ '^-?[0-9]{1,18}$'
+                  THEN COALESCE(numbered.element->>'decimals',
+                                numbered.element->>'digits')::bigint END,
+             -1),
          'group', COALESCE(numbered.element->>'group', ''),
          'encode', COALESCE(numbered.element->>'encode', ''),
          'sort', numbered.sort_order,
@@ -550,6 +585,25 @@ LEFT JOIN device_latest_value point
 ORDER BY numbered.device_id, numbered.protocol_order,
          numbered.function_order, numbered.element_order)sql",
                                                    params);
+    static constexpr std::string_view kRefreshElementMetadataScript = R"lua(
+local element_id = ARGV[1]
+local ok, incoming = pcall(cjson.decode, ARGV[2])
+if not ok or type(incoming) ~= 'table' then
+  return redis.error_reply('invalid latest element metadata')
+end
+local existing = redis.call('HGET', KEYS[1], element_id)
+if existing ~= false and existing ~= nil and existing ~= '' then
+  local decoded_ok, previous = pcall(cjson.decode, existing)
+  if decoded_ok and type(previous) == 'table' then
+    if previous.value ~= nil then incoming.value = previous.value end
+    if previous.observedAt ~= nil then incoming.observedAt = previous.observedAt end
+    if previous.updatedAt ~= nil then incoming.updatedAt = previous.updatedAt end
+    if previous.source ~= nil then incoming.source = previous.source end
+  end
+end
+redis.call('HSET', KEYS[1], element_id, cjson.encode(incoming))
+return 1
+)lua";
     auto pipeline = redis.pipeline();
     std::vector<std::vector<std::string>> commands;
     commands.reserve(elements.rows().size() + elementIds.size());
@@ -558,18 +612,20 @@ ORDER BY numbered.device_id, numbered.protocol_order,
         const std::string deviceCode(row[1].text());
         const std::string elementId(row[3].text());
         elementIds[deviceCode].push_back(elementId);
-        commands.push_back(
-            {recoveryDeviceCodes.contains(deviceCode) ? "HSET" : "HSETNX",
-             latestKey(deviceCode), elementId, std::string(row[13].text())});
+        commands.push_back({"EVAL", std::string(kRefreshElementMetadataScript), "1",
+                            latestKey(deviceCode), elementId, std::string(row[13].text())});
         std::vector<std::string_view> views;
         views.reserve(commands.back().size());
         for (const auto& argument : commands.back())
             views.push_back(argument);
         pipeline.command(views);
         if (!row[7].text().empty()) {
-            auto& lastReport = lastReports[deviceCode];
-            lastReport = std::max(
-                lastReport, static_cast<std::int64_t>(std::stoll(std::string(row[7].text()))));
+            const auto parsed = service::common::parseInt64(
+                std::optional<std::string_view>{row[7].text()});
+            if (parsed) {
+                auto& lastReport = lastReports[deviceCode];
+                lastReport = std::max(lastReport, *parsed);
+            }
         }
     }
     for (const auto& [deviceCode, ids] : elementIds) {
@@ -581,18 +637,17 @@ ORDER BY numbered.device_id, numbered.protocol_order,
         pipeline.command(views);
     }
     if (!commands.empty())
-        (void)co_await std::move(pipeline).exec();
+        co_await executeProjectionPipeline(std::move(pipeline), "project latest elements");
 
     if (!lastReports.empty()) {
         auto reportPipeline = redis.pipeline();
         std::vector<std::vector<std::string>> reportCommands;
         reportCommands.reserve(lastReports.size() * 2);
-        const auto nowMilliseconds = std::stoll(now);
         for (const auto& [deviceCode, lastReport] : lastReports) {
             const auto window =
                 onlineWindows.contains(deviceCode) ? onlineWindows.at(deviceCode) : 300000;
             const auto onlineUntil = lastReport + window;
-            const auto online = onlineUntil >= nowMilliseconds;
+            const auto online = onlineUntil >= nowMs;
             const auto state = online ? std::string_view("online") : std::string_view("offline");
             const auto reason = online ? std::string_view{} : std::string_view("data_stale");
             const auto lastReportText = std::to_string(lastReport);
@@ -616,7 +671,7 @@ ORDER BY numbered.device_id, numbered.protocol_order,
                                                         reportCommands.back().end());
             reportPipeline.command(deadlineViews);
         }
-        (void)co_await std::move(reportPipeline).exec();
+        co_await executeProjectionPipeline(std::move(reportPipeline), "project latest state");
     }
     co_await signalFreshness(redis);
 }

@@ -194,7 +194,6 @@ export const platformSchema = z.object({
             (value) => value.startsWith('http://') || value.startsWith('https://'),
             '平台地址只支持 HTTP 或 HTTPS'
         ),
-    enrollmentToken: z.string().max(192).optional(),
     enabled: z.boolean(),
     priority: z.number().int().min(0).max(65535),
     reconnectIntervalSec: z.number().int().min(1).max(3600),

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <memory_resource>
@@ -75,9 +76,10 @@ inline Entry decode(std::string_view encoded) {
     result.id.assign(fields[0]);
     result.name.assign(fields[1]);
     result.status.assign(fields[2]);
-    try {
-        result.expiresAtMs = std::stoll(std::string(fields[3]));
-    } catch (const std::exception&) {
+    const auto expiration = fields[3];
+    const auto [end, error] =
+        std::from_chars(expiration.data(), expiration.data() + expiration.size(), result.expiresAtMs);
+    if (expiration.empty() || error != std::errc{} || end != expiration.data() + expiration.size()) {
         throw std::runtime_error("invalid projected access-session expiration");
     }
     for (auto& scope : parseStringArray(fields[4]))

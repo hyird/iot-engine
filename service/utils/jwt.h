@@ -1,7 +1,9 @@
 #pragma once
 
+#include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -41,23 +43,25 @@ inline std::string requiredSecret(const ruvia::Env& env, std::string_view name) 
 }
 
 inline std::chrono::seconds duration(std::string_view value, std::chrono::seconds fallback) {
-    try {
-        if (value.empty())
-            return fallback;
-        std::int64_t multiplier = 1;
-        const char suffix = value.back();
-        if (suffix == 'm')
-            multiplier = 60;
-        else if (suffix == 'h')
-            multiplier = 3600;
-        else if (suffix == 'd')
-            multiplier = 86400;
-        const bool hasSuffix = suffix == 's' || suffix == 'm' || suffix == 'h' || suffix == 'd';
-        const auto number = hasSuffix ? value.substr(0, value.size() - 1) : value;
-        return std::chrono::seconds(std::stoll(std::string(number)) * multiplier);
-    } catch (...) {
+    if (value.empty())
         return fallback;
-    }
+    std::int64_t multiplier = 1;
+    const char suffix = value.back();
+    if (suffix == 'm')
+        multiplier = 60;
+    else if (suffix == 'h')
+        multiplier = 3600;
+    else if (suffix == 'd')
+        multiplier = 86400;
+    const bool hasSuffix = suffix == 's' || suffix == 'm' || suffix == 'h' || suffix == 'd';
+    const auto number = hasSuffix ? value.substr(0, value.size() - 1) : value;
+    std::int64_t amount = 0;
+    const auto [end, error] =
+        std::from_chars(number.data(), number.data() + number.size(), amount);
+    if (number.empty() || error != std::errc{} || end != number.data() + number.size() ||
+        amount <= 0 || amount > std::numeric_limits<std::int64_t>::max() / multiplier)
+        return fallback;
+    return std::chrono::seconds(amount * multiplier);
 }
 
 inline std::string sign(ruvia::Context& c, const core::JwtPayload& payload,

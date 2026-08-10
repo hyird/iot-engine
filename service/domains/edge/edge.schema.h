@@ -152,8 +152,6 @@ class PlatformValidator final : public ruvia::Middleware<PlatformValidator> {
                    RUVIA_MAX(32, "平台名称不能超过 32 个字符")),
         RUVIA_RULE_NAME("baseUrl", baseUrl, RUVIA_REQUIRED("平台地址不能为空"),
                         RUVIA_MAX(255, "平台地址不能超过 255 个字符")),
-        RUVIA_RULE_NAME("enrollmentToken", enrollmentToken,
-                        RUVIA_MAX(192, "注册凭据不能超过 192 个字符")),
         RUVIA_RULE(priority, RUVIA_MIN(0, "优先级必须在 0 - 65535 之间"),
                    RUVIA_MAX(65535, "优先级必须在 0 - 65535 之间")),
         RUVIA_RULE_NAME("reconnectIntervalSec", reconnectIntervalSec,

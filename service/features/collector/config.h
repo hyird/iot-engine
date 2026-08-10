@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <charconv>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -374,10 +375,46 @@ inline std::int64_t integer(const std::vector<message::StreamField>& fields, std
     return result;
 }
 
+inline std::int64_t integerInRange(const std::vector<message::StreamField>& fields,
+                                   std::string_view name, std::int64_t minimum,
+                                   std::int64_t maximum, std::int64_t fallback = 0) {
+    const auto value = integer(fields, name, fallback);
+    if (value < minimum || value > maximum)
+        throw std::runtime_error("invalid runtime integer range: " + std::string(name));
+    return value;
+}
+
+inline bool boolean(const std::vector<message::StreamField>& fields, std::string_view name,
+                    bool fallback = false) {
+    const auto value = field(fields, name);
+    if (value.empty())
+        return fallback;
+    if (value == "0")
+        return false;
+    if (value == "1")
+        return true;
+    throw std::runtime_error("invalid runtime boolean: " + std::string(name));
+}
+
+inline std::vector<std::uint8_t> hexBytes(const std::vector<message::StreamField>& fields,
+                                          std::string_view name) {
+    const auto value = field(fields, name);
+    auto result = message::fromHex(value);
+    if (result.empty() && !value.empty())
+        throw std::runtime_error("invalid runtime hex: " + std::string(name));
+    return result;
+}
+
 inline double decimal(const std::vector<message::StreamField>& fields, std::string_view name,
                       double fallback = 0) {
     const auto value = field(fields, name);
-    return value.empty() ? fallback : std::stod(std::string(value));
+    if (value.empty())
+        return fallback;
+    double result = 0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
+    if (error != std::errc{} || end != value.data() + value.size() || !std::isfinite(result))
+        throw std::runtime_error("invalid runtime decimal: " + std::string(name));
+    return result;
 }
 
 inline DeviceDefinition device(const std::vector<message::StreamField>& fields) {
@@ -392,11 +429,11 @@ inline DeviceDefinition device(const std::vector<message::StreamField>& fields) 
     result.timezone = field(fields, "timezone");
     result.onlineTimeout = integer(fields, "online_timeout", 300);
     result.heartbeatMode = field(fields, "heartbeat_mode");
-    result.heartbeatBytes = message::fromHex(field(fields, "heartbeat_hex"));
+    result.heartbeatBytes = hexBytes(fields, "heartbeat_hex");
     result.registrationMode = field(fields, "registration_mode");
-    result.registrationBytes = message::fromHex(field(fields, "registration_hex"));
+    result.registrationBytes = hexBytes(fields, "registration_hex");
     result.modbusMode = field(fields, "modbus_mode");
-    result.slaveId = static_cast<std::uint8_t>(integer(fields, "slave_id", 1));
+    result.slaveId = static_cast<std::uint8_t>(integerInRange(fields, "slave_id", 0, 255, 1));
     result.modbusMergeGap = integer(fields, "modbus_merge_gap", 100);
     result.modbusMaxQuantity = integer(fields, "modbus_max_quantity", 125);
     result.s7ConnectionMode = field(fields, "s7_connection_mode");
@@ -430,7 +467,7 @@ inline ElementDefinition element(const std::vector<message::StreamField>& fields
     result.quantity = integer(fields, "quantity");
     result.scale = decimal(fields, "scale", 1);
     result.decimals = integer(fields, "decimals", -1);
-    result.writable = integer(fields, "writable") != 0;
+    result.writable = boolean(fields, "writable");
     result.area = field(fields, "area");
     result.dbNumber = integer(fields, "db_number");
     result.start = integer(fields, "start");
@@ -442,7 +479,7 @@ inline ElementDefinition element(const std::vector<message::StreamField>& fields
     result.encoding = field(fields, "encoding");
     result.length = integer(fields, "length");
     result.digits = integer(fields, "digits");
-    result.responseElement = integer(fields, "response_element") != 0;
+    result.responseElement = boolean(fields, "response_element");
     return result;
 }
 

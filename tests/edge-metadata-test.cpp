@@ -11,6 +11,20 @@ void require(bool condition, const char* message) {
         throw std::runtime_error(message);
 }
 
+void requireNoSqlCast(std::string_view query) {
+    require(query.find("(p.config->>'storageInterval')::numeric") == std::string_view::npos,
+            "edge metadata directly casts storageInterval");
+    require(query.find("(d.protocol_params->>'online_timeout')::bigint") ==
+                std::string_view::npos,
+            "edge metadata directly casts online_timeout");
+    require(query.find("COALESCE(NULLIF(p.config->>'storageInterval', ''), '1')") !=
+                std::string_view::npos,
+            "edge metadata does not leave storageInterval for strict parsing");
+    require(query.find("COALESCE(NULLIF(d.protocol_params->>'online_timeout', ''), '300')") !=
+                std::string_view::npos,
+            "edge metadata does not leave online_timeout for strict parsing");
+}
+
 int main() {
     try {
         const metadata::Device input{
@@ -49,6 +63,8 @@ int main() {
         }
         require(metadata::key("node") == "iot:edge:metadata:node",
                 "metadata Redis key is unstable");
+        requireNoSqlCast(metadata::kLoadNodeSql);
+        requireNoSqlCast(metadata::kLoadCatalogSql);
         std::cout << "edge metadata tests passed\n";
         return 0;
     } catch (const std::exception& error) {

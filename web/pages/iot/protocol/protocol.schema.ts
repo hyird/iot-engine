@@ -19,9 +19,44 @@ const modbusRegisterSchema = z.object({
         'UINT64',
         'DOUBLE',
     ]),
-    address: z.number().min(0, '寄存器地址不能小于 0').max(65535, '寄存器地址不能大于 65535'),
-    quantity: z.number().min(1, '寄存器数量不能小于 1').max(4, '寄存器数量不能大于 4'),
+    address: z
+        .number()
+        .int('寄存器地址必须是整数')
+        .min(0, '寄存器地址不能小于 0')
+        .max(65535, '寄存器地址不能大于 65535'),
+    quantity: z
+        .number()
+        .int('寄存器数量必须是整数')
+        .min(1, '寄存器数量不能小于 1')
+        .max(4, '寄存器数量不能大于 4'),
 });
+
+const s7AreaSchema = z
+    .object({
+        id: z.string().min(1, '寄存器 ID 不能为空'),
+        name: z.string().min(1, '寄存器名称不能为空'),
+        group: z.string().optional(),
+        area: z.enum(['DB', 'V', 'MK', 'PE', 'PA', 'CT', 'TM']),
+        dataType: z
+            .enum(['BOOL', 'INT8', 'UINT8', 'INT16', 'UINT16', 'INT32', 'UINT32', 'FLOAT', 'LREAL', 'STRING'])
+            .optional(),
+        dbNumber: z.number().int().min(1, 'DB 编号不能小于 1').optional(),
+        start: z.number().int().min(0, '起始偏移不能小于 0'),
+        startBit: z.number().int().min(0, '位号不能小于 0').max(7, '位号只能是 0~7').optional(),
+        size: z.number().int().min(1, '长度不能小于 1'),
+        unit: z.string().optional(),
+        decimals: z.number().int().min(-1, '小数位不能小于 -1').max(8, '小数位不能大于 8').optional(),
+        writable: z.boolean().optional(),
+        remark: z.string().optional(),
+    })
+    .superRefine((area, context) => {
+        if (area.area === 'DB' && area.dbNumber === undefined)
+            context.addIssue({
+                code: 'custom',
+                path: ['dbNumber'],
+                message: 'DB 区域必须填写 DB 编号',
+            });
+    });
 
 function isObject(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -89,12 +124,21 @@ export const protocolCreateSchema = baseSchema
                     path: ['config', 'plcModel'],
                     message: 'PLC型号无效',
                 });
-            if (!Array.isArray(config.areas))
+            if (!Array.isArray(config.areas)) {
                 context.addIssue({
                     code: 'custom',
                     path: ['config', 'areas'],
                     message: '寄存器必须是数组',
                 });
+            } else {
+                const areasResult = z.array(s7AreaSchema).safeParse(config.areas);
+                if (!areasResult.success)
+                    context.addIssue({
+                        code: 'custom',
+                        path: ['config', 'areas'],
+                        message: areasResult.error.issues[0]?.message ?? 'S7 寄存器配置无效',
+                    });
+            }
             if (!isObject(config.connection)) {
                 context.addIssue({
                     code: 'custom',

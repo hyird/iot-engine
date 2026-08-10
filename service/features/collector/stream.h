@@ -133,7 +133,7 @@ addGroupedBounded(const Redis& redis, std::string_view stream,
 if redis.call('XLEN', KEYS[1]) >= tonumber(ARGV[1]) then
   return false
 end
-local depth = tonumber(redis.call('GET', KEYS[2]) or '0')
+local depth = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
 if depth >= tonumber(ARGV[2]) then
   return false
 end
@@ -427,14 +427,18 @@ inline ruvia::Task<void> acknowledgeGroupedAndDelete(const Redis& redis,
                                                      std::string_view id,
                                                      std::string_view depthKey) {
     static constexpr std::string_view script = R"lua(
-local acknowledged = redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
-redis.call('XDEL', KEYS[1], ARGV[2])
-local depth = redis.call('DECR', KEYS[2])
-if depth <= 0 then
-  redis.call('DEL', KEYS[2])
-end
-return acknowledged
-)lua";
+	local acknowledged = redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
+	local removed = redis.call('XDEL', KEYS[1], ARGV[2])
+	if removed > 0 then
+	  local depth = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
+	  if depth <= 1 then
+	    redis.call('DEL', KEYS[2])
+	  else
+	    redis.call('DECR', KEYS[2])
+	  end
+	end
+	return acknowledged
+	)lua";
     const std::string streamStr(stream);
     const std::string depthStr(depthKey);
     const std::string groupStr(consumerGroup);
@@ -547,16 +551,20 @@ inline ruvia::Task<bool> completeInflightTask(const Redis& redis, std::string_vi
     static constexpr std::string_view script = R"lua(
 if redis.call('HGET', KEYS[3], 'token') ~= ARGV[3] then
   return 0
-end
-redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
-redis.call('XDEL', KEYS[1], ARGV[2])
-redis.call('DEL', KEYS[3])
-local depth = redis.call('DECR', KEYS[2])
-if depth <= 0 then
-  redis.call('DEL', KEYS[2])
-end
-return 1
-)lua";
+	end
+	redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
+	local removed = redis.call('XDEL', KEYS[1], ARGV[2])
+	redis.call('DEL', KEYS[3])
+	if removed > 0 then
+	  local depth = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
+	  if depth <= 1 then
+	    redis.call('DEL', KEYS[2])
+	  else
+	    redis.call('DECR', KEYS[2])
+	  end
+	end
+	return 1
+	)lua";
     const std::string streamStr(stream);
     const std::string depthStr(depthKey);
     const std::string inflightStr(inflightKey);

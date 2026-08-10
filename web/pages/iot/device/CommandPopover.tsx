@@ -37,6 +37,7 @@ const INTEGER_RANGES: Record<string, [bigint, bigint]> = {
 
 const HEX_VALUE_PATTERN = /^[0-9a-fA-F]+$/;
 const INTEGER_VALUE_PATTERN = /^[+-]?\d+$/;
+const DECIMAL_VALUE_PATTERN = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
 
 const parseBigIntStrict = (value: string): bigint | null => {
     if (!INTEGER_VALUE_PATTERN.test(value)) return null;
@@ -47,7 +48,7 @@ const parseBigIntStrict = (value: string): bigint | null => {
     }
 };
 
-const validateValue = (element: CommandElement): string | null => {
+export const validateValue = (element: CommandElement): string | null => {
     const value = element.value.trim();
     if (!value) return `「${element.name}」值不能为空`;
     if (element.dataType === 'BOOL') {
@@ -57,7 +58,11 @@ const validateValue = (element: CommandElement): string | null => {
     }
     if (element.dataType) {
         if (element.dataType === 'STRING') {
-            if (typeof element.size === 'number' && element.size > 0 && value.length > element.size)
+            if (
+                typeof element.size === 'number' &&
+                element.size > 0 &&
+                new TextEncoder().encode(value).byteLength > element.size
+            )
                 return `「${element.name}」STRING 长度不能超过 ${element.size} 字节`;
             return null;
         }
@@ -69,7 +74,7 @@ const validateValue = (element: CommandElement): string | null => {
                 return `「${element.name}」${element.dataType} 范围 ${range[0]} ~ ${range[1]}`;
             return null;
         }
-        const number = Number(value);
+        const number = DECIMAL_VALUE_PATTERN.test(value) ? Number(value) : Number.NaN;
         if (!Number.isFinite(number)) return `「${element.name}」请输入有效数字`;
         if (
             (element.dataType === 'FLOAT32' || element.dataType === 'FLOAT') &&
@@ -79,8 +84,9 @@ const validateValue = (element: CommandElement): string | null => {
         return null;
     }
     if (element.encode === 'BCD') {
-        const number = Number(value);
+        const number = DECIMAL_VALUE_PATTERN.test(value) ? Number(value) : Number.NaN;
         if (!Number.isFinite(number)) return `「${element.name}」BCD 编码只能输入数字`;
+        if (number < 0) return `「${element.name}」BCD 编码不支持负数`;
         const digits = Math.max(0, Math.min(8, element.digits ?? 0));
         const length = Math.max(1, element.length ?? 1);
         if (Math.round(Math.abs(number) * 10 ** digits) >= 10 ** (length * 2))
@@ -98,7 +104,9 @@ const validateValue = (element: CommandElement): string | null => {
             return `「${element.name}」${element.encode} 编码长度不能超过 ${element.length} 字节`;
         return null;
     }
-    return Number.isFinite(Number(value)) ? null : `「${element.name}」请输入有效数字`;
+    return DECIMAL_VALUE_PATTERN.test(value) && Number.isFinite(Number(value))
+        ? null
+        : `「${element.name}」请输入有效数字`;
 };
 
 const isDeviceOnline = (device: Device.RealTimeData) => {

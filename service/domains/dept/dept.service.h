@@ -51,7 +51,10 @@ class DeptService {
 
         const auto countRows =
             co_await c.db().query("SELECT COUNT(*) FROM sys_department d" + where, params);
-        const auto total = std::stoll(std::string(countRows.rows().front()[0].text()));
+        const auto total =
+            service::common::parseInt64(
+                std::optional<std::string_view>{countRows.rows().front()[0].text()})
+                .value_or(0);
         auto listParams = params;
         listParams.emplace_back(pageSize);
         const auto limitIndex = listParams.size();
@@ -200,7 +203,9 @@ VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, '')::uuid, NULLIF($5, '')::uuid, $6, 
             .parentName(row[4].text())
             .leaderId(row[5].text())
             .leaderName(row[6].text())
-            .sortOrder(static_cast<ruvia::Int64>(std::stoll(std::string(row[7].text()))))
+            .sortOrder(static_cast<ruvia::Int64>(
+                service::common::parseInt64(std::optional<std::string_view>{row[7].text()})
+                    .value_or(0)))
             .status(row[8].text())
             .createdAt(row[9].text())
             .updatedAt(row[10].text());

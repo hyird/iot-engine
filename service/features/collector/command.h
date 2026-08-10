@@ -130,9 +130,12 @@ inline void validateValue(const ElementDefinition& element, std::string_view val
     }
     if (element.encoding == "BCD") {
         const auto parsed = decimal(value, name);
+        if (parsed < 0)
+            throw std::invalid_argument("command_invalid: " + name +
+                                        " BCD must not be negative");
         const auto digits = std::clamp<std::int64_t>(element.digits, 0, 8);
         const auto length = std::max<std::int64_t>(1, element.length);
-        const auto scaled = std::round(std::abs(parsed) * std::pow(10.0, digits));
+        const auto scaled = std::round(parsed * std::pow(10.0, digits));
         if (scaled >= std::pow(10.0, length * 2))
             throw std::invalid_argument("command_invalid: " + name + " BCD is too long");
         return;

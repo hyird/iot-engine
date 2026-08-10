@@ -548,8 +548,11 @@ ORDER BY incoming.input_sequence)sql";
         const auto rows = co_await context.db().query(sql, params);
         std::vector<std::string> previous(messages.size(), "{}");
         for (const auto& row : rows.rows()) {
-            const auto sequence = static_cast<std::size_t>(
-                std::stoull(std::string(row[0].text())));
+            const auto parsedSequence =
+                service::common::parseInt64(std::optional<std::string_view>{row[0].text()});
+            if (!parsedSequence || *parsedSequence < 0)
+                continue;
+            const auto sequence = static_cast<std::size_t>(*parsedSequence);
             if (sequence < previous.size() && !row[1].isNull())
                 previous[sequence].assign(row[1].text());
         }

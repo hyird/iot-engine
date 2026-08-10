@@ -89,12 +89,15 @@ public:
       co_await drainOutbox(context);
       co_return;
     }
-    std::vector<std::vector<Evaluation>> evaluations(relevant.size());
-    for (const auto &row : rules.rows()) {
-      const auto sequence =
-          static_cast<std::size_t>(std::stoull(std::string(row[0].text())));
-      if (sequence >= relevant.size())
-        continue;
+	    std::vector<std::vector<Evaluation>> evaluations(relevant.size());
+	    for (const auto &row : rules.rows()) {
+	      const auto parsedSequence =
+	          service::common::parseInt64(std::optional<std::string_view>{row[0].text()});
+	      if (!parsedSequence || *parsedSequence < 0)
+	        continue;
+	      const auto sequence = static_cast<std::size_t>(*parsedSequence);
+	      if (sequence >= relevant.size())
+	        continue;
       evaluations[sequence].push_back(
           evaluation(row, 1, relevant[sequence]->valuesJson));
     }
@@ -106,8 +109,8 @@ public:
     co_await drainOutbox(context);
   }
 
-  static ruvia::Task<void>
-  evaluateOfflineDue(ruvia::WebWorkerContext &context) {
+	  static ruvia::Task<void>
+	  evaluateOfflineDue(ruvia::WebWorkerContext &context) {
     const auto now = nowMilliseconds();
     const auto due = co_await metadata::dueOffline(context.redis(), now);
     if (due.empty())
@@ -125,10 +128,14 @@ public:
           offlineEvaluationSql(uniqueRules, params), params);
       co_await apply(context, rules, "{}", now);
     }
-    co_await metadata::removeOfflineDeadlines(context.redis(), due);
-  }
+	    co_await metadata::removeOfflineDeadlines(context.redis(), due);
+	  }
 
-private:
+#ifdef IOT_ENGINE_TESTING
+	  static std::string evaluationTailForTest() { return evaluationTail(); }
+#endif
+
+	private:
   struct Evaluation {
     std::string ruleId;
     std::string ruleName;
@@ -519,54 +526,80 @@ LIMIT 256)sql");
 , conditions AS (
   SELECT samples.*,
          condition.value AS condition,
-         CASE condition.value->>'type'
-           WHEN 'offline' THEN
-             samples.observed_at IS NULL OR samples.observed_at <
-               NOW() - (COALESCE(NULLIF(condition.value->>'duration', '')::integer, 300)
-                        * interval '1 second')
-           WHEN 'threshold' THEN
-             CASE condition.value->>'operator'
-               WHEN '>' THEN current_value.numeric_value > NULLIF(condition.value->>'value', '')::numeric
-               WHEN '>=' THEN current_value.numeric_value >= NULLIF(condition.value->>'value', '')::numeric
-               WHEN '<' THEN current_value.numeric_value < NULLIF(condition.value->>'value', '')::numeric
-               WHEN '<=' THEN current_value.numeric_value <= NULLIF(condition.value->>'value', '')::numeric
-               WHEN '==' THEN current_value.text_value = condition.value->>'value'
-               WHEN '!=' THEN current_value.text_value <> condition.value->>'value'
-               ELSE FALSE
-             END
-           WHEN 'rate_of_change' THEN
-             CASE
-               WHEN previous_value.numeric_value IS NULL OR previous_value.numeric_value = 0
-                    OR current_value.numeric_value IS NULL THEN FALSE
-               WHEN COALESCE(condition.value->>'changeDirection', 'any') = 'rise' THEN
-                 current_value.numeric_value > previous_value.numeric_value
-                 AND ABS((current_value.numeric_value - previous_value.numeric_value)
-                         / previous_value.numeric_value * 100)
-                     >= COALESCE(NULLIF(condition.value->>'changeRate', '')::numeric, 0)
-               WHEN COALESCE(condition.value->>'changeDirection', 'any') = 'fall' THEN
-                 current_value.numeric_value < previous_value.numeric_value
-                 AND ABS((current_value.numeric_value - previous_value.numeric_value)
-                         / previous_value.numeric_value * 100)
-                     >= COALESCE(NULLIF(condition.value->>'changeRate', '')::numeric, 0)
-               ELSE
-                 ABS((current_value.numeric_value - previous_value.numeric_value)
-                     / previous_value.numeric_value * 100)
-                   >= COALESCE(NULLIF(condition.value->>'changeRate', '')::numeric, 0)
-             END
-           ELSE FALSE
-         END AS condition_matched
-  FROM samples
-  CROSS JOIN LATERAL jsonb_array_elements(samples.conditions) condition(value)
-  LEFT JOIN LATERAL (
-    SELECT
-      CASE
-        WHEN condition.value ? 'bitIndex'
-          AND (samples.data->'values'->(condition.value->>'elementKey')->>'value')
-              ~ '^-?[0-9]+$'
-        THEN (((samples.data->'values'->(condition.value->>'elementKey')->>'value')::bigint
-               >> (condition.value->>'bitIndex')::integer) & 1)::text
-        ELSE samples.data->'values'->(condition.value->>'elementKey')->>'value'
-      END AS text_value,
+	         CASE condition.value->>'type'
+	           WHEN 'offline' THEN
+	             samples.observed_at IS NULL OR samples.observed_at <
+	               NOW() - (COALESCE(condition_number.duration_seconds, 300)
+	                        * interval '1 second')
+	           WHEN 'threshold' THEN
+	             CASE condition.value->>'operator'
+	               WHEN '>' THEN COALESCE(current_value.numeric_value > condition_number.threshold_value, FALSE)
+	               WHEN '>=' THEN COALESCE(current_value.numeric_value >= condition_number.threshold_value, FALSE)
+	               WHEN '<' THEN COALESCE(current_value.numeric_value < condition_number.threshold_value, FALSE)
+	               WHEN '<=' THEN COALESCE(current_value.numeric_value <= condition_number.threshold_value, FALSE)
+	               WHEN '==' THEN current_value.text_value = condition.value->>'value'
+	               WHEN '!=' THEN current_value.text_value <> condition.value->>'value'
+	               ELSE FALSE
+	             END
+	           WHEN 'rate_of_change' THEN
+	             CASE
+	               WHEN previous_value.numeric_value IS NULL OR previous_value.numeric_value = 0
+	                    OR current_value.numeric_value IS NULL
+	                    OR condition_number.change_rate IS NULL THEN FALSE
+	               WHEN COALESCE(condition.value->>'changeDirection', 'any') = 'rise' THEN
+	                 current_value.numeric_value > previous_value.numeric_value
+	                 AND ABS((current_value.numeric_value - previous_value.numeric_value)
+	                         / previous_value.numeric_value * 100)
+	                     >= condition_number.change_rate
+	               WHEN COALESCE(condition.value->>'changeDirection', 'any') = 'fall' THEN
+	                 current_value.numeric_value < previous_value.numeric_value
+	                 AND ABS((current_value.numeric_value - previous_value.numeric_value)
+	                         / previous_value.numeric_value * 100)
+	                     >= condition_number.change_rate
+	               ELSE
+	                 ABS((current_value.numeric_value - previous_value.numeric_value)
+	                     / previous_value.numeric_value * 100)
+	                   >= condition_number.change_rate
+	             END
+	           ELSE FALSE
+	         END AS condition_matched
+	  FROM samples
+	  CROSS JOIN LATERAL jsonb_array_elements(samples.conditions) condition(value)
+	  LEFT JOIN LATERAL (
+	    SELECT
+	      CASE
+	        WHEN condition.value->>'duration' ~ '^[0-9]{1,10}$'
+	        THEN LEAST(GREATEST((condition.value->>'duration')::bigint, 1), 86400)::integer
+	      END AS duration_seconds,
+	      CASE
+	        WHEN length(COALESCE(condition.value->>'value', '')) <= 64
+	             AND condition.value->>'value' ~ '^-?[0-9]+([.][0-9]+)?$'
+	        THEN (condition.value->>'value')::numeric
+	      END AS threshold_value,
+	      CASE
+	        WHEN condition.value->>'changeRate' IS NULL
+	             OR condition.value->>'changeRate' = '' THEN 0::numeric
+	        WHEN length(condition.value->>'changeRate') <= 64
+	             AND condition.value->>'changeRate' ~ '^[0-9]+([.][0-9]+)?$'
+	        THEN (condition.value->>'changeRate')::numeric
+	      END AS change_rate,
+	      CASE
+	        WHEN condition.value->>'bitIndex' ~ '^([0-9]|[1-5][0-9]|6[0-2])$'
+	        THEN (condition.value->>'bitIndex')::integer
+	      END AS bit_index
+	  ) condition_number ON TRUE
+	  LEFT JOIN LATERAL (
+	    SELECT
+	      CASE
+	        WHEN condition.value ? 'bitIndex'
+	          AND condition_number.bit_index IS NOT NULL
+	          AND (samples.data->'values'->(condition.value->>'elementKey')->>'value')
+	              ~ '^-?[0-9]+$'
+	        THEN (((samples.data->'values'->(condition.value->>'elementKey')->>'value')::bigint
+	               >> condition_number.bit_index) & 1)::text
+	        WHEN condition.value ? 'bitIndex' THEN NULL
+	        ELSE samples.data->'values'->(condition.value->>'elementKey')->>'value'
+	      END AS text_value,
       CASE
         WHEN (samples.data->'values'->(condition.value->>'elementKey')->>'value')
              ~ '^-?[0-9]+([.][0-9]+)?$'

@@ -36,9 +36,12 @@ inline constexpr bool supportsProtocolVersion(std::uint32_t version) noexcept {
     return version == kLegacyProtocolVersion || version == kProtocolVersion;
 }
 
-inline std::string& platformIdStorage() {
-    static std::string value(kDefaultPlatformId);
-    return value;
+inline constexpr bool terminalCommandResultState(pb::CommandState state) noexcept {
+    return state == pb::COMMAND_STATE_SUCCEEDED ||
+           state == pb::COMMAND_STATE_READBACK_MISMATCH ||
+           state == pb::COMMAND_STATE_DEVICE_OFFLINE ||
+           state == pb::COMMAND_STATE_TIMED_OUT ||
+           state == pb::COMMAND_STATE_REJECTED || state == pb::COMMAND_STATE_FAILED;
 }
 
 inline std::string& publicBaseUrlStorage() {
@@ -46,7 +49,7 @@ inline std::string& publicBaseUrlStorage() {
     return value;
 }
 
-inline std::string_view platformId() { return platformIdStorage(); }
+inline constexpr std::string_view platformId() { return kDefaultPlatformId; }
 
 inline std::string_view publicBaseUrl() { return publicBaseUrlStorage(); }
 
@@ -104,13 +107,21 @@ inline bool uuidBytes(std::string_view value, std::uint8_t output[16]) {
     return byte == 16;
 }
 
-inline bool configurePlatform(std::string_view id, std::string_view publicBaseUrl) {
-    std::uint8_t idBytes[16]{};
+inline bool validSessionPlatformId(std::string_view value) noexcept {
+    if (value.size() != 16)
+        return false;
+    for (const unsigned char byte : value)
+        if (byte != 0)
+            return true;
+    return false;
+}
+
+inline bool configurePublicBaseUrl(std::string_view publicBaseUrl) {
     const std::size_t schemeSize = publicBaseUrl.starts_with("https://")
                                        ? 8
                                    : publicBaseUrl.starts_with("http://") ? 7
                                                                             : 0;
-    if (!uuidBytes(id, idBytes) || publicBaseUrl.size() > 255 || schemeSize == 0 ||
+    if (publicBaseUrl.size() > 255 || schemeSize == 0 ||
         publicBaseUrl.size() <= schemeSize || publicBaseUrl[schemeSize] == '/')
         return false;
     for (const unsigned char character : publicBaseUrl)
@@ -118,7 +129,6 @@ inline bool configurePlatform(std::string_view id, std::string_view publicBaseUr
             return false;
     while (publicBaseUrl.ends_with('/'))
         publicBaseUrl.remove_suffix(1);
-    platformIdStorage().assign(id);
     publicBaseUrlStorage().assign(publicBaseUrl);
     return true;
 }

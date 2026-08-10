@@ -19,6 +19,7 @@
 #include "service/features/edge/config.h"
 #include "service/features/edge/protocol.h"
 #include "service/features/edge/projector.h"
+#include "service/features/edge/session.h"
 #include "service/domains/edge/edge.schema.h"
 
 namespace service::edge {
@@ -57,7 +58,6 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         std::uint64_t inboundSequence{};
         std::uint64_t outboundSequence{};
         std::uint64_t configSentAtMs{};
-        std::uint64_t onlineMarkedAtMs{};
         std::array<TelemetryReceipt, 64> telemetryReceipts{};
         std::size_t nextTelemetryReceipt{};
         bool capabilitySeen{};
@@ -73,12 +73,13 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         pb::Envelope input;
         if (!protocol::decode(first->payload(), input) ||
             !protocol::supportsProtocolVersion(input.protocol_version()) ||
-            input.payload_case() != pb::Envelope::kHello || input.platform_id().size() != 16 ||
-            !platformMatches(input.platform_id()) || !protocol::validImei(input.hello().imei())) {
+            input.payload_case() != pb::Envelope::kHello ||
+            !protocol::validSessionPlatformId(input.platform_id()) ||
+            !protocol::validImei(input.hello().imei())) {
             co_await socket.close(1002, "invalid hello");
             co_return;
         }
-        co_await publishIngress(c, first->payload());
+        co_await publishIngress(c, first->payload(), protocol::nowMs());
         const auto authKey = protocol::authKey(input.hello().imei());
         const auto auth = co_await c.redis().get(authKey);
         const auto separator = auth ? auth->find('|') : std::string_view::npos;
@@ -90,7 +91,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             auth && separator != std::string_view::npos
                 ? std::string(auth->substr(separator + 1))
                 : "pending";
-        auto session = makeSession(nodeId, input.protocol_version());
+        auto session = makeSession(nodeId, input.protocol_version(), input.platform_id());
         if (status != "approved") {
             co_await sendEnrollment(socket, session, status);
             if (status == "rejected") {
@@ -105,8 +106,9 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                     input.payload_case() != pb::Envelope::kHeartbeat ||
                     !input.node_id().empty() || input.session_epoch() != 0 ||
                     input.sequence() <= session.inboundSequence ||
-                    input.platform_id().size() != 16 ||
-                    !platformMatches(input.platform_id())) {
+                    input.platform_id() !=
+                        protocol::bytes(session.platformBytes.data(),
+                                        session.platformBytes.size())) {
                     co_await socket.close(1002, "invalid pending heartbeat");
                     co_return;
                 }
@@ -136,7 +138,9 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             }
             if (status != "approved")
                 co_return;
-            session = makeSession(nodeId, session.protocolVersion);
+            session = makeSession(
+                nodeId, session.protocolVersion,
+                protocol::bytes(session.platformBytes.data(), session.platformBytes.size()));
         }
 
         auto ack = makeEnvelope(session);
@@ -149,25 +153,39 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         helloAck->set_max_message_size(static_cast<std::uint32_t>(protocol::kMaxMessageSize));
         helloAck->set_platform_time_ms(protocol::nowMs());
         co_await send(socket, ack);
-        co_await markOnline(c, session);
-        co_await drain(c, socket, session);
-
-        while (auto message = co_await socket.read()) {
-            if (!message->binary() || !protocol::decode(message->payload(), input) ||
-                !validInbound(input, session)) {
-                co_await socket.close(1002, "invalid envelope");
-                co_return;
-            }
-            session.inboundSequence = input.sequence();
-            const auto telemetry = telemetryDecision(session, input);
-            if (shouldProject(input) && telemetry.publish)
-                co_await publishIngress(c, message->payload());
-            if (telemetry.acknowledge)
-                co_await handle(c, socket, session, input);
-            co_await markOnline(c, session);
+        (void)co_await session_state::claim(c.redis(), session.nodeId, session.epoch);
+        std::exception_ptr sessionFailure;
+        try {
             co_await drain(c, socket, session);
+            while (auto message = co_await socket.read()) {
+                if (!message->binary() || !protocol::decode(message->payload(), input) ||
+                    !validInbound(input, session)) {
+                    co_await socket.close(1002, "invalid envelope");
+                    break;
+                }
+                if (!co_await session_state::refresh(c.redis(), session.nodeId, session.epoch)) {
+                    co_await socket.close(1008, "session replaced");
+                    break;
+                }
+                session.inboundSequence = input.sequence();
+                const auto telemetry = telemetryDecision(session, input);
+                if (shouldProject(input) && telemetry.publish)
+                    co_await publishIngress(c, message->payload(), protocol::nowMs());
+                if (telemetry.acknowledge)
+                    co_await handle(c, socket, session, input);
+                co_await drain(c, socket, session);
+            }
+        } catch (...) {
+            sessionFailure = std::current_exception();
         }
-        (void)co_await c.redis().del(sessionKey(session.nodeId));
+        try {
+            (void)co_await session_state::release(c.redis(), session.nodeId, session.epoch);
+        } catch (...) {
+            if (!sessionFailure)
+                sessionFailure = std::current_exception();
+        }
+        if (sessionFailure)
+            std::rethrow_exception(sessionFailure);
     }
 
     ruvia::Task<void> terminal(ruvia::Context& c) {
@@ -284,12 +302,13 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             std::rethrow_exception(failure);
     }
 
-    static Session makeSession(std::string nodeId, std::uint32_t protocolVersion) {
+    static Session makeSession(std::string nodeId, std::uint32_t protocolVersion,
+                               std::string_view platformId) {
         Session result;
         result.nodeId = std::move(nodeId);
         result.protocolVersion = protocolVersion;
         protocol::uuidBytes(result.nodeId, result.nodeBytes.data());
-        protocol::uuidBytes(protocol::platformId(), result.platformBytes.data());
+        std::memcpy(result.platformBytes.data(), platformId.data(), result.platformBytes.size());
         result.epoch = randomEpoch();
         return result;
     }
@@ -309,12 +328,6 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         static thread_local std::mt19937_64 random(std::random_device{}());
         auto value = random();
         return value == 0 ? 1 : value;
-    }
-
-    static bool platformMatches(std::string_view value) {
-        std::uint8_t expected[16]{};
-        return protocol::uuidBytes(protocol::platformId(), expected) &&
-               value == protocol::bytes(expected, sizeof(expected));
     }
 
     static bool validInbound(const pb::Envelope& input, const Session& session) {
@@ -378,8 +391,12 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
     }
 
     static pb::Envelope makeEnvelope(Session& session) {
-        return protocol::outbound(session.nodeId, session.epoch, ++session.outboundSequence,
-                                  session.protocolVersion);
+        auto result = protocol::outbound(session.nodeId, session.epoch,
+                                         ++session.outboundSequence,
+                                         session.protocolVersion);
+        result.set_platform_id(
+            protocol::bytes(session.platformBytes.data(), session.platformBytes.size()));
+        return result;
     }
 
     static ruvia::Task<void> send(ruvia::WebSocket& socket, const pb::Envelope& envelope) {
@@ -389,27 +406,17 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         co_await socket.binary(wire);
     }
 
-    static ruvia::Task<void> markOnline(ruvia::Context& c, Session& session) {
-        constexpr std::uint64_t refreshIntervalMs = 10000;
-        const auto now = protocol::nowMs();
-        if (session.onlineMarkedAtMs != 0 &&
-            now - session.onlineMarkedAtMs < refreshIntervalMs)
-            co_return;
-        const auto key = sessionKey(session.nodeId);
-        const auto epoch = std::to_string(session.epoch);
-        co_await c.redis().setEx(key, std::chrono::seconds(90), epoch);
-        session.onlineMarkedAtMs = now;
-    }
-
-    static ruvia::Task<void> publishIngress(ruvia::Context& c, std::string_view wire) {
+    static ruvia::Task<void> publishIngress(ruvia::Context& c, std::string_view wire,
+                                            std::int64_t receivedAtMs) {
         std::vector<service::message::StreamField> fields;
         fields.push_back({"wire", std::string(wire)});
+        fields.push_back({"received_at_ms", std::to_string(receivedAtMs)});
         (void)co_await service::message::redis::add(
             c.redis(), kEdgeIngressStream, fields, 100000);
     }
 
     static std::string sessionKey(std::string_view nodeId) {
-        return "iot:edge:session:" + std::string(nodeId);
+        return session_state::key(nodeId);
     }
 
     static ruvia::Task<void> drain(ruvia::Context& c, ruvia::WebSocket& socket,

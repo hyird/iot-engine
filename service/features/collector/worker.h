@@ -1284,9 +1284,9 @@ redis.call('HSET', KEYS[1], 'updated_at_ms', ARGV[3])
 redis.call('HSET', KEYS[2], '_state', cjson.encode({
   state = 'offline',
   reason = ARGV[2],
-  lastReportAt = tonumber(redis.call('HGET', KEYS[1], 'last_report_at_ms') or '0'),
-  onlineUntil = tonumber(redis.call('HGET', KEYS[1], 'online_until_ms') or '0'),
-  updatedAt = tonumber(ARGV[3])
+  lastReportAt = tonumber(redis.call('HGET', KEYS[1], 'last_report_at_ms') or '0') or 0,
+  onlineUntil = tonumber(redis.call('HGET', KEYS[1], 'online_until_ms') or '0') or 0,
+  updatedAt = tonumber(ARGV[3]) or 0
 }), '_updated_at_ms', ARGV[3])
 return 1
 )lua";

@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cctype>
 #include <cstring>
@@ -24,6 +25,9 @@
 #include <vector>
 
 namespace {
+
+constexpr std::size_t kMaxSipHeaderBytes = 64 * 1024;
+constexpr std::size_t kMaxSipBodyBytes = 8 * 1024 * 1024;
 
 struct RemoteEndpoint {
     std::string host;
@@ -93,11 +97,27 @@ std::optional<int> registrationExpires(const SipMessage& message) {
     }
 }
 
-unsigned int extractCSeqNumber(const std::string& value) {
+struct CSeqValue {
+    unsigned int number{0};
+    std::string method;
+};
+
+std::optional<CSeqValue> parseCSeq(const std::string& value) {
     std::istringstream input(value);
-    unsigned int cseq = 0;
-    input >> cseq;
-    return cseq;
+    std::string numberText;
+    std::string method;
+    std::string extra;
+    if (!(input >> numberText >> method) || (input >> extra)) {
+        return std::nullopt;
+    }
+    unsigned int number = 0;
+    const auto [end, error] =
+        std::from_chars(numberText.data(), numberText.data() + numberText.size(), number);
+    if (numberText.empty() || error != std::errc{} ||
+        end != numberText.data() + numberText.size()) {
+        return std::nullopt;
+    }
+    return CSeqValue{.number = number, .method = std::move(method)};
 }
 
 std::string peerToString(const SipServer::SipPeer& peer) {
@@ -108,6 +128,27 @@ const char* transportName(SipServer::SipTransport transport) {
     return transport == SipServer::SipTransport::Tcp ? "TCP" : "UDP";
 }
 
+bool samePeer(const SipServer::SipPeer& expected, const SipServer::SipPeer& actual) {
+    if (expected.transport != actual.transport || expected.address != actual.address ||
+        expected.port != actual.port) {
+        return false;
+    }
+    if (expected.transport == SipServer::SipTransport::Tcp && expected.tcp && actual.tcp &&
+        expected.tcp != actual.tcp) {
+        return false;
+    }
+    return true;
+}
+
+bool registeredRemoteMatches(const DeviceRegistry& deviceRegistry,
+                             const std::string& deviceId,
+                             const SipServer::SipPeer& remote) {
+    if (deviceId.empty())
+        return false;
+    const auto device = deviceRegistry.findDevice(deviceId);
+    return device.has_value() && device->remoteAddress == peerToString(remote);
+}
+
 std::string lower(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
@@ -115,9 +156,28 @@ std::string lower(std::string value) {
     return value;
 }
 
+std::string trim(std::string value) {
+    const auto notSpace = [](unsigned char c) { return !std::isspace(c); };
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(), notSpace));
+    value.erase(std::find_if(value.rbegin(), value.rend(), notSpace).base(), value.end());
+    return value;
+}
+
+std::optional<unsigned int> parseUnsigned(std::string value) {
+    value = trim(std::move(value));
+    unsigned int parsed = 0;
+    const auto [end, error] =
+        std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (value.empty() || error != std::errc{} || end != value.data() + value.size()) {
+        return std::nullopt;
+    }
+    return parsed;
+}
+
 std::optional<std::size_t> contentLengthOf(const std::string& headerText) {
     std::istringstream lines(headerText);
     std::string line;
+    std::optional<std::size_t> contentLength;
     while (std::getline(lines, line)) {
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
@@ -126,15 +186,21 @@ std::optional<std::size_t> contentLengthOf(const std::string& headerText) {
         if (colon == std::string::npos) {
             continue;
         }
-        if (lower(line.substr(0, colon)) == "content-length") {
-            try {
-                return static_cast<std::size_t>(std::stoul(line.substr(colon + 1)));
-            } catch (...) {
+        const auto name = lower(trim(line.substr(0, colon)));
+        if (name == "content-length" || name == "l") {
+            const auto value = trim(line.substr(colon + 1));
+            std::size_t parsed{};
+            const auto [end, error] =
+                std::from_chars(value.data(), value.data() + value.size(), parsed);
+            if (value.empty() || error != std::errc{} ||
+                end != value.data() + value.size() ||
+                (contentLength && *contentLength != parsed)) {
                 return std::nullopt;
             }
+            contentLength = parsed;
         }
     }
-    return 0;
+    return contentLength.value_or(0);
 }
 
 std::string compactForLog(std::string value, std::size_t limit = 512) {
@@ -168,18 +234,14 @@ std::optional<RemoteEndpoint> parseRemoteEndpoint(const std::string& remoteAddre
         return std::nullopt;
     }
 
-    try {
-        const auto port = std::stoi(remoteAddress.substr(colon + 1));
-        if (port <= 0 || port > 65535) {
-            return std::nullopt;
-        }
-        return RemoteEndpoint{
-            remoteAddress.substr(0, colon),
-            static_cast<uint16_t>(port),
-        };
-    } catch (...) {
+    const auto port = parseUnsigned(remoteAddress.substr(colon + 1));
+    if (!port || *port == 0 || *port > 65535) {
         return std::nullopt;
     }
+    return RemoteEndpoint{
+        remoteAddress.substr(0, colon),
+        static_cast<uint16_t>(*port),
+    };
 }
 
 std::string routeUnavailableReason(const std::optional<DeviceRouteSnapshot>& route) {
@@ -239,14 +301,17 @@ int xmlInt(const pugi::xml_node& node, const char* name, int fallback = -1) {
     if (text.empty()) {
         text = xmlText(node.child("Info"), name);
     }
+    text = trim(std::move(text));
     if (text.empty()) {
         return fallback;
     }
-    try {
-        return std::stoi(text);
-    } catch (...) {
+    int parsed = 0;
+    const auto [end, error] =
+        std::from_chars(text.data(), text.data() + text.size(), parsed);
+    if (error != std::errc{} || end != text.data() + text.size()) {
         return fallback;
     }
+    return parsed;
 }
 
 bool statusOnline(const std::string& status) {
@@ -627,17 +692,36 @@ void SipServer::processTcpPending(const TcpConnectionPtr& connection) {
     }
     while (true) {
         const auto headerEnd = connection->pending.find("\r\n\r\n");
-        if (headerEnd == std::string::npos)
+        if (headerEnd == std::string::npos) {
+            if (connection->pending.size() > kMaxSipHeaderBytes) {
+                LOG_WARN << "[GB28181][SIP] Closing TCP connection with oversized SIP header from "
+                         << connection->key << ", pending_bytes=" << connection->pending.size();
+                removeTcpConnection(connection);
+                return;
+            }
             break;
+        }
+        if (headerEnd > kMaxSipHeaderBytes) {
+            LOG_WARN << "[GB28181][SIP] Closing TCP connection with oversized SIP header from "
+                     << connection->key << ", header_bytes=" << headerEnd;
+            removeTcpConnection(connection);
+            return;
+        }
         const auto contentLength =
             contentLengthOf(connection->pending.substr(0, headerEnd));
         if (!contentLength.has_value()) {
-            LOG_WARN << "[GB28181][SIP] TCP message with invalid Content-Length from "
+            LOG_WARN << "[GB28181][SIP] Closing TCP connection with invalid Content-Length from "
                      << connection->key << ", header=\""
                      << compactForLog(connection->pending.substr(0, headerEnd), 300)
                      << "\"";
-            connection->pending.clear();
-            break;
+            removeTcpConnection(connection);
+            return;
+        }
+        if (*contentLength > kMaxSipBodyBytes) {
+            LOG_WARN << "[GB28181][SIP] Closing TCP connection with oversized SIP body from "
+                     << connection->key << ", content_length=" << *contentLength;
+            removeTcpConnection(connection);
+            return;
         }
         const auto packetSize = headerEnd + 4 + *contentLength;
         if (connection->pending.size() < packetSize)
@@ -692,8 +776,9 @@ void SipServer::handlePacket(const std::string& packet, const SipPeer& remote) {
 }
 
 void SipServer::handleResponse(const SipMessage& message, const SipPeer& remote) {
-    const auto cseq = message.header("CSeq");
-    if (message.statusCode == 200 && cseq.find("INVITE") != std::string::npos) {
+    const auto cseqHeader = message.header("CSeq");
+    const auto cseq = parseCSeq(cseqHeader);
+    if (message.statusCode == 200 && cseq && cseq->method == "INVITE") {
         handleInviteOk(message, remote);
         return;
     }
@@ -703,13 +788,20 @@ void SipServer::handleResponse(const SipMessage& message, const SipPeer& remote)
                  << ", reason=\"" << message.reasonPhrase << "\""
                  << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
                  << ", call_id=" << message.header("Call-ID")
-                 << ", cseq=\"" << cseq << "\""
+                 << ", cseq=\"" << cseqHeader << "\""
                  << ", body=\"" << compactForLog(message.body, 300) << "\"";
-        if (cseq.find("INVITE") != std::string::npos) {
-            const auto sessionId =
-                sessionIdByCallId(message.header("Call-ID"));
-            if (sessionId)
-                (void)stopPreview(*sessionId);
+        if (cseq && cseq->method == "INVITE") {
+            const auto callId = message.header("Call-ID");
+            std::optional<std::string> sessionToStop;
+            for (const auto& [sessionId, session] : previewSessions_) {
+                if (session.callId == callId && session.inviteCseq == cseq->number &&
+                    samePeer(session.remote, remote)) {
+                    sessionToStop = sessionId;
+                    break;
+                }
+            }
+            if (sessionToStop)
+                (void)stopPreview(*sessionToStop);
         }
         return;
     }
@@ -717,7 +809,7 @@ void SipServer::handleResponse(const SipMessage& message, const SipPeer& remote)
     LOG_DEBUG << "[GB28181][SIP] Unhandled response, status=" << message.statusCode
               << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
               << ", call_id=" << message.header("Call-ID")
-              << ", cseq=\"" << cseq << "\"";
+              << ", cseq=\"" << cseqHeader << "\"";
 }
 
 void SipServer::handleInviteOk(const SipMessage& message, const SipPeer& remote) {
@@ -728,43 +820,56 @@ void SipServer::handleInviteOk(const SipMessage& message, const SipPeer& remote)
         return;
     }
 
-    PreviewSession session;
-    bool found = false;
-    for (auto& [_, candidate] : previewSessions_) {
-        if (candidate.callId == callId) {
-            session = candidate;
-            found = true;
-            break;
-        }
-    }
-
-    if (!found) {
-        LOG_WARN << "[GB28181][Invite] 200 OK for unknown Call-ID, call_id=" << callId
+    const auto cseq = parseCSeq(message.header("CSeq"));
+    if (!cseq || cseq->method != "INVITE") {
+        LOG_WARN << "[GB28181][Invite] 200 OK with non-INVITE CSeq ignored, call_id="
+                 << callId
                  << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
                  << ", cseq=\"" << message.header("CSeq") << "\"";
         return;
     }
 
-    const auto to = message.header("To");
-    const auto cseq = extractCSeqNumber(message.header("CSeq"));
-    const auto toTag = extractTag(to);
-    if (!message.body.empty()) {
-        LOG_DEBUG << "[GB28181][Invite] 200 OK SDP received, session=" << session.sessionId
-                 << ", mode=" << session.mode
-                 << ", device=" << session.deviceId
-                 << ", channel=" << session.channelId
-                 << ", stream_id=" << session.streamId
-                 << ", call_id=" << callId
-                 << ", body=\"" << compactForLog(message.body, 1200) << "\"";
-    }
+    PreviewSession* session = nullptr;
     for (auto& [_, candidate] : previewSessions_) {
         if (candidate.callId == callId) {
-            candidate.toTag = toTag;
-            candidate.established = true;
-            cancelDeadline(DeadlineKind::Invite, candidate.sessionId);
+            session = &candidate;
             break;
         }
     }
+
+    if (!session) {
+        LOG_WARN << "[GB28181][Invite] 200 OK for unknown Call-ID, call_id=" << callId
+                 << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
+                 << ", cseq=\"" << message.header("CSeq") << "\"";
+        return;
+    }
+    if (session->inviteCseq != cseq->number || !samePeer(session->remote, remote)) {
+        LOG_WARN << "[GB28181][Invite] 200 OK correlation mismatch, session="
+                 << session->sessionId
+                 << ", call_id=" << callId
+                 << ", expected_cseq=" << session->inviteCseq
+                 << ", actual_cseq=" << cseq->number
+                 << ", expected_remote=" << transportName(session->remote.transport) << " "
+                 << peerToString(session->remote)
+                 << ", actual_remote=" << transportName(remote.transport) << " "
+                 << peerToString(remote);
+        return;
+    }
+
+    const auto to = message.header("To");
+    const auto toTag = extractTag(to);
+    if (!message.body.empty()) {
+        LOG_DEBUG << "[GB28181][Invite] 200 OK SDP received, session=" << session->sessionId
+                 << ", mode=" << session->mode
+                 << ", device=" << session->deviceId
+                 << ", channel=" << session->channelId
+                 << ", stream_id=" << session->streamId
+                 << ", call_id=" << callId
+                 << ", body=\"" << compactForLog(message.body, 1200) << "\"";
+    }
+    session->toTag = toTag;
+    session->established = true;
+    cancelDeadline(DeadlineKind::Invite, session->sessionId);
 
     const auto host = remote.address;
     const auto port = remote.port;
@@ -773,25 +878,25 @@ void SipServer::handleInviteOk(const SipMessage& message, const SipPeer& remote)
     const auto transport = transportName(remote.transport);
 
     std::ostringstream ack;
-    ack << "ACK sip:" << session.channelId << "@" << host << ":" << port << " SIP/2.0\r\n"
+    ack << "ACK sip:" << session->channelId << "@" << host << ":" << port << " SIP/2.0\r\n"
         << "Via: SIP/2.0/" << transport << " " << publicHost << ":" << sipConfig_.port << ";branch=" << branch << "\r\n"
-        << "From: <sip:" << sipConfig_.id << "@" << sipConfig_.domain << ">;tag=" << session.fromTag << "\r\n"
+        << "From: <sip:" << sipConfig_.id << "@" << sipConfig_.domain << ">;tag=" << session->fromTag << "\r\n"
         << "To: " << to << "\r\n"
         << "Call-ID: " << callId << "\r\n"
-        << "CSeq: " << cseq << " ACK\r\n"
+        << "CSeq: " << cseq->number << " ACK\r\n"
         << "Contact: <sip:" << sipConfig_.id << "@" << publicHost << ":" << sipConfig_.port << ">\r\n"
         << "Max-Forwards: 70\r\n"
         << "User-Agent: gb28181-platform-cpp\r\n"
         << "Content-Length: 0\r\n\r\n";
 
     sendRequest(ack.str(), remote);
-    LOG_DEBUG << "[GB28181][Invite] ACK sent, session=" << session.sessionId
-             << ", mode=" << session.mode
-             << ", device=" << session.deviceId
-             << ", channel=" << session.channelId
-             << ", stream_id=" << session.streamId
+    LOG_DEBUG << "[GB28181][Invite] ACK sent, session=" << session->sessionId
+             << ", mode=" << session->mode
+             << ", device=" << session->deviceId
+             << ", channel=" << session->channelId
+             << ", stream_id=" << session->streamId
              << ", call_id=" << callId
-             << ", cseq=" << cseq
+             << ", cseq=" << cseq->number
              << ", to_tag=" << toTag
              << ", remote=" << transportName(remote.transport) << " " << peerToString(remote);
 }
@@ -801,7 +906,26 @@ void SipServer::handleRegister(const SipMessage& message, const SipPeer& remote)
         message, sipConfig_.domain, sipConfig_.password, sipConfig_.password,
         sipConfig_.nonceTtlSeconds);
     bool replay = false;
+    std::string deviceId;
     if (proof) {
+        deviceId = extractUserFromSipUri(message.header("From"));
+        if (deviceId.empty()) {
+            deviceId = extractUserFromSipUri(message.header("Contact"));
+        }
+        if (deviceId.empty()) {
+            deviceId = proof->username;
+        }
+        if (proof->username.empty() || deviceId != proof->username) {
+            sendResponse(message, remote, 403, "Forbidden");
+            LOG_WARN << "[GB28181][Register] Authenticated username mismatch, username="
+                     << proof->username
+                     << ", declared_device=" << deviceId
+                     << ", remote=" << transportName(remote.transport) << " "
+                     << peerToString(remote)
+                     << ", call_id=" << message.header("Call-ID")
+                     << ", cseq=\"" << message.header("CSeq") << "\"";
+            return;
+        }
         const auto replayKey = proof->nonce + "\n" + proof->username;
         const auto previous = digestNonceCounts_.find(replayKey);
         replay = previous != digestNonceCounts_.end() &&
@@ -828,14 +952,6 @@ void SipServer::handleRegister(const SipMessage& message, const SipPeer& remote)
                      << ", cseq=\"" << message.header("CSeq") << "\"";
         }
         return;
-    }
-
-    auto deviceId = extractUserFromSipUri(message.header("From"));
-    if (deviceId.empty()) {
-        deviceId = extractUserFromSipUri(message.header("Contact"));
-    }
-    if (deviceId.empty()) {
-        deviceId = remote.address;
     }
 
     const auto expires = registrationExpires(message);
@@ -897,7 +1013,21 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
              << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
              << ", body_bytes=" << message.body.size();
 
+    auto rejectUnexpectedRemote = [&](std::string_view context,
+                                      const std::string& targetDeviceId) {
+        if (registeredRemoteMatches(deviceRegistry_, targetDeviceId, remote))
+            return false;
+        LOG_WARN << "[GB28181][" << context
+                 << "] Ignored MESSAGE from unexpected remote, device="
+                 << targetDeviceId
+                 << ", remote=" << transportName(remote.transport) << " "
+                 << peerToString(remote);
+        return true;
+    };
+
     if (cmdType == "Keepalive") {
+        if (rejectUnexpectedRemote("Keepalive", deviceId))
+            return;
         const auto status = xmlText(root, "Status");
         bool shouldQueryCatalog = false;
         if (statusOnline(status)) {
@@ -922,6 +1052,8 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
     }
 
     if (cmdType == "Catalog") {
+        if (rejectUnexpectedRemote("Catalog", deviceId))
+            return;
         std::vector<Channel> channels;
         std::size_t onlineCount = 0;
         for (auto item : root.child("DeviceList").children("Item")) {
@@ -956,18 +1088,41 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
 
     if (cmdType == "RecordInfo") {
         auto originalDeviceId = deviceId;
+        bool matchedPendingQuery = false;
         if (!snText.empty()) {
-            try {
-                const auto sn = static_cast<unsigned int>(std::stoul(snText));
-                const auto iter = pendingRecordQueries_.find(sn);
-                if (iter != pendingRecordQueries_.end()) {
-                    deviceId = iter->second;
-                    pendingRecordQueries_.erase(iter);
-                    cancelDeadline(DeadlineKind::RecordQuery,
-                                   std::to_string(sn));
-                }
-            } catch (...) {
+            const auto sn = parseUnsigned(snText);
+            if (!sn) {
+                LOG_WARN << "[GB28181][Record] Ignored RecordInfo with invalid SN, reported_device="
+                         << originalDeviceId
+                         << ", sn=\"" << snText << "\""
+                         << ", remote=" << transportName(remote.transport) << " "
+                         << peerToString(remote);
+                return;
             }
+            const auto iter = pendingRecordQueries_.find(*sn);
+            if (iter != pendingRecordQueries_.end()) {
+                if (!samePeer(iter->second.remote, remote)) {
+                    LOG_WARN << "[GB28181][Record] Ignored RecordInfo from unexpected remote, expected_device="
+                             << iter->second.deviceId
+                             << ", reported_device=" << originalDeviceId
+                             << ", sn=" << *sn
+                             << ", expected_remote="
+                             << transportName(iter->second.remote.transport) << " "
+                             << peerToString(iter->second.remote)
+                             << ", actual_remote=" << transportName(remote.transport)
+                             << " " << peerToString(remote);
+                    return;
+                }
+                deviceId = iter->second.deviceId;
+                matchedPendingQuery = true;
+                pendingRecordQueries_.erase(iter);
+                cancelDeadline(DeadlineKind::RecordQuery,
+                               std::to_string(*sn));
+            }
+        }
+        if (!matchedPendingQuery &&
+            rejectUnexpectedRemote("Record", deviceId)) {
+            return;
         }
         std::vector<RecordItem> records;
         for (auto item : root.child("RecordList").children("Item")) {
@@ -1132,7 +1287,8 @@ bool SipServer::queryRecords(const std::string& deviceId, const std::string& cha
     const auto branch = "z9hG4bK-" + makeToken("record");
     const auto tag = makeToken("tag");
     const auto callId = makeToken("record") + "@" + sipConfig_.domain;
-    pendingRecordQueries_[sn] = deviceId;
+    pendingRecordQueries_[sn] =
+        PendingRecordQuery{.deviceId = deviceId, .remote = *remote};
     scheduleDeadline(DeadlineKind::RecordQuery, std::to_string(sn),
                      std::chrono::seconds(sipConfig_.commandTimeoutSeconds));
 
@@ -2072,11 +2228,8 @@ void SipServer::expireDeadline(const Deadline& deadline) {
         (void)stopPreview(deadline.key);
         break;
     case DeadlineKind::RecordQuery:
-        try {
-            pendingRecordQueries_.erase(
-                static_cast<unsigned int>(std::stoul(deadline.key)));
-        } catch (...) {
-        }
+        if (const auto sn = parseUnsigned(deadline.key))
+            pendingRecordQueries_.erase(*sn);
         LOG_WARN << "[GB28181][Record] Query timed out, sn=" << deadline.key;
         break;
     case DeadlineKind::AuthNonce:

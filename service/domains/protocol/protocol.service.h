@@ -11,6 +11,7 @@
 #include <ruvia/web/db/Db.h>
 
 #include "service/features/edge/config.h"
+#include "service/features/access/contract.h"
 #include "service/features/event/config.h"
 #include "service/features/telemetry/latest.h"
 #include "service/common/http.h"
@@ -110,6 +111,7 @@ ORDER BY name LIMIT $2 OFFSET $3)sql",
         const auto name = requiredString(payload, "name", "配置名称不能为空");
         validateProtocol(protocol);
         validateName(name);
+        validateOptionalNullableString(payload, "remark", "remark 必须是字符串或 null", 500);
         co_await validateConfig(c, payload.view(), protocol, true);
         co_await ensureNameAvailable(c, name, std::nullopt);
         const auto principal = service::middleware::requireAuth(c);
@@ -119,7 +121,10 @@ ORDER BY name LIMIT $2 OFFSET $3)sql",
 WITH body AS (SELECT $1::jsonb AS value)
 INSERT INTO protocol_config(id, protocol, name, enabled, config, remark, created_by)
 SELECT $3::uuid, value->>'protocol', value->>'name',
-       COALESCE((value->>'enabled')::boolean, TRUE), value->'config',
+       CASE WHEN NOT (value ? 'enabled') THEN TRUE
+            WHEN jsonb_typeof(value->'enabled') = 'boolean' THEN value->>'enabled' = 'true'
+            ELSE FALSE END,
+       value->'config',
        NULLIF(value->>'remark', ''), $2
 FROM body)sql",
             service::common::dbParams(payload.view(), principal.userId, id));
@@ -138,19 +143,27 @@ FROM body)sql",
             service::common::fail(16001, "协议配置不存在", 404);
         co_await requireOwner(c, existing.rows().front()[1].text());
         const std::string protocol(existing.rows().front()[0].text());
-        if (const auto requested = payload.get<ruvia::String>("protocol");
-            requested && !requested->view().empty() && requested->view() != protocol)
-            service::common::fail(16006, "协议类型不可修改", 409);
-        if (const auto name = payload.get<ruvia::String>("name")) {
-            validateName(name->view());
-            co_await ensureNameAvailable(c, std::string(name->view()), std::string(id));
+        if (const auto requested =
+                optionalString(payload, "protocol", "protocol 必须是字符串", 16)) {
+            if (requested->empty())
+                service::common::fail(16003, "protocol 不能为空", 400);
+            if (*requested != protocol)
+                service::common::fail(16006, "协议类型不可修改", 409);
         }
+        if (const auto name = optionalString(payload, "name", "name 必须是字符串", 64)) {
+            validateName(*name);
+            co_await ensureNameAvailable(c, *name, std::string(id));
+        }
+        validateOptionalNullableString(payload, "remark", "remark 必须是字符串或 null", 500);
         co_await validateConfig(c, payload.view(), protocol, false);
         (void)co_await c.db().execute(R"sql(
 WITH body AS (SELECT $1::jsonb AS value)
 UPDATE protocol_config p
 SET name = CASE WHEN body.value ? 'name' THEN body.value->>'name' ELSE p.name END,
-    enabled = CASE WHEN body.value ? 'enabled' THEN (body.value->>'enabled')::boolean ELSE p.enabled END,
+    enabled = CASE WHEN NOT (body.value ? 'enabled') THEN p.enabled
+                   WHEN jsonb_typeof(body.value->'enabled') = 'boolean'
+                   THEN body.value->>'enabled' = 'true'
+                   ELSE p.enabled END,
     config = CASE WHEN body.value ? 'config' THEN p.config || (body.value->'config') ELSE p.config END,
     remark = CASE WHEN body.value ? 'remark' THEN NULLIF(body.value->>'remark', '') ELSE p.remark END,
     updated_at = NOW()
@@ -197,7 +210,9 @@ ORDER BY l.edge_node_id::text)sql",
             (void)co_await service::edge::configService().queueSnapshot(c, row[0].text());
     }
 
-    static std::int64_t toInt(std::string_view value) { return std::stoll(std::string(value)); }
+    static std::int64_t toInt(std::string_view value) {
+        return service::common::parseInt64(std::optional<std::string_view>{value}).value_or(0);
+    }
 
     static std::string itemExpression() {
         return R"sql(jsonb_build_object(
@@ -215,6 +230,35 @@ ORDER BY l.edge_node_id::text)sql",
         return std::string(value->view());
     }
 
+    static std::optional<std::string> optionalString(const ruvia::JsonValue& payload,
+                                                     std::string_view field,
+                                                     std::string_view typeMessage,
+                                                     std::size_t maximum) {
+        const auto raw = service::access::jsonField(payload, field);
+        if (!raw)
+            return std::nullopt;
+        const auto value = payload.get<ruvia::String>(field);
+        if (!value)
+            service::common::fail(16002, std::string(typeMessage), 400);
+        if (value->view().size() > maximum)
+            service::common::fail(16002, std::string(field) + " 长度超出限制", 400);
+        return std::string(value->view());
+    }
+
+    static void validateOptionalNullableString(const ruvia::JsonValue& payload,
+                                               std::string_view field,
+                                               std::string_view typeMessage,
+                                               std::size_t maximum) {
+        const auto raw = service::access::jsonField(payload, field);
+        if (!raw || raw->isNull())
+            return;
+        const auto value = payload.get<ruvia::String>(field);
+        if (!value)
+            service::common::fail(16002, std::string(typeMessage), 400);
+        if (value->view().size() > maximum)
+            service::common::fail(16002, std::string(field) + " 长度超出限制", 400);
+    }
+
     static void validateProtocol(std::string_view protocol) {
         if (protocol != "SL651" && protocol != "Modbus" && protocol != "S7")
             service::common::fail(16003, "不支持的协议类型", 400);
@@ -227,6 +271,14 @@ ORDER BY l.edge_node_id::text)sql",
 
     ruvia::Task<void> validateConfig(ruvia::Context& c, std::string_view body,
                                      const std::string& protocol, bool required) {
+        const auto enabled = co_await c.db().query(R"sql(
+WITH body AS (SELECT $1::jsonb AS value)
+SELECT NOT (value ? 'enabled') OR jsonb_typeof(value->'enabled') = 'boolean'
+FROM body)sql",
+                                                   service::common::dbParams(body));
+        if (enabled.rows().front()[0].text() != "t")
+            service::common::fail(16004, "enabled 必须是布尔值", 400);
+
         const auto shape = co_await c.db().query(R"sql(
 WITH body AS (SELECT $1::jsonb AS value)
 SELECT body.value ? 'config', jsonb_typeof(body.value->'config')
@@ -280,30 +332,71 @@ FROM cfg)sql",
                 (required &&
                  (row[6].text() != "t" || row[7].text() != "t" || row[8].text() != "t")))
                 service::common::fail(16004, "S7 配置无效", 400);
+            const auto areas = co_await c.db().query(R"sql(
+WITH cfg AS (SELECT ($1::jsonb)->'config' AS value),
+areas AS (
+  SELECT item FROM cfg, jsonb_array_elements(value->'areas') AS item
+  WHERE value ? 'areas'
+)
+SELECT COALESCE(bool_and(
+    jsonb_typeof(item) = 'object'
+    AND jsonb_typeof(item->'id') = 'string' AND COALESCE(item->>'id', '') <> ''
+    AND jsonb_typeof(item->'name') = 'string' AND COALESCE(item->>'name', '') <> ''
+    AND item->>'area' IN ('DB', 'V', 'MK', 'PE', 'PA', 'CT', 'TM')
+    AND (NOT (item ? 'dataType') OR item->>'dataType' IN
+        ('BOOL', 'INT8', 'UINT8', 'INT16', 'UINT16', 'INT32', 'UINT32', 'FLOAT', 'LREAL', 'STRING'))
+    AND CASE WHEN item->>'area' = 'DB'
+             THEN CASE WHEN jsonb_typeof(item->'dbNumber') = 'number'
+                            AND item->>'dbNumber' ~ '^[0-9]{1,5}$'
+                       THEN (item->>'dbNumber')::integer BETWEEN 1 AND 65535 ELSE FALSE END
+             ELSE TRUE END
+    AND CASE WHEN jsonb_typeof(item->'start') = 'number'
+                  AND item->>'start' ~ '^[0-9]{1,10}$'
+             THEN (item->>'start')::bigint BETWEEN 0 AND 2147483647 ELSE FALSE END
+    AND CASE WHEN NOT (item ? 'startBit') THEN TRUE
+             WHEN jsonb_typeof(item->'startBit') = 'number'
+                  AND item->>'startBit' ~ '^[0-7]$'
+             THEN TRUE ELSE FALSE END
+    AND CASE WHEN jsonb_typeof(item->'size') = 'number'
+                  AND item->>'size' ~ '^[0-9]{1,5}$'
+             THEN (item->>'size')::integer BETWEEN 1 AND 65535 ELSE FALSE END
+    AND CASE WHEN NOT (item ? 'decimals') THEN TRUE
+             WHEN jsonb_typeof(item->'decimals') = 'number'
+                  AND item->>'decimals' ~ '^-?[0-9]{1,2}$'
+             THEN (item->>'decimals')::integer BETWEEN -1 AND 8 ELSE FALSE END
+    AND (NOT (item ? 'writable') OR jsonb_typeof(item->'writable') = 'boolean')
+), TRUE) FROM areas)sql",
+                                                    service::common::dbParams(body));
+            if (areas.rows().front()[0].text() != "t")
+                service::common::fail(16004, "S7 寄存器配置无效", 400);
             co_return;
         }
         if (protocol != "Modbus")
             co_return;
 
-        const auto configRows = co_await c.db().query(R"sql(
-WITH cfg AS (SELECT ($1::jsonb)->'config' AS value)
-SELECT
-    COALESCE(value->>'byteOrder', '') IN
-        ('BIG_ENDIAN', 'LITTLE_ENDIAN', 'BIG_ENDIAN_BYTE_SWAP', 'LITTLE_ENDIAN_BYTE_SWAP'),
-    COALESCE(jsonb_typeof(value->'registers') = 'array', FALSE),
-    COALESCE(jsonb_typeof(value->'packet') = 'object', TRUE)
-FROM cfg)sql",
-                                                      service::common::dbParams(body));
-        const auto& config = configRows.rows().front();
-        if (config[0].text() != "t")
-            service::common::fail(16004, "Modbus 配置的 byteOrder 无效", 400);
-        if (config[1].text() != "t")
-            service::common::fail(16004, "Modbus 配置的 registers 必须是数组", 400);
-        if (config[2].text() != "t")
-            service::common::fail(16004, "Modbus 配置的 packet 必须是对象", 400);
-
-        const auto registers = co_await c.db().query(R"sql(
-WITH cfg AS (SELECT ($1::jsonb)->'config' AS value),
+	    const auto configRows = co_await c.db().query(R"sql(
+	WITH cfg AS (SELECT ($1::jsonb)->'config' AS value)
+	SELECT
+	    (NOT (value ? 'byteOrder') OR value->>'byteOrder' IN
+	        ('BIG_ENDIAN', 'LITTLE_ENDIAN', 'BIG_ENDIAN_BYTE_SWAP', 'LITTLE_ENDIAN_BYTE_SWAP'),
+	    (NOT (value ? 'registers') OR jsonb_typeof(value->'registers') = 'array'),
+	    (NOT (value ? 'packet') OR jsonb_typeof(value->'packet') = 'object'),
+	    value ? 'byteOrder',
+	    value ? 'registers'
+	FROM cfg)sql",
+	                                                      service::common::dbParams(body));
+	        const auto& config = configRows.rows().front();
+	        if (config[0].text() != "t" || (required && config[3].text() != "t"))
+	            service::common::fail(16004, "Modbus 配置的 byteOrder 无效", 400);
+	        if (config[1].text() != "t" || (required && config[4].text() != "t"))
+	            service::common::fail(16004, "Modbus 配置的 registers 必须是数组", 400);
+	        if (config[2].text() != "t")
+	            service::common::fail(16004, "Modbus 配置的 packet 必须是对象", 400);
+	        if (config[4].text() != "t")
+	            co_return;
+	
+	        const auto registers = co_await c.db().query(R"sql(
+	WITH cfg AS (SELECT ($1::jsonb)->'config' AS value),
 registers AS (SELECT item FROM cfg, jsonb_array_elements(value->'registers') AS item)
 SELECT COALESCE(bool_and(
     jsonb_typeof(item) = 'object'
@@ -313,9 +406,11 @@ SELECT COALESCE(bool_and(
     AND item->>'dataType' IN ('BOOL', 'INT16', 'UINT16', 'INT32', 'UINT32', 'FLOAT32',
                               'INT64', 'UINT64', 'DOUBLE')
     AND CASE WHEN jsonb_typeof(item->'address') = 'number'
-             THEN (item->>'address')::numeric BETWEEN 0 AND 65535 ELSE FALSE END
+                  AND item->>'address' ~ '^[0-9]{1,5}$'
+             THEN (item->>'address')::integer BETWEEN 0 AND 65535 ELSE FALSE END
     AND CASE WHEN jsonb_typeof(item->'quantity') = 'number'
-             THEN (item->>'quantity')::numeric BETWEEN 1 AND 4 ELSE FALSE END
+                  AND item->>'quantity' ~ '^[1-4]$'
+             THEN TRUE ELSE FALSE END
 ), TRUE) FROM registers)sql",
                                                      service::common::dbParams(body));
         if (registers.rows().front()[0].text() != "t")

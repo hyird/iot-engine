@@ -1,11 +1,14 @@
 #include <iostream>
+#include <chrono>
 #include <stdexcept>
 #include <string>
 
 #include "service/features/access/contract.h"
 #include "service/features/access/event.h"
 #include "service/features/access/session.h"
+#include "service/features/access/webhook.h"
 #include "service/features/event/config.h"
+#include "service/utils/jwt.h"
 
 namespace access_contract = service::access;
 
@@ -33,6 +36,12 @@ int main() {
                 "UTC timestamp must use seconds precision");
         require(access_contract::iso8601(-1) == "1969-12-31T23:59:59Z",
                 "UTC timestamp must floor negative milliseconds");
+        require(service::utils::jwt_detail::duration("15m", std::chrono::seconds(1)) ==
+                    std::chrono::minutes(15),
+                "JWT duration suffix parsing changed");
+        require(service::utils::jwt_detail::duration("1x", std::chrono::hours(1)) ==
+                    std::chrono::hours(1),
+                "JWT duration accepted trailing non-duration bytes");
         const auto now = access_contract::nowIso8601();
         require(now.size() == 20 && now[4] == '-' && now[7] == '-' && now[10] == 'T' &&
                     now[13] == ':' && now[16] == ':' && now[19] == 'Z',
@@ -75,6 +84,63 @@ int main() {
         require(!service::access::session::expired(decodedSession, 4102444799999LL) &&
                     service::access::session::expired(decodedSession, 4102444800000LL),
                 "projected AccessKey expiration boundary changed");
+        bool invalidSessionExpirationRejected = false;
+        try {
+            (void)service::access::session::decode(service::access::session::encode(
+                "019fd9f6-4be5-7272-a194-9e571bce848d", "production key", "enabled",
+                "4102444800000x", R"(["device:realtime"])", R"([])"));
+        } catch (const std::runtime_error&) {
+            invalidSessionExpirationRejected = true;
+        }
+        require(invalidSessionExpirationRejected,
+                "projected AccessKey session accepted a non-decimal expiration");
+        const auto queryOnlyUrl = service::access::parseWebhookUrl(
+            "https://example.test?token=delivery");
+        require(queryOnlyUrl.target == "/?token=delivery",
+                "query-only webhook URL produced an invalid HTTP request target");
+        const auto ipv6Url =
+            service::access::parseWebhookUrl("https://[2001:db8::1]:8443/callback");
+        const auto ipv6Request =
+            service::access::WebhookHttpClient::request(ipv6Url, "{}", {});
+        require(ipv6Request.find("\r\nHost: [2001:db8::1]:8443\r\n") != std::string::npos,
+                "IPv6 webhook request produced an invalid Host header");
+        for (const auto& headers :
+             {std::vector<std::pair<std::string, std::string>>{{"X-Trace", "safe\r\nX-Injected: yes"}},
+              std::vector<std::pair<std::string, std::string>>{{"Content-Length", "0"}}}) {
+            bool rejected = false;
+            try {
+                (void)service::access::WebhookHttpClient::request(ipv6Url, "{}", headers);
+            } catch (const std::invalid_argument&) {
+                rejected = true;
+            }
+            require(rejected, "unsafe stored webhook header reached the HTTP wire request");
+        }
+        require(service::access::managedWebhookHeader("Transfer-Encoding", true) &&
+                    service::access::managedWebhookHeader("X-IOT-Signature", true),
+                "custom webhook headers could override transport or signature metadata");
+        bool unsafeUrlRejected = false;
+        try {
+            (void)service::access::parseWebhookUrl("https://example.test/callback\r\nX-Injected: yes");
+        } catch (const std::invalid_argument&) {
+            unsafeUrlRejected = true;
+        }
+        require(unsafeUrlRejected, "stored webhook URL reached the HTTP request line with CRLF");
+        for (const auto response : {"NOT-HTTP 200 OK\r\n\r\n",
+                                    "HTTP/1.1 2000 Invalid\r\n\r\n",
+                                    "HTTP/1.1 200 OK\r\n"}) {
+            bool rejected = false;
+            try {
+                (void)service::access::WebhookHttpClient::parseResponse(response);
+            } catch (const std::runtime_error&) {
+                rejected = true;
+            }
+            require(rejected, "malformed webhook response was accepted as HTTP success");
+        }
+        const auto informational = service::access::WebhookHttpClient::parseResponse(
+            "HTTP/1.1 103 Early Hints\r\nLink: </schema>; rel=preload\r\n\r\n"
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+        require(informational.status == 200 && informational.body == "ok",
+                "webhook client treated an informational response as the final result");
         std::cout << "open access tests passed\n";
         return 0;
     } catch (const std::exception& error) {

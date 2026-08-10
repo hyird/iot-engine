@@ -171,8 +171,20 @@ redis.call('XDEL', KEYS[2], ARGV[2])
 return 1
 )lua";
         static constexpr std::string_view validScript = R"lua(
+local expected_device = redis.call('HGET', KEYS[1], 'device_id')
+local current_status = redis.call('HGET', KEYS[1], 'status')
+if expected_device ~= ARGV[5] or current_status ~= 'PENDING' then
+  local reason = expected_device ~= ARGV[5]
+    and 'command_result_device_mismatch' or 'command_result_not_pending'
+  redis.call('XADD', KEYS[4], 'MAXLEN', '~', 1000, '*',
+    'source_entry_id', ARGV[2], 'failure_reason', reason,
+    'command_id', ARGV[9], 'device_id', ARGV[5], 'failed_at_ms', ARGV[7])
+  redis.call('XACK', KEYS[3], ARGV[1], ARGV[2])
+  redis.call('XDEL', KEYS[3], ARGV[2])
+  return 0
+end
 local hash = {}
-for index = 9, #ARGV do hash[#hash + 1] = ARGV[index] end
+for index = 10, #ARGV do hash[#hash + 1] = ARGV[index] end
 redis.call('HSET', KEYS[1], unpack(hash))
 redis.call('PEXPIRE', KEYS[1], ARGV[3])
 redis.call('XADD', KEYS[2], 'MAXLEN', '~', 100000, '*',
@@ -227,10 +239,12 @@ return 1
                 ",\"reason\":" + service::access::jsonQuoted(message.get("reason")) + "}";
             const std::string source(sourceStream);
             const std::string eventStream(service::access::event::kStream);
-            const std::string_view keys[]{key, eventStream, source};
+            const auto deadLetter = message::deadLetterStream(partition);
+            const std::string_view keys[]{key, eventStream, source, deadLetter};
             std::vector<std::string_view> arguments{
                 kGroup, message.id, ttl, message.get("message_id"),
-                message.get("device_id"), message.get("device_code"), completedAt, data};
+                message.get("device_id"), message.get("device_code"), completedAt, data,
+                commandId};
             arguments.reserve(arguments.size() + fields.size() * 2);
             for (const auto& field : fields) {
                 arguments.push_back(field.name);
