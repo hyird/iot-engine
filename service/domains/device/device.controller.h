@@ -50,7 +50,7 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
 
   private:
     static std::string id(ruvia::Context& c) {
-        return std::string(c.req().valid<DeviceIdParams>().id()->view());
+        return std::string(c.req().validated<DeviceIdParams>().id()->view());
     }
 
     static ruvia::HttpResponse jsonData(ruvia::Context& c, std::string_view data) {
@@ -90,12 +90,12 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
     }
     ruvia::Task<ruvia::HttpResponse> create(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:device:add");
-        co_await deviceService().create(c, c.req().valid<SaveDeviceBody>());
+        co_await deviceService().create(c, c.req().validated<SaveDeviceBody>());
         co_return c.json(service::common::operation(c, "创建成功"));
     }
     ruvia::Task<ruvia::HttpResponse> update(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:device:edit");
-        co_await deviceService().update(c, id(c), c.req().valid<SaveDeviceBody>());
+        co_await deviceService().update(c, id(c), c.req().validated<SaveDeviceBody>());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
     ruvia::Task<ruvia::HttpResponse> remove(ruvia::Context& c) {
@@ -108,7 +108,7 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
         co_await service::middleware::requirePermission(c, "iot:device:command");
         co_return c.json(service::common::ok<DeviceCommandCreateResponse>(
             c, co_await service::command::commandService().create(
-                   c, id(c), c.req().valid<DeviceCommandBody>())));
+                   c, id(c), c.req().validated<DeviceCommandBody>())));
     }
 
     ruvia::Task<ruvia::HttpResponse> commandStatus(ruvia::Context& c) {
@@ -131,7 +131,7 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
 
     ruvia::Task<ruvia::HttpResponse> replaceShares(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:device:share");
-        co_await deviceShareService().replace(c, id(c), c.req().valid<ReplaceDeviceSharesBody>());
+        co_await deviceShareService().replace(c, id(c), c.req().validated<ReplaceDeviceSharesBody>());
         co_return c.json(service::common::operation(c, "设备分享已更新"));
     }
 
@@ -159,7 +159,7 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
     ruvia::Task<ruvia::HttpResponse> replaceGroupShares(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:device-group:share");
         co_await deviceShareService().replaceGroup(c, id(c),
-                                                   c.req().valid<ReplaceDeviceSharesBody>());
+                                                   c.req().validated<ReplaceDeviceSharesBody>());
         co_return c.json(service::common::operation(c, "设备分组分享已更新"));
     }
     ruvia::Task<ruvia::HttpResponse> groupDetail(ruvia::Context& c) {
@@ -169,12 +169,12 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
     }
     ruvia::Task<ruvia::HttpResponse> groupCreate(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:device-group:add");
-        co_await deviceService().createGroup(c, c.req().valid<SaveDeviceGroupBody>());
+        co_await deviceService().createGroup(c, c.req().validated<SaveDeviceGroupBody>());
         co_return c.json(service::common::operation(c, "创建成功"));
     }
     ruvia::Task<ruvia::HttpResponse> groupUpdate(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:device-group:edit");
-        co_await deviceService().updateGroup(c, id(c), c.req().valid<SaveDeviceGroupBody>());
+        co_await deviceService().updateGroup(c, id(c), c.req().validated<SaveDeviceGroupBody>());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
     ruvia::Task<ruvia::HttpResponse> groupRemove(ruvia::Context& c) {

@@ -29,7 +29,7 @@ class LinkController final : public ruvia::Controller<LinkController> {
 
   private:
     static std::string id(ruvia::Context& c) {
-        return std::string(c.req().valid<LinkIdParams>().id()->view());
+        return std::string(c.req().validated<LinkIdParams>().id()->view());
     }
 
     static std::optional<std::string> text(const std::optional<ruvia::String>& value) {
@@ -38,7 +38,7 @@ class LinkController final : public ruvia::Controller<LinkController> {
 
     ruvia::Task<ruvia::HttpResponse> list(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:link:query");
-        const auto& query = c.req().valid<LinkListQuery>();
+        const auto& query = c.req().validated<LinkListQuery>();
         co_return c.json(service::common::ok<LinkPageResponse>(
             c, co_await linkService().list(c, static_cast<std::int64_t>(*query.page()),
                                            static_cast<std::int64_t>(*query.pageSize()),
@@ -72,13 +72,13 @@ class LinkController final : public ruvia::Controller<LinkController> {
 
     ruvia::Task<ruvia::HttpResponse> create(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:link:add");
-        co_await linkService().create(c, c.req().valid<SaveLinkBody>());
+        co_await linkService().create(c, c.req().validated<SaveLinkBody>());
         co_return c.json(service::common::operation(c, "创建成功"));
     }
 
     ruvia::Task<ruvia::HttpResponse> update(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:link:edit");
-        co_await linkService().update(c, id(c), c.req().valid<SaveLinkBody>());
+        co_await linkService().update(c, id(c), c.req().validated<SaveLinkBody>());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 

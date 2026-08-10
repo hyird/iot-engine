@@ -43,7 +43,7 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
 
   private:
     static std::string id(ruvia::Context& c) {
-        return std::string(c.req().valid<EdgeIdParams>().id()->view());
+        return std::string(c.req().validated<EdgeIdParams>().id()->view());
     }
 
     static std::optional<std::string> text(const std::optional<ruvia::String>& value) {
@@ -52,7 +52,7 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
 
     ruvia::Task<ruvia::HttpResponse> list(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:edge:query");
-        const auto& query = c.req().valid<EdgeListQuery>();
+        const auto& query = c.req().validated<EdgeListQuery>();
         co_return c.json(service::common::ok<EdgePageResponse>(
             c, co_await edgeService().list(c, *query.page(), *query.pageSize(),
                                            text(query.keyword()), text(query.status()))));
@@ -66,25 +66,25 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
 
     ruvia::Task<ruvia::HttpResponse> enrollment(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:edge:edit");
-        co_await edgeService().setEnrollment(c, id(c), c.req().valid<EnrollmentBody>());
+        co_await edgeService().setEnrollment(c, id(c), c.req().validated<EnrollmentBody>());
         co_return c.json(service::common::operation(c, "注册状态已更新"));
     }
 
     ruvia::Task<ruvia::HttpResponse> renameNode(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:edge:edit");
-        co_await edgeService().renameNode(c, id(c), c.req().valid<NodeNameBody>());
+        co_await edgeService().renameNode(c, id(c), c.req().validated<NodeNameBody>());
         co_return c.json(service::common::operation(c, "节点名称已更新"));
     }
 
     ruvia::Task<ruvia::HttpResponse> network(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:edge:config");
-        co_await edgeService().queueNetwork(c, id(c), c.req().valid<NetworkBody>());
+        co_await edgeService().queueNetwork(c, id(c), c.req().validated<NetworkBody>());
         co_return c.json(service::common::operation(c, "网络配置已下发"));
     }
 
     ruvia::Task<ruvia::HttpResponse> modem(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:edge:config");
-        co_await edgeService().queueModem(c, id(c), c.req().valid<ModemControlBody>());
+        co_await edgeService().queueModem(c, id(c), c.req().validated<ModemControlBody>());
         co_return c.json(service::common::operation(c, "4G 操作已下发"));
     }
 
@@ -96,13 +96,13 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
 
     ruvia::Task<ruvia::HttpResponse> savePlatform(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:edge:config");
-        (void)co_await edgeService().queuePlatform(c, id(c), c.req().valid<PlatformBody>());
+        (void)co_await edgeService().queuePlatform(c, id(c), c.req().validated<PlatformBody>());
         co_return c.json(service::common::operation(c, "平台配置已下发"));
     }
 
     ruvia::Task<ruvia::HttpResponse> removePlatform(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:edge:config");
-        const auto& params = c.req().valid<EdgePlatformParams>();
+        const auto& params = c.req().validated<EdgePlatformParams>();
         co_await edgeService().deletePlatform(c, params.id()->view(), params.platformId()->view());
         co_return c.json(service::common::operation(c, "平台删除配置已下发"));
     }
@@ -122,12 +122,12 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
     ruvia::Task<ruvia::HttpResponse> logs(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:edge:query");
         co_return c.json(service::common::ok<LogsResponse>(
-            c, co_await edgeService().logs(c, id(c), c.req().valid<LogsQuery>())));
+            c, co_await edgeService().logs(c, id(c), c.req().validated<LogsQuery>())));
     }
 
     ruvia::Task<ruvia::HttpResponse> logLevel(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:edge:config");
-        co_await edgeService().setLogLevel(c, id(c), c.req().valid<LogLevelBody>());
+        co_await edgeService().setLogLevel(c, id(c), c.req().validated<LogLevelBody>());
         co_return c.json(service::common::operation(c, "日志等级已下发"));
     }
 
@@ -231,8 +231,8 @@ class EdgePublicController final : public ruvia::Controller<EdgePublicController
 
   private:
     ruvia::Task<ruvia::HttpResponse> download(ruvia::Context& c) {
-        const auto& id = c.req().valid<EdgeIdParams>();
-        const auto& query = c.req().valid<FirmwareDownloadQuery>();
+        const auto& id = c.req().validated<EdgeIdParams>();
+        const auto& query = c.req().validated<FirmwareDownloadQuery>();
         auto [path, fileName] = co_await edgeService().firmwareDownload(
             c, id.id()->view(), query.token()->view());
         if (!std::filesystem::is_regular_file(path))

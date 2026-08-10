@@ -27,12 +27,12 @@ class DeptController final : public ruvia::Controller<DeptController> {
 
   private:
     static std::string id(ruvia::Context& c) {
-        return std::string(c.req().valid<DeptIdParams>().id()->view());
+        return std::string(c.req().validated<DeptIdParams>().id()->view());
     }
 
     ruvia::Task<ruvia::HttpResponse> list(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:dept:query");
-        const auto& query = c.req().valid<DeptListQuery>();
+        const auto& query = c.req().validated<DeptListQuery>();
         const auto keyword = query.keyword()
                                  ? std::optional<std::string>(std::string(query.keyword()->view()))
                                  : std::nullopt;
@@ -62,13 +62,13 @@ class DeptController final : public ruvia::Controller<DeptController> {
 
     ruvia::Task<ruvia::HttpResponse> create(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:dept:add");
-        co_await deptService().create(c, c.req().valid<CreateDeptBody>());
+        co_await deptService().create(c, c.req().validated<CreateDeptBody>());
         co_return c.json(service::common::operation(c, "创建成功"));
     }
 
     ruvia::Task<ruvia::HttpResponse> update(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:dept:edit");
-        co_await deptService().update(c, id(c), c.req().valid<UpdateDeptBody>());
+        co_await deptService().update(c, id(c), c.req().validated<UpdateDeptBody>());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 

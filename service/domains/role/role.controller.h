@@ -27,12 +27,12 @@ class RoleController final : public ruvia::Controller<RoleController> {
 
   private:
     static std::string id(ruvia::Context& c) {
-        return std::string(c.req().valid<RoleIdParams>().id()->view());
+        return std::string(c.req().validated<RoleIdParams>().id()->view());
     }
 
     ruvia::Task<ruvia::HttpResponse> list(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:role:query");
-        const auto& query = c.req().valid<RoleListQuery>();
+        const auto& query = c.req().validated<RoleListQuery>();
         const auto keyword = query.keyword()
                                  ? std::optional<std::string>(std::string(query.keyword()->view()))
                                  : std::nullopt;
@@ -59,13 +59,13 @@ class RoleController final : public ruvia::Controller<RoleController> {
 
     ruvia::Task<ruvia::HttpResponse> create(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:role:add");
-        co_await roleService().create(c, c.req().valid<CreateRoleBody>());
+        co_await roleService().create(c, c.req().validated<CreateRoleBody>());
         co_return c.json(service::common::operation(c, "创建成功"));
     }
 
     ruvia::Task<ruvia::HttpResponse> update(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:role:edit");
-        co_await roleService().update(c, id(c), c.req().valid<UpdateRoleBody>());
+        co_await roleService().update(c, id(c), c.req().validated<UpdateRoleBody>());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 

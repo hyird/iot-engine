@@ -172,7 +172,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
 
     ruvia::Task<void> terminal(ruvia::Context& c) {
         auto& socket = c.webSocket();
-        const auto& query = c.req().valid<TerminalTicketQuery>();
+        const auto& query = c.req().validated<TerminalTicketQuery>();
         const std::string ticket(query.ticket()->view());
         const auto ticketKey = "iot:edge:terminal:ticket:" + ticket;
         const auto node = co_await c.redis().getDel(ticketKey);

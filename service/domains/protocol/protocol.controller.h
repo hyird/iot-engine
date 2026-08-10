@@ -29,7 +29,7 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
 
   private:
     static std::string id(ruvia::Context& c) {
-        return std::string(c.req().valid<ProtocolIdParams>().id()->view());
+        return std::string(c.req().validated<ProtocolIdParams>().id()->view());
     }
 
     static ruvia::HttpResponse jsonData(ruvia::Context& c, std::string_view data) {
@@ -44,7 +44,7 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
 
     ruvia::Task<ruvia::HttpResponse> list(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:protocol:query");
-        const auto& query = c.req().valid<ProtocolListQuery>();
+        const auto& query = c.req().validated<ProtocolListQuery>();
         const auto protocol =
             query.protocol() ? std::optional<std::string>(query.protocol()->view()) : std::nullopt;
         const auto data =
@@ -55,7 +55,7 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
 
     ruvia::Task<ruvia::HttpResponse> options(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:protocol:query");
-        const auto& query = c.req().valid<ProtocolListQuery>();
+        const auto& query = c.req().validated<ProtocolListQuery>();
         if (!query.protocol())
             service::common::fail(16003, "protocol 不能为空", 400);
         const auto data = co_await protocolService().options(

@@ -24,12 +24,12 @@ class UserController final : public ruvia::Controller<UserController> {
 
   private:
     static std::string id(ruvia::Context& c) {
-        return std::string(c.req().valid<UserIdParams>().id()->view());
+        return std::string(c.req().validated<UserIdParams>().id()->view());
     }
 
     ruvia::Task<ruvia::HttpResponse> list(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:user:query");
-        const auto& query = c.req().valid<UserListQuery>();
+        const auto& query = c.req().validated<UserListQuery>();
         const auto page = static_cast<std::int64_t>(*query.page());
         const auto pageSize = static_cast<std::int64_t>(*query.pageSize());
         const auto keyword = query.keyword()
@@ -44,7 +44,7 @@ class UserController final : public ruvia::Controller<UserController> {
 
     ruvia::Task<ruvia::HttpResponse> options(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:user:query");
-        const auto& query = c.req().valid<UserOptionsQuery>();
+        const auto& query = c.req().validated<UserOptionsQuery>();
         const auto keyword = query.keyword()
                                  ? std::optional<std::string>(std::string(query.keyword()->view()))
                                  : std::nullopt;
@@ -60,13 +60,13 @@ class UserController final : public ruvia::Controller<UserController> {
 
     ruvia::Task<ruvia::HttpResponse> create(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:user:add");
-        co_await userService().create(c, c.req().valid<CreateUserBody>());
+        co_await userService().create(c, c.req().validated<CreateUserBody>());
         co_return c.json(service::common::operation(c, "创建成功"));
     }
 
     ruvia::Task<ruvia::HttpResponse> update(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:user:edit");
-        co_await userService().update(c, id(c), c.req().valid<UpdateUserBody>());
+        co_await userService().update(c, id(c), c.req().validated<UpdateUserBody>());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 

@@ -22,12 +22,12 @@ class AuthController final : public ruvia::Controller<AuthController> {
   private:
     ruvia::Task<ruvia::HttpResponse> login(ruvia::Context& c) {
         co_return c.json(service::common::ok<LoginResponse>(
-            c, co_await authService().login(c, c.req().valid<LoginBody>())));
+            c, co_await authService().login(c, c.req().validated<LoginBody>())));
     }
 
     ruvia::Task<ruvia::HttpResponse> refresh(ruvia::Context& c) {
         co_return c.json(service::common::ok<LoginResponse>(
-            c, co_await authService().refresh(c, c.req().valid<RefreshBody>())));
+            c, co_await authService().refresh(c, c.req().validated<RefreshBody>())));
     }
 
     ruvia::Task<ruvia::HttpResponse> logout(ruvia::Context& c) {

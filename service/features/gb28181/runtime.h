@@ -117,7 +117,7 @@ class Runtime final {
                     outcome.error = std::current_exception();
                 }
                 auto completed = sharedCompletion->complete(std::move(outcome));
-                if (!completed.completed()) {
+                if (!completed.accepted()) {
                     auto rejected = std::move(completed).takeRejected();
                     if (rejected && rejected->value)
                         rollback(*rejected->value);
