@@ -109,7 +109,11 @@ const DeviceValues = ({
     wide?: boolean;
     compact?: boolean;
 }) => {
-    const columnCount = wide ? 2 : 1;
+    // A normal card is wide enough for two compact value cells. Keeping every
+    // element on its own row wastes half of the card and makes small device
+    // types unnecessarily tall. Long labels still expand to a full row via
+    // buildAlignedLayout.
+    const columnCount = wide || items.length > 1 ? 2 : 1;
     const layoutItems = buildAlignedLayout(items, wide, columnCount);
 
     return (

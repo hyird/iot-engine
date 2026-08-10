@@ -56,9 +56,9 @@ import { usePermissions } from '@/hooks/usePermission';
 import { formatDateTime, parseDateTime } from '@/utils/dateTime';
 import { useLinkOptions } from '../link/link.service';
 import CommandPopover from './CommandPopover';
-import { getDeviceDetail } from './device.client';
 import DeviceFormModal, { type DeviceFormValues } from './DeviceFormModal';
 import DeviceGroupPanel from './DeviceGroupPanel';
+import { getDeviceDetail } from './device.client';
 import {
     useDeviceDelete,
     useDeviceGroupShares,
@@ -580,7 +580,10 @@ const parseHistoryBitLabels = (
         typeof value === 'number'
             ? value
             : textValue
-              ? Number.parseInt(textValue, textValue.startsWith('0x') || /[A-Fa-f]/.test(textValue) ? 16 : 10)
+              ? Number.parseInt(
+                    textValue,
+                    textValue.startsWith('0x') || /[A-Fa-f]/.test(textValue) ? 16 : 10
+                )
               : Number.NaN;
     if (!Number.isFinite(numeric)) return [];
     return dictConfig.items
@@ -895,9 +898,11 @@ const DeviceGridItem = memo(
                                 <div className="whitespace-normal break-words leading-5">
                                     {device.name}
                                 </div>
-                                <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-xs font-normal text-slate-400">
-                                    <span>编码：{device.device_code}</span>
-                                    <span>设备 ID：{device.id}</span>
+                                <div className="mt-0.5 min-w-0 text-xs font-normal leading-4 text-slate-400">
+                                    <div className="truncate">编码：{device.device_code}</div>
+                                    <Tooltip title={`设备 ID：${device.id}`}>
+                                        <div className="truncate">设备 ID：{device.id}</div>
+                                    </Tooltip>
                                 </div>
                             </div>
                             <Tag
