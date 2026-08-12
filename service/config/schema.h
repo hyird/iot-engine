@@ -1225,11 +1225,14 @@ END
 $schema$;
 )sql"},
     {"0022_gb28181_custom_names", R"sql(
+DO $schema$
+BEGIN
 ALTER TABLE gb28181_device
     ADD COLUMN custom_name VARCHAR(255);
-
 ALTER TABLE gb28181_channel
     ADD COLUMN custom_name VARCHAR(255);
+END
+$schema$;
 )sql"},
 }};
 
