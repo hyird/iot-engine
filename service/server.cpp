@@ -322,7 +322,9 @@ int main(int argc, char *argv[])
         auto openWebhooks = std::make_shared<service::access::WebhookRuntime>();
         auto configReconciler = std::make_shared<service::runtime::Reconciler>();
         auto edgeProjector = std::make_shared<service::edge::Projector>();
-        auto gb28181Projector = std::make_shared<service::gb28181::Projector>();
+        auto gb28181Projector = gb28181.enabled
+                                    ? std::make_shared<service::gb28181::Projector>()
+                                    : nullptr;
         auto alerts = std::make_shared<service::alert::Runtime>();
         app.useDb(std::move(db))
             .useRedis(std::move(serviceRedis))
@@ -340,10 +342,12 @@ int main(int argc, char *argv[])
                 openWebhooks->start(workers);
                 edgeProjector->start(workers.front());
                 alerts->start(workers.front());
-                auto gb28181Snapshot = gb28181Projector->start(workers.front());
-                service::gb28181::runtime().attachProjector(
-                    gb28181Projector, std::move(gb28181Snapshot));
-                service::gb28181::runtime().start();
+                if (gb28181Projector) {
+                    auto gb28181Snapshot = gb28181Projector->start(workers.front());
+                    service::gb28181::runtime().attachProjector(
+                        gb28181Projector, std::move(gb28181Snapshot));
+                    service::gb28181::runtime().start();
+                }
                 auto started = std::make_shared<std::promise<void>>();
                 auto ready = started->get_future();
                 const auto posted = workers.front().post(
@@ -363,7 +367,8 @@ int main(int argc, char *argv[])
                     {
                 alerts->stop();
                 service::gb28181::runtime().stop();
-                gb28181Projector->stop();
+                if (gb28181Projector)
+                    gb28181Projector->stop();
                 configReconciler->stop();
                 edgeProjector->stop();
                 collector->stop();
