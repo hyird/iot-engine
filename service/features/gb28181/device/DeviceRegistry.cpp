@@ -61,6 +61,13 @@ void DeviceRegistry::updateCatalog(const std::string &deviceId,
   }
   device.online = true;
   device.lastSeen = std::chrono::system_clock::now();
+  for (auto &channel : channels) {
+    const auto current = std::find_if(
+        device.channels.begin(), device.channels.end(),
+        [&](const Channel &value) { return value.id == channel.id; });
+    if (current != device.channels.end())
+      channel.customName = current->customName;
+  }
   device.channels = std::move(channels);
   notify(device, Change::Catalog);
 }
@@ -150,6 +157,32 @@ bool DeviceRegistry::updateMapping(const std::string &deviceId,
     return false;
   iter->second.mappedDeviceId = std::move(mappedDeviceId);
   notify(iter->second, Change::Mapping);
+  return true;
+}
+
+bool DeviceRegistry::updateDeviceName(const std::string &deviceId,
+                                      std::string customName) {
+  const auto iter = devices_.find(deviceId);
+  if (iter == devices_.end())
+    return false;
+  iter->second.customName = std::move(customName);
+  notify(iter->second, Change::DeviceName);
+  return true;
+}
+
+bool DeviceRegistry::updateChannelName(const std::string &deviceId,
+                                       const std::string &channelId,
+                                       std::string customName) {
+  const auto device = devices_.find(deviceId);
+  if (device == devices_.end())
+    return false;
+  const auto channel = std::find_if(
+      device->second.channels.begin(), device->second.channels.end(),
+      [&](const Channel &value) { return value.id == channelId; });
+  if (channel == device->second.channels.end())
+    return false;
+  channel->customName = std::move(customName);
+  notify(device->second, Change::ChannelName);
   return true;
 }
 

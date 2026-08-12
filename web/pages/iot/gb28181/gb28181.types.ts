@@ -43,36 +43,27 @@ export namespace GB28181 {
     export interface Channel {
         id: string;
         name: string;
+        reported_name: string;
+        custom_name: string;
         manufacturer: string;
         online: boolean;
         ptz_type: number;
         ptz_capable: boolean;
     }
 
-    export interface RecordItem {
-        device_id: string;
-        name: string;
-        file_path: string;
-        address: string;
-        start_time: string;
-        end_time: string;
-        type: string;
-        recorder_id: string;
-    }
-
     export interface Device {
         id: string;
         name: string;
+        reported_name: string;
+        custom_name: string;
         manufacturer: string;
         remote_address: string;
         remote_ip: string;
         remote_port: string;
         registration_source: string;
-        mapped_device_id: string;
         last_seen_at: string;
         online: boolean;
         channels: Channel[];
-        records: RecordItem[];
     }
 
     export interface StreamStatus {
@@ -123,7 +114,6 @@ export namespace GB28181 {
         channel_id?: string;
         action?: string;
         speed?: number;
-        mapped_device_id?: string;
         recording?: boolean;
     }
 
@@ -151,20 +141,17 @@ export namespace GB28181 {
         zoom: number;
     }
 
-    export interface RecordQueryPayload {
-        deviceId: string;
-        channelId: string;
-        startTime: string;
-        endTime: string;
-    }
-
     export interface StreamPayload {
         streamId: string;
     }
 
-    export interface MapDevicePayload {
+    export interface DeviceNamePayload {
         deviceId: string;
-        mappedDeviceId: string;
+        name: string;
+    }
+
+    export interface ChannelNamePayload extends DeviceNamePayload {
+        channelId: string;
     }
 
     export type PtzAction = 'left' | 'right' | 'up' | 'down' | 'zoomin' | 'zoomout' | 'stop';

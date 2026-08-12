@@ -23,6 +23,8 @@ public:
     Catalog,
     Records,
     Mapping,
+    DeviceName,
+    ChannelName,
   };
 
   using Observer = std::function<void(const Device &, Change)>;
@@ -51,6 +53,9 @@ public:
                     const std::string &channelId = {}) const;
   void markOffline(const std::string &deviceId);
   bool updateMapping(const std::string &deviceId, std::string mappedDeviceId);
+  bool updateDeviceName(const std::string &deviceId, std::string customName);
+  bool updateChannelName(const std::string &deviceId,
+                         const std::string &channelId, std::string customName);
   void replace(std::vector<Device> devices);
 
 private:

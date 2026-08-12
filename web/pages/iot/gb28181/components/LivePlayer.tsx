@@ -2,28 +2,25 @@ import Hls from 'hls.js';
 import mpegts from 'mpegts.js';
 import { useEffect, useRef, useState } from 'react';
 import { Endpoint, Events } from 'zlmrtc-client';
-import {
-    createJessibucaFlvPlayer,
-    type JessibucaFlvPlayer,
-} from '@/lib/gb28181/jessibucaFlvPlayer';
+import { type AdaptiveFlvPlayer, createAdaptiveFlvPlayer } from '@/lib/gb28181/adaptiveFlvPlayer';
 import type { GB28181 } from '../gb28181.types';
+import {
+    buildPlaybackCandidates,
+    type PlaybackCandidate,
+    type PlaybackCapabilities,
+} from '../playbackCandidates';
 
-const WEBRTC_FALLBACK_DELAY_MS = 8000;
+const WEBRTC_CONNECT_TIMEOUT_MS = 4000;
+const FALLBACK_FIRST_FRAME_TIMEOUT_MS = 5000;
 const WEBRTC_CODEC_RETRY_MS = 400;
 const WEBRTC_CODEC_RETRY_COUNT = 10;
 
-type PlaybackCandidate = {
-    label: string;
-    engine: 'jessibuca' | 'hls' | 'mpegts';
-    mediaType?: 'flv' | 'mpegts';
-    url: string;
-};
-
 type PlayerResources = {
+    adaptiveFlv?: AdaptiveFlvPlayer;
+    candidateCleanup?: () => void;
     hls?: Hls;
     mpegts?: ReturnType<typeof mpegts.createPlayer>;
     rtc?: Endpoint;
-    jessibuca?: JessibucaFlvPlayer;
     fallbackTimer?: number;
 };
 
@@ -35,6 +32,8 @@ const resetVideoElement = (video: HTMLVideoElement) => {
 };
 
 const closePlayerResources = (resources: PlayerResources, video?: HTMLVideoElement | null) => {
+    resources.candidateCleanup?.();
+    resources.candidateCleanup = undefined;
     if (resources.fallbackTimer) {
         window.clearTimeout(resources.fallbackTimer);
         resources.fallbackTimer = undefined;
@@ -45,31 +44,9 @@ const closePlayerResources = (resources: PlayerResources, video?: HTMLVideoEleme
     resources.mpegts = undefined;
     resources.rtc?.close();
     resources.rtc = undefined;
-    resources.jessibuca?.close();
-    resources.jessibuca = undefined;
+    resources.adaptiveFlv?.close();
+    resources.adaptiveFlv = undefined;
     if (video) resetVideoElement(video);
-};
-
-const buildPlaybackCandidates = (urls: GB28181.PlayUrls): PlaybackCandidate[] => {
-    const candidates: Array<PlaybackCandidate | null> = [
-        urls.http_flv
-            ? { label: 'Jessibuca HTTP-FLV', engine: 'jessibuca', url: urls.http_flv }
-            : null,
-        urls.ws_flv ? { label: 'Jessibuca WS-FLV', engine: 'jessibuca', url: urls.ws_flv } : null,
-        urls.hls ? { label: 'HLS', engine: 'hls', url: urls.hls } : null,
-        urls.http_flv
-            ? { label: 'HTTP-FLV', engine: 'mpegts', mediaType: 'flv', url: urls.http_flv }
-            : null,
-        urls.ws_flv
-            ? { label: 'WS-FLV', engine: 'mpegts', mediaType: 'flv', url: urls.ws_flv }
-            : null,
-        urls.http_ts
-            ? { label: 'HTTP-TS', engine: 'mpegts', mediaType: 'mpegts', url: urls.http_ts }
-            : null,
-    ];
-    return candidates.filter((candidate): candidate is PlaybackCandidate =>
-        Boolean(candidate?.url)
-    );
 };
 
 const AUXILIARY_VIDEO_CODECS = new Set(['RTX', 'RED', 'ULPFEC', 'FLEXFEC-03']);
@@ -186,12 +163,55 @@ const wait = (duration: number) =>
         window.setTimeout(resolve, duration);
     });
 
+const watchFirstVideoFrame = (video: HTMLVideoElement, callback: () => void) => {
+    let done = false;
+    const finish = () => {
+        if (done) return;
+        done = true;
+        callback();
+    };
+
+    if (typeof video.requestVideoFrameCallback === 'function') {
+        const id = video.requestVideoFrameCallback(finish);
+        return () => {
+            done = true;
+            video.cancelVideoFrameCallback(id);
+        };
+    }
+
+    video.addEventListener('loadeddata', finish, { once: true });
+    return () => {
+        done = true;
+        video.removeEventListener('loadeddata', finish);
+    };
+};
+
+const detectPlaybackCapabilities = (video: HTMLVideoElement): PlaybackCapabilities => {
+    const featureList = mpegts.getFeatureList();
+    return {
+        hls: Hls.isSupported() || Boolean(video.canPlayType('application/vnd.apple.mpegurl')),
+        mpegts: mpegts.isSupported(),
+        mseH265: featureList.mseH265Playback === true,
+        softwareVideo:
+            typeof Worker !== 'undefined' &&
+            typeof WebAssembly !== 'undefined' &&
+            typeof VideoFrame !== 'undefined',
+        webCodecs:
+            typeof VideoDecoder !== 'undefined' &&
+            typeof EncodedVideoChunk !== 'undefined' &&
+            typeof VideoFrame !== 'undefined',
+    };
+};
+
 export function Gb28181LivePlayer({ session }: { session: GB28181.PreviewStartResult }) {
     const videoRef = useRef<HTMLVideoElement | null>(null);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const resourcesRef = useRef<PlayerResources>({});
+    const mutedRef = useRef(true);
     const [status, setStatus] = useState('准备播放');
     const [activeProtocol, setActiveProtocol] = useState<string>();
+    const [audioAvailable, setAudioAvailable] = useState(false);
+    const [muted, setMuted] = useState(true);
     const [surface, setSurface] = useState<'video' | 'canvas'>('video');
 
     useEffect(() => {
@@ -200,39 +220,42 @@ export function Gb28181LivePlayer({ session }: { session: GB28181.PreviewStartRe
         const resources = resourcesRef.current;
         const playUrls = session.play_urls;
 
-        const playElement = async (label: string, playingStatus = '播放中') => {
+        setAudioAvailable(false);
+
+        const playElement = async (label: string) => {
             const video = videoRef.current;
             if (!video || disposed) return;
             setActiveProtocol(label);
             try {
                 await video.play();
-                if (!disposed) setStatus(playingStatus);
             } catch {
-                if (!disposed) setStatus('已就绪');
+                if (!disposed) setStatus('等待浏览器允许播放');
             }
         };
 
-        const updateWebRtcVideoCodec = async (endpoint: Endpoint) => {
+        const updateWebRtcVideoCodec = async (
+            endpoint: Endpoint,
+            onCodec: (codec: string) => void
+        ) => {
             for (let attempt = 0; attempt < WEBRTC_CODEC_RETRY_COUNT; attempt += 1) {
                 if (disposed || resources.rtc !== endpoint) return;
                 const codec = await findWebRtcVideoCodec(endpoint);
                 if (disposed || resources.rtc !== endpoint) return;
                 if (codec) {
-                    setStatus(codec);
+                    onCodec(codec);
                     return;
                 }
                 if (attempt < WEBRTC_CODEC_RETRY_COUNT - 1) {
                     await wait(WEBRTC_CODEC_RETRY_MS);
                 }
             }
-            if (!disposed && resources.rtc === endpoint) {
-                setStatus('未知');
-            }
+            if (!disposed && resources.rtc === endpoint) onCodec('未知编码');
         };
 
         const playFallbackCandidate = (candidates: PlaybackCandidate[], index: number) => {
             const video = videoRef.current;
-            if (!video || disposed) return;
+            const canvas = canvasRef.current;
+            if (!video || !canvas || disposed) return;
 
             closePlayerResources(resources, video);
             const candidate = candidates[index];
@@ -242,67 +265,77 @@ export function Gb28181LivePlayer({ session }: { session: GB28181.PreviewStartRe
                 return;
             }
 
-            const playNext = () => {
-                if (!disposed) playFallbackCandidate(candidates, index + 1);
+            let candidateClosed = false;
+            let advanced = false;
+            const startedAt = performance.now();
+            const firstFrameTimer = window.setTimeout(() => {
+                playNext();
+            }, FALLBACK_FIRST_FRAME_TIMEOUT_MS);
+            let stopWatchingFrame: (() => void) | undefined;
+            const cleanupCandidate = () => {
+                candidateClosed = true;
+                advanced = true;
+                window.clearTimeout(firstFrameTimer);
+                stopWatchingFrame?.();
             };
+            const playNext = () => {
+                if (advanced || disposed) return;
+                advanced = true;
+                window.clearTimeout(firstFrameTimer);
+                stopWatchingFrame?.();
+                playFallbackCandidate(candidates, index + 1);
+            };
+            const firstFrameStatus = (details?: string) => {
+                window.clearTimeout(firstFrameTimer);
+                const elapsed = Math.max(0, Math.round(performance.now() - startedAt));
+                setStatus(`${details ? `${details} · ` : ''}首帧 ${elapsed}ms`);
+            };
+            resources.candidateCleanup = cleanupCandidate;
+            setAudioAvailable(false);
+            setActiveProtocol(candidate.label);
+            setStatus('连接中');
 
-            if (candidate.engine === 'jessibuca') {
-                const canvas = canvasRef.current;
-                if (!canvas || typeof VideoFrame === 'undefined') {
-                    playNext();
-                    return;
-                }
-
+            if (candidate.engine === 'adaptive-flv') {
                 setSurface('canvas');
-                setActiveProtocol(candidate.label);
-                setStatus('连接中');
-
-                let firstFrameRendered = false;
-                let player: JessibucaFlvPlayer | undefined;
-                let closed = false;
-                const firstFrameTimer = window.setTimeout(() => {
-                    if (!firstFrameRendered) playNext();
-                }, WEBRTC_FALLBACK_DELAY_MS);
-
-                resources.jessibuca = {
-                    close: () => {
-                        closed = true;
-                        window.clearTimeout(firstFrameTimer);
-                        player?.close();
-                        canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
-                    },
-                };
-
-                void createJessibucaFlvPlayer({
+                void createAdaptiveFlvPlayer({
                     url: candidate.url,
                     canvas,
-                    onFirstFrame: () => {
-                        if (disposed) return;
-                        firstFrameRendered = true;
-                        window.clearTimeout(firstFrameTimer);
-                        setStatus('播放中');
+                    decoder: candidate.decoder ?? 'native-only',
+                    muted: mutedRef.current,
+                    onAudioAvailable: (available) => {
+                        if (!disposed && !candidateClosed) setAudioAvailable(available);
                     },
-                    onError: () => {
-                        playNext();
+                    onVideoMode: (info) => {
+                        if (!disposed && !candidateClosed) {
+                            setStatus(
+                                `${info.codec} · ${info.decoder === 'webcodecs' ? '硬解' : 'Worker软解'} · 解码中`
+                            );
+                        }
                     },
+                    onFirstFrame: (info) => {
+                        if (disposed || candidateClosed) return;
+                        firstFrameStatus(
+                            `${info.codec} · ${info.decoder === 'webcodecs' ? '硬解' : 'Worker软解'}`
+                        );
+                    },
+                    onError: playNext,
                 })
                     .then((runtime) => {
-                        player = runtime;
-                        if (closed || disposed) runtime.close();
+                        if (candidateClosed || disposed || advanced) runtime.close();
+                        else resources.adaptiveFlv = runtime;
                     })
-                    .catch(() => {
-                        playNext();
-                    });
+                    .catch(playNext);
                 return;
             }
 
             setSurface('video');
+            stopWatchingFrame = watchFirstVideoFrame(video, () => firstFrameStatus());
             if (candidate.engine === 'hls') {
-                setActiveProtocol(candidate.label);
-                setStatus('连接中');
                 if (Hls.isSupported()) {
                     const hls = new Hls({
-                        backBufferLength: 30,
+                        backBufferLength: 5,
+                        liveMaxLatencyDurationCount: 3,
+                        liveSyncDurationCount: 1,
                         lowLatencyMode: true,
                     });
                     resources.hls = hls;
@@ -311,6 +344,7 @@ export function Gb28181LivePlayer({ session }: { session: GB28181.PreviewStartRe
                         hls.loadSource(candidate.url);
                     });
                     hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                        setAudioAvailable(hls.audioTracks.length > 0);
                         void playElement(candidate.label);
                     });
                     hls.on(Hls.Events.ERROR, (_event, data) => {
@@ -323,7 +357,9 @@ export function Gb28181LivePlayer({ session }: { session: GB28181.PreviewStartRe
                     video.src = candidate.url;
                     video.addEventListener(
                         'loadedmetadata',
-                        () => void playElement(candidate.label),
+                        () => {
+                            void playElement(candidate.label);
+                        },
                         {
                             once: true,
                         }
@@ -337,8 +373,6 @@ export function Gb28181LivePlayer({ session }: { session: GB28181.PreviewStartRe
             }
 
             if (mpegts.isSupported()) {
-                setActiveProtocol(candidate.label);
-                setStatus('连接中');
                 const player = mpegts.createPlayer(
                     {
                         type: candidate.mediaType ?? 'flv',
@@ -349,12 +383,19 @@ export function Gb28181LivePlayer({ session }: { session: GB28181.PreviewStartRe
                         enableStashBuffer: false,
                         isLive: true,
                         liveBufferLatencyChasing: true,
-                        liveBufferLatencyMaxLatency: 1.5,
-                        liveBufferLatencyMinRemain: 0.2,
+                        liveBufferLatencyMaxLatency: 1,
+                        liveBufferLatencyMinRemain: 0.1,
+                        lazyLoad: false,
                     }
                 );
                 resources.mpegts = player;
                 player.on(mpegts.Events.ERROR, playNext);
+                player.on(mpegts.Events.MEDIA_INFO, (info) => {
+                    if (candidateClosed || disposed) return;
+                    setAudioAvailable(info.hasAudio === true);
+                    if (info.videoCodec)
+                        setStatus(`${info.videoCodec.toUpperCase()} · 原生解码 · 解码中`);
+                });
                 player.attachMediaElement(video);
                 player.load();
                 void playElement(candidate.label);
@@ -367,7 +408,12 @@ export function Gb28181LivePlayer({ session }: { session: GB28181.PreviewStartRe
         const startFallbackPlayback = () => {
             if (disposed || fallbackStarted) return;
             fallbackStarted = true;
-            playFallbackCandidate(buildPlaybackCandidates(playUrls), 0);
+            const video = videoRef.current;
+            if (!video) return;
+            playFallbackCandidate(
+                buildPlaybackCandidates(playUrls, detectPlaybackCapabilities(video)),
+                0
+            );
         };
 
         const startWebRtcPlayback = () => {
@@ -380,6 +426,25 @@ export function Gb28181LivePlayer({ session }: { session: GB28181.PreviewStartRe
             setActiveProtocol('WebRTC');
             setSurface('video');
             setStatus('连接中');
+            const startedAt = performance.now();
+            let codec = '未知编码';
+            let firstFrameElapsed: number | undefined;
+            const renderWebRtcStatus = () => {
+                setStatus(
+                    firstFrameElapsed === undefined
+                        ? `${codec} · 获取中`
+                        : `${codec} · 首帧 ${firstFrameElapsed}ms`
+                );
+            };
+            const stopWatchingFrame = watchFirstVideoFrame(video, () => {
+                firstFrameElapsed = Math.max(0, Math.round(performance.now() - startedAt));
+                if (resources.fallbackTimer) {
+                    window.clearTimeout(resources.fallbackTimer);
+                    resources.fallbackTimer = undefined;
+                }
+                renderWebRtcStatus();
+            });
+            resources.candidateCleanup = stopWatchingFrame;
 
             const endpoint = new Endpoint({
                 element: video,
@@ -396,11 +461,16 @@ export function Gb28181LivePlayer({ session }: { session: GB28181.PreviewStartRe
             resources.rtc = endpoint;
 
             endpoint.on(Events.WEBRTC_ON_REMOTE_STREAMS, () => {
-                if (resources.fallbackTimer) {
-                    window.clearTimeout(resources.fallbackTimer);
-                    resources.fallbackTimer = undefined;
-                }
-                void playElement('WebRTC', '获取中').then(() => updateWebRtcVideoCodec(endpoint));
+                const stream = video.srcObject;
+                setAudioAvailable(
+                    stream instanceof MediaStream && stream.getAudioTracks().length > 0
+                );
+                void playElement('WebRTC').then(() =>
+                    updateWebRtcVideoCodec(endpoint, (nextCodec) => {
+                        codec = nextCodec;
+                        renderWebRtcStatus();
+                    })
+                );
             });
             endpoint.on(Events.WEBRTC_NOT_SUPPORT, startFallbackPlayback);
             endpoint.on(Events.WEBRTC_ICE_CANDIDATE_ERROR, startFallbackPlayback);
@@ -412,10 +482,11 @@ export function Gb28181LivePlayer({ session }: { session: GB28181.PreviewStartRe
             });
 
             resources.fallbackTimer = window.setTimeout(() => {
+                resources.fallbackTimer = undefined;
                 if (video.readyState < video.HAVE_CURRENT_DATA) {
                     startFallbackPlayback();
                 }
-            }, WEBRTC_FALLBACK_DELAY_MS);
+            }, WEBRTC_CONNECT_TIMEOUT_MS);
             return true;
         };
 
@@ -430,13 +501,21 @@ export function Gb28181LivePlayer({ session }: { session: GB28181.PreviewStartRe
         };
     }, [session.play_urls]);
 
+    const toggleMuted = () => {
+        const nextMuted = !mutedRef.current;
+        mutedRef.current = nextMuted;
+        setMuted(nextMuted);
+        if (videoRef.current) videoRef.current.muted = nextMuted;
+        resourcesRef.current.adaptiveFlv?.setMuted(nextMuted);
+    };
+
     return (
         <>
             <video
                 ref={videoRef}
                 controls
                 autoPlay
-                muted
+                muted={muted}
                 playsInline
                 className={`h-full w-full bg-black ${surface === 'video' ? 'block' : 'hidden'}`}
             />
@@ -448,6 +527,15 @@ export function Gb28181LivePlayer({ session }: { session: GB28181.PreviewStartRe
                 {activeProtocol && <span>{activeProtocol}</span>}
                 <span>{status}</span>
             </div>
+            {audioAvailable && (
+                <button
+                    type="button"
+                    onClick={toggleMuted}
+                    className="absolute bottom-3 left-3 z-20 rounded bg-black/60 px-2 py-1 text-xs text-white transition hover:bg-black/80"
+                >
+                    {muted ? '开启声音' : '关闭声音'}
+                </button>
+            )}
         </>
     );
 }

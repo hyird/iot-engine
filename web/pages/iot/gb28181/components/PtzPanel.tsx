@@ -225,7 +225,7 @@ export function PtzPanel({ speed, disabled, onSpeedChange, onAction, onPosition 
     return (
         <Popover
             trigger="click"
-            placement="bottomRight"
+            placement="topRight"
             arrow={false}
             open={open}
             onOpenChange={(nextOpen) => {

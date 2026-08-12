@@ -467,6 +467,7 @@ add_test(NAME gb28181-schema COMMAND gb28181-schema-test)
 
 add_executable(gb28181-projector-test
     tests/gb28181-projector-test.cpp
+    service/features/gb28181/device/DeviceRegistry.cpp
     service/features/gb28181/media/StreamRegistry.cpp)
 target_include_directories(gb28181-projector-test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"

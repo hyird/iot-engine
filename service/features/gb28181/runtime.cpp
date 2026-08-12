@@ -174,6 +174,28 @@ ruvia::Task<bool> Runtime::mapDevice(ruvia::Context &context, std::string id,
       });
 }
 
+ruvia::Task<bool> Runtime::renameDevice(ruvia::Context &context, std::string id,
+                                        std::string customName) {
+  co_return co_await invoke<bool>(
+      context,
+      [this, id = std::move(id), customName = std::move(customName)]() mutable {
+        return devices_->updateDeviceName(id, std::move(customName));
+      });
+}
+
+ruvia::Task<bool> Runtime::renameChannel(ruvia::Context &context,
+                                         std::string deviceId,
+                                         std::string channelId,
+                                         std::string customName) {
+  co_return co_await invoke<bool>(
+      context,
+      [this, deviceId = std::move(deviceId), channelId = std::move(channelId),
+       customName = std::move(customName)]() mutable {
+        return devices_->updateChannelName(deviceId, channelId,
+                                           std::move(customName));
+      });
+}
+
 ruvia::Task<bool> Runtime::queryCatalog(ruvia::Context &context,
                                         std::string deviceId) {
   co_return co_await invoke<bool>(context,

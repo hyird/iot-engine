@@ -46,6 +46,22 @@ export function useGb28181CatalogQuery() {
     });
 }
 
+export function useGb28181RenameDevice() {
+    return useMutationWithMessage<void, GB28181.DeviceNamePayload>({
+        mutationFn: api.renameDevice,
+        successMessage: '摄像头名称已更新',
+        invalidateKeys: [gb28181Keys.devices()],
+    });
+}
+
+export function useGb28181RenameChannel() {
+    return useMutationWithMessage<void, GB28181.ChannelNamePayload>({
+        mutationFn: api.renameChannel,
+        successMessage: '通道名称已更新',
+        invalidateKeys: [gb28181Keys.devices()],
+    });
+}
+
 export function useGb28181PreviewStart() {
     return useMutationWithMessage<GB28181.PreviewStartResult, GB28181.StartPreviewPayload>({
         mutationFn: api.startPreview,
@@ -59,38 +75,6 @@ export function useGb28181PreviewStop() {
         mutationFn: api.stopPreview,
         successMessage: '会话已停止',
         invalidateKeys: [gb28181Keys.streams()],
-    });
-}
-
-export function useGb28181RecordQuery() {
-    return useMutationWithMessage<GB28181.CommandResult, GB28181.RecordQueryPayload>({
-        mutationFn: api.queryRecords,
-        successMessage: '录像查询已发送',
-        invalidateKeys: [gb28181Keys.devices()],
-    });
-}
-
-export function useGb28181PlaybackStart() {
-    return useMutationWithMessage<GB28181.PreviewStartResult, GB28181.RecordQueryPayload>({
-        mutationFn: api.startPlayback,
-        successMessage: '录像回放已发起',
-        invalidateKeys: [gb28181Keys.streams()],
-    });
-}
-
-export function useGb28181MapDevice() {
-    return useMutationWithMessage<GB28181.CommandResult, GB28181.MapDevicePayload>({
-        mutationFn: api.mapDevice,
-        successMessage: '平台设备关联已保存',
-        invalidateKeys: [gb28181Keys.devices()],
-    });
-}
-
-export function useGb28181UnmapDevice() {
-    return useMutationWithMessage<GB28181.CommandResult, string>({
-        mutationFn: api.unmapDevice,
-        successMessage: '平台设备关联已解除',
-        invalidateKeys: [gb28181Keys.devices()],
     });
 }
 

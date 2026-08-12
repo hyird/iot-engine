@@ -1,5 +1,5 @@
-import { VideoCameraOutlined } from '@ant-design/icons';
-import { Card, Space, Statistic, Table, Tag, Typography } from 'antd';
+import { EditOutlined, VideoCameraOutlined } from '@ant-design/icons';
+import { Button, Card, Space, Statistic, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { GB28181 } from '../gb28181.types';
 import { displayText, onlineTag, registrationSourceTag, remoteEndpoint } from '../view';
@@ -18,7 +18,9 @@ type DeviceListCardProps = {
     selectedDevice?: GB28181.Device;
     stats: DeviceStats;
     loading: boolean;
+    canRename: boolean;
     onSelect: (device: GB28181.Device) => void;
+    onRename: (device: GB28181.Device) => void;
 };
 
 export function DeviceListCard({
@@ -27,7 +29,9 @@ export function DeviceListCard({
     selectedDevice,
     stats,
     loading,
+    canRename,
     onSelect,
+    onRename,
 }: DeviceListCardProps) {
     const deviceColumns: ColumnsType<GB28181.Device> = [
         {
@@ -45,6 +49,20 @@ export function DeviceListCard({
                     <Space size={4}>
                         <Text strong>{displayText(name)}</Text>
                         {registrationSourceTag(record.registration_source)}
+                        {canRename && (
+                            <Tooltip title="编辑摄像头名称">
+                                <Button
+                                    type="text"
+                                    size="small"
+                                    icon={<EditOutlined />}
+                                    aria-label={`编辑摄像头 ${name || record.id} 的名称`}
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        onRename(record);
+                                    }}
+                                />
+                            </Tooltip>
+                        )}
                     </Space>
                     <Text type="secondary" className="text-xs">
                         {record.id}
@@ -66,6 +84,7 @@ export function DeviceListCard({
     return (
         <Card
             size="small"
+            className="flex h-full min-h-0 flex-col [&_.ant-card-body]:flex [&_.ant-card-body]:min-h-0 [&_.ant-card-body]:flex-1 [&_.ant-card-body]:flex-col"
             title={
                 <Space>
                     <VideoCameraOutlined />
@@ -92,21 +111,24 @@ export function DeviceListCard({
                     valueStyle={{ fontSize: 20 }}
                 />
             </div>
-            <Table
-                rowKey="id"
-                size="small"
-                columns={deviceColumns}
-                dataSource={filteredDevices}
-                loading={loading}
-                pagination={{ pageSize: 10, size: 'small' }}
-                onRow={(record) => ({
-                    onClick: () => onSelect(record),
-                    className:
-                        record.id === selectedDevice?.id
-                            ? 'cursor-pointer bg-blue-50'
-                            : 'cursor-pointer',
-                })}
-            />
+            <div className="min-h-0 flex-1 overflow-auto">
+                <Table
+                    sticky
+                    rowKey="id"
+                    size="small"
+                    columns={deviceColumns}
+                    dataSource={filteredDevices}
+                    loading={loading}
+                    pagination={{ pageSize: 10, size: 'small' }}
+                    onRow={(record) => ({
+                        onClick: () => onSelect(record),
+                        className:
+                            record.id === selectedDevice?.id
+                                ? 'cursor-pointer bg-blue-50'
+                                : 'cursor-pointer',
+                    })}
+                />
+            </div>
         </Card>
     );
 }

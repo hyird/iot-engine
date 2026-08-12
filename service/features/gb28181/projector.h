@@ -133,8 +133,9 @@ private:
     Snapshot snapshot;
     std::unordered_map<std::string, std::size_t> deviceIndexes;
     const auto devices = co_await context.db().query(R"sql(
-SELECT id, name, manufacturer, remote_address, registration_source, online,
-       iot_utc_timestamp(last_seen_at), COALESCE(mapped_device_id::text, '')
+SELECT id, name, COALESCE(custom_name, ''), manufacturer, remote_address,
+       registration_source, online, iot_utc_timestamp(last_seen_at),
+       COALESCE(mapped_device_id::text, '')
 FROM gb28181_device
 ORDER BY id)sql");
     snapshot.devices.reserve(devices.size());
@@ -142,31 +143,43 @@ ORDER BY id)sql");
       Device device;
       device.id = std::string(row[0].value().value_or(std::string_view{}));
       device.name = std::string(row[1].value().value_or(std::string_view{}));
-      device.manufacturer = std::string(row[2].value().value_or(std::string_view{}));
-      device.remoteAddress = std::string(row[3].value().value_or(std::string_view{}));
-      device.registrationSource = std::string(row[4].value().value_or(std::string_view{}));
-      device.online = boolean(row[5].value().value_or(std::string_view{}));
-      if (const auto parsed = service::common::parseUtcTimestamp(row[6].value().value_or(std::string_view{})))
+      device.customName =
+          std::string(row[2].value().value_or(std::string_view{}));
+      device.manufacturer =
+          std::string(row[3].value().value_or(std::string_view{}));
+      device.remoteAddress =
+          std::string(row[4].value().value_or(std::string_view{}));
+      device.registrationSource =
+          std::string(row[5].value().value_or(std::string_view{}));
+      device.online = boolean(row[6].value().value_or(std::string_view{}));
+      if (const auto parsed = service::common::parseUtcTimestamp(
+              row[7].value().value_or(std::string_view{})))
         device.lastSeen = *parsed;
-      device.mappedDeviceId = std::string(row[7].value().value_or(std::string_view{}));
+      device.mappedDeviceId =
+          std::string(row[8].value().value_or(std::string_view{}));
       deviceIndexes.emplace(device.id, snapshot.devices.size());
       snapshot.devices.push_back(std::move(device));
     }
 
     const auto channels = co_await context.db().query(R"sql(
-SELECT device_id, id, name, manufacturer, online, ptz_type
+SELECT device_id, id, name, COALESCE(custom_name, ''), manufacturer, online,
+       ptz_type
 FROM gb28181_channel
 ORDER BY device_id, id)sql");
     for (const auto &row : channels) {
-      const auto device = deviceIndexes.find(std::string(row[0].value().value_or(std::string_view{})));
+      const auto device = deviceIndexes.find(
+          std::string(row[0].value().value_or(std::string_view{})));
       if (device == deviceIndexes.end())
         continue;
       snapshot.devices[device->second].channels.push_back(Channel{
           .id = std::string(row[1].value().value_or(std::string_view{})),
           .name = std::string(row[2].value().value_or(std::string_view{})),
-          .manufacturer = std::string(row[3].value().value_or(std::string_view{})),
-          .online = boolean(row[4].value().value_or(std::string_view{})),
-          .ptzType = integer(row[5].value().value_or(std::string_view{}), -1),
+          .customName =
+              std::string(row[3].value().value_or(std::string_view{})),
+          .manufacturer =
+              std::string(row[4].value().value_or(std::string_view{})),
+          .online = boolean(row[5].value().value_or(std::string_view{})),
+          .ptzType = integer(row[6].value().value_or(std::string_view{}), -1),
       });
     }
 
@@ -177,7 +190,8 @@ SELECT device_id, channel_id, name, file_path, address,
 FROM gb28181_record
 ORDER BY device_id, start_time DESC)sql");
     for (const auto &row : records) {
-      const auto device = deviceIndexes.find(std::string(row[0].value().value_or(std::string_view{})));
+      const auto device = deviceIndexes.find(
+          std::string(row[0].value().value_or(std::string_view{})));
       if (device == deviceIndexes.end())
         continue;
       snapshot.devices[device->second].records.push_back(RecordItem{
@@ -188,7 +202,8 @@ ORDER BY device_id, start_time DESC)sql");
           .startTime = std::string(row[5].value().value_or(std::string_view{})),
           .endTime = std::string(row[6].value().value_or(std::string_view{})),
           .type = std::string(row[7].value().value_or(std::string_view{})),
-          .recorderId = std::string(row[8].value().value_or(std::string_view{})),
+          .recorderId =
+              std::string(row[8].value().value_or(std::string_view{})),
       });
     }
 
@@ -216,12 +231,13 @@ ORDER BY app, stream, schema)sql");
     (void)co_await transaction.execute(
         R"sql(
 INSERT INTO gb28181_device(
-    id, name, manufacturer, remote_address, registration_source, online,
-    last_seen_at, mapped_device_id, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz,
-        NULLIF($8, '')::uuid, NOW())
+    id, name, custom_name, manufacturer, remote_address, registration_source,
+    online, last_seen_at, mapped_device_id, updated_at)
+VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, $7, $8::timestamptz,
+        NULLIF($9, '')::uuid, NOW())
 ON CONFLICT (id) DO UPDATE
 SET name = EXCLUDED.name,
+    custom_name = EXCLUDED.custom_name,
     manufacturer = EXCLUDED.manufacturer,
     remote_address = EXCLUDED.remote_address,
     registration_source = EXCLUDED.registration_source,
@@ -229,8 +245,8 @@ SET name = EXCLUDED.name,
     last_seen_at = EXCLUDED.last_seen_at,
     mapped_device_id = EXCLUDED.mapped_device_id,
     updated_at = NOW())sql",
-        service::common::dbParams(device.id, device.name, device.manufacturer,
-                                  device.remoteAddress,
+        service::common::dbParams(device.id, device.name, device.customName,
+                                  device.manufacturer, device.remoteAddress,
                                   device.registrationSource, device.online,
                                   lastSeen, device.mappedDeviceId));
   }
@@ -246,46 +262,52 @@ SET name = EXCLUDED.name,
     }
 
     std::string sql = R"sql(
-WITH raw_incoming(ordinal, id, name, manufacturer, online, ptz_type)
+WITH raw_incoming(
+    ordinal, id, name, custom_name, manufacturer, online, ptz_type)
 AS (VALUES )sql";
     std::vector<ruvia::DbValue> params;
-    params.reserve(1 + device.channels.size() * 5);
+    params.reserve(1 + device.channels.size() * 6);
     params.emplace_back(std::string_view(device.id));
     for (const auto &channel : device.channels) {
       if (params.size() != 1)
         sql.push_back(',');
       const auto base = params.size() + 1;
-      sql += "(" + std::to_string((params.size() - 1) / 5) + "::bigint,$" +
+      sql += "(" + std::to_string((params.size() - 1) / 6) + "::bigint,$" +
              std::to_string(base) + "::varchar,$" + std::to_string(base + 1) +
              "::varchar,$" + std::to_string(base + 2) + "::varchar,$" +
-             std::to_string(base + 3) + "::boolean,$" +
-             std::to_string(base + 4) + "::integer)";
+             std::to_string(base + 3) + "::varchar,$" +
+             std::to_string(base + 4) + "::boolean,$" +
+             std::to_string(base + 5) + "::integer)";
       params.emplace_back(std::string_view(channel.id));
       params.emplace_back(std::string_view(channel.name));
+      params.emplace_back(std::string_view(channel.customName));
       params.emplace_back(std::string_view(channel.manufacturer));
       params.emplace_back(channel.online);
       params.emplace_back(channel.ptzType);
     }
     sql += R"sql(), incoming AS (
-  SELECT DISTINCT ON (id) id, name, manufacturer, online, ptz_type
+  SELECT DISTINCT ON (id) id, name, custom_name, manufacturer, online, ptz_type
   FROM raw_incoming
   ORDER BY id, ordinal DESC
 ), upserted AS (
   INSERT INTO gb28181_channel(
-      device_id, id, name, manufacturer, online, ptz_type, updated_at)
-  SELECT $1, incoming.id, incoming.name, incoming.manufacturer,
-         incoming.online, incoming.ptz_type, NOW()
+      device_id, id, name, custom_name, manufacturer, online, ptz_type,
+      updated_at)
+  SELECT $1, incoming.id, incoming.name, NULLIF(incoming.custom_name, ''),
+         incoming.manufacturer, incoming.online, incoming.ptz_type, NOW()
   FROM incoming
   ON CONFLICT (device_id, id) DO UPDATE SET
       name = EXCLUDED.name,
+      custom_name = EXCLUDED.custom_name,
       manufacturer = EXCLUDED.manufacturer,
       online = EXCLUDED.online,
       ptz_type = EXCLUDED.ptz_type,
       updated_at = NOW()
-  WHERE (gb28181_channel.name, gb28181_channel.manufacturer,
+  WHERE (gb28181_channel.name, gb28181_channel.custom_name,
+         gb28181_channel.manufacturer,
          gb28181_channel.online, gb28181_channel.ptz_type)
         IS DISTINCT FROM
-        (EXCLUDED.name, EXCLUDED.manufacturer, EXCLUDED.online,
+        (EXCLUDED.name, EXCLUDED.custom_name, EXCLUDED.manufacturer, EXCLUDED.online,
          EXCLUDED.ptz_type)
   RETURNING id
 )
@@ -384,7 +406,8 @@ WHERE stored.device_id = $1
         "SELECT pg_advisory_xact_lock(hashtextextended($1, 28181))",
         service::common::dbParams(device.id));
     co_await saveDeviceBase(transaction, device);
-    if (change == DeviceRegistry::Change::Catalog)
+    if (change == DeviceRegistry::Change::Catalog ||
+        change == DeviceRegistry::Change::ChannelName)
       co_await syncChannels(transaction, device);
     else if (change == DeviceRegistry::Change::Records)
       co_await syncRecords(transaction, device);
@@ -400,7 +423,9 @@ WHERE stored.device_id = $1
     co_await service::message::redis::setHash(
         context.redis(), key,
         {{"id", device.id},
-         {"name", device.name},
+         {"name", std::string(device.displayName())},
+         {"reported_name", device.name},
+         {"custom_name", device.customName},
          {"online", device.online ? "1" : "0"},
          {"remote_address", device.remoteAddress},
          {"registration_source", device.registrationSource},

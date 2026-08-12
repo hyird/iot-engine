@@ -5,7 +5,7 @@
 
 namespace service::config {
 
-inline constexpr std::array<ruvia::DbMigration, 22> kSchemaMigrations{{
+inline constexpr std::array<ruvia::DbMigration, 23> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
@@ -1223,6 +1223,13 @@ ORDER BY history.device_id, point.key, history.report_time DESC, history.id DESC
 ON CONFLICT (device_id, element_id) DO NOTHING;
 END
 $schema$;
+)sql"},
+    {"0022_gb28181_custom_names", R"sql(
+ALTER TABLE gb28181_device
+    ADD COLUMN custom_name VARCHAR(255);
+
+ALTER TABLE gb28181_channel
+    ADD COLUMN custom_name VARCHAR(255);
 )sql"},
 }};
 

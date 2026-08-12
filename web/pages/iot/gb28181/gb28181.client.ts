@@ -20,6 +20,15 @@ export const getHealth = () => request.get<GB28181.Health>(`${BASE}/health`, { _
 export const getSipConfig = () => request.get<GB28181.SipConfig>(`${BASE}/config/sip`);
 export const getDevices = () => request.get<GB28181.Items<GB28181.Device>>(`${BASE}/devices`);
 export const getStreams = () => request.get<GB28181.Items<GB28181.StreamStatus>>(`${BASE}/streams`);
+export const renameDevice = (payload: GB28181.DeviceNamePayload) =>
+    request.put<void>(`${BASE}/devices/${pathPart(payload.deviceId)}/name`, {
+        name: payload.name,
+    });
+export const renameChannel = (payload: GB28181.ChannelNamePayload) =>
+    request.put<void>(
+        `${BASE}/devices/${pathPart(payload.deviceId)}/channels/${pathPart(payload.channelId)}/name`,
+        { name: payload.name }
+    );
 export const queryCatalog = (deviceId: string) =>
     request.post<GB28181.CommandResult>(`${BASE}/devices/${pathPart(deviceId)}/catalog/query`);
 export const startPreview = (payload: GB28181.StartPreviewPayload) =>
@@ -42,32 +51,8 @@ export const sendPtzPosition = (payload: GB28181.PtzPositionPayload) =>
             { pan: payload.pan, tilt: payload.tilt, zoom: payload.zoom }
         )
     );
-export const queryRecords = (payload: GB28181.RecordQueryPayload) =>
-    request.post<GB28181.CommandResult>(
-        appendQueryParams(
-            `${BASE}/devices/${pathPart(payload.deviceId)}/channels/${pathPart(payload.channelId)}/records/query`,
-            { start_time: payload.startTime, end_time: payload.endTime }
-        )
-    );
-export const startPlayback = (payload: GB28181.RecordQueryPayload) =>
-    request.post<GB28181.PreviewStartResult>(
-        appendQueryParams(
-            `${BASE}/devices/${pathPart(payload.deviceId)}/channels/${pathPart(payload.channelId)}/playback/start`,
-            { start_time: payload.startTime, end_time: payload.endTime }
-        )
-    );
-export const mapDevice = (payload: GB28181.MapDevicePayload) =>
-    request.post<GB28181.CommandResult>(
-        appendQueryParams(`${BASE}/devices/${pathPart(payload.deviceId)}/mapping`, {
-            mapped_device_id: payload.mappedDeviceId,
-        })
-    );
-export const unmapDevice = (deviceId: string) =>
-    request.delete<GB28181.CommandResult>(`${BASE}/devices/${pathPart(deviceId)}/mapping`);
 export const getRecording = (payload: GB28181.StreamPayload) =>
-    request.get<GB28181.CommandResult>(
-        `${BASE}/streams/${pathPart(payload.streamId)}/recording`
-    );
+    request.get<GB28181.CommandResult>(`${BASE}/streams/${pathPart(payload.streamId)}/recording`);
 export const startRecording = (payload: GB28181.StreamPayload) =>
     request.post<GB28181.CommandResult>(
         `${BASE}/streams/${pathPart(payload.streamId)}/recording/start`

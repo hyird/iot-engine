@@ -1,12 +1,12 @@
 import {
+    EditOutlined,
     PauseCircleOutlined,
     PlayCircleOutlined,
     ReloadOutlined,
     SendOutlined,
     VideoCameraOutlined,
 } from '@ant-design/icons';
-import { App, Button, Card, DatePicker, Input, Result, Select, Space, Tag, Typography } from 'antd';
-import dayjs, { type Dayjs } from 'dayjs';
+import { App, Button, Card, Input, Modal, Result, Select, Space, Tag, Typography } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { PageContainer } from '@/components/PageContainer';
 import { usePermission } from '@/hooks/usePermission';
@@ -17,15 +17,13 @@ import {
     useGb28181CatalogQuery,
     useGb28181Devices,
     useGb28181Health,
-    useGb28181MapDevice,
-    useGb28181PlaybackStart,
     useGb28181PreviewStart,
     useGb28181PreviewStop,
-    useGb28181RecordQuery,
+    useGb28181RenameChannel,
+    useGb28181RenameDevice,
     useGb28181Recording,
     useGb28181RecordingStart,
     useGb28181RecordingStop,
-    useGb28181UnmapDevice,
 } from './gb28181.service';
 import { useAuthStore } from '@/store/authStore';
 import type { GB28181 } from './gb28181.types';
@@ -36,6 +34,19 @@ import { SessionDetailsCard } from './components/SessionDetailsCard';
 import { ptzCapabilityTag } from './view';
 
 const { Text, Title } = Typography;
+
+type RenameTarget =
+    | {
+          kind: 'device';
+          deviceId: string;
+          reportedName: string;
+      }
+    | {
+          kind: 'channel';
+          deviceId: string;
+          channelId: string;
+          reportedName: string;
+      };
 
 export default function Gb28181Page() {
     const { message } = App.useApp();
@@ -49,12 +60,8 @@ export default function Gb28181Page() {
     const [selectedChannelId, setSelectedChannelId] = useState<string>();
     const [activeSession, setActiveSession] = useState<GB28181.PreviewStartResult | null>(null);
     const [ptzSpeed, setPtzSpeed] = useState(80);
-    const [recordRange, setRecordRange] = useState<[Dayjs, Dayjs]>([
-        dayjs().subtract(1, 'hour'),
-        dayjs(),
-    ]);
-    const [selectedRecordIndex, setSelectedRecordIndex] = useState<string>();
-    const [mappedDeviceId, setMappedDeviceId] = useState('');
+    const [renameTarget, setRenameTarget] = useState<RenameTarget>();
+    const [renameValue, setRenameValue] = useState('');
     const activeSessionRef = useRef<GB28181.PreviewStartResult | null>(null);
     const ptzSessionRef = useRef<GB28181.PreviewStartResult | null>(null);
     const ptzSpeedRef = useRef(ptzSpeed);
@@ -66,12 +73,10 @@ export default function Gb28181Page() {
     });
 
     const catalogMutation = useGb28181CatalogQuery();
+    const renameDeviceMutation = useGb28181RenameDevice();
+    const renameChannelMutation = useGb28181RenameChannel();
     const previewStartMutation = useGb28181PreviewStart();
     const previewStopMutation = useGb28181PreviewStop();
-    const recordQueryMutation = useGb28181RecordQuery();
-    const playbackStartMutation = useGb28181PlaybackStart();
-    const mapDeviceMutation = useGb28181MapDevice();
-    const unmapDeviceMutation = useGb28181UnmapDevice();
     const recordingStartMutation = useGb28181RecordingStart();
     const recordingStopMutation = useGb28181RecordingStop();
     const devices = devicesQuery.data?.items ?? [];
@@ -145,6 +150,8 @@ export default function Gb28181Page() {
             {
                 id: selectedDevice.id,
                 name: selectedDevice.name || selectedDevice.id,
+                reported_name: selectedDevice.reported_name || selectedDevice.name,
+                custom_name: selectedDevice.custom_name,
                 manufacturer: selectedDevice.manufacturer,
                 online: selectedDevice.online,
                 ptz_type: -1,
@@ -157,25 +164,11 @@ export default function Gb28181Page() {
         () => channels.find((channel) => channel.id === selectedChannelId) ?? channels[0],
         [channels, selectedChannelId]
     );
-    const selectedRecord =
-        selectedRecordIndex === undefined
-            ? undefined
-            : selectedDevice?.records[Number(selectedRecordIndex)];
     const recordingQuery = useGb28181Recording(
         activeSession?.stream_id,
         canRecord && healthQuery.data?.media_capabilities.recording === true
     );
     const isRecording = recordingQuery.data?.recording === true;
-
-    useEffect(() => {
-        // Device id is intentionally part of the reset trigger: switching
-        // between two currently-unmapped devices must discard draft input.
-        if (selectedDevice?.id === undefined) {
-            setMappedDeviceId('');
-            return;
-        }
-        setMappedDeviceId(selectedDevice?.mapped_device_id ?? '');
-    }, [selectedDevice?.id, selectedDevice?.mapped_device_id]);
 
     const stats = useMemo(() => {
         const onlineDevices = devices.filter((device) => device.online).length;
@@ -212,6 +205,51 @@ export default function Gb28181Page() {
     const refreshAll = () => {
         healthQuery.refetch();
         devicesQuery.refetch();
+    };
+
+    const openRenameDevice = (device: GB28181.Device) => {
+        setRenameTarget({
+            kind: 'device',
+            deviceId: device.id,
+            reportedName: device.reported_name || device.id,
+        });
+        setRenameValue(device.name || device.id);
+    };
+
+    const openRenameChannel = () => {
+        if (!selectedDevice || !selectedChannel) return;
+        setRenameTarget({
+            kind: 'channel',
+            deviceId: selectedDevice.id,
+            channelId: selectedChannel.id,
+            reportedName: selectedChannel.reported_name || selectedChannel.id,
+        });
+        setRenameValue(selectedChannel.name || selectedChannel.id);
+    };
+
+    const submitRename = () => {
+        if (!renameTarget) return;
+        const name = renameValue.trim();
+        if (!name) {
+            message.warning('名称不能为空');
+            return;
+        }
+        const close = () => setRenameTarget(undefined);
+        if (renameTarget.kind === 'device') {
+            renameDeviceMutation.mutate(
+                { deviceId: renameTarget.deviceId, name },
+                { onSuccess: close }
+            );
+            return;
+        }
+        renameChannelMutation.mutate(
+            {
+                deviceId: renameTarget.deviceId,
+                channelId: renameTarget.channelId,
+                name,
+            },
+            { onSuccess: close }
+        );
     };
 
     const currentTarget = () => {
@@ -317,71 +355,6 @@ export default function Gb28181Page() {
         }
     };
 
-    const rfc3339Seconds = (value: Dayjs) =>
-        value.toDate().toISOString().replace(/\.\d{3}Z$/, 'Z');
-
-    const handleQueryRecords = () => {
-        const target = currentTarget();
-        if (!target) return;
-        recordQueryMutation.mutate(
-            {
-                ...target,
-                startTime: rfc3339Seconds(recordRange[0]),
-                endTime: rfc3339Seconds(recordRange[1]),
-            },
-            {
-                onSuccess: () => {
-                    window.setTimeout(() => devicesQuery.refetch(), 1200);
-                },
-            }
-        );
-    };
-
-    const handleStartPlayback = () => {
-        if (!selectedDevice || !selectedRecord) {
-            message.warning('请选择录像');
-            return;
-        }
-        playbackStartMutation.mutate(
-            {
-                deviceId: selectedDevice.id,
-                channelId: selectedRecord.device_id,
-                startTime: selectedRecord.start_time,
-                endTime: selectedRecord.end_time,
-            },
-            {
-                onSuccess: (result) => {
-                    const previousSession = activeSessionRef.current;
-                    if (previousSession && previousSession.session_id !== result.session_id) {
-                        stopPreviewKeepalive(previousSession.session_id, tokenRef.current);
-                    }
-                    activeSessionRef.current = result;
-                    setActiveSession(result);
-                },
-            }
-        );
-    };
-
-    const handleSaveMapping = () => {
-        if (!selectedDevice) return;
-        const target = mappedDeviceId.trim();
-        if (!target) {
-            message.warning('请输入平台设备 UUID');
-            return;
-        }
-        mapDeviceMutation.mutate({
-            deviceId: selectedDevice.id,
-            mappedDeviceId: target,
-        });
-    };
-
-    const handleRemoveMapping = () => {
-        if (!selectedDevice) return;
-        unmapDeviceMutation.mutate(selectedDevice.id, {
-            onSuccess: () => setMappedDeviceId(''),
-        });
-    };
-
     const handleStartRecording = () => {
         if (!activeSession) return;
         recordingStartMutation.mutate(
@@ -454,23 +427,24 @@ export default function Gb28181Page() {
 
     return (
         <PageContainer header={pageHeader}>
-            <div className="grid h-full grid-cols-1 gap-4 overflow-auto 2xl:grid-cols-[420px_minmax(0,1fr)]">
-                <div className="space-y-4 min-w-0">
+            <div className="grid h-full min-h-0 grid-cols-1 grid-rows-[minmax(0,2fr)_minmax(0,3fr)] gap-4 overflow-hidden 2xl:grid-cols-[420px_minmax(0,1fr)] 2xl:grid-rows-1">
+                <div className="min-h-0 min-w-0 overflow-hidden">
                     <DeviceListCard
                         devices={devices}
                         filteredDevices={filteredDevices}
                         selectedDevice={selectedDevice}
                         stats={stats}
                         loading={devicesQuery.isLoading}
+                        canRename={canControl}
                         onSelect={(device) => {
                             setSelectedDeviceId(device.id);
                             setSelectedChannelId(undefined);
-                            setSelectedRecordIndex(undefined);
                         }}
+                        onRename={openRenameDevice}
                     />
                 </div>
 
-                <div className="space-y-4 min-w-0">
+                <div className="min-h-0 min-w-0 space-y-4 overflow-y-auto pr-1">
                     <Card
                         size="small"
                         title={
@@ -490,6 +464,14 @@ export default function Gb28181Page() {
                                     className="min-w-[260px]"
                                     onChange={setSelectedChannelId}
                                 />
+                                <Button
+                                    size="small"
+                                    icon={<EditOutlined />}
+                                    disabled={!canControl || !selectedChannel}
+                                    onClick={openRenameChannel}
+                                >
+                                    编辑通道名
+                                </Button>
                             </Space>
                         }
                         extra={
@@ -561,7 +543,7 @@ export default function Gb28181Page() {
                             )}
 
                             {activeSession && activeChannelSupportsPtz ? (
-                                <div className="absolute right-3 top-3 z-20">
+                                <div className="absolute bottom-14 right-3 z-20">
                                     <PtzPanel
                                         speed={ptzSpeed}
                                         disabled={ptzDisabled}
@@ -579,83 +561,30 @@ export default function Gb28181Page() {
                         selectedChannel={selectedChannel}
                         activeSession={activeSession}
                     />
-
-                    <Card size="small" title="平台设备关联">
-                        <Space.Compact className="w-full">
-                            <Input
-                                value={mappedDeviceId}
-                                disabled={!selectedDevice || !canControl}
-                                placeholder="核心平台设备 UUID（用于告警与资产关联）"
-                                onChange={(event) => setMappedDeviceId(event.target.value)}
-                            />
-                            <Button
-                                type="primary"
-                                disabled={!selectedDevice || !canControl}
-                                loading={mapDeviceMutation.isPending}
-                                onClick={handleSaveMapping}
-                            >
-                                保存关联
-                            </Button>
-                            <Button
-                                danger
-                                disabled={
-                                    !selectedDevice ||
-                                    !canControl ||
-                                    !selectedDevice.mapped_device_id
-                                }
-                                loading={unmapDeviceMutation.isPending}
-                                onClick={handleRemoveMapping}
-                            >
-                                解除
-                            </Button>
-                        </Space.Compact>
-                    </Card>
-
-                    <Card
-                        size="small"
-                        title="设备录像"
-                        extra={
-                            <Space wrap>
-                                <DatePicker.RangePicker
-                                    showTime
-                                    value={recordRange}
-                                    onChange={(value) => {
-                                        if (value?.[0] && value[1])
-                                            setRecordRange([value[0], value[1]]);
-                                    }}
-                                />
-                                <Button
-                                    disabled={!canRecord || !selectedChannel}
-                                    loading={recordQueryMutation.isPending}
-                                    onClick={handleQueryRecords}
-                                >
-                                    查询录像
-                                </Button>
-                                <Button
-                                    type="primary"
-                                    disabled={!canRecord || !selectedRecord}
-                                    loading={playbackStartMutation.isPending}
-                                    onClick={handleStartPlayback}
-                                >
-                                    开始回放
-                                </Button>
-                            </Space>
-                        }
-                    >
-                        <Select
-                            allowClear
-                            className="w-full"
-                            placeholder="选择查询到的录像"
-                            value={selectedRecordIndex}
-                            onChange={setSelectedRecordIndex}
-                            options={(selectedDevice?.records ?? []).map((record, index) => ({
-                                value: String(index),
-                                label: `${record.name || record.device_id} · ${record.start_time} — ${record.end_time}`,
-                            }))}
-                        />
-                    </Card>
                 </div>
             </div>
+            <Modal
+                title={renameTarget?.kind === 'device' ? '编辑摄像头名称' : '编辑通道名称'}
+                open={Boolean(renameTarget)}
+                okText="保存"
+                cancelText="取消"
+                confirmLoading={renameDeviceMutation.isPending || renameChannelMutation.isPending}
+                onOk={submitRename}
+                onCancel={() => setRenameTarget(undefined)}
+            >
+                <Space direction="vertical" className="w-full">
+                    <Input
+                        autoFocus
+                        maxLength={255}
+                        showCount
+                        value={renameValue}
+                        placeholder="请输入名称"
+                        onChange={(event) => setRenameValue(event.target.value)}
+                        onPressEnter={submitRename}
+                    />
+                    <Text type="secondary">设备上报名称：{renameTarget?.reportedName || '--'}</Text>
+                </Space>
+            </Modal>
         </PageContainer>
     );
 }
