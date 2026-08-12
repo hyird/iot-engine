@@ -135,8 +135,7 @@ struct RuntimeRepositoryScaleDb {
                 "RACK_SLOT", "PG", "0", "1", "0100", "0101", "5000", "5000",
                 "STANDARD", "5", "1", "60", "1", "100", "125"});
         } else if (sql.find("p.protocol = 'Modbus'") != std::string_view::npos &&
-                   sql.find("ORDER BY d.id, (element->>'address')::integer") !=
-                       std::string_view::npos) {
+                   sql.find("ORDER BY d.id,") != std::string_view::npos) {
             result.values.emplace_back(FakeDbRow{
                 "device-1", "temperature", "Temperature", "℃", "UINT16", "BIG_ENDIAN",
                 "HOLDING_REGISTER", "0", "1", "1x", "-1", "f"});
