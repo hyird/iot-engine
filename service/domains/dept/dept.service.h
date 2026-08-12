@@ -196,19 +196,20 @@ VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, '')::uuid, NULLIF($5, '')::uuid, $6, 
 
   private:
     template <typename Row> static void fill(DeptItemDto& item, const Row& row) {
-        item.set<"id">(row[0].value().value_or(std::string_view{}))
-            .set<"name">(row[1].value().value_or(std::string_view{}))
-            .set<"code">(row[2].value().value_or(std::string_view{}))
-            .set<"parentId">(row[3].value().value_or(std::string_view{}))
-            .set<"parentName">(row[4].value().value_or(std::string_view{}))
-            .set<"leaderId">(row[5].value().value_or(std::string_view{}))
-            .set<"leaderName">(row[6].value().value_or(std::string_view{}))
-            .set<"sortOrder">(static_cast<ruvia::Int64>(
-                service::common::parseInt64(std::optional<std::string_view>{row[7].value().value_or(std::string_view{})})
-                    .value_or(0)))
-            .set<"status">(row[8].value().value_or(std::string_view{}))
-            .set<"createdAt">(row[9].value().value_or(std::string_view{}))
-            .set<"updatedAt">(row[10].value().value_or(std::string_view{}));
+        item.set<"id">(row[0].value().value_or(std::string_view{}));
+        item.set<"name">(row[1].value().value_or(std::string_view{}));
+        item.set<"code">(row[2].value().value_or(std::string_view{}));
+        item.set<"parentId">(row[3].value().value_or(std::string_view{}));
+        item.set<"parentName">(row[4].value().value_or(std::string_view{}));
+        item.set<"leaderId">(row[5].value().value_or(std::string_view{}));
+        item.set<"leaderName">(row[6].value().value_or(std::string_view{}));
+        item.set<"sortOrder">(static_cast<ruvia::Int64>(
+            service::common::parseInt64(
+                std::optional<std::string_view>{row[7].value().value_or(std::string_view{})})
+                .value_or(0)));
+        item.set<"status">(row[8].value().value_or(std::string_view{}));
+        item.set<"createdAt">(row[9].value().value_or(std::string_view{}));
+        item.set<"updatedAt">(row[10].value().value_or(std::string_view{}));
     }
 
     ruvia::Task<void> validateRelations(ruvia::Context& c, std::string_view parentId,

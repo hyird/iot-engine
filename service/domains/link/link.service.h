@@ -562,12 +562,15 @@ WHERE link.id = $1 ORDER BY position)sql",
         std::set<std::string> ids;
         std::set<std::string> endpoints;
         for (const auto& target : targets) {
-            const auto id = required(target.get<"id">(), "目标 ID 不能为空");
-            const auto name = required(target.get<"name">(), "目标名称不能为空");
-            const auto targetIp = required(target.get<"ip">(), "目标 IP 不能为空");
-            const auto targetPort = target.get<"port">() ? static_cast<std::int64_t>(*target.get<"port">()) : 0;
-            const auto targetStatus =
-                target.get<"status">() ? std::string(target.get<"status">()->view()) : "enabled";
+            const auto id = required(target.template get<"id">(), "目标 ID 不能为空");
+            const auto name = required(target.template get<"name">(), "目标名称不能为空");
+            const auto targetIp = required(target.template get<"ip">(), "目标 IP 不能为空");
+            const auto targetPort = target.template get<"port">()
+                                        ? static_cast<std::int64_t>(*target.template get<"port">())
+                                        : 0;
+            const auto targetStatus = target.template get<"status">()
+                                          ? std::string(target.template get<"status">()->view())
+                                          : "enabled";
             if (targetStatus != "enabled" && targetStatus != "disabled")
                 service::common::fail(15003, "目标状态无效", 400);
             if (name.empty() || !isIpv4(targetIp) || targetPort < 1 || targetPort > 65535)

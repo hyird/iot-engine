@@ -714,67 +714,72 @@ FROM edge_node)sql";
     template <typename Row> static void fillNode(ruvia::Context& c, EdgeNodeDto& node, const Row& row) {
         NodeStatusDto status(c);
         ConfigStatusDto config(c);
-        config.set<"activeVersion">(integer(row[12].value().value_or(std::string_view{})))
-            .set<"desiredVersion">(integer(row[13].value().value_or(std::string_view{})))
-            .set<"state">(row[14].value().value_or(std::string_view{}))
-            .set<"message">(row[15].value().value_or(std::string_view{}));
+        config.set<"activeVersion">(integer(row[12].value().value_or(std::string_view{})));
+        config.set<"desiredVersion">(integer(row[13].value().value_or(std::string_view{})));
+        config.set<"state">(row[14].value().value_or(std::string_view{}));
+        config.set<"message">(row[15].value().value_or(std::string_view{}));
         OutboxStatusDto outbox(c);
-        outbox.set<"records">(integer(row[16].value().value_or(std::string_view{}))).set<"bytes">(integer(row[17].value().value_or(std::string_view{})));
+        outbox.set<"records">(integer(row[16].value().value_or(std::string_view{})));
+        outbox.set<"bytes">(integer(row[17].value().value_or(std::string_view{})));
         LogStatusDto log(c);
         log.set<"level">(row[18].value().value_or(std::string_view{}));
-        status.set<"online">(row[9].value().value_or(std::string_view{}) == "t")
-            .set<"lastSeenAt">(row[10].value().value_or(std::string_view{}))
-            .set<"config">(std::move(config))
-            .set<"outbox">(std::move(outbox))
-            .set<"log">(std::move(log));
+        status.set<"online">(row[9].value().value_or(std::string_view{}) == "t");
+        status.set<"lastSeenAt">(row[10].value().value_or(std::string_view{}));
+        status.set<"config">(std::move(config));
+        status.set<"outbox">(std::move(outbox));
+        status.set<"log">(std::move(log));
 
         CapabilityDto capability(c);
-        capability.set<"networkConfig">(row[19].value().value_or(std::string_view{}) == "t")
-            .set<"networkConfigVersion">(integer(row[20].value().value_or(std::string_view{})))
-            .set<"firmwareUpdate">(row[21].value().value_or(std::string_view{}) == "t")
-            .set<"platformConfig">(row[22].value().value_or(std::string_view{}) == "t")
-            .set<"deviceConfig">(row[23].value().value_or(std::string_view{}) == "t")
-            .set<"modemControl">(row[24].value().value_or(std::string_view{}) == "t")
-            .set<"terminal">(row[25].value().value_or(std::string_view{}) == "t")
-            .set<"logs">(row[26].value().value_or(std::string_view{}) == "t");
+        capability.set<"networkConfig">(row[19].value().value_or(std::string_view{}) == "t");
+        capability.set<"networkConfigVersion">(
+            integer(row[20].value().value_or(std::string_view{})));
+        capability.set<"firmwareUpdate">(row[21].value().value_or(std::string_view{}) == "t");
+        capability.set<"platformConfig">(row[22].value().value_or(std::string_view{}) == "t");
+        capability.set<"deviceConfig">(row[23].value().value_or(std::string_view{}) == "t");
+        capability.set<"modemControl">(row[24].value().value_or(std::string_view{}) == "t");
+        capability.set<"terminal">(row[25].value().value_or(std::string_view{}) == "t");
+        capability.set<"logs">(row[26].value().value_or(std::string_view{}) == "t");
 
         SignalDto signal(c);
-        signal.set<"csq">(integer(row[30].value().value_or(std::string_view{})))
-            .set<"rssiDbm">(integer(row[31].value().value_or(std::string_view{})))
-            .set<"percent">(integer(row[32].value().value_or(std::string_view{})));
+        signal.set<"csq">(integer(row[30].value().value_or(std::string_view{})));
+        signal.set<"rssiDbm">(integer(row[31].value().value_or(std::string_view{})));
+        signal.set<"percent">(integer(row[32].value().value_or(std::string_view{})));
         MobileDto mobile(c);
-        mobile.set<"available">(row[27].value().value_or(std::string_view{}) == "t")
-            .set<"simState">(row[28].value().value_or(std::string_view{}))
-            .set<"iccid">(row[29].value().value_or(std::string_view{}))
-            .set<"signal">(std::move(signal))
-            .set<"registered">(row[33].value().value_or(std::string_view{}) == "t")
-            .set<"registrationStatus">(integer(row[34].value().value_or(std::string_view{})))
-            .set<"apn">(row[35].value().value_or(std::string_view{}))
-            .set<"operatorName">(row[36].value().value_or(std::string_view{}))
-            .set<"connected">(row[37].value().value_or(std::string_view{}) == "t")
-            .set<"ipv4">(row[38].value().value_or(std::string_view{}));
+        mobile.set<"available">(row[27].value().value_or(std::string_view{}) == "t");
+        mobile.set<"simState">(row[28].value().value_or(std::string_view{}));
+        mobile.set<"iccid">(row[29].value().value_or(std::string_view{}));
+        mobile.set<"signal">(std::move(signal));
+        mobile.set<"registered">(row[33].value().value_or(std::string_view{}) == "t");
+        mobile.set<"registrationStatus">(
+            integer(row[34].value().value_or(std::string_view{})));
+        mobile.set<"apn">(row[35].value().value_or(std::string_view{}));
+        mobile.set<"operatorName">(row[36].value().value_or(std::string_view{}));
+        mobile.set<"connected">(row[37].value().value_or(std::string_view{}) == "t");
+        mobile.set<"ipv4">(row[38].value().value_or(std::string_view{}));
 
         FirmwareStatusDto firmware(c);
-        firmware.set<"state">(row[39].value().value_or(std::string_view{}))
-            .set<"progressPercent">(integer(row[40].value().value_or(std::string_view{})))
-            .set<"downloadedBytes">(integer(row[41].value().value_or(std::string_view{})))
-            .set<"totalBytes">(integer(row[42].value().value_or(std::string_view{})))
-            .set<"message">(row[43].value().value_or(std::string_view{}));
+        firmware.set<"state">(row[39].value().value_or(std::string_view{}));
+        firmware.set<"progressPercent">(
+            integer(row[40].value().value_or(std::string_view{})));
+        firmware.set<"downloadedBytes">(
+            integer(row[41].value().value_or(std::string_view{})));
+        firmware.set<"totalBytes">(integer(row[42].value().value_or(std::string_view{})));
+        firmware.set<"message">(row[43].value().value_or(std::string_view{}));
 
-        node.set<"id">(row[0].value().value_or(std::string_view{}))
-            .set<"imei">(row[1].value().value_or(std::string_view{}))
-            .set<"name">(row[2].value().value_or(std::string_view{}))
-            .set<"model">(row[3].value().value_or(std::string_view{}))
-            .set<"softwareVersion">(row[4].value().value_or(std::string_view{}))
-            .set<"hostname">(row[5].value().value_or(std::string_view{}))
-            .set<"architecture">(row[6].value().value_or(std::string_view{}))
-            .set<"openwrtRelease">(row[7].value().value_or(std::string_view{}))
-            .set<"enrollmentStatus">(row[8].value().value_or(std::string_view{}))
-            .set<"status">(std::move(status))
-            .set<"capability">(std::move(capability))
-            .set<"mobile">(std::move(mobile))
-            .set<"firmware">(std::move(firmware))
-            .set<"createdAt">(row[11].value().value_or(std::string_view{}));
+        node.set<"id">(row[0].value().value_or(std::string_view{}));
+        node.set<"imei">(row[1].value().value_or(std::string_view{}));
+        node.set<"name">(row[2].value().value_or(std::string_view{}));
+        node.set<"model">(row[3].value().value_or(std::string_view{}));
+        node.set<"softwareVersion">(row[4].value().value_or(std::string_view{}));
+        node.set<"hostname">(row[5].value().value_or(std::string_view{}));
+        node.set<"architecture">(row[6].value().value_or(std::string_view{}));
+        node.set<"openwrtRelease">(row[7].value().value_or(std::string_view{}));
+        node.set<"enrollmentStatus">(row[8].value().value_or(std::string_view{}));
+        node.set<"status">(std::move(status));
+        node.set<"capability">(std::move(capability));
+        node.set<"mobile">(std::move(mobile));
+        node.set<"firmware">(std::move(firmware));
+        node.set<"createdAt">(row[11].value().value_or(std::string_view{}));
     }
 
     static std::vector<std::string> split(std::string_view value) {

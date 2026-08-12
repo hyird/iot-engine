@@ -939,15 +939,15 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
         }
         const auto capabilities = DeviceAccessService::capabilities(
             actor, DeviceAccessService::rank(row[29].value().value_or(std::string_view{})), row[9].value().value_or(std::string_view{}) == "t");
-        item.set<"elementCount">(toInt(row[28].value().value_or(std::string_view{})))
-            .set<"connected">(false)
-            .set<"connectionState">("offline")
-            .set<"elements">(ruvia::BoxedArray<DeviceElementDto>(c.resource()))
-            .set<"canEdit">(capabilities.canEdit)
-            .set<"canDelete">(capabilities.canDelete)
-            .set<"canShare">(capabilities.canShare)
-            .set<"canCommand">(capabilities.canCommand)
-            .set<"accessLevel">(capabilities.accessLevel);
+        item.set<"elementCount">(toInt(row[28].value().value_or(std::string_view{})));
+        item.set<"connected">(false);
+        item.set<"connectionState">("offline");
+        item.set<"elements">(ruvia::BoxedArray<DeviceElementDto>(c.resource()));
+        item.set<"canEdit">(capabilities.canEdit);
+        item.set<"canDelete">(capabilities.canDelete);
+        item.set<"canShare">(capabilities.canShare);
+        item.set<"canCommand">(capabilities.canCommand);
+        item.set<"accessLevel">(capabilities.accessLevel);
         if (row[30].value().has_value()) {
             item.set<"edgeNodeId">(row[30].value().value_or(std::string_view{})).set<"edgeNodeName">(row[31].value().value_or(std::string_view{})).set<"edgeNodeImei">(row[32].value().value_or(std::string_view{}));
         }

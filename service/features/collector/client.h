@@ -37,6 +37,10 @@ class Client final {
         co_await registry_.connect();
     }
 
+    [[nodiscard]] auto withOptions(ruvia::OperationOptions options) const {
+        return registry_.get(&resource_, operationScope_).withOptions(std::move(options));
+    }
+
     void close() noexcept {
         if (closed_)
             return;
@@ -55,10 +59,6 @@ class Client final {
          std::span<const std::string_view> args = {}) const {
         auto redis = withOptions(ruvia::OperationOptions{.timeout = kCommandTimeout});
         co_return co_await redis.eval(script, keys, args);
-    }
-
-    [[nodiscard]] auto withOptions(ruvia::OperationOptions options) const {
-        return registry_.get(&resource_, operationScope_).withOptions(std::move(options));
     }
 
   private:
