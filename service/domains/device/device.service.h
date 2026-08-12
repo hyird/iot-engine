@@ -27,6 +27,7 @@
 #include "service/features/edge/config.h"
 #include "service/domains/device/device.types.h"
 #include "service/features/telemetry/latest.h"
+#include "service/utils/number.h"
 
 namespace service::device {
 
@@ -821,13 +822,7 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
             value.remove_suffix(1);
         if (value.empty())
             return std::nullopt;
-        double output = 0;
-        const auto [end, error] =
-            std::from_chars(value.data(), value.data() + value.size(), output);
-        if (error != std::errc{} || end != value.data() + value.size() ||
-            !std::isfinite(output))
-            return std::nullopt;
-        return output;
+        return service::utils::decimal(value);
     }
 
     static double toDouble(std::string_view value, double fallback = 0) {

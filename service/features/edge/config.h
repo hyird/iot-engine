@@ -22,6 +22,7 @@
 #include "service/features/edge/metadata.h"
 #include "service/features/edge/protocol.h"
 #include "service/middleware/auth.h"
+#include "service/utils/number.h"
 
 namespace service::edge {
 
@@ -66,11 +67,8 @@ inline void packet(std::string* output, std::string_view mode, std::string_view 
 inline double number(std::string_view value, double fallback = 0.0) {
     if (value.empty())
         return fallback;
-    double result = 0.0;
-    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
-    if (error != std::errc{} || end != value.data() + value.size() || !std::isfinite(result))
-        return fallback;
-    return result;
+    const auto result = service::utils::decimal(value);
+    return result.value_or(fallback);
 }
 
 inline constexpr std::string_view kReplaceQueueScript = R"lua(

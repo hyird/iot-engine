@@ -238,10 +238,15 @@ std::optional<RemoteEndpoint> parseRemoteEndpoint(const std::string& remoteAddre
     if (!port || *port == 0 || *port > 65535) {
         return std::nullopt;
     }
-    return RemoteEndpoint{
-        remoteAddress.substr(0, colon),
-        static_cast<uint16_t>(*port),
-    };
+    auto host = remoteAddress.substr(0, colon);
+    if (host.front() == '[') {
+        if (host.size() < 3 || host.back() != ']')
+            return std::nullopt;
+        host = host.substr(1, host.size() - 2);
+    } else if (host.find(':') != std::string::npos) {
+        return std::nullopt;
+    }
+    return RemoteEndpoint{std::move(host), static_cast<uint16_t>(*port)};
 }
 
 std::string routeUnavailableReason(const std::optional<DeviceRouteSnapshot>& route) {

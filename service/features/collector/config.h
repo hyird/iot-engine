@@ -19,6 +19,7 @@
 #include "service/common/message/contract.h"
 #include "service/features/collector/stream.h"
 #include "service/features/collector/types.h"
+#include "service/utils/number.h"
 
 namespace service::collector::config {
 
@@ -410,11 +411,10 @@ inline double decimal(const std::vector<message::StreamField>& fields, std::stri
     const auto value = field(fields, name);
     if (value.empty())
         return fallback;
-    double result = 0;
-    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
-    if (error != std::errc{} || end != value.data() + value.size() || !std::isfinite(result))
+    const auto result = service::utils::decimal(value);
+    if (!result)
         throw std::runtime_error("invalid runtime decimal: " + std::string(name));
-    return result;
+    return *result;
 }
 
 inline DeviceDefinition device(const std::vector<message::StreamField>& fields) {

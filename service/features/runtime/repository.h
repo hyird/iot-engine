@@ -20,6 +20,7 @@
 
 #include "service/common/message/contract.h"
 #include "service/features/collector/types.h"
+#include "service/utils/number.h"
 
 namespace service::runtime::repository {
 
@@ -126,12 +127,10 @@ template <typename Row> bool cellBool(const Row& row, std::size_t column) {
     return value == "t" || value == "true" || value == "1";
 }
 inline double decimal(std::string_view value, std::string_view name) {
-    double parsed = 0.0;
-    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
-    if (value.empty() || error != std::errc{} || end != value.data() + value.size() ||
-        !std::isfinite(parsed))
+    const auto parsed = service::utils::decimal(value);
+    if (!parsed)
         throw std::runtime_error("invalid runtime repository decimal: " + std::string(name));
-    return parsed;
+    return *parsed;
 }
 } // namespace detail
 

@@ -17,6 +17,7 @@
 
 #include "service/common/http.h"
 #include "service/features/collector/stream.h"
+#include "service/utils/number.h"
 
 namespace service::edge::metadata {
 
@@ -111,12 +112,8 @@ inline std::optional<std::int64_t> integer(std::string_view value) noexcept {
 inline double number(std::string_view value, double fallback = 0.0) noexcept {
     if (value.empty())
         return fallback;
-    double result{};
-    const auto [end, error] =
-        std::from_chars(value.data(), value.data() + value.size(), result);
-    if (error != std::errc{} || end != value.data() + value.size() || !std::isfinite(result))
-        return fallback;
-    return result;
+    const auto result = service::utils::decimal(value);
+    return result.value_or(fallback);
 }
 
 inline std::int64_t positiveCeil(std::string_view value, double fallback = 1.0) noexcept {
