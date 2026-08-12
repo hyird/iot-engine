@@ -48,10 +48,10 @@ class CommandService final {
               ELSE TRUE END
             FROM device WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
             service::common::dbParams(deviceId));
-        if (deviceRows.rows().empty())
+        if (deviceRows.empty())
             service::common::fail(18001, "设备不存在", 404);
         const auto capabilities = service::device::DeviceAccessService::capabilities(
-            access.actor, access.level, deviceRows.rows().front()[0].text() == "t");
+            access.actor, access.level, deviceRows.front()[0].value().value_or(std::string_view{}) == "t");
         if (!capabilities.canCommand)
             service::common::fail(18005, "设备未开启远程控制或当前账号无下发权限", 403);
 
@@ -71,9 +71,9 @@ class CommandService final {
               ELSE TRUE END
             FROM device WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
             service::common::dbParams(deviceId));
-        if (deviceRows.rows().empty())
+        if (deviceRows.empty())
             service::common::fail(18001, "设备不存在", 404);
-        if (deviceRows.rows().front()[0].text() != "t")
+        if (deviceRows.front()[0].value().value_or(std::string_view{}) != "t")
             service::common::fail(18005, "设备未开启远程控制", 403);
         co_return co_await enqueueDevice(context, deviceId, body,
                                          "access-key:" + std::string(accessKeyId));
@@ -92,20 +92,20 @@ class CommandService final {
             context, deviceId, service::device::DeviceAccessLevel::operate);
 
         service::device::DeviceCommandStatusDto result(context);
-        result.commandId(commandId)
-            .deviceId(deviceId)
-            .deviceCode(field(fields, "device_code"))
-            .protocol(field(fields, "protocol"))
-            .status(field(fields, "status"));
+        result.set<"commandId">(commandId)
+            .set<"deviceId">(deviceId)
+            .set<"deviceCode">(field(fields, "device_code"))
+            .set<"protocol">(field(fields, "protocol"))
+            .set<"status">(field(fields, "status"));
         const auto reason = field(fields, "reason");
         if (!reason.empty())
-            result.reason(reason);
+            result.set<"reason">(reason);
         const auto createdAt = integer(fields, "created_at_ms");
         if (createdAt != 0)
-            result.createdAtMs(createdAt);
+            result.set<"createdAtMs">(createdAt);
         const auto completedAt = integer(fields, "completed_at_ms");
         if (completedAt != 0)
-            result.completedAtMs(completedAt);
+            result.set<"completedAtMs">(completedAt);
         co_return result;
     }
 
@@ -145,14 +145,14 @@ JOIN protocol_config p ON p.id = d.protocol_config_id
 LEFT JOIN edge_node n ON n.id = l.edge_node_id
 WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)sql",
                                                       service::common::dbParams(deviceId));
-        if (!edge.rows().empty() && !edge.rows().front()[0].text().empty()) {
-            if (edge.rows().front()[4].text() != "t")
+        if (!edge.empty() && !edge.front()[0].value().value_or(std::string_view{}).empty()) {
+            if (edge.front()[4].value().value_or(std::string_view{}) != "t")
                 service::common::fail(18013, "边缘节点设备配置尚未生效", 409);
             co_return co_await enqueueEdgeDevice(context, deviceId, body, std::move(submittedBy),
-                                                 edge.rows().front()[0].text(),
-                                                 edge.rows().front()[1].text(),
-                                                 edge.rows().front()[2].text(),
-                                                 edge.rows().front()[3].text() == "t");
+                                                 edge.front()[0].value().value_or(std::string_view{}),
+                                                 edge.front()[1].value().value_or(std::string_view{}),
+                                                 edge.front()[2].value().value_or(std::string_view{}),
+                                                 edge.front()[3].value().value_or(std::string_view{}) == "t");
         }
 
         auto requested = normalize(body);
@@ -234,7 +234,7 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
         }
 
         service::device::DeviceCommandCreateDto result(context);
-        result.commandIds(std::move(commandIds)).status("PENDING");
+        result.set<"commandIds">(std::move(commandIds)).set<"status">("PENDING");
         co_return result;
     }
 
@@ -341,7 +341,7 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
         }
 
         service::device::DeviceCommandCreateDto result(context);
-        result.commandIds(std::move(commandIds)).status("PENDING");
+        result.set<"commandIds">(std::move(commandIds)).set<"status">("PENDING");
         co_return result;
     }
 
@@ -405,20 +405,20 @@ WHERE d.id = $1::uuid AND p.protocol = 'SL651')sql";
             service::common::fail(18010, "边缘节点不支持该设备协议", 400);
         }
         const auto rows = co_await context.db().query(sql, service::common::dbParams(device.id));
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             service::collector::ElementDefinition element;
-            element.id = std::string(row[0].text());
-            element.name = std::string(row[1].text());
-            element.unit = std::string(row[2].text());
-            element.dataType = std::string(row[3].text());
-            element.direction = std::string(row[4].text());
-            element.size = parseInteger(row[5].text());
-            element.length = parseInteger(row[5].text());
-            element.digits = parseInteger(row[6].text());
-            element.writable = row[7].text() == "t";
-            element.responseElement = row[8].text() == "t";
-            element.functionCode = std::string(row[9].text());
-            element.encoding = std::string(row[10].text());
+            element.id = std::string(row[0].value().value_or(std::string_view{}));
+            element.name = std::string(row[1].value().value_or(std::string_view{}));
+            element.unit = std::string(row[2].value().value_or(std::string_view{}));
+            element.dataType = std::string(row[3].value().value_or(std::string_view{}));
+            element.direction = std::string(row[4].value().value_or(std::string_view{}));
+            element.size = parseInteger(row[5].value().value_or(std::string_view{}));
+            element.length = parseInteger(row[5].value().value_or(std::string_view{}));
+            element.digits = parseInteger(row[6].value().value_or(std::string_view{}));
+            element.writable = row[7].value().value_or(std::string_view{}) == "t";
+            element.responseElement = row[8].value().value_or(std::string_view{}) == "t";
+            element.functionCode = std::string(row[9].value().value_or(std::string_view{}));
+            element.encoding = std::string(row[10].value().value_or(std::string_view{}));
             device.elements.push_back(std::move(element));
         }
     }
@@ -444,16 +444,16 @@ WHERE d.id = $1::uuid AND p.protocol = 'SL651')sql";
 
     static std::vector<service::collector::CommandElementValue>
     normalize(const service::device::DeviceCommandBody& body) {
-        if (!body.elements() || body.elements()->empty() || body.elements()->size() > 256)
+        if (!body.get<"elements">() || body.get<"elements">()->empty() || body.get<"elements">()->size() > 256)
             service::common::fail(18010, "下发要素数量必须在 1 - 256 之间", 400);
         std::vector<service::collector::CommandElementValue> result;
         std::set<std::string, std::less<>> seenElementIds;
-        result.reserve(body.elements()->size());
-        for (const auto& element : *body.elements()) {
-            if (!element.elementId() || !element.value())
+        result.reserve(body.get<"elements">()->size());
+        for (const auto& element : *body.get<"elements">()) {
+            if (!element.get<"elementId">() || !element.get<"value">())
                 service::common::fail(18010, "下发要素参数不完整", 400);
-            const auto id = element.elementId()->view();
-            const auto value = element.value()->view();
+            const auto id = element.get<"elementId">()->view();
+            const auto value = element.get<"value">()->view();
             if (!service::common::isUuid(id))
                 service::common::fail(18010, "下发要素 ID 必须是 UUID", 400);
             if (!seenElementIds.emplace(id).second)

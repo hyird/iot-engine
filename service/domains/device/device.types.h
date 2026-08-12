@@ -24,368 +24,281 @@ inline bool isDeviceTimezone(const ruvia::String& value) {
     return hh <= 13 && mm <= 59;
 }
 
-struct DeviceIdParams final {
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
-    RUVIA_MODEL(DeviceIdParams, id);
-};
+RUVIA_REQUEST_MODEL(DeviceIdParams,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String));
 
 // ===== 设备分享 =====
 
-struct DeviceShareBodyItem final {
-    RUVIA_OPTIONAL_FIELD_NAME("subject_type", subjectType, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("subject_id", subjectId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("access_level", accessLevel, ruvia::String);
-    RUVIA_MODEL(DeviceShareBodyItem, subjectType, subjectId, accessLevel);
-};
+RUVIA_REQUEST_MODEL(DeviceShareBodyItem,
+    RUVIA_OPTIONAL_FIELD_NAME("subject_type", subjectType, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("subject_id", subjectId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("access_level", accessLevel, ruvia::String));
 
-struct ReplaceDeviceSharesBody final {
-    RUVIA_OPTIONAL_FIELD(shares, ruvia::Array<DeviceShareBodyItem>);
-    RUVIA_MODEL(ReplaceDeviceSharesBody, shares);
-};
+RUVIA_REQUEST_MODEL(ReplaceDeviceSharesBody,
+    RUVIA_OPTIONAL_FIELD(shares, ruvia::Array<DeviceShareBodyItem>));
 
-struct DeviceShareItemDto final {
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("subject_type", subjectType, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("subject_id", subjectId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("subject_name", subjectName, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("access_level", accessLevel, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("source_type", sourceType, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("source_group_id", sourceGroupId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("source_group_name", sourceGroupName, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(inherited, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("created_at", createdAt, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("updated_at", updatedAt, ruvia::String);
-    RUVIA_MODEL(DeviceShareItemDto, id, subjectType, subjectId, subjectName, accessLevel,
-                sourceType, sourceGroupId, sourceGroupName, inherited, createdAt, updatedAt);
-};
+RUVIA_RESPONSE_MODEL(DeviceShareItemDto,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("subject_type", subjectType, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("subject_id", subjectId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("subject_name", subjectName, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("access_level", accessLevel, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("source_type", sourceType, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("source_group_id", sourceGroupId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("source_group_name", sourceGroupName, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(inherited, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("created_at", createdAt, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("updated_at", updatedAt, ruvia::String));
 
-struct DeviceShareTargetDto final {
-    RUVIA_OPTIONAL_FIELD_NAME("subject_type", subjectType, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("subject_id", subjectId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("subject_name", subjectName, ruvia::String);
-    RUVIA_MODEL(DeviceShareTargetDto, subjectType, subjectId, subjectName);
-};
+RUVIA_RESPONSE_MODEL(DeviceShareTargetDto,
+    RUVIA_OPTIONAL_FIELD_NAME("subject_type", subjectType, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("subject_id", subjectId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("subject_name", subjectName, ruvia::String));
 
-struct DeviceSharesResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<DeviceShareItemDto>);
-    RUVIA_MODEL(DeviceSharesResponse, code, message, data);
-};
+RUVIA_RESPONSE_MODEL(DeviceSharesResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<DeviceShareItemDto>));
 
-struct DeviceShareTargetsResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<DeviceShareTargetDto>);
-    RUVIA_MODEL(DeviceShareTargetsResponse, code, message, data);
-};
+RUVIA_RESPONSE_MODEL(DeviceShareTargetsResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<DeviceShareTargetDto>));
 
 // ===== 设备写侧 Body =====
 
-struct DevicePacketBody final {
-    RUVIA_OPTIONAL_FIELD(mode, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(content, ruvia::String);
-    RUVIA_MODEL(DevicePacketBody, mode, content);
-};
+RUVIA_REQUEST_MODEL(DevicePacketBody,
+    RUVIA_OPTIONAL_FIELD(mode, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(content, ruvia::String));
 
-struct SaveDeviceBody final {
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("device_code", deviceCode, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("link_id", linkId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("edge_node_id", edgeNodeId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("edge_transport", edgeTransport, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("edge_interface", edgeInterface, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("edge_mode", edgeMode, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("edge_ip", edgeIp, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("edge_port", edgePort, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("serial_baud_rate", serialBaudRate, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("serial_data_bits", serialDataBits, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("serial_stop_bits", serialStopBits, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("serial_parity", serialParity, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("serial_rs485", serialRs485, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("target_id", targetId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("protocol_config_id", protocolConfigId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("group_id", groupId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("online_timeout", onlineTimeout, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("remote_control", remoteControl, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("modbus_mode", modbusMode, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("slave_id", slaveId, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(timezone, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(heartbeat, DevicePacketBody);
-    RUVIA_OPTIONAL_FIELD(registration, DevicePacketBody);
-    RUVIA_OPTIONAL_FIELD(remark, ruvia::String);
-    RUVIA_MODEL(SaveDeviceBody, name, deviceCode, linkId, edgeNodeId, edgeTransport,
-                edgeInterface, edgeMode, edgeIp, edgePort, serialBaudRate, serialDataBits,
-                serialStopBits, serialParity, serialRs485, targetId, protocolConfigId, groupId,
-                status, onlineTimeout, remoteControl, modbusMode, slaveId, timezone, heartbeat,
-                registration, remark);
-};
+RUVIA_REQUEST_MODEL(SaveDeviceBody,
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("device_code", deviceCode, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("link_id", linkId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("edge_node_id", edgeNodeId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("edge_transport", edgeTransport, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("edge_interface", edgeInterface, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("edge_mode", edgeMode, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("edge_ip", edgeIp, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("edge_port", edgePort, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("serial_baud_rate", serialBaudRate, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("serial_data_bits", serialDataBits, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("serial_stop_bits", serialStopBits, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("serial_parity", serialParity, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("serial_rs485", serialRs485, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("target_id", targetId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("protocol_config_id", protocolConfigId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("group_id", groupId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("online_timeout", onlineTimeout, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("remote_control", remoteControl, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("modbus_mode", modbusMode, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("slave_id", slaveId, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(timezone, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(heartbeat, DevicePacketBody),
+    RUVIA_OPTIONAL_FIELD(registration, DevicePacketBody),
+    RUVIA_OPTIONAL_FIELD(remark, ruvia::String));
 
 // ===== 设备读侧 DTO =====
 
 // 心跳包 / 注册包（透传 DB jsonb 的 mode + 可选 content）
-struct DevicePacketDto final {
-    RUVIA_OPTIONAL_FIELD(mode, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(content, ruvia::String);
-    RUVIA_MODEL(DevicePacketDto, mode, content);
-};
+RUVIA_RESPONSE_MODEL(DevicePacketDto,
+    RUVIA_OPTIONAL_FIELD(mode, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(content, ruvia::String));
 
-struct DeviceCommandElementBody final {
-    RUVIA_OPTIONAL_FIELD_NAME("elementId", elementId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(value, ruvia::String);
-    RUVIA_MODEL(DeviceCommandElementBody, elementId, value);
-};
+RUVIA_REQUEST_MODEL(DeviceCommandElementBody,
+    RUVIA_OPTIONAL_FIELD_NAME("elementId", elementId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(value, ruvia::String));
 
-struct DeviceCommandBody final {
-    RUVIA_OPTIONAL_FIELD_NAME("deviceId", deviceId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(elements, ruvia::Array<DeviceCommandElementBody>);
-    RUVIA_MODEL(DeviceCommandBody, deviceId, elements);
-};
+RUVIA_REQUEST_MODEL(DeviceCommandBody,
+    RUVIA_OPTIONAL_FIELD_NAME("deviceId", deviceId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(elements, ruvia::Array<DeviceCommandElementBody>));
 
-struct DeviceCommandCreateDto final {
-    RUVIA_OPTIONAL_FIELD_NAME("command_ids", commandIds, ruvia::BoxedArray<ruvia::String>);
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_MODEL(DeviceCommandCreateDto, commandIds, status);
-};
+RUVIA_RESPONSE_MODEL(DeviceCommandCreateDto,
+    RUVIA_OPTIONAL_FIELD_NAME("command_ids", commandIds, ruvia::BoxedArray<ruvia::String>),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String));
 
-struct DeviceCommandStatusDto final {
-    RUVIA_OPTIONAL_FIELD_NAME("command_id", commandId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("device_code", deviceCode, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(reason, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("created_at_ms", createdAtMs, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("completed_at_ms", completedAtMs, ruvia::Int64);
-    RUVIA_MODEL(DeviceCommandStatusDto, commandId, deviceId, deviceCode, protocol, status, reason,
-                createdAtMs, completedAtMs);
-};
+RUVIA_RESPONSE_MODEL(DeviceCommandStatusDto,
+    RUVIA_OPTIONAL_FIELD_NAME("command_id", commandId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("device_code", deviceCode, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(reason, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("created_at_ms", createdAtMs, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("completed_at_ms", completedAtMs, ruvia::Int64));
 
-struct DeviceElementDto final {
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(value, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(unit, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(scale, ruvia::Double);
-    RUVIA_OPTIONAL_FIELD(decimals, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(group, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(encode, ruvia::String);
-    RUVIA_MODEL(DeviceElementDto, id, name, value, unit, scale, decimals, group, encode);
-};
+RUVIA_RESPONSE_MODEL(DeviceElementDto,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(value, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(unit, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(scale, ruvia::Double),
+    RUVIA_OPTIONAL_FIELD(decimals, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(group, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(encode, ruvia::String));
 
-struct DeviceCommandOptionDto final {
-    RUVIA_OPTIONAL_FIELD(label, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(value, ruvia::String);
-    RUVIA_MODEL(DeviceCommandOptionDto, label, value);
-};
+RUVIA_RESPONSE_MODEL(DeviceCommandOptionDto,
+    RUVIA_OPTIONAL_FIELD(label, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(value, ruvia::String));
 
-struct DeviceCommandOperationElementDto final {
-    RUVIA_OPTIONAL_FIELD_NAME("elementId", elementId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(value, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(unit, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(options, ruvia::BoxedArray<DeviceCommandOptionDto>);
-    RUVIA_OPTIONAL_FIELD_NAME("registerType", registerType, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("dataType", dataType, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(size, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(encode, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(length, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(digits, ruvia::Int64);
-    RUVIA_MODEL(DeviceCommandOperationElementDto, elementId, name, value, unit, options,
-                registerType, dataType, size, encode, length, digits);
-};
+RUVIA_RESPONSE_MODEL(DeviceCommandOperationElementDto,
+    RUVIA_OPTIONAL_FIELD_NAME("elementId", elementId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(value, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(unit, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(options, ruvia::BoxedArray<DeviceCommandOptionDto>),
+    RUVIA_OPTIONAL_FIELD_NAME("registerType", registerType, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("dataType", dataType, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(size, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(encode, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(length, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(digits, ruvia::Int64));
 
-struct DeviceCommandOperationDto final {
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(elements, ruvia::BoxedArray<DeviceCommandOperationElementDto>);
-    RUVIA_MODEL(DeviceCommandOperationDto, name, elements);
-};
+RUVIA_RESPONSE_MODEL(DeviceCommandOperationDto,
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(elements, ruvia::BoxedArray<DeviceCommandOperationElementDto>));
 
-struct EdgeStatusDto final {
-    RUVIA_OPTIONAL_FIELD(state, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(reason, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("clientCount", clientCount, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("lastActivityAt", lastActivityAt, ruvia::String);
-    RUVIA_MODEL(EdgeStatusDto, state, reason, clientCount, lastActivityAt);
-};
+RUVIA_RESPONSE_MODEL(EdgeStatusDto,
+    RUVIA_OPTIONAL_FIELD(state, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(reason, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("clientCount", clientCount, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("lastActivityAt", lastActivityAt, ruvia::String));
 
-struct DeviceItemDto final {
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("device_code", deviceCode, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("link_id", linkId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("edge_node_id", edgeNodeId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("edge_node_name", edgeNodeName, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("edge_node_imei", edgeNodeImei, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("edge_transport", edgeTransport, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("edge_interface", edgeInterface, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("edge_mode", edgeMode, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("edge_ip", edgeIp, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("edge_port", edgePort, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("serial_baud_rate", serialBaudRate, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("serial_data_bits", serialDataBits, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("serial_stop_bits", serialStopBits, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("serial_parity", serialParity, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("serial_rs485", serialRs485, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("target_id", targetId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("protocol_config_id", protocolConfigId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("group_id", groupId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("online_timeout", onlineTimeout, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("remote_control", remoteControl, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("modbus_mode", modbusMode, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("slave_id", slaveId, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(timezone, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(heartbeat, DevicePacketDto);
-    RUVIA_OPTIONAL_FIELD(registration, DevicePacketDto);
-    RUVIA_OPTIONAL_FIELD(remark, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("created_by", createdBy, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("created_at", createdAt, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("updated_at", updatedAt, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("link_name", linkName, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("link_mode", linkMode, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("link_protocol", linkProtocol, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("protocol_name", protocolName, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("protocol_type", protocolType, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("read_interval", readInterval, ruvia::Double);
-    RUVIA_OPTIONAL_FIELD_NAME("storage_interval", storageInterval, ruvia::Double);
-    RUVIA_OPTIONAL_FIELD_NAME("element_count", elementCount, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(connected, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("connectionState", connectionState, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("edgeStatus", edgeStatus, EdgeStatusDto);
-    RUVIA_OPTIONAL_FIELD_NAME("reportTime", reportTime, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(elements, ruvia::BoxedArray<DeviceElementDto>);
-    RUVIA_OPTIONAL_FIELD_NAME("commandOperations", commandOperations,
-                              ruvia::BoxedArray<DeviceCommandOperationDto>);
-    RUVIA_OPTIONAL_FIELD_NAME("can_edit", canEdit, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("can_delete", canDelete, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("can_share", canShare, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("can_command", canCommand, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("access_level", accessLevel, ruvia::String);
-    RUVIA_MODEL(DeviceItemDto, id, name, deviceCode, linkId, edgeNodeId, edgeNodeName,
-                edgeNodeImei, edgeTransport, edgeInterface, edgeMode, edgeIp, edgePort,
-                serialBaudRate, serialDataBits, serialStopBits, serialParity, serialRs485,
-                targetId, protocolConfigId, groupId, status, onlineTimeout, remoteControl,
-                modbusMode, slaveId, timezone, heartbeat, registration, remark, createdBy,
-                createdAt, updatedAt, linkName, linkMode, linkProtocol, protocolName,
-                protocolType, readInterval, storageInterval, elementCount, connected,
-                connectionState, edgeStatus, reportTime, elements, commandOperations, canEdit,
-                canDelete, canShare, canCommand, accessLevel);
-};
+RUVIA_RESPONSE_MODEL(DeviceItemDto,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("device_code", deviceCode, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("link_id", linkId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("edge_node_id", edgeNodeId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("edge_node_name", edgeNodeName, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("edge_node_imei", edgeNodeImei, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("edge_transport", edgeTransport, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("edge_interface", edgeInterface, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("edge_mode", edgeMode, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("edge_ip", edgeIp, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("edge_port", edgePort, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("serial_baud_rate", serialBaudRate, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("serial_data_bits", serialDataBits, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("serial_stop_bits", serialStopBits, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("serial_parity", serialParity, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("serial_rs485", serialRs485, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("target_id", targetId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("protocol_config_id", protocolConfigId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("group_id", groupId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("online_timeout", onlineTimeout, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("remote_control", remoteControl, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("modbus_mode", modbusMode, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("slave_id", slaveId, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(timezone, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(heartbeat, DevicePacketDto),
+    RUVIA_OPTIONAL_FIELD(registration, DevicePacketDto),
+    RUVIA_OPTIONAL_FIELD(remark, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("created_by", createdBy, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("created_at", createdAt, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("updated_at", updatedAt, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("link_name", linkName, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("link_mode", linkMode, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("link_protocol", linkProtocol, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("protocol_name", protocolName, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("protocol_type", protocolType, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("read_interval", readInterval, ruvia::Double),
+    RUVIA_OPTIONAL_FIELD_NAME("storage_interval", storageInterval, ruvia::Double),
+    RUVIA_OPTIONAL_FIELD_NAME("element_count", elementCount, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(connected, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("connectionState", connectionState, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("edgeStatus", edgeStatus, EdgeStatusDto),
+    RUVIA_OPTIONAL_FIELD_NAME("reportTime", reportTime, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(elements, ruvia::BoxedArray<DeviceElementDto>),
+    RUVIA_OPTIONAL_FIELD_NAME("commandOperations", commandOperations, ruvia::BoxedArray<DeviceCommandOperationDto>),
+    RUVIA_OPTIONAL_FIELD_NAME("can_edit", canEdit, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("can_delete", canDelete, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("can_share", canShare, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("can_command", canCommand, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("access_level", accessLevel, ruvia::String));
 
-struct DeviceOptionDto final {
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("device_code", deviceCode, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("can_edit", canEdit, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("can_delete", canDelete, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("can_share", canShare, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("can_command", canCommand, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("access_level", accessLevel, ruvia::String);
-    RUVIA_MODEL(DeviceOptionDto, id, name, deviceCode, canEdit, canDelete, canShare, canCommand,
-                accessLevel);
-};
+RUVIA_RESPONSE_MODEL(DeviceOptionDto,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("device_code", deviceCode, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("can_edit", canEdit, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("can_delete", canDelete, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("can_share", canShare, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("can_command", canCommand, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("access_level", accessLevel, ruvia::String));
 
-struct DeviceRealtimeDto final {
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(connected, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("connectionState", connectionState, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(elements, ruvia::BoxedArray<ruvia::String>);
-    RUVIA_OPTIONAL_FIELD_NAME("can_edit", canEdit, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("can_delete", canDelete, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("can_share", canShare, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("can_command", canCommand, ruvia::Bool);
-    RUVIA_OPTIONAL_FIELD_NAME("access_level", accessLevel, ruvia::String);
-    RUVIA_MODEL(DeviceRealtimeDto, id, connected, connectionState, elements, canEdit, canDelete,
-                canShare, canCommand, accessLevel);
-};
+RUVIA_RESPONSE_MODEL(DeviceRealtimeDto,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(connected, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("connectionState", connectionState, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(elements, ruvia::BoxedArray<ruvia::String>),
+    RUVIA_OPTIONAL_FIELD_NAME("can_edit", canEdit, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("can_delete", canDelete, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("can_share", canShare, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("can_command", canCommand, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("access_level", accessLevel, ruvia::String));
 
-struct DevicePageDataDto final {
-    RUVIA_OPTIONAL_FIELD(list, ruvia::BoxedArray<DeviceItemDto>);
-    RUVIA_OPTIONAL_FIELD(total, ruvia::Int64);
-    RUVIA_MODEL(DevicePageDataDto, list, total);
-};
-struct DeviceRealtimePageDto final {
-    RUVIA_OPTIONAL_FIELD(list, ruvia::BoxedArray<DeviceRealtimeDto>);
-    RUVIA_OPTIONAL_FIELD(total, ruvia::Int64);
-    RUVIA_MODEL(DeviceRealtimePageDto, list, total);
-};
+RUVIA_RESPONSE_MODEL(DevicePageDataDto,
+    RUVIA_OPTIONAL_FIELD(list, ruvia::BoxedArray<DeviceItemDto>),
+    RUVIA_OPTIONAL_FIELD(total, ruvia::Int64));
+RUVIA_RESPONSE_MODEL(DeviceRealtimePageDto,
+    RUVIA_OPTIONAL_FIELD(list, ruvia::BoxedArray<DeviceRealtimeDto>),
+    RUVIA_OPTIONAL_FIELD(total, ruvia::Int64));
 
-struct DevicePageResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, DevicePageDataDto);
-    RUVIA_MODEL(DevicePageResponse, code, message, data);
-};
-struct DeviceDetailResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, DeviceItemDto);
-    RUVIA_MODEL(DeviceDetailResponse, code, message, data);
-};
-struct DeviceCommandCreateResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, DeviceCommandCreateDto);
-    RUVIA_MODEL(DeviceCommandCreateResponse, code, message, data);
-};
-struct DeviceCommandStatusResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, DeviceCommandStatusDto);
-    RUVIA_MODEL(DeviceCommandStatusResponse, code, message, data);
-};
-struct DeviceOptionsResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<DeviceOptionDto>);
-    RUVIA_MODEL(DeviceOptionsResponse, code, message, data);
-};
-struct DeviceRealtimeResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, DeviceRealtimePageDto);
-    RUVIA_MODEL(DeviceRealtimeResponse, code, message, data);
-};
+RUVIA_RESPONSE_MODEL(DevicePageResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, DevicePageDataDto));
+RUVIA_RESPONSE_MODEL(DeviceDetailResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, DeviceItemDto));
+RUVIA_RESPONSE_MODEL(DeviceCommandCreateResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, DeviceCommandCreateDto));
+RUVIA_RESPONSE_MODEL(DeviceCommandStatusResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, DeviceCommandStatusDto));
+RUVIA_RESPONSE_MODEL(DeviceOptionsResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<DeviceOptionDto>));
+RUVIA_RESPONSE_MODEL(DeviceRealtimeResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, DeviceRealtimePageDto));
 
 // ===== 设备分组（合并入 device 模块，子资源）=====
 
-struct SaveDeviceGroupBody final {
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("parent_id", parentId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("sort_order", sortOrder, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(remark, ruvia::String);
-    RUVIA_MODEL(SaveDeviceGroupBody, name, parentId, status, sortOrder, remark);
-};
+RUVIA_REQUEST_MODEL(SaveDeviceGroupBody,
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("parent_id", parentId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("sort_order", sortOrder, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(remark, ruvia::String));
 
-struct DeviceGroupItemDto final {
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("parent_id", parentId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("sort_order", sortOrder, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(remark, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("deviceCount", deviceCount, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("created_at", createdAt, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("updated_at", updatedAt, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("can_share", canShare, ruvia::Bool);
-    RUVIA_MODEL(DeviceGroupItemDto, id, name, parentId, status, sortOrder, remark, deviceCount,
-                createdAt, updatedAt, canShare);
-};
+RUVIA_RESPONSE_MODEL(DeviceGroupItemDto,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("parent_id", parentId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("sort_order", sortOrder, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(remark, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("deviceCount", deviceCount, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("created_at", createdAt, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("updated_at", updatedAt, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("can_share", canShare, ruvia::Bool));
 
-struct DeviceGroupListResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<DeviceGroupItemDto>);
-    RUVIA_MODEL(DeviceGroupListResponse, code, message, data);
-};
-struct DeviceGroupDetailResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, DeviceGroupItemDto);
-    RUVIA_MODEL(DeviceGroupDetailResponse, code, message, data);
-};
+RUVIA_RESPONSE_MODEL(DeviceGroupListResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<DeviceGroupItemDto>));
+RUVIA_RESPONSE_MODEL(DeviceGroupDetailResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, DeviceGroupItemDto));
 
 } // namespace service::device

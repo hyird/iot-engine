@@ -130,19 +130,19 @@ ORDER BY key.id)sql");
     const auto version = service::common::nextUuidV7();
     const auto versionKey = std::string(kVersionPrefix) + version;
     constexpr std::size_t chunkSize = 128;
-    for (std::size_t offset = 0; offset < rows.rows().size(); offset += chunkSize) {
-        const auto end = std::min(rows.rows().size(), offset + chunkSize);
+    for (std::size_t offset = 0; offset < rows.size(); offset += chunkSize) {
+        const auto end = std::min(rows.size(), offset + chunkSize);
         std::vector<std::string> command{"HSET", versionKey};
         command.reserve(2 + (end - offset) * 2);
         for (std::size_t index = offset; index < end; ++index) {
-            const auto& row = rows.rows()[index];
-            command.emplace_back(row[0].text());
-            command.push_back(encode(row[1].text(), row[2].text(), row[3].text(),
-                                     row[4].text(), row[5].text(), row[6].text()));
+            const auto& row = rows[index];
+            command.emplace_back(row[0].value().value_or(std::string_view{}));
+            command.push_back(encode(row[1].value().value_or(std::string_view{}), row[2].value().value_or(std::string_view{}), row[3].value().value_or(std::string_view{}),
+                                     row[4].value().value_or(std::string_view{}), row[5].value().value_or(std::string_view{}), row[6].value().value_or(std::string_view{})));
         }
         (void)co_await service::message::redis::command(context.redis(), command);
     }
-    if (rows.rows().empty())
+    if (rows.empty())
         (void)co_await service::message::redis::command(
             context.redis(), {"HSET", versionKey, "__ready", "1"});
     (void)co_await service::message::redis::command(

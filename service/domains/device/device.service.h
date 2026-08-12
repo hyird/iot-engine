@@ -97,18 +97,18 @@ LEFT JOIN sys_role role
 WHERE actor.id = $1 AND actor.status = 'enabled' AND actor.deleted_at IS NULL
 GROUP BY actor.id, department.id)sql",
                                                 service::common::dbParams(principal.userId));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(service::common::kTokenInvalidErrorCode, "用户状态无效", 401);
-        const auto& row = rows.rows().front();
+        const auto& row = rows.front();
         DeviceActor result;
         result.userId = principal.userId;
-        result.departmentId = std::string(row[0].text());
-        result.superadmin = isTrue(row[1].text());
-        result.canEdit = isTrue(row[2].text());
-        result.canDelete = isTrue(row[3].text());
-        result.canShare = isTrue(row[4].text());
-        result.canCommand = isTrue(row[5].text());
-        result.canGroupShare = isTrue(row[6].text());
+        result.departmentId = std::string(row[0].value().value_or(std::string_view{}));
+        result.superadmin = isTrue(row[1].value().value_or(std::string_view{}));
+        result.canEdit = isTrue(row[2].value().value_or(std::string_view{}));
+        result.canDelete = isTrue(row[3].value().value_or(std::string_view{}));
+        result.canShare = isTrue(row[4].value().value_or(std::string_view{}));
+        result.canCommand = isTrue(row[5].value().value_or(std::string_view{}));
+        result.canGroupShare = isTrue(row[6].value().value_or(std::string_view{}));
         co_return result;
     }
 
@@ -119,9 +119,9 @@ GROUP BY actor.id, department.id)sql",
             "SELECT created_by::text FROM device_group WHERE id = $1 "
             "AND deleted_at IS NULL LIMIT 1",
             service::common::dbParams(groupId));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(17001, "设备分组不存在", 404);
-        if (!currentActor.superadmin && rows.rows().front()[0].text() != currentActor.userId)
+        if (!currentActor.superadmin && rows.front()[0].value().value_or(std::string_view{}) != currentActor.userId)
             service::common::fail(17005, "只能分享自己创建的设备分组", 403);
         co_return currentActor;
     }
@@ -134,9 +134,9 @@ GROUP BY actor.id, department.id)sql",
                 " FROM device WHERE device.id = $4 AND device.deleted_at IS NULL LIMIT 1",
             service::common::dbParams(currentActor.userId, currentActor.departmentId,
                                       currentActor.superadmin ? "true" : "false", deviceId));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(18001, "设备不存在", 404);
-        const auto level = rank(rows.rows().front()[0].text());
+        const auto level = rank(rows.front()[0].value().value_or(std::string_view{}));
         if (level == DeviceAccessLevel::none)
             service::common::fail(18001, "设备不存在", 404);
         if (level < minimum)
@@ -270,14 +270,14 @@ class DeviceService {
                                       actor.superadmin ? "true" : "false"));
         ruvia::BoxedArray<DeviceItemDto> items(c.resource());
         std::map<std::string, DeviceItemDto*, std::less<>> itemsById;
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             auto& item = items.emplace(c);
             fillItem(c, item, row, actor);
-            itemsById.emplace(std::string(row[0].text()), &item);
+            itemsById.emplace(std::string(row[0].value().value_or(std::string_view{})), &item);
         }
         co_await fillLatest(c, itemsById);
         DevicePageDataDto result(c);
-        result.list(std::move(items)).total(static_cast<std::int64_t>(rows.rows().size()));
+        result.set<"list">(std::move(items)).set<"total">(static_cast<std::int64_t>(rows.size()));
         co_return result;
     }
 
@@ -296,22 +296,22 @@ class DeviceService {
             service::common::dbParams(actor.userId, actor.departmentId,
                                       actor.superadmin ? "true" : "false"));
         ruvia::BoxedArray<DeviceRealtimeDto> items(c.resource());
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             const auto capabilities = DeviceAccessService::capabilities(
-                actor, DeviceAccessService::rank(row[2].text()), row[1].text() == "t");
+                actor, DeviceAccessService::rank(row[2].value().value_or(std::string_view{})), row[1].value().value_or(std::string_view{}) == "t");
             auto& item = items.emplace(c);
-            item.id(row[0].text())
-                .connected(false)
-                .connectionState("offline")
-                .elements(ruvia::BoxedArray<ruvia::String>(c.resource()))
-                .canEdit(capabilities.canEdit)
-                .canDelete(capabilities.canDelete)
-                .canShare(capabilities.canShare)
-                .canCommand(capabilities.canCommand)
-                .accessLevel(capabilities.accessLevel);
+            item.set<"id">(row[0].value().value_or(std::string_view{}))
+                .set<"connected">(false)
+                .set<"connectionState">("offline")
+                .set<"elements">(ruvia::BoxedArray<ruvia::String>(c.resource()))
+                .set<"canEdit">(capabilities.canEdit)
+                .set<"canDelete">(capabilities.canDelete)
+                .set<"canShare">(capabilities.canShare)
+                .set<"canCommand">(capabilities.canCommand)
+                .set<"accessLevel">(capabilities.accessLevel);
         }
         DeviceRealtimePageDto result(c);
-        result.list(std::move(items)).total(static_cast<std::int64_t>(rows.rows().size()));
+        result.set<"list">(std::move(items)).set<"total">(static_cast<std::int64_t>(rows.size()));
         co_return result;
     }
 
@@ -325,10 +325,10 @@ class DeviceService {
                 "WHERE d.id = $4 AND d.access_rank > 0 LIMIT 1",
             service::common::dbParams(actor.userId, actor.departmentId,
                                       actor.superadmin ? "true" : "false", id));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(18001, "设备不存在", 404);
         DeviceItemDto item(c);
-        fillItem(c, item, rows.rows().front(), actor);
+        fillItem(c, item, rows.front(), actor);
         std::map<std::string, DeviceItemDto*, std::less<>> itemById{{std::string(id), &item}};
         co_await fillLatest(c, itemById);
         co_await fillCommandOperations(c, itemById, id);
@@ -389,8 +389,8 @@ SELECT jsonb_build_object(
 )::text
 FROM filtered)sql",
                 service::common::dbParams(id, start, end, pageSize, offset, page));
-            co_return rows.rows().empty() ? std::string{"{\"list\":[],\"total\":0}"}
-                                         : std::string{rows.rows().front()[0].text()};
+            co_return rows.empty() ? std::string{"{\"list\":[],\"total\":0}"}
+                                         : std::string{rows.front()[0].value().value_or(std::string_view{})};
         } catch (const std::exception&) {
             service::common::fail(18002, "时间范围格式错误", 400);
         }
@@ -411,18 +411,18 @@ FROM filtered)sql",
             service::common::dbParams(actor.userId, actor.departmentId,
                                       actor.superadmin ? "true" : "false"));
         ruvia::BoxedArray<DeviceOptionDto> result(c.resource());
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             const auto capabilities = DeviceAccessService::capabilities(
-                actor, DeviceAccessService::rank(row[4].text()), row[3].text() == "t");
+                actor, DeviceAccessService::rank(row[4].value().value_or(std::string_view{})), row[3].value().value_or(std::string_view{}) == "t");
             auto& item = result.emplace(c);
-            item.id(row[0].text())
-                .name(row[1].text())
-                .deviceCode(row[2].text())
-                .canEdit(capabilities.canEdit)
-                .canDelete(capabilities.canDelete)
-                .canShare(capabilities.canShare)
-                .canCommand(capabilities.canCommand)
-                .accessLevel(capabilities.accessLevel);
+            item.set<"id">(row[0].value().value_or(std::string_view{}))
+                .set<"name">(row[1].value().value_or(std::string_view{}))
+                .set<"deviceCode">(row[2].value().value_or(std::string_view{}))
+                .set<"canEdit">(capabilities.canEdit)
+                .set<"canDelete">(capabilities.canDelete)
+                .set<"canShare">(capabilities.canShare)
+                .set<"canCommand">(capabilities.canCommand)
+                .set<"accessLevel">(capabilities.accessLevel);
         }
         co_return result;
     }
@@ -433,29 +433,29 @@ FROM filtered)sql",
         co_await validateRuntimeIdentity(c, body, std::nullopt);
         const auto principal = service::middleware::requireAuth(c);
         const auto id = service::common::nextUuidV7();
-        const std::string name(body.name()->view());
-        const std::string deviceCode(body.deviceCode()->view());
-        const std::string edgeNodeId = str(body.edgeNodeId());
+        const std::string name(body.get<"name">()->view());
+        const std::string deviceCode(body.get<"deviceCode">()->view());
+        const std::string edgeNodeId = str(body.get<"edgeNodeId">());
         const std::string linkId =
-            edgeNodeId.empty() ? str(body.linkId()) : service::common::nextUuidV7();
+            edgeNodeId.empty() ? str(body.get<"linkId">()) : service::common::nextUuidV7();
         const std::string edgeEndpoint = edgeEndpointJson(body);
-        const std::string targetId = str(body.targetId());
-        const std::string protocolConfigId(body.protocolConfigId()->view());
-        const std::string groupId = str(body.groupId());
-        const std::string status = body.status() ? std::string(body.status()->view()) : "enabled";
+        const std::string targetId = str(body.get<"targetId">());
+        const std::string protocolConfigId(body.get<"protocolConfigId">()->view());
+        const std::string groupId = str(body.get<"groupId">());
+        const std::string status = body.get<"status">() ? std::string(body.get<"status">()->view()) : "enabled";
         const std::int64_t onlineTimeout =
-            body.onlineTimeout() ? static_cast<std::int64_t>(*body.onlineTimeout()) : 300;
+            body.get<"onlineTimeout">() ? static_cast<std::int64_t>(*body.get<"onlineTimeout">()) : 300;
         const std::string remoteControl =
-            (!body.remoteControl() || *body.remoteControl()) ? "true" : "false";
-        const std::string modbusMode = str(body.modbusMode());
+            (!body.get<"remoteControl">() || *body.get<"remoteControl">()) ? "true" : "false";
+        const std::string modbusMode = str(body.get<"modbusMode">());
         const std::string slaveId =
-            body.slaveId() ? std::to_string(static_cast<std::int64_t>(*body.slaveId())) : "";
-        const std::string timezone = (body.timezone() && !body.timezone()->view().empty())
-                                         ? std::string(body.timezone()->view())
+            body.get<"slaveId">() ? std::to_string(static_cast<std::int64_t>(*body.get<"slaveId">())) : "";
+        const std::string timezone = (body.get<"timezone">() && !body.get<"timezone">()->view().empty())
+                                         ? std::string(body.get<"timezone">()->view())
                                          : "+08:00";
-        const std::string heartbeat = packetJson(body.heartbeat());
-        const std::string registration = packetJson(body.registration());
-        const std::string remark = str(body.remark());
+        const std::string heartbeat = packetJson(body.get<"heartbeat">());
+        const std::string registration = packetJson(body.get<"registration">());
+        const std::string remark = str(body.get<"remark">());
         // Keep the optional edge-node parameter typed as text through NULLIF. If PostgreSQL
         // infers it as uuid first, the empty-string sentinel is cast to uuid before NULLIF.
         (void)co_await c.db().execute(
@@ -509,14 +509,14 @@ SELECT d.link_id::text, COALESCE(l.edge_node_id::text, ''),
 FROM device d JOIN link l ON l.id = d.link_id
 WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
                                                 service::common::dbParams(id));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(18001, "设备不存在", 404);
-        if (body.linkId() && body.linkId()->view() != rows.rows().front()[0].text())
+        if (body.get<"linkId">() && body.get<"linkId">()->view() != rows.front()[0].value().value_or(std::string_view{}))
             service::common::fail(18003, "设备所属链路不可修改", 409);
-        if (body.edgeNodeId() && body.edgeNodeId()->view() != rows.rows().front()[1].text())
+        if (body.get<"edgeNodeId">() && body.get<"edgeNodeId">()->view() != rows.front()[1].value().value_or(std::string_view{}))
             service::common::fail(18003, "设备所属边缘节点不可修改", 409);
-        if (body.protocolConfigId() &&
-            body.protocolConfigId()->view() != rows.rows().front()[2].text())
+        if (body.get<"protocolConfigId">() &&
+            body.get<"protocolConfigId">()->view() != rows.front()[2].value().value_or(std::string_view{}))
             service::common::fail(18003, "设备类型不可修改", 409);
         co_await validate(c, body, false);
         co_await ensureUnique(c, body, std::string(id));
@@ -530,23 +530,23 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
             params.emplace_back(std::move(value));
             set += std::string(assign) + std::to_string(params.size());
         };
-        if (body.name())
-            raw("name = $", ruvia::DbValue{body.name()->view()});
-        if (body.linkId())
-            raw("link_id = NULLIF($", ruvia::DbValue{body.linkId()->view()}),
+        if (body.get<"name">())
+            raw("name = $", ruvia::DbValue{body.get<"name">()->view()});
+        if (body.get<"linkId">())
+            raw("link_id = NULLIF($", ruvia::DbValue{body.get<"linkId">()->view()}),
                 set += ", '')::uuid";
-        if (body.protocolConfigId())
-            raw("protocol_config_id = $", ruvia::DbValue{body.protocolConfigId()->view()}),
+        if (body.get<"protocolConfigId">())
+            raw("protocol_config_id = $", ruvia::DbValue{body.get<"protocolConfigId">()->view()}),
                 set += "::uuid";
-        if (body.groupId())
-            raw("group_id = NULLIF($", ruvia::DbValue{body.groupId()->view()}),
+        if (body.get<"groupId">())
+            raw("group_id = NULLIF($", ruvia::DbValue{body.get<"groupId">()->view()}),
                 set += ", '')::uuid";
-        if (body.status())
-            raw("status = $", ruvia::DbValue{body.status()->view()});
+        if (body.get<"status">())
+            raw("status = $", ruvia::DbValue{body.get<"status">()->view()});
         std::string edgeEndpointUpdate;
-        if (body.edgeTransport() || body.edgeInterface() || body.edgeMode() || body.edgeIp() ||
-            body.edgePort() || body.serialBaudRate() || body.serialDataBits() ||
-            body.serialStopBits() || body.serialParity() || body.serialRs485()) {
+        if (body.get<"edgeTransport">() || body.get<"edgeInterface">() || body.get<"edgeMode">() || body.get<"edgeIp">() ||
+            body.get<"edgePort">() || body.get<"serialBaudRate">() || body.get<"serialDataBits">() ||
+            body.get<"serialStopBits">() || body.get<"serialParity">() || body.get<"serialRs485">()) {
             edgeEndpointUpdate = edgeEndpointJson(body);
         }
         std::string protocolParams = "protocol_params";
@@ -562,32 +562,32 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
             protocolParams = "jsonb_set(" + protocolParams + ", '{" + std::string(key) + "}', $" +
                              std::to_string(params.size()) + "::jsonb, true)";
         };
-        if (body.deviceCode())
-            jsonValue("device_code", ruvia::DbValue{body.deviceCode()->view()}, "::text");
-        if (body.targetId())
-            jsonValue("target_id", ruvia::DbValue{body.targetId()->view()}, "::text");
-        if (body.onlineTimeout())
+        if (body.get<"deviceCode">())
+            jsonValue("device_code", ruvia::DbValue{body.get<"deviceCode">()->view()}, "::text");
+        if (body.get<"targetId">())
+            jsonValue("target_id", ruvia::DbValue{body.get<"targetId">()->view()}, "::text");
+        if (body.get<"onlineTimeout">())
             jsonValue("online_timeout",
-                      ruvia::DbValue{static_cast<std::int64_t>(*body.onlineTimeout())}, "::bigint");
-        if (body.remoteControl())
+                      ruvia::DbValue{static_cast<std::int64_t>(*body.get<"onlineTimeout">())}, "::bigint");
+        if (body.get<"remoteControl">())
             jsonValue("remote_control",
-                      ruvia::DbValue{std::string_view{*body.remoteControl() ? "true" : "false"}},
+                      ruvia::DbValue{std::string_view{*body.get<"remoteControl">() ? "true" : "false"}},
                       "::boolean");
-        if (body.modbusMode())
-            jsonValue("modbus_mode", ruvia::DbValue{body.modbusMode()->view()}, "::text");
-        if (body.slaveId())
-            jsonValue("slave_id", ruvia::DbValue{static_cast<std::int64_t>(*body.slaveId())},
+        if (body.get<"modbusMode">())
+            jsonValue("modbus_mode", ruvia::DbValue{body.get<"modbusMode">()->view()}, "::text");
+        if (body.get<"slaveId">())
+            jsonValue("slave_id", ruvia::DbValue{static_cast<std::int64_t>(*body.get<"slaveId">())},
                       "::bigint");
-        if (body.timezone())
-            jsonValue("timezone", ruvia::DbValue{body.timezone()->view()}, "::text");
+        if (body.get<"timezone">())
+            jsonValue("timezone", ruvia::DbValue{body.get<"timezone">()->view()}, "::text");
         std::string heartbeat;
-        if (body.heartbeat()) {
-            heartbeat = packetJson(body.heartbeat());
+        if (body.get<"heartbeat">()) {
+            heartbeat = packetJson(body.get<"heartbeat">());
             jsonDocument("heartbeat", heartbeat);
         }
         std::string registration;
-        if (body.registration()) {
-            registration = packetJson(body.registration());
+        if (body.get<"registration">()) {
+            registration = packetJson(body.get<"registration">());
             jsonDocument("registration", registration);
         }
         if (protocolParams != "protocol_params") {
@@ -595,12 +595,12 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
                 set += ", ";
             set += "protocol_params = " + protocolParams;
         }
-        if (body.remark())
-            raw("remark = NULLIF($", ruvia::DbValue{body.remark()->view()}), set += ", '')";
+        if (body.get<"remark">())
+            raw("remark = NULLIF($", ruvia::DbValue{body.get<"remark">()->view()}), set += ", '')";
 
         const bool updateEdgeLink =
-            !rows.rows().front()[1].text().empty() &&
-            (!edgeEndpointUpdate.empty() || body.status());
+            !rows.front()[1].value().value_or(std::string_view{}).empty() &&
+            (!edgeEndpointUpdate.empty() || body.get<"status">());
         if (!set.empty() || updateEdgeLink) {
             auto transaction = co_await c.db().beginTransaction();
             if (!set.empty()) {
@@ -612,7 +612,7 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
             }
             if (updateEdgeLink) {
                 const auto edgeStatus =
-                    body.status() ? std::string(body.status()->view()) : std::string{};
+                    body.get<"status">() ? std::string(body.get<"status">()->view()) : std::string{};
                 (void)co_await transaction.execute(R"sql(
 UPDATE link
 SET endpoint = CASE WHEN NULLIF($1::text, '') IS NULL THEN endpoint
@@ -627,22 +627,22 @@ WHERE id = $3::uuid AND execution = 'edge'
   ))sql",
                                                    service::common::dbParams(
                                                        edgeEndpointUpdate, edgeStatus,
-                                                       rows.rows().front()[0].text()));
+                                                       rows.front()[0].value().value_or(std::string_view{})));
             }
             co_await transaction.commit();
         }
         try {
-            if (body.deviceCode() && body.deviceCode()->view() != rows.rows().front()[3].text())
+            if (body.get<"deviceCode">() && body.get<"deviceCode">()->view() != rows.front()[3].value().value_or(std::string_view{}))
                 co_await service::telemetry::latest::eraseDevice(c.redis(),
-                                                                 rows.rows().front()[3].text());
+                                                                 rows.front()[3].value().value_or(std::string_view{}));
             co_await service::telemetry::latest::projectDevice(c, id);
         } catch (...) {
             // PostgreSQL remains authoritative; startup hydration repairs Redis read models.
         }
         co_await service::message::publishConfigEvent(c, "device", "updated", id);
-        if (!rows.rows().front()[1].text().empty())
+        if (!rows.front()[1].value().value_or(std::string_view{}).empty())
             (void)co_await service::edge::configService().queueSnapshot(
-                c, rows.rows().front()[1].text());
+                c, rows.front()[1].value().value_or(std::string_view{}));
     }
 
     ruvia::Task<void> remove(ruvia::Context& c, std::string_view id) {
@@ -653,29 +653,29 @@ SELECT d.protocol_params->>'device_code', COALESCE(l.edge_node_id::text, ''),
 FROM device d JOIN link l ON l.id = d.link_id
 WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
                                                 service::common::dbParams(id));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(18001, "设备不存在", 404);
         auto transaction = co_await c.db().beginTransaction();
         (void)co_await transaction.execute(
             "UPDATE device SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1",
             service::common::dbParams(id));
-        if (rows.rows().front()[3].text() == "edge") {
+        if (rows.front()[3].value().value_or(std::string_view{}) == "edge") {
             (void)co_await transaction.execute(
                 "UPDATE link SET deleted_at = NOW(), updated_at = NOW() "
                 "WHERE id = $1::uuid AND execution = 'edge'",
-                service::common::dbParams(rows.rows().front()[2].text()));
+                service::common::dbParams(rows.front()[2].value().value_or(std::string_view{})));
         }
         co_await transaction.commit();
         try {
             co_await service::telemetry::latest::eraseDevice(
-                c.redis(), rows.rows().front()[0].text());
+                c.redis(), rows.front()[0].value().value_or(std::string_view{}));
         } catch (...) {
             // The next startup hydration removes stale Redis state for deleted devices.
         }
         co_await service::message::publishConfigEvent(c, "device", "deleted", id);
-        if (!rows.rows().front()[1].text().empty())
+        if (!rows.front()[1].value().value_or(std::string_view{}).empty())
             (void)co_await service::edge::configService().queueSnapshot(
-                c, rows.rows().front()[1].text());
+                c, rows.front()[1].value().value_or(std::string_view{}));
     }
 
     // ===== 设备分组（合并入同一 DeviceService 类）=====
@@ -699,7 +699,7 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
             sql, service::common::dbParams(actor.userId, actor.departmentId,
                                            actor.superadmin ? "true" : "false"));
         ruvia::BoxedArray<DeviceGroupItemDto> result(c.resource());
-        for (const auto& row : rows.rows())
+        for (const auto& row : rows)
             fillGroup(result.emplace(c), row, actor);
         co_return result;
     }
@@ -721,10 +721,10 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
                 "AND device_group.id IN (SELECT id FROM visible_group) LIMIT 1",
             service::common::dbParams(actor.userId, actor.departmentId,
                                       actor.superadmin ? "true" : "false", id));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(17001, "设备分组不存在", 404);
         DeviceGroupItemDto item(c);
-        fillGroup(item, rows.rows().front(), actor);
+        fillGroup(item, rows.front(), actor);
         co_return item;
     }
 
@@ -732,12 +732,12 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
         co_await validateParent(c, body, std::nullopt);
         const auto principal = service::middleware::requireAuth(c);
         const auto id = service::common::nextUuidV7();
-        const std::string name(body.name()->view());
-        const std::string parentId = body.parentId() ? std::string(body.parentId()->view()) : "";
-        const std::string status = body.status() ? std::string(body.status()->view()) : "enabled";
+        const std::string name(body.get<"name">()->view());
+        const std::string parentId = body.get<"parentId">() ? std::string(body.get<"parentId">()->view()) : "";
+        const std::string status = body.get<"status">() ? std::string(body.get<"status">()->view()) : "enabled";
         const std::int64_t sortOrder =
-            body.sortOrder() ? static_cast<std::int64_t>(*body.sortOrder()) : 0;
-        const std::string remark = body.remark() ? std::string(body.remark()->view()) : "";
+            body.get<"sortOrder">() ? static_cast<std::int64_t>(*body.get<"sortOrder">()) : 0;
+        const std::string remark = body.get<"remark">() ? std::string(body.get<"remark">()->view()) : "";
         (void)co_await c.db().execute(
             R"sql(
 INSERT INTO device_group(id, name, parent_id, status, sort_order, remark, created_by)
@@ -751,9 +751,9 @@ VALUES ($1::uuid, $2, NULLIF($3, '')::uuid, $4, $5, NULLIF($6, ''), $7))sql",
         const auto rows = co_await c.db().query(
             "SELECT created_by FROM device_group WHERE id = $1 AND deleted_at IS NULL",
             service::common::dbParams(id));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(17001, "设备分组不存在", 404);
-        co_await requireGroupOwner(c, rows.rows().front()[0].text());
+        co_await requireGroupOwner(c, rows.front()[0].value().value_or(std::string_view{}));
         co_await validateParent(c, body, std::string(id));
 
         std::string set;
@@ -764,22 +764,22 @@ VALUES ($1::uuid, $2, NULLIF($3, '')::uuid, $4, $5, NULLIF($6, ''), $7))sql",
             params.emplace_back(std::move(value));
             set += std::string(column) + " = $" + std::to_string(params.size());
         };
-        if (body.name())
-            assign("name", ruvia::DbValue{body.name()->view()});
-        if (body.parentId()) {
+        if (body.get<"name">())
+            assign("name", ruvia::DbValue{body.get<"name">()->view()});
+        if (body.get<"parentId">()) {
             if (!set.empty())
                 set += ", ";
-            params.emplace_back(ruvia::DbValue{body.parentId()->view()});
+            params.emplace_back(ruvia::DbValue{body.get<"parentId">()->view()});
             set += "parent_id = NULLIF($" + std::to_string(params.size()) + ", '')::uuid";
         }
-        if (body.status())
-            assign("status", ruvia::DbValue{body.status()->view()});
-        if (body.sortOrder())
-            assign("sort_order", ruvia::DbValue{static_cast<std::int64_t>(*body.sortOrder())});
-        if (body.remark()) {
+        if (body.get<"status">())
+            assign("status", ruvia::DbValue{body.get<"status">()->view()});
+        if (body.get<"sortOrder">())
+            assign("sort_order", ruvia::DbValue{static_cast<std::int64_t>(*body.get<"sortOrder">())});
+        if (body.get<"remark">()) {
             if (!set.empty())
                 set += ", ";
-            params.emplace_back(ruvia::DbValue{body.remark()->view()});
+            params.emplace_back(ruvia::DbValue{body.get<"remark">()->view()});
             set += "remark = NULLIF($" + std::to_string(params.size()) + ", '')";
         }
         if (set.empty())
@@ -795,14 +795,14 @@ VALUES ($1::uuid, $2, NULLIF($3, '')::uuid, $4, $5, NULLIF($6, ''), $7))sql",
         const auto rows = co_await c.db().query(
             "SELECT created_by FROM device_group WHERE id = $1 AND deleted_at IS NULL",
             service::common::dbParams(id));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(17001, "设备分组不存在", 404);
-        co_await requireGroupOwner(c, rows.rows().front()[0].text());
+        co_await requireGroupOwner(c, rows.front()[0].value().value_or(std::string_view{}));
         const auto used = co_await c.db().query(R"sql(
 SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS NULL)
     OR EXISTS (SELECT 1 FROM device WHERE group_id = $1 AND deleted_at IS NULL))sql",
                                                 service::common::dbParams(id));
-        if (used.rows().front()[0].text() == "t")
+        if (used.front()[0].value().value_or(std::string_view{}) == "t")
             service::common::fail(17004, "请先移除子分组和设备", 409);
         (void)co_await c.db().execute(
             "UPDATE device_group SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1",
@@ -888,89 +888,89 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
     template <typename Row>
     static void fillItem(ruvia::Context& c, DeviceItemDto& item, Row&& row,
                          const DeviceActor& actor) {
-        item.id(row[0].text()).name(row[1].text()).deviceCode(row[2].text());
-        if (!row[3].isNull())
-            item.linkId(row[3].text());
-        if (!row[4].isNull())
-            item.targetId(row[4].text());
-        item.protocolConfigId(row[5].text());
-        if (!row[6].isNull())
-            item.groupId(row[6].text());
-        item.status(row[7].text())
-            .onlineTimeout(toInt(row[8].text()))
-            .remoteControl(row[9].text() == "t");
-        if (!row[10].isNull())
-            item.modbusMode(row[10].text());
-        if (!row[11].isNull())
-            item.slaveId(toInt(row[11].text()));
-        item.timezone(row[12].text());
+        item.set<"id">(row[0].value().value_or(std::string_view{})).set<"name">(row[1].value().value_or(std::string_view{})).set<"deviceCode">(row[2].value().value_or(std::string_view{}));
+        if (row[3].value().has_value())
+            item.set<"linkId">(row[3].value().value_or(std::string_view{}));
+        if (row[4].value().has_value())
+            item.set<"targetId">(row[4].value().value_or(std::string_view{}));
+        item.set<"protocolConfigId">(row[5].value().value_or(std::string_view{}));
+        if (row[6].value().has_value())
+            item.set<"groupId">(row[6].value().value_or(std::string_view{}));
+        item.set<"status">(row[7].value().value_or(std::string_view{}))
+            .set<"onlineTimeout">(toInt(row[8].value().value_or(std::string_view{})))
+            .set<"remoteControl">(row[9].value().value_or(std::string_view{}) == "t");
+        if (row[10].value().has_value())
+            item.set<"modbusMode">(row[10].value().value_or(std::string_view{}));
+        if (row[11].value().has_value())
+            item.set<"slaveId">(toInt(row[11].value().value_or(std::string_view{})));
+        item.set<"timezone">(row[12].value().value_or(std::string_view{}));
         {
             DevicePacketDto heartbeat(c);
-            if (!row[13].isNull())
-                heartbeat.mode(row[13].text());
-            if (!row[14].isNull())
-                heartbeat.content(row[14].text());
-            item.heartbeat(std::move(heartbeat));
+            if (row[13].value().has_value())
+                heartbeat.set<"mode">(row[13].value().value_or(std::string_view{}));
+            if (row[14].value().has_value())
+                heartbeat.set<"content">(row[14].value().value_or(std::string_view{}));
+            item.set<"heartbeat">(std::move(heartbeat));
         }
         {
             DevicePacketDto registration(c);
-            if (!row[15].isNull())
-                registration.mode(row[15].text());
-            if (!row[16].isNull())
-                registration.content(row[16].text());
-            item.registration(std::move(registration));
+            if (row[15].value().has_value())
+                registration.set<"mode">(row[15].value().value_or(std::string_view{}));
+            if (row[16].value().has_value())
+                registration.set<"content">(row[16].value().value_or(std::string_view{}));
+            item.set<"registration">(std::move(registration));
         }
-        item.remark(row[17].text())
-            .createdBy(row[18].text())
-            .createdAt(row[19].text())
-            .updatedAt(row[20].text())
-            .linkName(row[21].text())
-            .linkMode(row[22].text())
-            .linkProtocol(row[23].text())
-            .protocolName(row[24].text())
-            .protocolType(row[25].text());
-        if (!row[26].isNull()) {
-            if (const auto value = parseDouble(row[26].text()))
-                item.readInterval(*value);
+        item.set<"remark">(row[17].value().value_or(std::string_view{}))
+            .set<"createdBy">(row[18].value().value_or(std::string_view{}))
+            .set<"createdAt">(row[19].value().value_or(std::string_view{}))
+            .set<"updatedAt">(row[20].value().value_or(std::string_view{}))
+            .set<"linkName">(row[21].value().value_or(std::string_view{}))
+            .set<"linkMode">(row[22].value().value_or(std::string_view{}))
+            .set<"linkProtocol">(row[23].value().value_or(std::string_view{}))
+            .set<"protocolName">(row[24].value().value_or(std::string_view{}))
+            .set<"protocolType">(row[25].value().value_or(std::string_view{}));
+        if (row[26].value().has_value()) {
+            if (const auto value = parseDouble(row[26].value().value_or(std::string_view{})))
+                item.set<"readInterval">(*value);
         }
-        if (!row[27].isNull()) {
-            if (const auto value = parseDouble(row[27].text()))
-                item.storageInterval(*value);
+        if (row[27].value().has_value()) {
+            if (const auto value = parseDouble(row[27].value().value_or(std::string_view{})))
+                item.set<"storageInterval">(*value);
         }
         const auto capabilities = DeviceAccessService::capabilities(
-            actor, DeviceAccessService::rank(row[29].text()), row[9].text() == "t");
-        item.elementCount(toInt(row[28].text()))
-            .connected(false)
-            .connectionState("offline")
-            .elements(ruvia::BoxedArray<DeviceElementDto>(c.resource()))
-            .canEdit(capabilities.canEdit)
-            .canDelete(capabilities.canDelete)
-            .canShare(capabilities.canShare)
-            .canCommand(capabilities.canCommand)
-            .accessLevel(capabilities.accessLevel);
-        if (!row[30].isNull()) {
-            item.edgeNodeId(row[30].text()).edgeNodeName(row[31].text()).edgeNodeImei(row[32].text());
+            actor, DeviceAccessService::rank(row[29].value().value_or(std::string_view{})), row[9].value().value_or(std::string_view{}) == "t");
+        item.set<"elementCount">(toInt(row[28].value().value_or(std::string_view{})))
+            .set<"connected">(false)
+            .set<"connectionState">("offline")
+            .set<"elements">(ruvia::BoxedArray<DeviceElementDto>(c.resource()))
+            .set<"canEdit">(capabilities.canEdit)
+            .set<"canDelete">(capabilities.canDelete)
+            .set<"canShare">(capabilities.canShare)
+            .set<"canCommand">(capabilities.canCommand)
+            .set<"accessLevel">(capabilities.accessLevel);
+        if (row[30].value().has_value()) {
+            item.set<"edgeNodeId">(row[30].value().value_or(std::string_view{})).set<"edgeNodeName">(row[31].value().value_or(std::string_view{})).set<"edgeNodeImei">(row[32].value().value_or(std::string_view{}));
         }
-        if (!row[33].isNull())
-            item.edgeTransport(row[33].text());
-        if (!row[34].isNull())
-            item.edgeInterface(row[34].text());
-        if (!row[35].isNull())
-            item.edgeMode(row[35].text());
-        if (!row[36].isNull())
-            item.edgeIp(row[36].text());
-        if (!row[37].isNull())
-            item.edgePort(toInt(row[37].text()));
-        if (!row[38].isNull())
-            item.serialBaudRate(toInt(row[38].text()));
-        if (!row[39].isNull())
-            item.serialDataBits(toInt(row[39].text()));
-        if (!row[40].isNull())
-            item.serialStopBits(toInt(row[40].text()));
-        if (!row[41].isNull())
-            item.serialParity(row[41].text());
-        if (!row[42].isNull())
-            item.serialRs485(row[42].text() == "t");
+        if (row[33].value().has_value())
+            item.set<"edgeTransport">(row[33].value().value_or(std::string_view{}));
+        if (row[34].value().has_value())
+            item.set<"edgeInterface">(row[34].value().value_or(std::string_view{}));
+        if (row[35].value().has_value())
+            item.set<"edgeMode">(row[35].value().value_or(std::string_view{}));
+        if (row[36].value().has_value())
+            item.set<"edgeIp">(row[36].value().value_or(std::string_view{}));
+        if (row[37].value().has_value())
+            item.set<"edgePort">(toInt(row[37].value().value_or(std::string_view{})));
+        if (row[38].value().has_value())
+            item.set<"serialBaudRate">(toInt(row[38].value().value_or(std::string_view{})));
+        if (row[39].value().has_value())
+            item.set<"serialDataBits">(toInt(row[39].value().value_or(std::string_view{})));
+        if (row[40].value().has_value())
+            item.set<"serialStopBits">(toInt(row[40].value().value_or(std::string_view{})));
+        if (row[41].value().has_value())
+            item.set<"serialParity">(row[41].value().value_or(std::string_view{}));
+        if (row[42].value().has_value())
+            item.set<"serialRs485">(row[42].value().value_or(std::string_view{}) == "t");
     }
 
     static ruvia::Task<void>
@@ -987,16 +987,16 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
         bindings.reserve(items.size() * 3);
         for (const auto& [id, item] : items) {
             (void)id;
-            if (!item->deviceCode())
+            if (!item->get<"deviceCode">())
                 continue;
-            pipeline.hgetAll(service::telemetry::latest::runtimeKey(item->deviceCode()->view()));
+            pipeline.hgetAll(service::telemetry::latest::runtimeKey(item->get<"deviceCode">()->view()));
             bindings.push_back({ReplyKind::runtime, item});
-            pipeline.hgetAll(service::telemetry::latest::latestKey(item->deviceCode()->view()));
+            pipeline.hgetAll(service::telemetry::latest::latestKey(item->get<"deviceCode">()->view()));
             bindings.push_back({ReplyKind::latest, item});
-            if (item->edgeNodeId() && item->linkId() && item->edgeTransport() &&
-                item->edgeTransport()->view() == "tcp") {
+            if (item->get<"edgeNodeId">() && item->get<"linkId">() && item->get<"edgeTransport">() &&
+                item->get<"edgeTransport">()->view() == "tcp") {
                 pipeline.hgetAll(
-                    edgeEndpointStatusKey(item->edgeNodeId()->view(), item->linkId()->view()));
+                    edgeEndpointStatusKey(item->get<"edgeNodeId">()->view(), item->get<"linkId">()->view()));
                 bindings.push_back({ReplyKind::endpoint, item});
             }
         }
@@ -1125,42 +1125,42 @@ ORDER BY device_id, operation_position, operation_key, element_position,
             std::vector<ElementData> elements;
         };
         std::map<std::string, std::vector<OperationData>, std::less<>> configured;
-        for (const auto& row : rows.rows()) {
-            const auto deviceId = std::string(row[0].text());
+        for (const auto& row : rows) {
+            const auto deviceId = std::string(row[0].value().value_or(std::string_view{}));
             if (!items.contains(deviceId))
                 continue;
             auto& operations = configured[deviceId];
-            const auto operationKey = std::string(row[1].text());
+            const auto operationKey = std::string(row[1].value().value_or(std::string_view{}));
             auto operation =
                 std::find_if(operations.begin(), operations.end(),
                              [&](const auto& value) { return value.key == operationKey; });
             if (operation == operations.end()) {
-                operations.push_back({operationKey, std::string(row[2].text()), {}});
+                operations.push_back({operationKey, std::string(row[2].value().value_or(std::string_view{})), {}});
                 operation = std::prev(operations.end());
             }
-            const auto elementId = std::string(row[3].text());
+            const auto elementId = std::string(row[3].value().value_or(std::string_view{}));
             auto element = std::find_if(operation->elements.begin(), operation->elements.end(),
                                         [&](const auto& value) { return value.id == elementId; });
             if (element == operation->elements.end()) {
                 ElementData data;
                 data.id = elementId;
-                data.name = std::string(row[4].text());
-                data.unit = std::string(row[5].text());
-                data.registerType = std::string(row[6].text());
-                data.dataType = std::string(row[7].text());
-                if (!row[8].isNull())
-                    data.size = toInt(row[8].text());
-                data.encode = std::string(row[9].text());
-                if (!row[10].isNull())
-                    data.length = toInt(row[10].text());
-                if (!row[11].isNull())
-                    data.digits = toInt(row[11].text());
+                data.name = std::string(row[4].value().value_or(std::string_view{}));
+                data.unit = std::string(row[5].value().value_or(std::string_view{}));
+                data.registerType = std::string(row[6].value().value_or(std::string_view{}));
+                data.dataType = std::string(row[7].value().value_or(std::string_view{}));
+                if (row[8].value().has_value())
+                    data.size = toInt(row[8].value().value_or(std::string_view{}));
+                data.encode = std::string(row[9].value().value_or(std::string_view{}));
+                if (row[10].value().has_value())
+                    data.length = toInt(row[10].value().value_or(std::string_view{}));
+                if (row[11].value().has_value())
+                    data.digits = toInt(row[11].value().value_or(std::string_view{}));
                 operation->elements.push_back(std::move(data));
                 element = std::prev(operation->elements.end());
             }
-            if (!row[12].isNull() && !row[13].isNull())
+            if (row[12].value().has_value() && row[13].value().has_value())
                 element->options.push_back(
-                    {std::string(row[12].text()), std::string(row[13].text())});
+                    {std::string(row[12].value().value_or(std::string_view{})), std::string(row[13].value().value_or(std::string_view{}))});
         }
 
         for (auto& [deviceId, operations] : configured) {
@@ -1170,35 +1170,35 @@ ORDER BY device_id, operation_position, operation_key, element_position,
             ruvia::BoxedArray<DeviceCommandOperationDto> operationDtos(c.resource());
             for (const auto& operation : operations) {
                 auto& operationDto = operationDtos.emplace(c);
-                operationDto.name(operation.name);
+                operationDto.set<"name">(operation.name);
                 ruvia::BoxedArray<DeviceCommandOperationElementDto> elementDtos(c.resource());
                 for (const auto& element : operation.elements) {
                     auto& elementDto = elementDtos.emplace(c);
-                    elementDto.elementId(element.id).name(element.name).value("");
+                    elementDto.set<"elementId">(element.id).set<"name">(element.name).set<"value">("");
                     if (!element.unit.empty())
-                        elementDto.unit(element.unit);
+                        elementDto.set<"unit">(element.unit);
                     if (!element.registerType.empty())
-                        elementDto.registerType(element.registerType);
+                        elementDto.set<"registerType">(element.registerType);
                     if (!element.dataType.empty())
-                        elementDto.dataType(element.dataType);
+                        elementDto.set<"dataType">(element.dataType);
                     if (element.size)
-                        elementDto.size(*element.size);
+                        elementDto.set<"size">(*element.size);
                     if (!element.encode.empty())
-                        elementDto.encode(element.encode);
+                        elementDto.set<"encode">(element.encode);
                     if (element.length)
-                        elementDto.length(*element.length);
+                        elementDto.set<"length">(*element.length);
                     if (element.digits)
-                        elementDto.digits(*element.digits);
+                        elementDto.set<"digits">(*element.digits);
                     if (!element.options.empty()) {
                         ruvia::BoxedArray<DeviceCommandOptionDto> optionDtos(c.resource());
                         for (const auto& option : element.options)
-                            optionDtos.emplace(c).label(option.label).value(option.value);
-                        elementDto.options(std::move(optionDtos));
+                            optionDtos.emplace(c).set<"label">(option.label).set<"value">(option.value);
+                        elementDto.set<"options">(std::move(optionDtos));
                     }
                 }
-                operationDto.elements(std::move(elementDtos));
+                operationDto.set<"elements">(std::move(elementDtos));
             }
-            item->second->commandOperations(std::move(operationDtos));
+            item->second->set<"commandOperations">(std::move(operationDtos));
         }
     }
 
@@ -1264,11 +1264,11 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         if (!reportTime.empty()) {
             const auto milliseconds = toInt(reportTime);
             if (milliseconds > 0)
-                item.reportTime(service::common::utcTimestampFromMilliseconds(milliseconds));
+                item.set<"reportTime">(service::common::utcTimestampFromMilliseconds(milliseconds));
         }
         const auto state = redisHashField(reply, "state");
         const bool online = state == "online";
-        item.connected(online).connectionState(online ? "online" : "offline");
+        item.set<"connected">(online).set<"connectionState">(online ? "online" : "offline");
     }
 
     static void applyEdgeRuntime(ruvia::Context& c, DeviceItemDto& item,
@@ -1277,21 +1277,21 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         if (state.empty())
             return;
         EdgeStatusDto status(c);
-        status.state(state);
+        status.set<"state">(state);
         const auto reason = redisHashField(reply, "reason");
         if (!reason.empty())
-            status.reason(reason);
+            status.set<"reason">(reason);
         const auto clientCount = redisHashField(reply, "client_count");
         if (!clientCount.empty())
-            status.clientCount(toInt(clientCount));
+            status.set<"clientCount">(toInt(clientCount));
         const auto lastActivity = redisHashField(reply, "last_activity_at_ms");
         if (!lastActivity.empty()) {
             const auto milliseconds = toInt(lastActivity);
             if (milliseconds > 0)
-                status.lastActivityAt(
+                status.set<"lastActivityAt">(
                     service::common::utcTimestampFromMilliseconds(milliseconds));
         }
-        item.edgeStatus(std::move(status));
+        item.set<"edgeStatus">(std::move(status));
     }
 
     struct LatestElement final {
@@ -1372,21 +1372,21 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         std::int64_t reportTime = 0;
         for (const auto& element : elements) {
             auto& dto = dtos.emplace(c);
-            dto.id(element.id)
-                .name(element.name)
-                .value(element.value)
-                .unit(element.unit)
-                .scale(element.scale)
-                .decimals(element.decimals);
+            dto.set<"id">(element.id)
+                .set<"name">(element.name)
+                .set<"value">(element.value)
+                .set<"unit">(element.unit)
+                .set<"scale">(element.scale)
+                .set<"decimals">(element.decimals);
             if (!element.group.empty())
-                dto.group(element.group);
+                dto.set<"group">(element.group);
             if (!element.encode.empty())
-                dto.encode(element.encode);
+                dto.set<"encode">(element.encode);
             reportTime = std::max(reportTime, element.observedAt);
         }
-        item.elements(std::move(dtos));
-        if (reportTime > 0 && !item.reportTime())
-            item.reportTime(service::common::utcTimestampFromMilliseconds(reportTime));
+        item.set<"elements">(std::move(dtos));
+        if (reportTime > 0 && !item.get<"reportTime">())
+            item.set<"reportTime">(service::common::utcTimestampFromMilliseconds(reportTime));
     }
 
     static std::string str(const std::optional<ruvia::String>& value) {
@@ -1431,17 +1431,17 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         if (!packet)
             return "";
         std::string out = "{\"mode\":";
-        appendJsonString(out, packet->mode() ? packet->mode()->view() : std::string_view("OFF"));
-        if (packet->content()) {
+        appendJsonString(out, packet->get<"mode">() ? packet->get<"mode">()->view() : std::string_view("OFF"));
+        if (packet->get<"content">()) {
             out += ",\"content\":";
-            appendJsonString(out, packet->content()->view());
+            appendJsonString(out, packet->get<"content">()->view());
         }
         out.push_back('}');
         return out;
     }
 
     static std::string edgeEndpointJson(const SaveDeviceBody& body) {
-        if (!body.edgeNodeId() || body.edgeNodeId()->view().empty())
+        if (!body.get<"edgeNodeId">() || body.get<"edgeNodeId">()->view().empty())
             return "";
         const auto quoted = [](std::string& out, std::string_view key,
                                std::string_view value, bool& first) {
@@ -1464,35 +1464,35 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         std::string out{"{"};
         bool first = true;
         quoted(out, "transport",
-               body.edgeTransport() ? body.edgeTransport()->view() : std::string_view{}, first);
+               body.get<"edgeTransport">() ? body.get<"edgeTransport">()->view() : std::string_view{}, first);
         quoted(out, "interface",
-               body.edgeInterface() ? body.edgeInterface()->view() : std::string_view{}, first);
-        if (body.edgeTransport() && body.edgeTransport()->view() == "serial") {
-            integer(out, "baud_rate", body.serialBaudRate()
-                                          ? static_cast<std::int64_t>(*body.serialBaudRate())
+               body.get<"edgeInterface">() ? body.get<"edgeInterface">()->view() : std::string_view{}, first);
+        if (body.get<"edgeTransport">() && body.get<"edgeTransport">()->view() == "serial") {
+            integer(out, "baud_rate", body.get<"serialBaudRate">()
+                                          ? static_cast<std::int64_t>(*body.get<"serialBaudRate">())
                                           : 9600,
                     first);
-            integer(out, "data_bits", body.serialDataBits()
-                                         ? static_cast<std::int64_t>(*body.serialDataBits())
+            integer(out, "data_bits", body.get<"serialDataBits">()
+                                         ? static_cast<std::int64_t>(*body.get<"serialDataBits">())
                                          : 8,
                     first);
-            integer(out, "stop_bits", body.serialStopBits()
-                                         ? static_cast<std::int64_t>(*body.serialStopBits())
+            integer(out, "stop_bits", body.get<"serialStopBits">()
+                                         ? static_cast<std::int64_t>(*body.get<"serialStopBits">())
                                          : 1,
                     first);
             quoted(out, "parity",
-                   body.serialParity() ? body.serialParity()->view() : std::string_view("none"),
+                   body.get<"serialParity">() ? body.get<"serialParity">()->view() : std::string_view("none"),
                    first);
             if (!first)
                 out.push_back(',');
             appendJsonString(out, "rs485");
-            out += body.serialRs485() && *body.serialRs485() ? ":true" : ":false";
+            out += body.get<"serialRs485">() && *body.get<"serialRs485">() ? ":true" : ":false";
         } else {
-            quoted(out, "mode", body.edgeMode() ? body.edgeMode()->view() : std::string_view{},
+            quoted(out, "mode", body.get<"edgeMode">() ? body.get<"edgeMode">()->view() : std::string_view{},
                    first);
-            quoted(out, "ip", body.edgeIp() ? body.edgeIp()->view() : std::string_view{}, first);
+            quoted(out, "ip", body.get<"edgeIp">() ? body.get<"edgeIp">()->view() : std::string_view{}, first);
             integer(out, "port",
-                    body.edgePort() ? static_cast<std::int64_t>(*body.edgePort()) : 0, first);
+                    body.get<"edgePort">() ? static_cast<std::int64_t>(*body.get<"edgePort">()) : 0, first);
         }
         out.push_back('}');
         return out;
@@ -1503,13 +1503,13 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         if (!packet)
             return;
         const std::string_view mode =
-            packet->mode() ? packet->mode()->view() : std::string_view("OFF");
+            packet->get<"mode">() ? packet->get<"mode">()->view() : std::string_view("OFF");
         if (mode != "OFF" && mode != "HEX" && mode != "ASCII")
             service::common::fail(18002, "设备参数无效", 400);
         if (mode == "OFF")
             return;
         const std::string_view content =
-            packet->content() ? packet->content()->view() : std::string_view{};
+            packet->get<"content">() ? packet->get<"content">()->view() : std::string_view{};
         if (content.empty())
             service::common::fail(18002, "设备参数无效", 400);
         if (mode == "ASCII" && content.size() > 256)
@@ -1532,11 +1532,11 @@ ORDER BY device_id, operation_position, operation_key, element_position,
     // 扁平字段（必填/长度/枚举/范围/UUID/timezone）由声明式校验器保证；
     // 此处只做跨字段、依赖 DB 与协议相关的校验（保留 18002/18003 域码）。
     ruvia::Task<void> validate(ruvia::Context& c, const SaveDeviceBody& body, bool required) {
-        validatePacket(body.heartbeat());
-        validatePacket(body.registration());
-        const auto linkId = str(body.linkId());
-        const auto edgeNodeId = str(body.edgeNodeId());
-        const auto configId = str(body.protocolConfigId());
+        validatePacket(body.get<"heartbeat">());
+        validatePacket(body.get<"registration">());
+        const auto linkId = str(body.get<"linkId">());
+        const auto edgeNodeId = str(body.get<"edgeNodeId">());
+        const auto configId = str(body.get<"protocolConfigId">());
         if (!linkId.empty() && !edgeNodeId.empty())
             service::common::fail(18003, "本地链路和边缘节点只能选择一个", 400);
         if (required && linkId.empty() && edgeNodeId.empty())
@@ -1544,7 +1544,7 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         if (required && configId.empty())
             service::common::fail(18003, "请选择设备类型", 400);
 
-        const auto& code = body.deviceCode();
+        const auto& code = body.get<"deviceCode">();
         if (code) {
             if (code->view().empty() || code->view().size() > 100)
                 service::common::fail(18002, "设备编码长度必须在 1 - 100 之间", 400);
@@ -1552,11 +1552,11 @@ ORDER BY device_id, operation_position, operation_key, element_position,
                 if (!std::isalnum(static_cast<unsigned char>(character)))
                     service::common::fail(18002, "设备编码只能包含字母和数字", 400);
         }
-        if (body.groupId() && !body.groupId()->view().empty()) {
+        if (body.get<"groupId">() && !body.get<"groupId">()->view().empty()) {
             const auto group = co_await c.db().query(
                 "SELECT 1 FROM device_group WHERE id = $1 AND deleted_at IS NULL",
-                service::common::dbParams(body.groupId()->view()));
-            if (group.rows().empty())
+                service::common::dbParams(body.get<"groupId">()->view()));
+            if (group.empty())
                 service::common::fail(18003, "设备分组不存在", 400);
         }
         if (configId.empty() || (linkId.empty() && edgeNodeId.empty()))
@@ -1575,9 +1575,9 @@ WHERE n.id = $1::uuid AND n.enrollment_status = 'approved'
   AND p.id = $2::uuid AND p.deleted_at IS NULL LIMIT 1)sql",
                                                         service::common::dbParams(edgeNodeId,
                                                                                   configId));
-            if (relation.rows().empty())
+            if (relation.empty())
                 service::common::fail(18003, "边缘节点未批准或设备类型不存在", 400);
-            configProtocol = std::string(relation.rows().front()[0].text());
+            configProtocol = std::string(relation.front()[0].value().value_or(std::string_view{}));
             if (configProtocol != "Modbus" && configProtocol != "S7" &&
                 configProtocol != "SL651")
                 service::common::fail(18003, "边缘采集协议不受支持", 400);
@@ -1589,15 +1589,15 @@ FROM link l CROSS JOIN protocol_config p
 WHERE l.id = $1 AND l.deleted_at IS NULL AND l.execution = 'collector'
   AND p.id = $2 AND p.deleted_at IS NULL LIMIT 1)sql",
                                                       service::common::dbParams(linkId, configId));
-            if (relation.rows().empty())
+            if (relation.empty())
                 service::common::fail(18003, "链路或设备类型不存在", 400);
-            const std::string linkProtocol(relation.rows().front()[0].text());
-            configProtocol = std::string(relation.rows().front()[2].text());
+            const std::string linkProtocol(relation.front()[0].value().value_or(std::string_view{}));
+            configProtocol = std::string(relation.front()[2].value().value_or(std::string_view{}));
             if (linkProtocol != configProtocol)
                 service::common::fail(18003, "链路协议与设备类型不一致", 409);
         }
         if (configProtocol == "SL651" &&
-            (packetEnabled(body.heartbeat()) || packetEnabled(body.registration())))
+            (packetEnabled(body.get<"heartbeat">()) || packetEnabled(body.get<"registration">())))
             service::common::fail(18002, "SL651 设备不支持配置注册包或心跳包", 400);
         if (configProtocol == "SL651" && code) {
             if (code->view().size() > 10)
@@ -1609,7 +1609,7 @@ WHERE l.id = $1 AND l.deleted_at IS NULL AND l.execution = 'collector'
     }
 
     static bool packetEnabled(const std::optional<DevicePacketBody>& packet) {
-        return packet && packet->mode() && packet->mode()->view() != "OFF";
+        return packet && packet->get<"mode">() && packet->get<"mode">()->view() != "OFF";
     }
 
     static bool ipv4(std::string_view input) {
@@ -1635,8 +1635,8 @@ WHERE l.id = $1 AND l.deleted_at IS NULL AND l.execution = 'collector'
                                                   const SaveDeviceBody& body,
                                                   std::string_view nodeId,
                                                   std::string_view protocol) {
-        const auto transport = str(body.edgeTransport());
-        const auto interfaceName = str(body.edgeInterface());
+        const auto transport = str(body.get<"edgeTransport">());
+        const auto interfaceName = str(body.get<"edgeInterface">());
         if (transport != "serial" && transport != "tcp")
             service::common::fail(18003, "请选择边缘节点的串口或网口", 400);
         if (interfaceName.empty())
@@ -1651,9 +1651,9 @@ SELECT available FROM edge_node_serial
 WHERE node_id = $1::uuid AND path = $2 LIMIT 1)sql",
                                                       service::common::dbParams(nodeId,
                                                                                 interfaceName));
-            if (serial.rows().empty() || serial.rows().front()[0].text() != "t")
+            if (serial.empty() || serial.front()[0].value().value_or(std::string_view{}) != "t")
                 service::common::fail(18003, "所选串口不存在或当前不可用", 409);
-            if (packetEnabled(body.heartbeat()) || packetEnabled(body.registration()))
+            if (packetEnabled(body.get<"heartbeat">()) || packetEnabled(body.get<"registration">()))
                 service::common::fail(18002, "串口设备不支持注册包或心跳包", 400);
             co_return;
         }
@@ -1664,12 +1664,12 @@ WHERE node_id = $1::uuid AND name = $2 AND COALESCE(ipv4, '') <> ''
 LIMIT 1)sql",
                                                    service::common::dbParams(nodeId,
                                                                              interfaceName));
-        if (network.rows().empty())
+        if (network.empty())
             service::common::fail(18003, "所选网口不存在、未上报 IPv4 或属于受保护上联", 409);
-        const auto interfaceIp = network.rows().front()[0].text();
-        const auto mode = str(body.edgeMode());
-        const auto ip = str(body.edgeIp());
-        if ((mode != "TCP Client" && mode != "TCP Server") || !body.edgePort() || !ipv4(ip))
+        const auto interfaceIp = network.front()[0].value().value_or(std::string_view{});
+        const auto mode = str(body.get<"edgeMode">());
+        const auto ip = str(body.get<"edgeIp">());
+        if ((mode != "TCP Client" && mode != "TCP Server") || !body.get<"edgePort">() || !ipv4(ip))
             service::common::fail(18003, "边缘 TCP 模式、IPv4 或端口无效", 400);
         if (protocol == "S7" && mode != "TCP Client")
             service::common::fail(18003, "S7 仅支持边缘节点主动连接 PLC", 400);
@@ -1678,7 +1678,7 @@ LIMIT 1)sql",
         if (mode == "TCP Server") {
             if (ip != "0.0.0.0" && ip != interfaceIp)
                 service::common::fail(18003, "TCP Server 监听地址必须是所选网口地址", 400);
-        } else if (packetEnabled(body.heartbeat()) || packetEnabled(body.registration())) {
+        } else if (packetEnabled(body.get<"heartbeat">()) || packetEnabled(body.get<"registration">())) {
             service::common::fail(18002, "仅 TCP Server 设备支持注册包或心跳包", 400);
         }
     }
@@ -1686,32 +1686,32 @@ LIMIT 1)sql",
     ruvia::Task<void> validateEdgeRuntimeIdentity(ruvia::Context& c,
                                                    const SaveDeviceBody& body,
                                                    std::optional<std::string> excludedId) {
-        if (!body.edgeNodeId() || body.edgeNodeId()->view().empty())
+        if (!body.get<"edgeNodeId">() || body.get<"edgeNodeId">()->view().empty())
             co_return;
-        const auto transport = str(body.edgeTransport());
-        const auto interfaceName = str(body.edgeInterface());
-        const auto mode = str(body.edgeMode());
-        const auto ip = str(body.edgeIp());
-        const auto port = body.edgePort() ? static_cast<std::int64_t>(*body.edgePort()) : 0;
-        const auto slaveId = body.slaveId() ? static_cast<std::int64_t>(*body.slaveId()) : 1;
+        const auto transport = str(body.get<"edgeTransport">());
+        const auto interfaceName = str(body.get<"edgeInterface">());
+        const auto mode = str(body.get<"edgeMode">());
+        const auto ip = str(body.get<"edgeIp">());
+        const auto port = body.get<"edgePort">() ? static_cast<std::int64_t>(*body.get<"edgePort">()) : 0;
+        const auto slaveId = body.get<"slaveId">() ? static_cast<std::int64_t>(*body.get<"slaveId">()) : 1;
         const auto excluded = excludedId.value_or(std::string(kNilUuid));
         std::string protocol;
-        if (body.protocolConfigId() && !body.protocolConfigId()->view().empty()) {
+        if (body.get<"protocolConfigId">() && !body.get<"protocolConfigId">()->view().empty()) {
             const auto protocolRows = co_await c.db().query(
                 "SELECT protocol FROM protocol_config WHERE id = $1::uuid AND deleted_at IS NULL",
-                service::common::dbParams(body.protocolConfigId()->view()));
-            if (protocolRows.rows().empty())
+                service::common::dbParams(body.get<"protocolConfigId">()->view()));
+            if (protocolRows.empty())
                 co_return;
-            protocol = std::string(protocolRows.rows().front()[0].text());
+            protocol = std::string(protocolRows.front()[0].value().value_or(std::string_view{}));
         } else if (excludedId) {
             const auto protocolRows = co_await c.db().query(R"sql(
 SELECT p.protocol
 FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id AND p.deleted_at IS NULL
 WHERE d.id = $1::uuid AND d.deleted_at IS NULL LIMIT 1)sql",
                                                             service::common::dbParams(excluded));
-            if (protocolRows.rows().empty())
+            if (protocolRows.empty())
                 co_return;
-            protocol = std::string(protocolRows.rows().front()[0].text());
+            protocol = std::string(protocolRows.front()[0].value().value_or(std::string_view{}));
         } else {
             co_return;
         }
@@ -1726,12 +1726,12 @@ WHERE l.edge_node_id = $1::uuid AND d.id <> $2::uuid AND d.deleted_at IS NULL
   AND l.endpoint->>'interface' = $3
 ORDER BY d.id LIMIT 1)sql",
                                                     service::common::dbParams(
-                                                        body.edgeNodeId()->view(), excluded,
+                                                        body.get<"edgeNodeId">()->view(), excluded,
                                                         interfaceName));
-            if (!rows.rows().empty())
+            if (!rows.empty())
                 service::common::fail(
                     18006,
-                    "边缘串口已被设备占用，冲突设备: " + std::string(rows.rows().front()[0].text()),
+                    "边缘串口已被设备占用，冲突设备: " + std::string(rows.front()[0].value().value_or(std::string_view{})),
                     409);
             co_return;
         }
@@ -1757,13 +1757,13 @@ WHERE l.edge_node_id = $1::uuid AND d.id <> $2::uuid AND d.deleted_at IS NULL
   )
 ORDER BY d.id LIMIT 1)sql",
                                                     service::common::dbParams(
-                                                        body.edgeNodeId()->view(), excluded, port,
+                                                        body.get<"edgeNodeId">()->view(), excluded, port,
                                                         ip));
-            if (!rows.rows().empty())
+            if (!rows.empty())
                 service::common::fail(
                     18006,
                     "边缘 TCP Server 监听地址端口冲突，冲突设备: " +
-                        std::string(rows.rows().front()[0].text()),
+                        std::string(rows.front()[0].value().value_or(std::string_view{})),
                     409);
             co_return;
         }
@@ -1789,16 +1789,16 @@ WHERE l.edge_node_id = $1::uuid AND d.id <> $2::uuid AND d.deleted_at IS NULL
              THEN NULLIF(l.endpoint->>'port', '')::integer END, 0) = $5
 ORDER BY d.id)sql",
                                                 service::common::dbParams(
-                                                    body.edgeNodeId()->view(), excluded, protocol,
+                                                    body.get<"edgeNodeId">()->view(), excluded, protocol,
                                                     ip, port));
-        for (const auto& row : rows.rows()) {
-            const std::string name(row[0].text());
+        for (const auto& row : rows) {
+            const std::string name(row[0].value().value_or(std::string_view{}));
             if (protocol == "S7")
                 service::common::fail(18006,
                                       "边缘 S7 TCP Client 同一目标只能关联一个设备，冲突设备: " +
                                           name,
                                       409);
-            if (toInt(row[1].text()) == slaveId)
+            if (toInt(row[1].value().value_or(std::string_view{})) == slaveId)
                 service::common::fail(
                     18006,
                     "边缘 Modbus TCP Client 同一目标下 Slave ID 重复，冲突设备: " + name,
@@ -1808,18 +1808,18 @@ ORDER BY d.id)sql",
 
     ruvia::Task<void> validateRuntimeIdentity(ruvia::Context& c, const SaveDeviceBody& body,
                                               std::optional<std::string> excludedId) {
-        if (body.edgeNodeId() && !body.edgeNodeId()->view().empty()) {
+        if (body.get<"edgeNodeId">() && !body.get<"edgeNodeId">()->view().empty()) {
             co_await validateEdgeRuntimeIdentity(c, body, excludedId);
             co_return;
         }
         const std::string excluded = excludedId.value_or(std::string(kNilUuid));
-        const std::string inLinkId = str(body.linkId());
-        const std::string inTargetId = str(body.targetId());
-        const std::string inConfigId = str(body.protocolConfigId());
+        const std::string inLinkId = str(body.get<"linkId">());
+        const std::string inTargetId = str(body.get<"targetId">());
+        const std::string inConfigId = str(body.get<"protocolConfigId">());
         const std::string inSlaveId =
-            body.slaveId() ? std::to_string(static_cast<std::int64_t>(*body.slaveId())) : "";
-        const std::string inRegistration = packetJson(body.registration());
-        const std::string inHeartbeat = packetJson(body.heartbeat());
+            body.get<"slaveId">() ? std::to_string(static_cast<std::int64_t>(*body.get<"slaveId">())) : "";
+        const std::string inRegistration = packetJson(body.get<"registration">());
+        const std::string inHeartbeat = packetJson(body.get<"heartbeat">());
         const auto candidate = co_await c.db().query(
             R"sql(
 WITH current_device AS (
@@ -1861,18 +1861,18 @@ JOIN protocol_config protocol
 LIMIT 1)sql",
             service::common::dbParams(inLinkId, excluded, inTargetId, inConfigId, inSlaveId,
                                       inRegistration, inHeartbeat));
-        if (candidate.rows().empty())
+        if (candidate.empty())
             co_return;
 
-        const auto& current = candidate.rows().front();
-        const std::string linkId(current[0].text());
-        const std::string linkMode(current[1].text());
-        const std::string protocol(current[2].text());
-        const std::string targetId(current[3].text());
-        const auto slaveId = toInt(current[4].text());
-        const std::string registrationMode(current[5].text());
-        const std::string registrationKey(current[6].text());
-        const std::string heartbeatMode(current[7].text());
+        const auto& current = candidate.front();
+        const std::string linkId(current[0].value().value_or(std::string_view{}));
+        const std::string linkMode(current[1].value().value_or(std::string_view{}));
+        const std::string protocol(current[2].value().value_or(std::string_view{}));
+        const std::string targetId(current[3].value().value_or(std::string_view{}));
+        const auto slaveId = toInt(current[4].value().value_or(std::string_view{}));
+        const std::string registrationMode(current[5].value().value_or(std::string_view{}));
+        const std::string registrationKey(current[6].value().value_or(std::string_view{}));
+        const std::string heartbeatMode(current[7].value().value_or(std::string_view{}));
         if (linkMode != "TCP Server" || protocol == "SL651") {
             if (registrationMode != "OFF" || heartbeatMode != "OFF")
                 service::common::fail(18002,
@@ -1909,14 +1909,14 @@ ORDER BY device.id)sql",
         if (linkMode == "TCP Client") {
             if (targetId.empty())
                 co_return;
-            for (const auto& sibling : siblings.rows()) {
-                if (sibling[2].text() != targetId)
+            for (const auto& sibling : siblings) {
+                if (sibling[2].value().value_or(std::string_view{}) != targetId)
                     continue;
-                const std::string name(sibling[0].text());
+                const std::string name(sibling[0].value().value_or(std::string_view{}));
                 if (protocol == "S7")
                     service::common::fail(
                         18006, "S7 同一目标地址只能关联一个设备，冲突设备: " + name, 409);
-                if (toInt(sibling[1].text()) == slaveId)
+                if (toInt(sibling[1].value().value_or(std::string_view{})) == slaveId)
                     service::common::fail(
                         18006, "Modbus 同一目标地址下 Slave ID 重复，冲突设备: " + name, 409);
             }
@@ -1925,16 +1925,16 @@ ORDER BY device.id)sql",
         if (linkMode != "TCP Server")
             co_return;
 
-        if (protocol == "Modbus" && !siblings.rows().empty()) {
+        if (protocol == "Modbus" && !siblings.empty()) {
             if (registrationMode == "OFF")
                 service::common::fail(18006, "Modbus TCP Server 链路存在多个设备时必须配置注册包",
                                       409);
-            for (const auto& sibling : siblings.rows()) {
-                const std::string name(sibling[0].text());
-                if (sibling[3].text() == "OFF")
+            for (const auto& sibling : siblings) {
+                const std::string name(sibling[0].value().value_or(std::string_view{}));
+                if (sibling[3].value().value_or(std::string_view{}) == "OFF")
                     service::common::fail(
                         18006, "Modbus TCP Server 链路存在未配置注册包的设备: " + name, 409);
-                if (sibling[4].text() == registrationKey && toInt(sibling[1].text()) == slaveId)
+                if (sibling[4].value().value_or(std::string_view{}) == registrationKey && toInt(sibling[1].value().value_or(std::string_view{})) == slaveId)
                     service::common::fail(
                         18006, "Modbus 同一链路和注册码下 Slave ID 重复，冲突设备: " + name, 409);
             }
@@ -1942,19 +1942,19 @@ ORDER BY device.id)sql",
         }
 
         if (protocol == "S7") {
-            for (const auto& sibling : siblings.rows())
-                if (sibling[4].text() == registrationKey)
+            for (const auto& sibling : siblings)
+                if (sibling[4].value().value_or(std::string_view{}) == registrationKey)
                     service::common::fail(18006,
                                           "S7 TCP Server 同一链路下注册码重复，冲突设备: " +
-                                              std::string(sibling[0].text()),
+                                              std::string(sibling[0].value().value_or(std::string_view{})),
                                           409);
         }
     }
 
     ruvia::Task<void> ensureUnique(ruvia::Context& c, const SaveDeviceBody& body,
                                    std::optional<std::string> excludedId) {
-        const auto& name = body.name();
-        const auto& code = body.deviceCode();
+        const auto& name = body.get<"name">();
+        const auto& code = body.get<"deviceCode">();
         if (!name && !code)
             co_return;
         const std::string nameValue = str(name);
@@ -1968,7 +1968,7 @@ WHERE deleted_at IS NULL AND id <> $1::uuid
        OR ($3 <> '' AND protocol_params->>'device_code' = $3)) LIMIT 1)sql",
             service::common::dbParams(excluded, std::string_view(nameValue),
                                       std::string_view(codeValue)));
-        if (!rows.rows().empty())
+        if (!rows.empty())
             service::common::fail(18004, "设备名称或编码已存在", 409);
     }
 
@@ -1976,21 +1976,21 @@ WHERE deleted_at IS NULL AND id <> $1::uuid
 
     template <typename Row>
     static void fillGroup(DeviceGroupItemDto& item, const Row& row, const DeviceActor& actor) {
-        item.id(row[0].text())
-            .name(row[1].text())
-            .parentId(row[2].text())
-            .status(row[3].text())
-            .sortOrder(toInt(row[4].text()))
-            .remark(row[5].text())
-            .deviceCount(toInt(row[6].text()))
-            .createdAt(row[7].text())
-            .updatedAt(row[8].text())
-            .canShare(actor.canGroupShare && (actor.superadmin || row[9].text() == actor.userId));
+        item.set<"id">(row[0].value().value_or(std::string_view{}))
+            .set<"name">(row[1].value().value_or(std::string_view{}))
+            .set<"parentId">(row[2].value().value_or(std::string_view{}))
+            .set<"status">(row[3].value().value_or(std::string_view{}))
+            .set<"sortOrder">(toInt(row[4].value().value_or(std::string_view{})))
+            .set<"remark">(row[5].value().value_or(std::string_view{}))
+            .set<"deviceCount">(toInt(row[6].value().value_or(std::string_view{})))
+            .set<"createdAt">(row[7].value().value_or(std::string_view{}))
+            .set<"updatedAt">(row[8].value().value_or(std::string_view{}))
+            .set<"canShare">(actor.canGroupShare && (actor.superadmin || row[9].value().value_or(std::string_view{}) == actor.userId));
     }
 
     ruvia::Task<void> validateParent(ruvia::Context& c, const SaveDeviceGroupBody& body,
                                      std::optional<std::string> currentId) {
-        const auto& parent = body.parentId();
+        const auto& parent = body.get<"parentId">();
         if (!parent || parent->view().empty())
             co_return;
         if (!service::common::isUuid(parent->view()))
@@ -2000,7 +2000,7 @@ WHERE deleted_at IS NULL AND id <> $1::uuid
         const auto exists =
             co_await c.db().query("SELECT 1 FROM device_group WHERE id = $1 AND deleted_at IS NULL",
                                   service::common::dbParams(parent->view()));
-        if (exists.rows().empty())
+        if (exists.empty())
             service::common::fail(17003, "上级分组不存在", 400);
     }
 
@@ -2013,7 +2013,7 @@ SELECT EXISTS (SELECT 1 FROM sys_user_role ur JOIN sys_role r ON r.id = ur.role_
 WHERE ur.user_id = $1 AND r.code = 'superadmin' AND r.status = 'enabled'
 AND r.deleted_at IS NULL))sql",
                                                 service::common::dbParams(principal.userId));
-        if (rows.rows().front()[0].text() != "t")
+        if (rows.front()[0].value().value_or(std::string_view{}) != "t")
             service::common::fail(17005, "只能管理自己创建的设备分组", 403);
     }
 
@@ -2076,19 +2076,19 @@ LEFT JOIN sys_department inherited_department
 ORDER BY 2, 4, 9, 1)sql",
                                                 service::common::dbParams(deviceId));
         ruvia::BoxedArray<DeviceShareItemDto> result(c.resource());
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             auto& item = result.emplace(c);
-            item.id(row[0].text())
-                .subjectType(row[1].text())
-                .subjectId(row[2].text())
-                .subjectName(row[3].text())
-                .accessLevel(row[4].text())
-                .sourceType(row[5].text())
-                .sourceGroupId(row[6].text())
-                .sourceGroupName(row[7].text())
-                .inherited(row[8].text() == "t")
-                .createdAt(row[9].text())
-                .updatedAt(row[10].text());
+            item.set<"id">(row[0].value().value_or(std::string_view{}))
+                .set<"subjectType">(row[1].value().value_or(std::string_view{}))
+                .set<"subjectId">(row[2].value().value_or(std::string_view{}))
+                .set<"subjectName">(row[3].value().value_or(std::string_view{}))
+                .set<"accessLevel">(row[4].value().value_or(std::string_view{}))
+                .set<"sourceType">(row[5].value().value_or(std::string_view{}))
+                .set<"sourceGroupId">(row[6].value().value_or(std::string_view{}))
+                .set<"sourceGroupName">(row[7].value().value_or(std::string_view{}))
+                .set<"inherited">(row[8].value().value_or(std::string_view{}) == "t")
+                .set<"createdAt">(row[9].value().value_or(std::string_view{}))
+                .set<"updatedAt">(row[10].value().value_or(std::string_view{}));
         }
         co_return result;
     }
@@ -2109,9 +2109,9 @@ WHERE department.status = 'enabled' AND department.deleted_at IS NULL
 ORDER BY 1, 3, 2)sql",
                                                 service::common::dbParams(deviceId));
         ruvia::BoxedArray<DeviceShareTargetDto> result(c.resource());
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             auto& item = result.emplace(c);
-            item.subjectType(row[0].text()).subjectId(row[1].text()).subjectName(row[2].text());
+            item.set<"subjectType">(row[0].value().value_or(std::string_view{})).set<"subjectId">(row[1].value().value_or(std::string_view{})).set<"subjectName">(row[2].value().value_or(std::string_view{}));
         }
         co_return result;
     }
@@ -2126,9 +2126,9 @@ ORDER BY 1, 3, 2)sql",
         const auto deviceRows = co_await transaction.query(
             "SELECT created_by::text FROM device WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
             service::common::dbParams(deviceId));
-        if (deviceRows.rows().empty())
+        if (deviceRows.empty())
             service::common::fail(18001, "设备不存在", 404);
-        const std::string ownerId(deviceRows.rows().front()[0].text());
+        const std::string ownerId(deviceRows.front()[0].value().value_or(std::string_view{}));
 
         co_await validateTargets(transaction, shares, ownerId);
 
@@ -2182,19 +2182,19 @@ WHERE access_grant.group_id = $1
 ORDER BY 2, 4, access_grant.id)sql",
                                                 service::common::dbParams(groupId));
         ruvia::BoxedArray<DeviceShareItemDto> result(c.resource());
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             auto& item = result.emplace(c);
-            item.id(row[0].text())
-                .subjectType(row[1].text())
-                .subjectId(row[2].text())
-                .subjectName(row[3].text())
-                .accessLevel(row[4].text())
-                .sourceType(row[5].text())
-                .sourceGroupId(row[6].text())
-                .sourceGroupName(row[7].text())
-                .inherited(false)
-                .createdAt(row[9].text())
-                .updatedAt(row[10].text());
+            item.set<"id">(row[0].value().value_or(std::string_view{}))
+                .set<"subjectType">(row[1].value().value_or(std::string_view{}))
+                .set<"subjectId">(row[2].value().value_or(std::string_view{}))
+                .set<"subjectName">(row[3].value().value_or(std::string_view{}))
+                .set<"accessLevel">(row[4].value().value_or(std::string_view{}))
+                .set<"sourceType">(row[5].value().value_or(std::string_view{}))
+                .set<"sourceGroupId">(row[6].value().value_or(std::string_view{}))
+                .set<"sourceGroupName">(row[7].value().value_or(std::string_view{}))
+                .set<"inherited">(false)
+                .set<"createdAt">(row[9].value().value_or(std::string_view{}))
+                .set<"updatedAt">(row[10].value().value_or(std::string_view{}));
         }
         co_return result;
     }
@@ -2215,9 +2215,9 @@ WHERE department.status = 'enabled' AND department.deleted_at IS NULL
 ORDER BY 1, 3, 2)sql",
                                                 service::common::dbParams(groupId));
         ruvia::BoxedArray<DeviceShareTargetDto> result(c.resource());
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             auto& item = result.emplace(c);
-            item.subjectType(row[0].text()).subjectId(row[1].text()).subjectName(row[2].text());
+            item.set<"subjectType">(row[0].value().value_or(std::string_view{})).set<"subjectId">(row[1].value().value_or(std::string_view{})).set<"subjectName">(row[2].value().value_or(std::string_view{}));
         }
         co_return result;
     }
@@ -2231,9 +2231,9 @@ ORDER BY 1, 3, 2)sql",
             "SELECT created_by::text FROM device_group WHERE id = $1 AND deleted_at IS NULL "
             "FOR UPDATE",
             service::common::dbParams(groupId));
-        if (groupRows.rows().empty())
+        if (groupRows.empty())
             service::common::fail(17001, "设备分组不存在", 404);
-        co_await validateTargets(transaction, shares, groupRows.rows().front()[0].text());
+        co_await validateTargets(transaction, shares, groupRows.front()[0].value().value_or(std::string_view{}));
 
         (void)co_await transaction.execute(
             "DELETE FROM device_group_access_grant WHERE group_id = $1",
@@ -2271,17 +2271,17 @@ VALUES ($1, $2, 'device_group.share.replace', 'device_group', $3, 'success',
     };
 
     static std::vector<NormalizedShare> normalize(const ReplaceDeviceSharesBody& body) {
-        if (!body.shares())
+        if (!body.get<"shares">())
             service::common::fail(18010, "分享列表不能为空", 400);
         std::vector<NormalizedShare> shares;
-        shares.reserve(body.shares()->size());
+        shares.reserve(body.get<"shares">()->size());
         std::set<std::string, std::less<>> uniqueSubjects;
-        for (const auto& item : *body.shares()) {
-            if (!item.subjectType() || !item.subjectId() || !item.accessLevel())
+        for (const auto& item : *body.get<"shares">()) {
+            if (!item.get<"subjectType">() || !item.get<"subjectId">() || !item.get<"accessLevel">())
                 service::common::fail(18010, "分享对象参数不完整", 400);
-            NormalizedShare share{std::string(item.subjectType()->view()),
-                                  std::string(item.subjectId()->view()),
-                                  std::string(item.accessLevel()->view())};
+            NormalizedShare share{std::string(item.get<"subjectType">()->view()),
+                                  std::string(item.get<"subjectId">()->view()),
+                                  std::string(item.get<"accessLevel">()->view())};
             if (share.subjectType != "user" && share.subjectType != "department")
                 service::common::fail(18010, "分享对象类型无效", 400);
             if (!service::common::isUuid(share.subjectId))
@@ -2306,14 +2306,14 @@ VALUES ($1, $2, 'device_group.share.replace', 'device_group', $3, 'success',
                     "SELECT 1 FROM sys_user WHERE id = $1 AND status = 'enabled' "
                     "AND deleted_at IS NULL LIMIT 1",
                     service::common::dbParams(share.subjectId));
-                if (target.rows().empty())
+                if (target.empty())
                     service::common::fail(18010, "包含不存在或已禁用的用户", 400);
             } else {
                 const auto target = co_await transaction.query(
                     "SELECT 1 FROM sys_department WHERE id = $1 AND status = 'enabled' "
                     "AND deleted_at IS NULL LIMIT 1",
                     service::common::dbParams(share.subjectId));
-                if (target.rows().empty())
+                if (target.empty())
                     service::common::fail(18010, "包含不存在或已禁用的部门", 400);
             }
         }

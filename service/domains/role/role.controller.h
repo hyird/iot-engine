@@ -27,21 +27,21 @@ class RoleController final : public ruvia::Controller<RoleController> {
 
   private:
     static std::string id(ruvia::Context& c) {
-        return std::string(c.req().validated<RoleIdParams>().id()->view());
+        return std::string(c.req().validated<RoleIdParams>().get<"id">()->view());
     }
 
     ruvia::Task<ruvia::HttpResponse> list(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:role:query");
         const auto& query = c.req().validated<RoleListQuery>();
-        const auto keyword = query.keyword()
-                                 ? std::optional<std::string>(std::string(query.keyword()->view()))
+        const auto keyword = query.get<"keyword">()
+                                 ? std::optional<std::string>(std::string(query.get<"keyword">()->view()))
                                  : std::nullopt;
-        const auto status = query.status()
-                                ? std::optional<std::string>(std::string(query.status()->view()))
+        const auto status = query.get<"status">()
+                                ? std::optional<std::string>(std::string(query.get<"status">()->view()))
                                 : std::nullopt;
         co_return c.json(service::common::ok<RolePageResponse>(
-            c, co_await roleService().list(c, static_cast<std::int64_t>(*query.page()),
-                                           static_cast<std::int64_t>(*query.pageSize()), keyword,
+            c, co_await roleService().list(c, static_cast<std::int64_t>(*query.get<"page">()),
+                                           static_cast<std::int64_t>(*query.get<"pageSize">()), keyword,
                                            status)));
     }
 

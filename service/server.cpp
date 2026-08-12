@@ -26,6 +26,7 @@
 #include "service/domains/alert/alert.controller.h"
 #include "service/features/alert/runtime.h"
 #include "service/domains/gb28181/gb28181.controller.h"
+#include "service/domains/gb28181/media.controller.h"
 #include "service/features/gb28181/runtime.h"
 #include "service/domains/edge/edge.controller.h"
 #include "service/features/edge/gateway.h"
@@ -279,11 +280,11 @@ int main(int argc, char *argv[])
         const auto cpu = std::max(2U, std::thread::hardware_concurrency());
         const auto mediaWorkers =
             static_cast<unsigned>(std::max(1, gb28181.media.workerThreads));
-        // GB28181 owns one SIP actor plus two ZLM pools (EventPoller and
-        // WorkThread). Reserve those threads before splitting the remaining
-        // business budget between the northbound and southbound workers.
+        // GB28181 owns one SIP actor, one media proxy loop, and two ZLM pools
+        // (EventPoller and WorkThread). Reserve those threads before splitting
+        // the remaining business budget between northbound/southbound workers.
         const auto gb28181WorkerCount =
-            gb28181.enabled ? 1U + 2U * mediaWorkers : 0U;
+            gb28181.enabled ? 2U + 2U * mediaWorkers : 0U;
         // Service and Collector each need at least one worker. On a host with
         // fewer CPUs than that hard minimum plus the enabled media runtime,
         // controlled oversubscription is unavoidable and remains explicit.
@@ -379,7 +380,7 @@ int main(int argc, char *argv[])
             .setListeners({ruvia::ListenerConfig::http(
                 app.env().get("HOST").value_or("0.0.0.0"),
                 app.env().get<std::uint16_t>("PORT").value_or(1102))})
-            .setMaxStreamBodyBytes(129U * 1024U * 1024U)
+            .setStreamBodyLimit(129U * 1024U * 1024U)
             .setMaxWebSocketMessageBytes(16U * 1024U)
             .setWorkersPerListener(serviceWorkerCount)
             .run();

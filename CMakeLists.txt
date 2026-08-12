@@ -52,7 +52,7 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(ruvia
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    GIT_TAG f21ebda1117aa9f9b8f93ef208a546023a01f829)
+    GIT_TAG 693d2688ef9c345b5805434df56c4f5b22437774)
 FetchContent_MakeAvailable(ruvia)
 
 FetchContent_Declare(nanopb
@@ -264,6 +264,7 @@ add_executable(iot-engine
     service/common/packet-log.cpp
     service/features/gb28181/device/DeviceRegistry.cpp
     service/features/gb28181/media/StreamRegistry.cpp
+    service/features/gb28181/media/MediaProxy.cpp
     service/features/gb28181/media/ZlmSdk.cpp
     service/features/gb28181/runtime.cpp
     service/features/gb28181/sip/DigestAuth.cpp
@@ -436,6 +437,8 @@ add_test(NAME system-service COMMAND system-service-test)
 
 add_executable(gb28181-media-test
     tests/gb28181-media-test.cpp
+    service/common/packet-log.cpp
+    service/features/gb28181/media/MediaProxy.cpp
     service/features/gb28181/media/ZlmSdk.cpp)
 target_include_directories(gb28181-media-test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"

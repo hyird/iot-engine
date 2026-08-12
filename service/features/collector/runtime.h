@@ -85,8 +85,9 @@ class Runtime final {
             auto completion = std::make_shared<std::promise<void>>();
             stopped.push_back(completion->get_future());
             auto* worker = workers_[index].get();
+            auto loop = pool_->loop(index);
             asio::co_spawn(
-                pool_->loop(index).ioContext(),
+                loop.ioContext(),
                 ruvia::detail::taskAsAwaitable(worker->shutdown()),
                 [completion](std::exception_ptr error) {
                     try {

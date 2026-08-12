@@ -51,7 +51,7 @@ class EdgeService {
             where += " AND enrollment_status = $" + std::to_string(params.size());
         }
         const auto count = co_await c.db().query("SELECT COUNT(*) FROM edge_node" + where, params);
-        const auto total = integer(count.rows().front()[0].text());
+        const auto total = integer(count.front()[0].value().value_or(std::string_view{}));
         auto listParams = params;
         listParams.emplace_back(pageSize);
         const auto limit = listParams.size();
@@ -62,44 +62,44 @@ class EdgeService {
                 std::to_string(limit) + " OFFSET $" + std::to_string(offset),
             listParams);
         ruvia::BoxedArray<EdgeNodeDto> nodes(c.resource());
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             auto& node = nodes.emplace(c);
             fillNode(c, node, row);
         }
         EdgePageDto result(c);
-        result.list(std::move(nodes))
-            .total(total)
-            .page(page)
-            .pageSize(pageSize)
-            .totalPages(total == 0 ? 0 : (total + pageSize - 1) / pageSize);
+        result.set<"list">(std::move(nodes))
+            .set<"total">(total)
+            .set<"page">(page)
+            .set<"pageSize">(pageSize)
+            .set<"totalPages">(total == 0 ? 0 : (total + pageSize - 1) / pageSize);
         co_return result;
     }
 
     ruvia::Task<EdgeNodeDto> detail(ruvia::Context& c, std::string_view id) {
         const auto rows = co_await c.db().query(nodeSelect() + " WHERE id = $1::uuid LIMIT 1",
                                                 service::common::dbParams(id));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(17001, "边缘节点不存在", 404);
         EdgeNodeDto node(c);
-        fillNode(c, node, rows.rows().front());
-        node.interfaces(co_await interfaces(c, id));
-        node.networks(co_await networks(c, id));
-        node.serialPorts(co_await serialPorts(c, id));
-        node.platforms(co_await platforms(c, id));
-        node.tasks(co_await tasks(c, id));
+        fillNode(c, node, rows.front());
+        node.set<"interfaces">(co_await interfaces(c, id));
+        node.set<"networks">(co_await networks(c, id));
+        node.set<"serialPorts">(co_await serialPorts(c, id));
+        node.set<"platforms">(co_await platforms(c, id));
+        node.set<"tasks">(co_await tasks(c, id));
         co_return node;
     }
 
     ruvia::Task<void> setEnrollment(ruvia::Context& c, std::string_view id,
                                     const EnrollmentBody& body) {
         const auto principal = service::middleware::requireAuth(c);
-        const auto& maybeStatus = body.status();
+        const auto& maybeStatus = body.get<"status">();
         if (!maybeStatus || maybeStatus->view().empty())
             service::common::fail(17003, "注册状态不能为空", 400);
         const std::string status(maybeStatus->view());
         if (status != "approved" && status != "rejected")
             service::common::fail(17003, "注册状态无效", 400);
-        const std::string name = body.name() ? std::string(body.name()->view()) : std::string{};
+        const std::string name = body.get<"name">() ? std::string(body.get<"name">()->view()) : std::string{};
         std::string_view stage = "database";
         try {
             const auto updated = co_await c.db().query(R"sql(
@@ -110,9 +110,9 @@ WHERE id = $4::uuid
 RETURNING imei)sql",
                                                          service::common::dbParams(
                                                              status, name, principal.userId, id));
-            if (updated.rows().empty())
+            if (updated.empty())
                 service::common::fail(17001, "边缘节点不存在", 404);
-            const auto key = protocol::authKey(updated.rows().front()[0].text());
+            const auto key = protocol::authKey(updated.front()[0].value().value_or(std::string_view{}));
             const auto value = std::string(id) + "|" + status;
             stage = "redis";
             co_await c.redis().set(key, value);
@@ -125,7 +125,7 @@ RETURNING imei)sql",
 
     ruvia::Task<void> renameNode(ruvia::Context& c, std::string_view id,
                                  const NodeNameBody& body) {
-        const auto& maybeName = body.name();
+        const auto& maybeName = body.get<"name">();
         if (!maybeName || maybeName->view().empty())
             service::common::fail(17003, "节点名称不能为空", 400);
         const std::string name(maybeName->view());
@@ -134,14 +134,14 @@ UPDATE edge_node SET name = $1::text, updated_at = NOW()
 WHERE id = $2::uuid
 RETURNING id)sql",
                                                    service::common::dbParams(name, id));
-        if (updated.rows().empty())
+        if (updated.empty())
             service::common::fail(17001, "边缘节点不存在", 404);
     }
 
     ruvia::Task<void> queueNetwork(ruvia::Context& c, std::string_view nodeId,
                                    const NetworkBody& body) {
         const auto networkConfigVersion = co_await requireNetworkManagement(c, nodeId);
-        const auto& maybeConfigs = body.interfaces();
+        const auto& maybeConfigs = body.get<"interfaces">();
         if (!maybeConfigs || maybeConfigs->empty())
             service::common::fail(17003, "至少配置一个网络接口", 400);
         const auto& configs = *maybeConfigs;
@@ -156,16 +156,16 @@ RETURNING id)sql",
         protocol::uuidBytes(taskId, requestId);
         request->set_request_id(protocol::bytes(requestId, 16));
         for (const auto& config : configs) {
-            if (!config.operation() || config.operation()->view().empty())
+            if (!config.get<"operation">() || config.get<"operation">()->view().empty())
                 service::common::fail(17003, "网络接口操作不能为空", 400);
-            if (!config.name() || config.name()->view().empty())
+            if (!config.get<"name">() || config.get<"name">()->view().empty())
                 service::common::fail(17003, "逻辑接口名称不能为空", 400);
-            const std::string operation(config.operation()->view());
-            const std::string name(config.name()->view());
+            const std::string operation(config.get<"operation">()->view());
+            const std::string name(config.get<"name">()->view());
             if (operation != "upsert" && operation != "delete")
                 service::common::fail(17003, "网络接口操作只支持 upsert 或 delete", 400);
             const std::string previousName =
-                config.previousName() ? std::string(config.previousName()->view())
+                config.get<"previousName">() ? std::string(config.get<"previousName">()->view())
                                       : std::string{};
             if (!names.emplace(name).second)
                 service::common::fail(17003, "同一请求不能重复配置逻辑接口 " + name, 400);
@@ -191,17 +191,18 @@ RETURNING id)sql",
                 item->set_operation(pb::NETWORK_CONFIG_UPSERT);
                 item->set_previous_logical_name(previousName);
                 const std::string mode =
-                    config.mode() ? std::string(config.mode()->view()) : std::string{};
-                const std::string device =
-                    config.device() ? std::string(config.device()->view()) : std::string{};
+                    config.get<"mode">() ? std::string(config.get<"mode">()->view()) : std::string{};
+                const std::string device = config.get<"device">()
+                                               ? std::string(config.get<"device">()->view())
+                                               : std::string{};
                 const std::string ip =
-                    config.ip() ? std::string(config.ip()->view()) : std::string{};
+                    config.get<"ip">() ? std::string(config.get<"ip">()->view()) : std::string{};
                 const std::string gateway =
-                    config.gateway() ? std::string(config.gateway()->view()) : std::string{};
-                const bool bridge = config.bridge() && *config.bridge();
+                    config.get<"gateway">() ? std::string(config.get<"gateway">()->view()) : std::string{};
+                const bool bridge = config.get<"bridge">() && *config.get<"bridge">();
                 const auto prefix =
-                    config.prefixLength() ? static_cast<std::uint32_t>(*config.prefixLength()) : 0U;
-                const auto& ports = config.bridgePorts();
+                    config.get<"prefixLength">() ? static_cast<std::uint32_t>(*config.get<"prefixLength">()) : 0U;
+                const auto& ports = config.get<"bridgePorts">();
                 validateNetworkConfig(name, mode, device, bridge, ports, ip, prefix, gateway,
                                       available, devices);
                 item->set_mode(mode == "static" ? pb::NETWORK_ADDRESS_STATIC
@@ -218,7 +219,7 @@ RETURNING id)sql",
                 item->set_gateway(gateway);
             }
         }
-        const auto rollbackTimeoutSec = body.rollbackTimeoutSec().value_or(60);
+        const auto rollbackTimeoutSec = body.get<"rollbackTimeoutSec">().value_or(60);
         if (rollbackTimeoutSec < 30 || rollbackTimeoutSec > 300)
             service::common::fail(17003, "回滚等待时间必须在 30 - 300 秒之间", 400);
         request->set_rollback_timeout_sec(static_cast<std::uint32_t>(rollbackTimeoutSec));
@@ -228,36 +229,36 @@ RETURNING id)sql",
     ruvia::Task<void> queueModem(ruvia::Context& c, std::string_view nodeId,
                                  const ModemControlBody& body) {
         co_await requireNodeCapability(c, nodeId, "modemControl", "移动网络控制");
-        const auto& maybeAction = body.action();
+        const auto& maybeAction = body.get<"action">();
         if (!maybeAction || maybeAction->view().empty())
             service::common::fail(17012, "移动网络操作不能为空", 400);
         const std::string action(maybeAction->view());
         if (action != "apply_profile" && action != "redial")
             service::common::fail(17012, "移动网络操作无效", 400);
-        const std::string apn = body.apn() ? std::string(body.apn()->view()) : std::string{};
-        const bool automatic = body.automatic() && *body.automatic();
+        const std::string apn = body.get<"apn">() ? std::string(body.get<"apn">()->view()) : std::string{};
+        const bool automatic = body.get<"automatic">() && *body.get<"automatic">();
         const std::string pdpType =
-            body.pdpType() ? std::string(body.pdpType()->view()) : "IP";
+            body.get<"pdpType">() ? std::string(body.get<"pdpType">()->view()) : "IP";
         const std::string authType =
-            body.authType() ? std::string(body.authType()->view()) : "none";
-        if (body.pdpType() && pdpType != "IP" && pdpType != "IPV6" && pdpType != "IPV4V6")
+            body.get<"authType">() ? std::string(body.get<"authType">()->view()) : "none";
+        if (body.get<"pdpType">() && pdpType != "IP" && pdpType != "IPV6" && pdpType != "IPV4V6")
             service::common::fail(17012, "PDP 类型无效", 400);
-        if (body.authType() && authType != "none" && authType != "pap" && authType != "chap" &&
+        if (body.get<"authType">() && authType != "none" && authType != "pap" && authType != "chap" &&
             authType != "both")
             service::common::fail(17012, "认证方式无效", 400);
         const std::string username =
-            body.username() ? std::string(body.username()->view()) : std::string{};
+            body.get<"username">() ? std::string(body.get<"username">()->view()) : std::string{};
         const std::string password =
-            body.password() ? std::string(body.password()->view()) : std::string{};
+            body.get<"password">() ? std::string(body.get<"password">()->view()) : std::string{};
         const std::string pinCode =
-            body.pinCode() ? std::string(body.pinCode()->view()) : std::string{};
+            body.get<"pinCode">() ? std::string(body.get<"pinCode">()->view()) : std::string{};
         const bool redialAfterApply =
-            body.redialAfterApply() && *body.redialAfterApply();
+            body.get<"redialAfterApply">() && *body.get<"redialAfterApply">();
 
         if (action == "apply_profile") {
-            if (!body.apn() || !body.automatic() || !body.pdpType() || !body.authType() ||
-                !body.username() || !body.password() || !body.pinCode() ||
-                !body.redialAfterApply())
+            if (!body.get<"apn">() || !body.get<"automatic">() || !body.get<"pdpType">() || !body.get<"authType">() ||
+                !body.get<"username">() || !body.get<"password">() || !body.get<"pinCode">() ||
+                !body.get<"redialAfterApply">())
                 service::common::fail(17012, "移动网络配置参数不完整", 400);
             if (automatic && !apn.empty())
                 service::common::fail(17012, "自动 APN 模式不能填写 APN", 400);
@@ -267,9 +268,9 @@ RETURNING id)sql",
                 service::common::fail(17012, "无认证模式不能填写用户名或密码", 400);
             if (authType != "none" && (username.empty() || password.empty()))
                 service::common::fail(17012, "启用 APN 认证时必须同时填写用户名和密码", 400);
-        } else if (body.apn() || body.automatic() || body.pdpType() || body.authType() ||
-                   body.username() || body.password() || body.pinCode() ||
-                   body.redialAfterApply()) {
+        } else if (body.get<"apn">() || body.get<"automatic">() || body.get<"pdpType">() || body.get<"authType">() ||
+                   body.get<"username">() || body.get<"password">() || body.get<"pinCode">() ||
+                   body.get<"redialAfterApply">()) {
             service::common::fail(17012, "重新拨号不能携带 APN 配置参数", 400);
         }
 
@@ -316,13 +317,13 @@ RETURNING id)sql",
     ruvia::Task<std::string> queuePlatform(ruvia::Context& c, std::string_view nodeId,
                                            const PlatformBody& body) {
         co_await requireNodeCapability(c, nodeId, "platformConfig", "多平台配置");
-        const std::string platformId = body.platformId()
-                                           ? std::string(body.platformId()->view())
+        const std::string platformId = body.get<"platformId">()
+                                           ? std::string(body.get<"platformId">()->view())
                                            : service::common::nextUuidV7();
         if (platformId == protocol::platformId())
             service::common::fail(17007, "当前平台不能通过远程命令修改", 400);
-        const auto& maybeName = body.name();
-        const auto& maybeBaseUrl = body.baseUrl();
+        const auto& maybeName = body.get<"name">();
+        const auto& maybeBaseUrl = body.get<"baseUrl">();
         if (!maybeName || maybeName->view().empty())
             service::common::fail(17003, "平台名称不能为空", 400);
         if (!maybeBaseUrl || maybeBaseUrl->view().empty())
@@ -330,10 +331,10 @@ RETURNING id)sql",
         const std::string name(maybeName->view());
         const std::string baseUrl(maybeBaseUrl->view());
         validatePlatformUrl(baseUrl);
-        const bool enabled = body.enabled().value_or(true);
-        const auto priority = body.priority().value_or(100);
-        const auto reconnectIntervalSec = body.reconnectIntervalSec().value_or(5);
-        const auto outboxMaxBytes = body.outboxMaxBytes().value_or(262144);
+        const bool enabled = body.get<"enabled">().value_or(true);
+        const auto priority = body.get<"priority">().value_or(100);
+        const auto reconnectIntervalSec = body.get<"reconnectIntervalSec">().value_or(5);
+        const auto outboxMaxBytes = body.get<"outboxMaxBytes">().value_or(262144);
         if (priority < 0 || priority > 65535)
             service::common::fail(17003, "优先级必须在 0 - 65535 之间", 400);
         if (reconnectIntervalSec < 1 || reconnectIntervalSec > 3600)
@@ -407,12 +408,12 @@ SET name = EXCLUDED.name, base_url = EXCLUDED.base_url, enabled = EXCLUDED.enabl
         co_await validateFirmwareTarget(c, nodeId);
         const std::string firmwareIdText(firmwareId);
         const auto rows = co_await c.db().query(R"sql(
-SELECT version, sha256, size_bytes, download_token
+SELECT sha256, size_bytes, download_token
 FROM edge_firmware WHERE id = $1::uuid LIMIT 1)sql",
                                                 service::common::dbParams(firmwareIdText));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(17009, "固件不存在", 404);
-        const auto& row = rows.rows().front();
+        const auto& row = rows.front();
         const auto taskId = service::common::nextUuidV7();
         auto envelope = protocol::outbound(nodeId);
         auto* request = envelope.mutable_firmware_update_request();
@@ -421,12 +422,12 @@ FROM edge_firmware WHERE id = $1::uuid LIMIT 1)sql",
         const auto requestId = protocol::bytes(bytes, 16);
         const auto download = std::string(protocol::publicBaseUrl()) +
                               "/edge/v1/firmware/" + firmwareIdText + "/download?token=" +
-                              std::string(row[3].text());
-        if (!hex(row[1].text(), bytes, 32))
+                              std::string(row[2].value().value_or(std::string_view{}));
+        if (!hex(row[0].value().value_or(std::string_view{}), bytes, 32))
             service::common::fail(17010, "固件摘要无效", 500);
         if (!firmware::populateUpdateRequest(
                 *request, requestId, download, protocol::bytes(bytes, 32),
-                static_cast<std::uint64_t>(integer(row[2].text())), row[0].text(), keepSettings))
+                static_cast<std::uint64_t>(integer(row[1].value().value_or(std::string_view{}))), keepSettings))
             service::common::fail(17010, "固件请求元数据无效", 500);
         const std::string json = "{\"firmware_id\":\"" + firmwareIdText + "\"}";
         co_await createTaskAndQueue(c, nodeId, taskId, "firmware", json, envelope);
@@ -437,14 +438,14 @@ FROM edge_firmware WHERE id = $1::uuid LIMIT 1)sql",
 SELECT id::text, version, file_name, sha256, size_bytes, iot_utc_timestamp(created_at)
 FROM edge_firmware ORDER BY created_at DESC LIMIT 100)sql");
         ruvia::BoxedArray<FirmwareDto> result(c.resource());
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             auto& item = result.emplace(c);
-            item.id(row[0].text())
-                .version(row[1].text())
-                .fileName(row[2].text())
-                .sha256(row[3].text())
-                .sizeBytes(integer(row[4].text()))
-                .createdAt(row[5].text());
+            item.set<"id">(row[0].value().value_or(std::string_view{}))
+                .set<"version">(row[1].value().value_or(std::string_view{}))
+                .set<"fileName">(row[2].value().value_or(std::string_view{}))
+                .set<"sha256">(row[3].value().value_or(std::string_view{}))
+                .set<"sizeBytes">(integer(row[4].value().value_or(std::string_view{})))
+                .set<"createdAt">(row[5].value().value_or(std::string_view{}));
         }
         co_return result;
     }
@@ -471,11 +472,11 @@ VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::uuid))sql",
 SELECT storage_path, file_name FROM edge_firmware
 WHERE id = $1::uuid AND download_token = $2 LIMIT 1)sql",
                                                 service::common::dbParams(id, token));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(17009, "固件不存在或下载凭据无效", 404);
         co_return std::pair<std::filesystem::path, std::string>{
-            std::filesystem::path(std::string(rows.rows().front()[0].text())),
-            std::string(rows.rows().front()[1].text())};
+            std::filesystem::path(std::string(rows.front()[0].value().value_or(std::string_view{}))),
+            std::string(rows.front()[1].value().value_or(std::string_view{}))};
     }
 
     ruvia::Task<TerminalTicketDto> terminalTicket(ruvia::Context& c,
@@ -488,12 +489,12 @@ SELECT enrollment_status,
        (last_seen_at IS NOT NULL AND last_seen_at > NOW() - INTERVAL '90 seconds')
 FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
                                                 service::common::dbParams(nodeId));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(17001, "边缘节点不存在", 404);
-        if (rows.rows().front()[0].text() != "approved" ||
-            rows.rows().front()[1].text() != "t")
+        if (rows.front()[0].value().value_or(std::string_view{}) != "approved" ||
+            rows.front()[1].value().value_or(std::string_view{}) != "t")
             service::common::fail(17018, "节点未检测到 ttyd", 409);
-        if (rows.rows().front()[2].text() != "t")
+        if (rows.front()[2].value().value_or(std::string_view{}) != "t")
             service::common::fail(17019, "节点当前离线", 409);
         const auto sessionKey = "iot:edge:session:" + std::string(nodeId);
         const auto session = co_await c.redis().get(sessionKey);
@@ -501,9 +502,11 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
             service::common::fail(17019, "节点当前离线", 409);
         const auto ticket = service::common::nextUuidV7();
         const auto key = "iot:edge:terminal:ticket:" + ticket;
-        co_await c.redis().setEx(key, std::chrono::seconds(60), nodeId);
+        co_await c.redis().set(
+            key, nodeId,
+            {.expiration = ruvia::RedisSetExpiration::expiresAfter(std::chrono::seconds(60))});
         TerminalTicketDto result(c);
-        result.ticket(ticket);
+        result.set<"ticket">(ticket);
         co_return result;
     }
 
@@ -520,18 +523,18 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
         auto envelope = protocol::outbound(nodeId);
         auto* request = envelope.mutable_log_request();
         request->set_request_id(protocol::bytes(bytes, sizeof(bytes)));
-        const auto limit = query.limit().value_or(48);
+        const auto limit = query.get<"limit">().value_or(48);
         if (limit < 1 || limit > 48)
             service::common::fail(17020, "日志条数必须在 1 - 48 之间", 400);
         request->set_limit(static_cast<std::uint32_t>(limit));
-        if (query.level()) {
-            const auto level = std::string(query.level()->view());
+        if (query.get<"level">()) {
+            const auto level = std::string(query.get<"level">()->view());
             if (level != "debug" && level != "info" && level != "warn" && level != "error")
                 service::common::fail(17020, "日志级别无效", 400);
             request->set_level(level);
         }
-        if (query.source()) {
-            const auto sourceValue = std::string(query.source()->view());
+        if (query.get<"source">()) {
+            const auto sourceValue = std::string(query.get<"source">()->view());
             if (sourceValue.size() > 16)
                 service::common::fail(17020, "日志来源不能超过 16 个字符", 400);
             request->set_source(sourceValue);
@@ -552,13 +555,13 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
                 ruvia::BoxedArray<LogLineDto> lines(c.resource());
                 for (const auto& line : result.lines()) {
                     auto& item = lines.emplace(c);
-                    item.time(service::common::utcTimestampFromMilliseconds(line.time_ms()))
-                        .level(line.level())
-                        .source(line.source())
-                        .message(line.message())
-                        .detail(line.detail());
+                    item.set<"time">(service::common::utcTimestampFromMilliseconds(line.time_ms()))
+                        .set<"level">(line.level())
+                        .set<"source">(line.source())
+                        .set<"message">(line.message())
+                        .set<"detail">(line.detail());
                 }
-                output.lines(std::move(lines));
+                output.set<"lines">(std::move(lines));
                 co_return output;
             }
             (void)co_await ruvia::sleepFor(c.worker(), std::chrono::milliseconds(50));
@@ -573,7 +576,7 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
         if (!session)
             service::common::fail(17019, "节点当前离线", 409);
 
-        const auto& maybeLevel = body.level();
+        const auto& maybeLevel = body.get<"level">();
         if (!maybeLevel || maybeLevel->view().empty())
             service::common::fail(17020, "日志级别不能为空", 400);
         const auto level = std::string(maybeLevel->view());
@@ -711,67 +714,67 @@ FROM edge_node)sql";
     template <typename Row> static void fillNode(ruvia::Context& c, EdgeNodeDto& node, const Row& row) {
         NodeStatusDto status(c);
         ConfigStatusDto config(c);
-        config.activeVersion(integer(row[12].text()))
-            .desiredVersion(integer(row[13].text()))
-            .state(row[14].text())
-            .message(row[15].text());
+        config.set<"activeVersion">(integer(row[12].value().value_or(std::string_view{})))
+            .set<"desiredVersion">(integer(row[13].value().value_or(std::string_view{})))
+            .set<"state">(row[14].value().value_or(std::string_view{}))
+            .set<"message">(row[15].value().value_or(std::string_view{}));
         OutboxStatusDto outbox(c);
-        outbox.records(integer(row[16].text())).bytes(integer(row[17].text()));
+        outbox.set<"records">(integer(row[16].value().value_or(std::string_view{}))).set<"bytes">(integer(row[17].value().value_or(std::string_view{})));
         LogStatusDto log(c);
-        log.level(row[18].text());
-        status.online(row[9].text() == "t")
-            .lastSeenAt(row[10].text())
-            .config(std::move(config))
-            .outbox(std::move(outbox))
-            .log(std::move(log));
+        log.set<"level">(row[18].value().value_or(std::string_view{}));
+        status.set<"online">(row[9].value().value_or(std::string_view{}) == "t")
+            .set<"lastSeenAt">(row[10].value().value_or(std::string_view{}))
+            .set<"config">(std::move(config))
+            .set<"outbox">(std::move(outbox))
+            .set<"log">(std::move(log));
 
         CapabilityDto capability(c);
-        capability.networkConfig(row[19].text() == "t")
-            .networkConfigVersion(integer(row[20].text()))
-            .firmwareUpdate(row[21].text() == "t")
-            .platformConfig(row[22].text() == "t")
-            .deviceConfig(row[23].text() == "t")
-            .modemControl(row[24].text() == "t")
-            .terminal(row[25].text() == "t")
-            .logs(row[26].text() == "t");
+        capability.set<"networkConfig">(row[19].value().value_or(std::string_view{}) == "t")
+            .set<"networkConfigVersion">(integer(row[20].value().value_or(std::string_view{})))
+            .set<"firmwareUpdate">(row[21].value().value_or(std::string_view{}) == "t")
+            .set<"platformConfig">(row[22].value().value_or(std::string_view{}) == "t")
+            .set<"deviceConfig">(row[23].value().value_or(std::string_view{}) == "t")
+            .set<"modemControl">(row[24].value().value_or(std::string_view{}) == "t")
+            .set<"terminal">(row[25].value().value_or(std::string_view{}) == "t")
+            .set<"logs">(row[26].value().value_or(std::string_view{}) == "t");
 
         SignalDto signal(c);
-        signal.csq(integer(row[30].text()))
-            .rssiDbm(integer(row[31].text()))
-            .percent(integer(row[32].text()));
+        signal.set<"csq">(integer(row[30].value().value_or(std::string_view{})))
+            .set<"rssiDbm">(integer(row[31].value().value_or(std::string_view{})))
+            .set<"percent">(integer(row[32].value().value_or(std::string_view{})));
         MobileDto mobile(c);
-        mobile.available(row[27].text() == "t")
-            .simState(row[28].text())
-            .iccid(row[29].text())
-            .signal(std::move(signal))
-            .registered(row[33].text() == "t")
-            .registrationStatus(integer(row[34].text()))
-            .apn(row[35].text())
-            .operatorName(row[36].text())
-            .connected(row[37].text() == "t")
-            .ipv4(row[38].text());
+        mobile.set<"available">(row[27].value().value_or(std::string_view{}) == "t")
+            .set<"simState">(row[28].value().value_or(std::string_view{}))
+            .set<"iccid">(row[29].value().value_or(std::string_view{}))
+            .set<"signal">(std::move(signal))
+            .set<"registered">(row[33].value().value_or(std::string_view{}) == "t")
+            .set<"registrationStatus">(integer(row[34].value().value_or(std::string_view{})))
+            .set<"apn">(row[35].value().value_or(std::string_view{}))
+            .set<"operatorName">(row[36].value().value_or(std::string_view{}))
+            .set<"connected">(row[37].value().value_or(std::string_view{}) == "t")
+            .set<"ipv4">(row[38].value().value_or(std::string_view{}));
 
         FirmwareStatusDto firmware(c);
-        firmware.state(row[39].text())
-            .progressPercent(integer(row[40].text()))
-            .downloadedBytes(integer(row[41].text()))
-            .totalBytes(integer(row[42].text()))
-            .message(row[43].text());
+        firmware.set<"state">(row[39].value().value_or(std::string_view{}))
+            .set<"progressPercent">(integer(row[40].value().value_or(std::string_view{})))
+            .set<"downloadedBytes">(integer(row[41].value().value_or(std::string_view{})))
+            .set<"totalBytes">(integer(row[42].value().value_or(std::string_view{})))
+            .set<"message">(row[43].value().value_or(std::string_view{}));
 
-        node.id(row[0].text())
-            .imei(row[1].text())
-            .name(row[2].text())
-            .model(row[3].text())
-            .softwareVersion(row[4].text())
-            .hostname(row[5].text())
-            .architecture(row[6].text())
-            .openwrtRelease(row[7].text())
-            .enrollmentStatus(row[8].text())
-            .status(std::move(status))
-            .capability(std::move(capability))
-            .mobile(std::move(mobile))
-            .firmware(std::move(firmware))
-            .createdAt(row[11].text());
+        node.set<"id">(row[0].value().value_or(std::string_view{}))
+            .set<"imei">(row[1].value().value_or(std::string_view{}))
+            .set<"name">(row[2].value().value_or(std::string_view{}))
+            .set<"model">(row[3].value().value_or(std::string_view{}))
+            .set<"softwareVersion">(row[4].value().value_or(std::string_view{}))
+            .set<"hostname">(row[5].value().value_or(std::string_view{}))
+            .set<"architecture">(row[6].value().value_or(std::string_view{}))
+            .set<"openwrtRelease">(row[7].value().value_or(std::string_view{}))
+            .set<"enrollmentStatus">(row[8].value().value_or(std::string_view{}))
+            .set<"status">(std::move(status))
+            .set<"capability">(std::move(capability))
+            .set<"mobile">(std::move(mobile))
+            .set<"firmware">(std::move(firmware))
+            .set<"createdAt">(row[11].value().value_or(std::string_view{}));
     }
 
     static std::vector<std::string> split(std::string_view value) {
@@ -809,21 +812,21 @@ SELECT name, display_name, COALESCE(mac, ''), is_up, is_bridge, COALESCE(ipv4, '
 FROM edge_node_interface WHERE node_id = $1::uuid ORDER BY name)sql",
                                                 service::common::dbParams(id));
         ruvia::BoxedArray<InterfaceDto> result(c.resource());
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             auto& item = result.emplace(c);
             ruvia::BoxedArray<ruvia::String> ports(c.resource());
-            for (const auto& port : split(row[8].text()))
+            for (const auto& port : split(row[8].value().value_or(std::string_view{})))
                 if (!port.empty())
                     ports.emplace(port, c.resource());
-            item.name(row[0].text())
-                .displayName(row[1].text())
-                .mac(row[2].text())
-                .up(row[3].text() == "t")
-                .bridge(row[4].text() == "t")
-                .ipv4(row[5].text())
-                .prefixLength(integer(row[6].text()))
-                .gateway(row[7].text())
-                .bridgePorts(std::move(ports));
+            item.set<"name">(row[0].value().value_or(std::string_view{}))
+                .set<"displayName">(row[1].value().value_or(std::string_view{}))
+                .set<"mac">(row[2].value().value_or(std::string_view{}))
+                .set<"up">(row[3].value().value_or(std::string_view{}) == "t")
+                .set<"bridge">(row[4].value().value_or(std::string_view{}) == "t")
+                .set<"ipv4">(row[5].value().value_or(std::string_view{}))
+                .set<"prefixLength">(integer(row[6].value().value_or(std::string_view{})))
+                .set<"gateway">(row[7].value().value_or(std::string_view{}))
+                .set<"bridgePorts">(std::move(ports));
         }
         co_return result;
     }
@@ -838,21 +841,21 @@ SELECT name, address_mode, device, is_up, is_bridge, COALESCE(ipv4, ''),
 FROM edge_node_network WHERE node_id = $1::uuid ORDER BY name)sql",
                                                 service::common::dbParams(id));
         ruvia::BoxedArray<NetworkDto> result(c.resource());
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             auto& item = result.emplace(c);
             ruvia::BoxedArray<ruvia::String> ports(c.resource());
-            for (const auto& port : split(row[8].text()))
+            for (const auto& port : split(row[8].value().value_or(std::string_view{})))
                 if (!port.empty())
                     ports.emplace(port, c.resource());
-            item.name(row[0].text())
-                .mode(row[1].text())
-                .device(row[2].text())
-                .up(row[3].text() == "t")
-                .bridge(row[4].text() == "t")
-                .ipv4(row[5].text())
-                .prefixLength(integer(row[6].text()))
-                .gateway(row[7].text())
-                .bridgePorts(std::move(ports));
+            item.set<"name">(row[0].value().value_or(std::string_view{}))
+                .set<"mode">(row[1].value().value_or(std::string_view{}))
+                .set<"device">(row[2].value().value_or(std::string_view{}))
+                .set<"up">(row[3].value().value_or(std::string_view{}) == "t")
+                .set<"bridge">(row[4].value().value_or(std::string_view{}) == "t")
+                .set<"ipv4">(row[5].value().value_or(std::string_view{}))
+                .set<"prefixLength">(integer(row[6].value().value_or(std::string_view{})))
+                .set<"gateway">(row[7].value().value_or(std::string_view{}))
+                .set<"bridgePorts">(std::move(ports));
         }
         co_return result;
     }
@@ -864,12 +867,12 @@ SELECT path, display_name, available, rs485 FROM edge_node_serial
 WHERE node_id = $1::uuid ORDER BY path)sql",
                                                 service::common::dbParams(id));
         ruvia::BoxedArray<SerialDto> result(c.resource());
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             auto& item = result.emplace(c);
-            item.path(row[0].text())
-                .displayName(row[1].text())
-                .available(row[2].text() == "t")
-                .rs485(row[3].text() == "t");
+            item.set<"path">(row[0].value().value_or(std::string_view{}))
+                .set<"displayName">(row[1].value().value_or(std::string_view{}))
+                .set<"available">(row[2].value().value_or(std::string_view{}) == "t")
+                .set<"rs485">(row[3].value().value_or(std::string_view{}) == "t");
         }
         co_return result;
     }
@@ -882,18 +885,19 @@ SELECT platform_id::text, name, base_url, enabled, priority, reconnect_interval_
 FROM edge_node_platform WHERE node_id = $1::uuid ORDER BY priority, name)sql",
                                                 service::common::dbParams(id));
         ruvia::BoxedArray<PlatformDto> result(c.resource());
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             auto& item = result.emplace(c);
             PlatformStatusDto status(c);
-            status.state(row[7].text()).message(row[8].text());
-            item.platformId(row[0].text())
-                .name(row[1].text())
-                .baseUrl(row[2].text())
-                .enabled(row[3].text() == "t")
-                .priority(integer(row[4].text()))
-                .reconnectIntervalSec(integer(row[5].text()))
-                .outboxMaxBytes(integer(row[6].text()))
-                .status(std::move(status));
+            status.set<"state">(row[7].value().value_or(std::string_view{}))
+                .set<"message">(row[8].value().value_or(std::string_view{}));
+            item.set<"platformId">(row[0].value().value_or(std::string_view{}))
+                .set<"name">(row[1].value().value_or(std::string_view{}))
+                .set<"baseUrl">(row[2].value().value_or(std::string_view{}))
+                .set<"enabled">(row[3].value().value_or(std::string_view{}) == "t")
+                .set<"priority">(integer(row[4].value().value_or(std::string_view{})))
+                .set<"reconnectIntervalSec">(integer(row[5].value().value_or(std::string_view{})))
+                .set<"outboxMaxBytes">(integer(row[6].value().value_or(std::string_view{})))
+                .set<"status">(std::move(status));
         }
         co_return result;
     }
@@ -901,17 +905,17 @@ FROM edge_node_platform WHERE node_id = $1::uuid ORDER BY priority, name)sql",
     static ruvia::Task<ruvia::BoxedArray<TaskDto>> tasks(ruvia::Context& c, std::string_view id) {
         const auto rows = co_await c.db().query(taskSelect(), service::common::dbParams(id));
         ruvia::BoxedArray<TaskDto> result(c.resource());
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             auto& item = result.emplace(c);
-            item.id(row[0].text())
-                .taskType(row[1].text())
-                .status(row[2].text())
-                .message(row[3].text())
-                .progressPercent(integer(row[4].text()))
-                .downloadedBytes(integer(row[5].text()))
-                .totalBytes(integer(row[6].text()))
-                .createdAt(row[7].text())
-                .updatedAt(row[8].text());
+            item.set<"id">(row[0].value().value_or(std::string_view{}))
+                .set<"taskType">(row[1].value().value_or(std::string_view{}))
+                .set<"status">(row[2].value().value_or(std::string_view{}))
+                .set<"message">(row[3].value().value_or(std::string_view{}))
+                .set<"progressPercent">(integer(row[4].value().value_or(std::string_view{})))
+                .set<"downloadedBytes">(integer(row[5].value().value_or(std::string_view{})))
+                .set<"totalBytes">(integer(row[6].value().value_or(std::string_view{})))
+                .set<"createdAt">(row[7].value().value_or(std::string_view{}))
+                .set<"updatedAt">(row[8].value().value_or(std::string_view{}));
         }
         co_return result;
     }
@@ -973,8 +977,8 @@ FROM edge_node_platform WHERE node_id = $1::uuid ORDER BY priority, name)sql",
             "WHERE node_id = $1::uuid AND name <> 'lo' AND is_bridge = FALSE",
             service::common::dbParams(nodeId));
         std::unordered_set<std::string> result;
-        for (const auto& row : rows.rows())
-            result.emplace(row[0].text());
+        for (const auto& row : rows)
+            result.emplace(row[0].value().value_or(std::string_view{}));
         co_return result;
     }
 
@@ -1035,13 +1039,13 @@ SELECT enrollment_status,
                      THEN (capability->>'networkConfigVersion')::bigint END, 0)
 FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
                                                 service::common::dbParams(nodeId));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(17001, "边缘节点不存在", 404);
-        if (rows.rows().front()[0].text() != "approved")
+        if (rows.front()[0].value().value_or(std::string_view{}) != "approved")
             service::common::fail(17002, "边缘节点尚未批准注册", 409);
-        if (rows.rows().front()[1].text() != "t")
+        if (rows.front()[1].value().value_or(std::string_view{}) != "t")
             service::common::fail(17004, "网络配置不可用", 409);
-        const auto version = integer(rows.rows().front()[2].text());
+        const auto version = integer(rows.front()[2].value().value_or(std::string_view{}));
         if (version < 2)
             service::common::fail(17004, "节点代理版本过旧，请先升级后再管理网络", 409);
         co_return version;
@@ -1094,11 +1098,11 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
             "ELSE false END "
             "FROM edge_node WHERE id = $2::uuid LIMIT 1",
             service::common::dbParams(key, nodeId));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(17001, "边缘节点不存在", 404);
-        if (rows.rows().front()[0].text() != "approved")
+        if (rows.front()[0].value().value_or(std::string_view{}) != "approved")
             service::common::fail(17002, "边缘节点尚未批准注册", 409);
-        if (rows.rows().front()[1].text() != "t")
+        if (rows.front()[1].value().value_or(std::string_view{}) != "t")
             service::common::fail(17004, std::string(feature) + "不可用", 409);
     }
 

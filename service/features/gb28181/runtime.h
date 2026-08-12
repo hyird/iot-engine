@@ -5,18 +5,19 @@
 #include <exception>
 #include <memory>
 #include <optional>
-#include <string>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
+#include <ruvia/core/EventLoopPool.h>
 #include <ruvia/core/OneShot.h>
 #include <ruvia/core/Task.h>
-#include <ruvia/core/EventLoopPool.h>
 #include <ruvia/web/Context.h>
 
 #include "config/AppConfig.h"
 #include "device/DeviceRegistry.h"
+#include "media/MediaProxy.h"
 #include "media/StreamRegistry.h"
 #include "media/ZlmSdk.h"
 #include "projector.h"
@@ -43,6 +44,8 @@ class Runtime final {
     [[nodiscard]] const std::string& lastError() const noexcept { return lastError_; }
     [[nodiscard]] ZlmSdk::Ports mediaPorts() const noexcept;
     [[nodiscard]] ZlmSdk::Capabilities mediaCapabilities() const noexcept;
+    [[nodiscard]] std::shared_ptr<MediaProxySession>
+    openMediaProxy(MediaProxyRequest request) const;
 
     ruvia::Task<std::vector<Device>> devices(ruvia::Context& context);
     ruvia::Task<std::optional<Device>> device(ruvia::Context& context, std::string id);
@@ -53,7 +56,8 @@ class Runtime final {
                                    std::string channelId, std::string startTime,
                                    std::string endTime);
     ruvia::Task<bool> ptz(ruvia::Context& context, std::string deviceId,
-                          std::string channelId, std::string action, std::uint8_t speed);
+                          std::string channelId, std::string action,
+                          std::uint8_t speed);
     ruvia::Task<bool> ptzPosition(ruvia::Context& context, std::string deviceId,
                                   std::string channelId, double pan, double tilt,
                                   double zoom);
@@ -74,8 +78,8 @@ class Runtime final {
     ruvia::Task<bool> startRecording(ruvia::Context& context, std::string streamId);
     ruvia::Task<bool> stopRecording(ruvia::Context& context, std::string streamId);
     ruvia::Task<bool> recording(ruvia::Context& context, std::string streamId);
-    void streamChanged(std::string app, std::string stream, std::string schema, bool online,
-                       int readerCount);
+    void streamChanged(std::string app, std::string stream, std::string schema,
+                       bool online, int readerCount);
     void streamNoneReader(std::string app, std::string stream, std::string schema);
 
   private:
@@ -105,9 +109,9 @@ class Runtime final {
             std::make_shared<ruvia::OneShotCompletion<DispatchResult<T>>>(
                 std::move(completion));
         auto cancelled = std::make_shared<std::atomic_bool>(false);
-        const auto posted = sipLoop_.post(
-            [sharedCompletion, cancelled, factory = std::move(factory),
-             rollback = std::move(rollback)]() mutable {
+        const auto posted =
+            sipLoop_.post([sharedCompletion, cancelled, factory = std::move(factory),
+                           rollback = std::move(rollback)]() mutable {
                 if (cancelled->load())
                     return;
                 DispatchResult<T> outcome;
@@ -127,25 +131,26 @@ class Runtime final {
             throw std::runtime_error("GB28181 SIP worker rejected operation");
 
         auto waited = co_await receiver.waitFor(timeout);
-        auto* outcome = waited.value();
-        if (outcome == nullptr) {
+        if (!waited.hasValue()) {
             cancelled->store(true);
-            if (waited.timedOut() != nullptr)
+            if (waited.status() == ruvia::WorkerWaitStatus::kTimedOut)
                 throw std::runtime_error("GB28181 operation timed out");
-            if (waited.workerStopping() != nullptr)
+            if (waited.status() == ruvia::WorkerWaitStatus::kWorkerStopping)
                 throw std::runtime_error("GB28181 service worker is stopping");
             throw std::runtime_error("GB28181 operation was cancelled");
         }
-        if (outcome->error)
-            std::rethrow_exception(outcome->error);
-        if (!outcome->value)
+        auto outcome = std::move(waited).takeValue();
+        if (outcome.error)
+            std::rethrow_exception(outcome.error);
+        if (!outcome.value)
             throw std::runtime_error("GB28181 operation completed without a value");
-        co_return std::move(*outcome->value);
+        co_return std::move(*outcome.value);
     }
 
     AppConfig config_;
     std::unique_ptr<ruvia::EventLoopPool> loopPool_;
     ruvia::EventLoop sipLoop_;
+    ruvia::EventLoop mediaProxyLoop_;
     std::unique_ptr<DeviceRegistry> devices_;
     std::unique_ptr<StreamRegistry> streams_;
     std::unique_ptr<ZlmSdk> zlm_;

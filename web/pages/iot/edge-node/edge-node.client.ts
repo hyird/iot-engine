@@ -25,7 +25,10 @@ export const getEdgeDetail = (id: string) =>
     request.get<Edge.Node>(`${BASE}/${edgeIdSchema.parse(id)}`);
 export const getLogs = (id: string, query?: Edge.LogsQuery) =>
     request.get<Edge.Logs>(
-        appendQueryParams(`${BASE}/${edgeIdSchema.parse(id)}/logs`, logsQuerySchema.parse(query ?? {}))
+        appendQueryParams(
+            `${BASE}/${edgeIdSchema.parse(id)}/logs`,
+            logsQuerySchema.parse(query ?? {})
+        )
     );
 export const setLogLevel = (id: string, data: Edge.LogLevelDto) =>
     request.put<void>(`${BASE}/${edgeIdSchema.parse(id)}/logs/level`, logLevelSchema.parse(data));
@@ -45,13 +48,34 @@ export const removePlatform = (id: string, platformId: string) =>
     request.delete<void>(
         `${BASE}/${edgeIdSchema.parse(id)}/platforms/${platformIdSchema.parse(platformId)}`
     );
-export const upgradeFirmware = (id: string, data: Edge.FirmwareUpgradeDto) => {
+export const upgradeFirmware = (
+    id: string,
+    data: Edge.FirmwareUpgradeDto,
+    onProgress?: (progress: Edge.FirmwareUploadProgress) => void
+) => {
     const value = firmwareUpgradeSchema.parse(data);
     const form = new FormData();
     form.append('keepSettings', String(value.keepSettings));
     form.append('file', value.file, value.file.name);
     return request.post<void>(`${BASE}/${edgeIdSchema.parse(id)}/firmware`, form, {
         timeout: 5 * 60 * 1000,
+        onUploadProgress: onProgress
+            ? (event) => {
+                  const totalBytes = value.file.size;
+                  const ratio = event.total
+                      ? event.loaded / event.total
+                      : (event.progress ?? event.loaded / totalBytes);
+                  const loadedBytes = Math.min(
+                      totalBytes,
+                      Math.max(0, Math.round(totalBytes * ratio))
+                  );
+                  onProgress({
+                      loadedBytes,
+                      totalBytes,
+                      percent: Math.min(100, Math.round((loadedBytes / totalBytes) * 100)),
+                  });
+              }
+            : undefined,
     });
 };
 export const getTerminalTicket = (id: string) =>

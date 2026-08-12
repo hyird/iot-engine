@@ -91,11 +91,14 @@ void runTask(ruvia::Task<void> task) {
 }
 
 struct FakeDbCell {
-    std::string value;
+    std::string content;
     bool null = false;
 
-    [[nodiscard]] std::string_view text() const noexcept { return value; }
-    [[nodiscard]] bool isNull() const noexcept { return null; }
+    [[nodiscard]] std::optional<std::string_view> value() const noexcept {
+        if (null)
+            return std::nullopt;
+        return content;
+    }
 };
 
 struct FakeDbRow {
@@ -115,9 +118,11 @@ struct FakeDbRow {
 struct FakeDbResult {
     std::vector<FakeDbRow> values;
 
-    [[nodiscard]] const std::vector<FakeDbRow>& rows() const noexcept {
-        return values;
-    }
+    [[nodiscard]] auto begin() const noexcept { return values.begin(); }
+    [[nodiscard]] auto end() const noexcept { return values.end(); }
+    [[nodiscard]] bool empty() const noexcept { return values.empty(); }
+    [[nodiscard]] std::size_t size() const noexcept { return values.size(); }
+    [[nodiscard]] const FakeDbRow& operator[](std::size_t index) const { return values.at(index); }
 };
 
 struct RuntimeRepositoryScaleDb {
@@ -165,8 +170,8 @@ struct RecordingRedis {
 };
 
 struct EdgeSessionRedis {
-    ruvia::Task<void> setEx(std::string_view, std::chrono::seconds,
-                            std::string_view epoch) const {
+    ruvia::Task<void> set(std::string_view, std::string_view epoch,
+                          ruvia::RedisSetOptions) const {
         value = std::string(epoch);
         co_return;
     }

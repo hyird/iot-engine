@@ -241,23 +241,21 @@ void testWebTerminalProtobuf() {
             "web terminal resize payload changed");
 }
 
-void testFirmwareRequestIncludesTargetVersion() {
+void testFirmwareRequestDefersVersionToNodeHello() {
     service::edge::pb::FirmwareUpdateRequest request;
     require(service::edge::firmware::populateUpdateRequest(
                 request, std::string(16, '\1'), "https://example.test/firmware.bin",
-                std::string(32, '\2'), 1024, "v1.2.3", true),
+                std::string(32, '\2'), 1024, true),
             "valid firmware request metadata was rejected");
-    require(request.version() == "v1.2.3",
-            "firmware request dropped the configured target version");
-}
-
-void testFirmwareRebootRequiresTargetVersion() {
-    require(service::edge::firmware::rebootConfirmsTarget("v1.2.3", "v1.2.3"),
-            "matching device-reported firmware version was rejected");
-    require(!service::edge::firmware::rebootConfirmsTarget("v1.2.2", "v1.2.3"),
-            "a reboot on the previous firmware version confirmed the update");
-    require(!service::edge::firmware::rebootConfirmsTarget("", "v1.2.3"),
-            "an empty device-reported firmware version confirmed the update");
+    require(request.version().empty(),
+            "firmware request must not infer or require a target version");
+    require(request.size_bytes() == 1024 && request.keep_settings(),
+            "firmware request metadata changed unexpectedly");
+    service::edge::pb::FirmwareUpdateRequest empty;
+    require(!service::edge::firmware::populateUpdateRequest(
+                empty, std::string(16, '\1'), "https://example.test/firmware.bin",
+                std::string(32, '\2'), 0, true),
+            "zero-length firmware request was accepted");
 }
 
 void testCommandResultRequiresTerminalState() {
@@ -291,8 +289,7 @@ int main() {
     testModemProfileRoundTrip();
     testNanopbBounds();
     testWebTerminalProtobuf();
-    testFirmwareRequestIncludesTargetVersion();
-    testFirmwareRebootRequiresTargetVersion();
+    testFirmwareRequestDefersVersionToNodeHello();
     testCommandResultRequiresTerminalState();
     std::cout << "edge protocol tests passed\n";
 }

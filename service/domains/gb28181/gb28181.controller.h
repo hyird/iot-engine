@@ -86,7 +86,7 @@ class Gb28181Controller final : public ruvia::Controller<Gb28181Controller> {
         const auto deviceId = requiredRoute(c, "deviceId", "设备编号不能为空");
         co_await gb28181Service().queryCatalog(c, deviceId);
         GbActionDto data(c);
-        data.sent(true).deviceId(deviceId);
+        data.set<"sent">(true).set<"deviceId">(deviceId);
         co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
     }
 
@@ -98,7 +98,7 @@ class Gb28181Controller final : public ruvia::Controller<Gb28181Controller> {
             requiredQuery(c, "mapped_device_id", "映射设备编号不能为空");
         co_await gb28181Service().mapDevice(c, deviceId, mappedDeviceId);
         GbActionDto data(c);
-        data.deviceId(deviceId).mappedDeviceId(mappedDeviceId);
+        data.set<"deviceId">(deviceId).set<"mappedDeviceId">(mappedDeviceId);
         co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
     }
 
@@ -108,7 +108,7 @@ class Gb28181Controller final : public ruvia::Controller<Gb28181Controller> {
         const auto deviceId = requiredRoute(c, "deviceId", "设备编号不能为空");
         co_await gb28181Service().mapDevice(c, deviceId, {});
         GbActionDto data(c);
-        data.deviceId(deviceId).mappedDeviceId("");
+        data.set<"deviceId">(deviceId).set<"mappedDeviceId">("");
         co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
     }
 
@@ -145,11 +145,11 @@ class Gb28181Controller final : public ruvia::Controller<Gb28181Controller> {
         const auto speed = ptzSpeed(c);
         co_await gb28181Service().ptz(c, deviceId, channelId, action, speed);
         GbActionDto data(c);
-        data.sent(true)
-            .deviceId(deviceId)
-            .channelId(channelId)
-            .action(action)
-            .speed(speed);
+        data.set<"sent">(true)
+            .set<"deviceId">(deviceId)
+            .set<"channelId">(channelId)
+            .set<"action">(action)
+            .set<"speed">(speed);
         co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
     }
 
@@ -163,7 +163,7 @@ class Gb28181Controller final : public ruvia::Controller<Gb28181Controller> {
         const auto zoom = finiteQuery(c, "zoom", 1.0, 1000.0);
         co_await gb28181Service().ptzPosition(c, deviceId, channelId, pan, tilt, zoom);
         GbActionDto data(c);
-        data.sent(true).pan(pan).tilt(tilt).zoom(zoom);
+        data.set<"sent">(true).set<"pan">(pan).set<"tilt">(tilt).set<"zoom">(zoom);
         co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
     }
 
@@ -176,7 +176,7 @@ class Gb28181Controller final : public ruvia::Controller<Gb28181Controller> {
         const auto endTime = requiredUtcQuery(c, "end_time", "结束时间不能为空");
         co_await gb28181Service().queryRecords(c, deviceId, channelId, startTime, endTime);
         GbActionDto data(c);
-        data.sent(true).deviceId(deviceId).channelId(channelId);
+        data.set<"sent">(true).set<"deviceId">(deviceId).set<"channelId">(channelId);
         co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
     }
 
@@ -200,7 +200,7 @@ class Gb28181Controller final : public ruvia::Controller<Gb28181Controller> {
         requireEnabled();
         const auto streamId = requiredRoute(c, "streamId", "流编号不能为空");
         GbActionDto data(c);
-        data.recording(co_await gb28181Service().recording(c, streamId));
+        data.set<"recording">(co_await gb28181Service().recording(c, streamId));
         co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
     }
 
@@ -210,7 +210,7 @@ class Gb28181Controller final : public ruvia::Controller<Gb28181Controller> {
         const auto streamId = requiredRoute(c, "streamId", "流编号不能为空");
         co_await gb28181Service().startRecording(c, streamId);
         GbActionDto data(c);
-        data.recording(true);
+        data.set<"recording">(true);
         co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
     }
 
@@ -220,7 +220,7 @@ class Gb28181Controller final : public ruvia::Controller<Gb28181Controller> {
         const auto streamId = requiredRoute(c, "streamId", "流编号不能为空");
         co_await gb28181Service().stopRecording(c, streamId);
         GbActionDto data(c);
-        data.recording(false);
+        data.set<"recording">(false);
         co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
     }
 

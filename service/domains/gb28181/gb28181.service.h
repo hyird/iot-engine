@@ -20,49 +20,49 @@ class Gb28181Service final {
         const auto& instance = runtime();
         const auto ports = instance.mediaPorts();
         GbMediaPortsDto portsDto(c);
-        portsDto.http(ports.http)
-            .https(ports.https)
-            .rtsp(ports.rtsp)
-            .rtsps(ports.rtsps)
-            .rtmp(ports.rtmp)
-            .rtmps(ports.rtmps)
-            .rtc(ports.rtc)
-            .srt(ports.srt);
+        portsDto.set<"http">(ports.http)
+            .set<"https">(ports.https)
+            .set<"rtsp">(ports.rtsp)
+            .set<"rtsps">(ports.rtsps)
+            .set<"rtmp">(ports.rtmp)
+            .set<"rtmps">(ports.rtmps)
+            .set<"rtc">(ports.rtc)
+            .set<"srt">(ports.srt);
         const auto capabilities = instance.mediaCapabilities();
         GbMediaCapabilitiesDto capabilitiesDto(c);
-        capabilitiesDto.faac(capabilities.faac)
-            .ffmpeg(capabilities.ffmpeg)
-            .hls(capabilities.hls)
-            .mp4(capabilities.mp4)
-            .rtpProxy(capabilities.rtpProxy)
-            .srt(capabilities.srt)
-            .sctp(capabilities.sctp)
-            .webRtc(capabilities.webRtc)
-            .x264(capabilities.x264)
-            .videoStack(capabilities.videoStack)
-            .tls(capabilities.tls)
-            .recording(capabilities.recording);
+        capabilitiesDto.set<"faac">(capabilities.faac)
+            .set<"ffmpeg">(capabilities.ffmpeg)
+            .set<"hls">(capabilities.hls)
+            .set<"mp4">(capabilities.mp4)
+            .set<"rtpProxy">(capabilities.rtpProxy)
+            .set<"srt">(capabilities.srt)
+            .set<"sctp">(capabilities.sctp)
+            .set<"webRtc">(capabilities.webRtc)
+            .set<"x264">(capabilities.x264)
+            .set<"videoStack">(capabilities.videoStack)
+            .set<"tls">(capabilities.tls)
+            .set<"recording">(capabilities.recording);
         GbHealthDto result(c);
-        result.status(instance.started() ? "ok"
+        result.set<"status">(instance.started() ? "ok"
                                          : (instance.enabled() ? "error" : "disabled"))
-            .service("iot-engine-gb28181")
-            .enabled(instance.enabled())
-            .started(instance.started())
-            .error(instance.lastError())
-            .mediaPorts(std::move(portsDto))
-            .mediaCapabilities(std::move(capabilitiesDto));
+            .set<"service">("iot-engine-gb28181")
+            .set<"enabled">(instance.enabled())
+            .set<"started">(instance.started())
+            .set<"error">(instance.lastError())
+            .set<"mediaPorts">(std::move(portsDto))
+            .set<"mediaCapabilities">(std::move(capabilitiesDto));
         return result;
     }
 
     [[nodiscard]] GbSipConfigDto sipConfig(ruvia::Context& c) const {
         const auto& config = runtime().config().sip;
         GbSipConfigDto result(c);
-        result.domain(config.domain)
-            .id(config.id)
-            .host(config.host)
-            .publicIp(config.publicIp)
-            .port(config.port)
-            .transport(config.transport);
+        result.set<"domain">(config.domain)
+            .set<"id">(config.id)
+            .set<"host">(config.host)
+            .set<"publicIp">(config.publicIp)
+            .set<"port">(config.port)
+            .set<"transport">(config.transport);
         return result;
     }
 
@@ -72,7 +72,7 @@ class Gb28181Service final {
         for (const auto& value : values)
             items.emplace(deviceDto(c, value));
         GbDeviceListDto result(c);
-        result.items(std::move(items));
+        result.set<"items">(std::move(items));
         co_return result;
     }
 
@@ -89,7 +89,7 @@ class Gb28181Service final {
         for (const auto& value : values)
             items.emplace(streamDto(c, value));
         GbStreamListDto result(c);
-        result.items(std::move(items));
+        result.set<"items">(std::move(items));
         co_return result;
     }
 
@@ -140,7 +140,7 @@ class Gb28181Service final {
             const auto target = co_await c.db().query(
                 "SELECT 1 FROM device WHERE id = $1::uuid AND deleted_at IS NULL",
                 service::common::dbParams(mappedDeviceId));
-            if (target.rows().empty())
+            if (target.empty())
                 service::common::fail(10003, "映射目标设备不存在", 404);
         }
         if (!co_await runtime().mapDevice(c, std::move(deviceId),
@@ -167,33 +167,33 @@ class Gb28181Service final {
     [[nodiscard]] static GbPreviewStartDto previewStart(
         ruvia::Context& c, const SipServer::PreviewStartResult& value) {
         GbPlayUrlsDto urls(c);
-        urls.httpFlv(value.playUrls.httpFlv)
-            .wsFlv(value.playUrls.wsFlv)
-            .httpTs(value.playUrls.httpTs)
-            .hls(value.playUrls.hls)
-            .webrtc(value.playUrls.webRtc)
-            .rtsp(value.playUrls.rtsp)
-            .rtmp(value.playUrls.rtmp);
+        urls.set<"httpFlv">(value.playUrls.httpFlv)
+            .set<"wsFlv">(value.playUrls.wsFlv)
+            .set<"httpTs">(value.playUrls.httpTs)
+            .set<"hls">(value.playUrls.hls)
+            .set<"webrtc">(value.playUrls.webRtc)
+            .set<"rtsp">(value.playUrls.rtsp)
+            .set<"rtmp">(value.playUrls.rtmp);
         GbPreviewStartDto result(c);
-        result.sent(true)
-            .sessionId(value.sessionId)
-            .deviceId(value.deviceId)
-            .channelId(value.channelId)
-            .streamId(value.streamId)
-            .ssrc(value.ssrc)
-            .rtpPort(value.rtpPort)
-            .playUrls(std::move(urls));
+        result.set<"sent">(true)
+            .set<"sessionId">(value.sessionId)
+            .set<"deviceId">(value.deviceId)
+            .set<"channelId">(value.channelId)
+            .set<"streamId">(value.streamId)
+            .set<"ssrc">(value.ssrc)
+            .set<"rtpPort">(value.rtpPort)
+            .set<"playUrls">(std::move(urls));
         return result;
     }
 
     [[nodiscard]] static GbPreviewStopDto previewStop(
         ruvia::Context& c, const SipServer::PreviewStopResult& value) {
         GbPreviewStopDto result(c);
-        result.stopped(true)
-            .sessionId(value.sessionId)
-            .streamId(value.streamId)
-            .byeSent(value.byeSent)
-            .rtpServerClosed(value.rtpServerClosed);
+        result.set<"stopped">(true)
+            .set<"sessionId">(value.sessionId)
+            .set<"streamId">(value.streamId)
+            .set<"byeSent">(value.byeSent)
+            .set<"rtpServerClosed">(value.rtpServerClosed);
         return result;
     }
 
@@ -221,50 +221,50 @@ class Gb28181Service final {
         ruvia::BoxedArray<GbChannelDto> channels(c.resource());
         for (const auto& channel : value.channels) {
             auto& dto = channels.emplace(c);
-            dto.id(channel.id)
-                .name(channel.name)
-                .manufacturer(channel.manufacturer)
-                .online(channel.online)
-                .ptzType(channel.ptzType)
-                .ptzCapable(channel.ptzType > 0);
+            dto.set<"id">(channel.id)
+                .set<"name">(channel.name)
+                .set<"manufacturer">(channel.manufacturer)
+                .set<"online">(channel.online)
+                .set<"ptzType">(channel.ptzType)
+                .set<"ptzCapable">(channel.ptzType > 0);
         }
         ruvia::BoxedArray<GbRecordDto> records(c.resource());
         for (const auto& record : value.records) {
             auto& dto = records.emplace(c);
-            dto.deviceId(record.deviceId)
-                .name(record.name)
-                .filePath(record.filePath)
-                .address(record.address)
-                .startTime(record.startTime)
-                .endTime(record.endTime)
-                .type(record.type)
-                .recorderId(record.recorderId);
+            dto.set<"deviceId">(record.deviceId)
+                .set<"name">(record.name)
+                .set<"filePath">(record.filePath)
+                .set<"address">(record.address)
+                .set<"startTime">(record.startTime)
+                .set<"endTime">(record.endTime)
+                .set<"type">(record.type)
+                .set<"recorderId">(record.recorderId);
         }
         GbDeviceDto result(c);
-        result.id(value.id)
-            .name(value.name)
-            .manufacturer(value.manufacturer)
-            .remoteAddress(value.remoteAddress)
-            .remoteIp(remoteIp)
-            .remotePort(remotePort)
-            .registrationSource(value.registrationSource)
-            .mappedDeviceId(value.mappedDeviceId)
-            .lastSeenAt(service::common::utcTimestamp(value.lastSeen))
-            .online(value.online)
-            .channels(std::move(channels))
-            .records(std::move(records));
+        result.set<"id">(value.id)
+            .set<"name">(value.name)
+            .set<"manufacturer">(value.manufacturer)
+            .set<"remoteAddress">(value.remoteAddress)
+            .set<"remoteIp">(remoteIp)
+            .set<"remotePort">(remotePort)
+            .set<"registrationSource">(value.registrationSource)
+            .set<"mappedDeviceId">(value.mappedDeviceId)
+            .set<"lastSeenAt">(service::common::utcTimestamp(value.lastSeen))
+            .set<"online">(value.online)
+            .set<"channels">(std::move(channels))
+            .set<"records">(std::move(records));
         return result;
     }
 
     [[nodiscard]] static GbStreamDto streamDto(ruvia::Context& c,
                                                 const StreamStatus& value) {
         GbStreamDto result(c);
-        result.id(StreamRegistry::identity(value.app, value.stream, value.schema))
-            .app(value.app)
-            .stream(value.stream)
-            .schema(value.schema)
-            .online(value.online)
-            .readerCount(value.readerCount);
+        result.set<"id">(StreamRegistry::identity(value.app, value.stream, value.schema))
+            .set<"app">(value.app)
+            .set<"stream">(value.stream)
+            .set<"schema">(value.schema)
+            .set<"online">(value.online)
+            .set<"readerCount">(value.readerCount);
         return result;
     }
 };

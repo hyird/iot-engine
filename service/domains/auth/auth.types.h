@@ -6,46 +6,34 @@
 
 namespace service::auth {
 
-struct LoginBody final {
-    RUVIA_OPTIONAL_FIELD(username, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(password, ruvia::String);
-    RUVIA_MODEL(LoginBody, username, password);
-};
+RUVIA_REQUEST_MODEL(LoginBody,
+    RUVIA_OPTIONAL_FIELD(username, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(password, ruvia::String));
 
-struct RefreshBody final {
-    RUVIA_OPTIONAL_FIELD_NAME("refresh_token", refreshToken, ruvia::String);
-    RUVIA_MODEL(RefreshBody, refreshToken);
-};
+RUVIA_REQUEST_MODEL(RefreshBody,
+    RUVIA_OPTIONAL_FIELD_NAME("refresh_token", refreshToken, ruvia::String));
 
-struct AuthUserInfoDto final {
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(username, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(nickname, ruvia::String, RUVIA_OMIT_EMPTY);
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(roles, ruvia::Array<service::role::RoleOptionDto>);
-    RUVIA_OPTIONAL_FIELD(permissions, ruvia::Array<ruvia::String>);
-    RUVIA_MODEL(AuthUserInfoDto, id, username, nickname, status, roles, permissions);
-};
+RUVIA_RESPONSE_MODEL(AuthUserInfoDto,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(username, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(nickname, ruvia::String, RUVIA_OMIT_EMPTY),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(roles, ruvia::Array<service::role::RoleOptionDto>),
+    RUVIA_OPTIONAL_FIELD(permissions, ruvia::Array<ruvia::String>));
 
-struct LoginResultDto final {
-    RUVIA_OPTIONAL_FIELD(token, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("refresh_token", refreshToken, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(user, AuthUserInfoDto);
-    RUVIA_MODEL(LoginResultDto, token, refreshToken, user);
-};
+RUVIA_RESPONSE_MODEL(LoginResultDto,
+    RUVIA_OPTIONAL_FIELD(token, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("refresh_token", refreshToken, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(user, AuthUserInfoDto));
 
-struct LoginResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, LoginResultDto);
-    RUVIA_MODEL(LoginResponse, code, message, data);
-};
+RUVIA_RESPONSE_MODEL(LoginResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, LoginResultDto));
 
-struct CurrentUserResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, AuthUserInfoDto);
-    RUVIA_MODEL(CurrentUserResponse, code, message, data);
-};
+RUVIA_RESPONSE_MODEL(CurrentUserResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, AuthUserInfoDto));
 
 } // namespace service::auth

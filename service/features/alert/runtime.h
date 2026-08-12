@@ -85,14 +85,14 @@ public:
     std::vector<ruvia::DbValue> params;
     const auto rules = co_await context.db().query(
         telemetryEvaluationSql(relevant, relevantPrevious, params), params);
-    if (rules.rows().empty()) {
+    if (rules.empty()) {
       co_await drainOutbox(context);
       co_return;
     }
 	    std::vector<std::vector<Evaluation>> evaluations(relevant.size());
-	    for (const auto &row : rules.rows()) {
+	    for (const auto &row : rules) {
 	      const auto parsedSequence =
-	          service::common::parseInt64(std::optional<std::string_view>{row[0].text()});
+	          service::common::parseInt64(std::optional<std::string_view>{row[0].value().value_or(std::string_view{})});
 	      if (!parsedSequence || *parsedSequence < 0)
 	        continue;
 	      const auto sequence = static_cast<std::size_t>(*parsedSequence);
@@ -175,8 +175,8 @@ public:
   apply(ruvia::WebWorkerContext &context, const Rows &rows,
         std::string_view fallbackData, std::int64_t occurredAtMs) {
     std::vector<Evaluation> evaluations;
-    evaluations.reserve(rows.rows().size());
-    for (const auto &row : rows.rows())
+    evaluations.reserve(rows.size());
+    for (const auto &row : rows)
       evaluations.push_back(evaluation(row, 1, fallbackData));
     co_await applyEvaluations(context, evaluations, occurredAtMs, {});
   }
@@ -200,20 +200,20 @@ public:
   template <typename Row>
   static Evaluation evaluation(const Row &row, std::size_t offset,
                                std::string_view fallbackData) {
-    const auto ruleName = std::string(row[offset + 1].text());
+    const auto ruleName = std::string(row[offset + 1].value().value_or(std::string_view{}));
     return Evaluation{
-        .ruleId = std::string(row[offset].text()),
+        .ruleId = std::string(row[offset].value().value_or(std::string_view{})),
         .ruleName = ruleName,
-        .severity = std::string(row[offset + 2].text()),
-        .deviceId = std::string(row[offset + 3].text()),
-        .deviceCode = std::string(row[offset + 4].text()),
+        .severity = std::string(row[offset + 2].value().value_or(std::string_view{})),
+        .deviceId = std::string(row[offset + 3].value().value_or(std::string_view{})),
+        .deviceCode = std::string(row[offset + 4].value().value_or(std::string_view{})),
         .matched =
-            row[offset + 5].text() == "t" || row[offset + 5].text() == "true",
-        .silence = std::string(row[offset + 6].text()),
-        .recovery = std::string(row[offset + 7].text()),
-        .recoveryWait = std::string(row[offset + 8].text()),
-        .data = row[offset + 9].isNull() ? std::string(fallbackData)
-                                         : std::string(row[offset + 9].text()),
+            row[offset + 5].value().value_or(std::string_view{}) == "t" || row[offset + 5].value().value_or(std::string_view{}) == "true",
+        .silence = std::string(row[offset + 6].value().value_or(std::string_view{})),
+        .recovery = std::string(row[offset + 7].value().value_or(std::string_view{})),
+        .recoveryWait = std::string(row[offset + 8].value().value_or(std::string_view{})),
+        .data = !row[offset + 9].value().has_value() ? std::string(fallbackData)
+                                         : std::string(row[offset + 9].value().value_or(std::string_view{})),
         .recordId = service::common::nextUuidV7(),
         .message = ruleName + " 触发告警",
     };
@@ -385,34 +385,34 @@ ORDER BY created_at, event_id)sql";
   template <typename Rows>
   static ruvia::Task<void> publishOutboxRows(
       ruvia::WebWorkerContext &context, const Rows &events) {
-    if (events.rows().empty())
+    if (events.empty())
       co_return;
     const auto scriptSha = co_await context.redis().scriptLoad(
         service::access::event::kPublishScript);
     auto pipeline = context.redis().pipeline();
-    for (const auto &event : events.rows()) {
+    for (const auto &event : events) {
       const auto occurredAt = service::common::parseInt64(
-          std::optional<std::string_view>(event[4].text()));
+          std::optional<std::string_view>(event[4].value().value_or(std::string_view{})));
       if (!occurredAt)
         throw std::runtime_error("invalid alert outbox timestamp");
       service::access::event::queue(
-          pipeline, scriptSha, event[0].text(), event[1].text(),
-          event[2].text(), event[3].text(), *occurredAt, event[5].text());
+          pipeline, scriptSha, event[0].value().value_or(std::string_view{}), event[1].value().value_or(std::string_view{}),
+          event[2].value().value_or(std::string_view{}), event[3].value().value_or(std::string_view{}), *occurredAt, event[5].value().value_or(std::string_view{}));
     }
     const auto replies = co_await std::move(pipeline).exec();
     service::message::redis::requirePipelineSuccess("publish alert outbox", replies);
 
     std::string remove = "DELETE FROM alert_event_outbox WHERE (event_id, event_type) IN (";
     std::vector<ruvia::DbValue> params;
-    params.reserve(events.rows().size() * 2);
-    for (const auto &event : events.rows()) {
+    params.reserve(events.size() * 2);
+    for (const auto &event : events) {
       if (!params.empty())
         remove.push_back(',');
       const auto base = params.size() + 1;
       remove += "($" + std::to_string(base) + "::uuid,$" +
                 std::to_string(base + 1) + "::text)";
-      params.emplace_back(event[0].text());
-      params.emplace_back(event[1].text());
+      params.emplace_back(event[0].value().value_or(std::string_view{}));
+      params.emplace_back(event[1].value().value_or(std::string_view{}));
     }
     remove.push_back(')');
     (void)co_await context.db().execute(remove, params);
@@ -429,7 +429,7 @@ SELECT event_id::text, event_type, device_id::text, device_code,
 FROM alert_event_outbox
 ORDER BY created_at, event_id
 LIMIT 256)sql");
-      if (events.rows().empty())
+      if (events.empty())
         co_return;
       co_await publishOutboxRows(context, events);
     }

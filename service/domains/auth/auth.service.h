@@ -67,8 +67,8 @@ class AuthService {
     }
 
     ruvia::Task<LoginResultDto> login(ruvia::Context& c, const LoginBody& body) {
-        const std::string username(body.username()->view());
-        const std::string password(body.password()->view());
+        const std::string username(body.get<"username">()->view());
+        const std::string password(body.get<"password">()->view());
         if (LoginRateLimiter::instance().locked(username)) {
             service::common::fail(11003, "登录失败次数过多，请 15 分钟后再试", 429);
         }
@@ -80,8 +80,8 @@ WHERE username = $1 AND deleted_at IS NULL
 LIMIT 1)sql",
                                                 service::common::dbParams(username));
 
-        if (rows.rows().empty() ||
-            !service::utils::comparePassword(password, rows.rows().front()[2].text())) {
+        if (rows.empty() ||
+            !service::utils::comparePassword(password, rows.front()[2].value().value_or(std::string_view{}))) {
             const int remaining = 5 - LoginRateLimiter::instance().failure(username);
             const auto message = remaining > 0 ? "用户名或密码错误，还剩 " +
                                                      std::to_string(remaining) + " 次尝试机会"
@@ -89,26 +89,26 @@ LIMIT 1)sql",
             service::common::fail(11001, message, remaining > 0 ? 401 : 429);
         }
 
-        const auto& row = rows.rows().front();
-        if (row[4].text() != "enabled")
+        const auto& row = rows.front();
+        if (row[4].value().value_or(std::string_view{}) != "enabled")
             service::common::fail(11002, "用户已被禁用", 403);
         LoginRateLimiter::instance().clear(username);
 
-        const std::string userId(row[0].text());
-        const std::string nickname(row[3].text());
-        const std::string status(row[4].text());
+        const std::string userId(row[0].value().value_or(std::string_view{}));
+        const std::string nickname(row[3].value().value_or(std::string_view{}));
+        const std::string status(row[4].value().value_or(std::string_view{}));
         service::core::JwtPayload payload{userId, username};
         LoginResultDto result(c);
-        result.token(service::utils::signAccessToken(c, payload))
-            .refreshToken(service::utils::signRefreshToken(c, payload))
-            .user(co_await buildUser(c, userId, username, nickname, status));
+        result.set<"token">(service::utils::signAccessToken(c, payload))
+            .set<"refreshToken">(service::utils::signRefreshToken(c, payload))
+            .set<"user">(co_await buildUser(c, userId, username, nickname, status));
         co_return result;
     }
 
     ruvia::Task<LoginResultDto> refresh(ruvia::Context& c, const RefreshBody& body) {
         service::core::JwtPayload payload;
         try {
-            payload = service::utils::verifyRefreshToken(c, body.refreshToken()->view());
+            payload = service::utils::verifyRefreshToken(c, body.get<"refreshToken">()->view());
         } catch (...) {
             service::common::fail(service::common::kTokenInvalidErrorCode, "刷新令牌无效", 401);
         }
@@ -116,21 +116,21 @@ LIMIT 1)sql",
 SELECT id, username, COALESCE(nickname, ''), status
 FROM sys_user WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
                                                 service::common::dbParams(payload.userId));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(11008, "用户不存在", 404);
-        const auto& row = rows.rows().front();
-        if (row[3].text() != "enabled")
+        const auto& row = rows.front();
+        if (row[3].value().value_or(std::string_view{}) != "enabled")
             service::common::fail(11002, "用户已被禁用", 403);
 
-        const std::string userId(row[0].text());
-        const std::string username(row[1].text());
-        const std::string nickname(row[2].text());
-        const std::string status(row[3].text());
+        const std::string userId(row[0].value().value_or(std::string_view{}));
+        const std::string username(row[1].value().value_or(std::string_view{}));
+        const std::string nickname(row[2].value().value_or(std::string_view{}));
+        const std::string status(row[3].value().value_or(std::string_view{}));
         service::core::JwtPayload next{userId, username};
         LoginResultDto result(c);
-        result.token(service::utils::signAccessToken(c, next))
-            .refreshToken(service::utils::signRefreshToken(c, next))
-            .user(co_await buildUser(c, userId, username, nickname, status));
+        result.set<"token">(service::utils::signAccessToken(c, next))
+            .set<"refreshToken">(service::utils::signRefreshToken(c, next))
+            .set<"user">(co_await buildUser(c, userId, username, nickname, status));
         co_return result;
     }
 
@@ -139,13 +139,13 @@ FROM sys_user WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
 SELECT username, COALESCE(nickname, ''), status
 FROM sys_user WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
                                                 service::common::dbParams(userId));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(11008, "用户不存在", 404);
-        const auto& row = rows.rows().front();
-        if (row[2].text() != "enabled")
+        const auto& row = rows.front();
+        if (row[2].value().value_or(std::string_view{}) != "enabled")
             service::common::fail(11002, "用户已被禁用", 403);
-        co_return co_await buildUser(c, userId, std::string(row[0].text()),
-                                     std::string(row[1].text()), std::string(row[2].text()));
+        co_return co_await buildUser(c, userId, std::string(row[0].value().value_or(std::string_view{})),
+                                     std::string(row[1].value().value_or(std::string_view{})), std::string(row[2].value().value_or(std::string_view{})));
     }
 
   private:
@@ -153,7 +153,7 @@ FROM sys_user WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
                                            const std::string& username, const std::string& nickname,
                                            const std::string& status) {
         AuthUserInfoDto user(c);
-        user.id(userId).username(username).nickname(nickname).status(status);
+        user.set<"id">(userId).set<"username">(username).set<"nickname">(nickname).set<"status">(status);
 
         const auto roles = co_await c.db().query(R"sql(
 SELECT r.id, r.name, r.code
@@ -162,10 +162,10 @@ JOIN sys_user_role ur ON ur.role_id = r.id
 WHERE ur.user_id = $1 AND r.status = 'enabled' AND r.deleted_at IS NULL
 ORDER BY r.id)sql",
                                                  service::common::dbParams(userId));
-        auto& roleItems = user.rolesEnsure();
-        for (const auto& row : roles.rows()) {
+        auto& roleItems = user.ensure<"roles">();
+        for (const auto& row : roles) {
             auto& role = roleItems.emplace_back(c);
-            role.id(row[0].text()).name(row[1].text()).code(row[2].text());
+            role.set<"id">(row[0].value().value_or(std::string_view{})).set<"name">(row[1].value().value_or(std::string_view{})).set<"code">(row[2].value().value_or(std::string_view{}));
         }
 
         const auto permissions = co_await c.db().query(R"sql(
@@ -176,9 +176,9 @@ CROSS JOIN LATERAL jsonb_array_elements_text(r.permissions) AS p(permission)
 WHERE ur.user_id = $1 AND r.status = 'enabled' AND r.deleted_at IS NULL
 ORDER BY p.permission)sql",
                                                        service::common::dbParams(userId));
-        auto& permissionItems = user.permissionsEnsure();
-        for (const auto& row : permissions.rows())
-            permissionItems.emplace_back(row[0].text(), c.resource());
+        auto& permissionItems = user.ensure<"permissions">();
+        for (const auto& row : permissions)
+            permissionItems.emplace_back(row[0].value().value_or(std::string_view{}), c.resource());
         co_return user;
     }
 };

@@ -24,19 +24,19 @@ class UserController final : public ruvia::Controller<UserController> {
 
   private:
     static std::string id(ruvia::Context& c) {
-        return std::string(c.req().validated<UserIdParams>().id()->view());
+        return std::string(c.req().validated<UserIdParams>().get<"id">()->view());
     }
 
     ruvia::Task<ruvia::HttpResponse> list(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:user:query");
         const auto& query = c.req().validated<UserListQuery>();
-        const auto page = static_cast<std::int64_t>(*query.page());
-        const auto pageSize = static_cast<std::int64_t>(*query.pageSize());
-        const auto keyword = query.keyword()
-                                 ? std::optional<std::string>(std::string(query.keyword()->view()))
+        const auto page = static_cast<std::int64_t>(*query.get<"page">());
+        const auto pageSize = static_cast<std::int64_t>(*query.get<"pageSize">());
+        const auto keyword = query.get<"keyword">()
+                                 ? std::optional<std::string>(std::string(query.get<"keyword">()->view()))
                                  : std::nullopt;
-        const auto status = query.status()
-                                ? std::optional<std::string>(std::string(query.status()->view()))
+        const auto status = query.get<"status">()
+                                ? std::optional<std::string>(std::string(query.get<"status">()->view()))
                                 : std::nullopt;
         co_return c.json(service::common::ok<UserPageResponse>(
             c, co_await userService().list(c, page, pageSize, keyword, status)));
@@ -45,8 +45,8 @@ class UserController final : public ruvia::Controller<UserController> {
     ruvia::Task<ruvia::HttpResponse> options(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:user:query");
         const auto& query = c.req().validated<UserOptionsQuery>();
-        const auto keyword = query.keyword()
-                                 ? std::optional<std::string>(std::string(query.keyword()->view()))
+        const auto keyword = query.get<"keyword">()
+                                 ? std::optional<std::string>(std::string(query.get<"keyword">()->view()))
                                  : std::nullopt;
         co_return c.json(service::common::ok<UserOptionsResponse>(
             c, co_await userService().options(c, keyword)));

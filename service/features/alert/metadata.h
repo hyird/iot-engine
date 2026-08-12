@@ -73,24 +73,24 @@ inline ruvia::Task<void> refresh(Context& context) {
     std::set<std::string, std::less<>> devices;
     std::vector<OfflineEntry> offlineEntries;
     const auto now = service::message::utcNowMilliseconds();
-    for (const auto& row : rows.rows()) {
-        const std::string deviceId(row[0].text());
+    for (const auto& row : rows) {
+        const std::string deviceId(row[0].value().value_or(std::string_view{}));
         devices.emplace(deviceId);
-        if (row[2].isNull())
+        if (!row[2].value().has_value())
             continue;
         const auto durationSeconds =
-            service::common::parseInt64(std::optional<std::string_view>{row[2].text()});
+            service::common::parseInt64(std::optional<std::string_view>{row[2].value().value_or(std::string_view{})});
         if (!durationSeconds || *durationSeconds <= 0)
             continue;
         const auto observedAtMs =
-            service::common::parseInt64(std::optional<std::string_view>{row[3].text()})
+            service::common::parseInt64(std::optional<std::string_view>{row[3].value().value_or(std::string_view{})})
                 .value_or(0);
         const auto durationMs = *durationSeconds * 1000;
         offlineEntries.push_back(
             {offlineDurationKey(deviceId),
-             std::string(row[1].text()) + ":" + std::to_string(durationMs),
+             std::string(row[1].value().value_or(std::string_view{})) + ":" + std::to_string(durationMs),
              durationMs, observedAtMs > 0 ? observedAtMs + durationMs : now,
-             std::string(row[4].text())});
+             std::string(row[4].value().value_or(std::string_view{}))});
     }
 
     std::vector<std::string> arguments;

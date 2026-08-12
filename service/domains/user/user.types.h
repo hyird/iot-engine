@@ -21,100 +21,75 @@ inline bool isPhoneNumber(const ruvia::String& value) {
     return true;
 }
 
-struct CreateUserBody final {
-    RUVIA_OPTIONAL_FIELD(username, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(password, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(nickname, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(phone, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(email, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("department_id", departmentId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("role_ids", roleIds, ruvia::Array<ruvia::String>);
-    RUVIA_MODEL(CreateUserBody, username, password, nickname, phone, email, status, departmentId,
-                roleIds);
-};
+RUVIA_REQUEST_MODEL(CreateUserBody,
+    RUVIA_OPTIONAL_FIELD(username, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(password, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(nickname, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(phone, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(email, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("department_id", departmentId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("role_ids", roleIds, ruvia::Array<ruvia::String>));
 
-struct UpdateUserBody final {
-    RUVIA_OPTIONAL_FIELD(nickname, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(phone, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(email, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(password, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("department_id", departmentId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("role_ids", roleIds, ruvia::Array<ruvia::String>);
-    RUVIA_MODEL(UpdateUserBody, nickname, phone, email, status, password, departmentId, roleIds);
-};
+RUVIA_REQUEST_MODEL(UpdateUserBody,
+    RUVIA_OPTIONAL_FIELD(nickname, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(phone, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(email, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(password, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("department_id", departmentId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("role_ids", roleIds, ruvia::Array<ruvia::String>));
 
-struct UserListQuery final {
-    RUVIA_OPTIONAL_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1));
-    RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64, RUVIA_DEFAULT(10));
-    RUVIA_OPTIONAL_FIELD(keyword, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_MODEL(UserListQuery, page, pageSize, keyword, status);
-};
+RUVIA_REQUEST_MODEL(UserListQuery,
+    RUVIA_OPTIONAL_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1)),
+    RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64, RUVIA_DEFAULT(10)),
+    RUVIA_OPTIONAL_FIELD(keyword, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String));
 
-struct UserOptionsQuery final {
-    RUVIA_OPTIONAL_FIELD(keyword, ruvia::String);
-    RUVIA_MODEL(UserOptionsQuery, keyword);
-};
+RUVIA_REQUEST_MODEL(UserOptionsQuery,
+    RUVIA_OPTIONAL_FIELD(keyword, ruvia::String));
 
-struct UserIdParams final {
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
-    RUVIA_MODEL(UserIdParams, id);
-};
+RUVIA_REQUEST_MODEL(UserIdParams,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String));
 
-struct UserOptionDto final {
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(username, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(nickname, ruvia::String, RUVIA_OMIT_EMPTY);
-    RUVIA_MODEL(UserOptionDto, id, username, nickname);
-};
+RUVIA_RESPONSE_MODEL(UserOptionDto,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(username, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(nickname, ruvia::String, RUVIA_OMIT_EMPTY));
 
-struct UserItemDto final {
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(username, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(nickname, ruvia::String, RUVIA_OMIT_EMPTY);
-    RUVIA_OPTIONAL_FIELD(phone, ruvia::String, RUVIA_OMIT_EMPTY);
-    RUVIA_OPTIONAL_FIELD(email, ruvia::String, RUVIA_OMIT_EMPTY);
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("department_id", departmentId, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("department_name", departmentName, ruvia::String,
-                              RUVIA_OMIT_EMPTY);
-    RUVIA_OPTIONAL_FIELD(roles, ruvia::BoxedArray<service::role::RoleOptionDto>);
-    RUVIA_OPTIONAL_FIELD_NAME("created_at", createdAt, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("updated_at", updatedAt, ruvia::String);
-    RUVIA_MODEL(UserItemDto, id, username, nickname, phone, email, status, departmentId,
-                departmentName, roles, createdAt, updatedAt);
-};
+RUVIA_RESPONSE_MODEL(UserItemDto,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(username, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(nickname, ruvia::String, RUVIA_OMIT_EMPTY),
+    RUVIA_OPTIONAL_FIELD(phone, ruvia::String, RUVIA_OMIT_EMPTY),
+    RUVIA_OPTIONAL_FIELD(email, ruvia::String, RUVIA_OMIT_EMPTY),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("department_id", departmentId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("department_name", departmentName, ruvia::String, RUVIA_OMIT_EMPTY),
+    RUVIA_OPTIONAL_FIELD(roles, ruvia::BoxedArray<service::role::RoleOptionDto>),
+    RUVIA_OPTIONAL_FIELD_NAME("created_at", createdAt, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("updated_at", updatedAt, ruvia::String));
 
-struct UserPageDataDto final {
-    RUVIA_OPTIONAL_FIELD(list, ruvia::BoxedArray<UserItemDto>);
-    RUVIA_OPTIONAL_FIELD(total, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(page, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("totalPages", totalPages, ruvia::Int64);
-    RUVIA_MODEL(UserPageDataDto, list, total, page, pageSize, totalPages);
-};
+RUVIA_RESPONSE_MODEL(UserPageDataDto,
+    RUVIA_OPTIONAL_FIELD(list, ruvia::BoxedArray<UserItemDto>),
+    RUVIA_OPTIONAL_FIELD(total, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(page, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("totalPages", totalPages, ruvia::Int64));
 
-struct UserPageResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, UserPageDataDto);
-    RUVIA_MODEL(UserPageResponse, code, message, data);
-};
+RUVIA_RESPONSE_MODEL(UserPageResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, UserPageDataDto));
 
-struct UserDetailResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, UserItemDto);
-    RUVIA_MODEL(UserDetailResponse, code, message, data);
-};
+RUVIA_RESPONSE_MODEL(UserDetailResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, UserItemDto));
 
-struct UserOptionsResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<UserOptionDto>);
-    RUVIA_MODEL(UserOptionsResponse, code, message, data);
-};
+RUVIA_RESPONSE_MODEL(UserOptionsResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<UserOptionDto>));
 
 } // namespace service::user

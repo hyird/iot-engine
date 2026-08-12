@@ -547,14 +547,14 @@ WHERE update_barrier.updated_count >= 0 AND latest_barrier.latest_count >= 0
 ORDER BY incoming.input_sequence)sql";
         const auto rows = co_await context.db().query(sql, params);
         std::vector<std::string> previous(messages.size(), "{}");
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             const auto parsedSequence =
-                service::common::parseInt64(std::optional<std::string_view>{row[0].text()});
+                service::common::parseInt64(std::optional<std::string_view>{row[0].value().value_or(std::string_view{})});
             if (!parsedSequence || *parsedSequence < 0)
                 continue;
             const auto sequence = static_cast<std::size_t>(*parsedSequence);
-            if (sequence < previous.size() && !row[1].isNull())
-                previous[sequence].assign(row[1].text());
+            if (sequence < previous.size() && row[1].value().has_value())
+                previous[sequence].assign(row[1].value().value_or(std::string_view{}));
         }
         co_return previous;
     }

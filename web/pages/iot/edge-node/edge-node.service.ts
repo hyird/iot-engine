@@ -103,8 +103,11 @@ export function usePlatformDeleteMutation() {
 
 export function useFirmwareUpgradeMutation() {
     return useMutationWithMessage({
-        mutationFn: (value: { id: string; data: Edge.FirmwareUpgradeDto }) =>
-            upgradeFirmware(value.id, value.data),
+        mutationFn: (value: {
+            id: string;
+            data: Edge.FirmwareUpgradeDto;
+            onProgress?: (progress: Edge.FirmwareUploadProgress) => void;
+        }) => upgradeFirmware(value.id, value.data, value.onProgress),
         successMessage: '固件已上传，刷写任务已下发给当前节点',
         invalidateKeys: [edgeQueryKeys.all],
     });

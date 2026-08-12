@@ -174,13 +174,13 @@ ruvia::Task<NodeSnapshot> loadNodeFromDatabase(Context& context, std::string_vie
     const auto rows = co_await context.db().query(kLoadNodeSql,
                                                     service::common::dbParams(nodeId));
     NodeSnapshot snapshot;
-    snapshot.reserve(rows.rows().size());
-    for (const auto& row : rows.rows()) {
+    snapshot.reserve(rows.size());
+    for (const auto& row : rows) {
         snapshot.emplace(
-            std::string(row[0].text()),
-            Device{std::string(row[1].text()), std::string(row[2].text()),
-                   std::string(row[3].text()), positiveCeil(row[4].text()),
-                   onlineWindowMilliseconds(row[5].text())});
+            std::string(row[0].value().value_or(std::string_view{})),
+            Device{std::string(row[1].value().value_or(std::string_view{})), std::string(row[2].value().value_or(std::string_view{})),
+                   std::string(row[3].value().value_or(std::string_view{})), positiveCeil(row[4].value().value_or(std::string_view{})),
+                   onlineWindowMilliseconds(row[5].value().value_or(std::string_view{}))});
     }
     co_return snapshot;
 }
@@ -189,15 +189,15 @@ template <typename Context>
 ruvia::Task<Catalog> loadCatalogFromDatabase(Context& context) {
     const auto rows = co_await context.db().query(kLoadCatalogSql);
     Catalog catalog;
-    for (const auto& row : rows.rows()) {
-        auto& snapshot = catalog[std::string(row[0].text())];
-        if (row[1].isNull() || row[2].isNull() || row[3].isNull() || row[4].isNull())
+    for (const auto& row : rows) {
+        auto& snapshot = catalog[std::string(row[0].value().value_or(std::string_view{}))];
+        if (!row[1].value().has_value() || !row[2].value().has_value() || !row[3].value().has_value() || !row[4].value().has_value())
             continue;
         snapshot.emplace(
-            std::string(row[1].text()),
-            Device{std::string(row[2].text()), std::string(row[3].text()),
-                   std::string(row[4].text()), positiveCeil(row[5].text()),
-                   onlineWindowMilliseconds(row[6].text())});
+            std::string(row[1].value().value_or(std::string_view{})),
+            Device{std::string(row[2].value().value_or(std::string_view{})), std::string(row[3].value().value_or(std::string_view{})),
+                   std::string(row[4].value().value_or(std::string_view{})), positiveCeil(row[5].value().value_or(std::string_view{})),
+                   onlineWindowMilliseconds(row[6].value().value_or(std::string_view{}))});
     }
     co_return catalog;
 }

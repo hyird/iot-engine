@@ -40,7 +40,7 @@ class ProtocolService {
 
         const auto countRows =
             co_await c.db().query("SELECT COUNT(*) FROM protocol_config" + where, params);
-        const auto total = toInt(countRows.rows().front()[0].text());
+        const auto total = toInt(countRows.front()[0].value().value_or(std::string_view{}));
         auto listParams = params;
         listParams.emplace_back(pageSize);
         const auto limitIndex = listParams.size();
@@ -54,11 +54,11 @@ class ProtocolService {
 
         std::string result = "{\"list\":[";
         bool first = true;
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             if (!first)
                 result.push_back(',');
             first = false;
-            result.append(row[0].text());
+            result.append(row[0].value().value_or(std::string_view{}));
         }
         result += "],\"total\":" + std::to_string(total) + ",\"page\":" + std::to_string(page) +
                   ",\"pageSize\":" + std::to_string(pageSize) + ",\"totalPages\":" +
@@ -71,9 +71,9 @@ class ProtocolService {
             "SELECT " + itemExpression() +
                 "::text FROM protocol_config WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
             service::common::dbParams(id));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(16001, "协议配置不存在", 404);
-        co_return std::string(rows.rows().front()[0].text());
+        co_return std::string(rows.front()[0].value().value_or(std::string_view{}));
     }
 
     ruvia::Task<std::string> options(ruvia::Context& c, const std::string& protocol,
@@ -83,7 +83,7 @@ class ProtocolService {
         const auto countRows = co_await c.db().query(
             "SELECT COUNT(*) FROM protocol_config WHERE deleted_at IS NULL AND protocol = $1",
             service::common::dbParams(protocol));
-        const auto total = toInt(countRows.rows().front()[0].text());
+        const auto total = toInt(countRows.front()[0].value().value_or(std::string_view{}));
         const auto rows = co_await c.db().query(
             R"sql(
 SELECT jsonb_build_object('id', id, 'name', name)::text
@@ -93,11 +93,11 @@ ORDER BY name LIMIT $2 OFFSET $3)sql",
             service::common::dbParams(protocol, pageSize, (page - 1) * pageSize));
         std::string result = "{\"list\":[";
         bool first = true;
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             if (!first)
                 result.push_back(',');
             first = false;
-            result.append(row[0].text());
+            result.append(row[0].value().value_or(std::string_view{}));
         }
         result += "],\"total\":" + std::to_string(total) + ",\"page\":" + std::to_string(page) +
                   ",\"pageSize\":" + std::to_string(pageSize) + "}";
@@ -139,10 +139,10 @@ FROM body)sql",
             "SELECT protocol, created_by FROM protocol_config WHERE id = $1 AND deleted_at IS "
             "NULL LIMIT 1",
             service::common::dbParams(id));
-        if (existing.rows().empty())
+        if (existing.empty())
             service::common::fail(16001, "协议配置不存在", 404);
-        co_await requireOwner(c, existing.rows().front()[1].text());
-        const std::string protocol(existing.rows().front()[0].text());
+        co_await requireOwner(c, existing.front()[1].value().value_or(std::string_view{}));
+        const std::string protocol(existing.front()[0].value().value_or(std::string_view{}));
         if (const auto requested =
                 optionalString(payload, "protocol", "protocol 必须是字符串", 16)) {
             if (requested->empty())
@@ -182,14 +182,14 @@ FROM body WHERE p.id = $2)sql",
         const auto existing = co_await c.db().query("SELECT created_by FROM protocol_config "
                                                     "WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
                                                     service::common::dbParams(id));
-        if (existing.rows().empty())
+        if (existing.empty())
             service::common::fail(16001, "协议配置不存在", 404);
-        co_await requireOwner(c, existing.rows().front()[0].text());
+        co_await requireOwner(c, existing.front()[0].value().value_or(std::string_view{}));
         const auto used = co_await c.db().query(
             "SELECT EXISTS (SELECT 1 FROM device WHERE protocol_config_id = $1::uuid "
             "AND deleted_at IS NULL)",
             service::common::dbParams(id));
-        if (used.rows().front()[0].text() == "t")
+        if (used.front()[0].value().value_or(std::string_view{}) == "t")
             service::common::fail(16008, "协议配置已被设备使用，请先删除关联设备", 409);
         (void)co_await c.db().execute(
             "UPDATE protocol_config SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1",
@@ -206,8 +206,8 @@ JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NUL
 WHERE d.protocol_config_id = $1::uuid AND d.deleted_at IS NULL
 ORDER BY l.edge_node_id::text)sql",
                                                 service::common::dbParams(configId));
-        for (const auto& row : rows.rows())
-            (void)co_await service::edge::configService().queueSnapshot(c, row[0].text());
+        for (const auto& row : rows)
+            (void)co_await service::edge::configService().queueSnapshot(c, row[0].value().value_or(std::string_view{}));
     }
 
     static std::int64_t toInt(std::string_view value) {
@@ -276,7 +276,7 @@ WITH body AS (SELECT $1::jsonb AS value)
 SELECT NOT (value ? 'enabled') OR jsonb_typeof(value->'enabled') = 'boolean'
 FROM body)sql",
                                                    service::common::dbParams(body));
-        if (enabled.rows().front()[0].text() != "t")
+        if (enabled.front()[0].value().value_or(std::string_view{}) != "t")
             service::common::fail(16004, "enabled 必须是布尔值", 400);
 
         const auto shape = co_await c.db().query(R"sql(
@@ -284,13 +284,13 @@ WITH body AS (SELECT $1::jsonb AS value)
 SELECT body.value ? 'config', jsonb_typeof(body.value->'config')
 FROM body)sql",
                                                  service::common::dbParams(body));
-        const bool present = shape.rows().front()[0].text() == "t";
+        const bool present = shape.front()[0].value().value_or(std::string_view{}) == "t";
         if (!present) {
             if (required)
                 service::common::fail(16004, "config 不能为空", 400);
             co_return;
         }
-        if (shape.rows().front()[1].text() != "object")
+        if (shape.front()[1].value().value_or(std::string_view{}) != "object")
             service::common::fail(16004, "config 必须是对象", 400);
         if (protocol == "SL651") {
             const auto rows = co_await c.db().query(R"sql(
@@ -301,9 +301,9 @@ SELECT
   value ? 'responseMode', value ? 'funcs'
 FROM cfg)sql",
                                                     service::common::dbParams(body));
-            const auto& row = rows.rows().front();
-            if (row[0].text() != "t" || row[1].text() != "t" ||
-                (required && (row[2].text() != "t" || row[3].text() != "t")))
+            const auto& row = rows.front();
+            if (row[0].value().value_or(std::string_view{}) != "t" || row[1].value().value_or(std::string_view{}) != "t" ||
+                (required && (row[2].value().value_or(std::string_view{}) != "t" || row[3].value().value_or(std::string_view{}) != "t")))
                 service::common::fail(16004, "SL651 配置无效", 400);
             co_return;
         }
@@ -326,11 +326,11 @@ SELECT
   value ? 'plcModel', value ? 'connection', value ? 'areas'
 FROM cfg)sql",
                                                     service::common::dbParams(body));
-            const auto& row = rows.rows().front();
-            if (row[0].text() != "t" || row[1].text() != "t" || row[2].text() != "t" ||
-                row[3].text() != "t" || row[4].text() != "t" || row[5].text() != "t" ||
+            const auto& row = rows.front();
+            if (row[0].value().value_or(std::string_view{}) != "t" || row[1].value().value_or(std::string_view{}) != "t" || row[2].value().value_or(std::string_view{}) != "t" ||
+                row[3].value().value_or(std::string_view{}) != "t" || row[4].value().value_or(std::string_view{}) != "t" || row[5].value().value_or(std::string_view{}) != "t" ||
                 (required &&
-                 (row[6].text() != "t" || row[7].text() != "t" || row[8].text() != "t")))
+                 (row[6].value().value_or(std::string_view{}) != "t" || row[7].value().value_or(std::string_view{}) != "t" || row[8].value().value_or(std::string_view{}) != "t")))
                 service::common::fail(16004, "S7 配置无效", 400);
             const auto areas = co_await c.db().query(R"sql(
 WITH cfg AS (SELECT ($1::jsonb)->'config' AS value),
@@ -367,7 +367,7 @@ SELECT COALESCE(bool_and(
     AND (NOT (item ? 'writable') OR jsonb_typeof(item->'writable') = 'boolean')
 ), TRUE) FROM areas)sql",
                                                     service::common::dbParams(body));
-            if (areas.rows().front()[0].text() != "t")
+            if (areas.front()[0].value().value_or(std::string_view{}) != "t")
                 service::common::fail(16004, "S7 寄存器配置无效", 400);
             co_return;
         }
@@ -385,14 +385,14 @@ SELECT COALESCE(bool_and(
 	    value ? 'registers'
 	FROM cfg)sql",
 	                                                      service::common::dbParams(body));
-	        const auto& config = configRows.rows().front();
-	        if (config[0].text() != "t" || (required && config[3].text() != "t"))
+	        const auto& config = configRows.front();
+	        if (config[0].value().value_or(std::string_view{}) != "t" || (required && config[3].value().value_or(std::string_view{}) != "t"))
 	            service::common::fail(16004, "Modbus 配置的 byteOrder 无效", 400);
-	        if (config[1].text() != "t" || (required && config[4].text() != "t"))
+	        if (config[1].value().value_or(std::string_view{}) != "t" || (required && config[4].value().value_or(std::string_view{}) != "t"))
 	            service::common::fail(16004, "Modbus 配置的 registers 必须是数组", 400);
-	        if (config[2].text() != "t")
+	        if (config[2].value().value_or(std::string_view{}) != "t")
 	            service::common::fail(16004, "Modbus 配置的 packet 必须是对象", 400);
-	        if (config[4].text() != "t")
+	        if (config[4].value().value_or(std::string_view{}) != "t")
 	            co_return;
 	
 	        const auto registers = co_await c.db().query(R"sql(
@@ -413,7 +413,7 @@ SELECT COALESCE(bool_and(
              THEN TRUE ELSE FALSE END
 ), TRUE) FROM registers)sql",
                                                      service::common::dbParams(body));
-        if (registers.rows().front()[0].text() != "t")
+        if (registers.front()[0].value().value_or(std::string_view{}) != "t")
             service::common::fail(16004, "Modbus 寄存器配置无效", 400);
     }
 
@@ -428,7 +428,7 @@ SELECT COALESCE(bool_and(
         }
         sql += " LIMIT 1";
         const auto rows = co_await c.db().query(sql, params);
-        if (!rows.rows().empty())
+        if (!rows.empty())
             service::common::fail(16005, "配置名称已存在", 409);
     }
 
@@ -443,7 +443,7 @@ SELECT EXISTS (
       AND r.status = 'enabled' AND r.deleted_at IS NULL
 ))sql",
                                                 service::common::dbParams(principal.userId));
-        if (rows.rows().empty() || rows.rows().front()[0].text() != "t")
+        if (rows.empty() || rows.front()[0].value().value_or(std::string_view{}) != "t")
             service::common::fail(16007, "只能修改或删除自己创建的协议配置", 403);
     }
 };

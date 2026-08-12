@@ -9,16 +9,12 @@ namespace service::protocol {
 // （RUVIA_FIELD 只接受 Ruvia value 类型或嵌套模型），故 protocol 的读写保持
 // jsonb 输出/入参，不套用 typed DTO；协议相关的 config 校验在 service 内完成。
 
-struct ProtocolListQuery final {
-    RUVIA_OPTIONAL_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1));
-    RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64, RUVIA_DEFAULT(10));
-    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String);
-    RUVIA_MODEL(ProtocolListQuery, page, pageSize, protocol);
-};
+RUVIA_REQUEST_MODEL(ProtocolListQuery,
+    RUVIA_OPTIONAL_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1)),
+    RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64, RUVIA_DEFAULT(10)),
+    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String));
 
-struct ProtocolIdParams final {
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
-    RUVIA_MODEL(ProtocolIdParams, id);
-};
+RUVIA_REQUEST_MODEL(ProtocolIdParams,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String));
 
 } // namespace service::protocol

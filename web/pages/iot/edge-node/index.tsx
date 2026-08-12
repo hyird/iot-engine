@@ -558,6 +558,8 @@ export default function EdgeNodePage() {
     const [networkOpen, setNetworkOpen] = useState(false);
     const [platformOpen, setPlatformOpen] = useState(false);
     const [firmwareOpen, setFirmwareOpen] = useState(false);
+    const [firmwareUploadProgress, setFirmwareUploadProgress] =
+        useState<Edge.FirmwareUploadProgress>();
     const [modemOpen, setModemOpen] = useState(false);
     const [terminalOpen, setTerminalOpen] = useState(false);
     const [networkForm] = Form.useForm<Edge.NetworkConfig>();
@@ -569,6 +571,7 @@ export default function EdgeNodePage() {
     const networkBridge = Form.useWatch('bridge', networkForm);
     const modemAutomatic = Form.useWatch('automatic', modemForm);
     const modemAuthType = Form.useWatch('authType', modemForm);
+    const firmwareFile = Form.useWatch('file', firmwareForm);
     const { message, modal } = App.useApp();
     const { run: search } = useDebounceFn((value: string) => {
         setKeyword(value);
@@ -579,11 +582,11 @@ export default function EdgeNodePage() {
     const nodes: Edge.Node[] = data?.list ?? [];
     const { data: detail, isLoading: detailLoading } = useEdgeDetail(selectedId);
     const logsQuery = { limit: 48, level: logLevel };
-    const { data: logs, isFetching: logsLoading, refetch: refreshLogs } = useEdgeLogs(
-        logNode?.id,
-        logsQuery,
-        Boolean(logNode)
-    );
+    const {
+        data: logs,
+        isFetching: logsLoading,
+        refetch: refreshLogs,
+    } = useEdgeLogs(logNode?.id, logsQuery, Boolean(logNode));
     const enrollment = useEnrollmentMutation();
     const nodeName = useNodeNameMutation();
     const network = useNetworkMutation();
@@ -738,6 +741,8 @@ export default function EdgeNodePage() {
     };
 
     const showFirmware = (node: Edge.Node) => {
+        firmwareUpgrade.reset();
+        setFirmwareUploadProgress(undefined);
         firmwareForm.resetFields();
         firmwareForm.setFieldsValue({ keepSettings: true });
         setFirmwareNode(node);
@@ -1144,7 +1149,10 @@ export default function EdgeNodePage() {
                                                 <Tag color="blue" className="!mr-0 !rounded-md">
                                                     {node.model || '未知型号'}
                                                 </Tag>
-                                                <Tag color="purple" className="!mr-0 !rounded-md">
+                                                    <Tag
+                                                        color="purple"
+                                                        className="!mr-0 !rounded-md"
+                                                    >
                                                     {node.softwareVersion || '未知版本'}
                                                 </Tag>
                                             </span>
@@ -1177,7 +1185,9 @@ export default function EdgeNodePage() {
                                                     <Button
                                                         type="text"
                                                         size="small"
-                                                        className={EDGE_CARD_ACTION_BUTTON_CLASS}
+                                                            className={
+                                                                EDGE_CARD_ACTION_BUTTON_CLASS
+                                                            }
                                                         icon={<EditOutlined />}
                                                         onClick={() => showRename(node)}
                                                     />
@@ -1205,7 +1215,8 @@ export default function EdgeNodePage() {
                                                         />
                                                     </Tooltip>
                                                 )}
-                                            {node.enrollmentStatus === 'approved' && canConfig && (
+                                                {node.enrollmentStatus === 'approved' &&
+                                                    canConfig && (
                                                 <Tooltip
                                                     title={
                                                         capability.networkConfig &&
@@ -1220,14 +1231,17 @@ export default function EdgeNodePage() {
                                                             size="small"
                                                             disabled={
                                                                 !capability.networkConfig ||
-                                                                capability.networkConfigVersion < 2
+                                                                        capability.networkConfigVersion <
+                                                                            2
                                                             }
                                                             className={
                                                                 EDGE_CARD_ACTION_BUTTON_CLASS
                                                             }
                                                             icon={<GlobalOutlined />}
                                                             onClick={() =>
-                                                                void showNetworkManager(node)
+                                                                        void showNetworkManager(
+                                                                            node
+                                                                        )
                                                             }
                                                         />
                                                     </span>
@@ -1281,7 +1295,8 @@ export default function EdgeNodePage() {
                                                         />
                                                     </Tooltip>
                                                 )}
-                                            {node.enrollmentStatus === 'approved' && canQuery && (
+                                                {node.enrollmentStatus === 'approved' &&
+                                                    canQuery && (
                                                 <Tooltip
                                                     title={
                                                         !status.online
@@ -1295,7 +1310,10 @@ export default function EdgeNodePage() {
                                                         <Button
                                                             type="text"
                                                             size="small"
-                                                            disabled={!status.online || !capability.logs}
+                                                                    disabled={
+                                                                        !status.online ||
+                                                                        !capability.logs
+                                                                    }
                                                             className={
                                                                 EDGE_CARD_ACTION_BUTTON_CLASS
                                                             }
@@ -1303,7 +1321,8 @@ export default function EdgeNodePage() {
                                                             onClick={() => {
                                                                 setLogLevel(undefined);
                                                                 setNodeLogLevel(
-                                                                    node.status.log?.level ?? 'info'
+                                                                            node.status.log
+                                                                                ?.level ?? 'info'
                                                                 );
                                                                 setLogNode(node);
                                                             }}
@@ -1329,29 +1348,41 @@ export default function EdgeNodePage() {
                                                         />
                                                     </Tooltip>
                                                 )}
-                                            {canEdit && node.enrollmentStatus !== 'approved' && (
+                                                {canEdit &&
+                                                    node.enrollmentStatus !== 'approved' && (
                                                 <Tooltip title="批准注册">
                                                     <Button
                                                         type="text"
                                                         size="small"
-                                                        className={EDGE_CARD_ACTION_BUTTON_CLASS}
+                                                                className={
+                                                                    EDGE_CARD_ACTION_BUTTON_CLASS
+                                                                }
                                                         icon={<CheckOutlined />}
                                                         onClick={() =>
-                                                            updateEnrollment(node, 'approved')
+                                                                    updateEnrollment(
+                                                                        node,
+                                                                        'approved'
+                                                                    )
                                                         }
                                                     />
                                                 </Tooltip>
                                             )}
-                                            {canEdit && node.enrollmentStatus !== 'rejected' && (
+                                                {canEdit &&
+                                                    node.enrollmentStatus !== 'rejected' && (
                                                 <Tooltip title="拒绝注册">
                                                     <Button
                                                         type="text"
                                                         danger
                                                         size="small"
-                                                        className={EDGE_CARD_DANGER_BUTTON_CLASS}
+                                                                className={
+                                                                    EDGE_CARD_DANGER_BUTTON_CLASS
+                                                                }
                                                         icon={<CloseOutlined />}
                                                         onClick={() =>
-                                                            updateEnrollment(node, 'rejected')
+                                                                    updateEnrollment(
+                                                                        node,
+                                                                        'rejected'
+                                                                    )
                                                         }
                                                     />
                                                 </Tooltip>
@@ -1991,8 +2022,7 @@ export default function EdgeNodePage() {
                         </Button>
                     </Popconfirm>
                     <p className="text-xs text-slate-500">
-                        APN 配置按 OpenWrt 移动网络参数下发；密码和 SIM PIN
-                        不写入任务审计记录。
+                        APN 配置按 OpenWrt 移动网络参数下发；密码和 SIM PIN 不写入任务审计记录。
                     </p>
                 </Form>
             </FormModal>
@@ -2001,11 +2031,18 @@ export default function EdgeNodePage() {
                 open={firmwareOpen}
                 title={`上传固件并刷写${firmwareNode ? ` · ${firmwareNode.name || firmwareNode.imei}` : ''}`}
                 onCancel={() => {
+                    if (firmwareUpgrade.isPending) return;
                     setFirmwareOpen(false);
                     setFirmwareNode(undefined);
+                    setFirmwareUploadProgress(undefined);
+                    firmwareUpgrade.reset();
                 }}
                 onOk={() => firmwareForm.submit()}
-                okButtonProps={{ danger: true }}
+                okButtonProps={{ danger: true, disabled: !firmwareFile }}
+                cancelButtonProps={{ disabled: firmwareUpgrade.isPending }}
+                closable={!firmwareUpgrade.isPending}
+                keyboard={!firmwareUpgrade.isPending}
+                maskClosable={!firmwareUpgrade.isPending}
                 confirmLoading={firmwareUpgrade.isPending}
                 destroyOnHidden
             >
@@ -2014,16 +2051,27 @@ export default function EdgeNodePage() {
                     layout="vertical"
                     onFinish={(values) => {
                         const parsed = validateForm(firmwareForm, firmwareUpgradeSchema, values);
-                        if (parsed && firmwareNode)
+                        if (parsed && firmwareNode) {
+                            setFirmwareUploadProgress({
+                                loadedBytes: 0,
+                                totalBytes: parsed.file.size,
+                                percent: 0,
+                            });
                             firmwareUpgrade.mutate(
-                                { id: firmwareNode.id, data: parsed },
+                                {
+                                    id: firmwareNode.id,
+                                    data: parsed,
+                                    onProgress: setFirmwareUploadProgress,
+                                },
                                 {
                                     onSuccess: () => {
                                         setFirmwareOpen(false);
                                         setFirmwareNode(undefined);
+                                        setFirmwareUploadProgress(undefined);
                                     },
                                 }
                             );
+                        }
                     }}
                 >
                     <Form.Item
@@ -2031,14 +2079,41 @@ export default function EdgeNodePage() {
                         name="file"
                         getValueFromEvent={(event) => event?.fileList?.[0]?.originFileObj}
                     >
-                        <Upload beforeUpload={() => false} maxCount={1} accept=".bin,.img">
-                            <Button>选择固件</Button>
+                        <Upload
+                            beforeUpload={() => false}
+                            maxCount={1}
+                            accept=".bin,.img"
+                            disabled={firmwareUpgrade.isPending}
+                        >
+                            <Button disabled={firmwareUpgrade.isPending}>选择固件</Button>
                         </Upload>
                     </Form.Item>
                     <p className="text-xs text-slate-500">
                         最大 128 MiB。文件名仅作为文件标识，不作为固件版本；上传完成后平台计算
                         SHA-256，并立即只向当前节点下发。刷写重启后，版本以节点上报为准。
                     </p>
+                    {firmwareUploadProgress && (
+                        <div className="mb-5 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+                            <Flex justify="space-between" gap={12} className="mb-2 text-xs">
+                                <span className="font-medium text-slate-700">
+                                    {firmwareUpgrade.isError
+                                        ? '上传失败，可直接重试'
+                                        : firmwareUploadProgress.percent >= 100
+                                          ? '上传完成，平台正在校验并创建刷写任务'
+                                          : '正在上传固件到平台'}
+                                </span>
+                                <span className="shrink-0 text-slate-500">
+                                    {formatBytes(firmwareUploadProgress.loadedBytes)} /{' '}
+                                    {formatBytes(firmwareUploadProgress.totalBytes)}
+                                </span>
+                            </Flex>
+                            <Progress
+                                percent={firmwareUploadProgress.percent}
+                                status={firmwareUpgrade.isError ? 'exception' : 'active'}
+                                size="small"
+                            />
+                        </div>
+                    )}
                     <Form.Item label="保留 UCI 配置" name="keepSettings" valuePropName="checked">
                         <Switch />
                     </Form.Item>

@@ -29,7 +29,7 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
 
   private:
     static std::string id(ruvia::Context& c) {
-        return std::string(c.req().validated<ProtocolIdParams>().id()->view());
+        return std::string(c.req().validated<ProtocolIdParams>().get<"id">()->view());
     }
 
     static ruvia::HttpResponse jsonData(ruvia::Context& c, std::string_view data) {
@@ -45,22 +45,25 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
     ruvia::Task<ruvia::HttpResponse> list(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:protocol:query");
         const auto& query = c.req().validated<ProtocolListQuery>();
-        const auto protocol =
-            query.protocol() ? std::optional<std::string>(query.protocol()->view()) : std::nullopt;
+        const auto& protocolValue = query.get<"protocol">();
+        const auto protocol = protocolValue
+                                  ? std::optional<std::string>(protocolValue->view())
+                                  : std::nullopt;
         const auto data =
-            co_await protocolService().list(c, static_cast<std::int64_t>(*query.page()),
-                                            static_cast<std::int64_t>(*query.pageSize()), protocol);
+            co_await protocolService().list(c, static_cast<std::int64_t>(*query.get<"page">()),
+                                            static_cast<std::int64_t>(*query.get<"pageSize">()), protocol);
         co_return jsonData(c, data);
     }
 
     ruvia::Task<ruvia::HttpResponse> options(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:protocol:query");
         const auto& query = c.req().validated<ProtocolListQuery>();
-        if (!query.protocol())
+        const auto& protocol = query.get<"protocol">();
+        if (!protocol)
             service::common::fail(16003, "protocol 不能为空", 400);
         const auto data = co_await protocolService().options(
-            c, std::string(query.protocol()->view()), static_cast<std::int64_t>(*query.page()),
-            static_cast<std::int64_t>(*query.pageSize()));
+            c, std::string(protocol->view()), static_cast<std::int64_t>(*query.get<"page">()),
+            static_cast<std::int64_t>(*query.get<"pageSize">()));
         co_return jsonData(c, data);
     }
 

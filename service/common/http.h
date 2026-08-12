@@ -25,11 +25,9 @@ inline constexpr std::int64_t kTokenExpiredErrorCode{11005};
 inline constexpr std::int64_t kTokenInvalidErrorCode{11006};
 inline constexpr std::int64_t kPermissionDeniedErrorCode{11007};
 
-struct ErrorResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_MODEL(ErrorResponse, code, message);
-};
+RUVIA_RESPONSE_MODEL(ErrorResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String));
 
 inline std::optional<std::int64_t> parseInt64(std::optional<std::string_view> input) {
     if (!input || input->empty())
@@ -73,19 +71,21 @@ inline std::int64_t errorCode(std::string_view code, std::uint16_t status) {
 
 template <typename Response, typename Data> inline Response ok(ruvia::Context& c, Data&& data) {
     Response response(c);
-    response.code(0).message("ok").data(std::forward<Data>(data));
+    response.template set<"code">(0)
+        .template set<"message">("ok")
+        .template set<"data">(std::forward<Data>(data));
     return response;
 }
 
 inline OperationResponse operation(ruvia::Context& c, std::string_view message) {
     OperationResponse response(c);
-    response.code(0).message(message);
+    response.set<"code">(0).set<"message">(message);
     return response;
 }
 
 inline ErrorResponse error(ruvia::Context& c, std::int64_t code, std::string_view message) {
     ErrorResponse response(c);
-    response.code(code).message(message);
+    response.set<"code">(code).set<"message">(message);
     return response;
 }
 

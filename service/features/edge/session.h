@@ -5,8 +5,10 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include <ruvia/core/Task.h>
+#include <ruvia/web/redis/RedisTypes.h>
 
 #include "service/features/collector/stream.h"
 
@@ -18,7 +20,10 @@ inline std::string key(std::string_view nodeId) {
 
 template <typename Redis>
 ruvia::Task<bool> claim(const Redis& redis, std::string_view nodeId, std::uint64_t epoch) {
-    co_await redis.setEx(key(nodeId), std::chrono::seconds(90), std::to_string(epoch));
+    ruvia::RedisSetOptions options;
+    options.expiration =
+        ruvia::RedisSetExpiration::expiresAfter(std::chrono::seconds(90));
+    co_await redis.set(key(nodeId), std::to_string(epoch), std::move(options));
     co_return true;
 }
 

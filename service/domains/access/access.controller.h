@@ -166,7 +166,7 @@ class AccessController final : public ruvia::Controller<AccessController> {
         const auto session = co_await accessService().authenticate(c, kScopeCommand);
         const auto body = co_await c.req().json<service::device::DeviceCommandBody>();
         const auto id =
-            body.deviceId() ? std::string(body.deviceId()->view()) : std::string{};
+            body.get<"deviceId">() ? std::string(body.get<"deviceId">()->view()) : std::string{};
         requireUuid(id, "设备 ID 无效");
         if (!session.allowsDevice(id))
             service::common::fail(19011, "AccessKey 无权控制该设备", 403);

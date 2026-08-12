@@ -4,15 +4,11 @@
 
 namespace service::alert {
 
-struct AlertIdParams final {
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
-    RUVIA_MODEL(AlertIdParams, id);
-};
+RUVIA_REQUEST_MODEL(AlertIdParams,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String));
 
-struct AlertListQuery final {
-    RUVIA_OPTIONAL_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1));
-    RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64, RUVIA_DEFAULT(20));
-    RUVIA_MODEL(AlertListQuery, page, pageSize);
-};
+RUVIA_REQUEST_MODEL(AlertListQuery,
+    RUVIA_OPTIONAL_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1)),
+    RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64, RUVIA_DEFAULT(20)));
 
 } // namespace service::alert

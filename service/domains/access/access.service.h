@@ -589,9 +589,9 @@ SELECT jsonb_build_object(
         std::optional<std::string> secret;
     };
     template <typename Rows> static std::string firstJson(const Rows& rows) {
-        if (rows.rows().empty() || rows.rows().front().empty() || rows.rows().front()[0].isNull())
+        if (rows.empty() || rows.front().empty() || !rows.front()[0].value().has_value())
             return "[]";
-        return std::string(rows.rows().front()[0].text());
+        return std::string(rows.front()[0].value().value_or(std::string_view{}));
     }
 
     static std::string requiredString(const ruvia::JsonValue& payload, std::string_view field,
@@ -770,7 +770,7 @@ SELECT NOT EXISTS (
                        'te', 'upgrade', 'expect', 'proxy-connection')
 ))sql",
                                                 service::common::dbParams(headers));
-        if (rows.rows().front()[0].text() != "t")
+        if (rows.front()[0].value().value_or(std::string_view{}) != "t")
             service::common::fail(19002, "自定义 Header 包含非法或保留字段", 400);
     }
 
@@ -794,7 +794,7 @@ SELECT NOT EXISTS (
                                   params);
         const auto visible =
             service::common::parseInt64(
-                std::optional<std::string_view>{rows.rows().front()[0].text()})
+                std::optional<std::string_view>{rows.front()[0].value().value_or(std::string_view{})})
                 .value_or(-1);
         if (visible != static_cast<std::int64_t>(ids.size()))
             service::common::fail(19011,
@@ -824,7 +824,7 @@ SELECT EXISTS(SELECT 1 FROM open_access_key
 WHERE name = $1 AND deleted_at IS NULL AND ($2 = '' OR id <> $2::uuid))
 )sql",
                                                 service::common::dbParams(name, exceptValue));
-        if (rows.rows().front()[0].text() == "t")
+        if (rows.front()[0].value().value_or(std::string_view{}) == "t")
             service::common::fail(19003, "调用配置名称已存在", 409);
     }
 
@@ -839,7 +839,7 @@ WHERE access_key_id = $1::uuid AND name = $2 AND deleted_at IS NULL
   AND ($3 = '' OR id <> $3::uuid))
 )sql",
                                   service::common::dbParams(accessKeyId, name, exceptValue));
-        if (rows.rows().front()[0].text() == "t")
+        if (rows.front()[0].value().value_or(std::string_view{}) == "t")
             service::common::fail(19003, "同一调用配置下的 Webhook 名称已存在", 409);
     }
 
@@ -848,23 +848,23 @@ WHERE access_key_id = $1::uuid AND name = $2 AND deleted_at IS NULL
 SELECT name, status, scopes::text, iot_utc_timestamp(expires_at), remark
 FROM open_access_key WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
                                                 service::common::dbParams(id));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(19001, "调用配置不存在", 404);
-        const auto& row = rows.rows().front();
+        const auto& row = rows.front();
         KeyState state;
-        state.name = std::string(row[0].text());
-        state.status = std::string(row[1].text());
-        state.scopes = parseStringArray(row[2].text());
-        if (!row[3].isNull())
-            state.expiresAt = std::string(row[3].text());
-        if (!row[4].isNull())
-            state.remark = std::string(row[4].text());
+        state.name = std::string(row[0].value().value_or(std::string_view{}));
+        state.status = std::string(row[1].value().value_or(std::string_view{}));
+        state.scopes = parseStringArray(row[2].value().value_or(std::string_view{}));
+        if (row[3].value().has_value())
+            state.expiresAt = std::string(row[3].value().value_or(std::string_view{}));
+        if (row[4].value().has_value())
+            state.remark = std::string(row[4].value().value_or(std::string_view{}));
         const auto devices =
             co_await c.db().query("SELECT device_id::text FROM open_access_key_device "
                                   "WHERE access_key_id = $1::uuid ORDER BY device_id",
                                   service::common::dbParams(id));
-        for (const auto& device : devices.rows())
-            state.deviceIds.emplace_back(device[0].text());
+        for (const auto& device : devices)
+            state.deviceIds.emplace_back(device[0].value().value_or(std::string_view{}));
         co_return state;
     }
 
@@ -874,21 +874,21 @@ SELECT access_key_id::text, name, url, status, timeout_seconds,
        headers::text, event_types::text, secret
 FROM open_webhook WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
                                                 service::common::dbParams(id));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(19001, "Webhook 不存在", 404);
-        const auto& row = rows.rows().front();
+        const auto& row = rows.front();
         WebhookState state;
-        state.accessKeyId = std::string(row[0].text());
-        state.name = std::string(row[1].text());
-        state.url = std::string(row[2].text());
-        state.status = std::string(row[3].text());
+        state.accessKeyId = std::string(row[0].value().value_or(std::string_view{}));
+        state.name = std::string(row[1].value().value_or(std::string_view{}));
+        state.url = std::string(row[2].value().value_or(std::string_view{}));
+        state.status = std::string(row[3].value().value_or(std::string_view{}));
         state.timeout =
-            service::common::parseInt64(std::optional<std::string_view>{row[4].text()})
+            service::common::parseInt64(std::optional<std::string_view>{row[4].value().value_or(std::string_view{})})
                 .value_or(state.timeout);
-        state.headers = std::string(row[5].text());
-        state.events = parseStringArray(row[6].text());
-        if (!row[7].isNull())
-            state.secret = std::string(row[7].text());
+        state.headers = std::string(row[5].value().value_or(std::string_view{}));
+        state.events = parseStringArray(row[6].value().value_or(std::string_view{}));
+        if (row[7].value().has_value())
+            state.secret = std::string(row[7].value().value_or(std::string_view{}));
         co_return state;
     }
 
@@ -900,7 +900,7 @@ FROM open_webhook WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
         const auto rows = co_await c.db().query(
             "SELECT EXISTS(SELECT 1 FROM device WHERE id = $1::uuid AND deleted_at IS NULL)",
             service::common::dbParams(deviceId));
-        if (rows.rows().front()[0].text() != "t")
+        if (rows.front()[0].value().value_or(std::string_view{}) != "t")
             service::common::fail(19001, "设备不存在", 404);
     }
 

@@ -817,16 +817,16 @@ FROM (
     }
 
     template <typename Rows> static std::string firstJson(const Rows& rows) {
-        if (rows.rows().empty() || rows.rows().front().empty() || rows.rows().front()[0].isNull())
+        if (rows.empty() || rows.front().empty() || !rows.front()[0].value().has_value())
             return "{}";
-        return std::string(rows.rows().front()[0].text());
+        return std::string(rows.front()[0].value().value_or(std::string_view{}));
     }
 
     template <typename Rows>
     static std::string firstObject(const Rows& rows, std::string_view notFound) {
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(17003, std::string(notFound), 404);
-        return std::string(rows.rows().front()[0].text());
+        return std::string(rows.front()[0].value().value_or(std::string_view{}));
     }
 
     static PageParams addPageParams(std::vector<ruvia::DbValue>& params,
@@ -870,7 +870,7 @@ FROM (
         const auto rows = co_await c.db().query(
             "SELECT 1 FROM device WHERE id = $1::uuid AND deleted_at IS NULL",
             service::common::dbParams(id));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(17003, "关联设备不存在", 404);
     }
 
@@ -878,7 +878,7 @@ FROM (
         const auto rows = co_await c.db().query(
             "SELECT 1 FROM protocol_config WHERE id = $1::uuid AND deleted_at IS NULL",
             service::common::dbParams(id));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(17003, "协议配置不存在", 404);
     }
 
@@ -886,7 +886,7 @@ FROM (
         const auto rows = co_await c.db().query(
             "SELECT 1 FROM alert_rule WHERE id = $1::uuid AND deleted_at IS NULL",
             service::common::dbParams(id));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(17003, "告警规则不存在", 404);
     }
 
@@ -894,7 +894,7 @@ FROM (
         const auto rows = co_await c.db().query(
             "SELECT 1 FROM alert_rule_template WHERE id = $1::uuid AND deleted_at IS NULL",
             service::common::dbParams(id));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(17003, "告警模板不存在", 404);
     }
 
@@ -906,7 +906,7 @@ FROM (
             "SELECT 1 FROM alert_rule WHERE device_id = $1::uuid AND name = $2 "
             "AND deleted_at IS NULL AND ($3 = '' OR id <> NULLIF($3, '')::uuid)",
             service::common::dbParams(deviceId, name, excludedId));
-        if (!rows.rows().empty())
+        if (!rows.empty())
             service::common::fail(17009, "该设备已存在同名告警规则", 409);
     }
 
@@ -917,7 +917,7 @@ FROM (
             "SELECT 1 FROM alert_rule_template WHERE name = $1 AND deleted_at IS NULL "
             "AND ($2 = '' OR id <> NULLIF($2, '')::uuid)",
             service::common::dbParams(name, excludedId));
-        if (!rows.rows().empty())
+        if (!rows.empty())
             service::common::fail(17009, "告警模板名称已存在", 409);
     }
 };

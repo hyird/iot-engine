@@ -172,12 +172,12 @@ class Projector final {
     static ruvia::Task<void> hydrateAuth(ruvia::WebWorkerContext& context) {
         const auto rows = co_await context.db().query(
             "SELECT imei, id::text, enrollment_status FROM edge_node");
-        if (rows.rows().empty())
+        if (rows.empty())
             co_return;
         auto pipeline = context.redis().pipeline();
-        for (const auto& row : rows.rows()) {
-            const auto key = protocol::authKey(row[0].text());
-            const auto value = std::string(row[1].text()) + "|" + std::string(row[2].text());
+        for (const auto& row : rows) {
+            const auto key = protocol::authKey(row[0].value().value_or(std::string_view{}));
+            const auto value = std::string(row[1].value().value_or(std::string_view{})) + "|" + std::string(row[2].value().value_or(std::string_view{}));
             pipeline.set(key, value);
         }
         const auto replies = co_await std::move(pipeline).exec();
@@ -382,8 +382,8 @@ RETURNING id::text, enrollment_status)sql",
                                                           hello.mobile_ipv4(),
                                                           hello.log_level()));
         const auto key = protocol::authKey(hello.imei());
-        const auto nodeId = std::string(rows.rows().front()[0].text());
-        const auto enrollmentStatus = std::string(rows.rows().front()[1].text());
+        const auto nodeId = std::string(rows.front()[0].value().value_or(std::string_view{}));
+        const auto enrollmentStatus = std::string(rows.front()[1].value().value_or(std::string_view{}));
         const auto value = nodeId + "|" + enrollmentStatus;
         co_await context.redis().set(key, value);
         if (enrollmentStatus == "approved") {
@@ -391,13 +391,10 @@ RETURNING id::text, enrollment_status)sql",
 WITH target AS (
     SELECT task.id
     FROM edge_task task
-    JOIN edge_firmware firmware
-      ON firmware.id = (task.request->>'firmware_id')::uuid
     WHERE task.node_id = $2::uuid
       AND task.task_type = 'firmware'
       AND task.status = 'running'
       AND task.result->>'state' = 'flashing'
-      AND firmware.version = $1::text
     ORDER BY task.created_at DESC
     LIMIT 1
 )

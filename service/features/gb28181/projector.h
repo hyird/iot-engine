@@ -137,18 +137,18 @@ SELECT id, name, manufacturer, remote_address, registration_source, online,
        iot_utc_timestamp(last_seen_at), COALESCE(mapped_device_id::text, '')
 FROM gb28181_device
 ORDER BY id)sql");
-    snapshot.devices.reserve(devices.rows().size());
-    for (const auto &row : devices.rows()) {
+    snapshot.devices.reserve(devices.size());
+    for (const auto &row : devices) {
       Device device;
-      device.id = std::string(row[0].text());
-      device.name = std::string(row[1].text());
-      device.manufacturer = std::string(row[2].text());
-      device.remoteAddress = std::string(row[3].text());
-      device.registrationSource = std::string(row[4].text());
-      device.online = boolean(row[5].text());
-      if (const auto parsed = service::common::parseUtcTimestamp(row[6].text()))
+      device.id = std::string(row[0].value().value_or(std::string_view{}));
+      device.name = std::string(row[1].value().value_or(std::string_view{}));
+      device.manufacturer = std::string(row[2].value().value_or(std::string_view{}));
+      device.remoteAddress = std::string(row[3].value().value_or(std::string_view{}));
+      device.registrationSource = std::string(row[4].value().value_or(std::string_view{}));
+      device.online = boolean(row[5].value().value_or(std::string_view{}));
+      if (const auto parsed = service::common::parseUtcTimestamp(row[6].value().value_or(std::string_view{})))
         device.lastSeen = *parsed;
-      device.mappedDeviceId = std::string(row[7].text());
+      device.mappedDeviceId = std::string(row[7].value().value_or(std::string_view{}));
       deviceIndexes.emplace(device.id, snapshot.devices.size());
       snapshot.devices.push_back(std::move(device));
     }
@@ -157,16 +157,16 @@ ORDER BY id)sql");
 SELECT device_id, id, name, manufacturer, online, ptz_type
 FROM gb28181_channel
 ORDER BY device_id, id)sql");
-    for (const auto &row : channels.rows()) {
-      const auto device = deviceIndexes.find(std::string(row[0].text()));
+    for (const auto &row : channels) {
+      const auto device = deviceIndexes.find(std::string(row[0].value().value_or(std::string_view{})));
       if (device == deviceIndexes.end())
         continue;
       snapshot.devices[device->second].channels.push_back(Channel{
-          .id = std::string(row[1].text()),
-          .name = std::string(row[2].text()),
-          .manufacturer = std::string(row[3].text()),
-          .online = boolean(row[4].text()),
-          .ptzType = integer(row[5].text(), -1),
+          .id = std::string(row[1].value().value_or(std::string_view{})),
+          .name = std::string(row[2].value().value_or(std::string_view{})),
+          .manufacturer = std::string(row[3].value().value_or(std::string_view{})),
+          .online = boolean(row[4].value().value_or(std::string_view{})),
+          .ptzType = integer(row[5].value().value_or(std::string_view{}), -1),
       });
     }
 
@@ -176,19 +176,19 @@ SELECT device_id, channel_id, name, file_path, address,
        record_type, recorder_id
 FROM gb28181_record
 ORDER BY device_id, start_time DESC)sql");
-    for (const auto &row : records.rows()) {
-      const auto device = deviceIndexes.find(std::string(row[0].text()));
+    for (const auto &row : records) {
+      const auto device = deviceIndexes.find(std::string(row[0].value().value_or(std::string_view{})));
       if (device == deviceIndexes.end())
         continue;
       snapshot.devices[device->second].records.push_back(RecordItem{
-          .deviceId = std::string(row[1].text()),
-          .name = std::string(row[2].text()),
-          .filePath = std::string(row[3].text()),
-          .address = std::string(row[4].text()),
-          .startTime = std::string(row[5].text()),
-          .endTime = std::string(row[6].text()),
-          .type = std::string(row[7].text()),
-          .recorderId = std::string(row[8].text()),
+          .deviceId = std::string(row[1].value().value_or(std::string_view{})),
+          .name = std::string(row[2].value().value_or(std::string_view{})),
+          .filePath = std::string(row[3].value().value_or(std::string_view{})),
+          .address = std::string(row[4].value().value_or(std::string_view{})),
+          .startTime = std::string(row[5].value().value_or(std::string_view{})),
+          .endTime = std::string(row[6].value().value_or(std::string_view{})),
+          .type = std::string(row[7].value().value_or(std::string_view{})),
+          .recorderId = std::string(row[8].value().value_or(std::string_view{})),
       });
     }
 
@@ -196,14 +196,14 @@ ORDER BY device_id, start_time DESC)sql");
 SELECT app, stream, schema, online, reader_count
 FROM gb28181_stream
 ORDER BY app, stream, schema)sql");
-    snapshot.streams.reserve(streams.rows().size());
-    for (const auto &row : streams.rows()) {
+    snapshot.streams.reserve(streams.size());
+    for (const auto &row : streams) {
       snapshot.streams.push_back(StreamStatus{
-          .app = std::string(row[0].text()),
-          .stream = std::string(row[1].text()),
-          .schema = std::string(row[2].text()),
-          .online = boolean(row[3].text()),
-          .readerCount = integer(row[4].text()),
+          .app = std::string(row[0].value().value_or(std::string_view{})),
+          .stream = std::string(row[1].value().value_or(std::string_view{})),
+          .schema = std::string(row[2].value().value_or(std::string_view{})),
+          .online = boolean(row[3].value().value_or(std::string_view{})),
+          .readerCount = integer(row[4].value().value_or(std::string_view{})),
       });
     }
     co_return snapshot;

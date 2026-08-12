@@ -191,7 +191,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
     ruvia::Task<void> terminal(ruvia::Context& c) {
         auto& socket = c.webSocket();
         const auto& query = c.req().validated<TerminalTicketQuery>();
-        const std::string ticket(query.ticket()->view());
+        const std::string ticket(query.get<"ticket">()->view());
         const auto ticketKey = "iot:edge:terminal:ticket:" + ticket;
         const auto node = co_await c.redis().getDel(ticketKey);
         if (!node) {
@@ -579,7 +579,10 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         if (!result.SerializeToString(&wire))
             co_return;
         const auto id = protocol::uuidText(result.request_id());
-        co_await c.redis().setEx("iot:edge:logs:" + id, std::chrono::seconds(60), wire);
+        ruvia::RedisSetOptions options;
+        options.expiration =
+            ruvia::RedisSetExpiration::expiresAfter(std::chrono::seconds(60));
+        co_await c.redis().set("iot:edge:logs:" + id, wire, std::move(options));
     }
 
     static ruvia::Task<void> saveLogLevelResult(ruvia::Context& c,
@@ -590,7 +593,10 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         if (!result.SerializeToString(&wire))
             co_return;
         const auto id = protocol::uuidText(result.request_id());
-        co_await c.redis().setEx("iot:edge:logs:level:" + id, std::chrono::seconds(60), wire);
+        ruvia::RedisSetOptions options;
+        options.expiration =
+            ruvia::RedisSetExpiration::expiresAfter(std::chrono::seconds(60));
+        co_await c.redis().set("iot:edge:logs:level:" + id, wire, std::move(options));
     }
 
     static ruvia::Task<void> saveTerminalData(ruvia::Context& c, const pb::TerminalData& data) {

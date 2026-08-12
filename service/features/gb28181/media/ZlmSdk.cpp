@@ -41,14 +41,6 @@ std::string trimTrailingSlash(std::string value) {
     return value;
 }
 
-std::string httpToWs(std::string value) {
-    if (value.rfind("http://", 0) == 0)
-        value.replace(0, 4, "ws");
-    else if (value.rfind("https://", 0) == 0)
-        value.replace(0, 5, "wss");
-    return value;
-}
-
 std::string authorityHost(std::string_view url) {
     const auto scheme = url.find("://");
     const auto begin = scheme == std::string_view::npos ? 0 : scheme + 3;
@@ -373,7 +365,6 @@ PlayUrls ZlmSdk::buildPlayUrls(const std::string& streamId) const {
     const auto httpPort = ports_.http == 0 ? config_.httpPort : ports_.http;
     const auto httpsPort = ports_.https == 0 ? config_.httpsPort : ports_.https;
     const auto httpBase = publicHttpBase(config_, httpPort, httpsPort);
-    const auto wsBase = httpToWs(httpBase);
     const auto rtsp = rtspBase(
         config_, httpPort, httpsPort,
         ports_.rtsp == 0 ? config_.rtspPort : ports_.rtsp,
@@ -388,7 +379,10 @@ PlayUrls ZlmSdk::buildPlayUrls(const std::string& streamId) const {
                       "&expires=" + std::to_string(expires);
     return PlayUrls{
         .httpFlv = httpBase + path + ".live.flv?" + auth,
-        .wsFlv = wsBase + path + ".live.flv?" + auth,
+        // The application proxy intentionally exposes HTTP streaming and WebRTC
+        // signaling only. Do not advertise a WebSocket URL that the proxy does
+        // not implement; the player falls back to HTTP-FLV/HLS without ambiguity.
+        .wsFlv = {},
         .httpTs = httpBase + path + ".live.ts?" + auth,
         .hls = httpBase + path + "/hls.m3u8?" + auth,
         .webRtc = httpBase + std::string(kWebRtcPath) + "?app=" +
@@ -561,7 +555,7 @@ void API_CALL ZlmSdk::handleHttpRequest(const mk_parser parser,
         contentLength == 0) {
         const char* headers[] = {"Content-Type", "application/json", nullptr};
         WebRtcResponseModel body;
-        body.code(-1).msg("invalid WebRTC play request");
+        body.set<"code">(-1).set<"msg">("invalid WebRTC play request");
         const auto serialized = ruvia::toJson(body);
         mk_http_response_invoker_do_string(invoker, 400, headers, serialized.c_str());
         return;
@@ -587,9 +581,9 @@ void API_CALL ZlmSdk::handleWebRtcAnswer(void* userData, const char* answer,
     }
     WebRtcResponseModel body;
     if (answer != nullptr) {
-        body.code(0).type("answer").sdp(answer);
+        body.set<"code">(0).set<"type">("answer").set<"sdp">(answer);
     } else {
-        body.code(-1).msg(safe(error));
+        body.set<"code">(-1).set<"msg">(safe(error));
     }
     const auto serialized = ruvia::toJson(body);
     mk_http_response_invoker_do_string(invoker, 200, headers, serialized.c_str());

@@ -370,7 +370,7 @@ JOIN protocol_config p ON p.id = d.protocol_config_id
 WHERE d.deleted_at IS NULL)sql" +
             filter + " ORDER BY d.id",
         params);
-    if (devices.rows().empty())
+    if (devices.empty())
         co_return;
 
     std::set<std::string, std::less<>> recoveryDeviceIds;
@@ -379,22 +379,22 @@ WHERE d.deleted_at IS NULL)sql" +
     if (preserveExisting) {
         auto existencePipeline = redis.pipeline();
         std::vector<std::vector<std::string>> existenceCommands;
-        existenceCommands.reserve(devices.rows().size() * 2);
-        for (const auto& row : devices.rows()) {
+        existenceCommands.reserve(devices.size() * 2);
+        for (const auto& row : devices) {
             existenceCommands.push_back(
-                {"HMGET", latestKey(row[1].text()), "_device_id", "_element_ids"});
+                {"HMGET", latestKey(row[1].value().value_or(std::string_view{})), "_device_id", "_element_ids"});
             std::vector<std::string_view> views(existenceCommands.back().begin(),
                                                 existenceCommands.back().end());
             existencePipeline.command(views);
             existenceCommands.push_back(
-                {"HMGET", runtimeKey(row[1].text()), "device_id", "online_until_ms"});
+                {"HMGET", runtimeKey(row[1].value().value_or(std::string_view{})), "device_id", "online_until_ms"});
             std::vector<std::string_view> runtimeViews(existenceCommands.back().begin(),
                                                        existenceCommands.back().end());
             existencePipeline.command(runtimeViews);
         }
         const auto replies = co_await std::move(existencePipeline).exec();
-        for (std::size_t index = 0; index < devices.rows().size(); ++index) {
-            const auto& row = devices.rows()[index];
+        for (std::size_t index = 0; index < devices.size(); ++index) {
+            const auto& row = devices[index];
             const auto latestIndex = index * 2;
             const auto runtimeIndex = latestIndex + 1;
             const bool matches =
@@ -402,47 +402,47 @@ WHERE d.deleted_at IS NULL)sql" +
                 replies[latestIndex].kind() == ruvia::RedisValue::Kind::kArray &&
                 replies[latestIndex].array().size() == 2 &&
                 replies[latestIndex].array()[0].kind() == ruvia::RedisValue::Kind::kString &&
-                replies[latestIndex].array()[0].string() == row[0].text() &&
+                replies[latestIndex].array()[0].string() == row[0].value().value_or(std::string_view{}) &&
                 replies[latestIndex].array()[1].kind() == ruvia::RedisValue::Kind::kString &&
                 !replies[latestIndex].array()[1].string().empty() &&
                 replies[runtimeIndex].kind() == ruvia::RedisValue::Kind::kArray &&
                 replies[runtimeIndex].array().size() == 2 &&
                 replies[runtimeIndex].array()[0].kind() == ruvia::RedisValue::Kind::kString &&
-                replies[runtimeIndex].array()[0].string() == row[0].text();
+                replies[runtimeIndex].array()[0].string() == row[0].value().value_or(std::string_view{});
             if (!matches) {
-                recoveryDeviceIds.emplace(row[0].text());
-                recoveryDeviceCodes.emplace(row[1].text());
+                recoveryDeviceIds.emplace(row[0].value().value_or(std::string_view{}));
+                recoveryDeviceCodes.emplace(row[1].value().value_or(std::string_view{}));
             } else if (replies[runtimeIndex].array()[1].kind() ==
                        ruvia::RedisValue::Kind::kString) {
                 const auto deadline = service::common::parseInt64(
                     std::optional<std::string_view>{replies[runtimeIndex].array()[1].string()});
                 if (deadline) {
-                    preservedDeadlines.insert_or_assign(std::string(row[1].text()),
+                    preservedDeadlines.insert_or_assign(std::string(row[1].value().value_or(std::string_view{})),
                                                         std::to_string(*deadline));
                 } else {
-                    recoveryDeviceIds.emplace(row[0].text());
-                    recoveryDeviceCodes.emplace(row[1].text());
+                    recoveryDeviceIds.emplace(row[0].value().value_or(std::string_view{}));
+                    recoveryDeviceCodes.emplace(row[1].value().value_or(std::string_view{}));
                 }
             }
         }
     } else {
-        for (const auto& row : devices.rows()) {
-            recoveryDeviceIds.emplace(row[0].text());
-            recoveryDeviceCodes.emplace(row[1].text());
+        for (const auto& row : devices) {
+            recoveryDeviceIds.emplace(row[0].value().value_or(std::string_view{}));
+            recoveryDeviceCodes.emplace(row[1].value().value_or(std::string_view{}));
         }
     }
 
     auto metaPipeline = redis.pipeline();
     std::vector<std::vector<std::string>> metaCommands;
-    metaCommands.reserve(devices.rows().size() * 6);
+    metaCommands.reserve(devices.size() * 6);
     std::map<std::string, std::int64_t, std::less<>> onlineWindows;
     std::map<std::string, std::vector<std::string>, std::less<>> elementIds;
-    for (const auto& row : devices.rows()) {
-        const std::string deviceId(row[0].text());
-        const std::string deviceCode(row[1].text());
+    for (const auto& row : devices) {
+        const std::string deviceId(row[0].value().value_or(std::string_view{}));
+        const std::string deviceCode(row[1].value().value_or(std::string_view{}));
         onlineWindows.insert_or_assign(
             deviceCode,
-            service::common::parseInt64(std::optional<std::string_view>{row[2].text()})
+            service::common::parseInt64(std::optional<std::string_view>{row[2].value().value_or(std::string_view{})})
                 .value_or(300000));
         elementIds.insert_or_assign(deviceCode, std::vector<std::string>{});
         if (recoveryDeviceIds.contains(deviceId)) {
@@ -606,22 +606,22 @@ return 1
 )lua";
     auto pipeline = redis.pipeline();
     std::vector<std::vector<std::string>> commands;
-    commands.reserve(elements.rows().size() + elementIds.size());
+    commands.reserve(elements.size() + elementIds.size());
     std::map<std::string, std::int64_t, std::less<>> lastReports;
-    for (const auto& row : elements.rows()) {
-        const std::string deviceCode(row[1].text());
-        const std::string elementId(row[3].text());
+    for (const auto& row : elements) {
+        const std::string deviceCode(row[1].value().value_or(std::string_view{}));
+        const std::string elementId(row[3].value().value_or(std::string_view{}));
         elementIds[deviceCode].push_back(elementId);
         commands.push_back({"EVAL", std::string(kRefreshElementMetadataScript), "1",
-                            latestKey(deviceCode), elementId, std::string(row[13].text())});
+                            latestKey(deviceCode), elementId, std::string(row[13].value().value_or(std::string_view{}))});
         std::vector<std::string_view> views;
         views.reserve(commands.back().size());
         for (const auto& argument : commands.back())
             views.push_back(argument);
         pipeline.command(views);
-        if (!row[7].text().empty()) {
+        if (!row[7].value().value_or(std::string_view{}).empty()) {
             const auto parsed = service::common::parseInt64(
-                std::optional<std::string_view>{row[7].text()});
+                std::optional<std::string_view>{row[7].value().value_or(std::string_view{})});
             if (parsed) {
                 auto& lastReport = lastReports[deviceCode];
                 lastReport = std::max(lastReport, *parsed);
@@ -704,20 +704,20 @@ WHERE deleted_at IS NULL AND id > $1::uuid
 ORDER BY id
 LIMIT 32)sql",
             service::common::dbParams(std::string_view(cursor)));
-        if (devices.rows().empty())
+        if (devices.empty())
             break;
 
         std::string ids = "{";
-        for (const auto& row : devices.rows()) {
+        for (const auto& row : devices) {
             if (ids.size() != 1)
                 ids.push_back(',');
-            ids.append(row[0].text());
+            ids.append(row[0].value().value_or(std::string_view{}));
         }
         ids.push_back('}');
-        cursor.assign(devices.rows().back()[0].text());
+        cursor.assign(devices[devices.size() - 1][0].value().value_or(std::string_view{}));
         co_await project(context, " AND d.id = ANY($1::uuid[])",
                          service::common::dbParams(std::string_view(ids)), false, true);
-        if (devices.rows().size() < kHydrationBatchSize)
+        if (devices.size() < kHydrationBatchSize)
             break;
     }
 }

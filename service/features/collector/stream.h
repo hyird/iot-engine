@@ -46,7 +46,7 @@ inline ruvia::Task<RedisValue> command(const Redis& redis,
     message += " failed";
     if (value.kind() == RedisValue::Kind::kError) {
         message += ": ";
-        message.append(value.string());
+        message.append(value.error());
     }
     throw std::runtime_error(message);
 }
@@ -170,7 +170,7 @@ inline ruvia::Task<void> ensureGroup(const Redis& redis, std::string_view stream
                                      std::string_view group) {
     const auto reply = co_await command(
         redis, {"XGROUP", "CREATE", std::string(stream), std::string(group), "0", "MKSTREAM"});
-    if (reply.kind() == RedisValue::Kind::kError && !reply.string().starts_with("BUSYGROUP"))
+    if (reply.kind() == RedisValue::Kind::kError && !reply.error().starts_with("BUSYGROUP"))
         throwValue("XGROUP CREATE", reply);
 }
 
@@ -278,8 +278,8 @@ readGroupManyBlockingUntil(const Redis& redis, std::span<const std::string> stre
     options.block = timeout.has_value()
                         ? ruvia::RedisBlockWait::forDuration(*timeout)
                         : ruvia::RedisBlockWait::indefinitely();
-    options.operation.stopToken = std::move(stopToken);
-    auto result = co_await redis.xreadGroup(group, consumer, reads, std::move(options));
+    auto result = co_await redis.withOptions({.stopToken = std::move(stopToken)})
+                      .xreadGroup(group, consumer, reads, std::move(options));
 
     std::vector<StreamBatch> batches;
     if (!result.has_value())

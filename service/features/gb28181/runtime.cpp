@@ -24,6 +24,16 @@ ZlmSdk::Capabilities Runtime::mediaCapabilities() const noexcept {
   return capabilities;
 }
 
+std::shared_ptr<MediaProxySession>
+Runtime::openMediaProxy(MediaProxyRequest request) const {
+  requireStarted();
+  const auto ports = mediaPorts();
+  if (ports.http == 0 || !mediaProxyLoop_.valid())
+    throw std::runtime_error("GB28181 media proxy is unavailable");
+  return MediaProxySession::create(mediaProxyLoop_, ports.http,
+                                   std::move(request));
+}
+
 void Runtime::configure(AppConfig config) {
   if (started_.load())
     throw std::runtime_error("GB28181 runtime is already started");
@@ -66,10 +76,11 @@ void Runtime::start() {
       throw std::runtime_error("GB28181 device timezone offset is invalid");
 
     loopPool_ = std::make_unique<ruvia::EventLoopPool>(
-        ruvia::EventLoopPoolOptions{.loopCount = 1, .mailboxCapacity = 1024});
+        ruvia::EventLoopPoolOptions{.loopCount = 2, .mailboxCapacity = 1024});
     loopPool_->start();
     sipLoop_ = loopPool_->loop(0);
-    if (!sipLoop_.valid())
+    mediaProxyLoop_ = loopPool_->loop(1);
+    if (!sipLoop_.valid() || !mediaProxyLoop_.valid())
       throw std::runtime_error("GB28181 event loop failed to start");
 
     devices_ = std::make_unique<DeviceRegistry>(
@@ -137,6 +148,7 @@ void Runtime::stop() noexcept {
   streams_.reset();
   devices_.reset();
   sipLoop_ = {};
+  mediaProxyLoop_ = {};
   loopPool_.reset();
 }
 

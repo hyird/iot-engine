@@ -620,21 +620,21 @@ WHERE webhook.deleted_at IS NULL AND webhook.status = 'enabled'
   AND device.deleted_at IS NULL
 ORDER BY binding.device_id, event_type.value, webhook.id)sql");
         Catalog result;
-        for (const auto& row : rows.rows()) {
-            const std::string deviceId(row[0].text());
+        for (const auto& row : rows) {
+            const std::string deviceId(row[0].value().value_or(std::string_view{}));
             auto& device = result[deviceId];
-            device.name.assign(row[1].text());
-            device.code.assign(row[2].text());
+            device.name.assign(row[1].value().value_or(std::string_view{}));
+            device.code.assign(row[2].value().value_or(std::string_view{}));
             const auto timeout =
-                service::common::parseInt64(std::optional<std::string_view>{row[8].text()})
+                service::common::parseInt64(std::optional<std::string_view>{row[8].value().value_or(std::string_view{})})
                     .value_or(5);
             const auto expiresAtMs =
-                service::common::parseInt64(std::optional<std::string_view>{row[9].text()})
+                service::common::parseInt64(std::optional<std::string_view>{row[9].value().value_or(std::string_view{})})
                     .value_or(0);
-            device.targets[std::string(row[10].text())].push_back(
-                {std::string(row[3].text()), std::string(row[4].text()),
-                 std::string(row[5].text()), std::string(row[6].text()),
-                 std::string(row[7].text()), timeout > 0 ? timeout : std::int64_t{5},
+            device.targets[std::string(row[10].value().value_or(std::string_view{}))].push_back(
+                {std::string(row[3].value().value_or(std::string_view{})), std::string(row[4].value().value_or(std::string_view{})),
+                 std::string(row[5].value().value_or(std::string_view{})), std::string(row[6].value().value_or(std::string_view{})),
+                 std::string(row[7].value().value_or(std::string_view{})), timeout > 0 ? timeout : std::int64_t{5},
                  expiresAtMs});
         }
         co_return result;
@@ -919,9 +919,9 @@ ORDER BY binding.device_id, event_type.value, webhook.id)sql");
                        [shared](WebhookHttpResponse result) mutable {
                            (void)shared->complete(std::move(result));
                        });
-            const auto outcome = co_await receiver.wait();
-            if (outcome.value())
-                response = *outcome.value();
+            auto outcome = co_await receiver.wait();
+            if (outcome.hasValue())
+                response = std::move(outcome).takeValue();
             else
                 response.error = "Webhook request was cancelled";
         } catch (const std::exception& error) {

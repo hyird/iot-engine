@@ -4,145 +4,108 @@
 
 namespace service::link {
 
-struct LinkTargetBody final {
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(ip, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(port, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_MODEL(LinkTargetBody, id, name, ip, port, status);
-};
+RUVIA_REQUEST_MODEL(LinkTargetBody,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(ip, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(port, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String));
 
-struct LinkEndpointBody final {
-    RUVIA_OPTIONAL_FIELD(mode, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(ip, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(port, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(targets, ruvia::Array<LinkTargetBody>);
-    RUVIA_MODEL(LinkEndpointBody, mode, ip, port, targets);
-};
+RUVIA_REQUEST_MODEL(LinkEndpointBody,
+    RUVIA_OPTIONAL_FIELD(mode, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(ip, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(port, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(targets, ruvia::Array<LinkTargetBody>));
 
-struct SaveLinkBody final {
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(endpoint, LinkEndpointBody);
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_MODEL(SaveLinkBody, name, protocol, endpoint, status);
-};
+RUVIA_REQUEST_MODEL(SaveLinkBody,
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(endpoint, LinkEndpointBody),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String));
 
-struct LinkListQuery final {
-    RUVIA_OPTIONAL_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1));
-    RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64, RUVIA_DEFAULT(10));
-    RUVIA_OPTIONAL_FIELD(keyword, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(mode, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_MODEL(LinkListQuery, page, pageSize, keyword, mode, protocol, status);
-};
+RUVIA_REQUEST_MODEL(LinkListQuery,
+    RUVIA_OPTIONAL_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1)),
+    RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64, RUVIA_DEFAULT(10)),
+    RUVIA_OPTIONAL_FIELD(keyword, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(mode, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String));
 
-struct LinkIdParams final {
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
-    RUVIA_MODEL(LinkIdParams, id);
-};
+RUVIA_REQUEST_MODEL(LinkIdParams,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String));
 
-struct RuntimeDto final {
-    RUVIA_OPTIONAL_FIELD(state, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(reason, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(error, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("clientCount", clientCount, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(clients, ruvia::BoxedArray<ruvia::String>);
-    RUVIA_OPTIONAL_FIELD_NAME("lastActivityAt", lastActivityAt, ruvia::String);
-    RUVIA_MODEL(RuntimeDto, state, reason, error, clientCount, clients, lastActivityAt);
-};
+RUVIA_RESPONSE_MODEL(RuntimeDto,
+    RUVIA_OPTIONAL_FIELD(state, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(reason, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(error, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("clientCount", clientCount, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(clients, ruvia::BoxedArray<ruvia::String>),
+    RUVIA_OPTIONAL_FIELD_NAME("lastActivityAt", lastActivityAt, ruvia::String));
 
-struct LinkTargetDto final {
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(ip, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(port, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(runtime, RuntimeDto);
-    RUVIA_MODEL(LinkTargetDto, id, name, ip, port, status, runtime);
-};
+RUVIA_RESPONSE_MODEL(LinkTargetDto,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(ip, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(port, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(runtime, RuntimeDto));
 
-struct LinkEndpointDto final {
-    RUVIA_OPTIONAL_FIELD(mode, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(ip, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(port, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(targets, ruvia::BoxedArray<LinkTargetDto>);
-    RUVIA_MODEL(LinkEndpointDto, mode, ip, port, targets);
-};
+RUVIA_RESPONSE_MODEL(LinkEndpointDto,
+    RUVIA_OPTIONAL_FIELD(mode, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(ip, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(port, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(targets, ruvia::BoxedArray<LinkTargetDto>));
 
-struct LinkItemDto final {
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(endpoint, LinkEndpointDto);
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(runtime, RuntimeDto);
-    RUVIA_OPTIONAL_FIELD_NAME("created_by", createdBy, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("created_at", createdAt, ruvia::String);
-    RUVIA_OPTIONAL_FIELD_NAME("updated_at", updatedAt, ruvia::String);
-    RUVIA_MODEL(LinkItemDto, id, name, protocol, endpoint, status, runtime, createdBy, createdAt,
-                updatedAt);
-};
+RUVIA_RESPONSE_MODEL(LinkItemDto,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(endpoint, LinkEndpointDto),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(runtime, RuntimeDto),
+    RUVIA_OPTIONAL_FIELD_NAME("created_by", createdBy, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("created_at", createdAt, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("updated_at", updatedAt, ruvia::String));
 
-struct LinkOptionDto final {
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(endpoint, LinkEndpointDto);
-    RUVIA_MODEL(LinkOptionDto, id, name, protocol, endpoint);
-};
+RUVIA_RESPONSE_MODEL(LinkOptionDto,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(endpoint, LinkEndpointDto));
 
-struct LinkEnumsDto final {
-    RUVIA_OPTIONAL_FIELD(modes, ruvia::BoxedArray<ruvia::String>);
-    RUVIA_OPTIONAL_FIELD(protocols, ruvia::BoxedArray<ruvia::String>);
-    RUVIA_OPTIONAL_FIELD(statuses, ruvia::BoxedArray<ruvia::String>);
-    RUVIA_MODEL(LinkEnumsDto, modes, protocols, statuses);
-};
+RUVIA_RESPONSE_MODEL(LinkEnumsDto,
+    RUVIA_OPTIONAL_FIELD(modes, ruvia::BoxedArray<ruvia::String>),
+    RUVIA_OPTIONAL_FIELD(protocols, ruvia::BoxedArray<ruvia::String>),
+    RUVIA_OPTIONAL_FIELD(statuses, ruvia::BoxedArray<ruvia::String>));
 
-struct LinkPageDataDto final {
-    RUVIA_OPTIONAL_FIELD(list, ruvia::BoxedArray<LinkItemDto>);
-    RUVIA_OPTIONAL_FIELD(total, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(page, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD_NAME("totalPages", totalPages, ruvia::Int64);
-    RUVIA_MODEL(LinkPageDataDto, list, total, page, pageSize, totalPages);
-};
+RUVIA_RESPONSE_MODEL(LinkPageDataDto,
+    RUVIA_OPTIONAL_FIELD(list, ruvia::BoxedArray<LinkItemDto>),
+    RUVIA_OPTIONAL_FIELD(total, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(page, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("totalPages", totalPages, ruvia::Int64));
 
-struct LinkPageResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, LinkPageDataDto);
-    RUVIA_MODEL(LinkPageResponse, code, message, data);
-};
-struct LinkDetailResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, LinkItemDto);
-    RUVIA_MODEL(LinkDetailResponse, code, message, data);
-};
-struct LinkOptionsResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<LinkOptionDto>);
-    RUVIA_MODEL(LinkOptionsResponse, code, message, data);
-};
-struct LinkEnumsResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, LinkEnumsDto);
-    RUVIA_MODEL(LinkEnumsResponse, code, message, data);
-};
-struct PublicIpDto final {
-    RUVIA_OPTIONAL_FIELD(ip, ruvia::String);
-    RUVIA_MODEL(PublicIpDto, ip);
-};
-struct PublicIpResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, PublicIpDto);
-    RUVIA_MODEL(PublicIpResponse, code, message, data);
-};
+RUVIA_RESPONSE_MODEL(LinkPageResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, LinkPageDataDto));
+RUVIA_RESPONSE_MODEL(LinkDetailResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, LinkItemDto));
+RUVIA_RESPONSE_MODEL(LinkOptionsResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<LinkOptionDto>));
+RUVIA_RESPONSE_MODEL(LinkEnumsResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, LinkEnumsDto));
+RUVIA_RESPONSE_MODEL(PublicIpDto,
+    RUVIA_OPTIONAL_FIELD(ip, ruvia::String));
+RUVIA_RESPONSE_MODEL(PublicIpResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, PublicIpDto));
 
 } // namespace service::link

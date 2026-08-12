@@ -29,7 +29,7 @@ class LinkController final : public ruvia::Controller<LinkController> {
 
   private:
     static std::string id(ruvia::Context& c) {
-        return std::string(c.req().validated<LinkIdParams>().id()->view());
+        return std::string(c.req().validated<LinkIdParams>().get<"id">()->view());
     }
 
     static std::optional<std::string> text(const std::optional<ruvia::String>& value) {
@@ -40,10 +40,10 @@ class LinkController final : public ruvia::Controller<LinkController> {
         co_await service::middleware::requirePermission(c, "iot:link:query");
         const auto& query = c.req().validated<LinkListQuery>();
         co_return c.json(service::common::ok<LinkPageResponse>(
-            c, co_await linkService().list(c, static_cast<std::int64_t>(*query.page()),
-                                           static_cast<std::int64_t>(*query.pageSize()),
-                                           text(query.keyword()), text(query.mode()),
-                                           text(query.protocol()), text(query.status()))));
+            c, co_await linkService().list(c, static_cast<std::int64_t>(*query.get<"page">()),
+                                           static_cast<std::int64_t>(*query.get<"pageSize">()),
+                                           text(query.get<"keyword">()), text(query.get<"mode">()),
+                                           text(query.get<"protocol">()), text(query.get<"status">()))));
     }
 
     ruvia::Task<ruvia::HttpResponse> options(ruvia::Context& c) {
@@ -60,7 +60,7 @@ class LinkController final : public ruvia::Controller<LinkController> {
     ruvia::Task<ruvia::HttpResponse> publicIp(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:link:query");
         PublicIpDto result(c);
-        result.ip(co_await linkService().publicIp(c));
+        result.set<"ip">(co_await linkService().publicIp(c));
         co_return c.json(service::common::ok<PublicIpResponse>(c, std::move(result)));
     }
 

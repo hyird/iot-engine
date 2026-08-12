@@ -43,7 +43,7 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
 
   private:
     static std::string id(ruvia::Context& c) {
-        return std::string(c.req().validated<EdgeIdParams>().id()->view());
+        return std::string(c.req().validated<EdgeIdParams>().get<"id">()->view());
     }
 
     static std::optional<std::string> text(const std::optional<ruvia::String>& value) {
@@ -54,8 +54,8 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
         co_await service::middleware::requirePermission(c, "iot:edge:query");
         const auto& query = c.req().validated<EdgeListQuery>();
         co_return c.json(service::common::ok<EdgePageResponse>(
-            c, co_await edgeService().list(c, *query.page(), *query.pageSize(),
-                                           text(query.keyword()), text(query.status()))));
+            c, co_await edgeService().list(c, *query.get<"page">(), *query.get<"pageSize">(),
+                                           text(query.get<"keyword">()), text(query.get<"status">()))));
     }
 
     ruvia::Task<ruvia::HttpResponse> detail(ruvia::Context& c) {
@@ -103,7 +103,7 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
     ruvia::Task<ruvia::HttpResponse> removePlatform(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:edge:config");
         const auto& params = c.req().validated<EdgePlatformParams>();
-        co_await edgeService().deletePlatform(c, params.id()->view(), params.platformId()->view());
+        co_await edgeService().deletePlatform(c, params.get<"id">()->view(), params.get<"platformId">()->view());
         co_return c.json(service::common::operation(c, "平台删除配置已下发"));
     }
 
@@ -234,7 +234,7 @@ class EdgePublicController final : public ruvia::Controller<EdgePublicController
         const auto& id = c.req().validated<EdgeIdParams>();
         const auto& query = c.req().validated<FirmwareDownloadQuery>();
         auto [path, fileName] = co_await edgeService().firmwareDownload(
-            c, id.id()->view(), query.token()->view());
+            c, id.get<"id">()->view(), query.get<"token">()->view());
         if (!std::filesystem::is_regular_file(path))
             service::common::fail(17009, "固件文件不存在", 404);
         c.header("Content-Disposition", "attachment; filename=firmware.bin");

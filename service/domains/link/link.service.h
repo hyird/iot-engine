@@ -108,7 +108,7 @@ class LinkService {
 
         const auto countRows =
             co_await c.db().query("SELECT COUNT(*) FROM link" + where, params);
-        const auto total = toInt(countRows.rows().front()[0].text());
+        const auto total = toInt(countRows.front()[0].value().value_or(std::string_view{}));
         auto listParams = params;
         listParams.emplace_back(pageSize);
         const auto limitIndex = listParams.size();
@@ -123,16 +123,16 @@ class LinkService {
             listParams);
 
         ruvia::BoxedArray<LinkItemDto> links(c.resource());
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             auto& item = links.emplace(c);
             co_await fill(c, item, row);
         }
         LinkPageDataDto result(c);
-        result.list(std::move(links))
-            .total(total)
-            .page(page)
-            .pageSize(pageSize)
-            .totalPages(total == 0 ? 0 : (total + pageSize - 1) / pageSize);
+        result.set<"list">(std::move(links))
+            .set<"total">(total)
+            .set<"page">(page)
+            .set<"pageSize">(pageSize)
+            .set<"totalPages">(total == 0 ? 0 : (total + pageSize - 1) / pageSize);
         co_return result;
     }
 
@@ -145,10 +145,10 @@ class LinkService {
 	WHERE id = $1 AND deleted_at IS NULL AND execution = 'collector'
 LIMIT 1)sql",
                                                 service::common::dbParams(id));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(15001, "链路不存在", 404);
         LinkItemDto item(c);
-        co_await fill(c, item, rows.rows().front());
+        co_await fill(c, item, rows.front());
         co_return item;
     }
 
@@ -159,17 +159,17 @@ LIMIT 1)sql",
 	            "FROM link WHERE deleted_at IS NULL AND execution = 'collector' AND "
 	            "status = 'enabled' ORDER BY name");
         ruvia::BoxedArray<LinkOptionDto> result(c.resource());
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             auto& item = result.emplace(c);
             LinkEndpointDto endpoint(c);
-            endpoint.mode(row[3].text())
-                .ip(row[4].text())
-                .port(toInt(row[5].text()))
-                .targets(co_await loadTargets(c, row[0].text(), RuntimeStatus{}));
-            item.id(row[0].text())
-                .name(row[1].text())
-                .protocol(row[2].text())
-                .endpoint(std::move(endpoint));
+            endpoint.set<"mode">(row[3].value().value_or(std::string_view{}))
+                .set<"ip">(row[4].value().value_or(std::string_view{}))
+                .set<"port">(toInt(row[5].value().value_or(std::string_view{})))
+                .set<"targets">(co_await loadTargets(c, row[0].value().value_or(std::string_view{}), RuntimeStatus{}));
+            item.set<"id">(row[0].value().value_or(std::string_view{}))
+                .set<"name">(row[1].value().value_or(std::string_view{}))
+                .set<"protocol">(row[2].value().value_or(std::string_view{}))
+                .set<"endpoint">(std::move(endpoint));
         }
         co_return result;
     }
@@ -186,9 +186,9 @@ LIMIT 1)sql",
         ruvia::BoxedArray<ruvia::String> statuses(c.resource());
         statuses.emplace("enabled", c.resource());
         statuses.emplace("disabled", c.resource());
-        result.modes(std::move(modes))
-            .protocols(std::move(protocols))
-            .statuses(std::move(statuses));
+        result.set<"modes">(std::move(modes))
+            .set<"protocols">(std::move(protocols))
+            .set<"statuses">(std::move(statuses));
         return result;
     }
 
@@ -209,8 +209,9 @@ LIMIT 1)sql",
                   [shared](std::string response) {
                       (void)shared->complete(parsePublicIp(response));
                   });
-        const auto result = co_await receiver.wait();
-        const std::string resolved = result.value() != nullptr ? *result.value() : std::string{};
+        auto result = co_await receiver.wait();
+        const std::string resolved =
+            result.hasValue() ? std::move(result).takeValue() : std::string{};
         std::lock_guard lock(publicIpMutex_);
         if (!resolved.empty()) {
             cachedPublicIp_ = resolved;
@@ -221,13 +222,13 @@ LIMIT 1)sql",
 
     ruvia::Task<void> create(ruvia::Context& c, const SaveLinkBody& body) {
         const auto principal = service::middleware::requireAuth(c);
-        const auto name = required(body.name(), "链路名称不能为空");
-        const auto protocol = required(body.protocol(), "协议不能为空");
+        const auto name = required(body.get<"name">(), "链路名称不能为空");
+        const auto protocol = required(body.get<"protocol">(), "协议不能为空");
         const auto& endpoint = requiredEndpoint(body);
-        const auto mode = required(endpoint.mode(), "链路模式不能为空");
-        const auto ip = endpoint.ip() ? std::string(endpoint.ip()->view()) : "";
-        const auto port = endpoint.port() ? static_cast<std::int64_t>(*endpoint.port()) : 0;
-        const auto status = body.status() ? std::string(body.status()->view()) : "enabled";
+        const auto mode = required(endpoint.get<"mode">(), "链路模式不能为空");
+        const auto ip = endpoint.get<"ip">() ? std::string(endpoint.get<"ip">()->view()) : "";
+        const auto port = endpoint.get<"port">() ? static_cast<std::int64_t>(*endpoint.get<"port">()) : 0;
+        const auto status = body.get<"status">() ? std::string(body.get<"status">()->view()) : "enabled";
         if (status != "enabled" && status != "disabled")
             service::common::fail(15002, "状态无效", 400);
         const auto& targets = requiredTargets(endpoint);
@@ -248,19 +249,19 @@ VALUES ($1::uuid, $2, $3, $4::jsonb, $5, $6, 'collector'))sql",
             "SELECT endpoint->>'mode', protocol, created_by FROM link WHERE id = $1 "
             "AND deleted_at IS NULL AND execution = 'collector' LIMIT 1",
             service::common::dbParams(id));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(15001, "链路不存在", 404);
-        co_await requireOwner(c, rows.rows().front()[2].text());
+        co_await requireOwner(c, rows.front()[2].value().value_or(std::string_view{}));
 
-        const auto name = required(body.name(), "链路名称不能为空");
-        const auto protocol = required(body.protocol(), "协议不能为空");
+        const auto name = required(body.get<"name">(), "链路名称不能为空");
+        const auto protocol = required(body.get<"protocol">(), "协议不能为空");
         const auto& endpoint = requiredEndpoint(body);
-        const auto mode = required(endpoint.mode(), "链路模式不能为空");
-        if (mode != rows.rows().front()[0].text() || protocol != rows.rows().front()[1].text())
+        const auto mode = required(endpoint.get<"mode">(), "链路模式不能为空");
+        if (mode != rows.front()[0].value().value_or(std::string_view{}) || protocol != rows.front()[1].value().value_or(std::string_view{}))
             service::common::fail(15006, "链路模式和协议创建后不能修改", 400);
-        const auto ip = endpoint.ip() ? std::string(endpoint.ip()->view()) : "";
-        const auto port = endpoint.port() ? static_cast<std::int64_t>(*endpoint.port()) : 0;
-        const auto status = body.status() ? std::string(body.status()->view()) : "enabled";
+        const auto ip = endpoint.get<"ip">() ? std::string(endpoint.get<"ip">()->view()) : "";
+        const auto port = endpoint.get<"port">() ? static_cast<std::int64_t>(*endpoint.get<"port">()) : 0;
+        const auto status = body.get<"status">() ? std::string(body.get<"status">()->view()) : "enabled";
         if (status != "enabled" && status != "disabled")
             service::common::fail(15002, "状态无效", 400);
         const auto& targets = requiredTargets(endpoint);
@@ -287,14 +288,14 @@ WHERE id = $4 AND execution = 'collector'
             "SELECT created_by FROM link WHERE id = $1 AND deleted_at IS NULL "
             "AND execution = 'collector' LIMIT 1",
             service::common::dbParams(id));
-        if (rows.rows().empty())
+        if (rows.empty())
             service::common::fail(15001, "链路不存在", 404);
-        co_await requireOwner(c, rows.rows().front()[0].text());
+        co_await requireOwner(c, rows.front()[0].value().value_or(std::string_view{}));
         const auto used = co_await c.db().query(
             "SELECT EXISTS (SELECT 1 FROM device WHERE link_id = $1::uuid "
             "AND deleted_at IS NULL)",
             service::common::dbParams(id));
-        if (used.rows().front()[0].text() == "t")
+        if (used.front()[0].value().value_or(std::string_view{}) == "t")
             service::common::fail(15008, "链路已被设备使用，请先删除关联设备", 409);
         (void)co_await c.db().execute(
             "UPDATE link SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1",
@@ -353,15 +354,15 @@ WHERE id = $4 AND execution = 'collector'
     }
 
     static const LinkEndpointBody& requiredEndpoint(const SaveLinkBody& body) {
-        if (!body.endpoint())
+        if (!body.get<"endpoint">())
             service::common::fail(15002, "链路端点不能为空", 400);
-        return *body.endpoint();
+        return *body.get<"endpoint">();
     }
 
     static const ruvia::Array<LinkTargetBody>& requiredTargets(const LinkEndpointBody& endpoint) {
-        if (!endpoint.targets())
+        if (!endpoint.get<"targets">())
             service::common::fail(15002, "目标列表不能为空", 400);
-        return *endpoint.targets();
+        return *endpoint.get<"targets">();
     }
 
     static void appendFilter(std::string& where, std::vector<ruvia::DbValue>& params,
@@ -374,7 +375,7 @@ WHERE id = $4 AND execution = 'collector'
 
     template <typename Row>
     ruvia::Task<void> fill(ruvia::Context& c, LinkItemDto& item, const Row& row) {
-        const auto id = std::string(row[0].text());
+        const auto id = std::string(row[0].value().value_or(std::string_view{}));
         const auto runtime = co_await loadRuntimeStatus(c, id);
         ruvia::BoxedArray<ruvia::String> clients(c.resource());
         const auto clientText = runtime.text("clients");
@@ -389,29 +390,29 @@ WHERE id = $4 AND execution = 'collector'
             start = end + 1;
         }
         RuntimeDto runtimeDto(c);
-        runtimeDto.state(runtime.text("state", "stopped"))
-            .reason(runtime.text("state_reason"))
-            .error(runtime.text("error"))
-            .clientCount(runtime.integer("connection_count"))
-            .clients(std::move(clients));
+        runtimeDto.set<"state">(runtime.text("state", "stopped"))
+            .set<"reason">(runtime.text("state_reason"))
+            .set<"error">(runtime.text("error"))
+            .set<"clientCount">(runtime.integer("connection_count"))
+            .set<"clients">(std::move(clients));
         const auto lastActivityAt = runtime.integer("last_activity_at_ms");
         if (lastActivityAt > 0)
-            runtimeDto.lastActivityAt(
+            runtimeDto.set<"lastActivityAt">(
                 service::common::utcTimestampFromMilliseconds(lastActivityAt));
-        item.id(id)
-            .name(row[1].text())
-            .protocol(row[2].text())
-            .status(row[6].text())
-            .runtime(std::move(runtimeDto))
-            .createdBy(row[7].text())
-            .createdAt(row[8].text())
-            .updatedAt(row[9].text());
+        item.set<"id">(id)
+            .set<"name">(row[1].value().value_or(std::string_view{}))
+            .set<"protocol">(row[2].value().value_or(std::string_view{}))
+            .set<"status">(row[6].value().value_or(std::string_view{}))
+            .set<"runtime">(std::move(runtimeDto))
+            .set<"createdBy">(row[7].value().value_or(std::string_view{}))
+            .set<"createdAt">(row[8].value().value_or(std::string_view{}))
+            .set<"updatedAt">(row[9].value().value_or(std::string_view{}));
         LinkEndpointDto endpoint(c);
-        endpoint.mode(row[3].text())
-            .ip(row[4].text())
-            .port(toInt(row[5].text()))
-            .targets(co_await loadTargets(c, id, runtime));
-        item.endpoint(std::move(endpoint));
+        endpoint.set<"mode">(row[3].value().value_or(std::string_view{}))
+            .set<"ip">(row[4].value().value_or(std::string_view{}))
+            .set<"port">(toInt(row[5].value().value_or(std::string_view{})))
+            .set<"targets">(co_await loadTargets(c, id, runtime));
+        item.set<"endpoint">(std::move(endpoint));
     }
 
     ruvia::Task<ruvia::BoxedArray<LinkTargetDto>> loadTargets(ruvia::Context& c, std::string_view id,
@@ -423,24 +424,24 @@ FROM link, jsonb_array_elements(COALESCE(endpoint->'targets', '[]'::jsonb))
 WHERE link.id = $1 ORDER BY position)sql",
                                                 service::common::dbParams(id));
         ruvia::BoxedArray<LinkTargetDto> result(c.resource());
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             auto& target = result.emplace(c);
-            const auto targetId = std::string(row[0].text());
+            const auto targetId = std::string(row[0].value().value_or(std::string_view{}));
             const auto prefix = "target:" + targetId + ':';
             RuntimeDto targetRuntime(c);
-            targetRuntime.state(runtime.text(prefix + "state", "stopped"))
-                .reason(runtime.text(prefix + "reason"))
-                .error(runtime.text(prefix + "error"));
+            targetRuntime.set<"state">(runtime.text(prefix + "state", "stopped"))
+                .set<"reason">(runtime.text(prefix + "reason"))
+                .set<"error">(runtime.text(prefix + "error"));
             const auto lastActivityAt = runtime.integer(prefix + "last_activity_at_ms");
             if (lastActivityAt > 0)
-                targetRuntime.lastActivityAt(
+                targetRuntime.set<"lastActivityAt">(
                     service::common::utcTimestampFromMilliseconds(lastActivityAt));
-            target.id(targetId)
-                .name(row[1].text())
-                .ip(row[2].text())
-                .port(toInt(row[3].text()))
-                .status(row[4].text())
-                .runtime(std::move(targetRuntime));
+            target.set<"id">(targetId)
+                .set<"name">(row[1].value().value_or(std::string_view{}))
+                .set<"ip">(row[2].value().value_or(std::string_view{}))
+                .set<"port">(toInt(row[3].value().value_or(std::string_view{})))
+                .set<"status">(row[4].value().value_or(std::string_view{}))
+                .set<"runtime">(std::move(targetRuntime));
         }
         co_return result;
     }
@@ -561,12 +562,12 @@ WHERE link.id = $1 ORDER BY position)sql",
         std::set<std::string> ids;
         std::set<std::string> endpoints;
         for (const auto& target : targets) {
-            const auto id = required(target.id(), "目标 ID 不能为空");
-            const auto name = required(target.name(), "目标名称不能为空");
-            const auto targetIp = required(target.ip(), "目标 IP 不能为空");
-            const auto targetPort = target.port() ? static_cast<std::int64_t>(*target.port()) : 0;
+            const auto id = required(target.get<"id">(), "目标 ID 不能为空");
+            const auto name = required(target.get<"name">(), "目标名称不能为空");
+            const auto targetIp = required(target.get<"ip">(), "目标 IP 不能为空");
+            const auto targetPort = target.get<"port">() ? static_cast<std::int64_t>(*target.get<"port">()) : 0;
             const auto targetStatus =
-                target.status() ? std::string(target.status()->view()) : "enabled";
+                target.get<"status">() ? std::string(target.get<"status">()->view()) : "enabled";
             if (targetStatus != "enabled" && targetStatus != "disabled")
                 service::common::fail(15003, "目标状态无效", 400);
             if (name.empty() || !isIpv4(targetIp) || targetPort < 1 || targetPort > 65535)
@@ -648,14 +649,16 @@ WHERE link.id = $1 ORDER BY position)sql",
             if (result.size() > 1)
                 result.push_back(',');
             result += "{\"id\":";
-            appendJsonString(result, target.id()->view());
+            appendJsonString(result, target.template get<"id">()->view());
             result += ",\"name\":";
-            appendJsonString(result, target.name()->view());
+            appendJsonString(result, target.template get<"name">()->view());
             result += ",\"ip\":";
-            appendJsonString(result, target.ip()->view());
-            result += ",\"port\":" + std::to_string(static_cast<std::int64_t>(*target.port()));
+            appendJsonString(result, target.template get<"ip">()->view());
+            result += ",\"port\":" +
+                      std::to_string(static_cast<std::int64_t>(*target.template get<"port">()));
             result += ",\"status\":";
-            appendJsonString(result, target.status() ? target.status()->view() : "enabled");
+            const auto& status = target.template get<"status">();
+            appendJsonString(result, status ? status->view() : "enabled");
             result.push_back('}');
         }
         result.push_back(']');
@@ -694,7 +697,7 @@ WHERE link.id = $1 ORDER BY position)sql",
         }
         sql += " LIMIT 1";
         const auto rows = co_await c.db().query(sql, params);
-        if (!rows.rows().empty())
+        if (!rows.empty())
             service::common::fail(15005, "链路名称或监听地址已存在", 409);
     }
 
@@ -709,7 +712,7 @@ SELECT EXISTS (
       AND r.status = 'enabled' AND r.deleted_at IS NULL
 ))sql",
                                                 service::common::dbParams(principal.userId));
-        if (rows.rows().empty() || rows.rows().front()[0].text() != "t")
+        if (rows.empty() || rows.front()[0].value().value_or(std::string_view{}) != "t")
             service::common::fail(15007, "只能修改或删除自己创建的链路", 403);
     }
 

@@ -6,22 +6,16 @@ namespace service::common {
 
 inline constexpr std::string_view kSuperAdminRoleCode{"superadmin"};
 
-struct OperationResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_MODEL(OperationResponse, code, message);
-};
+RUVIA_RESPONSE_MODEL(OperationResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String));
 
-struct HealthData final {
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String);
-    RUVIA_MODEL(HealthData, status);
-};
+RUVIA_RESPONSE_MODEL(HealthData,
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String));
 
-struct HealthResponse final {
-    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64);
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String);
-    RUVIA_OPTIONAL_FIELD(data, HealthData);
-    RUVIA_MODEL(HealthResponse, code, message, data);
-};
+RUVIA_RESPONSE_MODEL(HealthResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, HealthData));
 
 } // namespace service::common

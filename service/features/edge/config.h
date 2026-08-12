@@ -252,9 +252,9 @@ class ConfigService final {
     ruvia::Task<std::uint64_t> queueSnapshot(ruvia::Context& c, std::string_view nodeId) {
         const auto version = co_await c.db().query(config::detail::kQueueSnapshotSql,
                                                    service::common::dbParams(nodeId));
-        if (version.rows().empty())
+        if (version.empty())
             service::common::fail(17011, "边缘节点未批准或不支持设备配置", 409);
-        const auto revision = unsignedInteger(version.rows().front()[0].text());
+        const auto revision = unsignedInteger(version.front()[0].value().value_or(std::string_view{}));
 
         auto snapshot = co_await buildSnapshot(c, nodeId, revision);
         if (!snapshot) {
@@ -279,11 +279,11 @@ VALUES ($1::uuid, $2, $3, $4, $5::uuid))sql",
                                      std::uint64_t activeRevision) {
         const auto desired = co_await c.db().query(config::detail::kRequeueDesiredSql,
                                                    service::common::dbParams(nodeId));
-        if (desired.rows().empty())
+        if (desired.empty())
             co_return false;
-        const auto revision = unsignedInteger(desired.rows().front()[0].text());
+        const auto revision = unsignedInteger(desired.front()[0].value().value_or(std::string_view{}));
         if (revision == 0 || revision == activeRevision ||
-            desired.rows().front()[1].text() == "rejected")
+            desired.front()[1].value().value_or(std::string_view{}) == "rejected")
             co_return false;
 
         auto snapshot = co_await buildSnapshot(c, nodeId, revision);
@@ -500,79 +500,79 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
         std::vector<pb::ConfigItem> items;
         const auto devices = co_await c.db().query(config::detail::kBuildItemsSql,
                                                      service::common::dbParams(nodeId));
-        for (const auto& row : devices.rows()) {
-            const auto protocol = protocolValue(row[3].text());
+        for (const auto& row : devices) {
+            const auto protocol = protocolValue(row[3].value().value_or(std::string_view{}));
             pb::ConfigItem endpoint;
             endpoint.set_kind(pb::CONFIG_ITEM_ENDPOINT);
             auto* endpointValue = endpoint.mutable_endpoint();
-            if (!setUuid(endpointValue->mutable_endpoint_id(), row[32].text()))
+            if (!setUuid(endpointValue->mutable_endpoint_id(), row[32].value().value_or(std::string_view{})))
                 throw std::runtime_error("invalid edge link UUID");
-            endpointValue->set_name(row[1].text());
-            endpointValue->set_interface_name(row[10].text());
+            endpointValue->set_name(row[1].value().value_or(std::string_view{}));
+            endpointValue->set_interface_name(row[10].value().value_or(std::string_view{}));
             endpointValue->set_protocol(protocol);
-            endpointValue->set_enabled(row[31].text() == "t");
-            if (row[9].text() == "serial") {
+            endpointValue->set_enabled(row[31].value().value_or(std::string_view{}) == "t");
+            if (row[9].value().value_or(std::string_view{}) == "serial") {
                 endpointValue->set_transport(pb::TRANSPORT_SERIAL);
                 endpointValue->set_mode(pb::LINK_MODE_SERIAL);
                 auto* serial = endpointValue->mutable_serial();
-                serial->set_channel(row[10].text());
+                serial->set_channel(row[10].value().value_or(std::string_view{}));
                 serial->set_baud_rate(
-                    static_cast<std::uint32_t>(integer(row[14].text(), 9600)));
+                    static_cast<std::uint32_t>(integer(row[14].value().value_or(std::string_view{}), 9600)));
                 serial->set_data_bits(
-                    static_cast<std::uint32_t>(integer(row[15].text(), 8)));
+                    static_cast<std::uint32_t>(integer(row[15].value().value_or(std::string_view{}), 8)));
                 serial->set_stop_bits(
-                    static_cast<std::uint32_t>(integer(row[16].text(), 1)));
-                serial->set_parity(row[17].text());
-                serial->set_rs485(row[18].text() == "t");
+                    static_cast<std::uint32_t>(integer(row[16].value().value_or(std::string_view{}), 1)));
+                serial->set_parity(row[17].value().value_or(std::string_view{}));
+                serial->set_rs485(row[18].value().value_or(std::string_view{}) == "t");
             } else {
                 endpointValue->set_transport(pb::TRANSPORT_ETHERNET);
-                endpointValue->set_mode(row[11].text() == "TCP Server"
+                endpointValue->set_mode(row[11].value().value_or(std::string_view{}) == "TCP Server"
                                             ? pb::LINK_MODE_TCP_SERVER
                                             : pb::LINK_MODE_TCP_CLIENT);
-                endpointValue->set_ip(row[12].text());
+                endpointValue->set_ip(row[12].value().value_or(std::string_view{}));
                 endpointValue->set_port(
-                    static_cast<std::uint32_t>(integer(row[13].text())));
+                    static_cast<std::uint32_t>(integer(row[13].value().value_or(std::string_view{}))));
             }
             items.push_back(std::move(endpoint));
 
             pb::ConfigItem device;
             device.set_kind(pb::CONFIG_ITEM_DEVICE);
             auto* deviceValue = device.mutable_device();
-            setUuid(deviceValue->mutable_device_id(), row[0].text());
-            setUuid(deviceValue->mutable_endpoint_id(), row[32].text());
-            deviceValue->set_device_code(row[2].text());
-            deviceValue->set_name(row[1].text());
+            setUuid(deviceValue->mutable_device_id(), row[0].value().value_or(std::string_view{}));
+            setUuid(deviceValue->mutable_endpoint_id(), row[32].value().value_or(std::string_view{}));
+            deviceValue->set_device_code(row[2].value().value_or(std::string_view{}));
+            deviceValue->set_name(row[1].value().value_or(std::string_view{}));
             deviceValue->set_protocol(protocol);
-            deviceValue->set_timezone(row[4].text());
+            deviceValue->set_timezone(row[4].value().value_or(std::string_view{}));
             // Southbound acquisition is fixed at one second. readInterval controls
             // edge-to-platform reporting; storageInterval remains a platform-only
             // persistence policy carried by telemetry metadata.
             deviceValue->set_io_interval_ms(1000);
-            deviceValue->set_report_interval_sec(positiveCeil(row[5].text()));
+            deviceValue->set_report_interval_sec(positiveCeil(row[5].value().value_or(std::string_view{})));
             deviceValue->set_online_timeout_sec(
-                static_cast<std::uint32_t>(integer(row[6].text(), 300)));
+                static_cast<std::uint32_t>(integer(row[6].value().value_or(std::string_view{}), 300)));
             deviceValue->set_modbus_slave_id(
-                static_cast<std::uint32_t>(integer(row[7].text(), 1)));
-            deviceValue->set_modbus_mode(row[8].text());
+                static_cast<std::uint32_t>(integer(row[7].value().value_or(std::string_view{}), 1)));
+            deviceValue->set_modbus_mode(row[8].value().value_or(std::string_view{}));
             deviceValue->set_modbus_merge_gap(
-                static_cast<std::uint32_t>(integer(row[19].text())));
+                static_cast<std::uint32_t>(integer(row[19].value().value_or(std::string_view{}))));
             deviceValue->set_modbus_max_quantity(
-                static_cast<std::uint32_t>(integer(row[20].text(), 125)));
-            deviceValue->set_s7_connection_mode(row[21].text());
-            deviceValue->set_s7_connection_type(row[22].text());
+                static_cast<std::uint32_t>(integer(row[20].value().value_or(std::string_view{}), 125)));
+            deviceValue->set_s7_connection_mode(row[21].value().value_or(std::string_view{}));
+            deviceValue->set_s7_connection_type(row[22].value().value_or(std::string_view{}));
             deviceValue->set_s7_rack(
-                static_cast<std::uint32_t>(integer(row[23].text())));
+                static_cast<std::uint32_t>(integer(row[23].value().value_or(std::string_view{}))));
             deviceValue->set_s7_slot(
-                static_cast<std::uint32_t>(integer(row[24].text(), 1)));
-            deviceValue->set_s7_local_tsap(row[25].text());
-            deviceValue->set_s7_remote_tsap(row[26].text());
+                static_cast<std::uint32_t>(integer(row[24].value().value_or(std::string_view{}), 1)));
+            deviceValue->set_s7_local_tsap(row[25].value().value_or(std::string_view{}));
+            deviceValue->set_s7_remote_tsap(row[26].value().value_or(std::string_view{}));
             deviceValue->set_command_fast_read_duration_sec(10);
             deviceValue->set_command_fast_read_interval_sec(1);
-            packet(deviceValue->mutable_heartbeat_payload(), row[27].text(), row[28].text(),
+            packet(deviceValue->mutable_heartbeat_payload(), row[27].value().value_or(std::string_view{}), row[28].value().value_or(std::string_view{}),
                    "heartbeat_payload");
-            packet(deviceValue->mutable_registration_payload(), row[29].text(),
-                   row[30].text(), "registration_payload");
-            deviceValue->set_enabled(row[31].text() == "t");
+            packet(deviceValue->mutable_registration_payload(), row[29].value().value_or(std::string_view{}),
+                   row[30].value().value_or(std::string_view{}), "registration_payload");
+            deviceValue->set_enabled(row[31].value().value_or(std::string_view{}) == "t");
             items.push_back(std::move(device));
         }
 
@@ -586,24 +586,24 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
                                           std::vector<pb::ConfigItem>& items) {
         const auto rows = co_await c.db().query(config::detail::kAppendModbusSql,
                                                  service::common::dbParams(nodeId));
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             pb::ConfigItem item;
             item.set_kind(pb::CONFIG_ITEM_MODBUS_REGISTER);
             auto* value = item.mutable_modbus_register();
-            setUuid(value->mutable_device_id(), row[0].text());
-            value->set_element_id(row[1].text());
-            value->set_name(row[2].text());
-            value->set_unit(row[3].text());
-            value->set_register_type(row[4].text());
-            value->set_data_type(row[5].text());
-            value->set_byte_order(row[6].text());
-            value->set_address(static_cast<std::uint32_t>(integer(row[7].text())));
+            setUuid(value->mutable_device_id(), row[0].value().value_or(std::string_view{}));
+            value->set_element_id(row[1].value().value_or(std::string_view{}));
+            value->set_name(row[2].value().value_or(std::string_view{}));
+            value->set_unit(row[3].value().value_or(std::string_view{}));
+            value->set_register_type(row[4].value().value_or(std::string_view{}));
+            value->set_data_type(row[5].value().value_or(std::string_view{}));
+            value->set_byte_order(row[6].value().value_or(std::string_view{}));
+            value->set_address(static_cast<std::uint32_t>(integer(row[7].value().value_or(std::string_view{}))));
             value->set_quantity(
-                static_cast<std::uint32_t>(integer(row[8].text(), 1)));
-            value->set_scale(config::detail::number(row[9].text(), 1.0));
+                static_cast<std::uint32_t>(integer(row[8].value().value_or(std::string_view{}), 1)));
+            value->set_scale(config::detail::number(row[9].value().value_or(std::string_view{}), 1.0));
             value->set_decimals(
-                static_cast<std::int32_t>(integer(row[10].text(), -1)));
-            value->set_writable(row[11].text() == "t");
+                static_cast<std::int32_t>(integer(row[10].value().value_or(std::string_view{}), -1)));
+            value->set_writable(row[11].value().value_or(std::string_view{}) == "t");
             items.push_back(std::move(item));
         }
     }
@@ -612,27 +612,27 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
                                       std::vector<pb::ConfigItem>& items) {
         const auto rows = co_await c.db().query(config::detail::kAppendS7Sql,
                                                  service::common::dbParams(nodeId));
-        for (const auto& row : rows.rows()) {
+        for (const auto& row : rows) {
             pb::ConfigItem item;
             item.set_kind(pb::CONFIG_ITEM_S7_AREA);
             auto* value = item.mutable_s7_area();
-            setUuid(value->mutable_device_id(), row[0].text());
-            value->set_element_id(row[1].text());
-            value->set_name(row[2].text());
-            value->set_unit(row[3].text());
-            value->set_area(row[4].text());
+            setUuid(value->mutable_device_id(), row[0].value().value_or(std::string_view{}));
+            value->set_element_id(row[1].value().value_or(std::string_view{}));
+            value->set_name(row[2].value().value_or(std::string_view{}));
+            value->set_unit(row[3].value().value_or(std::string_view{}));
+            value->set_area(row[4].value().value_or(std::string_view{}));
             value->set_db_number(
-                static_cast<std::uint32_t>(integer(row[5].text())));
-            value->set_start(static_cast<std::uint32_t>(integer(row[6].text())));
+                static_cast<std::uint32_t>(integer(row[5].value().value_or(std::string_view{}))));
+            value->set_start(static_cast<std::uint32_t>(integer(row[6].value().value_or(std::string_view{}))));
             value->set_start_bit(
-                static_cast<std::uint32_t>(integer(row[7].text())));
+                static_cast<std::uint32_t>(integer(row[7].value().value_or(std::string_view{}))));
             value->set_size(
-                static_cast<std::uint32_t>(integer(row[8].text(), 1)));
-            value->set_data_type(row[9].text());
+                static_cast<std::uint32_t>(integer(row[8].value().value_or(std::string_view{}), 1)));
+            value->set_data_type(row[9].value().value_or(std::string_view{}));
             value->set_scale(1.0);
             value->set_decimals(
-                static_cast<std::int32_t>(integer(row[10].text(), -1)));
-            value->set_writable(row[11].text() == "t");
+                static_cast<std::int32_t>(integer(row[10].value().value_or(std::string_view{}), -1)));
+            value->set_writable(row[11].value().value_or(std::string_view{}) == "t");
             items.push_back(std::move(item));
         }
     }
@@ -641,38 +641,38 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
                                          std::vector<pb::ConfigItem>& items) {
         const auto functions = co_await c.db().query(config::detail::kAppendSl651FunctionsSql,
                                                       service::common::dbParams(nodeId));
-        for (const auto& row : functions.rows()) {
+        for (const auto& row : functions) {
             pb::ConfigItem item;
             item.set_kind(pb::CONFIG_ITEM_SL651_FUNCTION);
             auto* value = item.mutable_sl651_function();
-            setUuid(value->mutable_device_id(), row[0].text());
-            value->set_function_code(row[1].text());
-            value->set_name(row[2].text());
-            value->set_direction(row[3].text());
+            setUuid(value->mutable_device_id(), row[0].value().value_or(std::string_view{}));
+            value->set_function_code(row[1].value().value_or(std::string_view{}));
+            value->set_name(row[2].value().value_or(std::string_view{}));
+            value->set_direction(row[3].value().value_or(std::string_view{}));
             items.push_back(std::move(item));
         }
 
         const auto elements = co_await c.db().query(config::detail::kAppendSl651ElementsSql,
                                                      service::common::dbParams(nodeId));
-        for (const auto& row : elements.rows()) {
+        for (const auto& row : elements) {
             pb::ConfigItem item;
             item.set_kind(pb::CONFIG_ITEM_SL651_ELEMENT);
             auto* value = item.mutable_sl651_element();
-            setUuid(value->mutable_device_id(), row[0].text());
-            value->set_function_code(row[1].text());
-            value->set_element_id(row[2].text());
-            value->set_name(row[3].text());
-            value->set_unit(row[4].text());
-            value->set_encoding(row[5].text());
+            setUuid(value->mutable_device_id(), row[0].value().value_or(std::string_view{}));
+            value->set_function_code(row[1].value().value_or(std::string_view{}));
+            value->set_element_id(row[2].value().value_or(std::string_view{}));
+            value->set_name(row[3].value().value_or(std::string_view{}));
+            value->set_unit(row[4].value().value_or(std::string_view{}));
+            value->set_encoding(row[5].value().value_or(std::string_view{}));
             value->set_length(
-                static_cast<std::uint32_t>(integer(row[6].text())));
+                static_cast<std::uint32_t>(integer(row[6].value().value_or(std::string_view{}))));
             value->set_digits(
-                static_cast<std::uint32_t>(integer(row[7].text())));
+                static_cast<std::uint32_t>(integer(row[7].value().value_or(std::string_view{}))));
             const auto guide =
-                config::detail::packetBytes("HEX", row[8].text(), "sl651_guide");
+                config::detail::packetBytes("HEX", row[8].value().value_or(std::string_view{}), "sl651_guide");
             value->set_guide(protocol::bytes(guide.data(), guide.size()));
-            value->set_response_element(row[9].text() == "t");
-            value->set_writable(row[10].text() == "t" && !value->response_element());
+            value->set_response_element(row[9].value().value_or(std::string_view{}) == "t");
+            value->set_writable(row[10].value().value_or(std::string_view{}) == "t" && !value->response_element());
             items.push_back(std::move(item));
         }
     }

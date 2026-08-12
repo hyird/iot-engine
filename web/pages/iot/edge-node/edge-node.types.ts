@@ -195,6 +195,12 @@ export namespace Edge {
         keepSettings: boolean;
     }
 
+    export interface FirmwareUploadProgress {
+        loadedBytes: number;
+        totalBytes: number;
+        percent: number;
+    }
+
     export interface ModemProfileDto {
         action: 'apply_profile';
         automatic: boolean;

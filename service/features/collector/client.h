@@ -3,10 +3,10 @@
 #include <array>
 #include <chrono>
 #include <memory_resource>
-#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include <ruvia/core/Task.h>
 #include <ruvia/web/detail/redis/RedisRegistry.h>
@@ -46,25 +46,19 @@ class Client final {
 
     [[nodiscard]] ruvia::Task<ruvia::RedisValue>
     command(std::span<const std::string_view> args) const {
-        auto redis = registry_.get(&resource_, operationScope_);
-        co_return co_await redis.command(
-            args, ruvia::RedisOperationOptions{.timeout = kCommandTimeout});
+        auto redis = withOptions(ruvia::OperationOptions{.timeout = kCommandTimeout});
+        co_return co_await redis.command(args);
     }
 
     [[nodiscard]] ruvia::Task<ruvia::RedisValue>
     eval(std::string_view script, std::span<const std::string_view> keys = {},
          std::span<const std::string_view> args = {}) const {
-        auto redis = registry_.get(&resource_, operationScope_).withOptions(
-            ruvia::RedisOperationOptions{.timeout = kCommandTimeout});
+        auto redis = withOptions(ruvia::OperationOptions{.timeout = kCommandTimeout});
         co_return co_await redis.eval(script, keys, args);
     }
 
-    [[nodiscard]] ruvia::Task<std::optional<ruvia::RedisXReadGroupResult>>
-    xreadGroup(std::string_view group, std::string_view consumer,
-               std::span<const ruvia::RedisStreamReadView> streams,
-               ruvia::RedisXReadGroupOptions options = {}) const {
-        auto redis = registry_.get(&resource_, operationScope_);
-        co_return co_await redis.xreadGroup(group, consumer, streams, std::move(options));
+    [[nodiscard]] auto withOptions(ruvia::OperationOptions options) const {
+        return registry_.get(&resource_, operationScope_).withOptions(std::move(options));
     }
 
   private:

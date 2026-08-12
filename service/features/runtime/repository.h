@@ -106,24 +106,24 @@ inline std::int64_t integerInRange(std::string_view value, std::int64_t minimum,
 }
 
 template <typename Row> std::string cell(const Row& row, std::size_t column) {
-    return std::string(row[column].text());
+    return std::string(row[column].value().value_or(std::string_view{}));
 }
 template <typename Row>
 std::int64_t cellInt(const Row& row, std::size_t column, std::int64_t fallback = 0) {
-    return integer(row[column].text(), fallback);
+    return integer(row[column].value().value_or(std::string_view{}), fallback);
 }
 template <typename Row>
 std::uint16_t cellPort(const Row& row, std::size_t column, std::uint16_t fallback = 0) {
     return static_cast<std::uint16_t>(integerInRange(
-        row[column].text(), 0, std::numeric_limits<std::uint16_t>::max(), fallback));
+        row[column].value().value_or(std::string_view{}), 0, std::numeric_limits<std::uint16_t>::max(), fallback));
 }
 template <typename Row>
 std::uint8_t cellUInt8(const Row& row, std::size_t column, std::uint8_t fallback = 0) {
     return static_cast<std::uint8_t>(integerInRange(
-        row[column].text(), 0, std::numeric_limits<std::uint8_t>::max(), fallback));
+        row[column].value().value_or(std::string_view{}), 0, std::numeric_limits<std::uint8_t>::max(), fallback));
 }
 template <typename Row> bool cellBool(const Row& row, std::size_t column) {
-    const auto value = row[column].text();
+    const auto value = row[column].value().value_or(std::string_view{});
     return value == "t" || value == "true" || value == "1";
 }
 inline double decimal(std::string_view value, std::string_view name) {
@@ -147,7 +147,7 @@ SELECT id::text, name, endpoint->>'mode', protocol, COALESCE(endpoint->>'ip', ''
 FROM link
 WHERE deleted_at IS NULL AND execution = 'collector'
 ORDER BY id)sql");
-    for (const auto& row : links.rows()) {
+    for (const auto& row : links) {
         LinkDefinition link;
         link.id = cell(row, 0);
         link.name = cell(row, 1);
@@ -172,7 +172,7 @@ CROSS JOIN LATERAL jsonb_array_elements(COALESCE(l.endpoint->'targets', '[]'::js
 WHERE l.deleted_at IS NULL AND l.execution = 'collector'
   AND l.endpoint->>'mode' = 'TCP Client'
 ORDER BY l.id)sql");
-    for (const auto& row : targets.rows()) {
+    for (const auto& row : targets) {
         const auto linkId = cell(row, 0);
         const auto link = linkIndexes.find(linkId);
         if (link == linkIndexes.end())
@@ -221,7 +221,7 @@ JOIN protocol_config p ON p.id = d.protocol_config_id
   AND p.deleted_at IS NULL AND p.enabled = TRUE
 WHERE d.deleted_at IS NULL AND d.status = 'enabled'
 ORDER BY d.link_id, d.id)sql");
-    for (const auto& row : devices.rows()) {
+    for (const auto& row : devices) {
         DeviceDefinition device;
         device.id = cell(row, 0);
         device.code = cell(row, 1);
@@ -233,9 +233,9 @@ ORDER BY d.link_id, d.id)sql");
         device.timezone = cell(row, 7);
         device.onlineTimeout = cellInt(row, 8, 300);
         device.heartbeatMode = cell(row, 9);
-        device.heartbeatBytes = packetBytes(device.heartbeatMode, row[10].text());
+        device.heartbeatBytes = packetBytes(device.heartbeatMode, row[10].value().value_or(std::string_view{}));
         device.registrationMode = cell(row, 11);
-        device.registrationBytes = packetBytes(device.registrationMode, row[12].text());
+        device.registrationBytes = packetBytes(device.registrationMode, row[12].value().value_or(std::string_view{}));
         if (device.linkMode != "TCP Server" || device.protocol == "SL651") {
             device.heartbeatMode = "OFF";
             device.heartbeatBytes.clear();
@@ -306,7 +306,7 @@ WHERE d.deleted_at IS NULL
 ORDER BY d.id, configured.protocol_order, configured.function_order,
          configured.element_order)sql");
     RealtimeDeviceDefinition* realtimeDevice = nullptr;
-    for (const auto& row : realtimeRows.rows()) {
+    for (const auto& row : realtimeRows) {
         const auto deviceId = cell(row, 0);
         if (!realtimeDevice || realtimeDevice->id != deviceId) {
             RealtimeDeviceDefinition device;
@@ -316,7 +316,7 @@ ORDER BY d.id, configured.protocol_order, configured.function_order,
             snapshot.realtimeDevices.push_back(std::move(device));
             realtimeDevice = &snapshot.realtimeDevices.back();
         }
-        if (!row[3].isNull())
+        if (row[3].value().has_value())
             realtimeDevice->points.push_back(
                 RealtimePointDefinition{cell(row, 3), cell(row, 4), cell(row, 5)});
     }
@@ -336,8 +336,8 @@ WHERE d.deleted_at IS NULL AND d.status = 'enabled' AND p.deleted_at IS NULL AND
 ORDER BY d.id,
          CASE WHEN COALESCE(element->>'address', '') ~ '^-?[0-9]{1,18}$'
               THEN (element->>'address')::bigint ELSE 0 END)sql");
-    for (const auto& row : modbusElements.rows()) {
-        auto* device = findDevice(row[0].text());
+    for (const auto& row : modbusElements) {
+        auto* device = findDevice(row[0].value().value_or(std::string_view{}));
         if (!device)
             continue;
         ElementDefinition element;
@@ -350,7 +350,7 @@ ORDER BY d.id,
         element.registerType = cell(row, 6);
         element.address = cellInt(row, 7);
         element.quantity = cellInt(row, 8);
-        element.scale = decimal(row[9].text(), "scale");
+        element.scale = decimal(row[9].value().value_or(std::string_view{}), "scale");
         element.decimals = cellInt(row, 10);
         element.writable = cellBool(row, 11);
         device->elements.push_back(std::move(element));
@@ -371,8 +371,8 @@ WHERE d.deleted_at IS NULL AND d.status = 'enabled' AND p.deleted_at IS NULL AND
 ORDER BY d.id,
          CASE WHEN COALESCE(element->>'start', '') ~ '^-?[0-9]{1,18}$'
               THEN (element->>'start')::bigint ELSE 0 END)sql");
-    for (const auto& row : s7Elements.rows()) {
-        auto* device = findDevice(row[0].text());
+    for (const auto& row : s7Elements) {
+        auto* device = findDevice(row[0].value().value_or(std::string_view{}));
         if (!device)
             continue;
         ElementDefinition element;
@@ -409,8 +409,8 @@ CROSS JOIN LATERAL (
 ) configured
 WHERE d.deleted_at IS NULL AND d.status = 'enabled' AND p.deleted_at IS NULL AND p.enabled = TRUE
 ORDER BY d.id, func->>'funcCode', configured.response_element, configured.element->>'id')sql");
-    for (const auto& row : sl651Elements.rows()) {
-        auto* device = findDevice(row[0].text());
+    for (const auto& row : sl651Elements) {
+        auto* device = findDevice(row[0].value().value_or(std::string_view{}));
         if (!device)
             continue;
         ElementDefinition element;

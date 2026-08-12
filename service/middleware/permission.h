@@ -23,8 +23,8 @@ SELECT EXISTS (
       AND (r.code = 'superadmin' OR r.permissions ? '*' OR r.permissions ? $2)
 ))sql",
                               service::common::dbParams(principal.userId, permission));
-    const bool allowed = !rows.rows().empty() && !rows.rows().front().empty() &&
-                         rows.rows().front()[0].text() == "t";
+    const bool allowed = !rows.empty() && !rows.front().empty() &&
+                         rows.front()[0].value().value_or(std::string_view{}) == "t";
     if (!allowed)
         service::common::fail(service::common::kPermissionDeniedErrorCode, "无权限", 403);
 }

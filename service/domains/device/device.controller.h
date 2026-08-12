@@ -50,7 +50,7 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
 
   private:
     static std::string id(ruvia::Context& c) {
-        return std::string(c.req().validated<DeviceIdParams>().id()->view());
+        return std::string(c.req().validated<DeviceIdParams>().get<"id">()->view());
     }
 
     static ruvia::HttpResponse jsonData(ruvia::Context& c, std::string_view data) {

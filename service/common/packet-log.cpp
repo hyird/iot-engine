@@ -2,8 +2,8 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
@@ -20,6 +20,7 @@ namespace service::common::packet_log {
 namespace {
 
 struct State final {
+    std::shared_ptr<spdlog::details::thread_pool> pool;
     std::shared_ptr<spdlog::async_logger> logger;
 };
 
@@ -142,12 +143,11 @@ void initialize(Config config) {
         throw std::invalid_argument("packet log directory is empty");
 
     std::filesystem::create_directories(config.directory);
-    spdlog::init_thread_pool(kQueueSize, 1);
+    auto pool = std::make_shared<spdlog::details::thread_pool>(kQueueSize, 1);
     auto sink = std::make_shared<spdlog::sinks::daily_file_sink_mt>(
         (config.directory / "packet.log").string(), 0, 0, false, kRetentionDays);
     auto logger = std::make_shared<spdlog::async_logger>(
-        "iot-engine-packet", std::move(sink), spdlog::thread_pool(),
-        spdlog::async_overflow_policy::overrun_oldest);
+        "iot-engine-packet", std::move(sink), pool, spdlog::async_overflow_policy::overrun_oldest);
     logger->set_level(spdLevel(config.level));
     logger->flush_on(spdlog::level::warn);
     logger->set_formatter(std::make_unique<spdlog::pattern_formatter>(
@@ -156,6 +156,7 @@ void initialize(Config config) {
     spdlog::flush_every(std::chrono::seconds(1));
 
     auto next = std::make_shared<State>();
+    next->pool = std::move(pool);
     next->logger = std::move(logger);
 #if defined(__cpp_lib_atomic_shared_ptr) && __cpp_lib_atomic_shared_ptr >= 201711L
     state.store(std::move(next), std::memory_order_release);
@@ -177,8 +178,16 @@ void shutdown() noexcept {
         if (current && current->logger) {
             current->logger->flush();
             spdlog::drop(current->logger->name());
+            current->logger.reset();
+            // Destroying the dedicated pool joins its worker after draining queued
+            // log and flush messages. This gives shutdown a durability barrier
+            // without touching spdlog's process-wide default logger.
+            current->pool.reset();
         }
-        spdlog::shutdown();
+        // The packet logger owns only its named logger. Shutting down spdlog's
+        // process-wide registry here also clears the default application logger;
+        // the next LOG_* call then dereferences a null default logger. Leave the
+        // registry and its shared thread pool to process teardown.
     } catch (...) {
     }
 }
