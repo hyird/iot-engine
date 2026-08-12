@@ -888,7 +888,9 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
     template <typename Row>
     static void fillItem(ruvia::Context& c, DeviceItemDto& item, Row&& row,
                          const DeviceActor& actor) {
-        item.set<"id">(row[0].value().value_or(std::string_view{})).set<"name">(row[1].value().value_or(std::string_view{})).set<"deviceCode">(row[2].value().value_or(std::string_view{}));
+        item.set<"id">(row[0].value().value_or(std::string_view{}));
+        item.set<"name">(row[1].value().value_or(std::string_view{}));
+        item.set<"deviceCode">(row[2].value().value_or(std::string_view{}));
         if (row[3].value().has_value())
             item.set<"linkId">(row[3].value().value_or(std::string_view{}));
         if (row[4].value().has_value())
@@ -896,9 +898,9 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
         item.set<"protocolConfigId">(row[5].value().value_or(std::string_view{}));
         if (row[6].value().has_value())
             item.set<"groupId">(row[6].value().value_or(std::string_view{}));
-        item.set<"status">(row[7].value().value_or(std::string_view{}))
-            .set<"onlineTimeout">(toInt(row[8].value().value_or(std::string_view{})))
-            .set<"remoteControl">(row[9].value().value_or(std::string_view{}) == "t");
+        item.set<"status">(row[7].value().value_or(std::string_view{}));
+        item.set<"onlineTimeout">(toInt(row[8].value().value_or(std::string_view{})));
+        item.set<"remoteControl">(row[9].value().value_or(std::string_view{}) == "t");
         if (row[10].value().has_value())
             item.set<"modbusMode">(row[10].value().value_or(std::string_view{}));
         if (row[11].value().has_value())
@@ -920,15 +922,15 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
                 registration.set<"content">(row[16].value().value_or(std::string_view{}));
             item.set<"registration">(std::move(registration));
         }
-        item.set<"remark">(row[17].value().value_or(std::string_view{}))
-            .set<"createdBy">(row[18].value().value_or(std::string_view{}))
-            .set<"createdAt">(row[19].value().value_or(std::string_view{}))
-            .set<"updatedAt">(row[20].value().value_or(std::string_view{}))
-            .set<"linkName">(row[21].value().value_or(std::string_view{}))
-            .set<"linkMode">(row[22].value().value_or(std::string_view{}))
-            .set<"linkProtocol">(row[23].value().value_or(std::string_view{}))
-            .set<"protocolName">(row[24].value().value_or(std::string_view{}))
-            .set<"protocolType">(row[25].value().value_or(std::string_view{}));
+        item.set<"remark">(row[17].value().value_or(std::string_view{}));
+        item.set<"createdBy">(row[18].value().value_or(std::string_view{}));
+        item.set<"createdAt">(row[19].value().value_or(std::string_view{}));
+        item.set<"updatedAt">(row[20].value().value_or(std::string_view{}));
+        item.set<"linkName">(row[21].value().value_or(std::string_view{}));
+        item.set<"linkMode">(row[22].value().value_or(std::string_view{}));
+        item.set<"linkProtocol">(row[23].value().value_or(std::string_view{}));
+        item.set<"protocolName">(row[24].value().value_or(std::string_view{}));
+        item.set<"protocolType">(row[25].value().value_or(std::string_view{}));
         if (row[26].value().has_value()) {
             if (const auto value = parseDouble(row[26].value().value_or(std::string_view{})))
                 item.set<"readInterval">(*value);
@@ -949,7 +951,9 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
         item.set<"canCommand">(capabilities.canCommand);
         item.set<"accessLevel">(capabilities.accessLevel);
         if (row[30].value().has_value()) {
-            item.set<"edgeNodeId">(row[30].value().value_or(std::string_view{})).set<"edgeNodeName">(row[31].value().value_or(std::string_view{})).set<"edgeNodeImei">(row[32].value().value_or(std::string_view{}));
+            item.set<"edgeNodeId">(row[30].value().value_or(std::string_view{}));
+            item.set<"edgeNodeName">(row[31].value().value_or(std::string_view{}));
+            item.set<"edgeNodeImei">(row[32].value().value_or(std::string_view{}));
         }
         if (row[33].value().has_value())
             item.set<"edgeTransport">(row[33].value().value_or(std::string_view{}));
@@ -1976,16 +1980,19 @@ WHERE deleted_at IS NULL AND id <> $1::uuid
 
     template <typename Row>
     static void fillGroup(DeviceGroupItemDto& item, const Row& row, const DeviceActor& actor) {
-        item.set<"id">(row[0].value().value_or(std::string_view{}))
-            .set<"name">(row[1].value().value_or(std::string_view{}))
-            .set<"parentId">(row[2].value().value_or(std::string_view{}))
-            .set<"status">(row[3].value().value_or(std::string_view{}))
-            .set<"sortOrder">(toInt(row[4].value().value_or(std::string_view{})))
-            .set<"remark">(row[5].value().value_or(std::string_view{}))
-            .set<"deviceCount">(toInt(row[6].value().value_or(std::string_view{})))
-            .set<"createdAt">(row[7].value().value_or(std::string_view{}))
-            .set<"updatedAt">(row[8].value().value_or(std::string_view{}))
-            .set<"canShare">(actor.canGroupShare && (actor.superadmin || row[9].value().value_or(std::string_view{}) == actor.userId));
+        item.set<"id">(row[0].value().value_or(std::string_view{}));
+        item.set<"name">(row[1].value().value_or(std::string_view{}));
+        item.set<"parentId">(row[2].value().value_or(std::string_view{}));
+        item.set<"status">(row[3].value().value_or(std::string_view{}));
+        item.set<"sortOrder">(toInt(row[4].value().value_or(std::string_view{})));
+        item.set<"remark">(row[5].value().value_or(std::string_view{}));
+        item.set<"deviceCount">(toInt(row[6].value().value_or(std::string_view{})));
+        item.set<"createdAt">(row[7].value().value_or(std::string_view{}));
+        item.set<"updatedAt">(row[8].value().value_or(std::string_view{}));
+        item.set<"canShare">(
+            actor.canGroupShare &&
+            (actor.superadmin ||
+             row[9].value().value_or(std::string_view{}) == actor.userId));
     }
 
     ruvia::Task<void> validateParent(ruvia::Context& c, const SaveDeviceGroupBody& body,

@@ -229,16 +229,16 @@ RETURNING id)sql",
 
   private:
     template <typename Row> static void fillBase(UserItemDto& item, const Row& row) {
-        item.set<"id">(row[0].value().value_or(std::string_view{}))
-            .set<"username">(row[1].value().value_or(std::string_view{}))
-            .set<"nickname">(row[2].value().value_or(std::string_view{}))
-            .set<"phone">(row[3].value().value_or(std::string_view{}))
-            .set<"email">(row[4].value().value_or(std::string_view{}))
-            .set<"status">(row[5].value().value_or(std::string_view{}))
-            .set<"departmentId">(row[6].value().value_or(std::string_view{}))
-            .set<"departmentName">(row[7].value().value_or(std::string_view{}))
-            .set<"createdAt">(row[8].value().value_or(std::string_view{}))
-            .set<"updatedAt">(row[9].value().value_or(std::string_view{}));
+        item.set<"id">(row[0].value().value_or(std::string_view{}));
+        item.set<"username">(row[1].value().value_or(std::string_view{}));
+        item.set<"nickname">(row[2].value().value_or(std::string_view{}));
+        item.set<"phone">(row[3].value().value_or(std::string_view{}));
+        item.set<"email">(row[4].value().value_or(std::string_view{}));
+        item.set<"status">(row[5].value().value_or(std::string_view{}));
+        item.set<"departmentId">(row[6].value().value_or(std::string_view{}));
+        item.set<"departmentName">(row[7].value().value_or(std::string_view{}));
+        item.set<"createdAt">(row[8].value().value_or(std::string_view{}));
+        item.set<"updatedAt">(row[9].value().value_or(std::string_view{}));
     }
 
     ruvia::Task<ruvia::BoxedArray<service::role::RoleOptionDto>> loadRoles(ruvia::Context& c,

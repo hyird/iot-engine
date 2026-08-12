@@ -390,28 +390,28 @@ WHERE id = $4 AND execution = 'collector'
             start = end + 1;
         }
         RuntimeDto runtimeDto(c);
-        runtimeDto.set<"state">(runtime.text("state", "stopped"))
-            .set<"reason">(runtime.text("state_reason"))
-            .set<"error">(runtime.text("error"))
-            .set<"clientCount">(runtime.integer("connection_count"))
-            .set<"clients">(std::move(clients));
+        runtimeDto.set<"state">(runtime.text("state", "stopped"));
+        runtimeDto.set<"reason">(runtime.text("state_reason"));
+        runtimeDto.set<"error">(runtime.text("error"));
+        runtimeDto.set<"clientCount">(runtime.integer("connection_count"));
+        runtimeDto.set<"clients">(std::move(clients));
         const auto lastActivityAt = runtime.integer("last_activity_at_ms");
         if (lastActivityAt > 0)
             runtimeDto.set<"lastActivityAt">(
                 service::common::utcTimestampFromMilliseconds(lastActivityAt));
-        item.set<"id">(id)
-            .set<"name">(row[1].value().value_or(std::string_view{}))
-            .set<"protocol">(row[2].value().value_or(std::string_view{}))
-            .set<"status">(row[6].value().value_or(std::string_view{}))
-            .set<"runtime">(std::move(runtimeDto))
-            .set<"createdBy">(row[7].value().value_or(std::string_view{}))
-            .set<"createdAt">(row[8].value().value_or(std::string_view{}))
-            .set<"updatedAt">(row[9].value().value_or(std::string_view{}));
+        item.set<"id">(id);
+        item.set<"name">(row[1].value().value_or(std::string_view{}));
+        item.set<"protocol">(row[2].value().value_or(std::string_view{}));
+        item.set<"status">(row[6].value().value_or(std::string_view{}));
+        item.set<"runtime">(std::move(runtimeDto));
+        item.set<"createdBy">(row[7].value().value_or(std::string_view{}));
+        item.set<"createdAt">(row[8].value().value_or(std::string_view{}));
+        item.set<"updatedAt">(row[9].value().value_or(std::string_view{}));
         LinkEndpointDto endpoint(c);
-        endpoint.set<"mode">(row[3].value().value_or(std::string_view{}))
-            .set<"ip">(row[4].value().value_or(std::string_view{}))
-            .set<"port">(toInt(row[5].value().value_or(std::string_view{})))
-            .set<"targets">(co_await loadTargets(c, id, runtime));
+        endpoint.set<"mode">(row[3].value().value_or(std::string_view{}));
+        endpoint.set<"ip">(row[4].value().value_or(std::string_view{}));
+        endpoint.set<"port">(toInt(row[5].value().value_or(std::string_view{})));
+        endpoint.set<"targets">(co_await loadTargets(c, id, runtime));
         item.set<"endpoint">(std::move(endpoint));
     }
 

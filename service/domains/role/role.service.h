@@ -188,13 +188,13 @@ VALUES ($1, $2, $3, NULLIF($4, ''), $5,
 
   private:
     template <typename Row> static void fillBase(RoleItemDto& item, const Row& row) {
-        item.set<"id">(row[0].value().value_or(std::string_view{}))
-            .set<"name">(row[1].value().value_or(std::string_view{}))
-            .set<"code">(row[2].value().value_or(std::string_view{}))
-            .set<"description">(row[3].value().value_or(std::string_view{}))
-            .set<"status">(row[4].value().value_or(std::string_view{}))
-            .set<"createdAt">(row[5].value().value_or(std::string_view{}))
-            .set<"updatedAt">(row[6].value().value_or(std::string_view{}));
+        item.set<"id">(row[0].value().value_or(std::string_view{}));
+        item.set<"name">(row[1].value().value_or(std::string_view{}));
+        item.set<"code">(row[2].value().value_or(std::string_view{}));
+        item.set<"description">(row[3].value().value_or(std::string_view{}));
+        item.set<"status">(row[4].value().value_or(std::string_view{}));
+        item.set<"createdAt">(row[5].value().value_or(std::string_view{}));
+        item.set<"updatedAt">(row[6].value().value_or(std::string_view{}));
     }
 
     static std::string
