@@ -57,6 +57,30 @@ void requireStrictUpdateFieldTypes(std::string_view source) {
             "protocol service does not reject non-string remark fields");
 }
 
+void requireModbusRuntimeFieldValidation(std::string_view source) {
+    require(source.find("Modbus 配置的 readInterval 无效") != std::string_view::npos,
+            "protocol service does not validate Modbus readInterval");
+    require(source.find("Modbus 配置的 packet.mergeGap 无效") != std::string_view::npos,
+            "protocol service does not validate Modbus packet mergeGap");
+    require(source.find("Modbus 配置的 packet.maxQuantity 无效") != std::string_view::npos,
+            "protocol service does not validate Modbus packet maxQuantity");
+    require(source.find("Modbus 寄存器 scale 无效") != std::string_view::npos,
+            "protocol service does not validate Modbus register scale");
+    require(source.find("Modbus 寄存器 decimals 无效") != std::string_view::npos,
+            "protocol service does not validate Modbus register decimals");
+    require(source.find("Modbus 寄存器 writable 必须是布尔值") != std::string_view::npos,
+            "protocol service does not validate Modbus register writable");
+}
+
+void requireEdgeSyncDoesNotLeakAsUpdateFailure(std::string_view source) {
+    require(source.find("l.edge_node_id IS NOT NULL") != std::string_view::npos,
+            "protocol update can queue empty edge node IDs");
+    require(source.find("protocol edge config sync failed") != std::string_view::npos,
+            "protocol update does not isolate edge config sync failures");
+    require(source.find("catch (const std::exception& error)") != std::string_view::npos,
+            "protocol update does not catch edge config sync exceptions");
+}
+
 } // namespace
 
 int main() {
@@ -65,6 +89,8 @@ int main() {
         requireNoUnsafeParsing(source);
         requirePartialModbusUpdateValidation(source);
         requireStrictUpdateFieldTypes(source);
+        requireModbusRuntimeFieldValidation(source);
+        requireEdgeSyncDoesNotLeakAsUpdateFailure(source);
         std::cout << "protocol service tests passed\n";
         return 0;
     } catch (const std::exception& error) {

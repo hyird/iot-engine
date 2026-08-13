@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <iostream>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -204,10 +205,20 @@ SELECT DISTINCT l.edge_node_id::text
 FROM device d
 JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
 WHERE d.protocol_config_id = $1::uuid AND d.deleted_at IS NULL
+  AND l.edge_node_id IS NOT NULL
 ORDER BY l.edge_node_id::text)sql",
                                                 service::common::dbParams(configId));
-        for (const auto& row : rows)
-            (void)co_await service::edge::configService().queueSnapshot(c, row[0].value().value_or(std::string_view{}));
+        for (const auto& row : rows) {
+            const auto nodeId = row[0].value().value_or(std::string_view{});
+            if (nodeId.empty())
+                continue;
+            try {
+                (void)co_await service::edge::configService().queueSnapshot(c, nodeId);
+            } catch (const std::exception& error) {
+                std::cerr << "protocol edge config sync failed: node=" << nodeId
+                          << " config=" << configId << " error=" << error.what() << '\n';
+            }
+        }
     }
 
     static std::int64_t toInt(std::string_view value) {
@@ -381,24 +392,48 @@ SELECT COALESCE(bool_and(
 	        ('BIG_ENDIAN', 'LITTLE_ENDIAN', 'BIG_ENDIAN_BYTE_SWAP', 'LITTLE_ENDIAN_BYTE_SWAP'),
 	    (NOT (value ? 'registers') OR jsonb_typeof(value->'registers') = 'array'),
 	    (NOT (value ? 'packet') OR jsonb_typeof(value->'packet') = 'object'),
+	    (NOT (value ? 'readInterval') OR
+	     CASE WHEN jsonb_typeof(value->'readInterval') IN ('number', 'string')
+	               AND value->>'readInterval' ~ '^[0-9]{1,5}$'
+	          THEN (value->>'readInterval')::integer BETWEEN 1 AND 3600
+	          ELSE FALSE END),
+	    CASE WHEN NOT (value ? 'packet') OR jsonb_typeof(value->'packet') <> 'object'
+	              OR NOT (value->'packet' ? 'mergeGap') THEN TRUE
+	         WHEN jsonb_typeof(value->'packet'->'mergeGap') IN ('number', 'string')
+	              AND value->'packet'->>'mergeGap' ~ '^[0-9]{1,5}$'
+	         THEN (value->'packet'->>'mergeGap')::integer BETWEEN 0 AND 2000
+	         ELSE FALSE END,
+	    CASE WHEN NOT (value ? 'packet') OR jsonb_typeof(value->'packet') <> 'object'
+	              OR NOT (value->'packet' ? 'maxQuantity') THEN TRUE
+	         WHEN jsonb_typeof(value->'packet'->'maxQuantity') IN ('number', 'string')
+	              AND value->'packet'->>'maxQuantity' ~ '^[0-9]{1,5}$'
+	         THEN (value->'packet'->>'maxQuantity')::integer BETWEEN 1 AND 125
+	         ELSE FALSE END,
 	    value ? 'byteOrder',
 	    value ? 'registers'
 	FROM cfg)sql",
 	                                                      service::common::dbParams(body));
 	        const auto& config = configRows.front();
-	        if (config[0].value().value_or(std::string_view{}) != "t" || (required && config[3].value().value_or(std::string_view{}) != "t"))
+	        if (config[0].value().value_or(std::string_view{}) != "t" || (required && config[6].value().value_or(std::string_view{}) != "t"))
 	            service::common::fail(16004, "Modbus 配置的 byteOrder 无效", 400);
-	        if (config[1].value().value_or(std::string_view{}) != "t" || (required && config[4].value().value_or(std::string_view{}) != "t"))
+	        if (config[1].value().value_or(std::string_view{}) != "t" || (required && config[7].value().value_or(std::string_view{}) != "t"))
 	            service::common::fail(16004, "Modbus 配置的 registers 必须是数组", 400);
 	        if (config[2].value().value_or(std::string_view{}) != "t")
 	            service::common::fail(16004, "Modbus 配置的 packet 必须是对象", 400);
+	        if (config[3].value().value_or(std::string_view{}) != "t")
+	            service::common::fail(16004, "Modbus 配置的 readInterval 无效", 400);
 	        if (config[4].value().value_or(std::string_view{}) != "t")
+	            service::common::fail(16004, "Modbus 配置的 packet.mergeGap 无效", 400);
+	        if (config[5].value().value_or(std::string_view{}) != "t")
+	            service::common::fail(16004, "Modbus 配置的 packet.maxQuantity 无效", 400);
+	        if (config[7].value().value_or(std::string_view{}) != "t")
 	            co_return;
 	
 	        const auto registers = co_await c.db().query(R"sql(
 	WITH cfg AS (SELECT ($1::jsonb)->'config' AS value),
 registers AS (SELECT item FROM cfg, jsonb_array_elements(value->'registers') AS item)
-SELECT COALESCE(bool_and(
+SELECT
+  COALESCE(bool_and(
     jsonb_typeof(item) = 'object'
     AND jsonb_typeof(item->'id') = 'string' AND COALESCE(item->>'id', '') <> ''
     AND jsonb_typeof(item->'name') = 'string' AND COALESCE(item->>'name', '') <> ''
@@ -411,10 +446,39 @@ SELECT COALESCE(bool_and(
     AND CASE WHEN jsonb_typeof(item->'quantity') = 'number'
                   AND item->>'quantity' ~ '^[1-4]$'
              THEN TRUE ELSE FALSE END
-), TRUE) FROM registers)sql",
+  ), TRUE),
+  COALESCE(bool_and(
+    CASE WHEN NOT (item ? 'byteOrder') THEN TRUE
+         ELSE item->>'byteOrder' IN
+             ('BIG_ENDIAN', 'LITTLE_ENDIAN', 'BIG_ENDIAN_BYTE_SWAP', 'LITTLE_ENDIAN_BYTE_SWAP') END
+  ), TRUE),
+  COALESCE(bool_and(
+    CASE WHEN NOT (item ? 'scale') THEN TRUE
+         WHEN jsonb_typeof(item->'scale') IN ('number', 'string')
+              AND item->>'scale' ~ '^[+-]?([0-9]{1,18}(\.[0-9]{0,12})?|\.[0-9]{1,12})([eE][+-]?[0-9]{1,3})?$'
+         THEN abs((item->>'scale')::numeric) <= 1000000000
+         ELSE FALSE END
+  ), TRUE),
+  COALESCE(bool_and(
+    CASE WHEN NOT (item ? 'decimals') THEN TRUE
+         WHEN jsonb_typeof(item->'decimals') IN ('number', 'string')
+              AND item->>'decimals' ~ '^-?[0-9]{1,2}$'
+         THEN (item->>'decimals')::integer BETWEEN -1 AND 8
+         ELSE FALSE END
+  ), TRUE),
+  COALESCE(bool_and(NOT (item ? 'writable') OR jsonb_typeof(item->'writable') = 'boolean'), TRUE)
+FROM registers)sql",
                                                      service::common::dbParams(body));
         if (registers.front()[0].value().value_or(std::string_view{}) != "t")
             service::common::fail(16004, "Modbus 寄存器配置无效", 400);
+        if (registers.front()[1].value().value_or(std::string_view{}) != "t")
+            service::common::fail(16004, "Modbus 寄存器 byteOrder 无效", 400);
+        if (registers.front()[2].value().value_or(std::string_view{}) != "t")
+            service::common::fail(16004, "Modbus 寄存器 scale 无效", 400);
+        if (registers.front()[3].value().value_or(std::string_view{}) != "t")
+            service::common::fail(16004, "Modbus 寄存器 decimals 无效", 400);
+        if (registers.front()[4].value().value_or(std::string_view{}) != "t")
+            service::common::fail(16004, "Modbus 寄存器 writable 必须是布尔值", 400);
     }
 
     ruvia::Task<void> ensureNameAvailable(ruvia::Context& c, const std::string& name,

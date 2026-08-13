@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 
+import { numberOrDefault } from '../web/pages/iot/protocol/modbus/helpers';
 import { protocolCreateSchema } from '../web/pages/iot/protocol/protocol.schema';
 
 test('S7 protocol schema rejects malformed area fields', () => {
@@ -46,4 +47,9 @@ test('Modbus protocol schema rejects fractional register addresses', () => {
     });
 
     expect(result.success).toBe(false);
+});
+
+test('Modbus helpers normalize legacy numeric strings before save', () => {
+    expect(numberOrDefault('5', 1)).toBe(5);
+    expect(numberOrDefault('bad', 1)).toBe(1);
 });

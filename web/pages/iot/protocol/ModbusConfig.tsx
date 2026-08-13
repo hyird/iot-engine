@@ -31,6 +31,7 @@ import {
     getRegisterTypeMeta,
     normalizeModbusRegisters,
     normalizePacketConfig,
+    numberOrDefault,
     REGISTER_CARD_GRID_STYLE,
     REGISTER_TYPE_META,
     REGISTER_TYPE_ORDER,
@@ -134,7 +135,7 @@ const ModbusConfigPage = () => {
                 protocol: 'Modbus',
                 config: {
                     byteOrder: config.byteOrder,
-                    readInterval: config.readInterval,
+                    readInterval: numberOrDefault(config.readInterval, 1),
                     packet: normalizePacketConfig(config.packet),
                     registers: nextRegisters,
                 },
@@ -180,7 +181,7 @@ const ModbusConfigPage = () => {
         const config = activeType.config as Modbus.Config;
         const newConfig: Modbus.Config = {
             byteOrder: config.byteOrder,
-            readInterval: config.readInterval,
+            readInterval: numberOrDefault(config.readInterval, 1),
             packet: normalizePacketConfig(config.packet),
             registers: registers.filter((register) => register.id !== registerId),
         };
