@@ -410,7 +410,7 @@ SELECT COALESCE(bool_and(
 	WITH cfg AS (SELECT ($1::jsonb)->'config' AS value)
 	SELECT
 	    (NOT (value ? 'byteOrder') OR value->>'byteOrder' IN
-	        ('BIG_ENDIAN', 'LITTLE_ENDIAN', 'BIG_ENDIAN_BYTE_SWAP', 'LITTLE_ENDIAN_BYTE_SWAP'),
+	        ('BIG_ENDIAN', 'LITTLE_ENDIAN', 'BIG_ENDIAN_BYTE_SWAP', 'LITTLE_ENDIAN_BYTE_SWAP')),
 	    (NOT (value ? 'registers') OR jsonb_typeof(value->'registers') = 'array'),
 	    (NOT (value ? 'packet') OR jsonb_typeof(value->'packet') = 'object'),
 	    (NOT (value ? 'readInterval') OR

@@ -37,6 +37,9 @@ void requirePartialModbusUpdateValidation(std::string_view source) {
     require(source.find("NOT (value ? 'byteOrder') OR value->>'byteOrder' IN") !=
                 std::string_view::npos,
             "protocol service does not allow missing byteOrder on partial Modbus update");
+    require(source.find("('BIG_ENDIAN', 'LITTLE_ENDIAN', 'BIG_ENDIAN_BYTE_SWAP', "
+                        "'LITTLE_ENDIAN_BYTE_SWAP')),") != std::string_view::npos,
+            "protocol service Modbus byteOrder validation SQL is missing its closing parenthesis");
     require(source.find("NOT (value ? 'registers') OR jsonb_typeof(value->'registers') = 'array'") !=
                 std::string_view::npos,
             "protocol service does not allow missing registers on partial Modbus update");
