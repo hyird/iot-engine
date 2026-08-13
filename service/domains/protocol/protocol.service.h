@@ -175,8 +175,20 @@ FROM body WHERE p.id = $2)sql",
         } catch (...) {
             // Startup hydration repairs Redis read models if Redis is temporarily unavailable.
         }
-        co_await service::message::publishConfigEvent(c, "protocol", "updated", id);
-        co_await syncEdgeNodes(c, id);
+        try {
+            co_await service::message::publishConfigEvent(c, "protocol", "updated", id);
+        } catch (const std::exception& error) {
+            logPostUpdateFailure("config-event", id, error.what());
+        } catch (...) {
+            logPostUpdateFailure("config-event", id, "unknown exception");
+        }
+        try {
+            co_await syncEdgeNodes(c, id);
+        } catch (const std::exception& error) {
+            logPostUpdateFailure("edge-sync", id, error.what());
+        } catch (...) {
+            logPostUpdateFailure("edge-sync", id, "unknown exception");
+        }
     }
 
     ruvia::Task<void> remove(ruvia::Context& c, std::string_view id) {
@@ -217,8 +229,17 @@ ORDER BY l.edge_node_id::text)sql",
             } catch (const std::exception& error) {
                 std::cerr << "protocol edge config sync failed: node=" << nodeId
                           << " config=" << configId << " error=" << error.what() << '\n';
+            } catch (...) {
+                std::cerr << "protocol edge config sync failed: node=" << nodeId
+                          << " config=" << configId << " error=unknown exception\n";
             }
         }
+    }
+
+    static void logPostUpdateFailure(std::string_view stage, std::string_view configId,
+                                     std::string_view message) {
+        std::cerr << "protocol post-update " << stage << " failed: config=" << configId
+                  << " error=" << message << '\n';
     }
 
     static std::int64_t toInt(std::string_view value) {
