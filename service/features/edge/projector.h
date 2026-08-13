@@ -239,8 +239,8 @@ class Projector final {
             co_await saveCommandResult(context, nodeId, receivedAtMs,
                                        envelope.command_result());
             break;
-        case pb::Envelope::kEndpointStatusReport:
-            co_await saveEndpointStatus(context, nodeId, envelope.endpoint_status_report());
+        case pb::Envelope::kDeviceStatusReport:
+            co_await saveDeviceStatus(context, nodeId, envelope.device_status_report());
             break;
         default:
             break;
@@ -914,30 +914,30 @@ WHERE id = $3::uuid)sql",
             10000);
     }
 
-    static std::string endpointStatusKey(std::string_view nodeId, std::string_view endpointId) {
-        return "iot:runtime:edge:" + std::string(nodeId) + ":endpoint:" +
-               std::string(endpointId);
+    static std::string deviceStatusKey(std::string_view nodeId, std::string_view deviceId) {
+        return "iot:runtime:edge:" + std::string(nodeId) + ":device:" +
+               std::string(deviceId);
     }
 
-    static ruvia::Task<void> saveEndpointStatus(ruvia::WebWorkerContext& context,
-                                                 std::string_view nodeId,
-                                                 const pb::EndpointStatusReport& report) {
-        for (const auto& status : report.endpoints()) {
-            if (status.endpoint_id().size() != 16)
+    static ruvia::Task<void> saveDeviceStatus(ruvia::WebWorkerContext& context,
+                                               std::string_view nodeId,
+                                               const pb::DeviceStatusReport& report) {
+        for (const auto& status : report.devices()) {
+            if (status.device_id().size() != 16)
                 continue;
-            const auto endpointId = protocol::uuidText(status.endpoint_id());
+            const auto deviceId = protocol::uuidText(status.device_id());
             std::string clients;
             for (const auto& client : status.clients()) {
                 if (!clients.empty())
                     clients.push_back(',');
                 clients += client;
             }
-            const auto key = endpointStatusKey(nodeId, endpointId);
+            const auto key = deviceStatusKey(nodeId, deviceId);
             co_await service::message::redis::eraseHash(context.redis(), key);
             co_await service::message::redis::setHash(
                 context.redis(), key,
                 {{"node_id", std::string(nodeId)},
-                 {"endpoint_id", endpointId},
+                 {"device_id", deviceId},
                  {"state", status.state()},
                  {"reason", status.reason()},
                  {"client_count", std::to_string(status.client_count())},

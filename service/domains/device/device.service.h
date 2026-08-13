@@ -302,7 +302,7 @@ class DeviceService {
             auto& item = items.emplace(c);
             item.set<"id">(row[0].value().value_or(std::string_view{}))
                 .set<"connected">(false)
-                .set<"connectionState">("offline")
+                .set<"connectionState">("disconnected")
                 .set<"elements">(ruvia::BoxedArray<ruvia::String>(c.resource()))
                 .set<"canEdit">(capabilities.canEdit)
                 .set<"canDelete">(capabilities.canDelete)
@@ -454,7 +454,8 @@ FROM filtered)sql",
                                          ? std::string(body.get<"timezone">()->view())
                                          : "+08:00";
         const std::string heartbeat = packetJson(body.get<"heartbeat">());
-        const std::string registration = packetJson(body.get<"registration">());
+        const std::string registration =
+            edgeNodeId.empty() ? packetJson(body.get<"registration">()) : R"({"mode":"OFF"})";
         const std::string remark = str(body.get<"remark">());
         // Keep the optional edge-node parameter typed as text through NULLIF. If PostgreSQL
         // infers it as uuid first, the empty-string sentinel is cast to uuid before NULLIF.
@@ -587,7 +588,9 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
         }
         std::string registration;
         if (body.get<"registration">()) {
-            registration = packetJson(body.get<"registration">());
+            registration = rows.front()[1].value().value_or(std::string_view{}).empty()
+                               ? packetJson(body.get<"registration">())
+                               : R"({"mode":"OFF"})";
             jsonDocument("registration", registration);
         }
         if (protocolParams != "protocol_params") {
@@ -829,9 +832,9 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
         return parseDouble(value).value_or(fallback);
     }
 
-    static std::string edgeEndpointStatusKey(std::string_view nodeId, std::string_view endpointId) {
-        return "iot:runtime:edge:" + std::string(nodeId) + ":endpoint:" +
-               std::string(endpointId);
+    static std::string edgeDeviceStatusKey(std::string_view nodeId, std::string_view deviceId) {
+        return "iot:runtime:edge:" + std::string(nodeId) + ":device:" +
+               std::string(deviceId);
     }
 
     // 列顺序必须与 fillItem 的 row 下标严格对应。
@@ -914,7 +917,7 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
                 heartbeat.set<"content">(row[14].value().value_or(std::string_view{}));
             item.set<"heartbeat">(std::move(heartbeat));
         }
-        {
+        if (!row[30].value().has_value()) {
             DevicePacketDto registration(c);
             if (row[15].value().has_value())
                 registration.set<"mode">(row[15].value().value_or(std::string_view{}));
@@ -943,7 +946,7 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
             actor, DeviceAccessService::rank(row[29].value().value_or(std::string_view{})), row[9].value().value_or(std::string_view{}) == "t");
         item.set<"elementCount">(toInt(row[28].value().value_or(std::string_view{})));
         item.set<"connected">(false);
-        item.set<"connectionState">("offline");
+        item.set<"connectionState">("disconnected");
         item.set<"elements">(ruvia::BoxedArray<DeviceElementDto>(c.resource()));
         item.set<"canEdit">(capabilities.canEdit);
         item.set<"canDelete">(capabilities.canDelete);
@@ -982,7 +985,7 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
         if (items.empty())
             co_return;
         auto pipeline = c.redis().pipeline();
-        enum class ReplyKind { runtime, latest, endpoint };
+        enum class ReplyKind { runtime, latest, edgeDevice };
         struct ReplyBinding {
             ReplyKind kind;
             DeviceItemDto* item;
@@ -997,11 +1000,11 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
             bindings.push_back({ReplyKind::runtime, item});
             pipeline.hgetAll(service::telemetry::latest::latestKey(item->get<"deviceCode">()->view()));
             bindings.push_back({ReplyKind::latest, item});
-            if (item->get<"edgeNodeId">() && item->get<"linkId">() && item->get<"edgeTransport">() &&
+            if (item->get<"edgeNodeId">() && item->get<"edgeTransport">() &&
                 item->get<"edgeTransport">()->view() == "tcp") {
                 pipeline.hgetAll(
-                    edgeEndpointStatusKey(item->get<"edgeNodeId">()->view(), item->get<"linkId">()->view()));
-                bindings.push_back({ReplyKind::endpoint, item});
+                    edgeDeviceStatusKey(item->get<"edgeNodeId">()->view(), item->get<"id">()->view()));
+                bindings.push_back({ReplyKind::edgeDevice, item});
             }
         }
         const auto replies = co_await std::move(pipeline).exec();
@@ -1270,9 +1273,9 @@ ORDER BY device_id, operation_position, operation_key, element_position,
             if (milliseconds > 0)
                 item.set<"reportTime">(service::common::utcTimestampFromMilliseconds(milliseconds));
         }
-        const auto state = redisHashField(reply, "state");
-        const bool online = state == "online";
-        item.set<"connected">(online).set<"connectionState">(online ? "online" : "offline");
+        const bool connected = !redisHashField(reply, "connection_id").empty();
+        item.set<"connected">(connected)
+            .set<"connectionState">(connected ? "connected" : "disconnected");
     }
 
     static void applyEdgeRuntime(ruvia::Context& c, DeviceItemDto& item,
@@ -1280,6 +1283,9 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         const auto state = redisHashField(reply, "state");
         if (state.empty())
             return;
+        const bool connected = state == "connected" || state == "online";
+        item.set<"connected">(connected)
+            .set<"connectionState">(connected ? "connected" : "disconnected");
         EdgeStatusDto status(c);
         status.set<"state">(state);
         const auto reason = redisHashField(reply, "reason");
@@ -1639,6 +1645,8 @@ WHERE l.id = $1 AND l.deleted_at IS NULL AND l.execution = 'collector'
                                                   const SaveDeviceBody& body,
                                                   std::string_view nodeId,
                                                   std::string_view protocol) {
+        if (packetEnabled(body.get<"registration">()))
+            service::common::fail(18002, "边缘采集设备不支持注册码", 400);
         const auto transport = str(body.get<"edgeTransport">());
         const auto interfaceName = str(body.get<"edgeInterface">());
         if (transport != "serial" && transport != "tcp")
@@ -1657,8 +1665,8 @@ WHERE node_id = $1::uuid AND path = $2 LIMIT 1)sql",
                                                                                 interfaceName));
             if (serial.empty() || serial.front()[0].value().value_or(std::string_view{}) != "t")
                 service::common::fail(18003, "所选串口不存在或当前不可用", 409);
-            if (packetEnabled(body.get<"heartbeat">()) || packetEnabled(body.get<"registration">()))
-                service::common::fail(18002, "串口设备不支持注册包或心跳包", 400);
+            if (packetEnabled(body.get<"heartbeat">()))
+                service::common::fail(18002, "串口设备不支持心跳包", 400);
             co_return;
         }
 
@@ -1682,8 +1690,8 @@ LIMIT 1)sql",
         if (mode == "TCP Server") {
             if (ip != "0.0.0.0" && ip != interfaceIp)
                 service::common::fail(18003, "TCP Server 监听地址必须是所选网口地址", 400);
-        } else if (packetEnabled(body.get<"heartbeat">()) || packetEnabled(body.get<"registration">())) {
-            service::common::fail(18002, "仅 TCP Server 设备支持注册包或心跳包", 400);
+        } else if (packetEnabled(body.get<"heartbeat">())) {
+            service::common::fail(18002, "仅 TCP Server 设备支持心跳包", 400);
         }
     }
 

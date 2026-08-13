@@ -34,10 +34,13 @@ export function usePublicIp(options?: { enabled?: boolean }) {
     });
 }
 
-export function useLinkOptions(options?: { enabled?: boolean }) {
+export function useLinkOptions(
+    options?: Omit<UseQueryOptions<Link.Item[]>, 'queryKey' | 'queryFn'>
+) {
     return useQuery({
         queryKey: [...linkQueryKeys.all, 'options'],
         queryFn: async () => (await getList({ page: 1, pageSize: 100 })).list,
+        ...options,
         enabled: options?.enabled ?? true,
     });
 }

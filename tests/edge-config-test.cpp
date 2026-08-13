@@ -33,10 +33,10 @@ void testPacketBytesRejectInvalidHex() {
 
     bool rejectedOddNibble = false;
     try {
-        (void)service::edge::config::detail::packetBytes("HEX", "ABC", "registration_payload");
+        (void)service::edge::config::detail::packetBytes("HEX", "ABC", "heartbeat_payload");
     } catch (const std::runtime_error& error) {
         rejectedOddNibble =
-            std::string_view(error.what()).find("invalid edge config hex: registration_payload") !=
+            std::string_view(error.what()).find("invalid edge config hex: heartbeat_payload") !=
             std::string_view::npos;
     }
     require(rejectedOddNibble, "edge config accepted a HEX packet with an odd nibble");
@@ -114,6 +114,8 @@ void testBuildItemSqlAvoidsJsonCasts() {
     require(kBuildItemsSql.find("(p.config->'connection'->>'rack')::integer") ==
                 std::string_view::npos,
             "edge config buildItems directly casts S7 rack");
+    require(kBuildItemsSql.find("registration") == std::string_view::npos,
+            "edge config still exports a device registration payload");
     require(kAppendModbusSql.find("(item->>'address')::integer") == std::string_view::npos,
             "edge config Modbus query directly casts address");
     require(kAppendModbusSql.find("(item->>'scale')::numeric") == std::string_view::npos,

@@ -131,9 +131,10 @@ const DeviceFormModal = ({
     // 统一协议类型
     const protocolType = connectionMode === 'edge' ? edgeProtocol : linkProtocolType;
 
-    // 心跳包/注册包仅 Modbus/S7 的 TCP Server 模式使用。
+    // 边缘采集没有设备注册概念；注册包只属于平台直采的 TCP Server DTU 透传。
     const linkMode = connectionMode === 'edge' ? edgeMode : selectedLink?.endpoint.mode;
-    const showPacketConfig = linkMode === 'TCP Server' && protocolType !== 'SL651';
+    const showHeartbeatConfig = linkMode === 'TCP Server' && protocolType !== 'SL651';
+    const showRegistrationConfig = connectionMode === 'link' && showHeartbeatConfig;
 
     const { data: protocolOptions, isLoading: protocolOptionsLoading } = useProtocolConfigOptions(
         protocolType ?? 'Modbus',
@@ -294,8 +295,10 @@ const DeviceFormModal = ({
                     if (connectionMode === 'edge' && protocolType === 'Modbus') {
                         values.modbus_mode = edgeTransport === 'serial' ? 'RTU' : 'TCP';
                     }
-                    if (!showPacketConfig) {
+                    if (!showHeartbeatConfig) {
                         values.heartbeat = { mode: 'OFF' };
+                    }
+                    if (!showRegistrationConfig) {
                         values.registration = { mode: 'OFF' };
                     }
                     // HEX 内容去除空格
@@ -676,19 +679,17 @@ const DeviceFormModal = ({
                             label: '高级配置',
                             children: (
                                 <>
-                                    {protocolType === 'SL651' && (
-                                        <Form.Item
-                                            label="在线超时时间"
-                                            name="online_timeout"
-                                            extra="设备无心跳或数据上报超过此时间视为离线，单位：秒"
-                                        >
-                                            <InputNumber
-                                                placeholder="默认 300 秒（5分钟）"
-                                                min={1}
-                                                className="!w-full"
-                                            />
-                                        </Form.Item>
-                                    )}
+                                    <Form.Item
+                                        label="在线超时时间"
+                                        name="online_timeout"
+                                        extra="最新有效数据时间超过此时长后判定离线，单位：秒"
+                                    >
+                                        <InputNumber
+                                            placeholder="默认 300 秒（5分钟）"
+                                            min={1}
+                                            className="!w-full"
+                                        />
+                                    </Form.Item>
                                     {protocolType === 'SL651' && (
                                         <Form.Item
                                             label="允许远控"
@@ -707,7 +708,7 @@ const DeviceFormModal = ({
                                     >
                                         <Select showSearch options={TIMEZONE_OPTIONS} />
                                     </Form.Item>
-                                    {showPacketConfig && (
+                                    {showHeartbeatConfig && (
                                         <>
                                             <Form.Item
                                                 label="心跳包模式"
@@ -763,60 +764,72 @@ const DeviceFormModal = ({
                                                     );
                                                 }}
                                             </Form.Item>
-                                            <Form.Item
-                                                label="注册包模式"
-                                                name={['registration', 'mode']}
-                                            >
-                                                <Select>
-                                                    <Select.Option value="OFF">关闭</Select.Option>
-                                                    <Select.Option value="HEX">HEX</Select.Option>
-                                                    <Select.Option value="ASCII">
-                                                        ASCII
-                                                    </Select.Option>
-                                                </Select>
-                                            </Form.Item>
-                                            <Form.Item
-                                                noStyle
-                                                dependencies={[['registration', 'mode']]}
-                                            >
-                                                {({ getFieldValue }) => {
-                                                    const regMode = getFieldValue([
-                                                        'registration',
-                                                        'mode',
-                                                    ]);
-                                                    if (regMode === 'OFF' || !regMode) return null;
-                                                    return (
-                                                        <Form.Item
-                                                            label="注册包内容"
-                                                            name={['registration', 'content']}
-                                                            rules={
-                                                                regMode === 'HEX'
-                                                                    ? hexContentRules
-                                                                    : [
-                                                                          {
-                                                                              required: true,
-                                                                              message:
-                                                                                  '请输入注册包内容',
-                                                                          },
-                                                                      ]
-                                                            }
-                                                            extra={
-                                                                regMode === 'HEX'
-                                                                    ? '十六进制字符串，如: AA BB CC DD（空格会自动去除）'
-                                                                    : 'ASCII 字符串，支持 \\r \\n 转义'
-                                                            }
-                                                        >
-                                                            <Input
-                                                                placeholder={
-                                                                    regMode === 'HEX'
-                                                                        ? 'AA BB CC DD'
-                                                                        : 'HELLO\\r\\n'
-                                                                }
-                                                            />
-                                                        </Form.Item>
-                                                    );
-                                                }}
-                                            </Form.Item>
+                                            {showRegistrationConfig && (
+                                                <>
+                                                    <Form.Item
+                                                        label="注册包模式"
+                                                        name={['registration', 'mode']}
+                                                    >
+                                                        <Select>
+                                                            <Select.Option value="OFF">
+                                                                关闭
+                                                            </Select.Option>
+                                                            <Select.Option value="HEX">
+                                                                HEX
+                                                            </Select.Option>
+                                                            <Select.Option value="ASCII">
+                                                                ASCII
+                                                            </Select.Option>
+                                                        </Select>
+                                                    </Form.Item>
+                                                    <Form.Item
+                                                        noStyle
+                                                        dependencies={[['registration', 'mode']]}
+                                                    >
+                                                        {({ getFieldValue }) => {
+                                                            const regMode = getFieldValue([
+                                                                'registration',
+                                                                'mode',
+                                                            ]);
+                                                            if (regMode === 'OFF' || !regMode)
+                                                                return null;
+                                                            return (
+                                                                <Form.Item
+                                                                    label="注册包内容"
+                                                                    name={[
+                                                                        'registration',
+                                                                        'content',
+                                                                    ]}
+                                                                    rules={
+                                                                        regMode === 'HEX'
+                                                                            ? hexContentRules
+                                                                            : [
+                                                                                  {
+                                                                                      required: true,
+                                                                                      message:
+                                                                                          '请输入注册包内容',
+                                                                                  },
+                                                                              ]
+                                                                    }
+                                                                    extra={
+                                                                        regMode === 'HEX'
+                                                                            ? '十六进制字符串，如: AA BB CC DD（空格会自动去除）'
+                                                                            : 'ASCII 字符串，支持 \\r \\n 转义'
+                                                                    }
+                                                                >
+                                                                    <Input
+                                                                        placeholder={
+                                                                            regMode === 'HEX'
+                                                                                ? 'AA BB CC DD'
+                                                                                : 'HELLO\\r\\n'
+                                                                        }
+                                                                    />
+                                                                </Form.Item>
+                                                            );
+                                                        }}
+                                                    </Form.Item>
+                                                </>
+                                            )}
                                         </>
                                     )}
                                     <Form.Item label="备注" name="remark">

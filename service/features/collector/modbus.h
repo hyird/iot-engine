@@ -1141,7 +1141,8 @@ class Session final : public ProtocolSession,
         message.occurredAtMs = input.receivedAtMs;
         message.observedAtMs = input.receivedAtMs;
         message.storageInterval = std::clamp<std::int64_t>(device.storageInterval, 1, 86400);
-        message.onlineWindowMs = std::clamp<std::int64_t>(device.pollInterval, 1, 86400) * 3000;
+        message.onlineWindowMs =
+            std::clamp<std::int64_t>(device.onlineTimeout, 1, 86400) * 1000;
         message.source = "query";
         message.rawPayloads = {frame.raw};
         message.valuesJson = valuesJson(device, frame, request);

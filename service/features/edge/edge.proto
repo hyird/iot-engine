@@ -245,11 +245,11 @@ message Heartbeat {
 message HeartbeatAck {
   int64 platform_time_ms = 1;
   bool request_capability_report = 2;
-  bool request_endpoint_status = 3;
+  bool request_device_status = 3;
 }
 
-message EndpointStatus {
-  bytes endpoint_id = 1 [(nanopb).max_size = 16];
+message DeviceStatus {
+  bytes device_id = 1 [(nanopb).max_size = 16];
   string state = 2 [(nanopb).max_length = 24];
   string reason = 3 [(nanopb).max_length = 128];
   uint32 client_count = 4;
@@ -257,8 +257,8 @@ message EndpointStatus {
   int64 last_activity_at_ms = 6;
 }
 
-message EndpointStatusReport {
-  repeated EndpointStatus endpoints = 1 [(nanopb).max_count = 8];
+message DeviceStatusReport {
+  repeated DeviceStatus devices = 1 [(nanopb).max_count = 8];
 }
 
 message EventReport {
@@ -303,6 +303,8 @@ message EndpointConfig {
 }
 
 message DeviceConfig {
+  reserved 23;
+  reserved "registration_payload";
   bytes device_id = 1 [(nanopb).max_size = 16];
   bytes endpoint_id = 2 [(nanopb).max_size = 16];
   string device_code = 3 [(nanopb).max_length = 100];
@@ -330,7 +332,6 @@ message DeviceConfig {
   uint32 command_fast_read_duration_sec = 20;
   uint32 command_fast_read_interval_sec = 21;
   bytes heartbeat_payload = 22 [(nanopb).max_size = 256];
-  bytes registration_payload = 23 [(nanopb).max_size = 256];
   bool enabled = 24;
 }
 
@@ -701,7 +702,7 @@ message Envelope {
     Heartbeat heartbeat = 24;
     HeartbeatAck heartbeat_ack = 25;
     CapabilityReport capability_report = 26;
-    EndpointStatusReport endpoint_status_report = 27;
+    DeviceStatusReport device_status_report = 27;
     EventReport event_report = 28;
     ConfigBegin config_begin = 30;
     ConfigItem config_item = 31;

@@ -426,7 +426,7 @@ struct LatestProjectionDb {
                                                                              const Params&) {
         const std::string text(sql);
         FakeDbResult result;
-        if (text.find("CASE WHEN p.protocol = 'SL651'") != std::string::npos) {
+        if (text.find("d.protocol_params->>'online_timeout'") != std::string::npos) {
             result.values.emplace_back(FakeDbRow{"device-1", "D1", "300000"});
         } else if (text.find("WITH configured AS") != std::string::npos) {
             result.values.emplace_back(FakeDbRow{

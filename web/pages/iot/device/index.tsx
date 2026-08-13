@@ -53,8 +53,9 @@ import {
 import DeviceCard, { type DeviceCardItem } from '@/components/DeviceCard';
 import { PageContainer } from '@/components/PageContainer';
 import { usePermissions } from '@/hooks/usePermission';
-import { formatDateTime, parseDateTime } from '@/utils/dateTime';
+import { formatDateTime } from '@/utils/dateTime';
 import { useLinkOptions } from '../link/link.service';
+import type { Link } from '../link/link.types';
 import CommandPopover from './CommandPopover';
 import DeviceFormModal, { type DeviceFormValues } from './DeviceFormModal';
 import DeviceGroupPanel from './DeviceGroupPanel';
@@ -72,7 +73,8 @@ import {
     useReplaceDeviceGroupShares,
     useReplaceDeviceShares,
 } from './device.service';
-import type { Device } from './device.types';
+import { isDeviceOnline } from './device.runtime';
+import type { Device, EdgeStatus } from './device.types';
 import type { DeviceGroup } from './device-group.types';
 
 const { Search } = Input;
@@ -110,23 +112,13 @@ interface DeviceGroupStats extends DeviceProtocolStats {}
 
 const createGroupStats = (): DeviceGroupStats => ({ total: 0, online: 0, offline: 0, enabled: 0 });
 
-const isOnline = (device: Device.RealTimeData, now = Date.now()) => {
-    if (device.reportTime) {
-        const reportTime = parseDateTime(device.reportTime);
-        if (reportTime && !Number.isNaN(reportTime.getTime())) {
-            return now - reportTime.getTime() < (device.online_timeout || 300) * 1000;
-        }
-    }
-    return device.connectionState === 'online' || device.connected === true;
-};
-
 const accumulateStats = <T extends DeviceProtocolStats>(
     stats: T,
     device: Device.RealTimeData,
     now = Date.now()
 ) => {
     stats.total++;
-    if (isOnline(device, now)) stats.online++;
+    if (isDeviceOnline(device, now)) stats.online++;
     else stats.offline++;
     if (device.status === 'enabled') stats.enabled++;
 };
@@ -242,14 +234,38 @@ const edgeEndpointLabel = (device: Device.RealTimeData) => {
     return '边缘链路未配置';
 };
 
-const tcpStateText = (device: Device.RealTimeData, online: boolean) => {
-    const state = device.edgeStatus?.state?.trim();
-    const clientCount = device.edgeStatus?.clientCount ?? 0;
-    if (!state) return online ? 'TCP状态：已连接' : 'TCP状态：已断开';
+type TcpRuntimeStatus = EdgeStatus | Link.Runtime;
+
+const tcpRuntimeStatus = (
+    device: Device.RealTimeData,
+    link?: Link.Item
+): TcpRuntimeStatus | undefined => {
+    if (device.edge_node_id) return device.edgeStatus;
+    if (device.link_mode === 'TCP Server' && device.connected !== undefined) {
+        return {
+            ...link?.runtime,
+            state: device.connected ? 'connected' : 'disconnected',
+        };
+    }
+    if (device.target_id) {
+        const target = link?.endpoint.targets.find((item) => item.id === device.target_id);
+        if (target?.runtime) return target.runtime;
+    }
+    if (link?.runtime) return link.runtime;
+    if (device.connected !== undefined)
+        return { state: device.connected ? 'connected' : 'disconnected' };
+    return undefined;
+};
+
+const tcpStateText = (status?: TcpRuntimeStatus) => {
+    const state = status?.state?.trim();
+    const clientCount = status?.clientCount ?? 0;
+    if (!state) return 'TCP状态：未知';
     const labelMap: Record<string, string> = {
         online: '已连接',
         connected: '已连接',
-        listening: clientCount > 0 ? '已连接' : '已断开',
+        listening: '监听中',
+        partial: '部分连接',
         connecting: '重连中',
         reconnecting: '重连中',
         offline: '已断开',
@@ -264,13 +280,11 @@ const tcpStateText = (device: Device.RealTimeData, online: boolean) => {
     return `TCP状态：${label}${clients}`;
 };
 
-const tcpStateColor = (device: Device.RealTimeData, online: boolean) => {
-    const state = device.edgeStatus?.state?.toLowerCase();
-    if (!state) return online ? 'green' : 'default';
+const tcpStateColor = (status?: TcpRuntimeStatus) => {
+    const state = status?.state?.toLowerCase();
+    if (!state) return 'default';
     if (['online', 'connected'].includes(state)) return 'green';
-    if (state === 'listening')
-        return (device.edgeStatus?.clientCount ?? 0) > 0 ? 'green' : 'default';
-    if (['connecting', 'reconnecting'].includes(state)) return 'processing';
+    if (['listening', 'partial', 'connecting', 'reconnecting'].includes(state)) return 'processing';
     if (['error', 'failed'].includes(state)) return 'red';
     return 'default';
 };
@@ -842,6 +856,7 @@ const DeviceHistoryModal = ({
 interface DeviceGridItemProps {
     device: Device.RealTimeData;
     online: boolean;
+    linkById: ReadonlyMap<string, Link.Item>;
     onHistory: (device: Device.RealTimeData) => void;
     onShare: (device: Device.RealTimeData) => void;
     onEdit: (device: Device.RealTimeData) => void;
@@ -860,6 +875,7 @@ const DeviceGridItem = memo(
     ({
         device,
         online,
+        linkById,
         onHistory,
         onShare,
         onEdit,
@@ -882,7 +898,15 @@ const DeviceGridItem = memo(
         const canRemoteControl = device.remote_control !== false;
         const isCommandPopoverOpen = commandPopoverOpen && commandDeviceId === device.id;
         const commandLoading = commandLoadingId === device.id;
-        const isEdgeTcp = device.edge_node_id && device.edge_transport === 'tcp';
+        const link = linkById.get(device.link_id);
+        const isTcp = device.edge_node_id ? device.edge_transport === 'tcp' : !!device.link_id;
+        const tcpStatus = isTcp ? tcpRuntimeStatus(device, link) : undefined;
+        const registrationConfigured =
+            !device.edge_node_id &&
+            device.link_mode === 'TCP Server' &&
+            device.registration?.mode !== undefined &&
+            device.registration.mode !== 'OFF' &&
+            !!device.registration.content?.trim();
 
         return (
             <div className={`flex flex-col ${wide ? 'xl:col-span-2' : ''}`}>
@@ -923,13 +947,13 @@ const DeviceGridItem = memo(
                                     <Tag color="cyan" className="!mr-0 !rounded-md">
                                         {edgeEndpointLabel(device)}
                                     </Tag>
-                                    {isEdgeTcp && (
-                                        <Tooltip title={device.edgeStatus?.reason || undefined}>
+                                    {isTcp && (
+                                        <Tooltip title={tcpStatus?.reason || undefined}>
                                             <Tag
-                                                color={tcpStateColor(device, online)}
+                                                color={tcpStateColor(tcpStatus)}
                                                 className="!mr-0 !rounded-md"
                                             >
-                                                {tcpStateText(device, online)}
+                                                {tcpStateText(tcpStatus)}
                                             </Tag>
                                         </Tooltip>
                                     )}
@@ -937,6 +961,24 @@ const DeviceGridItem = memo(
                             ) : (
                                 <Tag color="blue" className="!mr-0 !rounded-md">
                                     {device.link_name || '未绑定连接'}
+                                </Tag>
+                            )}
+                            {!device.edge_node_id && isTcp && (
+                                <Tooltip title={tcpStatus?.reason || undefined}>
+                                    <Tag
+                                        color={tcpStateColor(tcpStatus)}
+                                        className="!mr-0 !rounded-md"
+                                    >
+                                        {tcpStateText(tcpStatus)}
+                                    </Tag>
+                                </Tooltip>
+                            )}
+                            {registrationConfigured && (
+                                <Tag
+                                    color={device.connected ? 'green' : 'default'}
+                                    className="!mr-0 !rounded-md"
+                                >
+                                    注册状态：{device.connected ? '已注册' : '未注册'}
                                 </Tag>
                             )}
                             <Tag color="purple" className="!mr-0 !rounded-md">
@@ -1184,7 +1226,7 @@ const DeviceGrid = memo(
                                 <DeviceGridItem
                                     key={device.id}
                                     device={device}
-                                    online={isOnline(device, statusNow)}
+                                    online={isDeviceOnline(device, statusNow)}
                                     {...itemProps}
                                 />
                             ))}
@@ -1238,10 +1280,18 @@ const DevicePage = () => {
         refetchInterval: DEVICE_LIST_POLLING_INTERVAL,
         refetchOnWindowFocus: false,
     });
-    const { data: linkOptions = [] } = useLinkOptions({ enabled: canQuery });
+    const { data: linkOptions = [] } = useLinkOptions({
+        enabled: canQuery,
+        refetchInterval: DEVICE_LIST_POLLING_INTERVAL,
+        refetchOnWindowFocus: false,
+    });
     const saveMutation = useDeviceSave();
     const { mutateAsync: deleteDevice } = useDeviceDelete();
     const deviceList = data?.list ?? EMPTY_DEVICE_LIST;
+    const linkById = useMemo(
+        () => new Map(linkOptions.map((link) => [link.id, link])),
+        [linkOptions]
+    );
 
     const groupIndex = useMemo(() => buildGroupIndex(groupTree), [groupTree]);
     const selectedGroup = useMemo(
@@ -1390,6 +1440,7 @@ const DevicePage = () => {
         <DeviceGrid
             devices={devices}
             statusNow={statusNow}
+            linkById={linkById}
             scrollElementRef={scrollContainerRef}
             onHistory={openHistory}
             onShare={openShare}

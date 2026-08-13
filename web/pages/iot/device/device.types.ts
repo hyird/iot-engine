@@ -30,7 +30,7 @@ export interface HeartbeatConfig {
     content?: string;
 }
 
-/** 注册包配置 */
+/** 注册包配置（仅平台直采 TCP Server 的 DTU 透传设备使用） */
 export interface RegistrationConfig {
     mode: RegistrationMode;
     content?: string;
@@ -98,7 +98,7 @@ export interface DeviceItem extends EdgeConnection {
     timezone?: string;
     /** 心跳包配置 */
     heartbeat?: HeartbeatConfig;
-    /** 注册包配置 */
+    /** 注册包配置（仅平台直采 TCP Server 的 DTU 透传设备使用） */
     registration?: RegistrationConfig;
     /** 备注 */
     remark?: string;
@@ -161,7 +161,7 @@ export interface CreateDeviceDto extends EdgeConnection {
     timezone?: string;
     /** 心跳包配置 */
     heartbeat?: HeartbeatConfig;
-    /** 注册包配置 */
+    /** 注册包配置（仅平台直采 TCP Server 的 DTU 透传设备使用） */
     registration?: RegistrationConfig;
     remark?: string;
 }
@@ -187,7 +187,7 @@ export interface UpdateDeviceDto extends EdgeConnection {
     timezone?: string;
     /** 心跳包配置 */
     heartbeat?: HeartbeatConfig;
-    /** 注册包配置 */
+    /** 注册包配置（仅平台直采 TCP Server 的 DTU 透传设备使用） */
     registration?: RegistrationConfig;
     remark?: string;
 }
@@ -243,10 +243,10 @@ export interface DeviceStaticData extends EdgeConnection {
 export interface DeviceRealtimeData {
     id: string;
     reportTime?: string;
-    /** 设备是否在线（基于实际 TCP 连接状态） */
+    /** 设备南向链路是否已连接；不代表设备在线 */
     connected?: boolean;
-    /** 设备连接状态（后端统一口径） */
-    connectionState?: 'online' | 'offline';
+    /** 设备南向链路状态；不代表设备在线 */
+    connectionState?: 'connected' | 'disconnected';
     elements?: DeviceElement[];
     image?: { data: string };
     // 资源权限（realtime 接口同样返回）
@@ -346,10 +346,10 @@ export interface ImageOperation {
 
 /** 设备实时数据（包含管理字段） = 静态数据 + 实时字段 */
 export interface DeviceRealTimeData extends DeviceStaticData {
-    /** 设备是否在线（基于实际 TCP 连接状态） */
+    /** 设备南向链路是否已连接；不代表设备在线 */
     connected?: boolean;
-    /** 设备连接状态（后端统一口径） */
-    connectionState?: 'online' | 'offline';
+    /** 设备南向链路状态；不代表设备在线 */
+    connectionState?: 'connected' | 'disconnected';
     reportTime?: string;
     elements?: DeviceElement[];
     image?: { data: string };

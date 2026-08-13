@@ -1,6 +1,6 @@
 import { App, Button, Checkbox, Flex, Input } from 'antd';
 import { useCallback, useState } from 'react';
-import { parseDateTime } from '@/utils/dateTime';
+import { isDeviceOnline } from './device.runtime';
 import { useDeviceCommand } from './device.service';
 import type { Device } from './device.types';
 
@@ -107,15 +107,6 @@ export const validateValue = (element: CommandElement): string | null => {
     return DECIMAL_VALUE_PATTERN.test(value) && Number.isFinite(Number(value))
         ? null
         : `「${element.name}」请输入有效数字`;
-};
-
-const isDeviceOnline = (device: Device.RealTimeData) => {
-    if (device.reportTime) {
-        const reportTime = parseDateTime(device.reportTime);
-        if (reportTime && !Number.isNaN(reportTime.getTime()))
-            return Date.now() - reportTime.getTime() < (device.online_timeout || 300) * 1000;
-    }
-    return device.connectionState === 'online' || device.connected === true;
 };
 
 const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {

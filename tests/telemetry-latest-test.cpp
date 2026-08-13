@@ -25,18 +25,13 @@ void requireNoUnsafeParsing(std::string_view source) {
     require(source.find("COALESCE((d.protocol_params->>'online_timeout')::bigint") ==
                 std::string_view::npos,
             "telemetry latest directly casts online_timeout");
-    require(source.find("COALESCE((p.config->>'readInterval')::numeric") ==
-                std::string_view::npos,
-            "telemetry latest directly casts readInterval");
-    require(source.find("(p.config->>'pollInterval')::numeric, 5") == std::string_view::npos,
-            "telemetry latest directly casts pollInterval");
     require(source.find("COALESCE(d.protocol_params->>'online_timeout', '') ~ "
                         "'^-?[0-9]{1,18}$'") != std::string_view::npos,
             "telemetry latest does not guard online_timeout casts");
-    require(source.find("COALESCE(p.config->>'readInterval', '') ~") != std::string_view::npos,
-            "telemetry latest does not guard readInterval casts");
-    require(source.find("COALESCE(p.config->>'pollInterval', '') ~") != std::string_view::npos,
-            "telemetry latest does not guard pollInterval casts");
+    require(source.find("p.config->>'readInterval'") == std::string_view::npos,
+            "telemetry latest still derives online state from readInterval");
+    require(source.find("p.config->>'pollInterval'") == std::string_view::npos,
+            "telemetry latest still derives online state from pollInterval");
     require(source.find("NULLIF(numbered.element->>'scale', '')::numeric") ==
                 std::string_view::npos,
             "telemetry latest directly casts element scale");

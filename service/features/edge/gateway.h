@@ -351,7 +351,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         case pb::Envelope::kConfigRejected:
         case pb::Envelope::kTelemetryBatch:
         case pb::Envelope::kCommandResult:
-        case pb::Envelope::kEndpointStatusReport:
+        case pb::Envelope::kDeviceStatusReport:
             return true;
         default:
             return false;
@@ -510,7 +510,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             auto* heartbeatAck = reply.mutable_heartbeat_ack();
             heartbeatAck->set_platform_time_ms(protocol::nowMs());
             heartbeatAck->set_request_capability_report(!session.capabilitySeen);
-            heartbeatAck->set_request_endpoint_status(input.heartbeat().managed_endpoint_count() > 0);
+            heartbeatAck->set_request_device_status(input.heartbeat().managed_endpoint_count() > 0);
             co_await send(socket, reply);
             break;
         }

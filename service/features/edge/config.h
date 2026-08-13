@@ -166,8 +166,6 @@ SELECT d.id::text, d.name, d.protocol_params->>'device_code', p.protocol,
        COALESCE(p.config->'connection'->>'remoteTSAP', ''),
        COALESCE(d.protocol_params->'heartbeat'->>'mode', 'OFF'),
        COALESCE(d.protocol_params->'heartbeat'->>'content', ''),
-       COALESCE(d.protocol_params->'registration'->>'mode', 'OFF'),
-       COALESCE(d.protocol_params->'registration'->>'content', ''),
        d.status = 'enabled' AND p.enabled AND l.status = 'enabled',
        d.link_id::text
 FROM device d
@@ -505,12 +503,12 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
             pb::ConfigItem endpoint;
             endpoint.set_kind(pb::CONFIG_ITEM_ENDPOINT);
             auto* endpointValue = endpoint.mutable_endpoint();
-            if (!setUuid(endpointValue->mutable_endpoint_id(), row[32].value().value_or(std::string_view{})))
+            if (!setUuid(endpointValue->mutable_endpoint_id(), row[30].value().value_or(std::string_view{})))
                 throw std::runtime_error("invalid edge link UUID");
             endpointValue->set_name(row[1].value().value_or(std::string_view{}));
             endpointValue->set_interface_name(row[10].value().value_or(std::string_view{}));
             endpointValue->set_protocol(protocol);
-            endpointValue->set_enabled(row[31].value().value_or(std::string_view{}) == "t");
+            endpointValue->set_enabled(row[29].value().value_or(std::string_view{}) == "t");
             if (row[9].value().value_or(std::string_view{}) == "serial") {
                 endpointValue->set_transport(pb::TRANSPORT_SERIAL);
                 endpointValue->set_mode(pb::LINK_MODE_SERIAL);
@@ -539,7 +537,7 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
             device.set_kind(pb::CONFIG_ITEM_DEVICE);
             auto* deviceValue = device.mutable_device();
             setUuid(deviceValue->mutable_device_id(), row[0].value().value_or(std::string_view{}));
-            setUuid(deviceValue->mutable_endpoint_id(), row[32].value().value_or(std::string_view{}));
+            setUuid(deviceValue->mutable_endpoint_id(), row[30].value().value_or(std::string_view{}));
             deviceValue->set_device_code(row[2].value().value_or(std::string_view{}));
             deviceValue->set_name(row[1].value().value_or(std::string_view{}));
             deviceValue->set_protocol(protocol);
@@ -570,9 +568,7 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
             deviceValue->set_command_fast_read_interval_sec(1);
             packet(deviceValue->mutable_heartbeat_payload(), row[27].value().value_or(std::string_view{}), row[28].value().value_or(std::string_view{}),
                    "heartbeat_payload");
-            packet(deviceValue->mutable_registration_payload(), row[29].value().value_or(std::string_view{}),
-                   row[30].value().value_or(std::string_view{}), "registration_payload");
-            deviceValue->set_enabled(row[31].value().value_or(std::string_view{}) == "t");
+            deviceValue->set_enabled(row[29].value().value_or(std::string_view{}) == "t");
             items.push_back(std::move(device));
         }
 

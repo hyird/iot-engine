@@ -352,21 +352,11 @@ ruvia::Task<void> project(Context& context, std::string filter,
     const auto devices = co_await context.db().query(
         R"sql(
 SELECT d.id::text, d.protocol_params->>'device_code',
-       CASE WHEN p.protocol = 'SL651'
-            THEN COALESCE(
-                   CASE WHEN COALESCE(d.protocol_params->>'online_timeout', '') ~ '^-?[0-9]{1,18}$'
-                        THEN (d.protocol_params->>'online_timeout')::bigint END,
-                   300) * 1000
-            ELSE COALESCE(
-                   CASE WHEN COALESCE(p.config->>'readInterval', '') ~
-                             '^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$'
-                        THEN (p.config->>'readInterval')::numeric END,
-                   CASE WHEN COALESCE(p.config->>'pollInterval', '') ~
-                             '^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$'
-                        THEN (p.config->>'pollInterval')::numeric END,
-                   5) * 3000 END::bigint
+       COALESCE(
+         CASE WHEN COALESCE(d.protocol_params->>'online_timeout', '') ~ '^-?[0-9]{1,18}$'
+              THEN (d.protocol_params->>'online_timeout')::bigint END,
+         300) * 1000
 FROM device d
-JOIN protocol_config p ON p.id = d.protocol_config_id
 WHERE d.deleted_at IS NULL)sql" +
             filter + " ORDER BY d.id",
         params);

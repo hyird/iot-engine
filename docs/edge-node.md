@@ -40,7 +40,7 @@ OpenWrt 目标平台的可安装制品验证。
 | 离线续传 | SQLite 缓存，100 条一批，ACK 后删除，超时重发 | 不使用数据库；完整 nanopb 消息按平台写入 `/tmp/edgenode`，进程重启可恢复，设备重启/断电后清空 |
 | 原始透传 | 设备原始数据上报和指定客户端下发 | 保留，但必须带来源平台、端点、连接 epoch 和消息 ID |
 | 配置同步 | 版本号、应用成功/失败、失败回滚、离线排队 | 保留；改为分块事务同步、摘要校验和每平台独立版本 |
-| 端点状态 | 连接状态、客户端列表、错误、最后活动时间 | 保留；平台只能看到自己配置的端点和设备 |
+| 设备链路状态 | 连接状态、客户端列表、错误、最后活动时间 | 按设备 ID 上报；仅表示南向链路，不代表设备在线 |
 | 网络管理 | DHCP/静态地址、桥创建/删除、成员口调整 | 保留功能面；OpenWrt 使用 UCI/ubus，并加入失联自动回滚 |
 | 在线终端 | 单 PTY，会话打开、输入、缩放、关闭、压缩输出 | 保留但默认关闭；显式授权、短期会话票据、完整审计，同一节点一次一个写会话 |
 | L2 运维 | EtherType `0x88B5` 发现和本地 TCP 隧道 | 保留为可选包特性；发现和控制载荷同样使用 nanopb，隧道默认只允许本机 SSH 端口 |
@@ -129,7 +129,7 @@ nanopb `Envelope`，消息边界就是 Envelope 边界，不再套 JSON 或 base
 
 - `Hello` / `HelloAck` / `EnrollmentPending` / `EnrollmentRejected`；
 - `Heartbeat` / `HeartbeatAck`；
-- `CapabilityReport` / `EndpointStatusReport` / `EventReport`；
+- `CapabilityReport` / `DeviceStatusReport` / `EventReport`；
 - `ConfigBegin` / `ConfigItem` / `ConfigCommit` / `ConfigApplied` /
   `ConfigRejected`；
 - `TelemetryBatch` / `TelemetryAck`；
@@ -203,7 +203,7 @@ tmpfs 并续传；设备重启或断电会清空 tmpfs。
 事件表记录节点、事件类型、级别、消息、结构化 detail 和 UTC 时间。节点凭据、注册挑战
 和吊销状态单独存储，不能混入 capabilities/runtime JSONB。
 
-实时在线、连接路由和端点状态写 Redis；PostgreSQL 只保存事实、最近状态快照和审计，
+最新数据时间、连接路由和设备链路状态写 Redis；PostgreSQL 只保存事实、最近状态快照和审计，
 页面不得逐节点扫描历史遥测。
 
 ## 6. 单平台功能对齐阶段
