@@ -52,7 +52,7 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(ruvia
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    GIT_TAG 693d2688ef9c345b5805434df56c4f5b22437774)
+    GIT_TAG ee06702868626918c1f7b8d6f085dbea15b166b7)
 FetchContent_MakeAvailable(ruvia)
 
 FetchContent_Declare(nanopb
