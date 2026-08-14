@@ -2074,6 +2074,9 @@ export default function EdgeNodePage() {
                         }
                     }}
                 >
+                    <Form.Item label="目标固件版本" name="version">
+                        <Input placeholder="例如 0.3.14" maxLength={64} />
+                    </Form.Item>
                     <Form.Item
                         label="当前节点固件文件"
                         name="file"
@@ -2089,8 +2092,8 @@ export default function EdgeNodePage() {
                         </Upload>
                     </Form.Item>
                     <p className="text-xs text-slate-500">
-                        最大 128 MiB。文件名仅作为文件标识，不作为固件版本；上传完成后平台计算
-                        SHA-256，并立即只向当前节点下发。刷写重启后，版本以节点上报为准。
+                        最大 128 MiB。目标版本用于刷写重启后的严格校验；上传完成后平台计算
+                        SHA-256，并立即只向当前节点下发。
                     </p>
                     {firmwareUploadProgress && (
                         <div className="mb-5 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">

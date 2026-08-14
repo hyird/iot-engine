@@ -191,6 +191,7 @@ export namespace Edge {
     }
 
     export interface FirmwareUpgradeDto {
+        version: string;
         file: File;
         keepSettings: boolean;
     }
