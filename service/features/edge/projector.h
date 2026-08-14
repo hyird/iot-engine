@@ -389,8 +389,10 @@ RETURNING id::text, enrollment_status)sql",
         if (enrollmentStatus == "approved") {
             (void)co_await context.db().execute(R"sql(
 WITH target AS (
-    SELECT task.id
+    SELECT task.id, firmware.version
     FROM edge_task task
+    JOIN edge_firmware firmware
+      ON firmware.id::text = task.request->>'firmware_id'
     WHERE task.node_id = $2::uuid
       AND task.task_type = 'firmware'
       AND task.status = 'running'
@@ -399,11 +401,15 @@ WITH target AS (
     LIMIT 1
 )
 UPDATE edge_task task
-SET status = 'succeeded',
+SET status = CASE WHEN target.version = $1::text THEN 'succeeded' ELSE 'failed' END,
     result = task.result || jsonb_build_object(
-        'state', 'rebooted',
-        'message', 'firmware reboot confirmed',
-        'softwareVersion', $1::text),
+        'state', CASE WHEN target.version = $1::text
+                      THEN 'rebooted' ELSE 'version_mismatch' END,
+        'message', CASE WHEN target.version = $1::text
+                        THEN 'firmware reboot confirmed'
+                        ELSE 'firmware rebooted with unexpected version' END,
+        'softwareVersion', $1::text,
+        'expectedSoftwareVersion', target.version),
     updated_at = NOW(),
     completed_at = NOW()
 FROM target
