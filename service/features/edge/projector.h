@@ -308,7 +308,7 @@ class Projector final {
         const auto candidate = service::common::nextUuidV7();
         const auto rows = co_await context.db().query(R"sql(
 INSERT INTO edge_node(id, platform_id, imei, model, software_version, hostname, architecture,
-                      openwrt_release, capability, mobile, status, updated_at)
+                      openwrt_release, capability, mobile, status, last_seen_at, updated_at)
 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8,
         jsonb_build_object(
             'networkConfig', $9::boolean,
@@ -341,7 +341,7 @@ VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8,
                 'message', ''),
             'outbox', jsonb_build_object('records', 0, 'bytes', 0),
             'log', jsonb_build_object('level', COALESCE(NULLIF($28::text, ''), 'info'))),
-        NOW())
+        NOW(), NOW())
 ON CONFLICT (platform_id, imei) DO UPDATE
 SET model = EXCLUDED.model, software_version = EXCLUDED.software_version,
     hostname = EXCLUDED.hostname, architecture = EXCLUDED.architecture,
@@ -355,6 +355,9 @@ SET model = EXCLUDED.model, software_version = EXCLUDED.software_version,
         jsonb_set(edge_node.status, '{log}',
                   COALESCE(edge_node.status->'log', '{}'::jsonb), true),
         '{log,level}', to_jsonb(COALESCE(NULLIF($28::text, ''), 'info')::text), true),
+    last_seen_at = CASE
+        WHEN edge_node.enrollment_status IN ('pending', 'approved') THEN NOW()
+        ELSE edge_node.last_seen_at END,
     updated_at = NOW()
 RETURNING id::text, enrollment_status)sql",
                                                      service::common::dbParams(

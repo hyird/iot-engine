@@ -45,6 +45,13 @@ int main() {
         require(source.find("status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'") !=
                     std::string::npos,
                 "edge projector does not guard desiredVersion");
+        require(source.find("status, last_seen_at, updated_at") != std::string::npos,
+                "edge hello insert does not record presence");
+        require(source.find("WHEN edge_node.enrollment_status IN ('pending', 'approved') THEN NOW()") !=
+                    std::string::npos,
+                "edge hello update does not refresh pending and approved presence");
+        require(source.find("ELSE edge_node.last_seen_at END") != std::string::npos,
+                "edge hello update refreshes rejected presence");
         std::cout << "edge projector tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {
