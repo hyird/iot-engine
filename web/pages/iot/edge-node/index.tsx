@@ -1,5 +1,4 @@
 import {
-    ApiOutlined,
     CheckOutlined,
     CloseOutlined,
     CodeOutlined,
@@ -64,7 +63,6 @@ import {
     networkInterfaceSchema,
     networkSchema,
     nodeNameSchema,
-    platformSchema,
 } from './edge-node.schema';
 import {
     useDeviceConfigSyncMutation,
@@ -77,8 +75,6 @@ import {
     useModemControlMutation,
     useNetworkMutation,
     useNodeNameMutation,
-    usePlatformDeleteMutation,
-    usePlatformMutation,
 } from './edge-node.service';
 import type { Edge } from './edge-node.types';
 
@@ -548,7 +544,6 @@ export default function EdgeNodePage() {
     const [networkDraft, setNetworkDraft] = useState<NetworkDraftItem[]>([]);
     const [networkRollbackTimeoutSec, setNetworkRollbackTimeoutSec] = useState(60);
     const [editingNetwork, setEditingNetwork] = useState<NetworkDraftItem>();
-    const [platformNode, setPlatformNode] = useState<Edge.Node>();
     const [firmwareNode, setFirmwareNode] = useState<Edge.Node>();
     const [modemNode, setModemNode] = useState<Edge.Node>();
     const [terminalNode, setTerminalNode] = useState<Edge.Node>();
@@ -556,14 +551,12 @@ export default function EdgeNodePage() {
     const [logLevel, setLogLevel] = useState<Edge.LogLevel>();
     const [nodeLogLevel, setNodeLogLevel] = useState<Edge.LogLevel>('info');
     const [networkOpen, setNetworkOpen] = useState(false);
-    const [platformOpen, setPlatformOpen] = useState(false);
     const [firmwareOpen, setFirmwareOpen] = useState(false);
     const [firmwareUploadProgress, setFirmwareUploadProgress] =
         useState<Edge.FirmwareUploadProgress>();
     const [modemOpen, setModemOpen] = useState(false);
     const [terminalOpen, setTerminalOpen] = useState(false);
     const [networkForm] = Form.useForm<Edge.NetworkConfig>();
-    const [platformForm] = Form.useForm<Edge.PlatformDto>();
     const [firmwareForm] = Form.useForm<Edge.FirmwareUpgradeDto>();
     const [modemForm] = Form.useForm<Edge.ModemProfileDto>();
     const [nameForm] = Form.useForm<Edge.NameDto>();
@@ -591,8 +584,6 @@ export default function EdgeNodePage() {
     const nodeName = useNodeNameMutation();
     const network = useNetworkMutation();
     const deviceConfigSync = useDeviceConfigSyncMutation();
-    const platform = usePlatformMutation();
-    const platformDelete = usePlatformDeleteMutation();
     const firmwareUpgrade = useFirmwareUpgradeMutation();
     const modemControl = useModemControlMutation();
     const logLevelControl = useLogLevelMutation();
@@ -713,31 +704,6 @@ export default function EdgeNodePage() {
     const showRename = (node: Edge.Node) => {
         nameForm.setFieldsValue({ name: node.name || node.hostname });
         setRenamingNode(node);
-    };
-
-    const showPlatform = (item?: Edge.Platform) => {
-        platformForm.setFieldsValue(
-            item
-                ? { ...item }
-                : {
-                      name: '',
-                      baseUrl: 'https://',
-                      enabled: true,
-                      priority: 100,
-                      reconnectIntervalSec: 5,
-                      outboxMaxBytes: 262144,
-                  }
-        );
-        setPlatformOpen(true);
-    };
-
-    const showPlatformManager = async (node: Edge.Node) => {
-        setPlatformNode(node.platforms ? node : await getEdgeDetail(node.id));
-    };
-
-    const refreshPlatformManager = async () => {
-        if (!platformNode) return;
-        setPlatformNode(await getEdgeDetail(platformNode.id));
     };
 
     const showFirmware = (node: Edge.Node) => {
@@ -966,40 +932,6 @@ export default function EdgeNodePage() {
         { title: '名称', dataIndex: 'displayName' },
         { title: '可读写', dataIndex: 'available', render: (value) => (value ? '是' : '否') },
         { title: 'RS485', dataIndex: 'rs485', render: (value) => (value ? '是' : '未确认') },
-    ];
-    const platformInfoColumns: ColumnsType<Edge.Platform> = [
-        { title: '名称', dataIndex: 'name' },
-        { title: 'HTTP(S) 地址', dataIndex: 'baseUrl' },
-        { title: '状态', render: (_, item) => statusTag(item.status.state) },
-        { title: '启用', dataIndex: 'enabled', render: (value) => (value ? '是' : '否') },
-    ];
-    const platformColumns: ColumnsType<Edge.Platform> = [
-        ...platformInfoColumns,
-        {
-            title: '操作',
-            width: 130,
-            render: (_, item) => (
-                <Space>
-                    <Button type="link" onClick={() => showPlatform(item)}>
-                        编辑
-                    </Button>
-                    <Popconfirm
-                        title="删除这个平台配置？"
-                        onConfirm={() =>
-                            platformNode &&
-                            platformDelete.mutate(
-                                { id: platformNode.id, platformId: item.platformId },
-                                { onSuccess: refreshPlatformManager }
-                            )
-                        }
-                    >
-                        <Button type="link" danger>
-                            删除
-                        </Button>
-                    </Popconfirm>
-                </Space>
-            ),
-        },
     ];
     const taskColumns: ColumnsType<Edge.Task> = [
         { title: '类型', dataIndex: 'taskType' },
@@ -1247,23 +1179,6 @@ export default function EdgeNodePage() {
                                                     </span>
                                                 </Tooltip>
                                             )}
-                                            {node.enrollmentStatus === 'approved' &&
-                                                canConfig &&
-                                                capability.platformConfig && (
-                                                    <Tooltip title="管理其他平台">
-                                                        <Button
-                                                            type="text"
-                                                            size="small"
-                                                            className={
-                                                                EDGE_CARD_ACTION_BUTTON_CLASS
-                                                            }
-                                                            icon={<ApiOutlined />}
-                                                            onClick={() =>
-                                                                void showPlatformManager(node)
-                                                            }
-                                                        />
-                                                    </Tooltip>
-                                                )}
                                             {node.enrollmentStatus === 'approved' &&
                                                 canConfig &&
                                                 capability.modemControl && (
@@ -1520,20 +1435,6 @@ export default function EdgeNodePage() {
                                     ),
                                 },
                                 {
-                                    key: 'platforms',
-                                    label: `其他平台 (${detail.platforms?.length ?? 0})`,
-                                    children: (
-                                        <Table
-                                            rowKey="platformId"
-                                            size="small"
-                                            pagination={false}
-                                            columns={platformInfoColumns}
-                                            dataSource={detail.platforms ?? []}
-                                            scroll={{ x: 'max-content', y: 360 }}
-                                        />
-                                    ),
-                                },
-                                {
                                     key: 'tasks',
                                     label: '任务记录',
                                     children: (
@@ -1733,29 +1634,6 @@ export default function EdgeNodePage() {
             </FormModal>
 
             <Modal
-                open={Boolean(platformNode)}
-                onCancel={() => setPlatformNode(undefined)}
-                footer={null}
-                width="min(880px, 92vw)"
-                title={`其他平台${platformNode ? ` · ${platformNode.name || platformNode.imei}` : ''}`}
-                destroyOnHidden
-            >
-                <Flex justify="flex-end" className="mb-3">
-                    <Button type="primary" icon={<ApiOutlined />} onClick={() => showPlatform()}>
-                        添加平台
-                    </Button>
-                </Flex>
-                <Table
-                    rowKey="platformId"
-                    size="small"
-                    pagination={false}
-                    columns={platformColumns}
-                    dataSource={platformNode?.platforms ?? []}
-                    scroll={{ x: 'max-content', y: 360 }}
-                />
-            </Modal>
-
-            <Modal
                 open={Boolean(logNode)}
                 onCancel={() => {
                     setLogNode(undefined);
@@ -1846,60 +1724,6 @@ export default function EdgeNodePage() {
                     <Form.Item label="节点名称" name="name">
                         <Input maxLength={100} showCount placeholder="请输入节点名称" />
                     </Form.Item>
-                </Form>
-            </FormModal>
-
-            <FormModal
-                open={platformOpen}
-                title={`配置其他平台${platformNode ? ` · ${platformNode.name || platformNode.imei}` : ''}`}
-                onCancel={() => setPlatformOpen(false)}
-                onOk={() => platformForm.submit()}
-                confirmLoading={platform.isPending}
-                destroyOnHidden
-            >
-                <Form
-                    form={platformForm}
-                    layout="vertical"
-                    onFinish={(values) => {
-                        const parsed = validateForm(platformForm, platformSchema, values);
-                        if (parsed && platformNode)
-                            platform.mutate(
-                                { id: platformNode.id, data: parsed },
-                                {
-                                    onSuccess: async () => {
-                                        setPlatformOpen(false);
-                                        await refreshPlatformManager();
-                                    },
-                                }
-                            );
-                    }}
-                >
-                    <Form.Item name="platformId" hidden>
-                        <Input />
-                    </Form.Item>
-                    <Form.Item label="平台名称" name="name">
-                        <Input maxLength={32} />
-                    </Form.Item>
-                    <Form.Item label="平台 HTTP(S) 地址" name="baseUrl">
-                        <Input placeholder="https://example.com" />
-                    </Form.Item>
-                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
-                        <Form.Item label="优先级" name="priority">
-                            <InputNumber className="w-full" min={0} max={65535} />
-                        </Form.Item>
-                        <Form.Item label="重连间隔（秒）" name="reconnectIntervalSec">
-                            <InputNumber className="w-full" min={1} max={3600} />
-                        </Form.Item>
-                        <Form.Item label="tmpfs 上报缓存上限（字节）" name="outboxMaxBytes">
-                            <InputNumber className="w-full" min={16384} max={8388608} />
-                        </Form.Item>
-                        <Form.Item label="启用" name="enabled" valuePropName="checked">
-                            <Switch />
-                        </Form.Item>
-                    </div>
-                    <p className="text-xs text-slate-500">
-                        平台地址只填写 HTTP 或 HTTPS；节点内部自动建立对应长连接。
-                    </p>
                 </Form>
             </FormModal>
 

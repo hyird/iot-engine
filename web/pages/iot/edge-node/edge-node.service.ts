@@ -2,12 +2,10 @@ import { useQuery } from '@tanstack/react-query';
 import { useMutationWithMessage } from '@/hooks/useMutation';
 import {
     configureNetwork,
-    configurePlatform,
     controlModem,
     getEdgeDetail,
     getEdgeList,
     getLogs,
-    removePlatform,
     renameEdge,
     setEnrollment,
     setLogLevel,
@@ -79,24 +77,6 @@ export function useDeviceConfigSyncMutation() {
     return useMutationWithMessage({
         mutationFn: syncDeviceConfig,
         successMessage: '设备配置已生成并下发',
-        invalidateKeys: [edgeQueryKeys.all],
-    });
-}
-
-export function usePlatformMutation() {
-    return useMutationWithMessage({
-        mutationFn: (value: { id: string; data: Edge.PlatformDto }) =>
-            configurePlatform(value.id, value.data),
-        successMessage: '平台配置已下发',
-        invalidateKeys: [edgeQueryKeys.all],
-    });
-}
-
-export function usePlatformDeleteMutation() {
-    return useMutationWithMessage({
-        mutationFn: (value: { id: string; platformId: string }) =>
-            removePlatform(value.id, value.platformId),
-        successMessage: '平台删除配置已下发',
         invalidateKeys: [edgeQueryKeys.all],
     });
 }

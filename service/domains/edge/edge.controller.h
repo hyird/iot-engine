@@ -32,9 +32,6 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
     RUVIA_POST("/:id/network", network, EdgeIdValidator, NetworkValidator);
     RUVIA_POST("/:id/modem", modem, EdgeIdValidator, ModemControlValidator);
     RUVIA_POST("/:id/sync", sync, EdgeIdValidator);
-    RUVIA_POST("/:id/platforms", savePlatform, EdgeIdValidator, PlatformValidator);
-    RUVIA_DELETE("/:id/platforms/:platformId", removePlatform,
-                 EdgePlatformParamsValidator);
     RUVIA_POST_STREAM("/:id/firmware", uploadFirmware, EdgeIdValidator);
     RUVIA_POST("/:id/terminal-ticket", terminalTicket, EdgeIdValidator);
     RUVIA_GET("/:id/logs", logs, EdgeIdValidator, LogsValidator);
@@ -93,19 +90,6 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
         co_await service::middleware::requirePermission(c, "iot:edge:config");
         (void)co_await configService().queueSnapshot(c, id(c));
         co_return c.json(service::common::operation(c, "设备配置已生成并下发"));
-    }
-
-    ruvia::Task<ruvia::HttpResponse> savePlatform(ruvia::Context& c) {
-        co_await service::middleware::requirePermission(c, "iot:edge:config");
-        (void)co_await edgeService().queuePlatform(c, id(c), c.req().validated<PlatformBody>());
-        co_return c.json(service::common::operation(c, "平台配置已下发"));
-    }
-
-    ruvia::Task<ruvia::HttpResponse> removePlatform(ruvia::Context& c) {
-        co_await service::middleware::requirePermission(c, "iot:edge:config");
-        const auto& params = c.req().validated<EdgePlatformParams>();
-        co_await edgeService().deletePlatform(c, params.get<"id">()->view(), params.get<"platformId">()->view());
-        co_return c.json(service::common::operation(c, "平台删除配置已下发"));
     }
 
     ruvia::Task<ruvia::HttpResponse> firmwares(ruvia::Context& c) {

@@ -21,12 +21,12 @@ void requireContains(std::string_view haystack, std::string_view needle,
         throw std::runtime_error(message);
 }
 
-std::string edgeServiceSource() {
+std::string edgeSource(const char* relativePath) {
     auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
-                "service/domains/edge/edge.service.h";
+                relativePath;
     std::ifstream input(path, std::ios::binary);
     if (!input.good())
-        throw std::runtime_error("cannot open edge service source");
+        throw std::runtime_error("cannot open edge source");
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
@@ -71,7 +71,8 @@ int main() {
         requireContains(taskSelect, "result->>'progressPercent' ~ '^-?[0-9]{1,18}$'",
                         "edge task select does not guard progressPercent");
 
-        const auto serviceSource = edgeServiceSource();
+        const auto serviceSource = edgeSource("service/domains/edge/edge.service.h");
+        const auto controllerSource = edgeSource("service/domains/edge/edge.controller.h");
         requireMissing(serviceSource, "const std::string status(body.status()->view());",
                        "edge enrollment dereferences optional status without validation");
         requireMissing(serviceSource, "const std::string name(body.name()->view());",
@@ -92,20 +93,18 @@ int main() {
         requireContains(serviceSource,
                         "authType != \"none\" && authType != \"pap\" && authType != \"chap\"",
                         "edge modem accepts unknown auth type as none");
-        requireMissing(serviceSource, "const std::string baseUrl(body.baseUrl()->view());",
-                       "edge platform dereferences optional baseUrl without validation");
-        requireMissing(serviceSource, "request->set_enabled(*body.enabled());",
-                       "edge platform dereferences optional enabled without local default");
-        requireMissing(serviceSource, "static_cast<std::uint32_t>(*body.priority())",
-                       "edge platform casts optional priority without local validation");
+        requireMissing(serviceSource, "queuePlatform(",
+                       "edge service still exposes remote platform configuration");
+        requireMissing(serviceSource, "deletePlatform(",
+                       "edge service still exposes remote platform deletion");
+        requireMissing(controllerSource, "/:id/platforms",
+                       "edge controller still exposes platform management routes");
         requireMissing(serviceSource, "std::clamp<std::int64_t>(*query.limit(), 1, 48)",
                        "edge log request clamps invalid limit instead of rejecting it");
         requireMissing(serviceSource, "const auto level = std::string(body.level()->view());",
                        "edge log level dereferences optional level without validation");
         requireContains(serviceSource, "status != \"approved\" && status != \"rejected\"",
                         "edge enrollment accepts invalid registration status");
-        requireContains(serviceSource, "priority < 0 || priority > 65535",
-                        "edge platform does not validate priority before uint32 cast");
         requireContains(serviceSource,
                         "level != \"debug\" && level != \"info\" && level != \"warn\"",
                         "edge log level accepts invalid values");

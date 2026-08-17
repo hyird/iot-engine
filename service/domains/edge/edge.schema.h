@@ -81,16 +81,6 @@ class EdgeIdValidator final : public ruvia::Middleware<EdgeIdValidator> {
                                     RUVIA_CUSTOM("id 必须是 UUID", service::common::isUuidField)));
 };
 
-class EdgePlatformParamsValidator final : public ruvia::Middleware<EdgePlatformParamsValidator> {
-  public:
-    RUVIA_VALIDATE_PARAM(
-        EdgePlatformParams,
-        RUVIA_RULE(id, RUVIA_REQUIRED("id 不能为空"),
-                   RUVIA_CUSTOM("id 必须是 UUID", service::common::isUuidField)),
-        RUVIA_RULE_NAME("platformId", platformId, RUVIA_REQUIRED("platformId 不能为空"),
-                        RUVIA_CUSTOM("platformId 必须是 UUID", service::common::isUuidField)));
-};
-
 class EnrollmentValidator final : public ruvia::Middleware<EnrollmentValidator> {
   public:
     RUVIA_VALIDATE_JSON(
@@ -140,26 +130,6 @@ class NetworkValidator final : public ruvia::Middleware<NetworkValidator> {
         RUVIA_RULE_NAME("rollbackTimeoutSec", rollbackTimeoutSec,
                         RUVIA_MIN(30, "回滚等待时间必须在 30 - 300 秒之间"),
                         RUVIA_MAX(300, "回滚等待时间必须在 30 - 300 秒之间")));
-};
-
-class PlatformValidator final : public ruvia::Middleware<PlatformValidator> {
-  public:
-    RUVIA_VALIDATE_JSON(
-        PlatformBody,
-        RUVIA_RULE_NAME("platformId", platformId,
-                        RUVIA_CUSTOM("平台 ID 必须是 UUID", service::common::isUuidField)),
-        RUVIA_RULE(name, RUVIA_REQUIRED("平台名称不能为空"),
-                   RUVIA_MAX(32, "平台名称不能超过 32 个字符")),
-        RUVIA_RULE_NAME("baseUrl", baseUrl, RUVIA_REQUIRED("平台地址不能为空"),
-                        RUVIA_MAX(255, "平台地址不能超过 255 个字符")),
-        RUVIA_RULE(priority, RUVIA_MIN(0, "优先级必须在 0 - 65535 之间"),
-                   RUVIA_MAX(65535, "优先级必须在 0 - 65535 之间")),
-        RUVIA_RULE_NAME("reconnectIntervalSec", reconnectIntervalSec,
-                        RUVIA_MIN(1, "重连间隔必须在 1 - 3600 秒之间"),
-                        RUVIA_MAX(3600, "重连间隔必须在 1 - 3600 秒之间")),
-        RUVIA_RULE_NAME("outboxMaxBytes", outboxMaxBytes,
-                        RUVIA_MIN(16384, "缓存上限必须在 16 KiB - 8 MiB 之间"),
-                        RUVIA_MAX(8388608, "缓存上限必须在 16 KiB - 8 MiB 之间")));
 };
 
 class ModemControlValidator final : public ruvia::Middleware<ModemControlValidator> {

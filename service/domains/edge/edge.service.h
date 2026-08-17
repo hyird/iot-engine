@@ -85,7 +85,6 @@ class EdgeService {
         node.set<"interfaces">(co_await interfaces(c, id));
         node.set<"networks">(co_await networks(c, id));
         node.set<"serialPorts">(co_await serialPorts(c, id));
-        node.set<"platforms">(co_await platforms(c, id));
         node.set<"tasks">(co_await tasks(c, id));
         co_return node;
     }
@@ -312,91 +311,6 @@ RETURNING id)sql",
                       ",\"redialAfterApply\":" +
                       std::string(redialAfterApply ? "true" : "false") + "}";
         co_await createTaskAndQueue(c, nodeId, taskId, "modem", json, envelope);
-    }
-
-    ruvia::Task<std::string> queuePlatform(ruvia::Context& c, std::string_view nodeId,
-                                           const PlatformBody& body) {
-        co_await requireNodeCapability(c, nodeId, "platformConfig", "多平台配置");
-        const std::string platformId = body.get<"platformId">()
-                                           ? std::string(body.get<"platformId">()->view())
-                                           : service::common::nextUuidV7();
-        if (platformId == protocol::platformId())
-            service::common::fail(17007, "当前平台不能通过远程命令修改", 400);
-        const auto& maybeName = body.get<"name">();
-        const auto& maybeBaseUrl = body.get<"baseUrl">();
-        if (!maybeName || maybeName->view().empty())
-            service::common::fail(17003, "平台名称不能为空", 400);
-        if (!maybeBaseUrl || maybeBaseUrl->view().empty())
-            service::common::fail(17003, "平台地址不能为空", 400);
-        const std::string name(maybeName->view());
-        const std::string baseUrl(maybeBaseUrl->view());
-        validatePlatformUrl(baseUrl);
-        const bool enabled = body.get<"enabled">().value_or(true);
-        const auto priority = body.get<"priority">().value_or(100);
-        const auto reconnectIntervalSec = body.get<"reconnectIntervalSec">().value_or(5);
-        const auto outboxMaxBytes = body.get<"outboxMaxBytes">().value_or(262144);
-        if (priority < 0 || priority > 65535)
-            service::common::fail(17003, "优先级必须在 0 - 65535 之间", 400);
-        if (reconnectIntervalSec < 1 || reconnectIntervalSec > 3600)
-            service::common::fail(17003, "重连间隔必须在 1 - 3600 秒之间", 400);
-        if (outboxMaxBytes < 16384 || outboxMaxBytes > 8388608)
-            service::common::fail(17003, "缓存上限必须在 16 KiB - 8 MiB 之间", 400);
-        const auto taskId = service::common::nextUuidV7();
-        auto envelope = protocol::outbound(nodeId);
-        auto* request = envelope.mutable_platform_config_request();
-        std::uint8_t bytes[16]{};
-        protocol::uuidBytes(taskId, bytes);
-        request->set_request_id(protocol::bytes(bytes, 16));
-        if (!protocol::uuidBytes(platformId, bytes))
-            service::common::fail(17008, "平台 ID 无效", 400);
-        request->set_target_platform_id(protocol::bytes(bytes, 16));
-        request->set_operation(pb::PLATFORM_CONFIG_UPSERT);
-        request->set_name(name);
-        request->set_url(baseUrl);
-        request->set_enabled(enabled);
-        request->set_priority(static_cast<std::uint32_t>(priority));
-        request->set_reconnect_interval_sec(static_cast<std::uint32_t>(reconnectIntervalSec));
-        request->set_outbox_max_bytes(static_cast<std::uint32_t>(outboxMaxBytes));
-        const std::string json = "{\"platform_id\":\"" + platformId +
-                                 "\",\"name\":\"" + jsonEscape(name) +
-                                 "\",\"base_url\":\"" + jsonEscape(baseUrl) + "\"}";
-        const auto principal = service::middleware::requireAuth(c);
-        (void)co_await c.db().execute(R"sql(
-INSERT INTO edge_node_platform(node_id, platform_id, name, base_url, enabled, priority,
-                               reconnect_interval_sec, outbox_max_bytes, status)
-VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8,
-        jsonb_build_object('state', 'pending', 'message', ''))
-ON CONFLICT (node_id, platform_id) DO UPDATE
-SET name = EXCLUDED.name, base_url = EXCLUDED.base_url, enabled = EXCLUDED.enabled,
-    priority = EXCLUDED.priority, reconnect_interval_sec = EXCLUDED.reconnect_interval_sec,
-    outbox_max_bytes = EXCLUDED.outbox_max_bytes,
-    status = jsonb_build_object('state', 'pending', 'message', ''), updated_at = NOW())sql",
-                                      service::common::dbParams(
-                                          nodeId, platformId, name, baseUrl, enabled, priority,
-                                          reconnectIntervalSec, outboxMaxBytes));
-        co_await insertTask(c, nodeId, taskId, "platform_upsert", json, principal.userId);
-        co_await push(c, nodeId, envelope);
-        co_return platformId;
-    }
-
-    ruvia::Task<void> deletePlatform(ruvia::Context& c, std::string_view nodeId,
-                                     std::string_view platformId) {
-        co_await requireNodeCapability(c, nodeId, "platformConfig", "多平台配置");
-        if (platformId == protocol::platformId())
-            service::common::fail(17007, "当前平台不能通过远程命令删除", 400);
-        const auto taskId = service::common::nextUuidV7();
-        auto envelope = protocol::outbound(nodeId);
-        auto* request = envelope.mutable_platform_config_request();
-        std::uint8_t bytes[16]{};
-        protocol::uuidBytes(taskId, bytes);
-        request->set_request_id(protocol::bytes(bytes, 16));
-        protocol::uuidBytes(platformId, bytes);
-        request->set_target_platform_id(protocol::bytes(bytes, 16));
-        request->set_operation(pb::PLATFORM_CONFIG_DELETE);
-        const auto principal = service::middleware::requireAuth(c);
-        const std::string json = "{\"platform_id\":\"" + std::string(platformId) + "\"}";
-        co_await insertTask(c, nodeId, taskId, "platform_delete", json, principal.userId);
-        co_await push(c, nodeId, envelope);
     }
 
     ruvia::Task<void> validateFirmwareTarget(ruvia::Context& c, std::string_view nodeId) {
@@ -647,9 +561,6 @@ WHERE id = $2::uuid)sql",
        CASE lower(COALESCE(capability->>'firmwareUpdate', ''))
             WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
             ELSE false END,
-       CASE lower(COALESCE(capability->>'platformConfig', ''))
-            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
-            ELSE false END,
        CASE lower(COALESCE(capability->>'deviceConfig', ''))
             WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
             ELSE false END,
@@ -734,37 +645,36 @@ FROM edge_node)sql";
         capability.set<"networkConfigVersion">(
             integer(row[20].value().value_or(std::string_view{})));
         capability.set<"firmwareUpdate">(row[21].value().value_or(std::string_view{}) == "t");
-        capability.set<"platformConfig">(row[22].value().value_or(std::string_view{}) == "t");
-        capability.set<"deviceConfig">(row[23].value().value_or(std::string_view{}) == "t");
-        capability.set<"modemControl">(row[24].value().value_or(std::string_view{}) == "t");
-        capability.set<"terminal">(row[25].value().value_or(std::string_view{}) == "t");
-        capability.set<"logs">(row[26].value().value_or(std::string_view{}) == "t");
+        capability.set<"deviceConfig">(row[22].value().value_or(std::string_view{}) == "t");
+        capability.set<"modemControl">(row[23].value().value_or(std::string_view{}) == "t");
+        capability.set<"terminal">(row[24].value().value_or(std::string_view{}) == "t");
+        capability.set<"logs">(row[25].value().value_or(std::string_view{}) == "t");
 
         SignalDto signal(c);
-        signal.set<"csq">(integer(row[30].value().value_or(std::string_view{})));
-        signal.set<"rssiDbm">(integer(row[31].value().value_or(std::string_view{})));
-        signal.set<"percent">(integer(row[32].value().value_or(std::string_view{})));
+        signal.set<"csq">(integer(row[29].value().value_or(std::string_view{})));
+        signal.set<"rssiDbm">(integer(row[30].value().value_or(std::string_view{})));
+        signal.set<"percent">(integer(row[31].value().value_or(std::string_view{})));
         MobileDto mobile(c);
-        mobile.set<"available">(row[27].value().value_or(std::string_view{}) == "t");
-        mobile.set<"simState">(row[28].value().value_or(std::string_view{}));
-        mobile.set<"iccid">(row[29].value().value_or(std::string_view{}));
+        mobile.set<"available">(row[26].value().value_or(std::string_view{}) == "t");
+        mobile.set<"simState">(row[27].value().value_or(std::string_view{}));
+        mobile.set<"iccid">(row[28].value().value_or(std::string_view{}));
         mobile.set<"signal">(std::move(signal));
-        mobile.set<"registered">(row[33].value().value_or(std::string_view{}) == "t");
+        mobile.set<"registered">(row[32].value().value_or(std::string_view{}) == "t");
         mobile.set<"registrationStatus">(
-            integer(row[34].value().value_or(std::string_view{})));
-        mobile.set<"apn">(row[35].value().value_or(std::string_view{}));
-        mobile.set<"operatorName">(row[36].value().value_or(std::string_view{}));
-        mobile.set<"connected">(row[37].value().value_or(std::string_view{}) == "t");
-        mobile.set<"ipv4">(row[38].value().value_or(std::string_view{}));
+            integer(row[33].value().value_or(std::string_view{})));
+        mobile.set<"apn">(row[34].value().value_or(std::string_view{}));
+        mobile.set<"operatorName">(row[35].value().value_or(std::string_view{}));
+        mobile.set<"connected">(row[36].value().value_or(std::string_view{}) == "t");
+        mobile.set<"ipv4">(row[37].value().value_or(std::string_view{}));
 
         FirmwareStatusDto firmware(c);
-        firmware.set<"state">(row[39].value().value_or(std::string_view{}));
+        firmware.set<"state">(row[38].value().value_or(std::string_view{}));
         firmware.set<"progressPercent">(
-            integer(row[40].value().value_or(std::string_view{})));
+            integer(row[39].value().value_or(std::string_view{})));
         firmware.set<"downloadedBytes">(
-            integer(row[41].value().value_or(std::string_view{})));
-        firmware.set<"totalBytes">(integer(row[42].value().value_or(std::string_view{})));
-        firmware.set<"message">(row[43].value().value_or(std::string_view{}));
+            integer(row[40].value().value_or(std::string_view{})));
+        firmware.set<"totalBytes">(integer(row[41].value().value_or(std::string_view{})));
+        firmware.set<"message">(row[42].value().value_or(std::string_view{}));
 
         node.set<"id">(row[0].value().value_or(std::string_view{}));
         node.set<"imei">(row[1].value().value_or(std::string_view{}));
@@ -878,31 +788,6 @@ WHERE node_id = $1::uuid ORDER BY path)sql",
                 .set<"displayName">(row[1].value().value_or(std::string_view{}))
                 .set<"available">(row[2].value().value_or(std::string_view{}) == "t")
                 .set<"rs485">(row[3].value().value_or(std::string_view{}) == "t");
-        }
-        co_return result;
-    }
-
-    static ruvia::Task<ruvia::BoxedArray<PlatformDto>> platforms(ruvia::Context& c,
-                                                           std::string_view id) {
-        const auto rows = co_await c.db().query(R"sql(
-SELECT platform_id::text, name, base_url, enabled, priority, reconnect_interval_sec,
-       outbox_max_bytes, COALESCE(status->>'state', 'pending'), COALESCE(status->>'message', '')
-FROM edge_node_platform WHERE node_id = $1::uuid ORDER BY priority, name)sql",
-                                                service::common::dbParams(id));
-        ruvia::BoxedArray<PlatformDto> result(c.resource());
-        for (const auto& row : rows) {
-            auto& item = result.emplace(c);
-            PlatformStatusDto status(c);
-            status.set<"state">(row[7].value().value_or(std::string_view{}))
-                .set<"message">(row[8].value().value_or(std::string_view{}));
-            item.set<"platformId">(row[0].value().value_or(std::string_view{}))
-                .set<"name">(row[1].value().value_or(std::string_view{}))
-                .set<"baseUrl">(row[2].value().value_or(std::string_view{}))
-                .set<"enabled">(row[3].value().value_or(std::string_view{}) == "t")
-                .set<"priority">(integer(row[4].value().value_or(std::string_view{})))
-                .set<"reconnectIntervalSec">(integer(row[5].value().value_or(std::string_view{})))
-                .set<"outboxMaxBytes">(integer(row[6].value().value_or(std::string_view{})))
-                .set<"status">(std::move(status));
         }
         co_return result;
     }
@@ -1054,17 +939,6 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
         if (version < 2)
             service::common::fail(17004, "节点代理版本过旧，请先升级后再管理网络", 409);
         co_return version;
-    }
-
-    static void validatePlatformUrl(std::string_view value) {
-        const std::string_view prefix = value.starts_with("https://") ? "https://"
-                                        : value.starts_with("http://") ? "http://"
-                                                                       : "";
-        if (prefix.empty() || value.size() <= prefix.size())
-            service::common::fail(17006, "平台地址必须使用 http:// 或 https://", 400);
-        for (const unsigned char ch : value)
-            if (ch < 0x20U || ch == 0x7fU)
-                service::common::fail(17006, "平台地址包含非法字符", 400);
     }
 
     static bool hex(std::string_view value, std::uint8_t* output, std::size_t size) {

@@ -40,17 +40,6 @@ export namespace Edge {
         rs485: boolean;
     }
 
-    export interface Platform {
-        platformId: string;
-        name: string;
-        baseUrl: string;
-        enabled: boolean;
-        priority: number;
-        reconnectIntervalSec: number;
-        outboxMaxBytes: number;
-        status: PlatformStatus;
-    }
-
     export interface Task {
         id: string;
         taskType: 'network' | 'firmware' | 'modem' | 'platform_upsert' | 'platform_delete';
@@ -61,11 +50,6 @@ export namespace Edge {
         totalBytes: number;
         createdAt: string;
         updatedAt: string;
-    }
-
-    export interface PlatformStatus {
-        state: 'pending' | 'applied' | 'failed';
-        message: string;
     }
 
     export interface ConfigStatus {
@@ -96,7 +80,6 @@ export namespace Edge {
         networkConfig: boolean;
         networkConfigVersion: number;
         firmwareUpdate: boolean;
-        platformConfig: boolean;
         deviceConfig: boolean;
         modemControl: boolean;
         terminal: boolean;
@@ -154,7 +137,6 @@ export namespace Edge {
         interfaces?: NetworkInterface[];
         networks?: Network[];
         serialPorts?: SerialPort[];
-        platforms?: Platform[];
         tasks?: Task[];
     }
 
@@ -178,16 +160,6 @@ export namespace Edge {
 
     export interface NameDto {
         name: string;
-    }
-
-    export interface PlatformDto {
-        platformId?: string;
-        name: string;
-        baseUrl: string;
-        enabled: boolean;
-        priority: number;
-        reconnectIntervalSec: number;
-        outboxMaxBytes: number;
     }
 
     export interface FirmwareUpgradeDto {

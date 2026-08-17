@@ -10,8 +10,6 @@ import {
     modemControlSchema,
     networkSchema,
     nodeNameSchema,
-    platformIdSchema,
-    platformSchema,
 } from './edge-node.schema';
 import type { Edge } from './edge-node.types';
 
@@ -42,12 +40,6 @@ export const controlModem = (id: string, data: Edge.ModemControlDto) =>
     request.post<void>(`${BASE}/${edgeIdSchema.parse(id)}/modem`, modemControlSchema.parse(data));
 export const syncDeviceConfig = (id: string) =>
     request.post<void>(`${BASE}/${edgeIdSchema.parse(id)}/sync`);
-export const configurePlatform = (id: string, data: Edge.PlatformDto) =>
-    request.post<void>(`${BASE}/${edgeIdSchema.parse(id)}/platforms`, platformSchema.parse(data));
-export const removePlatform = (id: string, platformId: string) =>
-    request.delete<void>(
-        `${BASE}/${edgeIdSchema.parse(id)}/platforms/${platformIdSchema.parse(platformId)}`
-    );
 export const upgradeFirmware = (
     id: string,
     data: Edge.FirmwareUpgradeDto,

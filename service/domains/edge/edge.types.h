@@ -13,10 +13,6 @@ RUVIA_REQUEST_MODEL(EdgeListQuery,
 RUVIA_REQUEST_MODEL(EdgeIdParams,
     RUVIA_OPTIONAL_FIELD(id, ruvia::String));
 
-RUVIA_REQUEST_MODEL(EdgePlatformParams,
-    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("platformId", platformId, ruvia::String));
-
 RUVIA_REQUEST_MODEL(EnrollmentBody,
     RUVIA_OPTIONAL_FIELD(status, ruvia::String),
     RUVIA_OPTIONAL_FIELD(name, ruvia::String));
@@ -39,15 +35,6 @@ RUVIA_REQUEST_MODEL(NetworkInterfaceBody,
 RUVIA_REQUEST_MODEL(NetworkBody,
     RUVIA_OPTIONAL_FIELD(interfaces, ruvia::Array<NetworkInterfaceBody>),
     RUVIA_OPTIONAL_FIELD_NAME("rollbackTimeoutSec", rollbackTimeoutSec, ruvia::Int64, RUVIA_DEFAULT(60)));
-
-RUVIA_REQUEST_MODEL(PlatformBody,
-    RUVIA_OPTIONAL_FIELD_NAME("platformId", platformId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("baseUrl", baseUrl, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(enabled, ruvia::Bool, RUVIA_DEFAULT(true)),
-    RUVIA_OPTIONAL_FIELD(priority, ruvia::Int64, RUVIA_DEFAULT(100)),
-    RUVIA_OPTIONAL_FIELD_NAME("reconnectIntervalSec", reconnectIntervalSec, ruvia::Int64, RUVIA_DEFAULT(5)),
-    RUVIA_OPTIONAL_FIELD_NAME("outboxMaxBytes", outboxMaxBytes, ruvia::Int64, RUVIA_DEFAULT(262144)));
 
 RUVIA_REQUEST_MODEL(FirmwareDownloadQuery,
     RUVIA_OPTIONAL_FIELD(token, ruvia::String));
@@ -102,20 +89,6 @@ RUVIA_RESPONSE_MODEL(SerialDto,
     RUVIA_OPTIONAL_FIELD(available, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(rs485, ruvia::Bool));
 
-RUVIA_RESPONSE_MODEL(PlatformStatusDto,
-    RUVIA_OPTIONAL_FIELD(state, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(message, ruvia::String));
-
-RUVIA_RESPONSE_MODEL(PlatformDto,
-    RUVIA_OPTIONAL_FIELD_NAME("platformId", platformId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("baseUrl", baseUrl, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(enabled, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(priority, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD_NAME("reconnectIntervalSec", reconnectIntervalSec, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD_NAME("outboxMaxBytes", outboxMaxBytes, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(status, PlatformStatusDto));
-
 RUVIA_RESPONSE_MODEL(ConfigStatusDto,
     RUVIA_OPTIONAL_FIELD_NAME("activeVersion", activeVersion, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD_NAME("desiredVersion", desiredVersion, ruvia::Int64),
@@ -140,7 +113,6 @@ RUVIA_RESPONSE_MODEL(CapabilityDto,
     RUVIA_OPTIONAL_FIELD_NAME("networkConfig", networkConfig, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD_NAME("networkConfigVersion", networkConfigVersion, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD_NAME("firmwareUpdate", firmwareUpdate, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD_NAME("platformConfig", platformConfig, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD_NAME("deviceConfig", deviceConfig, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD_NAME("modemControl", modemControl, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(terminal, ruvia::Bool),
@@ -199,7 +171,6 @@ RUVIA_RESPONSE_MODEL(EdgeNodeDto,
     RUVIA_OPTIONAL_FIELD(interfaces, ruvia::BoxedArray<InterfaceDto>),
     RUVIA_OPTIONAL_FIELD(networks, ruvia::BoxedArray<NetworkDto>),
     RUVIA_OPTIONAL_FIELD_NAME("serialPorts", serialPorts, ruvia::BoxedArray<SerialDto>),
-    RUVIA_OPTIONAL_FIELD(platforms, ruvia::BoxedArray<PlatformDto>),
     RUVIA_OPTIONAL_FIELD(tasks, ruvia::BoxedArray<TaskDto>));
 
 RUVIA_RESPONSE_MODEL(EdgePageDto,

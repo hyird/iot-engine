@@ -184,22 +184,6 @@ export const networkSchema = z
         });
     });
 
-export const platformSchema = z.object({
-    platformId: z.uuid('平台 ID 必须是 UUID').optional(),
-    name: z.string().min(1, '平台名称不能为空').max(32),
-    baseUrl: z
-        .url('请输入合法平台地址')
-        .max(255)
-        .refine(
-            (value) => value.startsWith('http://') || value.startsWith('https://'),
-            '平台地址只支持 HTTP 或 HTTPS'
-        ),
-    enabled: z.boolean(),
-    priority: z.number().int().min(0).max(65535),
-    reconnectIntervalSec: z.number().int().min(1).max(3600),
-    outboxMaxBytes: z.number().int().min(16384).max(8388608),
-});
-
 const apnSchema = z
     .string()
     .max(100, 'APN 不能超过 100 个字符')
@@ -289,4 +273,3 @@ export const logLevelSchema = z.object({
     level: z.enum(['debug', 'info', 'warn', 'error']),
 });
 export const edgeIdSchema = z.uuid('节点 ID 必须是 UUID');
-export const platformIdSchema = z.uuid('平台 ID 必须是 UUID');
