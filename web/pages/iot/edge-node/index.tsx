@@ -148,12 +148,12 @@ function validConfigTimestamp(value: number) {
 function formatConfigVersions(active: number, desired: number) {
     const activeValid = validConfigTimestamp(active);
     const desiredValid = validConfigTimestamp(desired);
-    if (activeValid && desiredValid && active === desired) return formatDateTime(active);
+    if (activeValid && desiredValid && active === desired) return String(active);
     if (activeValid && desiredValid) {
-        return `已应用 ${formatDateTime(active)} · 目标 ${formatDateTime(desired)}`;
+        return `已应用 ${active} · 目标 ${desired}`;
     }
-    if (desiredValid) return `${formatDateTime(desired)}（等待节点应用）`;
-    if (activeValid) return `已应用 ${formatDateTime(active)}`;
+    if (desiredValid) return `${desired}（等待节点应用）`;
+    if (activeValid) return `已应用 ${active}`;
     return '--';
 }
 
