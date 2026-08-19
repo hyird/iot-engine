@@ -1,6 +1,8 @@
+.codegraph
 /build*
 /.cache/
 /.DS_Store
 /.env
 /node_modules/
 /logs/
+/tmp/
