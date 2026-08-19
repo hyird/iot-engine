@@ -155,6 +155,11 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         co_await send(socket, ack);
         (void)co_await session_state::claim(c.redis(), session.nodeId, session.epoch);
         std::exception_ptr sessionFailure;
+        // Egress must not wait for the node to speak first: an idle terminal only
+        // produces a heartbeat every few seconds, which would stall keystrokes for
+        // that whole interval. The pump owns the egress key from here on.
+        ruvia::TaskScope egressScope(c.worker(), c.resource());
+        egressScope.spawn(pumpEgress(c, socket, session, egressScope.stopToken()));
         try {
             co_await drain(c, socket, session);
             while (auto message = co_await socket.read()) {
@@ -177,6 +182,13 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             }
         } catch (...) {
             sessionFailure = std::current_exception();
+        }
+        egressScope.requestStop();
+        try {
+            co_await egressScope.join();
+        } catch (...) {
+            if (!sessionFailure)
+                sessionFailure = std::current_exception();
         }
         try {
             (void)co_await session_state::release(c.redis(), session.nodeId, session.epoch);
@@ -425,7 +437,21 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             co_await drainKey(c, socket, session, "iot:edge:config:" + session.nodeId, 64);
         if (configCount != 0)
             session.configSentAtMs = protocol::nowMs();
-        (void)co_await drainKey(c, socket, session, "iot:edge:egress:" + session.nodeId, 16);
+    }
+
+    // Runs beside the session read loop on the same worker, so it shares
+    // session.outboundSequence without a lock: every increment is consumed before
+    // the next suspension point.
+    static ruvia::Task<void> pumpEgress(ruvia::Context& c, ruvia::WebSocket& socket,
+                                        Session& session, ruvia::StopToken stopToken) {
+        const std::string terminalKey = terminalInputKey(session.nodeId);
+        const std::string egressKey = "iot:edge:egress:" + session.nodeId;
+        while (!stopToken.stopRequested()) {
+            const auto keystrokes = co_await drainKey(c, socket, session, terminalKey, 64);
+            const auto commands = co_await drainKey(c, socket, session, egressKey, 64);
+            if (keystrokes + commands == 0)
+                (void)co_await ruvia::sleepFor(c.worker(), std::chrono::milliseconds(10));
+        }
     }
 
     static ruvia::Task<int> drainKey(ruvia::Context& c, ruvia::WebSocket& socket,
@@ -454,9 +480,21 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         const auto wire = protocol::encode(envelope);
         if (wire.empty())
             throw std::runtime_error("edge terminal envelope encode failed");
-        const auto key = "iot:edge:egress:" + std::string(nodeId);
-        (void)co_await c.redis().rpush(key, wire);
-        co_await c.redis().ltrim(key, -100, -1);
+        // Terminal input gets its own downstream key: the shared egress list is
+        // head-trimmed by command dispatch, which would hand the node a terminal_data
+        // whose terminal_open it never saw. Overflow here drops the newest envelope
+        // instead, so whatever the node does receive stays a valid prefix.
+        const auto key = terminalInputKey(nodeId);
+        constexpr std::int64_t maxBacklog = 4096;
+        const auto length = co_await c.redis().rpush(key, wire);
+        if (length == 1)
+            (void)co_await c.redis().expire(key, std::chrono::seconds(120));
+        if (length > maxBacklog)
+            (void)co_await c.redis().rpop(key);
+    }
+
+    static std::string terminalInputKey(std::string_view nodeId) {
+        return "iot:edge:terminal:in:" + std::string(nodeId);
     }
 
     static ruvia::Task<void> sendWebTerminal(ruvia::WebSocket& socket,

@@ -276,6 +276,7 @@ function TerminalModal({
         let lastSentSize = '';
         const encoder = new TextEncoder();
         const pendingInput: Uint8Array[] = [];
+        let pendingInputBytes = 0;
         const pendingOutput: Uint8Array[] = [];
         const outputLimitNotice = encoder.encode('\r\n[终端输出过快，已省略较早内容]\r\n');
         let pendingOutputBytes = 0;
@@ -341,7 +342,15 @@ function TerminalModal({
             const socket = socketRef.current;
             if (pendingInput.length === 0) return;
             if (socket?.readyState !== WebSocket.OPEN) {
+                // The ticket request and handshake take long enough to type into, and
+                // the terminal is already focused. Hold the keystrokes for onopen
+                // instead of dropping them; retry until the socket is past CONNECTING.
+                if (socket === null || socket.readyState === WebSocket.CONNECTING) {
+                    if (inputTimer === undefined) inputTimer = window.setTimeout(flushInput, 50);
+                    return;
+                }
                 pendingInput.length = 0;
+                pendingInputBytes = 0;
                 return;
             }
             const size = pendingInput.reduce((total, chunk) => total + chunk.byteLength, 0);
@@ -351,6 +360,7 @@ function TerminalModal({
                 payload.set(chunk, offset);
                 offset += chunk.byteLength;
             }
+            pendingInputBytes = 0;
             const data = create(WebTerminalDataSchema, { data: payload });
             socket.send(
                 toBinary(
@@ -434,7 +444,14 @@ function TerminalModal({
         resizeObserver.observe(host);
         scheduleFit();
         const input = terminal.onData((data) => {
-            pendingInput.push(encoder.encode(data));
+            const chunk = encoder.encode(data);
+            pendingInputBytes += chunk.byteLength;
+            // A held buffer must stay bounded: drop the oldest keystrokes rather than
+            // grow without limit if the handshake never completes.
+            while (pendingInputBytes > 256 * 1024 && pendingInput.length > 0) {
+                pendingInputBytes -= pendingInput.shift()?.byteLength ?? 0;
+            }
+            pendingInput.push(chunk);
             if (inputTimer === undefined) inputTimer = window.setTimeout(flushInput, 8);
         });
 
@@ -452,6 +469,7 @@ function TerminalModal({
                     setState('已连接，正在启动终端…');
                     scheduleFit();
                     terminal.focus();
+                    flushInput();
                 };
                 socket.onmessage = (event) => {
                     if (!(event.data instanceof ArrayBuffer)) {
