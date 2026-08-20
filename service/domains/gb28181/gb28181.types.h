@@ -123,6 +123,8 @@ RUVIA_RESPONSE_MODEL(
     RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::String),
     RUVIA_OPTIONAL_FIELD(ssrc, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("rtp_port", rtpPort, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("lease_timeout_seconds", leaseTimeoutSeconds,
+                              ruvia::Int64),
     RUVIA_OPTIONAL_FIELD_NAME("play_urls", playUrls, GbPlayUrlsDto));
 
 RUVIA_RESPONSE_MODEL(

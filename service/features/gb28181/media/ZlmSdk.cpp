@@ -230,7 +230,6 @@ void ZlmSdk::start() {
 
         mk_events events{};
         events.on_mk_media_changed = &ZlmSdk::handleMediaChanged;
-        events.on_mk_media_no_reader = &ZlmSdk::handleMediaNoReader;
         events.on_mk_media_play = &ZlmSdk::handleMediaPlay;
         events.on_mk_http_request = &ZlmSdk::handleHttpRequest;
         mk_events_listen(&events);
@@ -510,25 +509,11 @@ void API_CALL ZlmSdk::handleMediaChanged(int registered, const mk_media_source s
     std::lock_guard invocationLock(state->invocationMutex);
     if (!state->active.load() || !state->callbacks.onStreamChanged)
         return;
+    const auto online = registered != 0;
     state->callbacks.onStreamChanged(
         safe(mk_media_source_get_app(source)), safe(mk_media_source_get_stream(source)),
-        safe(mk_media_source_get_schema(source)), registered != 0,
-        mk_media_source_get_total_reader_count(source));
-}
-
-void API_CALL ZlmSdk::handleMediaNoReader(const mk_media_source source) {
-    const auto stream = std::string(safe(mk_media_source_get_stream(source)));
-    if (!managedStream(stream) || mk_media_source_get_total_reader_count(source) > 0)
-        return;
-    const auto state = activeCallbacks();
-    if (!state)
-        return;
-    std::lock_guard invocationLock(state->invocationMutex);
-    if (!state->active.load() || !state->callbacks.onStreamNoneReader)
-        return;
-    state->callbacks.onStreamNoneReader(safe(mk_media_source_get_app(source)),
-                                        std::move(stream),
-                                        safe(mk_media_source_get_schema(source)));
+        safe(mk_media_source_get_schema(source)), online,
+        online ? mk_media_source_get_total_reader_count(source) : 0);
 }
 
 void API_CALL ZlmSdk::handleHttpRequest(const mk_parser parser,

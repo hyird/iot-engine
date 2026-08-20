@@ -34,6 +34,7 @@ public:
   RUVIA_POST("/devices/:deviceId/channels/:channelId/records/query", records);
   RUVIA_POST("/devices/:deviceId/channels/:channelId/playback/start",
              startPlayback);
+  RUVIA_POST("/previews/:sessionId/heartbeat", heartbeatPreview);
   RUVIA_POST("/previews/:sessionId/stop", stopPreview);
   RUVIA_GET("/devices/:deviceId", device);
   RUVIA_GET("/streams/:streamId", stream);
@@ -158,6 +159,17 @@ private:
       service::common::fail(10003, "预览会话不存在", 404);
     co_return c.json(service::common::ok<GbPreviewStopResponse>(
         c, Gb28181Service::previewStop(c, *result)));
+  }
+
+  ruvia::Task<ruvia::HttpResponse> heartbeatPreview(ruvia::Context &c) {
+    co_await service::middleware::requirePermission(c, "iot:gb28181:control");
+    requireEnabled();
+    const auto sessionId = requiredRoute(c, "sessionId", "会话编号不能为空");
+    if (!co_await runtime().renewPreview(c, sessionId))
+      service::common::fail(10003, "预览会话不存在或已超时", 404);
+    GbActionDto data(c);
+    data.set<"sent">(true).set<"action">("heartbeat");
+    co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
   }
 
   ruvia::Task<ruvia::HttpResponse> ptz(ruvia::Context &c) {

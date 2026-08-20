@@ -4,6 +4,7 @@
 #include "service/features/gb28181/media/ZlmSdk.h"
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -71,7 +72,27 @@ int main() {
         config.rtpPortRangeStart = 0;
         config.rtpPortRangeEnd = 0;
 
-        ZlmSdk sdk(config);
+        std::atomic_int pcmRegistered{0};
+        std::atomic_int pcmDeregistered{0};
+        std::atomic_int invalidDeregisteredReaderCount{0};
+        ZlmSdk::Callbacks callbacks;
+        callbacks.onStreamChanged =
+            [&pcmRegistered, &pcmDeregistered,
+             &invalidDeregisteredReaderCount](const std::string&,
+                                              const std::string& stream,
+                                              const std::string&, bool online,
+                                              int readerCount) {
+                if (stream != "pcm-aac")
+                    return;
+                if (online) {
+                    ++pcmRegistered;
+                } else {
+                    ++pcmDeregistered;
+                    if (readerCount != 0)
+                        ++invalidDeregisteredReaderCount;
+                }
+            };
+        ZlmSdk sdk(config, std::move(callbacks));
         sdk.start();
         const auto ports = sdk.ports();
         require(ports.http != 0, "embedded ZLM HTTP server did not start");
@@ -98,7 +119,12 @@ int main() {
                                    frame * 128 + 1) == 1;
         }
         require(aacProduced, "embedded ZLM FAAC PCM input did not produce AAC");
+        require(pcmRegistered.load() > 0,
+                "embedded ZLM media registration callback was not observed");
         pcmMedia.reset();
+        require(pcmDeregistered.load() > 0 &&
+                    invalidDeregisteredReaderCount.load() == 0,
+                "embedded ZLM media deregistration queried an unsafe reader count");
 
         const auto opened = sdk.openRtpServer("34020000002000000001",
                                               "34020000001320000001", "2000000001");

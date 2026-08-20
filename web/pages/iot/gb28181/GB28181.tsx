@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { PageContainer } from '@/components/PageContainer';
 import { usePermission } from '@/hooks/usePermission';
 import {
+    renewPreview,
     sendPtz,
     sendPtzPosition,
     stopPreviewKeepalive,
@@ -108,6 +109,15 @@ export default function Gb28181Page() {
 
     useEffect(() => {
         activeSessionRef.current = activeSession;
+    }, [activeSession]);
+
+    useEffect(() => {
+        if (!activeSession) return;
+        const leaseSeconds = Math.max(3, activeSession.lease_timeout_seconds || 90);
+        const heartbeat = window.setInterval(() => {
+            void renewPreview({ sessionId: activeSession.session_id }).catch(() => undefined);
+        }, Math.max(1_000, Math.floor((leaseSeconds * 1_000) / 3)));
+        return () => window.clearInterval(heartbeat);
     }, [activeSession]);
 
     useEffect(() => {

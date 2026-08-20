@@ -198,6 +198,7 @@ public:
         .set<"streamId">(value.streamId)
         .set<"ssrc">(value.ssrc)
         .set<"rtpPort">(value.rtpPort)
+        .set<"leaseTimeoutSeconds">(value.leaseTimeoutSeconds)
         .set<"playUrls">(std::move(urls));
     return result;
   }

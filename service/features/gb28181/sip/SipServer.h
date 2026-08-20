@@ -14,6 +14,7 @@
 #include <atomic>
 #include <deque>
 #include <chrono>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -27,6 +28,9 @@
 
 class SipServer {
 public:
+    using ViewerCountObserver =
+        std::function<void(const std::string& streamId, unsigned int viewerCount)>;
+
     struct PreviewStartResult {
         std::string sessionId;
         std::string deviceId;
@@ -35,6 +39,7 @@ public:
         std::string ssrc;
         uint16_t rtpPort{0};
         PlayUrls playUrls;
+        unsigned int leaseTimeoutSeconds{0};
     };
 
     struct PreviewStopResult {
@@ -45,7 +50,8 @@ public:
     };
 
     SipServer(SipConfig sipConfig, MediaConfig mediaConfig, DeviceRegistry& deviceRegistry,
-              ZlmSdk& zlmSdk, ruvia::EventLoop ioLoop);
+              ZlmSdk& zlmSdk, ruvia::EventLoop ioLoop,
+              ViewerCountObserver viewerCountObserver = {});
     ~SipServer();
 
     void start();
@@ -60,6 +66,7 @@ public:
     startPlayback(const std::string& deviceId, const std::string& channelId,
                   const std::string& startTime, const std::string& endTime);
     std::optional<PreviewStopResult> stopPreview(const std::string& sessionId);
+    bool renewPreview(const std::string& sessionId);
     std::optional<PreviewStopResult> stopPreviewByStream(const std::string& streamId);
     void markStreamOnline(const std::string& streamId, bool online);
 
@@ -97,6 +104,7 @@ private:
         Catalog,
         Registration,
         Invite,
+        ViewerLease,
         RecordQuery,
         AuthNonce,
     };
@@ -143,6 +151,7 @@ private:
     MediaConfig mediaConfig_;
     DeviceRegistry& deviceRegistry_;
     ZlmSdk& zlmSdk_;
+    ViewerCountObserver viewerCountObserver_;
     std::atomic_bool running_{false};
     ruvia::EventLoop ioLoop_;
     std::unique_ptr<asio::ip::udp::socket> udpSocket_;
@@ -161,6 +170,8 @@ private:
 
     void startInLoop();
     void stopInLoop();
+    void notifyViewerCountChanged(const std::string& streamId,
+                                  unsigned int viewerCount) const noexcept;
     void receiveUdp();
     void acceptTcp();
     void readTcp(const TcpConnectionPtr& connection);

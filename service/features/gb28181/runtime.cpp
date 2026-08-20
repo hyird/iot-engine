@@ -103,17 +103,20 @@ void Runtime::start() {
       streamChanged(std::move(app), std::move(stream), std::move(schema),
                     online, readerCount);
     };
-    callbacks.onStreamNoneReader = [this](std::string app, std::string stream,
-                                          std::string schema) {
-      streamNoneReader(std::move(app), std::move(stream), std::move(schema));
-    };
     callbacks.onRtpDetached = [this](std::string stream) {
       scheduleStreamClose(std::move(stream));
     };
     zlm_ = std::make_unique<ZlmSdk>(config_.media, std::move(callbacks));
     zlm_->start();
     sip_ = std::make_unique<SipServer>(config_.sip, config_.media, *devices_,
-                                       *zlm_, sipLoop_);
+                                       *zlm_, sipLoop_,
+                                       [this](const std::string &stream,
+                                              unsigned int viewerCount) {
+                                         if (streams_)
+                                           streams_->updateViewerCount(
+                                               stream,
+                                               static_cast<int>(viewerCount));
+                                       });
     sip_->start();
     lastError_.clear();
   } catch (const std::exception &error) {
@@ -281,6 +284,14 @@ Runtime::stopPreview(ruvia::Context &context, std::string sessionId) {
       });
 }
 
+ruvia::Task<bool> Runtime::renewPreview(ruvia::Context &context,
+                                        std::string sessionId) {
+  co_return co_await invoke<bool>(
+      context, [this, sessionId = std::move(sessionId)] {
+        return sip_->renewPreview(sessionId);
+      });
+}
+
 ruvia::Task<std::optional<SipServer::PreviewStopResult>>
 Runtime::stopPreviewByStream(ruvia::Context &context, std::string streamId) {
   co_return co_await invoke<std::optional<SipServer::PreviewStopResult>>(
@@ -341,24 +352,6 @@ void Runtime::streamChanged(std::string app, std::string stream,
       streams_->updateStreamChanged(app, stream, schema, online, readerCount);
     if (sip_)
       sip_->markStreamOnline(stream, online);
-  });
-}
-
-void Runtime::streamNoneReader(std::string app, std::string stream,
-                               std::string schema) {
-  if (!started_.load() || !sipLoop_.valid())
-    return;
-  (void)sipLoop_.post([this, app = std::move(app), stream = std::move(stream),
-                       schema = std::move(schema)] {
-    if (!started_.load())
-      return;
-    if (streams_)
-      streams_->updateNoneReader(app, stream, schema);
-    if (!sip_ || !zlm_)
-      return;
-    const auto stopped = sip_->stopPreviewByStream(stream);
-    if (!stopped)
-      (void)zlm_->closeRtpServer(stream);
   });
 }
 

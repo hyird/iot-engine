@@ -79,6 +79,8 @@ public:
                 std::string endTime);
   ruvia::Task<std::optional<SipServer::PreviewStopResult>>
   stopPreview(ruvia::Context &context, std::string sessionId);
+  ruvia::Task<bool> renewPreview(ruvia::Context &context,
+                                 std::string sessionId);
   ruvia::Task<std::optional<SipServer::PreviewStopResult>>
   stopPreviewByStream(ruvia::Context &context, std::string streamId);
 
@@ -92,8 +94,6 @@ public:
   ruvia::Task<bool> recording(ruvia::Context &context, std::string streamId);
   void streamChanged(std::string app, std::string stream, std::string schema,
                      bool online, int readerCount);
-  void streamNoneReader(std::string app, std::string stream,
-                        std::string schema);
 
 private:
   template <typename T> struct DispatchResult {

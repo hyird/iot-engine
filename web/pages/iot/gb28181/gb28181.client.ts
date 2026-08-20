@@ -37,6 +37,10 @@ export const startPreview = (payload: GB28181.StartPreviewPayload) =>
     );
 export const stopPreview = (payload: GB28181.StopPreviewPayload) =>
     request.post<GB28181.PreviewStopResult>(`${BASE}/previews/${pathPart(payload.sessionId)}/stop`);
+export const renewPreview = (payload: GB28181.StopPreviewPayload) =>
+    request.post<GB28181.CommandResult>(
+        `${BASE}/previews/${pathPart(payload.sessionId)}/heartbeat`
+    );
 export const sendPtz = (payload: GB28181.PtzPayload) =>
     request.post<GB28181.CommandResult>(
         appendQueryParams(

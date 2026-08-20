@@ -22,8 +22,6 @@ class ZlmSdk final {
         std::function<void(std::string app, std::string stream, std::string schema,
                            bool online, int readerCount)>
             onStreamChanged;
-        std::function<void(std::string app, std::string stream, std::string schema)>
-            onStreamNoneReader;
         std::function<void(std::string stream)> onRtpDetached;
     };
 
@@ -123,7 +121,6 @@ class ZlmSdk final {
     static bool authorizePlay(const CallbackState& state, std::string_view stream,
                               std::string_view token, std::int64_t expires);
     static void API_CALL handleMediaChanged(int registered, const mk_media_source source);
-    static void API_CALL handleMediaNoReader(const mk_media_source source);
     static void API_CALL handleMediaPlay(const mk_media_info media,
                                          const mk_auth_invoker invoker,
                                          const mk_sock_info sender);

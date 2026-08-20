@@ -13,8 +13,10 @@
 
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <optional>
@@ -353,6 +355,9 @@ int main() {
   std::unique_ptr<SipServer> server;
   std::unique_ptr<DeviceRegistry> devices;
   std::unique_ptr<ZlmSdk> zlm;
+  std::vector<std::pair<std::string, unsigned int>> viewerCounts;
+  std::mutex viewerCountsMutex;
+  std::condition_variable viewerCountsChanged;
   try {
     require(!SipMessage::parse(
                  "MESSAGE sip:platform@example.test SIP/2.0\r\n"
@@ -405,7 +410,8 @@ int main() {
     sip.port = reserveLocalPort();
     sip.password = "test";
     sip.transport = "both";
-    sip.registrationTimeoutSeconds = 1;
+    sip.registrationTimeoutSeconds = 30;
+    sip.viewerLeaseTimeoutSeconds = 1;
     sip.logging = false;
 
     MediaConfig media;
@@ -422,7 +428,15 @@ int main() {
     devices = std::make_unique<DeviceRegistry>();
     zlm = std::make_unique<ZlmSdk>(media);
     zlm->start();
-    server = std::make_unique<SipServer>(sip, media, *devices, *zlm, loop);
+    server = std::make_unique<SipServer>(
+        sip, media, *devices, *zlm, loop,
+        [&viewerCounts, &viewerCountsMutex,
+         &viewerCountsChanged](const std::string &stream,
+                               unsigned int count) {
+          std::lock_guard lock(viewerCountsMutex);
+          viewerCounts.emplace_back(stream, count);
+          viewerCountsChanged.notify_all();
+        });
     server->start();
 
     asio::io_context clientContext;
@@ -616,6 +630,91 @@ int main() {
             "SIP accepted a 200 OK whose CSeq method was not INVITE");
     require(server->stopPreview(preview->sessionId).has_value(),
             "GB28181 pending preview session was not stopped");
+    {
+      std::lock_guard lock(viewerCountsMutex);
+      require(viewerCounts.size() >= 2 &&
+                  viewerCounts[viewerCounts.size() - 2] ==
+                      std::pair{preview->streamId, 1U} &&
+                  viewerCounts.back() == std::pair{preview->streamId, 0U},
+              "GB28181 pending preview viewer count was not released");
+      viewerCounts.clear();
+    }
+    const auto sharedPreview =
+        server->startPreview("34020000001320000001", "34020000001320000001");
+    require(sharedPreview.has_value(),
+            "GB28181 shared preview INVITE was not started");
+    const auto sharedInvite =
+        receiveSipMatching(
+            [&udp, &udpRemote](auto &buffer, std::error_code &error) {
+              return udp.receive_from(asio::buffer(buffer), udpRemote, 0, error);
+            },
+            [](const SipMessage &message) { return message.method == "INVITE"; },
+            std::chrono::seconds(3));
+    require(sharedInvite.has_value(),
+            "GB28181 shared preview INVITE was not received");
+    const auto sharedInviteOk = inviteOkWithCSeqMethod(*sharedInvite, "INVITE");
+    udp.send_to(asio::buffer(sharedInviteOk), serverUdp);
+    const auto sharedAck =
+        receiveSipMatching(
+            [&udp, &udpRemote](auto &buffer, std::error_code &error) {
+              return udp.receive_from(asio::buffer(buffer), udpRemote, 0, error);
+            },
+            [](const SipMessage &message) { return message.method == "ACK"; },
+            std::chrono::seconds(3));
+    require(sharedAck.has_value(),
+            "GB28181 shared preview INVITE was not acknowledged");
+    server->markStreamOnline(sharedPreview->streamId, true);
+
+    const auto secondViewer =
+        server->startPreview("34020000001320000001", "34020000001320000001");
+    require(secondViewer.has_value() &&
+                secondViewer->streamId == sharedPreview->streamId &&
+                secondViewer->sessionId != sharedPreview->sessionId,
+            "GB28181 concurrent preview did not reuse the camera stream");
+    {
+      std::unique_lock lock(viewerCountsMutex);
+      require(viewerCountsChanged.wait_for(
+                  lock, std::chrono::seconds(3),
+                  [&viewerCounts] { return viewerCounts.size() >= 3; }),
+              "GB28181 expired viewer lease did not reduce the viewer count");
+      require(viewerCounts.back() == std::pair{sharedPreview->streamId, 1U},
+              "GB28181 viewer lease expiry did not release exactly one viewer");
+    }
+    require(server->renewPreview(secondViewer->sessionId),
+            "GB28181 active viewer lease could not be renewed");
+    const auto prematureBye =
+        receiveSipMatching(
+            [&udp, &udpRemote](auto &buffer, std::error_code &error) {
+              return udp.receive_from(asio::buffer(buffer), udpRemote, 0, error);
+            },
+            [](const SipMessage &message) { return message.method == "BYE"; },
+            std::chrono::milliseconds(300));
+    require(!prematureBye.has_value(),
+            "GB28181 stream closed while another viewer was still active");
+    require(server->stopPreview(secondViewer->sessionId).has_value(),
+            "GB28181 second preview viewer was not released");
+    const auto lastViewerBye =
+        receiveSipMatching(
+            [&udp, &udpRemote](auto &buffer, std::error_code &error) {
+              return udp.receive_from(asio::buffer(buffer), udpRemote, 0, error);
+            },
+            [](const SipMessage &message) { return message.method == "BYE"; },
+            std::chrono::seconds(3));
+    require(lastViewerBye.has_value(),
+            "GB28181 stream was not closed after its last viewer disappeared");
+    require(!server->stopPreview(sharedPreview->sessionId).has_value(),
+            "GB28181 preview session remained after its last viewer left");
+    {
+      std::lock_guard lock(viewerCountsMutex);
+      require(viewerCounts ==
+                  std::vector<std::pair<std::string, unsigned int>>{
+                      {sharedPreview->streamId, 1U},
+                      {sharedPreview->streamId, 2U},
+                      {sharedPreview->streamId, 1U},
+                      {sharedPreview->streamId, 0U},
+                  },
+              "GB28181 shared preview viewer count did not follow 1-2-1-0");
+    }
 
     require(server->queryRecords("34020000001320000001",
                                  "34020000001320000001",

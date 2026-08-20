@@ -4,7 +4,7 @@ import * as api from './gb28181.client';
 import type { GB28181 } from './gb28181.types';
 
 export { api as gb28181Api };
-export { sendPtz, sendPtzPosition, stopPreviewKeepalive } from './gb28181.client';
+export { renewPreview, sendPtz, sendPtzPosition, stopPreviewKeepalive } from './gb28181.client';
 
 export const gb28181Keys = {
     all: ['gb28181'] as const,

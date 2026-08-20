@@ -140,6 +140,8 @@ namespace
             env.get<int>("GB28181_COMMAND_TIMEOUT_SECONDS").value_or(10);
         config.sip.inviteTimeoutSeconds =
             env.get<int>("GB28181_INVITE_TIMEOUT_SECONDS").value_or(15);
+        config.sip.viewerLeaseTimeoutSeconds =
+            env.get<int>("GB28181_VIEWER_LEASE_TIMEOUT_SECONDS").value_or(90);
         config.sip.nonceTtlSeconds =
             env.get<int>("GB28181_NONCE_TTL_SECONDS").value_or(300);
         config.sip.deviceTimezoneOffsetMinutes =

@@ -408,11 +408,13 @@ void runOnLoopAndWait(const ruvia::EventLoop& loop, std::function<void()> work) 
 } // namespace
 
 SipServer::SipServer(SipConfig sipConfig, MediaConfig mediaConfig, DeviceRegistry& deviceRegistry,
-                     ZlmSdk& zlmSdk, ruvia::EventLoop ioLoop)
+                     ZlmSdk& zlmSdk, ruvia::EventLoop ioLoop,
+                     ViewerCountObserver viewerCountObserver)
     : sipConfig_(std::move(sipConfig)),
       mediaConfig_(std::move(mediaConfig)),
       deviceRegistry_(deviceRegistry),
       zlmSdk_(zlmSdk),
+      viewerCountObserver_(std::move(viewerCountObserver)),
       ioLoop_(std::move(ioLoop)) {}
 
 SipServer::~SipServer() {
@@ -454,6 +456,7 @@ void SipServer::start() {
     if (sipConfig_.registrationTimeoutSeconds <= 0 ||
         sipConfig_.commandTimeoutSeconds <= 0 ||
         sipConfig_.inviteTimeoutSeconds <= 0 ||
+        sipConfig_.viewerLeaseTimeoutSeconds <= 0 ||
         sipConfig_.nonceTtlSeconds <= 0) {
         running_.store(false);
         throw std::runtime_error("GB28181 SIP timeouts must be positive");
@@ -589,6 +592,23 @@ void SipServer::stopInLoop() {
     LOG_DEBUG << "[GB28181][SIP] Stopped, active_sessions=" << sessionCount
              << ", active_viewers=" << viewerCount
              << ", tcp_connections=" << tcpConnectionCount;
+}
+
+void SipServer::notifyViewerCountChanged(const std::string& streamId,
+                                         unsigned int viewerCount) const noexcept {
+    if (!viewerCountObserver_)
+        return;
+    try {
+        viewerCountObserver_(streamId, viewerCount);
+    } catch (const std::exception& error) {
+        LOG_WARN << "[GB28181][Preview] Viewer count observer failed, stream_id="
+                 << streamId << ", viewers=" << viewerCount
+                 << ", error=" << error.what();
+    } catch (...) {
+        LOG_WARN << "[GB28181][Preview] Viewer count observer failed, stream_id="
+                 << streamId << ", viewers=" << viewerCount
+                 << ", error=unknown";
+    }
 }
 
 void SipServer::receiveUdp() {
@@ -875,6 +895,13 @@ void SipServer::handleInviteOk(const SipMessage& message, const SipPeer& remote)
     session->toTag = toTag;
     session->established = true;
     cancelDeadline(DeadlineKind::Invite, session->sessionId);
+    for (const auto& [viewerId, streamSessionId] : previewViewers_) {
+        if (streamSessionId == session->sessionId) {
+            scheduleDeadline(
+                DeadlineKind::ViewerLease, viewerId,
+                std::chrono::seconds(sipConfig_.viewerLeaseTimeoutSeconds));
+        }
+    }
 
     const auto host = remote.address;
     const auto port = remote.port;
@@ -1540,6 +1567,10 @@ SipServer::startPreview(const std::string& deviceId, const std::string& channelI
             const auto viewerId = makeToken("viewer");
             ++session.viewerCount;
             previewViewers_[viewerId] = session.sessionId;
+            scheduleDeadline(
+                DeadlineKind::ViewerLease, viewerId,
+                std::chrono::seconds(sipConfig_.viewerLeaseTimeoutSeconds));
+            notifyViewerCountChanged(session.streamId, session.viewerCount);
             LOG_DEBUG << "[GB28181][Preview] Stream reused, device=" << deviceId
                          << ", channel=" << channelId
                          << ", viewer_session=" << viewerId
@@ -1554,6 +1585,7 @@ SipServer::startPreview(const std::string& deviceId, const std::string& channelI
                 session.ssrc,
                 session.rtpPort,
                 session.playUrls,
+                static_cast<unsigned int>(sipConfig_.viewerLeaseTimeoutSeconds),
             };
         }
     }
@@ -1641,8 +1673,11 @@ SipServer::startPreview(const std::string& deviceId, const std::string& channelI
 
     previewSessions_.emplace(sessionId, session);
     previewViewers_.emplace(viewerId, sessionId);
+    notifyViewerCountChanged(session.streamId, session.viewerCount);
     scheduleDeadline(DeadlineKind::Invite, sessionId,
                      std::chrono::seconds(sipConfig_.inviteTimeoutSeconds));
+    scheduleDeadline(DeadlineKind::ViewerLease, viewerId,
+                     std::chrono::seconds(sipConfig_.viewerLeaseTimeoutSeconds));
     LOG_DEBUG << "[GB28181][Preview] Session stored, viewer_session=" << viewerId
              << ", stream_session=" << sessionId
              << ", stream_id=" << session.streamId
@@ -1670,6 +1705,7 @@ SipServer::startPreview(const std::string& deviceId, const std::string& channelI
         session.ssrc,
         session.rtpPort,
         session.playUrls,
+        static_cast<unsigned int>(sipConfig_.viewerLeaseTimeoutSeconds),
     };
 }
 
@@ -1812,15 +1848,22 @@ SipServer::startPlayback(const std::string& deviceId, const std::string& channel
     session.playUrls = rtpServer->playUrls;
     session.remote = *remote;
     session.mode = "playback";
+    session.viewerCount = 1;
 
+    const auto viewerId = makeToken("viewer");
     previewSessions_[sessionId] = session;
+    previewViewers_.emplace(viewerId, sessionId);
+    notifyViewerCountChanged(session.streamId, session.viewerCount);
     scheduleDeadline(DeadlineKind::Invite, sessionId,
                      std::chrono::seconds(sipConfig_.inviteTimeoutSeconds));
+    scheduleDeadline(DeadlineKind::ViewerLease, viewerId,
+                     std::chrono::seconds(sipConfig_.viewerLeaseTimeoutSeconds));
 
     sendRequest(request.str(), *remote);
     LOG_DEBUG << "[GB28181][Playback] INVITE sent, device=" << deviceId
              << ", channel=" << channelId
-             << ", session=" << sessionId
+             << ", viewer_session=" << viewerId
+             << ", stream_session=" << sessionId
              << ", stream_id=" << rtpServer->streamId
              << ", rtp_port=" << rtpServer->port
              << ", ssrc=" << ssrc
@@ -1830,13 +1873,14 @@ SipServer::startPlayback(const std::string& deviceId, const std::string& channel
              << ", sdp=\"" << compactForLog(bodyText, 700) << "\"";
 
     return PreviewStartResult{
-        session.sessionId,
+        viewerId,
         session.deviceId,
         session.channelId,
         session.streamId,
         session.ssrc,
         session.rtpPort,
         session.playUrls,
+        static_cast<unsigned int>(sipConfig_.viewerLeaseTimeoutSeconds),
     };
 }
 std::optional<SipServer::PreviewStopResult>
@@ -1846,25 +1890,30 @@ SipServer::stopPreview(const std::string& sessionId) {
     PreviewSession session;
     std::string streamSessionId = sessionId;
     const auto viewerIter = previewViewers_.find(sessionId);
-        if (viewerIter != previewViewers_.end()) {
-            streamSessionId = viewerIter->second;
-            previewViewers_.erase(viewerIter);
-        }
+    const bool viewerRequest = viewerIter != previewViewers_.end();
+    if (viewerRequest) {
+        streamSessionId = viewerIter->second;
+        cancelDeadline(DeadlineKind::ViewerLease, sessionId);
+        previewViewers_.erase(viewerIter);
+    }
 
-        const auto iter = previewSessions_.find(streamSessionId);
-        if (iter == previewSessions_.end()) {
-            LOG_WARN << "[GB28181][Preview] Stop skipped, session=" << sessionId
-                     << ", resolved_stream_session=" << streamSessionId
-                     << ", reason=session_not_found";
-            return std::nullopt;
-        }
+    const auto iter = previewSessions_.find(streamSessionId);
+    if (iter == previewSessions_.end()) {
+        LOG_WARN << "[GB28181][Preview] Stop skipped, session=" << sessionId
+                 << ", resolved_stream_session=" << streamSessionId
+                 << ", reason=session_not_found";
+        return std::nullopt;
+    }
 
-        if (iter->second.mode == "preview" && iter->second.viewerCount > 1 && streamSessionId != sessionId) {
-            --iter->second.viewerCount;
+    if (viewerRequest && iter->second.viewerCount > 0) {
+        --iter->second.viewerCount;
+        notifyViewerCountChanged(iter->second.streamId,
+                                 iter->second.viewerCount);
+        if (iter->second.viewerCount > 0) {
             LOG_DEBUG << "[GB28181][Preview] Viewer released, viewer_session=" << sessionId
-                     << ", stream_session=" << streamSessionId
-                     << ", stream_id=" << iter->second.streamId
-                     << ", viewers=" << iter->second.viewerCount;
+                      << ", stream_session=" << streamSessionId
+                      << ", stream_id=" << iter->second.streamId
+                      << ", viewers=" << iter->second.viewerCount;
             return PreviewStopResult{
                 sessionId,
                 iter->second.streamId,
@@ -1872,17 +1921,21 @@ SipServer::stopPreview(const std::string& sessionId) {
                 false,
             };
         }
+    }
 
-        session = iter->second;
-        for (auto viewer = previewViewers_.begin(); viewer != previewViewers_.end();) {
-            if (viewer->second == streamSessionId) {
-                viewer = previewViewers_.erase(viewer);
-            } else {
-                ++viewer;
-            }
+    session = iter->second;
+    for (auto viewer = previewViewers_.begin(); viewer != previewViewers_.end();) {
+        if (viewer->second == streamSessionId) {
+            cancelDeadline(DeadlineKind::ViewerLease, viewer->first);
+            viewer = previewViewers_.erase(viewer);
+        } else {
+            ++viewer;
         }
+    }
     previewSessions_.erase(iter);
     cancelDeadline(DeadlineKind::Invite, streamSessionId);
+    if (!viewerRequest && session.viewerCount > 0)
+        notifyViewerCountChanged(session.streamId, 0);
 
     LOG_DEBUG << "[GB28181][Preview] Stream session removed, requested_session=" << sessionId
              << ", stream_session=" << streamSessionId
@@ -1962,6 +2015,30 @@ SipServer::stopPreview(const std::string& sessionId) {
         byeSent,
         rtpServerClosed,
     };
+}
+
+bool SipServer::renewPreview(const std::string& sessionId) {
+    const auto viewer = previewViewers_.find(sessionId);
+    if (viewer == previewViewers_.end()) {
+        LOG_DEBUG << "[GB28181][Preview] Viewer lease renewal skipped, viewer_session="
+                  << sessionId << ", reason=viewer_not_found";
+        return false;
+    }
+    const auto session = previewSessions_.find(viewer->second);
+    if (session == previewSessions_.end()) {
+        cancelDeadline(DeadlineKind::ViewerLease, sessionId);
+        previewViewers_.erase(viewer);
+        LOG_WARN << "[GB28181][Preview] Orphan viewer lease removed, viewer_session="
+                 << sessionId;
+        return false;
+    }
+    scheduleDeadline(DeadlineKind::ViewerLease, sessionId,
+                     std::chrono::seconds(sipConfig_.viewerLeaseTimeoutSeconds));
+    LOG_DEBUG << "[GB28181][Preview] Viewer lease renewed, viewer_session="
+              << sessionId << ", stream_session=" << session->second.sessionId
+              << ", stream_id=" << session->second.streamId
+              << ", timeout_seconds=" << sipConfig_.viewerLeaseTimeoutSeconds;
+    return true;
 }
 
 std::optional<SipServer::PreviewStopResult>
@@ -2232,6 +2309,23 @@ void SipServer::expireDeadline(const Deadline& deadline) {
                  << deadline.key;
         (void)stopPreview(deadline.key);
         break;
+    case DeadlineKind::ViewerLease: {
+        const auto viewer = previewViewers_.find(deadline.key);
+        if (viewer == previewViewers_.end())
+            break;
+        const auto session = previewSessions_.find(viewer->second);
+        LOG_INFO << "[GB28181][Preview] Viewer lease expired, viewer_session="
+                 << deadline.key << ", stream_session=" << viewer->second
+                 << ", stream_id="
+                 << (session == previewSessions_.end()
+                         ? std::string{"unknown"}
+                         : session->second.streamId)
+                 << ", viewers_before="
+                 << (session == previewSessions_.end() ? 0U
+                                                       : session->second.viewerCount);
+        (void)stopPreview(deadline.key);
+        break;
+    }
     case DeadlineKind::RecordQuery:
         if (const auto sn = parseUnsigned(deadline.key))
             pendingRecordQueries_.erase(*sn);

@@ -1,6 +1,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
+#include <vector>
 #include <string_view>
 
 #include "service/features/gb28181/device/DeviceRegistry.h"
@@ -52,6 +53,24 @@ int main() {
     require(renamed && renamed->displayName() == "Renamed camera" &&
                 renamed->channels[0].displayName() == "Renamed channel",
             "custom names were not updated in the runtime registry");
+
+    std::vector<StreamStatus> projectedStreams;
+    StreamRegistry streams([&projectedStreams](const StreamStatus &stream) {
+      projectedStreams.push_back(stream);
+    });
+    streams.updateViewerCount("preview-stream", 1);
+    streams.updateStreamChanged("rtp", "preview-stream", "rtsp", true, 0);
+    require(projectedStreams.back().readerCount == 1,
+            "pending preview viewer count was not applied on registration");
+    streams.updateViewerCount("preview-stream", 2);
+    streams.updateViewerCount("preview-stream", 1);
+    require(projectedStreams[projectedStreams.size() - 2].readerCount == 2 &&
+                projectedStreams.back().readerCount == 1,
+            "preview viewer count did not track concurrent viewers");
+    streams.updateStreamChanged("rtp", "preview-stream", "rtsp", false, 99);
+    require(!projectedStreams.back().online &&
+                projectedStreams.back().readerCount == 0,
+            "stream deregistration retained an unsafe reader count");
     std::cout << "GB28181 projector tests passed\n";
     return EXIT_SUCCESS;
   } catch (const std::exception &error) {

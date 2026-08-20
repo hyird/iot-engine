@@ -97,6 +97,7 @@ export namespace GB28181 {
         stream_id: string;
         ssrc: string;
         rtp_port: number;
+        lease_timeout_seconds: number;
         play_urls: PlayUrls;
     }
 
