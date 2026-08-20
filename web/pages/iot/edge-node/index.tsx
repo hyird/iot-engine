@@ -1235,7 +1235,7 @@ export default function EdgeNodePage() {
                                                         !status.online
                                                             ? '节点当前离线'
                                                             : capability.logs
-                                                              ? '节点日志'
+                                                              ? '运行事件'
                                                               : `节点代理 ${node.softwareVersion || '当前版本'} 过旧，请升级至 0.3.4`
                                                     }
                                                 >
@@ -1365,7 +1365,7 @@ export default function EdgeNodePage() {
                             <Descriptions.Item label="OpenWrt">
                                 {detail.openwrtRelease || '-'}
                             </Descriptions.Item>
-                            <Descriptions.Item label="缓存">
+                            <Descriptions.Item label="待上报队列">
                                 {detail.status.outbox.records} 条 /{' '}
                                 {formatBytes(detail.status.outbox.bytes)}
                             </Descriptions.Item>
@@ -1660,7 +1660,7 @@ export default function EdgeNodePage() {
                 }}
                 footer={null}
                 width="min(920px, 92vw)"
-                title={`节点日志${logNode ? ` · ${logNode.name || logNode.imei}` : ''}`}
+                title={`运行事件${logNode ? ` · ${logNode.name || logNode.imei}` : ''}`}
                 destroyOnHidden
             >
                 <Flex justify="space-between" align="center" gap={12} className="mb-3">
@@ -1714,6 +1714,7 @@ export default function EdgeNodePage() {
                     loading={logsLoading}
                     columns={logColumns}
                     dataSource={logs?.lines ?? []}
+                    locale={{ emptyText: '暂无运行事件（正常遥测不会记录）' }}
                     scroll={{ x: 'max-content', y: 420 }}
                 />
             </Modal>
