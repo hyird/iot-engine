@@ -1,7 +1,6 @@
 #pragma once
 
 #include <array>
-#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -140,7 +139,6 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
 
         std::ofstream output;
         std::string keepSettingsText;
-        std::string version;
         std::string fileName;
         std::uint64_t bytes = 0;
         bool fileSeen = false;
@@ -169,10 +167,6 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
                 keepSettingsText.append(part->body());
                 if (keepSettingsText.size() > 5)
                     service::common::fail(17018, "保留配置参数无效", 400);
-            } else if (part->name() == "version") {
-                version.append(part->body());
-                if (version.size() > 64)
-                    service::common::fail(17018, "目标固件版本无效", 400);
             } else if (part->name() == "file" && fileSeen) {
                 bytes += part->body().size();
                 if (bytes > 128ULL * 1024ULL * 1024ULL)
@@ -187,13 +181,6 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
         }
         if (!fileSeen || bytes == 0 || fileName.empty())
             service::common::fail(17017, "固件文件不能为空", 400);
-        if (version.empty())
-            service::common::fail(17018, "目标固件版本不能为空", 400);
-        for (const unsigned char character : version) {
-            if (!std::isalnum(character) && character != '.' && character != '-' &&
-                character != '_' && character != '+')
-                service::common::fail(17018, "目标固件版本无效", 400);
-        }
         const bool keepSettings = keepSettingsText.empty() || keepSettingsText == "true" ||
                                   keepSettingsText == "1";
         if (!keepSettings && keepSettingsText != "false" && keepSettingsText != "0")
@@ -211,7 +198,7 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
             hashText.push_back(digits[value & 0x0fU]);
         }
         co_await edgeService().registerFirmware(
-            c, storageId, std::move(version), std::move(fileName), outputPath,
+            c, storageId, {}, std::move(fileName), outputPath,
             std::move(hashText), static_cast<std::int64_t>(bytes));
         cleanup.keep = true;
         co_await edgeService().queueFirmware(c, nodeId, storageId, keepSettings);

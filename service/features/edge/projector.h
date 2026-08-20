@@ -392,7 +392,7 @@ RETURNING id::text, enrollment_status)sql",
         if (enrollmentStatus == "approved") {
             (void)co_await context.db().execute(R"sql(
 WITH target AS (
-    SELECT task.id, firmware.version
+    SELECT task.id AS task_id, firmware.id AS firmware_id
     FROM edge_task task
     JOIN edge_firmware firmware
       ON firmware.id::text = task.request->>'firmware_id'
@@ -402,21 +402,23 @@ WITH target AS (
       AND task.result->>'state' = 'flashing'
     ORDER BY task.created_at DESC
     LIMIT 1
+), completed AS (
+    UPDATE edge_task task
+    SET status = 'succeeded',
+        result = task.result || jsonb_build_object(
+            'state', 'rebooted',
+            'message', 'firmware reboot confirmed',
+            'softwareVersion', $1::text),
+        updated_at = NOW(),
+        completed_at = NOW()
+    FROM target
+    WHERE task.id = target.task_id
+    RETURNING target.firmware_id
 )
-UPDATE edge_task task
-SET status = CASE WHEN target.version = $1::text THEN 'succeeded' ELSE 'failed' END,
-    result = task.result || jsonb_build_object(
-        'state', CASE WHEN target.version = $1::text
-                      THEN 'rebooted' ELSE 'version_mismatch' END,
-        'message', CASE WHEN target.version = $1::text
-                        THEN 'firmware reboot confirmed'
-                        ELSE 'firmware rebooted with unexpected version' END,
-        'softwareVersion', $1::text,
-        'expectedSoftwareVersion', target.version),
-    updated_at = NOW(),
-    completed_at = NOW()
-FROM target
-WHERE task.id = target.id)sql",
+UPDATE edge_firmware firmware
+SET version = $1::text
+FROM completed
+WHERE firmware.id = completed.firmware_id)sql",
                                                 service::common::dbParams(
                                                     hello.software_version(), nodeId));
         }

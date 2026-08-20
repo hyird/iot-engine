@@ -241,12 +241,6 @@ export const modemControlSchema = z.discriminatedUnion('action', [
 ]);
 
 export const firmwareUpgradeSchema = z.object({
-    version: z
-        .string()
-        .trim()
-        .min(1, '目标固件版本不能为空')
-        .max(64, '目标固件版本不能超过 64 个字符')
-        .regex(/^[0-9A-Za-z][0-9A-Za-z._+-]*$/, '目标固件版本格式无效'),
     file: z
         .instanceof(File)
         .refine(
