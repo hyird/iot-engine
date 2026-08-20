@@ -430,6 +430,9 @@ SipServer::~SipServer() {
 }
 
 void SipServer::start() {
+    if (weak_from_this().expired())
+        throw std::logic_error(
+            "SipServer must be owned by std::shared_ptr before start()");
     if (running_.exchange(true)) {
         LOG_DEBUG << "[GB28181][SIP] Start skipped: server already running";
         return;
@@ -614,42 +617,46 @@ void SipServer::notifyViewerCountChanged(const std::string& streamId,
 void SipServer::receiveUdp() {
     if (!running_.load() || !udpSocket_ || !udpSocket_->is_open())
         return;
+    const auto weak = weak_from_this();
     udpSocket_->async_receive_from(
         asio::buffer(udpBuffer_), udpRemote_,
-        [this](const std::error_code& error, std::size_t size) {
-            if (!running_.load())
+        [weak](const std::error_code& error, std::size_t size) {
+            const auto self = weak.lock();
+            if (!self || !self->running_.load())
                 return;
             if (error) {
                 if (error != asio::error::operation_aborted)
                     LOG_WARN << "[GB28181][SIP] UDP receive failed: " << error.message();
-                receiveUdp();
+                self->receiveUdp();
                 return;
             }
             SipPeer peer;
             peer.transport = SipTransport::Udp;
-            peer.udp = udpRemote_;
-            peer.address = udpRemote_.address().to_string();
-            peer.port = udpRemote_.port();
-            if (sipConfig_.logging) {
+            peer.udp = self->udpRemote_;
+            peer.address = self->udpRemote_.address().to_string();
+            peer.port = self->udpRemote_.port();
+            if (self->sipConfig_.logging) {
                 LOG_DEBUG << "[GB28181][SIP][UDP_RX] remote=" << peerToString(peer)
                           << ", bytes=" << size;
             }
-            handlePacket(std::string(udpBuffer_.data(), size), peer);
-            receiveUdp();
+            self->handlePacket(std::string(self->udpBuffer_.data(), size), peer);
+            self->receiveUdp();
         });
 }
 
 void SipServer::acceptTcp() {
     if (!running_.load() || !tcpAcceptor_ || !tcpAcceptor_->is_open())
         return;
-    tcpAcceptor_->async_accept([this](const std::error_code& error,
+    const auto weak = weak_from_this();
+    tcpAcceptor_->async_accept([weak](const std::error_code& error,
                                       asio::ip::tcp::socket socket) {
-        if (!running_.load())
+        const auto self = weak.lock();
+        if (!self || !self->running_.load())
             return;
         if (error) {
             if (error != asio::error::operation_aborted)
                 LOG_WARN << "[GB28181][SIP] TCP accept failed: " << error.message();
-            acceptTcp();
+            self->acceptTcp();
             return;
         }
         std::error_code endpointError;
@@ -658,38 +665,42 @@ void SipServer::acceptTcp() {
             LOG_WARN << "[GB28181][SIP] TCP remote endpoint failed: "
                      << endpointError.message();
             socket.close(endpointError);
-            acceptTcp();
+            self->acceptTcp();
             return;
         }
         auto connection = std::make_shared<TcpConnection>(std::move(socket));
         connection->key = endpointKey(endpoint);
         connection->address = endpoint.address().to_string();
         connection->port = endpoint.port();
-        tcpConnections_[connection->key] = connection;
+        self->tcpConnections_[connection->key] = connection;
         LOG_DEBUG << "[GB28181][SIP] TCP connected from " << connection->key;
-        readTcp(connection);
-        acceptTcp();
+        self->readTcp(connection);
+        self->acceptTcp();
     });
 }
 
 void SipServer::readTcp(const TcpConnectionPtr& connection) {
     if (!running_.load() || !connection || !connection->socket.is_open())
         return;
+    const auto weak = weak_from_this();
     connection->socket.async_read_some(
         asio::buffer(connection->readBuffer),
-        [this, connection](const std::error_code& error, std::size_t size) {
+        [weak, connection](const std::error_code& error, std::size_t size) {
+            const auto self = weak.lock();
+            if (!self)
+                return;
             if (error) {
                 if (error != asio::error::operation_aborted &&
                     error != asio::error::eof) {
                     LOG_WARN << "[GB28181][SIP] TCP receive failed from "
                              << connection->key << ": " << error.message();
                 }
-                removeTcpConnection(connection);
+                self->removeTcpConnection(connection);
                 return;
             }
             connection->pending.append(connection->readBuffer.data(), size);
-            processTcpPending(connection);
-            readTcp(connection);
+            self->processTcpPending(connection);
+            self->readTcp(connection);
         });
 }
 
@@ -2108,6 +2119,7 @@ void SipServer::sendRequest(const std::string& request, const SipPeer& remote) {
     }
 
     auto data = std::make_shared<std::string>(request);
+    const auto weak = weak_from_this();
     if (remote.transport == SipTransport::Tcp) {
         if (!remote.tcp) {
             LOG_WARN << "[GB28181][SIP] TCP send failed: connection is closed, remote="
@@ -2116,7 +2128,10 @@ void SipServer::sendRequest(const std::string& request, const SipPeer& remote) {
         }
         const auto connection = remote.tcp;
         const auto posted = ioLoop_.post(
-            [this, connection, data] { writeTcp(connection, data); });
+            [weak, connection, data] {
+                if (const auto self = weak.lock())
+                    self->writeTcp(connection, data);
+            });
         if (!posted.accepted())
             LOG_WARN << "[GB28181][SIP] TCP send rejected by Ruvia worker, remote="
                      << peerToString(remote);
@@ -2129,17 +2144,22 @@ void SipServer::sendRequest(const std::string& request, const SipPeer& remote) {
         return;
     }
 
-    const auto posted = ioLoop_.post([this, data, remoteAddress = remote.udp]() {
-        if (!running_.load() || !udpSocket_ || !udpSocket_->is_open())
+    const auto posted = ioLoop_.post([weak, data, remoteAddress = remote.udp]() {
+        const auto self = weak.lock();
+        if (!self || !self->running_.load() || !self->udpSocket_ ||
+            !self->udpSocket_->is_open())
             return;
-        udpSocket_->async_send_to(
+        self->udpSocket_->async_send_to(
             asio::buffer(*data), remoteAddress,
-            [this, data](const std::error_code& error, std::size_t sent) {
+            [weak, data](const std::error_code& error, std::size_t sent) {
+                const auto self = weak.lock();
+                if (!self)
+                    return;
                 if (error) {
                     if (error != asio::error::operation_aborted)
                         LOG_WARN << "[GB28181][SIP] UDP send failed: "
                                  << error.message();
-                } else if (sipConfig_.logging) {
+                } else if (self->sipConfig_.logging) {
                     LOG_DEBUG << "[GB28181][SIP][UDP_TX] bytes=" << sent;
                 }
             });
@@ -2166,24 +2186,28 @@ void SipServer::continueTcpWrite(const TcpConnectionPtr& connection) {
     }
     connection->writeInProgress = true;
     const auto data = connection->writes.front();
+    const auto weak = weak_from_this();
     asio::async_write(
         connection->socket, asio::buffer(*data),
-        [this, connection, data](const std::error_code& error, std::size_t sent) {
+        [weak, connection, data](const std::error_code& error, std::size_t sent) {
+            const auto self = weak.lock();
+            if (!self)
+                return;
             if (error) {
                 if (error != asio::error::operation_aborted)
                     LOG_WARN << "[GB28181][SIP] TCP send failed to "
                              << connection->key << ": " << error.message();
                 connection->writes.clear();
                 connection->writeInProgress = false;
-                removeTcpConnection(connection);
+                self->removeTcpConnection(connection);
                 return;
             }
             connection->writes.pop_front();
-            if (sipConfig_.logging) {
+            if (self->sipConfig_.logging) {
                 LOG_DEBUG << "[GB28181][SIP][TCP_TX] remote=" << connection->key
                           << ", bytes=" << sent;
             }
-            continueTcpWrite(connection);
+            self->continueTcpWrite(connection);
         });
 }
 
@@ -2267,8 +2291,11 @@ void SipServer::armDeadlineTimer() {
     if (deadlines_.empty())
         return;
     deadlineTimer_->expires_at(deadlines_.top().at);
-    deadlineTimer_->async_wait(
-        [this](const std::error_code& error) { processDeadlines(error); });
+    const auto weak = weak_from_this();
+    deadlineTimer_->async_wait([weak](const std::error_code& error) {
+        if (const auto self = weak.lock())
+            self->processDeadlines(error);
+    });
 }
 
 void SipServer::processDeadlines(const std::error_code& error) {

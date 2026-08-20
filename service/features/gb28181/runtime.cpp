@@ -108,7 +108,7 @@ void Runtime::start() {
     };
     zlm_ = std::make_unique<ZlmSdk>(config_.media, std::move(callbacks));
     zlm_->start();
-    sip_ = std::make_unique<SipServer>(config_.sip, config_.media, *devices_,
+    sip_ = std::make_shared<SipServer>(config_.sip, config_.media, *devices_,
                                        *zlm_, sipLoop_,
                                        [this](const std::string &stream,
                                               unsigned int viewerCount) {

@@ -26,7 +26,7 @@
 #undef GetMessage
 #endif
 
-class SipServer {
+class SipServer : public std::enable_shared_from_this<SipServer> {
 public:
     using ViewerCountObserver =
         std::function<void(const std::string& streamId, unsigned int viewerCount)>;

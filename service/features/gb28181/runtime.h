@@ -167,7 +167,7 @@ private:
   std::unique_ptr<DeviceRegistry> devices_;
   std::unique_ptr<StreamRegistry> streams_;
   std::unique_ptr<ZlmSdk> zlm_;
-  std::unique_ptr<SipServer> sip_;
+  std::shared_ptr<SipServer> sip_;
   std::shared_ptr<Projector> projector_;
   Projector::Snapshot snapshot_;
   std::atomic_bool started_{false};

@@ -5,6 +5,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -12,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 
 namespace {
@@ -19,6 +21,15 @@ namespace {
 void require(bool condition, std::string_view message) {
     if (!condition)
         throw std::runtime_error(std::string(message));
+}
+
+template <typename Predicate>
+bool waitUntil(Predicate predicate,
+               std::chrono::milliseconds timeout = std::chrono::seconds(3)) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!predicate() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    return predicate();
 }
 
 } // namespace
@@ -119,10 +130,12 @@ int main() {
                                    frame * 128 + 1) == 1;
         }
         require(aacProduced, "embedded ZLM FAAC PCM input did not produce AAC");
-        require(pcmRegistered.load() > 0,
+        require(waitUntil([&pcmRegistered] { return pcmRegistered.load() > 0; }),
                 "embedded ZLM media registration callback was not observed");
         pcmMedia.reset();
-        require(pcmDeregistered.load() > 0 &&
+        require(waitUntil([&pcmDeregistered] {
+                    return pcmDeregistered.load() > 0;
+                }) &&
                     invalidDeregisteredReaderCount.load() == 0,
                 "embedded ZLM media deregistration queried an unsafe reader count");
 

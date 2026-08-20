@@ -16,6 +16,7 @@
 #include <condition_variable>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
@@ -272,6 +273,60 @@ receiveSipMatching(Receive receive, Predicate predicate,
   return std::nullopt;
 }
 
+std::string exchangeUdp(asio::ip::udp::socket &client,
+                        const asio::ip::udp::endpoint &server,
+                        std::string_view request) {
+  client.send_to(asio::buffer(request), server);
+  asio::ip::udp::endpoint remote;
+  return receiveUntil(
+      [&client, &remote](auto &buffer, std::error_code &error) {
+        return client.receive_from(asio::buffer(buffer), remote, 0, error);
+      });
+}
+
+void verifyKeepaliveExpiry(std::shared_ptr<SipServer> &server, SipConfig sip,
+                           const MediaConfig &media, DeviceRegistry &devices,
+                           ZlmSdk &zlm, const ruvia::EventLoop &loop,
+                           asio::io_context &clientContext) {
+  server->stop();
+  server.reset();
+
+  sip.port = reserveLocalPort();
+  sip.transport = "udp";
+  sip.registrationTimeoutSeconds = 1;
+  server = std::make_shared<SipServer>(sip, media, devices, zlm, loop);
+  server->start();
+
+  const asio::ip::udp::endpoint endpoint(asio::ip::address_v4::loopback(),
+                                         sip.port);
+  asio::ip::udp::socket client(
+      clientContext, asio::ip::udp::endpoint(asio::ip::udp::v4(), 0));
+  client.non_blocking(true);
+
+  const auto challenge = exchangeUdp(
+      client, endpoint, sipRegister(client.local_endpoint().port(), 20));
+  const auto nonce = challengeNonce(challenge);
+  require(challenge.starts_with("SIP/2.0 401 Unauthorized") && !nonce.empty(),
+          "expiry test REGISTER challenge was not received");
+
+  const auto registration = exchangeUdp(
+      client, endpoint,
+      sipRegister(client.local_endpoint().port(), 21, nonce));
+  require(registration.starts_with("SIP/2.0 200 OK"),
+          "expiry test REGISTER was rejected");
+
+  const auto keepalive = exchangeUdp(
+      client, endpoint, sipKeepalive(client.local_endpoint().port()));
+  require(keepalive.starts_with("SIP/2.0 200 OK"),
+          "expiry test keepalive was not acknowledged");
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(1250));
+  server->stop();
+  const auto registered = devices.findDevice("34020000001320000001");
+  require(registered.has_value(), "registered device was not retained");
+  require(!registered->online, "device did not expire after keepalive timeout");
+}
+
 bool socketClosesWithin(asio::ip::tcp::socket &socket,
                         std::chrono::milliseconds timeout) {
   socket.non_blocking(true);
@@ -352,7 +407,7 @@ std::string recordInfoMessage(std::string_view sn, std::string_view deviceId) {
 int main() {
   ruvia::EventLoopPool pool(
       ruvia::EventLoopPoolOptions{.loopCount = 1, .mailboxCapacity = 128});
-  std::unique_ptr<SipServer> server;
+  std::shared_ptr<SipServer> server;
   std::unique_ptr<DeviceRegistry> devices;
   std::unique_ptr<ZlmSdk> zlm;
   std::vector<std::pair<std::string, unsigned int>> viewerCounts;
@@ -428,7 +483,7 @@ int main() {
     devices = std::make_unique<DeviceRegistry>();
     zlm = std::make_unique<ZlmSdk>(media);
     zlm->start();
-    server = std::make_unique<SipServer>(
+    server = std::make_shared<SipServer>(
         sip, media, *devices, *zlm, loop,
         [&viewerCounts, &viewerCountsMutex,
          &viewerCountsChanged](const std::string &stream,
@@ -781,8 +836,9 @@ int main() {
       ipv6Sip.host = "::1";
       ipv6Sip.transport = "udp";
       ipv6Sip.port = reserveLocalUdpPort(ipv6Address);
-      SipServer ipv6Server(ipv6Sip, media, ipv6Devices, *zlm, loop);
-      ipv6Server.start();
+      auto ipv6Server = std::make_shared<SipServer>(
+          ipv6Sip, media, ipv6Devices, *zlm, loop);
+      ipv6Server->start();
 
       asio::ip::udp::socket ipv6Client(
           clientContext, asio::ip::udp::endpoint(ipv6Address, 0));
@@ -791,7 +847,7 @@ int main() {
       ipv6Devices.upsertRegistration(
           "ipv6-device",
           "[::1]:" + std::to_string(ipv6Client.local_endpoint().port()));
-      require(ipv6Server.queryCatalog("ipv6-device"),
+      require(ipv6Server->queryCatalog("ipv6-device"),
               "GB28181 IPv6 UDP route was not resolved");
       const auto ipv6Catalog =
           receiveSipMatching(
@@ -807,16 +863,12 @@ int main() {
               std::chrono::seconds(3));
       require(ipv6Catalog.has_value(),
               "GB28181 IPv6 UDP catalog query was not delivered");
-      ipv6Server.stop();
+      ipv6Server->stop();
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1250));
-    server->stop();
+    verifyKeepaliveExpiry(server, sip, media, *devices, *zlm, loop,
+                          clientContext);
     zlm->stop();
-    const auto registered = devices->findDevice("34020000001320000001");
-    require(registered.has_value(), "registered device was not retained");
-    require(!registered->online,
-            "device did not expire after keepalive timeout");
     require(service::common::canonicalUtcTimestamp("2026-07-29 08:40:45+00") ==
                 "2026-07-29T08:40:45Z",
             "offset timestamp was not normalized");
