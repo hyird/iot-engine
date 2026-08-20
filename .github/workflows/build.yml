@@ -57,7 +57,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-clang18-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'vcpkg-overlay-ports/**', 'triplets/**', 'CMakeLists.txt') }}
+          key: vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-clang18-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**', 'triplets/**', 'CMakeLists.txt') }}
           restore-keys: |
             vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-clang18-${{ env.VCPKG_COMMIT }}-
 
@@ -110,7 +110,7 @@ jobs:
           cmake -E copy build/ci/iot-engine build/artifact/iot-engine
           cmake -E copy_directory build/web build/artifact/web
           cmake -DDEPENDENCY_BUILD_DIR=build/ci -DDESTINATION=build/artifact \
-            -P cmake/stage-third-party-notices.cmake
+            -P ports/cmake/stage-third-party-notices.cmake
           "$UPX_BIN" --best --lzma build/artifact/iot-engine
           "$UPX_BIN" --test build/artifact/iot-engine
           tar -C build/artifact -czf "build/iot-engine-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz" .
@@ -155,7 +155,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-appleclang-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'vcpkg-overlay-ports/**', 'triplets/**', 'CMakeLists.txt') }}
+          key: vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-appleclang-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**', 'triplets/**', 'CMakeLists.txt') }}
           restore-keys: |
             vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-appleclang-${{ env.VCPKG_COMMIT }}-
 
@@ -217,7 +217,7 @@ jobs:
           cmake -E copy build/ci/iot-engine build/artifact/iot-engine
           cmake -E copy_directory build/web build/artifact/web
           cmake -DDEPENDENCY_BUILD_DIR=build/ci -DDESTINATION=build/artifact \
-            -P cmake/stage-third-party-notices.cmake
+            -P ports/cmake/stage-third-party-notices.cmake
           tar -C build/artifact -czf "build/iot-engine-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz" .
 
       - name: Upload artifact
@@ -255,7 +255,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'vcpkg-overlay-ports/**', 'triplets/**', 'CMakeLists.txt') }}
+          key: vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**', 'triplets/**', 'CMakeLists.txt') }}
           restore-keys: |
             vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ env.VCPKG_COMMIT }}-
 
@@ -312,7 +312,7 @@ jobs:
           cmake -E copy "build/ci/$env:BUILD_TYPE/iot-engine.exe" build/artifact/iot-engine.exe
           cmake -E copy_directory build/web build/artifact/web
           cmake -DDEPENDENCY_BUILD_DIR=build/ci -DDESTINATION=build/artifact `
-            -P cmake/stage-third-party-notices.cmake
+            -P ports/cmake/stage-third-party-notices.cmake
           & $env:UPX_BIN --best --lzma build/artifact/iot-engine.exe
           if ($LASTEXITCODE -ne 0) {
               throw "UPX compression failed with exit code $LASTEXITCODE"

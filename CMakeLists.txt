@@ -18,7 +18,10 @@ if(NOT "$ENV{VCPKG_DEFAULT_HOST_TRIPLET}" STREQUAL "")
 endif()
 
 list(PREPEND VCPKG_OVERLAY_PORTS
-    "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg-overlay-ports")
+    "${CMAKE_CURRENT_SOURCE_DIR}/ports/vcpkg")
+list(REMOVE_DUPLICATES VCPKG_OVERLAY_PORTS)
+list(APPEND VCPKG_INSTALL_OPTIONS --no-print-usage)
+list(REMOVE_DUPLICATES VCPKG_INSTALL_OPTIONS)
 
 # ZLMediaKit and its Find*.cmake modules use CMAKE_BUILD_TYPE even with
 # multi-config generators. Set the dependency-discovery configuration before
@@ -40,6 +43,7 @@ endif()
 
 include(CheckIncludeFile)
 include(FetchContent)
+include("${CMAKE_CURRENT_SOURCE_DIR}/ports/cmake/project-targets.cmake")
 
 # CMAKE_COMPILE_WARNING_AS_ERROR is a CI policy for targets owned by this
 # repository. Do not propagate it into fetched third-party targets.
@@ -52,7 +56,7 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(ruvia
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    GIT_TAG ee06702868626918c1f7b8d6f085dbea15b166b7)
+    GIT_TAG 3e1fe54881a18ad9f84dcc0969a80821e3af63f5)
 FetchContent_MakeAvailable(ruvia)
 
 FetchContent_Declare(nanopb
@@ -154,9 +158,39 @@ FetchContent_Declare(zlmediakit
     PATCH_COMMAND
         "${CMAKE_COMMAND}"
         "-DSOURCE_DIR=<SOURCE_DIR>"
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch-zlmediakit.cmake")
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/ports/cmake/patch-zlmediakit.cmake")
 
+if(DEFINED CMAKE_MESSAGE_LOG_LEVEL)
+    set(IOT_ENGINE_MESSAGE_LOG_LEVEL "${CMAKE_MESSAGE_LOG_LEVEL}")
+    set(IOT_ENGINE_MESSAGE_LOG_LEVEL_DEFINED TRUE)
+endif()
+set(CMAKE_MESSAGE_LOG_LEVEL WARNING)
 FetchContent_MakeAvailable(zlmediakit)
+if(IOT_ENGINE_MESSAGE_LOG_LEVEL_DEFINED)
+    set(CMAKE_MESSAGE_LOG_LEVEL "${IOT_ENGINE_MESSAGE_LOG_LEVEL}")
+else()
+    unset(CMAKE_MESSAGE_LOG_LEVEL)
+endif()
+unset(IOT_ENGINE_MESSAGE_LOG_LEVEL)
+unset(IOT_ENGINE_MESSAGE_LOG_LEVEL_DEFINED)
+
+# ZLMediaKit forces verbose makefiles on; restore concise project output after
+# loading the dependency. Users can still request verbose output per build.
+set(CMAKE_VERBOSE_MAKEFILE OFF CACHE BOOL
+    "Show full compiler and linker commands" FORCE)
+
+# Keep warnings from the pinned ZLMediaKit sources visible by default except
+# for the specific MSVC diagnostics already audited in this revision. The
+# project's own targets retain the compiler's complete warning set.
+if(MSVC)
+    target_compile_options(flv PRIVATE /wd4828)
+    target_compile_options(mov PRIVATE /wd4828)
+    target_compile_options(ZLToolKit PRIVATE /wd4244 /wd4297)
+    target_compile_options(zlmediakit PRIVATE /wd4244 /wd4804)
+    target_compile_options(ext-codec PRIVATE /wd4267)
+    target_compile_options(srt PRIVATE /wd4244)
+    target_compile_options(webrtc PRIVATE /wd4244 /wd4834)
+endif()
 
 set(CMAKE_COMPILE_WARNING_AS_ERROR "${IOT_ENGINE_COMPILE_WARNING_AS_ERROR}")
 unset(IOT_ENGINE_COMPILE_WARNING_AS_ERROR)
@@ -250,9 +284,7 @@ add_library(edgenode-protocol STATIC
     "${WEB_TERMINAL_PROTO_CPP}")
 target_include_directories(edgenode-protocol PUBLIC "${EDGENODE_GENERATED_DIR}")
 target_link_libraries(edgenode-protocol PUBLIC protobuf::libprotobuf)
-if(MSVC)
-    target_compile_options(edgenode-protocol PRIVATE /utf-8 /Zc:__cplusplus)
-endif()
+iot_engine_configure_target(edgenode-protocol)
 
 # Ruvia's standalone manifest features do not belong to this parent manifest.
 unset(VCPKG_MANIFEST_FEATURES CACHE)
@@ -281,228 +313,124 @@ target_link_libraries(iot-engine PRIVATE
     edgenode-protocol
     mk_api
     OpenSSL::Crypto)
+iot_engine_configure_target(iot-engine)
 if(MSVC)
     target_compile_definitions(iot-engine PRIVATE
         NOMINMAX
         WIN32_LEAN_AND_MEAN
         MediaKitApi_STATIC)
-    target_compile_options(iot-engine PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
+    target_compile_options(iot-engine PRIVATE /bigobj /FS)
 endif()
 
 enable_testing()
-add_executable(collector-protocol-test
-    tests/collector-protocol-test.cpp
-    service/common/packet-log.cpp)
-target_include_directories(collector-protocol-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(collector-protocol-test PRIVATE ruvia::web spdlog::spdlog)
-if(MSVC)
-    target_compile_options(collector-protocol-test PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME collector-protocol COMMAND collector-protocol-test)
+iot_engine_add_test(collector-protocol LARGE
+    SOURCES
+        tests/collector-protocol-test.cpp
+        service/common/packet-log.cpp
+    LIBRARIES ruvia::web spdlog::spdlog)
 
-add_executable(access-test tests/access-test.cpp)
-target_include_directories(access-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(access-test PRIVATE ruvia::web)
-if(MSVC)
-    target_compile_options(access-test PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME access COMMAND access-test)
+iot_engine_add_test(access LARGE
+    SOURCES tests/access-test.cpp
+    LIBRARIES ruvia::web)
 
-add_executable(access-webhook-test tests/access-webhook-test.cpp)
-target_include_directories(access-webhook-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-if (MSVC)
-    target_compile_options(access-webhook-test PRIVATE /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME access-webhook COMMAND access-webhook-test)
+iot_engine_add_test(access-webhook
+    SOURCES tests/access-webhook-test.cpp)
 
-add_executable(storage-policy-test tests/storage-policy-test.cpp)
-target_include_directories(storage-policy-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(storage-policy-test PRIVATE ruvia::web)
-if(MSVC)
-    target_compile_options(storage-policy-test PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME storage-policy COMMAND storage-policy-test)
+iot_engine_add_test(storage-policy LARGE
+    SOURCES tests/storage-policy-test.cpp
+    LIBRARIES ruvia::web)
 
-add_executable(edge-protocol-test tests/edge-protocol-test.cpp)
-target_include_directories(edge-protocol-test PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(edge-protocol-test PRIVATE edgenode-protocol)
-if(MSVC)
-    target_compile_options(edge-protocol-test PRIVATE /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME edge-protocol COMMAND edge-protocol-test)
+iot_engine_add_test(edge-protocol
+    SOURCES tests/edge-protocol-test.cpp
+    LIBRARIES edgenode-protocol)
 
-add_executable(edge-config-test tests/edge-config-test.cpp)
-target_include_directories(edge-config-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(edge-config-test PRIVATE ruvia::web edgenode-protocol OpenSSL::Crypto)
-if(MSVC)
-    target_compile_options(edge-config-test PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME edge-config COMMAND edge-config-test)
+iot_engine_add_test(edge-config LARGE
+    SOURCES tests/edge-config-test.cpp
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
 
-add_executable(edge-metadata-test tests/edge-metadata-test.cpp)
-target_include_directories(edge-metadata-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(edge-metadata-test PRIVATE ruvia::web)
-if(MSVC)
-    target_compile_options(edge-metadata-test PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME edge-metadata COMMAND edge-metadata-test)
+iot_engine_add_test(edge-metadata LARGE
+    SOURCES tests/edge-metadata-test.cpp
+    LIBRARIES ruvia::web)
 
-add_executable(edge-service-test tests/edge-service-test.cpp)
-target_include_directories(edge-service-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(edge-service-test PRIVATE ruvia::web edgenode-protocol OpenSSL::Crypto)
-target_compile_definitions(edge-service-test PRIVATE IOT_ENGINE_TESTING)
-if(MSVC)
-    target_compile_options(edge-service-test PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME edge-service COMMAND edge-service-test)
+iot_engine_add_test(edge-service LARGE
+    SOURCES tests/edge-service-test.cpp
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto
+    DEFINITIONS IOT_ENGINE_TESTING)
 
-add_executable(edge-projector-test tests/edge-projector-test.cpp)
-if(MSVC)
-    target_compile_options(edge-projector-test PRIVATE /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME edge-projector COMMAND edge-projector-test)
+iot_engine_add_test(edge-projector NO_PROJECT_INCLUDE
+    SOURCES tests/edge-projector-test.cpp)
 
-add_executable(alert-runtime-test tests/alert-runtime-test.cpp)
-target_include_directories(alert-runtime-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(alert-runtime-test PRIVATE ruvia::web)
-target_compile_definitions(alert-runtime-test PRIVATE IOT_ENGINE_TESTING)
-if(MSVC)
-    target_compile_options(alert-runtime-test PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME alert-runtime COMMAND alert-runtime-test)
+iot_engine_add_test(alert-runtime LARGE
+    SOURCES tests/alert-runtime-test.cpp
+    LIBRARIES ruvia::web
+    DEFINITIONS IOT_ENGINE_TESTING)
 
-add_executable(runtime-repository-test tests/runtime-repository-test.cpp)
-target_include_directories(runtime-repository-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-if (MSVC)
-    target_compile_options(runtime-repository-test PRIVATE /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME runtime-repository COMMAND runtime-repository-test)
+foreach(test_name
+        runtime-repository
+        telemetry-latest
+        telemetry-persistence
+        command-service
+        link-service
+        device-service
+        protocol-service
+        access-service
+        system-service)
+    iot_engine_add_test("${test_name}"
+        SOURCES "tests/${test_name}-test.cpp")
+endforeach()
 
-add_executable(telemetry-latest-test tests/telemetry-latest-test.cpp)
-target_include_directories(telemetry-latest-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-if (MSVC)
-    target_compile_options(telemetry-latest-test PRIVATE /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME telemetry-latest COMMAND telemetry-latest-test)
-
-add_executable(telemetry-persistence-test tests/telemetry-persistence-test.cpp)
-target_include_directories(telemetry-persistence-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-if (MSVC)
-    target_compile_options(telemetry-persistence-test PRIVATE /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME telemetry-persistence COMMAND telemetry-persistence-test)
-
-add_executable(command-service-test tests/command-service-test.cpp)
-target_include_directories(command-service-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-if (MSVC)
-    target_compile_options(command-service-test PRIVATE /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME command-service COMMAND command-service-test)
-
-add_executable(link-service-test tests/link-service-test.cpp)
-target_include_directories(link-service-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-if (MSVC)
-    target_compile_options(link-service-test PRIVATE /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME link-service COMMAND link-service-test)
-
-add_executable(device-service-test tests/device-service-test.cpp)
-target_include_directories(device-service-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-if (MSVC)
-    target_compile_options(device-service-test PRIVATE /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME device-service COMMAND device-service-test)
-
-add_executable(protocol-service-test tests/protocol-service-test.cpp)
-target_include_directories(protocol-service-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-if (MSVC)
-    target_compile_options(protocol-service-test PRIVATE /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME protocol-service COMMAND protocol-service-test)
-
-add_executable(access-service-test tests/access-service-test.cpp)
-target_include_directories(access-service-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-if (MSVC)
-    target_compile_options(access-service-test PRIVATE /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME access-service COMMAND access-service-test)
-
-add_executable(system-service-test tests/system-service-test.cpp)
-target_include_directories(system-service-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-if (MSVC)
-    target_compile_options(system-service-test PRIVATE /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME system-service COMMAND system-service-test)
-
-add_executable(gb28181-media-test
-    tests/gb28181-media-test.cpp
-    service/common/packet-log.cpp
-    service/features/gb28181/media/MediaProxy.cpp
-    service/features/gb28181/media/ZlmSdk.cpp)
-target_include_directories(gb28181-media-test PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181")
-target_link_libraries(gb28181-media-test PRIVATE
-    ruvia::web
-    spdlog::spdlog
-    mk_api
-    OpenSSL::Crypto)
-if(MSVC)
-    target_compile_definitions(gb28181-media-test PRIVATE
+iot_engine_add_test(gb28181-media
+    SOURCES
+        tests/gb28181-media-test.cpp
+        service/common/packet-log.cpp
+        service/features/gb28181/media/MediaProxy.cpp
+        service/features/gb28181/media/ZlmSdk.cpp
+    LIBRARIES
+        ruvia::web
+        spdlog::spdlog
+        mk_api
+        OpenSSL::Crypto
+    INCLUDE_DIRECTORIES
+        "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181"
+    MSVC_DEFINITIONS
         NOMINMAX
         WIN32_LEAN_AND_MEAN
         MediaKitApi_STATIC)
-    target_compile_options(gb28181-media-test PRIVATE /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME gb28181-media COMMAND gb28181-media-test)
 
-add_executable(gb28181-schema-test tests/gb28181-schema-test.cpp)
-target_include_directories(gb28181-schema-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(gb28181-schema-test PRIVATE ruvia::web)
-if(MSVC)
-    target_compile_options(gb28181-schema-test PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME gb28181-schema COMMAND gb28181-schema-test)
+iot_engine_add_test(gb28181-schema LARGE
+    SOURCES tests/gb28181-schema-test.cpp
+    LIBRARIES ruvia::web)
 
-add_executable(gb28181-projector-test
-    tests/gb28181-projector-test.cpp
-    service/features/gb28181/device/DeviceRegistry.cpp
-    service/features/gb28181/media/StreamRegistry.cpp)
-target_include_directories(gb28181-projector-test PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181")
-target_link_libraries(gb28181-projector-test PRIVATE ruvia::web)
-target_compile_definitions(gb28181-projector-test PRIVATE IOT_ENGINE_TESTING)
-if(MSVC)
-    target_compile_options(gb28181-projector-test PRIVATE /bigobj /FS /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME gb28181-projector COMMAND gb28181-projector-test)
+iot_engine_add_test(gb28181-projector LARGE
+    SOURCES
+        tests/gb28181-projector-test.cpp
+        service/features/gb28181/device/DeviceRegistry.cpp
+        service/features/gb28181/media/StreamRegistry.cpp
+    LIBRARIES ruvia::web
+    INCLUDE_DIRECTORIES
+        "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181"
+    DEFINITIONS IOT_ENGINE_TESTING)
 
-add_executable(gb28181-sip-test
-    tests/gb28181-sip-test.cpp
-    service/features/gb28181/device/DeviceRegistry.cpp
-    service/features/gb28181/media/ZlmSdk.cpp
-    service/features/gb28181/sip/DigestAuth.cpp
-    service/features/gb28181/sip/SipMessage.cpp
-    service/features/gb28181/sip/SipServer.cpp)
-target_include_directories(gb28181-sip-test PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181")
-target_link_libraries(gb28181-sip-test PRIVATE
-    ruvia::web
-    pugixml::pugixml
-    spdlog::spdlog
-    mk_api
-    OpenSSL::Crypto)
-if(MSVC)
-    target_compile_definitions(gb28181-sip-test PRIVATE
+iot_engine_add_test(gb28181-sip
+    SOURCES
+        tests/gb28181-sip-test.cpp
+        service/features/gb28181/device/DeviceRegistry.cpp
+        service/features/gb28181/media/ZlmSdk.cpp
+        service/features/gb28181/sip/DigestAuth.cpp
+        service/features/gb28181/sip/SipMessage.cpp
+        service/features/gb28181/sip/SipServer.cpp
+    LIBRARIES
+        ruvia::web
+        pugixml::pugixml
+        spdlog::spdlog
+        mk_api
+        OpenSSL::Crypto
+    INCLUDE_DIRECTORIES
+        "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181"
+    MSVC_DEFINITIONS
         NOMINMAX
         WIN32_LEAN_AND_MEAN
         MediaKitApi_STATIC)
-    target_compile_options(gb28181-sip-test PRIVATE /utf-8 /Zc:__cplusplus)
-endif()
-add_test(NAME gb28181-sip COMMAND gb28181-sip-test)
 
 find_program(BUN_EXECUTABLE NAMES bun REQUIRED)
 
