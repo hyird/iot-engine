@@ -282,6 +282,7 @@ function TerminalModal({
         let pendingOutputBytes = 0;
         let outputWriting = false;
         let outputNoticeQueued = false;
+        let terminalCloseReason = '';
         const terminal = new Terminal({
             cursorBlink: true,
             fontFamily: "'Cascadia Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace",
@@ -441,7 +442,14 @@ function TerminalModal({
                 scheduleFit();
             }, 100);
         });
+        const restoreTerminalFocus = () => {
+            if (disposed || document.visibilityState !== 'visible') return;
+            scheduleFit();
+            terminal.focus();
+        };
         resizeObserver.observe(host);
+        window.addEventListener('focus', restoreTerminalFocus);
+        document.addEventListener('visibilitychange', restoreTerminalFocus);
         scheduleFit();
         const input = terminal.onData((data) => {
             const chunk = encoder.encode(data);
@@ -488,7 +496,8 @@ function TerminalModal({
                         } else if (frame.payload.case === 'data') {
                             appendOutput(frame.payload.value.data);
                         } else if (frame.payload.case === 'close') {
-                            setState(frame.payload.value.reason || '终端已关闭');
+                            terminalCloseReason = frame.payload.value.reason || '终端已关闭';
+                            setState(terminalCloseReason);
                             socket.close(1000, 'terminal closed');
                         } else {
                             setState('终端协议错误');
@@ -499,8 +508,13 @@ function TerminalModal({
                         socket.close(1002, 'invalid terminal protobuf');
                     }
                 };
-                socket.onerror = () => setState('终端连接失败');
-                socket.onclose = () => setState('终端已关闭');
+                socket.onerror = () => {
+                    terminalCloseReason ||= '终端连接失败';
+                    setState(terminalCloseReason);
+                };
+                socket.onclose = (event) => {
+                    setState(terminalCloseReason || event.reason || '终端已关闭');
+                };
             })
             .catch(() => setState('无法建立终端连接'));
         return () => {
@@ -510,6 +524,8 @@ function TerminalModal({
             if (inputTimer !== undefined) window.clearTimeout(inputTimer);
             if (outputFrame !== undefined) window.cancelAnimationFrame(outputFrame);
             resizeObserver.disconnect();
+            window.removeEventListener('focus', restoreTerminalFocus);
+            document.removeEventListener('visibilitychange', restoreTerminalFocus);
             input.dispose();
             socketRef.current?.close();
             socketRef.current = null;

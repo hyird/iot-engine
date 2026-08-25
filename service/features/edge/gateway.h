@@ -63,6 +63,12 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         bool capabilitySeen{};
     };
 
+    struct TerminalSession {
+        std::uint32_t columns{120};
+        std::uint32_t rows{30};
+        bool closed{};
+    };
+
     ruvia::Task<void> connect(ruvia::Context& c) {
         auto& socket = c.webSocket();
         auto first = co_await socket.read();
@@ -232,10 +238,10 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         ready.mutable_ready();
         co_await sendWebTerminal(socket, ready);
 
-        bool terminalClosed = false;
+        TerminalSession terminalSession;
         ruvia::TaskScope outputScope(c.worker(), c.resource());
-        outputScope.spawn(
-            pumpTerminal(c, socket, terminalId, outputScope.stopToken(), terminalClosed));
+        outputScope.spawn(pumpTerminal(c, socket, nodeId, std::string(*active), terminalId,
+                                       terminalBytes, outputScope.stopToken(), terminalSession));
         std::exception_ptr failure;
         std::uint16_t closeCode = 1000;
         std::string closeReason;
@@ -267,6 +273,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                         protocol::bytes(terminalBytes.data(), terminalBytes.size()));
                     terminalResize->set_columns(size.columns());
                     terminalResize->set_rows(size.rows());
+                    terminalSession.columns = size.columns();
+                    terminalSession.rows = size.rows();
                     co_await queue(c, nodeId, resize);
                 } else if (frame.payload_case() == webpb::WebTerminalFrame::kData) {
                     std::string_view remaining = frame.data().data();
@@ -299,7 +307,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             if (!failure)
                 failure = std::current_exception();
         }
-        if (!terminalClosed) {
+        if (!terminalSession.closed) {
             auto close = protocol::outbound(nodeId);
             auto* terminalClose = close.mutable_terminal_close();
             terminalClose->set_terminal_id(
@@ -308,7 +316,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             co_await queue(c, nodeId, close);
         }
         (void)co_await c.redis().del("iot:edge:terminal:out:" + terminalId);
-        if (!terminalClosed && !closeReason.empty())
+        if (!terminalSession.closed && !closeReason.empty())
             co_await socket.close(closeCode, closeReason);
         if (failure)
             std::rethrow_exception(failure);
@@ -505,32 +513,64 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         co_await socket.binary(wire);
     }
 
-    static ruvia::Task<void> pumpTerminal(ruvia::Context& c, ruvia::WebSocket& socket,
-                                          std::string terminalId, ruvia::StopToken stopToken,
-                                          bool& terminalClosed) {
+    static ruvia::Task<void> pumpTerminal(
+        ruvia::Context& c, ruvia::WebSocket& socket, std::string nodeId,
+        std::string nodeSession, std::string terminalId,
+        std::array<std::uint8_t, 16> terminalBytes, ruvia::StopToken stopToken,
+        TerminalSession& terminalSession) {
         const std::string key = "iot:edge:terminal:out:" + terminalId;
         const auto redis = c.redis();
+        auto nextKeepalive =
+            std::chrono::steady_clock::now() + std::chrono::seconds(20);
         while (!stopToken.stopRequested()) {
             auto item = co_await redis.lpop(key);
-            if (!item) {
+            if (item) {
+                webpb::WebTerminalFrame frame;
+                if (!frame.ParseFromArray(item->data(), static_cast<int>(item->size()))) {
+                    webpb::WebTerminalFrame close;
+                    close.mutable_close()->set_reason("terminal stream protocol error");
+                    co_await sendWebTerminal(socket, close);
+                    terminalSession.closed = true;
+                    co_await socket.close(1011, "terminal stream protocol error");
+                    co_return;
+                }
+                co_await socket.binary(*item);
+                if (frame.payload_case() == webpb::WebTerminalFrame::kClose) {
+                    terminalSession.closed = true;
+                    co_await socket.close(1000, "terminal closed");
+                    co_return;
+                }
+            }
+
+            if (std::chrono::steady_clock::now() >= nextKeepalive) {
+                const auto active = co_await redis.get(sessionKey(nodeId));
+                if (!active ||
+                    std::string_view(active->data(), active->size()) !=
+                        std::string_view(nodeSession)) {
+                    webpb::WebTerminalFrame close;
+                    close.mutable_close()->set_reason("edge node connection lost");
+                    co_await sendWebTerminal(socket, close);
+                    terminalSession.closed = true;
+                    co_await socket.close(1013, "edge node connection lost");
+                    co_return;
+                }
+
+                // WebSocket ping/pong only keeps the browser connection alive. A resize is a
+                // harmless application frame that also keeps the node-to-ttyd terminal path
+                // active while the user is reading output or the browser tab is backgrounded.
+                auto keepalive = protocol::outbound(nodeId);
+                auto* resize = keepalive.mutable_terminal_resize();
+                resize->set_terminal_id(
+                    protocol::bytes(terminalBytes.data(), terminalBytes.size()));
+                resize->set_columns(terminalSession.columns);
+                resize->set_rows(terminalSession.rows);
+                co_await queue(c, nodeId, keepalive);
+                nextKeepalive =
+                    std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            }
+
+            if (!item)
                 (void)co_await ruvia::sleepFor(c.worker(), std::chrono::milliseconds(10));
-                continue;
-            }
-            webpb::WebTerminalFrame frame;
-            if (!frame.ParseFromArray(item->data(), static_cast<int>(item->size()))) {
-                webpb::WebTerminalFrame close;
-                close.mutable_close()->set_reason("terminal stream protocol error");
-                co_await sendWebTerminal(socket, close);
-                terminalClosed = true;
-                co_await socket.close(1011, "terminal stream protocol error");
-                co_return;
-            }
-            co_await socket.binary(*item);
-            if (frame.payload_case() == webpb::WebTerminalFrame::kClose) {
-                terminalClosed = true;
-                co_await socket.close(1000, "terminal closed");
-                co_return;
-            }
         }
     }
 
