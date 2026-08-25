@@ -277,6 +277,7 @@ function TerminalModal({
         const encoder = new TextEncoder();
         const pendingInput: Uint8Array[] = [];
         let pendingInputBytes = 0;
+        let terminalReady = false;
         const pendingOutput: Uint8Array[] = [];
         const outputLimitNotice = encoder.encode('\r\n[终端输出过快，已省略较早内容]\r\n');
         let pendingOutputBytes = 0;
@@ -318,7 +319,11 @@ function TerminalModal({
             fitAddon.fit();
             const socket = socketRef.current;
             const sizeKey = `${terminal.cols}:${terminal.rows}`;
-            if (socket?.readyState === WebSocket.OPEN && sizeKey !== lastSentSize) {
+            if (
+                terminalReady &&
+                socket?.readyState === WebSocket.OPEN &&
+                sizeKey !== lastSentSize
+            ) {
                 const resize = create(WebTerminalResizeSchema, {
                     columns: terminal.cols,
                     rows: terminal.rows,
@@ -342,11 +347,14 @@ function TerminalModal({
             inputTimer = undefined;
             const socket = socketRef.current;
             if (pendingInput.length === 0) return;
-            if (socket?.readyState !== WebSocket.OPEN) {
-                // The ticket request and handshake take long enough to type into, and
-                // the terminal is already focused. Hold the keystrokes for onopen
-                // instead of dropping them; retry until the socket is past CONNECTING.
-                if (socket === null || socket.readyState === WebSocket.CONNECTING) {
+            if (!terminalReady || socket?.readyState !== WebSocket.OPEN) {
+                // The terminal is focused before the device has confirmed PTY creation.
+                // Hold keystrokes until TerminalOpened reaches the browser as Ready.
+                if (
+                    socket === null ||
+                    socket.readyState === WebSocket.CONNECTING ||
+                    (socket.readyState === WebSocket.OPEN && !terminalReady)
+                ) {
                     if (inputTimer === undefined) inputTimer = window.setTimeout(flushInput, 50);
                     return;
                 }
@@ -475,9 +483,7 @@ function TerminalModal({
                 socketRef.current = socket;
                 socket.onopen = () => {
                     setState('已连接，正在启动终端…');
-                    scheduleFit();
                     terminal.focus();
-                    flushInput();
                 };
                 socket.onmessage = (event) => {
                     if (!(event.data instanceof ArrayBuffer)) {
@@ -491,8 +497,11 @@ function TerminalModal({
                             new Uint8Array(event.data)
                         );
                         if (frame.payload.case === 'ready') {
+                            terminalReady = true;
                             setState('已连接');
+                            scheduleFit();
                             terminal.focus();
+                            flushInput();
                         } else if (frame.payload.case === 'data') {
                             appendOutput(frame.payload.value.data);
                         } else if (frame.payload.case === 'close') {

@@ -109,7 +109,9 @@ void testStrictProtocolVersionContract() {
     require(service::edge::protocol::isCurrentProtocolVersion(
                 service::edge::protocol::kProtocolVersion),
             "current protocol version was rejected");
-    require(!service::edge::protocol::isCurrentProtocolVersion(4),
+    require(service::edge::protocol::kProtocolVersion == 4,
+            "terminal acknowledgement did not advance the wire protocol");
+    require(!service::edge::protocol::isCurrentProtocolVersion(5),
             "future protocol version was accepted");
 
     auto envelope = service::edge::protocol::outbound(
@@ -133,6 +135,22 @@ void testStrictProtocolVersionContract() {
     require(decoded.payload_case() == service::edge::pb::Envelope::kHeartbeatAck &&
                 decoded.heartbeat_ack().platform_time_ms() == 1234,
             "strict protocol session binding changed payload");
+}
+
+void testTerminalOpenedContract() {
+    auto envelope = service::edge::protocol::outbound(
+        "00000000-0000-7000-8000-000000000002", 42, 7);
+    const std::string terminalId(16, '\x03');
+    envelope.mutable_terminal_opened()->set_terminal_id(terminalId);
+    const auto wire = service::edge::protocol::encode(envelope);
+    require(!wire.empty(), "terminal opened acknowledgement was not encoded");
+
+    service::edge::pb::Envelope decoded;
+    require(service::edge::protocol::decode(wire, decoded),
+            "terminal opened acknowledgement was not decoded");
+    require(decoded.payload_case() == service::edge::pb::Envelope::kTerminalOpened &&
+                decoded.terminal_opened().terminal_id() == terminalId,
+            "terminal opened acknowledgement changed identity");
 }
 
 void testPublicBaseUrlConfiguration() {
@@ -282,6 +300,7 @@ int main() {
     testConfigItemNanopbWireContract();
     testEnvelopeRoundTrip();
     testStrictProtocolVersionContract();
+    testTerminalOpenedContract();
     testPublicBaseUrlConfiguration();
     testSessionPlatformIdentityIsInternal();
     testModemProfileRoundTrip();

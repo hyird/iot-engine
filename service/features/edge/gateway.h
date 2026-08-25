@@ -65,7 +65,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
     struct TerminalSession {
         std::uint32_t columns{120};
         std::uint32_t rows{30};
-        bool closed{};
+        bool opened{};
+        bool nodeClosed{};
     };
 
     ruvia::Task<void> connect(ruvia::Context& c) {
@@ -153,7 +154,6 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         helloAck->set_assigned_node_id(
             protocol::bytes(session.nodeBytes.data(), session.nodeBytes.size()));
         helloAck->set_session_epoch(session.epoch);
-        helloAck->set_negotiated_protocol_version(protocol::kProtocolVersion);
         helloAck->set_heartbeat_interval_sec(5);
         helloAck->set_max_message_size(static_cast<std::uint32_t>(protocol::kMaxMessageSize));
         helloAck->set_platform_time_ms(protocol::nowMs());
@@ -227,15 +227,9 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         auto* terminalOpen = open.mutable_terminal_open();
         terminalOpen->set_terminal_id(
             protocol::bytes(terminalBytes.data(), terminalBytes.size()));
-        std::uint8_t ticketBytes[16]{};
-        protocol::uuidBytes(ticket, ticketBytes);
-        terminalOpen->set_ticket(protocol::bytes(ticketBytes, 16));
         terminalOpen->set_columns(120);
         terminalOpen->set_rows(30);
         co_await queue(c, nodeId, open);
-        webpb::WebTerminalFrame ready;
-        ready.mutable_ready();
-        co_await sendWebTerminal(socket, ready);
 
         TerminalSession terminalSession;
         ruvia::TaskScope outputScope(c.worker(), c.resource());
@@ -256,6 +250,11 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                                           static_cast<int>(message->payload().size()))) {
                     closeCode = 1002;
                     closeReason = "invalid terminal protobuf";
+                    break;
+                }
+                if (!terminalSession.opened) {
+                    closeCode = 1002;
+                    closeReason = "terminal is not ready";
                     break;
                 }
                 if (frame.payload_case() == webpb::WebTerminalFrame::kResize) {
@@ -306,7 +305,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             if (!failure)
                 failure = std::current_exception();
         }
-        if (!terminalSession.closed) {
+        if (!terminalSession.nodeClosed) {
             auto close = protocol::outbound(nodeId);
             auto* terminalClose = close.mutable_terminal_close();
             terminalClose->set_terminal_id(
@@ -315,7 +314,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             co_await queue(c, nodeId, close);
         }
         (void)co_await c.redis().del("iot:edge:terminal:out:" + terminalId);
-        if (!terminalSession.closed && !closeReason.empty())
+        if (!terminalSession.nodeClosed && !closeReason.empty())
             co_await socket.close(closeCode, closeReason);
         if (failure)
             std::rethrow_exception(failure);
@@ -516,6 +515,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         TerminalSession& terminalSession) {
         const std::string key = "iot:edge:terminal:out:" + terminalId;
         const auto redis = c.redis();
+        const auto openDeadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(15);
         auto nextKeepalive =
             std::chrono::steady_clock::now() + std::chrono::seconds(20);
         while (!stopToken.stopRequested()) {
@@ -526,19 +527,32 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                     webpb::WebTerminalFrame close;
                     close.mutable_close()->set_reason("terminal stream protocol error");
                     co_await sendWebTerminal(socket, close);
-                    terminalSession.closed = true;
                     co_await socket.close(1011, "terminal stream protocol error");
                     co_return;
                 }
+                if (frame.payload_case() == webpb::WebTerminalFrame::kReady) {
+                    terminalSession.opened = true;
+                } else if (frame.payload_case() == webpb::WebTerminalFrame::kClose) {
+                    terminalSession.nodeClosed = true;
+                }
                 co_await socket.binary(*item);
                 if (frame.payload_case() == webpb::WebTerminalFrame::kClose) {
-                    terminalSession.closed = true;
                     co_await socket.close(1000, "terminal closed");
                     co_return;
                 }
             }
 
-            if (std::chrono::steady_clock::now() >= nextKeepalive) {
+            if (!terminalSession.opened &&
+                std::chrono::steady_clock::now() >= openDeadline) {
+                webpb::WebTerminalFrame close;
+                close.mutable_close()->set_reason("terminal open timed out");
+                co_await sendWebTerminal(socket, close);
+                co_await socket.close(1013, "terminal open timed out");
+                co_return;
+            }
+
+            if (terminalSession.opened &&
+                std::chrono::steady_clock::now() >= nextKeepalive) {
                 const auto active = co_await redis.get(sessionKey(nodeId));
                 if (!active ||
                     std::string_view(active->data(), active->size()) !=
@@ -546,7 +560,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                     webpb::WebTerminalFrame close;
                     close.mutable_close()->set_reason("edge node connection lost");
                     co_await sendWebTerminal(socket, close);
-                    terminalSession.closed = true;
+                    terminalSession.nodeClosed = true;
                     co_await socket.close(1013, "edge node connection lost");
                     co_return;
                 }
@@ -634,6 +648,9 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         case pb::Envelope::kTerminalData:
             co_await saveTerminalData(c, input.terminal_data());
             break;
+        case pb::Envelope::kTerminalOpened:
+            co_await saveTerminalOpened(c, input.terminal_opened());
+            break;
         case pb::Envelope::kTerminalClose:
             co_await saveTerminalClose(c, input.terminal_close());
             break;
@@ -682,6 +699,21 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         const auto key = "iot:edge:terminal:out:" + id;
         webpb::WebTerminalFrame frame;
         frame.mutable_data()->set_data(data.data());
+        std::string wire;
+        if (!frame.SerializeToString(&wire))
+            co_return;
+        (void)co_await c.redis().rpush(key, wire);
+        (void)co_await c.redis().expire(key, std::chrono::seconds(120));
+    }
+
+    static ruvia::Task<void> saveTerminalOpened(ruvia::Context& c,
+                                                const pb::TerminalOpened& opened) {
+        if (opened.terminal_id().size() != 16)
+            co_return;
+        const auto id = protocol::uuidText(opened.terminal_id());
+        const auto key = "iot:edge:terminal:out:" + id;
+        webpb::WebTerminalFrame frame;
+        frame.mutable_ready();
         std::string wire;
         if (!frame.SerializeToString(&wire))
             co_return;
