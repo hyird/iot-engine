@@ -133,6 +133,22 @@ int main() {
                         "edge gateway exposes Ready before enabling terminal input");
         requireContains(gatewaySource, "terminal open timed out",
                         "edge gateway can wait forever for terminal-open acknowledgement");
+        requireContains(gatewaySource,
+                        "terminalSessionKey(nodeId, terminalId), nodeSession",
+                        "edge gateway does not register terminal ownership before opening");
+        requireContains(gatewaySource,
+                        "return \"iot:edge:terminal:out:\" + std::string(nodeId)",
+                        "edge terminal output keys are not isolated by node");
+        requireContains(gatewaySource,
+                        "if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end",
+                        "edge gateway does not atomically verify terminal ownership");
+        requireContains(gatewaySource,
+                        "co_await saveTerminalData(c, session, input.terminal_data())",
+                        "edge gateway does not bind terminal output to the authenticated session");
+        requireContains(gatewaySource, "redis.call('DEL', KEYS[1], KEYS[2])",
+                        "edge gateway does not atomically release terminal state");
+        requireMissing(gatewaySource, "\"iot:edge:terminal:out:\" + terminalId",
+                       "edge gateway still routes terminal output by unscoped identifier");
 
         std::cout << "edge service tests passed\n";
         return 0;
