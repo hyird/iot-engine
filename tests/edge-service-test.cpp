@@ -21,6 +21,16 @@ void requireContains(std::string_view haystack, std::string_view needle,
         throw std::runtime_error(message);
 }
 
+void requireBefore(std::string_view haystack, std::string_view before,
+                   std::string_view after, const char* message) {
+    const auto beforePosition = haystack.find(before);
+    const auto afterPosition = beforePosition == std::string_view::npos
+                                   ? std::string_view::npos
+                                   : haystack.find(after, beforePosition + before.size());
+    if (beforePosition == std::string_view::npos || afterPosition == std::string_view::npos)
+        throw std::runtime_error(message);
+}
+
 std::string edgeSource(const char* relativePath) {
     auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
                 relativePath;
@@ -118,19 +128,15 @@ int main() {
                         "edge gateway does not echo terminal liveness pings");
         requireMissing(gatewaySource, "terminalOpen->set_ticket",
                        "edge gateway forwards the consumed browser ticket to the node");
-        requireMissing(gatewaySource,
-                       "co_await queue(c, nodeId, open);\n        webpb::WebTerminalFrame ready;",
+        requireMissing(gatewaySource, "webpb::WebTerminalFrame ready;",
                        "edge gateway reports ready before the node opens its PTY");
         requireContains(gatewaySource, "case pb::Envelope::kTerminalOpened",
                         "edge gateway does not consume terminal-open acknowledgement");
         requireContains(gatewaySource, "terminalSession.opened = true",
                         "edge gateway does not gate terminal input on node acknowledgement");
-        requireContains(gatewaySource,
-                        "terminalSession.opened = true;\n                } else if "
-                        "(frame.payload_case() == webpb::WebTerminalFrame::kClose) {\n"
-                        "                    terminalSession.nodeClosed = true;\n"
-                        "                }\n                co_await socket.binary(*item);",
-                        "edge gateway exposes Ready before enabling terminal input");
+        requireBefore(gatewaySource, "terminalSession.opened = true;",
+                      "co_await socket.binary(*item);",
+                      "edge gateway exposes Ready before enabling terminal input");
         requireContains(gatewaySource, "terminal open timed out",
                         "edge gateway can wait forever for terminal-open acknowledgement");
         requireContains(gatewaySource,
