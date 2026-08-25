@@ -2324,19 +2324,23 @@ void testFreshnessDeadlineWait() {
 void testEdgeSessionOwnership() {
     EdgeSessionRedis redis;
     constexpr std::string_view nodeId = "00000000-0000-7000-8000-000000000002";
-    require(runTask(service::edge::session_state::claim(redis, nodeId, 11)),
+    require(runTask(service::edge::session_state::claim(redis, nodeId, 11, 3)),
             "initial edge session claim failed");
-    require(runTask(service::edge::session_state::claim(redis, nodeId, 22)),
+    require(runTask(service::edge::session_state::claim(redis, nodeId, 22, 5)),
             "replacement edge session claim failed");
-    require(!runTask(service::edge::session_state::refresh(redis, nodeId, 11)),
+    require(!runTask(service::edge::session_state::refresh(redis, nodeId, 11, 3)),
             "stale edge session retained ownership");
-    require(redis.value == "22", "stale edge session overwrote the replacement epoch");
-    require(!runTask(service::edge::session_state::release(redis, nodeId, 11)),
+    require(redis.value == "22|5", "stale edge session overwrote the replacement state");
+    require(!runTask(service::edge::session_state::release(redis, nodeId, 11, 3)),
             "stale edge session reported replacement cleanup");
-    require(redis.value == "22", "stale edge session deleted the replacement epoch");
-    require(runTask(service::edge::session_state::refresh(redis, nodeId, 22)),
+    require(redis.value == "22|5", "stale edge session deleted the replacement state");
+    require(service::edge::session_state::protocolVersion(*redis.value) == 5,
+            "edge session did not expose its negotiated protocol");
+    require(!service::edge::session_state::protocolVersion("22").has_value(),
+            "legacy epoch-only session state was treated as negotiated");
+    require(runTask(service::edge::session_state::refresh(redis, nodeId, 22, 5)),
             "active edge session failed to refresh ownership");
-    require(runTask(service::edge::session_state::release(redis, nodeId, 22)) && !redis.value,
+    require(runTask(service::edge::session_state::release(redis, nodeId, 22, 5)) && !redis.value,
             "active edge session failed to release ownership");
 }
 

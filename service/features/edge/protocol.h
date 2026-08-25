@@ -24,17 +24,20 @@ namespace pb = ::iot::edge::v1;
 
 namespace service::edge::protocol {
 
-inline constexpr std::uint32_t kProtocolVersion = 4;
+inline constexpr std::uint32_t kProtocolVersion = 5;
+inline constexpr std::uint32_t kOldestCompatibleProtocolVersion = 2;
 
 inline constexpr std::string_view kDefaultPlatformId{
     "00000000-0000-7000-8000-000000000001"};
 inline constexpr std::string_view kDefaultPublicBaseUrl{"https://i.a-z.xin"};
 inline constexpr std::size_t kMaxMessageSize{16U * 1024U};
 
-// Each version is a complete wire contract. Protocol upgrades are coordinated
-// with node firmware instead of negotiating an older schema inside a session.
 inline constexpr bool isCurrentProtocolVersion(std::uint32_t version) noexcept {
     return version == kProtocolVersion;
+}
+
+inline constexpr bool supportsProtocolVersion(std::uint32_t version) noexcept {
+    return version >= kOldestCompatibleProtocolVersion && version <= kProtocolVersion;
 }
 
 inline constexpr bool terminalCommandResultState(pb::CommandState state) noexcept {
@@ -220,9 +223,10 @@ inline std::array<std::uint8_t, 16> randomUuidV7Bytes() {
 }
 
 inline pb::Envelope outbound(std::string_view nodeId, std::uint64_t epoch = 0,
-                             std::uint64_t sequence = 0) {
+                             std::uint64_t sequence = 0,
+                             std::uint32_t protocolVersion = kProtocolVersion) {
     pb::Envelope result;
-    result.set_protocol_version(kProtocolVersion);
+    result.set_protocol_version(protocolVersion);
     result.set_session_epoch(epoch);
     result.set_sequence(sequence);
     result.set_created_at_ms(nowMs());
@@ -239,8 +243,9 @@ inline pb::Envelope outbound(std::string_view nodeId, std::uint64_t epoch = 0,
 
 inline void bindSession(pb::Envelope& envelope, std::string_view platformBytes,
                         std::string_view nodeBytes, std::uint64_t epoch,
-                        std::uint64_t sequence) {
-    envelope.set_protocol_version(kProtocolVersion);
+                        std::uint64_t sequence,
+                        std::uint32_t protocolVersion = kProtocolVersion) {
+    envelope.set_protocol_version(protocolVersion);
     envelope.set_session_epoch(epoch);
     envelope.set_sequence(sequence);
     envelope.set_platform_id(platformBytes);

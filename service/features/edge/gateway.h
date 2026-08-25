@@ -53,6 +53,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         std::string nodeId;
         std::array<std::uint8_t, 16> nodeBytes{};
         std::array<std::uint8_t, 16> platformBytes{};
+        std::uint32_t protocolVersion{protocol::kProtocolVersion};
         std::uint64_t epoch{};
         std::uint64_t inboundSequence{};
         std::uint64_t outboundSequence{};
@@ -65,6 +66,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
     struct TerminalSession {
         std::uint32_t columns{120};
         std::uint32_t rows{30};
+        std::uint32_t protocolVersion{protocol::kProtocolVersion};
+        std::uint64_t inputSequence{};
         bool opened{};
         bool nodeClosed{};
     };
@@ -78,7 +81,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         }
         pb::Envelope input;
         if (!protocol::decode(first->payload(), input) ||
-            !protocol::isCurrentProtocolVersion(input.protocol_version()) ||
+            !protocol::supportsProtocolVersion(input.protocol_version()) ||
             input.payload_case() != pb::Envelope::kHello ||
             !protocol::validSessionPlatformId(input.platform_id()) ||
             !protocol::validImei(input.hello().imei())) {
@@ -97,7 +100,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             auth && separator != std::string_view::npos
                 ? std::string(auth->substr(separator + 1))
                 : "pending";
-        auto session = makeSession(nodeId, input.platform_id());
+        auto session =
+            makeSession(nodeId, input.protocol_version(), input.platform_id());
         if (status != "approved") {
             co_await sendEnrollment(socket, session, status);
             if (status == "rejected") {
@@ -108,7 +112,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             session.inboundSequence = input.sequence();
             while (auto message = co_await socket.read()) {
                 if (!message->binary() || !protocol::decode(message->payload(), input) ||
-                    !protocol::isCurrentProtocolVersion(input.protocol_version()) ||
+                    input.protocol_version() != session.protocolVersion ||
                     input.payload_case() != pb::Envelope::kHeartbeat ||
                     !input.node_id().empty() || input.session_epoch() != 0 ||
                     input.sequence() <= session.inboundSequence ||
@@ -145,7 +149,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             if (status != "approved")
                 co_return;
             session = makeSession(
-                nodeId,
+                nodeId, session.protocolVersion,
                 protocol::bytes(session.platformBytes.data(), session.platformBytes.size()));
         }
 
@@ -154,11 +158,13 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         helloAck->set_assigned_node_id(
             protocol::bytes(session.nodeBytes.data(), session.nodeBytes.size()));
         helloAck->set_session_epoch(session.epoch);
+        helloAck->set_negotiated_protocol_version(session.protocolVersion);
         helloAck->set_heartbeat_interval_sec(5);
         helloAck->set_max_message_size(static_cast<std::uint32_t>(protocol::kMaxMessageSize));
         helloAck->set_platform_time_ms(protocol::nowMs());
         co_await send(socket, ack);
-        (void)co_await session_state::claim(c.redis(), session.nodeId, session.epoch);
+        (void)co_await session_state::claim(c.redis(), session.nodeId, session.epoch,
+                                            session.protocolVersion);
         std::exception_ptr sessionFailure;
         // Egress must not wait for the node to speak first: an idle terminal only
         // produces a heartbeat every few seconds, which would stall keystrokes for
@@ -173,7 +179,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                     co_await socket.close(1002, "invalid envelope");
                     break;
                 }
-                if (!co_await session_state::refresh(c.redis(), session.nodeId, session.epoch)) {
+                if (!co_await session_state::refresh(c.redis(), session.nodeId, session.epoch,
+                                                     session.protocolVersion)) {
                     co_await socket.close(1008, "session replaced");
                     break;
                 }
@@ -196,7 +203,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 sessionFailure = std::current_exception();
         }
         try {
-            (void)co_await session_state::release(c.redis(), session.nodeId, session.epoch);
+            (void)co_await session_state::release(c.redis(), session.nodeId, session.epoch,
+                                                  session.protocolVersion);
         } catch (...) {
             if (!sessionFailure)
                 sessionFailure = std::current_exception();
@@ -224,6 +232,13 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         const auto terminalBytes = protocol::randomUuidV7Bytes();
         const auto terminalId = protocol::uuidText(terminalBytes.data());
         const std::string nodeSession(*active);
+        const auto sessionProtocolVersion =
+            session_state::protocolVersion(nodeSession);
+        if (!sessionProtocolVersion ||
+            !protocol::supportsProtocolVersion(*sessionProtocolVersion)) {
+            co_await socket.close(1013, "edge node protocol state unavailable");
+            co_return;
+        }
         ruvia::RedisSetOptions terminalOptions;
         terminalOptions.expiration =
             ruvia::RedisSetExpiration::expiresAfter(std::chrono::seconds(120));
@@ -233,11 +248,20 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         auto* terminalOpen = open.mutable_terminal_open();
         terminalOpen->set_terminal_id(
             protocol::bytes(terminalBytes.data(), terminalBytes.size()));
+        if (*sessionProtocolVersion <= 3)
+            terminalOpen->set_ticket(ticket);
         terminalOpen->set_columns(120);
         terminalOpen->set_rows(30);
         co_await queue(c, nodeId, open);
 
         TerminalSession terminalSession;
+        terminalSession.protocolVersion = *sessionProtocolVersion;
+        if (terminalSession.protocolVersion <= 3) {
+            webpb::WebTerminalFrame ready;
+            ready.mutable_ready();
+            co_await sendWebTerminal(socket, ready);
+            terminalSession.opened = true;
+        }
         ruvia::TaskScope outputScope(c.worker(), c.resource());
         outputScope.spawn(pumpTerminal(c, socket, nodeId, nodeSession, terminalId,
                                        terminalBytes, outputScope.stopToken(), terminalSession));
@@ -289,9 +313,23 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                         terminalData->set_terminal_id(
                             protocol::bytes(terminalBytes.data(), terminalBytes.size()));
                         terminalData->set_data(remaining.data(), size);
+                        if (terminalSession.protocolVersion >= 5)
+                            terminalData->set_sequence(++terminalSession.inputSequence);
                         co_await queue(c, nodeId, data);
+                        if (terminalSession.protocolVersion >= 5 &&
+                            !co_await waitTerminalInputAck(
+                                c, nodeId, nodeSession, terminalId,
+                                terminalSession.inputSequence, terminalSession)) {
+                            closeCode = 1013;
+                            closeReason = terminalSession.nodeClosed
+                                              ? "edge node closed terminal"
+                                              : "terminal input acknowledgement timed out";
+                            break;
+                        }
                         remaining.remove_prefix(size);
                     }
+                    if (!closeReason.empty())
+                        break;
                 } else if (frame.payload_case() == webpb::WebTerminalFrame::kClose) {
                     closeReason = "browser closed";
                     break;
@@ -326,9 +364,11 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             std::rethrow_exception(failure);
     }
 
-    static Session makeSession(std::string nodeId, std::string_view platformId) {
+    static Session makeSession(std::string nodeId, std::uint32_t protocolVersion,
+                               std::string_view platformId) {
         Session result;
         result.nodeId = std::move(nodeId);
+        result.protocolVersion = protocolVersion;
         protocol::uuidBytes(result.nodeId, result.nodeBytes.data());
         std::memcpy(result.platformBytes.data(), platformId.data(), result.platformBytes.size());
         result.epoch = randomEpoch();
@@ -353,7 +393,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
     }
 
     static bool validInbound(const pb::Envelope& input, const Session& session) {
-        return protocol::isCurrentProtocolVersion(input.protocol_version()) &&
+        return input.protocol_version() == session.protocolVersion &&
                input.node_id().size() == 16 &&
                input.platform_id().size() == 16 && input.session_epoch() == session.epoch &&
                input.sequence() > session.inboundSequence &&
@@ -414,7 +454,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
 
     static pb::Envelope makeEnvelope(Session& session) {
         auto result = protocol::outbound(session.nodeId, session.epoch,
-                                         ++session.outboundSequence);
+                                         ++session.outboundSequence,
+                                         session.protocolVersion);
         result.set_platform_id(
             protocol::bytes(session.platformBytes.data(), session.platformBytes.size()));
         return result;
@@ -477,7 +518,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 envelope,
                 protocol::bytes(session.platformBytes.data(), session.platformBytes.size()),
                 protocol::bytes(session.nodeBytes.data(), session.nodeBytes.size()), session.epoch,
-                ++session.outboundSequence);
+                ++session.outboundSequence, session.protocolVersion);
             co_await send(socket, envelope);
             ++sent;
         }
@@ -498,8 +539,10 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         const auto length = co_await c.redis().rpush(key, wire);
         if (length == 1)
             (void)co_await c.redis().expire(key, std::chrono::seconds(120));
-        if (length > maxBacklog)
+        if (length > maxBacklog) {
             (void)co_await c.redis().rpop(key);
+            throw std::runtime_error("edge terminal input backlog exceeded");
+        }
     }
 
     static std::string terminalInputKey(std::string_view nodeId) {
@@ -513,9 +556,44 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
     }
 
     static std::string terminalOutputKey(std::string_view nodeId,
-                                         std::string_view terminalId) {
+                                          std::string_view terminalId) {
         return "iot:edge:terminal:out:" + std::string(nodeId) + ":" +
                std::string(terminalId);
+    }
+
+    static std::string terminalInputAckKey(std::string_view nodeId,
+                                           std::string_view terminalId) {
+        return "iot:edge:terminal:in-ack:" + std::string(nodeId) + ":" +
+               std::string(terminalId);
+    }
+
+    static std::string terminalOutputSequenceKey(std::string_view nodeId,
+                                                  std::string_view terminalId) {
+        return "iot:edge:terminal:out-seq:" + std::string(nodeId) + ":" +
+               std::string(terminalId);
+    }
+
+    static ruvia::Task<bool> waitTerminalInputAck(
+        ruvia::Context& c, std::string_view nodeId, std::string_view nodeSession,
+        std::string_view terminalId, std::uint64_t sequence,
+        const TerminalSession& terminalSession) {
+        const auto key = terminalInputAckKey(nodeId, terminalId);
+        const auto ownerKey = terminalSessionKey(nodeId, terminalId);
+        const auto expected = std::to_string(sequence);
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(15);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (terminalSession.nodeClosed)
+                co_return false;
+            const auto value = co_await c.redis().get(key);
+            if (value && std::string_view(value->data(), value->size()) == expected)
+                co_return true;
+            const auto owner = co_await c.redis().get(ownerKey);
+            if (!owner || std::string_view(owner->data(), owner->size()) != nodeSession)
+                co_return false;
+            (void)co_await ruvia::sleepFor(c.worker(), std::chrono::milliseconds(10));
+        }
+        co_return false;
     }
 
     static ruvia::Task<void> releaseTerminalSession(ruvia::Context& c,
@@ -524,12 +602,15 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                                                     std::string_view nodeSession) {
         static constexpr std::string_view script = R"lua(
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
-redis.call('DEL', KEYS[1], KEYS[2])
+redis.call('DEL', KEYS[1], KEYS[2], KEYS[3], KEYS[4])
 return 1
 )lua";
         const auto ownershipKey = terminalSessionKey(nodeId, terminalId);
         const auto outputKey = terminalOutputKey(nodeId, terminalId);
-        const std::string_view keys[]{ownershipKey, outputKey};
+        const auto inputAckKey = terminalInputAckKey(nodeId, terminalId);
+        const auto outputSequenceKey = terminalOutputSequenceKey(nodeId, terminalId);
+        const std::string_view keys[]{ownershipKey, outputKey, inputAckKey,
+                                      outputSequenceKey};
         const std::string_view arguments[]{nodeSession};
         const auto reply = co_await c.redis().eval(script, keys, arguments);
         if (reply.kind() != ruvia::RedisValue::Kind::kInteger)
@@ -567,12 +648,30 @@ return 1
                     co_await socket.close(1011, "terminal stream protocol error");
                     co_return;
                 }
+                if (terminalSession.protocolVersion >= 5 &&
+                    frame.payload_case() == webpb::WebTerminalFrame::kData &&
+                    frame.data().sequence() == 0) {
+                    webpb::WebTerminalFrame close;
+                    close.mutable_close()->set_reason("terminal output sequence missing");
+                    co_await sendWebTerminal(socket, close);
+                    co_await socket.close(1011, "terminal output sequence missing");
+                    co_return;
+                }
                 if (frame.payload_case() == webpb::WebTerminalFrame::kReady) {
                     terminalSession.opened = true;
                 } else if (frame.payload_case() == webpb::WebTerminalFrame::kClose) {
                     terminalSession.nodeClosed = true;
                 }
                 co_await socket.binary(*item);
+                if (terminalSession.protocolVersion >= 5 &&
+                    frame.payload_case() == webpb::WebTerminalFrame::kData) {
+                    auto ack = protocol::outbound(nodeId);
+                    auto* terminalAck = ack.mutable_terminal_data_ack();
+                    terminalAck->set_terminal_id(
+                        protocol::bytes(terminalBytes.data(), terminalBytes.size()));
+                    terminalAck->set_sequence(frame.data().sequence());
+                    co_await queue(c, nodeId, ack);
+                }
                 if (frame.payload_case() == webpb::WebTerminalFrame::kClose) {
                     co_await socket.close(1000, "terminal closed");
                     co_return;
@@ -696,6 +795,9 @@ return 1
         case pb::Envelope::kTerminalData:
             co_await saveTerminalData(c, session, input.terminal_data());
             break;
+        case pb::Envelope::kTerminalDataAck:
+            co_await saveTerminalDataAck(c, session, input.terminal_data_ack());
+            break;
         case pb::Envelope::kTerminalOpened:
             co_await saveTerminalOpened(c, session, input.terminal_opened());
             break;
@@ -755,7 +857,8 @@ return 1
 )lua";
         const auto ownershipKey = terminalSessionKey(session.nodeId, terminalId);
         const auto outputKey = terminalOutputKey(session.nodeId, terminalId);
-        const auto epoch = std::to_string(session.epoch);
+        const auto epoch =
+            session_state::value(session.epoch, session.protocolVersion);
         const std::string ttl = "120";
         const std::string_view keys[]{ownershipKey, outputKey};
         const std::string_view arguments[]{epoch, wire, ttl};
@@ -769,9 +872,78 @@ return 1
         if (data.terminal_id().size() != 16 || data.data().empty())
             co_return;
         const auto id = protocol::uuidText(data.terminal_id());
+        if (session.protocolVersion < 5) {
+            webpb::WebTerminalFrame legacyFrame;
+            legacyFrame.mutable_data()->set_data(data.data());
+            co_await saveTerminalFrame(c, session, id, legacyFrame);
+            co_return;
+        }
+        if (data.sequence() == 0)
+            throw std::runtime_error("edge terminal output sequence missing");
         webpb::WebTerminalFrame frame;
         frame.mutable_data()->set_data(data.data());
-        co_await saveTerminalFrame(c, session, id, frame);
+        frame.mutable_data()->set_sequence(data.sequence());
+        std::string wire;
+        if (!frame.SerializeToString(&wire))
+            co_return;
+        static constexpr std::string_view script = R"lua(
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+local previous = tonumber(redis.call('GET', KEYS[3]) or '0')
+local sequence = tonumber(ARGV[3])
+if sequence == previous then return 2 end
+if sequence ~= previous + 1 then return -1 end
+redis.call('RPUSH', KEYS[2], ARGV[2])
+redis.call('SET', KEYS[3], ARGV[3], 'EX', ARGV[4])
+redis.call('EXPIRE', KEYS[1], ARGV[4])
+redis.call('EXPIRE', KEYS[2], ARGV[4])
+return 1
+)lua";
+        const auto ownershipKey = terminalSessionKey(session.nodeId, id);
+        const auto outputKey = terminalOutputKey(session.nodeId, id);
+        const auto sequenceKey = terminalOutputSequenceKey(session.nodeId, id);
+        const auto epoch =
+            session_state::value(session.epoch, session.protocolVersion);
+        const auto sequence = std::to_string(data.sequence());
+        const std::string ttl = "120";
+        const std::string_view keys[]{ownershipKey, outputKey, sequenceKey};
+        const std::string_view arguments[]{epoch, wire, sequence, ttl};
+        const auto reply = co_await c.redis().eval(script, keys, arguments);
+        if (reply.kind() != ruvia::RedisValue::Kind::kInteger)
+            service::message::redis::throwValue("append sequenced terminal output", reply);
+        if (reply.integer() < 0)
+            throw std::runtime_error("edge terminal output sequence mismatch");
+    }
+
+    static ruvia::Task<void> saveTerminalDataAck(
+        ruvia::Context& c, const Session& session, const pb::TerminalDataAck& ack) {
+        if (session.protocolVersion < 5)
+            co_return;
+        if (ack.terminal_id().size() != 16 || ack.sequence() == 0)
+            co_return;
+        const auto id = protocol::uuidText(ack.terminal_id());
+        static constexpr std::string_view script = R"lua(
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+local previous = tonumber(redis.call('GET', KEYS[2]) or '0')
+local sequence = tonumber(ARGV[2])
+if sequence == previous then return 1 end
+if sequence ~= previous + 1 then return -1 end
+redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
+redis.call('EXPIRE', KEYS[1], ARGV[3])
+return 1
+)lua";
+        const auto ownershipKey = terminalSessionKey(session.nodeId, id);
+        const auto ackKey = terminalInputAckKey(session.nodeId, id);
+        const auto epoch =
+            session_state::value(session.epoch, session.protocolVersion);
+        const auto sequence = std::to_string(ack.sequence());
+        const std::string ttl = "120";
+        const std::string_view keys[]{ownershipKey, ackKey};
+        const std::string_view arguments[]{epoch, sequence, ttl};
+        const auto reply = co_await c.redis().eval(script, keys, arguments);
+        if (reply.kind() != ruvia::RedisValue::Kind::kInteger)
+            service::message::redis::throwValue("advance terminal input ack", reply);
+        if (reply.integer() < 0)
+            throw std::runtime_error("edge terminal input acknowledgement mismatch");
     }
 
     static ruvia::Task<void> saveTerminalOpened(ruvia::Context& c,

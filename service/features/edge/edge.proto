@@ -127,8 +127,8 @@ enum PlatformConfigOperation {
 message Empty {}
 
 message Hello {
-  reserved 7, 9;
-  reserved "enrollment_token", "supported_protocol_versions";
+  reserved 7;
+  reserved "enrollment_token";
   string imei = 1 [(nanopb).max_length = 15];
   string model = 2 [(nanopb).max_length = 128];
   string software_version = 3 [(nanopb).max_length = 32];
@@ -136,6 +136,7 @@ message Hello {
   string architecture = 5 [(nanopb).max_length = 32];
   string openwrt_release = 6 [(nanopb).max_length = 64];
   uint64 last_applied_config_version = 8;
+  repeated uint32 supported_protocol_versions = 9 [(nanopb).max_count = 8];
   bool supports_tcp = 10;
   bool supports_serial = 11;
   bool supports_network_config = 12;
@@ -163,10 +164,9 @@ message Hello {
 }
 
 message HelloAck {
-  reserved 3;
-  reserved "negotiated_protocol_version";
   bytes assigned_node_id = 1 [(nanopb).max_size = 16];
   uint64 session_epoch = 2;
+  uint32 negotiated_protocol_version = 3;
   uint32 heartbeat_interval_sec = 4;
   uint32 max_message_size = 5;
   int64 platform_time_ms = 6;
@@ -647,9 +647,8 @@ message LogLevelResult {
 }
 
 message TerminalOpen {
-  reserved 2;
-  reserved "ticket";
   bytes terminal_id = 1 [(nanopb).max_size = 16];
+  bytes ticket = 2 [(nanopb).max_size = 64];
   uint32 columns = 3;
   uint32 rows = 4;
 }
@@ -661,6 +660,12 @@ message TerminalOpened {
 message TerminalData {
   bytes terminal_id = 1 [(nanopb).max_size = 16];
   bytes data = 2 [(nanopb).max_size = 4096];
+  uint64 sequence = 3;
+}
+
+message TerminalDataAck {
+  bytes terminal_id = 1 [(nanopb).max_size = 16];
+  uint64 sequence = 2;
 }
 
 message TerminalResize {
@@ -739,6 +744,7 @@ message Envelope {
     LogLevelRequest log_level_request = 74;
     LogLevelResult log_level_result = 75;
     TerminalOpened terminal_opened = 76;
+    TerminalDataAck terminal_data_ack = 77;
     Ping ping = 80;
     Pong pong = 81;
     Error error = 90;

@@ -126,10 +126,12 @@ int main() {
         requireContains(gatewaySource,
                         "reply.mutable_pong()->set_nonce(input.ping().nonce())",
                         "edge gateway does not echo terminal liveness pings");
-        requireMissing(gatewaySource, "terminalOpen->set_ticket",
-                       "edge gateway forwards the consumed browser ticket to the node");
-        requireMissing(gatewaySource, "webpb::WebTerminalFrame ready;",
-                       "edge gateway reports ready before the node opens its PTY");
+        requireContains(gatewaySource, "if (*sessionProtocolVersion <= 3)",
+                        "edge gateway does not preserve legacy terminal ticket compatibility");
+        requireContains(gatewaySource, "terminalOpen->set_ticket(ticket)",
+                        "edge gateway does not satisfy legacy terminal-open validation");
+        requireContains(gatewaySource, "if (terminalSession.protocolVersion <= 3)",
+                        "edge gateway does not isolate legacy immediate-ready behavior");
         requireContains(gatewaySource, "case pb::Envelope::kTerminalOpened",
                         "edge gateway does not consume terminal-open acknowledgement");
         requireContains(gatewaySource, "terminalSession.opened = true",
@@ -139,6 +141,14 @@ int main() {
                       "edge gateway exposes Ready before enabling terminal input");
         requireContains(gatewaySource, "terminal open timed out",
                         "edge gateway can wait forever for terminal-open acknowledgement");
+        requireContains(gatewaySource, "terminalData->set_sequence",
+                        "edge gateway does not sequence v5 terminal input");
+        requireContains(gatewaySource, "waitTerminalInputAck",
+                        "edge gateway does not apply terminal input backpressure");
+        requireContains(gatewaySource, "mutable_terminal_data_ack",
+                        "edge gateway does not acknowledge delivered terminal output");
+        requireContains(gatewaySource, "session.protocolVersion < 5",
+                        "edge gateway does not isolate legacy terminal data handling");
         requireContains(gatewaySource,
                         "terminalSessionKey(nodeId, terminalId), nodeSession",
                         "edge gateway does not register terminal ownership before opening");
@@ -151,7 +161,8 @@ int main() {
         requireContains(gatewaySource,
                         "co_await saveTerminalData(c, session, input.terminal_data())",
                         "edge gateway does not bind terminal output to the authenticated session");
-        requireContains(gatewaySource, "redis.call('DEL', KEYS[1], KEYS[2])",
+        requireContains(gatewaySource,
+                        "redis.call('DEL', KEYS[1], KEYS[2], KEYS[3], KEYS[4])",
                         "edge gateway does not atomically release terminal state");
         requireMissing(gatewaySource, "\"iot:edge:terminal:out:\" + terminalId",
                        "edge gateway still routes terminal output by unscoped identifier");

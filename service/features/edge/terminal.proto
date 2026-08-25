@@ -6,6 +6,7 @@ message WebTerminalReady {}
 
 message WebTerminalData {
   bytes data = 1;
+  uint64 sequence = 2;
 }
 
 message WebTerminalResize {

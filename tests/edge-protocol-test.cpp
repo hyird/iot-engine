@@ -103,16 +103,24 @@ void testEnvelopeRoundTrip() {
             "oversized envelope was accepted");
 }
 
-void testStrictProtocolVersionContract() {
+void testCompatibleProtocolVersionContract() {
     require(!service::edge::protocol::isCurrentProtocolVersion(2),
-            "legacy protocol v2 was still accepted");
+            "legacy protocol was reported as current");
+    require(service::edge::protocol::supportsProtocolVersion(2) &&
+                service::edge::protocol::supportsProtocolVersion(3) &&
+                service::edge::protocol::supportsProtocolVersion(4) &&
+                service::edge::protocol::supportsProtocolVersion(5),
+            "supported edgenode protocol range changed");
+    require(!service::edge::protocol::supportsProtocolVersion(1) &&
+                !service::edge::protocol::supportsProtocolVersion(6),
+            "unsupported protocol version was accepted");
     require(service::edge::protocol::isCurrentProtocolVersion(
                 service::edge::protocol::kProtocolVersion),
             "current protocol version was rejected");
-    require(service::edge::protocol::kProtocolVersion == 4,
-            "terminal acknowledgement did not advance the wire protocol");
-    require(!service::edge::protocol::isCurrentProtocolVersion(5),
-            "future protocol version was accepted");
+    require(service::edge::protocol::kProtocolVersion == 5,
+            "terminal flow control did not advance the wire protocol");
+    require(!service::edge::protocol::isCurrentProtocolVersion(6),
+            "future protocol version was reported as current");
 
     auto envelope = service::edge::protocol::outbound(
         "00000000-0000-7000-8000-000000000002");
@@ -135,6 +143,11 @@ void testStrictProtocolVersionContract() {
     require(decoded.payload_case() == service::edge::pb::Envelope::kHeartbeatAck &&
                 decoded.heartbeat_ack().platform_time_ms() == 1234,
             "strict protocol session binding changed payload");
+
+    service::edge::protocol::bindSession(envelope, platform, node, 43, 8, 3);
+    require(envelope.protocol_version() == 3 && envelope.session_epoch() == 43 &&
+                envelope.sequence() == 8,
+            "legacy session binding did not preserve the negotiated protocol");
 }
 
 void testTerminalOpenedContract() {
@@ -151,6 +164,75 @@ void testTerminalOpenedContract() {
     require(decoded.payload_case() == service::edge::pb::Envelope::kTerminalOpened &&
                 decoded.terminal_opened().terminal_id() == terminalId,
             "terminal opened acknowledgement changed identity");
+}
+
+void testTerminalFlowControlContract() {
+    auto envelope = service::edge::protocol::outbound(
+        "00000000-0000-7000-8000-000000000002", 42, 8);
+    const std::string terminalId(16, '\x04');
+    auto* data = envelope.mutable_terminal_data();
+    data->set_terminal_id(terminalId);
+    data->set_data("input");
+    data->set_sequence(9);
+    const auto wire = service::edge::protocol::encode(envelope);
+    require(!wire.empty(), "sequenced terminal data was not encoded");
+    service::edge::pb::Envelope decoded;
+    require(service::edge::protocol::decode(wire, decoded) &&
+                decoded.terminal_data().sequence() == 9,
+            "terminal data sequence did not round trip");
+
+    auto ack = service::edge::protocol::outbound(
+        "00000000-0000-7000-8000-000000000002", 42, 9);
+    ack.mutable_terminal_data_ack()->set_terminal_id(terminalId);
+    ack.mutable_terminal_data_ack()->set_sequence(9);
+    const auto ackWire = service::edge::protocol::encode(ack);
+    require(service::edge::protocol::decode(ackWire, decoded) &&
+                decoded.payload_case() ==
+                    service::edge::pb::Envelope::kTerminalDataAck &&
+                decoded.terminal_data_ack().sequence() == 9,
+            "terminal data acknowledgement did not round trip");
+}
+
+void testLegacyEdgenodeContract() {
+    constexpr std::uint32_t legacyVersion = 3;
+    const std::string nodeId = "00000000-0000-7000-8000-000000000002";
+    const std::string platform(16, '\x01');
+    const std::string node(16, '\x02');
+    const std::string terminalId(16, '\x05');
+
+    auto helloAck = service::edge::protocol::outbound(nodeId, 77, 1, legacyVersion);
+    auto* negotiated = helloAck.mutable_hello_ack();
+    negotiated->set_assigned_node_id(node);
+    negotiated->set_session_epoch(77);
+    negotiated->set_negotiated_protocol_version(legacyVersion);
+    service::edge::protocol::bindSession(helloAck, platform, node, 77, 1,
+                                         legacyVersion);
+    auto wire = service::edge::protocol::encode(helloAck);
+    service::edge::pb::Envelope decoded;
+    require(service::edge::protocol::decode(wire, decoded) &&
+                decoded.protocol_version() == legacyVersion &&
+                decoded.hello_ack().negotiated_protocol_version() == legacyVersion,
+            "legacy hello negotiation did not round trip");
+
+    auto open = service::edge::protocol::outbound(nodeId, 77, 2, legacyVersion);
+    auto* terminalOpen = open.mutable_terminal_open();
+    terminalOpen->set_terminal_id(terminalId);
+    terminalOpen->set_ticket("legacy-browser-ticket");
+    terminalOpen->set_columns(120);
+    terminalOpen->set_rows(30);
+    wire = service::edge::protocol::encode(open);
+    require(service::edge::protocol::decode(wire, decoded) &&
+                decoded.protocol_version() == legacyVersion &&
+                decoded.terminal_open().ticket().size() >= 16,
+            "legacy terminal ticket contract was not preserved");
+
+    auto data = service::edge::protocol::outbound(nodeId, 77, 3, legacyVersion);
+    data.mutable_terminal_data()->set_terminal_id(terminalId);
+    data.mutable_terminal_data()->set_data("legacy input");
+    wire = service::edge::protocol::encode(data);
+    require(service::edge::protocol::decode(wire, decoded) &&
+                decoded.terminal_data().sequence() == 0,
+            "legacy unsequenced terminal data contract changed");
 }
 
 void testPublicBaseUrlConfiguration() {
@@ -299,8 +381,10 @@ int main() {
     testNetworkNanopbWireContract();
     testConfigItemNanopbWireContract();
     testEnvelopeRoundTrip();
-    testStrictProtocolVersionContract();
+    testCompatibleProtocolVersionContract();
     testTerminalOpenedContract();
+    testTerminalFlowControlContract();
+    testLegacyEdgenodeContract();
     testPublicBaseUrlConfiguration();
     testSessionPlatformIdentityIsInternal();
     testModemProfileRoundTrip();

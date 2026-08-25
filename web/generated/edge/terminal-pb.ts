@@ -9,10 +9,10 @@ import type { Message } from '@bufbuild/protobuf';
 /**
  * Describes the file terminal.proto.
  */
-export const file_web_terminal: GenFile =
+export const file_terminal: GenFile =
     /*@__PURE__*/
     fileDesc(
-        'ChJ3ZWJfdGVybWluYWwucHJvdG8SFGlvdC5lZGdlLnRlcm1pbmFsLnYxIhIKEFdlYlRlcm1pbmFsUmVhZHkiHwoPV2ViVGVybWluYWxEYXRhEgwKBGRhdGEYASABKAwiMgoRV2ViVGVybWluYWxSZXNpemUSDwoHY29sdW1ucxgBIAEoDRIMCgRyb3dzGAIgASgNIjUKEFdlYlRlcm1pbmFsQ2xvc2USEQoJZXhpdF9jb2RlGAEgASgFEg4KBnJlYXNvbhgCIAEoCSKBAgoQV2ViVGVybWluYWxGcmFtZRI3CgVyZWFkeRgBIAEoCzImLmlvdC5lZGdlLnRlcm1pbmFsLnYxLldlYlRlcm1pbmFsUmVhZHlIABI1CgRkYXRhGAIgASgLMiUuaW90LmVkZ2UudGVybWluYWwudjEuV2ViVGVybWluYWxEYXRhSAASOQoGcmVzaXplGAMgASgLMicuaW90LmVkZ2UudGVybWluYWwudjEuV2ViVGVybWluYWxSZXNpemVIABI3CgVjbG9zZRgEIAEoCzImLmlvdC5lZGdlLnRlcm1pbmFsLnYxLldlYlRlcm1pbmFsQ2xvc2VIAEIJCgdwYXlsb2FkYgZwcm90bzM'
+        'Cg50ZXJtaW5hbC5wcm90bxIUaW90LmVkZ2UudGVybWluYWwudjEiEgoQV2ViVGVybWluYWxSZWFkeSIxCg9XZWJUZXJtaW5hbERhdGESDAoEZGF0YRgBIAEoDBIQCghzZXF1ZW5jZRgCIAEoBCIyChFXZWJUZXJtaW5hbFJlc2l6ZRIPCgdjb2x1bW5zGAEgASgNEgwKBHJvd3MYAiABKA0iNQoQV2ViVGVybWluYWxDbG9zZRIRCglleGl0X2NvZGUYASABKAUSDgoGcmVhc29uGAIgASgJIoECChBXZWJUZXJtaW5hbEZyYW1lEjcKBXJlYWR5GAEgASgLMiYuaW90LmVkZ2UudGVybWluYWwudjEuV2ViVGVybWluYWxSZWFkeUgAEjUKBGRhdGEYAiABKAsyJS5pb3QuZWRnZS50ZXJtaW5hbC52MS5XZWJUZXJtaW5hbERhdGFIABI5CgZyZXNpemUYAyABKAsyJy5pb3QuZWRnZS50ZXJtaW5hbC52MS5XZWJUZXJtaW5hbFJlc2l6ZUgAEjcKBWNsb3NlGAQgASgLMiYuaW90LmVkZ2UudGVybWluYWwudjEuV2ViVGVybWluYWxDbG9zZUgAQgkKB3BheWxvYWRiBnByb3RvMw'
     );
 
 /**
@@ -26,7 +26,7 @@ export type WebTerminalReady = Message<'iot.edge.terminal.v1.WebTerminalReady'> 
  */
 export const WebTerminalReadySchema: GenMessage<WebTerminalReady> =
     /*@__PURE__*/
-    messageDesc(file_web_terminal, 0);
+    messageDesc(file_terminal, 0);
 
 /**
  * @generated from message iot.edge.terminal.v1.WebTerminalData
@@ -36,6 +36,11 @@ export type WebTerminalData = Message<'iot.edge.terminal.v1.WebTerminalData'> & 
      * @generated from field: bytes data = 1;
      */
     data: Uint8Array;
+
+    /**
+     * @generated from field: uint64 sequence = 2;
+     */
+    sequence: bigint;
 };
 
 /**
@@ -44,7 +49,7 @@ export type WebTerminalData = Message<'iot.edge.terminal.v1.WebTerminalData'> & 
  */
 export const WebTerminalDataSchema: GenMessage<WebTerminalData> =
     /*@__PURE__*/
-    messageDesc(file_web_terminal, 1);
+    messageDesc(file_terminal, 1);
 
 /**
  * @generated from message iot.edge.terminal.v1.WebTerminalResize
@@ -67,7 +72,7 @@ export type WebTerminalResize = Message<'iot.edge.terminal.v1.WebTerminalResize'
  */
 export const WebTerminalResizeSchema: GenMessage<WebTerminalResize> =
     /*@__PURE__*/
-    messageDesc(file_web_terminal, 2);
+    messageDesc(file_terminal, 2);
 
 /**
  * @generated from message iot.edge.terminal.v1.WebTerminalClose
@@ -90,7 +95,7 @@ export type WebTerminalClose = Message<'iot.edge.terminal.v1.WebTerminalClose'> 
  */
 export const WebTerminalCloseSchema: GenMessage<WebTerminalClose> =
     /*@__PURE__*/
-    messageDesc(file_web_terminal, 3);
+    messageDesc(file_terminal, 3);
 
 /**
  * @generated from message iot.edge.terminal.v1.WebTerminalFrame
@@ -137,4 +142,4 @@ export type WebTerminalFrame = Message<'iot.edge.terminal.v1.WebTerminalFrame'> 
  */
 export const WebTerminalFrameSchema: GenMessage<WebTerminalFrame> =
     /*@__PURE__*/
-    messageDesc(file_web_terminal, 4);
+    messageDesc(file_terminal, 4);
