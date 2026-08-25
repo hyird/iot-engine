@@ -626,11 +626,13 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             break;
         }
         case pb::Envelope::kPing: {
-            if (input.ping().nonce() != 0) {
-                auto reply = makeEnvelope(session);
-                reply.mutable_pong()->set_nonce(input.ping().nonce());
-                co_await send(socket, reply);
-            }
+            // Older nodes send zero-nonce application pings while a remote
+            // terminal is open. They still use the pong as their application
+            // liveness signal, so ignoring nonce zero forces a reconnect after
+            // the negotiated watchdog interval and strands the browser terminal.
+            auto reply = makeEnvelope(session);
+            reply.mutable_pong()->set_nonce(input.ping().nonce());
+            co_await send(socket, reply);
             break;
         }
         case pb::Envelope::kTerminalData:

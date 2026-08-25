@@ -73,6 +73,7 @@ int main() {
 
         const auto serviceSource = edgeSource("service/domains/edge/edge.service.h");
         const auto controllerSource = edgeSource("service/domains/edge/edge.controller.h");
+        const auto gatewaySource = edgeSource("service/features/edge/gateway.h");
         requireMissing(serviceSource, "const std::string status(body.status()->view());",
                        "edge enrollment dereferences optional status without validation");
         requireMissing(serviceSource, "const std::string name(body.name()->view());",
@@ -110,6 +111,11 @@ int main() {
                         "edge log level accepts invalid values");
         requireContains(serviceSource, "sourceValue.size() > 16",
                         "edge log source does not enforce local length limit");
+        requireMissing(gatewaySource, "if (input.ping().nonce() != 0)",
+                       "edge gateway drops zero-nonce terminal liveness pings");
+        requireContains(gatewaySource,
+                        "reply.mutable_pong()->set_nonce(input.ping().nonce())",
+                        "edge gateway does not echo terminal liveness pings");
 
         std::cout << "edge service tests passed\n";
         return 0;
