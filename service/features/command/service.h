@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <iostream>
@@ -12,6 +13,7 @@
 #include <vector>
 
 #include <ruvia/web/db/Db.h>
+#include <ruvia/core/Timer.h>
 
 #include "service/common/http.h"
 #include "service/common/uuid.h"
@@ -28,15 +30,13 @@ namespace service::command {
 
 class CommandService final {
   public:
-    static CommandService& instance() {
-        static CommandService service;
-        return service;
-    }
+    explicit CommandService(service::device::DeviceAccessService& accessService)
+        : accessService_(accessService) {}
 
     ruvia::Task<service::device::DeviceCommandCreateDto>
     create(ruvia::Context& context, std::string_view deviceId,
            const service::device::DeviceCommandBody& body) {
-        const auto access = co_await service::device::deviceAccessService().require(
+        const auto access = co_await accessService_.require(
             context, deviceId, service::device::DeviceAccessLevel::operate);
         const auto deviceRows = co_await context.db().query(
             R"sql(SELECT CASE
@@ -88,7 +88,7 @@ class CommandService final {
         const auto deviceId = field(fields, "device_id");
         if (deviceId.empty())
             service::common::fail(18012, "下发状态数据无效", 500);
-        (void)co_await service::device::deviceAccessService().require(
+        (void)co_await accessService_.require(
             context, deviceId, service::device::DeviceAccessLevel::operate);
 
         service::device::DeviceCommandStatusDto result(context);
@@ -109,7 +109,76 @@ class CommandService final {
         co_return result;
     }
 
+    ruvia::Task<service::device::DeviceCommandWaitDto>
+    wait(ruvia::Context& context, const service::device::DeviceCommandWaitBody& body) {
+        std::vector<std::string> commandIds;
+        commandIds.reserve(body.get<"commandIds">()->size());
+        std::set<std::string, std::less<>> authorizedDevices;
+        for (const auto& value : *body.get<"commandIds">()) {
+            const std::string commandId(value.view());
+            if (!service::common::isUuid(commandId))
+                service::common::fail(18012, "指令 ID 无效", 400);
+            const auto fields =
+                co_await message::redis::hashEntries(context.redis(), stateKey(commandId));
+            if (fields.empty())
+                service::common::fail(18012, "下发记录不存在或已过期", 404);
+            const std::string deviceId(field(fields, "device_id"));
+            if (deviceId.empty())
+                service::common::fail(18012, "下发状态数据无效", 500);
+            if (authorizedDevices.insert(deviceId).second)
+                (void)co_await accessService_.require(
+                    context, deviceId, service::device::DeviceAccessLevel::operate);
+            commandIds.push_back(std::move(commandId));
+        }
+
+        const auto timeout = std::chrono::milliseconds(
+            body.get<"timeoutMs">()
+                ? std::clamp<std::int64_t>(static_cast<std::int64_t>(*body.get<"timeoutMs">()),
+                                           0, 60000)
+                : 60000);
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (true) {
+            ruvia::BoxedArray<service::device::DeviceCommandStatusDto> statuses(
+                context.resource());
+            bool complete = true;
+            for (const auto& commandId : commandIds) {
+                const auto fields =
+                    co_await message::redis::hashEntries(context.redis(), stateKey(commandId));
+                if (fields.empty())
+                    service::common::fail(18012, "下发记录不存在或已过期", 404);
+                auto& result = statuses.emplace(context);
+                fillStatus(result, commandId, fields);
+                complete = complete && field(fields, "status") != "PENDING";
+            }
+            if (complete || std::chrono::steady_clock::now() >= deadline) {
+                service::device::DeviceCommandWaitDto result(context);
+                result.set<"complete">(complete).set<"statuses">(std::move(statuses));
+                co_return result;
+            }
+            (void)co_await ruvia::sleepFor(context.worker(), std::chrono::milliseconds(100));
+        }
+    }
+
   private:
+    static void fillStatus(service::device::DeviceCommandStatusDto& result,
+                           std::string_view commandId,
+                           const std::vector<message::StreamField>& fields) {
+        result.set<"commandId">(commandId)
+            .set<"deviceId">(field(fields, "device_id"))
+            .set<"deviceCode">(field(fields, "device_code"))
+            .set<"protocol">(field(fields, "protocol"))
+            .set<"status">(field(fields, "status"));
+        const auto reason = field(fields, "reason");
+        if (!reason.empty())
+            result.set<"reason">(reason);
+        const auto createdAt = integer(fields, "created_at_ms");
+        if (createdAt != 0)
+            result.set<"createdAtMs">(createdAt);
+        const auto completedAt = integer(fields, "completed_at_ms");
+        if (completedAt != 0)
+            result.set<"completedAtMs">(completedAt);
+    }
+
     ruvia::Task<service::device::DeviceCommandCreateDto>
     enqueueDevice(ruvia::Context& context, std::string_view deviceId,
                   const service::device::DeviceCommandBody& body, std::string submittedBy) {
@@ -474,8 +543,12 @@ WHERE d.id = $1::uuid AND p.protocol = 'SL651')sql";
         return error == std::errc{} && end == value.data() + value.size() ? result : 0;
     }
 
+    service::device::DeviceAccessService& accessService_;
 };
 
-inline CommandService& commandService() { return CommandService::instance(); }
+inline CommandService& commandService() {
+    static CommandService service(service::device::deviceAccessService());
+    return service;
+}
 
 } // namespace service::command

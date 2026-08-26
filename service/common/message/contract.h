@@ -15,6 +15,8 @@
 
 namespace service::message {
 
+inline constexpr std::string_view kMessageSchemaVersion{"1"};
+
 inline constexpr std::string_view kConfigStreamPrefix = "iot:channel:config:worker:";
 inline constexpr std::string_view kIngressStreamPrefix = "iot:channel:packet:raw:worker:";
 inline constexpr std::string_view kParsedStreamPrefix = "iot:channel:packet:parsed:worker:";
@@ -289,6 +291,8 @@ inline std::vector<std::vector<std::uint8_t>> rawPayloadsFromJson(std::string_vi
 
 inline std::vector<StreamField> ingressFields(const IngressPacket& packet) {
     return {{"event_type", "packet"},
+            {"event_id", packet.messageId},
+            {"schema_version", std::string(kMessageSchemaVersion)},
             {"message_id", packet.messageId},
             {"worker_instance_id", packet.workerInstanceId},
             {"link_id", packet.linkId},
@@ -335,6 +339,8 @@ inline IngressPacket ingressFrom(const StreamMessage& message) {
 
 inline std::vector<StreamField> connectionEventFields(const ConnectionEvent& event) {
     return {{"event_type", event.eventType},
+            {"event_id", event.messageId},
+            {"schema_version", std::string(kMessageSchemaVersion)},
             {"message_id", event.messageId},
             {"worker_instance_id", event.workerInstanceId},
             {"link_id", event.linkId},
@@ -379,7 +385,10 @@ inline ConnectionEvent connectionEventFrom(const StreamMessage& message) {
 }
 
 inline std::vector<StreamField> egressFields(const EgressPacket& packet) {
-    return {{"message_id", packet.messageId},
+    return {{"event_id", packet.messageId},
+            {"event_type", "packet.egress"},
+            {"schema_version", std::string(kMessageSchemaVersion)},
+            {"message_id", packet.messageId},
             {"worker_instance_id", packet.workerInstanceId},
             {"causation_id", packet.causationId},
             {"connection_id", packet.connectionId},
@@ -419,7 +428,11 @@ inline EgressPacket egressFrom(const StreamMessage& message) {
 }
 
 inline std::vector<StreamField> parsedFields(const ParsedDeviceMessage& message) {
-    return {{"message_id", message.messageId},
+    return {{"event_id", message.messageId},
+            {"event_type", "device.data.parsed"},
+            {"schema_version", std::string(kMessageSchemaVersion)},
+            {"aggregate_id", message.deviceId},
+            {"message_id", message.messageId},
             {"causation_id", message.causationId},
             {"link_id", message.linkId},
             {"device_id", message.deviceId},
@@ -490,7 +503,11 @@ inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
 }
 
 inline std::vector<StreamField> protocolTaskFields(const ProtocolTask& task) {
-    std::vector<StreamField> fields{{"message_id", task.messageId},
+    std::vector<StreamField> fields{{"event_id", task.messageId},
+                                    {"event_type", "protocol.task"},
+                                    {"schema_version", std::string(kMessageSchemaVersion)},
+                                    {"aggregate_id", task.deviceId},
+                                    {"message_id", task.messageId},
                                     {"causation_id", task.causationId},
                                     {"group_key", task.groupKey},
                                     {"protocol", task.protocol},

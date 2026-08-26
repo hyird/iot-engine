@@ -28,6 +28,19 @@ class DeviceCommandValidator final : public ruvia::Middleware<DeviceCommandValid
                                                       RUVIA_MAX(256, "单次最多下发 256 个要素")))
 };
 
+class DeviceCommandWaitValidator final : public ruvia::Middleware<DeviceCommandWaitValidator> {
+  public:
+    RUVIA_VALIDATE_JSON(
+        DeviceCommandWaitBody,
+        RUVIA_RULE_NAME("command_ids", commandIds,
+                        RUVIA_REQUIRED("指令 ID 不能为空"),
+                        RUVIA_MIN(1, "请至少提供一个指令 ID"),
+                        RUVIA_MAX(256, "单次最多等待 256 个指令")),
+        RUVIA_RULE_NAME("timeout_ms", timeoutMs,
+                        RUVIA_MIN(0, "等待时间不能小于 0"),
+                        RUVIA_MAX(60000, "等待时间不能超过 60 秒")))
+};
+
 // ===== 设备（写侧扁平校验；跨字段/协议相关校验在 service）=====
 
 class CreateDeviceValidator final : public ruvia::Middleware<CreateDeviceValidator> {

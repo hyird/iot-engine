@@ -5,7 +5,7 @@
 
 namespace service::config {
 
-inline constexpr std::array<ruvia::DbMigration, 23> kSchemaMigrations{{
+inline constexpr std::array<ruvia::DbMigration, 24> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
@@ -1231,6 +1231,31 @@ ALTER TABLE gb28181_device
     ADD COLUMN custom_name VARCHAR(255);
 ALTER TABLE gb28181_channel
     ADD COLUMN custom_name VARCHAR(255);
+END
+$schema$;
+)sql"},
+    {"0023_transactional_outbox", R"sql(
+DO $schema$
+BEGIN
+CREATE TABLE outbox_event (
+    id              UUID PRIMARY KEY,
+    event_type      VARCHAR(100) NOT NULL,
+    aggregate_type  VARCHAR(100) NOT NULL,
+    aggregate_id    TEXT NOT NULL,
+    action          VARCHAR(50) NOT NULL,
+    schema_version  INTEGER NOT NULL,
+    payload         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    occurred_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    available_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    published_at    TIMESTAMPTZ,
+    dead_lettered_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_outbox_event_pending
+    ON outbox_event(available_at, occurred_at, id)
+    WHERE published_at IS NULL AND dead_lettered_at IS NULL;
 END
 $schema$;
 )sql"},

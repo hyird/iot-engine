@@ -78,22 +78,14 @@ export function useDeviceDelete() {
     });
 }
 
-const waitForCommand = async (commandId: string) => {
-    const deadline = Date.now() + 60_000;
-    while (Date.now() < deadline) {
-        const state = await api.getDeviceCommandStatus(commandId);
-        if (state.status === 'SUCCESS') return;
-        if (state.status === 'FAILED') throw new Error(state.reason || '设备执行指令失败');
-        await new Promise((resolve) => window.setTimeout(resolve, 150));
-    }
-    throw new Error('等待设备应答超时');
-};
-
 export function useDeviceCommand() {
     return useMutationWithMessage({
         mutationFn: async ({ deviceId, data }: { deviceId: string; data: Device.Command }) => {
             const command = await api.createDeviceCommand(deviceId, data);
-            await Promise.all(command.command_ids.map(waitForCommand));
+            const result = await api.waitForDeviceCommands(command.command_ids);
+            const failed = result.statuses.find((state) => state.status === 'FAILED');
+            if (failed) throw new Error(failed.reason || '设备执行指令失败');
+            if (!result.complete) throw new Error('等待设备应答超时');
         },
         successMessage: '指令下发成功，设备已应答',
         errorMessage: (error) => error.message,

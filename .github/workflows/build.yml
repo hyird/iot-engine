@@ -23,6 +23,37 @@ env:
   UPX_WINDOWS_SHA256: fa5380bca4c2718547aaa0134bc0d8a7fa27e102f0ac6371573d60d1c21d64de
 
 jobs:
+  web_quality:
+    name: Web quality and contract tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout iot-engine
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Protocol and validation tests
+        run: >-
+          bun test
+          ./tests/terminal-protocol-test.ts
+          ./tests/command-validation-test.ts
+          ./tests/protocol-schema-test.ts
+          ./tests/device-runtime-test.ts
+
   ubuntu_build:
     name: Ubuntu build
     runs-on: ubuntu-24.04

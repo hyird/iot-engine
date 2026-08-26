@@ -459,7 +459,8 @@ FROM filtered)sql",
         const std::string remark = str(body.get<"remark">());
         // Keep the optional edge-node parameter typed as text through NULLIF. If PostgreSQL
         // infers it as uuid first, the empty-string sentinel is cast to uuid before NULLIF.
-        (void)co_await c.db().execute(
+        auto transaction = co_await c.db().beginTransaction();
+        (void)co_await transaction.execute(
             R"sql(
 WITH inserted_edge_link AS (
   INSERT INTO link(
@@ -490,6 +491,8 @@ VALUES ($1::uuid, $2, $4::uuid, $8::uuid, NULLIF($9, '')::uuid, $10,
                                       targetId, protocolConfigId, groupId, status, onlineTimeout,
                                       remoteControl, modbusMode, slaveId, timezone, heartbeat,
                                       registration, remark, principal.userId));
+        co_await service::message::enqueueConfigEvent(transaction, "device", "created", id);
+        co_await transaction.commit();
         try {
             co_await service::telemetry::latest::initializeDevice(c.redis(), id,
                                                                                deviceCode);
@@ -497,7 +500,6 @@ VALUES ($1::uuid, $2, $4::uuid, $8::uuid, NULLIF($9, '')::uuid, $10,
         } catch (...) {
             // PostgreSQL is authoritative; startup hydration or the first report repairs Redis.
         }
-        co_await service::message::publishConfigEvent(c, "device", "created", id);
         if (!edgeNodeId.empty())
             (void)co_await service::edge::configService().queueSnapshot(c, edgeNodeId);
     }
@@ -604,19 +606,21 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
         const bool updateEdgeLink =
             !rows.front()[1].value().value_or(std::string_view{}).empty() &&
             (!edgeEndpointUpdate.empty() || body.get<"status">());
-        if (!set.empty() || updateEdgeLink) {
+        {
             auto transaction = co_await c.db().beginTransaction();
-            if (!set.empty()) {
-                params.emplace_back(id);
-                (void)co_await transaction.execute("UPDATE device SET " + set +
-                                                       ", updated_at = NOW() WHERE id = $" +
-                                                       std::to_string(params.size()),
-                                                   params);
-            }
-            if (updateEdgeLink) {
-                const auto edgeStatus =
-                    body.get<"status">() ? std::string(body.get<"status">()->view()) : std::string{};
-                (void)co_await transaction.execute(R"sql(
+            if (!set.empty() || updateEdgeLink) {
+                if (!set.empty()) {
+                    params.emplace_back(id);
+                    (void)co_await transaction.execute(
+                        "UPDATE device SET " + set + ", updated_at = NOW() WHERE id = $" +
+                            std::to_string(params.size()),
+                        params);
+                }
+                if (updateEdgeLink) {
+                    const auto edgeStatus = body.get<"status">()
+                                                ? std::string(body.get<"status">()->view())
+                                                : std::string{};
+                    (void)co_await transaction.execute(R"sql(
 UPDATE link
 SET endpoint = CASE WHEN NULLIF($1::text, '') IS NULL THEN endpoint
                     ELSE NULLIF($1::text, '')::jsonb END,
@@ -628,10 +632,12 @@ WHERE id = $3::uuid AND execution = 'edge'
      AND endpoint IS DISTINCT FROM NULLIF($1::text, '')::jsonb)
     OR (NULLIF($2, '') IS NOT NULL AND status IS DISTINCT FROM $2::status_enum)
   ))sql",
-                                                   service::common::dbParams(
-                                                       edgeEndpointUpdate, edgeStatus,
-                                                       rows.front()[0].value().value_or(std::string_view{})));
+                        service::common::dbParams(
+                            edgeEndpointUpdate, edgeStatus,
+                            rows.front()[0].value().value_or(std::string_view{})));
+                }
             }
+            co_await service::message::enqueueConfigEvent(transaction, "device", "updated", id);
             co_await transaction.commit();
         }
         try {
@@ -642,7 +648,6 @@ WHERE id = $3::uuid AND execution = 'edge'
         } catch (...) {
             // PostgreSQL remains authoritative; startup hydration repairs Redis read models.
         }
-        co_await service::message::publishConfigEvent(c, "device", "updated", id);
         if (!rows.front()[1].value().value_or(std::string_view{}).empty())
             (void)co_await service::edge::configService().queueSnapshot(
                 c, rows.front()[1].value().value_or(std::string_view{}));
@@ -668,6 +673,7 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
                 "WHERE id = $1::uuid AND execution = 'edge'",
                 service::common::dbParams(rows.front()[2].value().value_or(std::string_view{})));
         }
+        co_await service::message::enqueueConfigEvent(transaction, "device", "deleted", id);
         co_await transaction.commit();
         try {
             co_await service::telemetry::latest::eraseDevice(
@@ -675,7 +681,6 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
         } catch (...) {
             // The next startup hydration removes stale Redis state for deleted devices.
         }
-        co_await service::message::publishConfigEvent(c, "device", "deleted", id);
         if (!rows.front()[1].value().value_or(std::string_view{}).empty())
             (void)co_await service::edge::configService().queueSnapshot(
                 c, rows.front()[1].value().value_or(std::string_view{}));

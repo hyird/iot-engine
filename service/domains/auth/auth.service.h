@@ -1,15 +1,13 @@
 #pragma once
 
-#include <chrono>
 #include <cstdint>
-#include <mutex>
 #include <string>
-#include <unordered_map>
 
 #include <ruvia/web/db/Db.h>
 
 #include "service/common/http.h"
 #include "service/domains/auth/auth.types.h"
+#include "service/features/collector/stream.h"
 #include "service/utils/jwt.h"
 #include "service/utils/password.h"
 
@@ -17,59 +15,53 @@ namespace service::auth {
 
 class LoginRateLimiter {
   public:
-    static LoginRateLimiter& instance() {
-        static LoginRateLimiter limiter;
-        return limiter;
+    virtual ~LoginRateLimiter() = default;
+
+    virtual ruvia::Task<bool> locked(ruvia::Context& context,
+                                     std::string_view username) {
+        const auto reply = co_await service::message::redis::command(
+            context.redis(), {"GET", key(username)});
+        if (reply.null())
+            co_return false;
+        if (reply.kind() != ruvia::RedisValue::Kind::kString)
+            throw std::runtime_error("invalid login rate limit state");
+        co_return service::common::parseInt64(reply.string()).value_or(0) >= 5;
     }
 
-    bool locked(const std::string& username) {
-        std::lock_guard lock(mutex_);
-        const auto found = records_.find(username);
-        if (found == records_.end())
-            return false;
-        if (found->second.expiresAt <= std::chrono::steady_clock::now()) {
-            records_.erase(found);
-            return false;
-        }
-        return found->second.failures >= 5;
+    virtual ruvia::Task<int> failure(ruvia::Context& context,
+                                     std::string_view username) {
+        static constexpr std::string_view script = R"lua(
+local failures = redis.call('INCR', KEYS[1])
+if failures == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
+return failures
+)lua";
+        const auto reply = co_await service::message::redis::command(
+            context.redis(), {"EVAL", std::string(script), "1", key(username), "900000"});
+        if (reply.kind() != ruvia::RedisValue::Kind::kInteger)
+            throw std::runtime_error("invalid login rate limit increment");
+        co_return static_cast<int>(reply.integer());
     }
 
-    int failure(const std::string& username) {
-        std::lock_guard lock(mutex_);
-        const auto now = std::chrono::steady_clock::now();
-        auto& record = records_[username];
-        if (record.expiresAt <= now) {
-            record.failures = 0;
-            record.expiresAt = now + std::chrono::minutes(15);
-        }
-        return ++record.failures;
-    }
-
-    void clear(const std::string& username) {
-        std::lock_guard lock(mutex_);
-        records_.erase(username);
+    virtual ruvia::Task<void> clear(ruvia::Context& context,
+                                    std::string_view username) {
+        (void)co_await service::message::redis::command(
+            context.redis(), {"DEL", key(username)});
     }
 
   private:
-    struct Record {
-        int failures{};
-        std::chrono::steady_clock::time_point expiresAt{};
-    };
-    std::mutex mutex_;
-    std::unordered_map<std::string, Record> records_;
+    static std::string key(std::string_view username) {
+        return "iot:auth:login-failures:" + std::string(username);
+    }
 };
 
 class AuthService {
   public:
-    static AuthService& instance() {
-        static AuthService service;
-        return service;
-    }
+    explicit AuthService(LoginRateLimiter& limiter) : limiter_(limiter) {}
 
     ruvia::Task<LoginResultDto> login(ruvia::Context& c, const LoginBody& body) {
         const std::string username(body.get<"username">()->view());
         const std::string password(body.get<"password">()->view());
-        if (LoginRateLimiter::instance().locked(username)) {
+        if (co_await limiter_.locked(c, username)) {
             service::common::fail(11003, "登录失败次数过多，请 15 分钟后再试", 429);
         }
 
@@ -82,7 +74,7 @@ LIMIT 1)sql",
 
         if (rows.empty() ||
             !service::utils::comparePassword(password, rows.front()[2].value().value_or(std::string_view{}))) {
-            const int remaining = 5 - LoginRateLimiter::instance().failure(username);
+            const int remaining = 5 - co_await limiter_.failure(c, username);
             const auto message = remaining > 0 ? "用户名或密码错误，还剩 " +
                                                      std::to_string(remaining) + " 次尝试机会"
                                                : "登录失败次数过多，请 15 分钟后再试";
@@ -92,7 +84,7 @@ LIMIT 1)sql",
         const auto& row = rows.front();
         if (row[4].value().value_or(std::string_view{}) != "enabled")
             service::common::fail(11002, "用户已被禁用", 403);
-        LoginRateLimiter::instance().clear(username);
+        co_await limiter_.clear(c, username);
 
         const std::string userId(row[0].value().value_or(std::string_view{}));
         const std::string nickname(row[3].value().value_or(std::string_view{}));
@@ -181,8 +173,14 @@ ORDER BY p.permission)sql",
             permissionItems.emplace_back(row[0].value().value_or(std::string_view{}), c.resource());
         co_return user;
     }
+  private:
+    LoginRateLimiter& limiter_;
 };
 
-inline AuthService& authService() { return AuthService::instance(); }
+inline AuthService& authService() {
+    static LoginRateLimiter limiter;
+    static AuthService service(limiter);
+    return service;
+}
 
 } // namespace service::auth

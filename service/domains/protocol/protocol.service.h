@@ -117,7 +117,8 @@ ORDER BY name LIMIT $2 OFFSET $3)sql",
         co_await ensureNameAvailable(c, name, std::nullopt);
         const auto principal = service::middleware::requireAuth(c);
         const auto id = service::common::nextUuidV7();
-        (void)co_await c.db().execute(
+        auto transaction = co_await c.db().beginTransaction();
+        (void)co_await transaction.execute(
             R"sql(
 WITH body AS (SELECT $1::jsonb AS value)
 INSERT INTO protocol_config(id, protocol, name, enabled, config, remark, created_by)
@@ -129,7 +130,8 @@ SELECT $3::uuid, value->>'protocol', value->>'name',
        NULLIF(value->>'remark', ''), $2
 FROM body)sql",
             service::common::dbParams(payload.view(), principal.userId, id));
-        co_await service::message::publishConfigEvent(c, "protocol", "created", id);
+        co_await service::message::enqueueConfigEvent(transaction, "protocol", "created", id);
+        co_await transaction.commit();
     }
 
     ruvia::Task<void> update(ruvia::Context& c, std::string_view id,
@@ -157,7 +159,8 @@ FROM body)sql",
         }
         validateOptionalNullableString(payload, "remark", "remark 必须是字符串或 null", 500);
         co_await validateConfig(c, payload.view(), protocol, false);
-        (void)co_await c.db().execute(R"sql(
+        auto transaction = co_await c.db().beginTransaction();
+        (void)co_await transaction.execute(R"sql(
 WITH body AS (SELECT $1::jsonb AS value)
 UPDATE protocol_config p
 SET name = CASE WHEN body.value ? 'name' THEN body.value->>'name' ELSE p.name END,
@@ -169,18 +172,13 @@ SET name = CASE WHEN body.value ? 'name' THEN body.value->>'name' ELSE p.name EN
     remark = CASE WHEN body.value ? 'remark' THEN NULLIF(body.value->>'remark', '') ELSE p.remark END,
     updated_at = NOW()
 FROM body WHERE p.id = $2)sql",
-                                      service::common::dbParams(payload.view(), id));
+                                       service::common::dbParams(payload.view(), id));
+        co_await service::message::enqueueConfigEvent(transaction, "protocol", "updated", id);
+        co_await transaction.commit();
         try {
             co_await service::telemetry::latest::projectProtocol(c, id);
         } catch (...) {
             // Startup hydration repairs Redis read models if Redis is temporarily unavailable.
-        }
-        try {
-            co_await service::message::publishConfigEvent(c, "protocol", "updated", id);
-        } catch (const std::exception& error) {
-            logPostUpdateFailure("config-event", id, error.what());
-        } catch (...) {
-            logPostUpdateFailure("config-event", id, "unknown exception");
         }
         try {
             co_await syncEdgeNodes(c, id);
@@ -204,10 +202,12 @@ FROM body WHERE p.id = $2)sql",
             service::common::dbParams(id));
         if (used.front()[0].value().value_or(std::string_view{}) == "t")
             service::common::fail(16008, "协议配置已被设备使用，请先删除关联设备", 409);
-        (void)co_await c.db().execute(
+        auto transaction = co_await c.db().beginTransaction();
+        (void)co_await transaction.execute(
             "UPDATE protocol_config SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1",
             service::common::dbParams(id));
-        co_await service::message::publishConfigEvent(c, "protocol", "deleted", id);
+        co_await service::message::enqueueConfigEvent(transaction, "protocol", "deleted", id);
+        co_await transaction.commit();
     }
 
   private:

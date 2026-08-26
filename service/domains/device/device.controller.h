@@ -24,6 +24,7 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
     RUVIA_GET("/options", options);
     RUVIA_GET("/realtime", realtime);
     RUVIA_GET("/commands/:id", commandStatus, DeviceIdParamsValidator);
+    RUVIA_POST("/commands/wait", commandWait, DeviceCommandWaitValidator);
     // 设备分组（统一收编到 /v1/device/groups）
     RUVIA_GET("/groups/tree-count", groupTreeCount);
     RUVIA_GET("/groups/tree", groupTree);
@@ -115,6 +116,13 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
         co_await service::middleware::requirePermission(c, "iot:device:command");
         co_return c.json(service::common::ok<DeviceCommandStatusResponse>(
             c, co_await service::command::commandService().status(c, id(c))));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> commandWait(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:device:command");
+        co_return c.json(service::common::ok<DeviceCommandWaitResponse>(
+            c, co_await service::command::commandService().wait(
+                   c, c.req().validated<DeviceCommandWaitBody>())));
     }
 
     ruvia::Task<ruvia::HttpResponse> shares(ruvia::Context& c) {

@@ -108,8 +108,8 @@ VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb,
             service::common::dbParams(id, name, prefix, keyHash, status, scopeJson, expiresAtValue,
                                       remarkValue, principal.userId));
         co_await replaceDevices(transaction, id, devices);
+        co_await service::message::enqueueConfigEvent(transaction, "access_key", "created", id);
         co_await transaction.commit();
-        co_await service::message::publishConfigEvent(c, "access_key", "created", id);
         co_await service::access::session::refresh(c);
 
         co_return "{\"id\":" + jsonQuoted(id) + ",\"name\":" + jsonQuoted(name) +
@@ -155,8 +155,8 @@ WHERE id = $1::uuid AND deleted_at IS NULL)sql",
             service::common::dbParams(id, name, status, scopeJson, expiresAtValue, remarkValue));
         if (deviceField)
             co_await replaceDevices(transaction, id, devices);
+        co_await service::message::enqueueConfigEvent(transaction, "access_key", "updated", id);
         co_await transaction.commit();
-        co_await service::message::publishConfigEvent(c, "access_key", "updated", id);
         co_await service::access::session::refresh(c);
     }
 
@@ -166,11 +166,13 @@ WHERE id = $1::uuid AND deleted_at IS NULL)sql",
         const auto rawKey = generateAccessKey();
         const auto prefix = rawKey.substr(0, 14);
         const auto keyHash = sha256(rawKey);
-        (void)co_await c.db().execute(R"sql(
+        auto transaction = co_await c.db().beginTransaction();
+        (void)co_await transaction.execute(R"sql(
 UPDATE open_access_key SET access_key_hash = $2, access_key_prefix = $3, updated_at = NOW()
 WHERE id = $1::uuid AND deleted_at IS NULL)sql",
-                                       service::common::dbParams(id, keyHash, prefix));
-        co_await service::message::publishConfigEvent(c, "access_key", "rotated", id);
+                                        service::common::dbParams(id, keyHash, prefix));
+        co_await service::message::enqueueConfigEvent(transaction, "access_key", "rotated", id);
+        co_await transaction.commit();
         co_await service::access::session::refresh(c);
         co_return "{\"id\":" + jsonQuoted(id) + ",\"name\":" + jsonQuoted(existing.name) +
             ",\"accessKey\":" + jsonQuoted(rawKey) + ",\"accessKeyPrefix\":" + jsonQuoted(prefix) +
@@ -189,8 +191,8 @@ WHERE id = $1::uuid AND deleted_at IS NULL)sql",
             "UPDATE open_access_key SET deleted_at = NOW(), updated_at = NOW() "
             "WHERE id = $1::uuid AND deleted_at IS NULL",
             service::common::dbParams(id));
+        co_await service::message::enqueueConfigEvent(transaction, "access_key", "deleted", id);
         co_await transaction.commit();
-        co_await service::message::publishConfigEvent(c, "access_key", "deleted", id);
         co_await service::access::session::refresh(c);
     }
 
@@ -243,15 +245,17 @@ FROM (
         const auto id = service::common::nextUuidV7();
         const auto eventJson = stringArrayJson(events);
         const auto secretValue = secret.value_or("");
-        (void)co_await c.db().execute(R"sql(
+        auto transaction = co_await c.db().beginTransaction();
+        (void)co_await transaction.execute(R"sql(
 INSERT INTO open_webhook(
   id, access_key_id, name, url, status, timeout_seconds, headers, event_types, secret)
 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8::jsonb, NULLIF($9, ''))
 )sql",
                                       service::common::dbParams(id, accessKeyId, name, url, status,
-                                                                timeout, headers, eventJson,
-                                                                secretValue));
-        co_await service::message::publishConfigEvent(c, "webhook", "created", id);
+                                                                 timeout, headers, eventJson,
+                                                                 secretValue));
+        co_await service::message::enqueueConfigEvent(transaction, "webhook", "created", id);
+        co_await transaction.commit();
         co_return "{\"id\":" + jsonQuoted(id) + ",\"accessKeyId\":" + jsonQuoted(accessKeyId) +
             ",\"name\":" + jsonQuoted(name) + ",\"url\":" + jsonQuoted(url) +
             ",\"status\":" + jsonQuoted(status) + ",\"timeoutSeconds\":" + std::to_string(timeout) +
@@ -288,26 +292,30 @@ VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8::jsonb, NULLIF($9, '')
         co_await ensureWebhookNameAvailable(c, accessKeyId, name, std::string(id));
         const auto eventJson = stringArrayJson(events);
         const auto secretValue = secret.value_or("");
-        (void)co_await c.db().execute(R"sql(
+        auto transaction = co_await c.db().beginTransaction();
+        (void)co_await transaction.execute(R"sql(
 UPDATE open_webhook
 SET access_key_id = $2::uuid, name = $3, url = $4, status = $5,
     timeout_seconds = $6, headers = $7::jsonb, event_types = $8::jsonb,
     secret = NULLIF($9, ''), updated_at = NOW()
 WHERE id = $1::uuid AND deleted_at IS NULL)sql",
                                       service::common::dbParams(id, accessKeyId, name, url, status,
-                                                                timeout, headers, eventJson,
-                                                                secretValue));
-        co_await service::message::publishConfigEvent(c, "webhook", "updated", id);
+                                                                 timeout, headers, eventJson,
+                                                                 secretValue));
+        co_await service::message::enqueueConfigEvent(transaction, "webhook", "updated", id);
+        co_await transaction.commit();
     }
 
     ruvia::Task<void> removeWebhook(ruvia::Context& c, std::string_view id) {
         requireUuid(id, "Webhook ID 无效");
         (void)co_await requireWebhook(c, id);
-        (void)co_await c.db().execute(
+        auto transaction = co_await c.db().beginTransaction();
+        (void)co_await transaction.execute(
             "UPDATE open_webhook SET deleted_at = NOW(), updated_at = NOW() "
             "WHERE id = $1::uuid AND deleted_at IS NULL",
             service::common::dbParams(id));
-        co_await service::message::publishConfigEvent(c, "webhook", "deleted", id);
+        co_await service::message::enqueueConfigEvent(transaction, "webhook", "deleted", id);
+        co_await transaction.commit();
     }
 
     ruvia::Task<std::string> listLogs(ruvia::Context& c) {

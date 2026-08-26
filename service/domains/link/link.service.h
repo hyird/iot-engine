@@ -236,12 +236,14 @@ LIMIT 1)sql",
         co_await ensureAvailable(c, name, mode, ip, port, std::nullopt);
         const auto endpointJson = serializeEndpoint(mode, ip, port, targets);
         const auto id = service::common::nextUuidV7();
-        (void)co_await c.db().execute(R"sql(
+        auto transaction = co_await c.db().beginTransaction();
+        (void)co_await transaction.execute(R"sql(
 INSERT INTO link(id, name, protocol, endpoint, status, created_by, execution)
 VALUES ($1::uuid, $2, $3, $4::jsonb, $5, $6, 'collector'))sql",
-                                      service::common::dbParams(id, name, protocol, endpointJson,
-                                                                status, principal.userId));
-        co_await service::message::publishConfigEvent(c, "link", "created", id);
+                                       service::common::dbParams(id, name, protocol, endpointJson,
+                                                                 status, principal.userId));
+        co_await service::message::enqueueConfigEvent(transaction, "link", "created", id);
+        co_await transaction.commit();
     }
 
     ruvia::Task<void> update(ruvia::Context& c, std::string_view id, const SaveLinkBody& body) {
@@ -268,7 +270,8 @@ VALUES ($1::uuid, $2, $3, $4::jsonb, $5, $6, 'collector'))sql",
         validateConfiguration(mode, protocol, ip, port, targets);
         co_await ensureAvailable(c, name, mode, ip, port, std::string(id));
         const auto endpointJson = serializeEndpoint(mode, ip, port, targets);
-        const auto updated = co_await c.db().execute(
+        auto transaction = co_await c.db().beginTransaction();
+        const auto updated = co_await transaction.execute(
             R"sql(
 UPDATE link
 SET name = $1, endpoint = $2::jsonb, status = $3, updated_at = NOW()
@@ -280,7 +283,8 @@ WHERE id = $4 AND execution = 'collector'
   ))sql",
             service::common::dbParams(name, endpointJson, status, id));
         if (updated.affectedRows() != 0)
-            co_await service::message::publishConfigEvent(c, "link", "updated", id);
+            co_await service::message::enqueueConfigEvent(transaction, "link", "updated", id);
+        co_await transaction.commit();
     }
 
     ruvia::Task<void> remove(ruvia::Context& c, std::string_view id) {
@@ -297,10 +301,12 @@ WHERE id = $4 AND execution = 'collector'
             service::common::dbParams(id));
         if (used.front()[0].value().value_or(std::string_view{}) == "t")
             service::common::fail(15008, "链路已被设备使用，请先删除关联设备", 409);
-        (void)co_await c.db().execute(
+        auto transaction = co_await c.db().beginTransaction();
+        (void)co_await transaction.execute(
             "UPDATE link SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1",
             service::common::dbParams(id));
-        co_await service::message::publishConfigEvent(c, "link", "deleted", id);
+        co_await service::message::enqueueConfigEvent(transaction, "link", "deleted", id);
+        co_await transaction.commit();
     }
 
   private:

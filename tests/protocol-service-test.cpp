@@ -82,8 +82,11 @@ void requireEdgeSyncDoesNotLeakAsUpdateFailure(std::string_view source) {
             "protocol update does not isolate edge config sync failures");
     require(source.find("catch (const std::exception& error)") != std::string_view::npos,
             "protocol update does not catch edge config sync exceptions");
-    require(source.find("logPostUpdateFailure(\"config-event\"") != std::string_view::npos,
-            "protocol update does not isolate config event publish failures");
+    require(source.find("enqueueConfigEvent(transaction, \"protocol\", \"updated\"") !=
+                std::string_view::npos,
+            "protocol update does not enqueue its event transactionally");
+    require(source.find("publishConfigEvent") == std::string_view::npos,
+            "protocol update still performs a database/Redis dual write");
     require(source.find("logPostUpdateFailure(\"edge-sync\"") != std::string_view::npos,
             "protocol update does not isolate edge sync query failures");
     require(source.find("protocol post-update ") != std::string_view::npos,

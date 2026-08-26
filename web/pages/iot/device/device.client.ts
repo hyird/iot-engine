@@ -48,6 +48,12 @@ export const getDeviceCommandStatus = (id: string) =>
     request.get<Device.CommandStatusResult>(`${DEVICE_BASE}/commands/${deviceIdSchema.parse(id)}`, {
         _silent: true,
     });
+export const waitForDeviceCommands = (commandIds: string[], timeoutMs = 60_000) =>
+    request.post<Device.CommandWaitResult>(
+        `${DEVICE_BASE}/commands/wait`,
+        { command_ids: commandIds.map((id) => deviceIdSchema.parse(id)), timeout_ms: timeoutMs },
+        { timeout: timeoutMs + 5_000, _silent: true }
+    );
 export const getDeviceShares = (id: string) =>
     request.get<Device.ShareItem[]>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}/shares`);
 export const getDeviceShareTargets = (id: string) =>

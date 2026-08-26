@@ -114,6 +114,10 @@ RUVIA_REQUEST_MODEL(DeviceCommandBody,
     RUVIA_OPTIONAL_FIELD_NAME("deviceId", deviceId, ruvia::String),
     RUVIA_OPTIONAL_FIELD(elements, ruvia::Array<DeviceCommandElementBody>));
 
+RUVIA_REQUEST_MODEL(DeviceCommandWaitBody,
+    RUVIA_OPTIONAL_FIELD_NAME("command_ids", commandIds, ruvia::Array<ruvia::String>),
+    RUVIA_OPTIONAL_FIELD_NAME("timeout_ms", timeoutMs, ruvia::Int64));
+
 RUVIA_RESPONSE_MODEL(DeviceCommandCreateDto,
     RUVIA_OPTIONAL_FIELD_NAME("command_ids", commandIds, ruvia::BoxedArray<ruvia::String>),
     RUVIA_OPTIONAL_FIELD(status, ruvia::String));
@@ -127,6 +131,10 @@ RUVIA_RESPONSE_MODEL(DeviceCommandStatusDto,
     RUVIA_OPTIONAL_FIELD(reason, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("created_at_ms", createdAtMs, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD_NAME("completed_at_ms", completedAtMs, ruvia::Int64));
+
+RUVIA_RESPONSE_MODEL(DeviceCommandWaitDto,
+    RUVIA_OPTIONAL_FIELD(complete, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD(statuses, ruvia::BoxedArray<DeviceCommandStatusDto>));
 
 RUVIA_RESPONSE_MODEL(DeviceElementDto,
     RUVIA_OPTIONAL_FIELD(id, ruvia::String),
@@ -262,6 +270,10 @@ RUVIA_RESPONSE_MODEL(DeviceCommandStatusResponse,
     RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(message, ruvia::String),
     RUVIA_OPTIONAL_FIELD(data, DeviceCommandStatusDto));
+RUVIA_RESPONSE_MODEL(DeviceCommandWaitResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, DeviceCommandWaitDto));
 RUVIA_RESPONSE_MODEL(DeviceOptionsResponse,
     RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(message, ruvia::String),

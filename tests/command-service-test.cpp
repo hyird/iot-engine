@@ -19,6 +19,14 @@ std::string commandSource() {
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
+std::string projectSource(std::string_view relative) {
+    auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
+                std::filesystem::path(relative);
+    std::ifstream input(path, std::ios::binary);
+    require(input.good(), "cannot open command integration source");
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
 void requireNoUnsafeJsonCasts(std::string_view source) {
     require(source.find("COALESCE((protocol_params->>'remote_control')::boolean") ==
                 std::string_view::npos,
@@ -56,6 +64,13 @@ int main() {
         const auto source = commandSource();
         requireNoUnsafeJsonCasts(source);
         requireDuplicateElementRejected(source);
+        require(source.find("DeviceCommandWaitDto") != std::string::npos,
+                "command service has no batched wait operation");
+        const auto client = projectSource("web/pages/iot/device/device.service.ts");
+        require(client.find("waitForDeviceCommands(command.command_ids)") != std::string::npos,
+                "web command flow does not use the batched wait operation");
+        require(client.find("window.setTimeout(resolve, 150)") == std::string::npos,
+                "web command flow still polls every command at 150 ms");
         std::cout << "command service tests passed\n";
         return 0;
     } catch (const std::exception& error) {

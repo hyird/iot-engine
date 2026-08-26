@@ -407,6 +407,11 @@ export interface CommandStatusResult {
     completed_at_ms?: number;
 }
 
+export interface CommandWaitResult {
+    complete: boolean;
+    statuses: CommandStatusResult[];
+}
+
 // ========== 历史数据相关类型 ==========
 
 /** 历史数据类型 */
@@ -502,6 +507,7 @@ type ReplaceDeviceSharesDtoType = ReplaceDeviceSharesDto;
 type DeviceCommandStatus = CommandStatus;
 type DeviceCommandCreateResult = CommandCreateResult;
 type DeviceCommandStatusResult = CommandStatusResult;
+type DeviceCommandWaitResult = CommandWaitResult;
 type DeviceHistoryRecord = HistoryRecord;
 type DeviceHistoryPointValue = HistoryPointValue;
 type DeviceHistoryRecordQuery = DeviceHistoryQuery;
@@ -536,6 +542,7 @@ export namespace Device {
     export type Command = CommandPayload;
     export type CommandCreateResult = DeviceCommandCreateResult;
     export type CommandStatusResult = DeviceCommandStatusResult;
+    export type CommandWaitResult = DeviceCommandWaitResult;
     export type CommandOperation = DeviceCommandOperation;
     export type CommandOperationElement = DeviceCommandOperationElement;
     export type ImageOperation = DeviceImageOperation;

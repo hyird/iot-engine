@@ -360,6 +360,9 @@ iot_engine_add_test(edge-service LARGE
 iot_engine_add_test(edge-projector NO_PROJECT_INCLUDE
     SOURCES tests/edge-projector-test.cpp)
 
+iot_engine_add_test(architecture
+    SOURCES tests/architecture-test.cpp)
+
 iot_engine_add_test(alert-runtime LARGE
     SOURCES tests/alert-runtime-test.cpp
     LIBRARIES ruvia::web

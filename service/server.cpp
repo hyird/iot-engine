@@ -21,6 +21,7 @@
 
 #include "service/common/http.h"
 #include "service/common/packet-log.h"
+#include "service/application/runtime.h"
 #include "service/config/schema.h"
 #include "service/config/storage.h"
 #include "service/domains/alert/alert.controller.h"
@@ -34,6 +35,7 @@
 #include "service/domains/link/link.controller.h"
 #include "service/domains/access/access.controller.h"
 #include "service/features/access/webhook.h"
+#include "service/features/event/outbox.h"
 #include "service/features/command/result.h"
 #include "service/features/command/queue.h"
 #include "service/features/runtime/projector.h"
@@ -46,6 +48,7 @@
 #include "service/domains/dept/dept.controller.h"
 #include "service/domains/role/role.controller.h"
 #include "service/domains/user/user.controller.h"
+#include "service/domains/system/operations.controller.h"
 
 namespace
 {
@@ -329,10 +332,21 @@ int main(int argc, char *argv[])
                                     ? std::make_shared<service::gb28181::Projector>()
                                     : nullptr;
         auto alerts = std::make_shared<service::alert::Runtime>();
+        auto observability = std::make_shared<service::observability::Registry>();
+        service::observability::configureProcessRegistry(*observability);
+        observability->gauge("iot_engine_service_workers",
+                             static_cast<std::int64_t>(serviceWorkerCount));
+        observability->gauge("iot_engine_collector_workers",
+                             static_cast<std::int64_t>(collectorWorkerCount));
+        auto outbox = std::make_shared<service::message::outbox::Runtime>(
+            *observability, collectorWorkerCount);
+        auto applicationRuntime =
+            std::make_shared<service::application::Runtime>(*observability);
         app.useDb(std::move(db))
             .useRedis(std::move(serviceRedis))
             .onStart([collector, telemetry, commandResults, openWebhooks, configReconciler,
-                      edgeProjector, gb28181Projector, alerts,
+                      edgeProjector, gb28181Projector, alerts, outbox,
+                      applicationRuntime,
                       collectorRedis = std::move(collectorRedis),
                       collectorWorkerCount, &app]() mutable
                      {
@@ -340,44 +354,85 @@ int main(int argc, char *argv[])
                 if (workers.empty())
                     throw std::runtime_error(
                         "service: no worker available for config projection");
-                telemetry->start(workers, collectorWorkerCount);
-                commandResults->start(workers, collectorWorkerCount);
-                openWebhooks->start(workers);
-                edgeProjector->start(workers.front());
-                alerts->start(workers.front());
+                applicationRuntime->add({
+                    .name = "outbox",
+                    .start = [outbox, worker = workers.front()] { outbox->start(worker); },
+                    .stop = [outbox] { outbox->stop(); }});
+                applicationRuntime->add({
+                    .name = "telemetry",
+                    .start = [telemetry, workers, collectorWorkerCount] {
+                        telemetry->start(workers, collectorWorkerCount);
+                    },
+                    .stop = [telemetry] { telemetry->stop(); }});
+                applicationRuntime->add({
+                    .name = "command-results",
+                    .start = [commandResults, workers, collectorWorkerCount] {
+                        commandResults->start(workers, collectorWorkerCount);
+                    },
+                    .stop = [commandResults] { commandResults->stop(); }});
+                applicationRuntime->add({
+                    .name = "webhooks",
+                    .dependencies = {"outbox"},
+                    .start = [openWebhooks, workers] { openWebhooks->start(workers); },
+                    .stop = [openWebhooks] { openWebhooks->stop(); }});
+                applicationRuntime->add({
+                    .name = "edge-projector",
+                    .start = [edgeProjector, worker = workers.front()] {
+                        edgeProjector->start(worker);
+                    },
+                    .stop = [edgeProjector] { edgeProjector->stop(); }});
+                applicationRuntime->add({
+                    .name = "alerts",
+                    .dependencies = {"telemetry"},
+                    .start = [alerts, worker = workers.front()] { alerts->start(worker); },
+                    .stop = [alerts] { alerts->stop(); }});
                 if (gb28181Projector) {
-                    auto gb28181Snapshot = gb28181Projector->start(workers.front());
-                    service::gb28181::runtime().attachProjector(
-                        gb28181Projector, std::move(gb28181Snapshot));
-                    service::gb28181::runtime().start();
+                    applicationRuntime->add({
+                        .name = "gb28181",
+                        .start = [gb28181Projector, worker = workers.front()] {
+                            auto snapshot = gb28181Projector->start(worker);
+                            service::gb28181::runtime().attachProjector(
+                                gb28181Projector, std::move(snapshot));
+                            service::gb28181::runtime().start();
+                        },
+                        .stop = [gb28181Projector] {
+                            service::gb28181::runtime().stop();
+                            gb28181Projector->stop();
+                        }});
                 }
-                auto started = std::make_shared<std::promise<void>>();
-                auto ready = started->get_future();
-                const auto posted = workers.front().post(
-                    [collector, collectorRedis, collectorWorkerCount,
-                     started](ruvia::WebWorkerContext& context) mutable -> ruvia::Task<void> {
-                        return startCollector(context, collector, std::move(collectorRedis),
-                                                collectorWorkerCount, started);
-                    });
-                if (!posted.accepted())
-                    throw std::runtime_error("service rejected runtime projection");
-                ready.get();
-                configReconciler->start(
-                    workers.size() > 2 ? workers[1] : workers.front(),
-                    collectorWorkerCount); })
-            .onStop([collector, telemetry, commandResults, openWebhooks, configReconciler,
-                     edgeProjector, gb28181Projector, alerts]
-                    {
-                alerts->stop();
-                service::gb28181::runtime().stop();
-                if (gb28181Projector)
-                    gb28181Projector->stop();
-                configReconciler->stop();
-                edgeProjector->stop();
-                collector->stop();
-                telemetry->stop();
-                commandResults->stop();
-                openWebhooks->stop(); })
+                applicationRuntime->add({
+                    .name = "collector",
+                    .dependencies = {"telemetry", "command-results", "edge-projector",
+                                     "alerts"},
+                    .start = [collector, collectorRedis = std::move(collectorRedis),
+                              collectorWorkerCount, worker = workers.front()]() mutable {
+                        auto started = std::make_shared<std::promise<void>>();
+                        auto ready = started->get_future();
+                        const auto posted = worker.post(
+                            [collector, collectorRedis = std::move(collectorRedis),
+                             collectorWorkerCount, started](
+                                ruvia::WebWorkerContext& context) mutable -> ruvia::Task<void> {
+                                return startCollector(context, collector,
+                                                      std::move(collectorRedis),
+                                                      collectorWorkerCount, started);
+                            });
+                        if (!posted.accepted())
+                            throw std::runtime_error(
+                                "service rejected runtime projection");
+                        ready.get();
+                    },
+                    .stop = [collector] { collector->stop(); }});
+                applicationRuntime->add({
+                    .name = "config-reconciler",
+                    .dependencies = {"collector", "outbox"},
+                    .start = [configReconciler,
+                              worker = workers.size() > 2 ? workers[1] : workers.front(),
+                              collectorWorkerCount] {
+                        configReconciler->start(worker, collectorWorkerCount);
+                    },
+                    .stop = [configReconciler] { configReconciler->stop(); }});
+                applicationRuntime->start(); })
+            .onStop([applicationRuntime] { applicationRuntime->stop(); })
             .onError(&handleError)
             .setListeners({ruvia::ListenerConfig::http(
                 app.env().get("HOST").value_or("0.0.0.0"),
