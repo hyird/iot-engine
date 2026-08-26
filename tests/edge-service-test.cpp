@@ -147,6 +147,16 @@ int main() {
                         "edge gateway does not apply terminal input backpressure");
         requireContains(gatewaySource, "mutable_terminal_data_ack",
                         "edge gateway does not acknowledge delivered terminal output");
+        requireContains(gatewaySource, "std::deque<std::string> outbound",
+                        "edge gateway does not serialize established-session replies");
+        requireContains(gatewaySource, "enqueue(session, reply)",
+                        "edge gateway still writes node acknowledgements outside the egress pump");
+        requireMissing(gatewaySource, "co_await drain(c, socket, session)",
+                       "edge gateway still sends config frames from the session read loop");
+        requireContains(gatewaySource, "co_await c.redis().lpush(key, *item)",
+                        "edge gateway drops a popped command when its socket send fails");
+        requireContains(gatewaySource, "co_await socket.close(1011, \"edge egress failed\")",
+                        "edge gateway leaves a half-open session online after its egress pump fails");
         requireContains(gatewaySource, "session.protocolVersion < 5",
                         "edge gateway does not isolate legacy terminal data handling");
         requireContains(gatewaySource,

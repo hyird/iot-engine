@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <exception>
 #include <random>
 #include <string>
@@ -58,6 +59,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         std::uint64_t inboundSequence{};
         std::uint64_t outboundSequence{};
         std::uint64_t configSentAtMs{};
+        std::deque<std::string> outbound;
         std::array<TelemetryReceipt, 64> telemetryReceipts{};
         std::size_t nextTelemetryReceipt{};
         bool capabilitySeen{};
@@ -172,7 +174,6 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         ruvia::TaskScope egressScope(c.worker(), c.resource());
         egressScope.spawn(pumpEgress(c, socket, session, egressScope.stopToken()));
         try {
-            co_await drain(c, socket, session);
             while (auto message = co_await socket.read()) {
                 if (!message->binary() || !protocol::decode(message->payload(), input) ||
                     !validInbound(input, session)) {
@@ -189,8 +190,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 if (shouldProject(input) && telemetry.publish)
                     co_await publishIngress(c, message->payload(), protocol::nowMs());
                 if (telemetry.acknowledge)
-                    co_await handle(c, socket, session, input);
-                co_await drain(c, socket, session);
+                    co_await handle(c, session, input);
             }
         } catch (...) {
             sessionFailure = std::current_exception();
@@ -468,6 +468,13 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         co_await socket.binary(wire);
     }
 
+    static void enqueue(Session& session, const pb::Envelope& envelope) {
+        auto wire = protocol::encode(envelope);
+        if (wire.empty())
+            throw std::runtime_error("edge envelope encode failed");
+        session.outbound.emplace_back(std::move(wire));
+    }
+
     static ruvia::Task<void> publishIngress(ruvia::Context& c, std::string_view wire,
                                             std::int64_t receivedAtMs) {
         std::vector<service::message::StreamField> fields;
@@ -481,26 +488,43 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         return session_state::key(nodeId);
     }
 
-    static ruvia::Task<void> drain(ruvia::Context& c, ruvia::WebSocket& socket,
-                                   Session& session) {
-        const auto configCount =
-            co_await drainKey(c, socket, session, "iot:edge:config:" + session.nodeId, 64);
-        if (configCount != 0)
-            session.configSentAtMs = protocol::nowMs();
-    }
-
     // Runs beside the session read loop on the same worker, so it shares
-    // session.outboundSequence without a lock: every increment is consumed before
-    // the next suspension point.
+    // session.outboundSequence and the local queue without a lock. It is the only
+    // coroutine that writes to the node WebSocket after the hello acknowledgement;
+    // concurrent writes can otherwise kill the pump while the read loop keeps the
+    // node looking online.
     static ruvia::Task<void> pumpEgress(ruvia::Context& c, ruvia::WebSocket& socket,
                                         Session& session, ruvia::StopToken stopToken) {
         const std::string terminalKey = terminalInputKey(session.nodeId);
+        const std::string configKey = "iot:edge:config:" + session.nodeId;
         const std::string egressKey = "iot:edge:egress:" + session.nodeId;
-        while (!stopToken.stopRequested()) {
-            const auto keystrokes = co_await drainKey(c, socket, session, terminalKey, 64);
-            const auto commands = co_await drainKey(c, socket, session, egressKey, 64);
-            if (keystrokes + commands == 0)
-                (void)co_await ruvia::sleepFor(c.worker(), std::chrono::milliseconds(10));
+        std::exception_ptr failure;
+        try {
+            while (!stopToken.stopRequested()) {
+                int replies = 0;
+                while (!session.outbound.empty() && replies < 64) {
+                    auto wire = std::move(session.outbound.front());
+                    session.outbound.pop_front();
+                    co_await socket.binary(wire);
+                    ++replies;
+                }
+                const auto configs = co_await drainKey(c, socket, session, configKey, 64);
+                if (configs != 0)
+                    session.configSentAtMs = protocol::nowMs();
+                const auto keystrokes = co_await drainKey(c, socket, session, terminalKey, 64);
+                const auto commands = co_await drainKey(c, socket, session, egressKey, 64);
+                if (replies + configs + keystrokes + commands == 0)
+                    (void)co_await ruvia::sleepFor(c.worker(), std::chrono::milliseconds(10));
+            }
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        if (failure) {
+            try {
+                co_await socket.close(1011, "edge egress failed");
+            } catch (...) {
+            }
+            std::rethrow_exception(failure);
         }
     }
 
@@ -519,7 +543,19 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 protocol::bytes(session.platformBytes.data(), session.platformBytes.size()),
                 protocol::bytes(session.nodeBytes.data(), session.nodeBytes.size()), session.epoch,
                 ++session.outboundSequence, session.protocolVersion);
-            co_await send(socket, envelope);
+            std::exception_ptr failure;
+            try {
+                co_await send(socket, envelope);
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            if (failure) {
+                // LPOP transfers ownership to this session. Put the command back
+                // before forcing a reconnect so a transient socket failure cannot
+                // leave its database task pending forever.
+                (void)co_await c.redis().lpush(key, *item);
+                std::rethrow_exception(failure);
+            }
             ++sent;
         }
         co_return sent;
@@ -731,8 +767,8 @@ return 1
         }
     }
 
-    static ruvia::Task<void> handle(ruvia::Context& c, ruvia::WebSocket& socket,
-                                    Session& session, const pb::Envelope& input) {
+    static ruvia::Task<void> handle(ruvia::Context& c, Session& session,
+                                    const pb::Envelope& input) {
         switch (input.payload_case()) {
         case pb::Envelope::kHeartbeat: {
             constexpr std::uint64_t retryIntervalMs = 30000;
@@ -746,7 +782,7 @@ return 1
             heartbeatAck->set_platform_time_ms(protocol::nowMs());
             heartbeatAck->set_request_capability_report(!session.capabilitySeen);
             heartbeatAck->set_request_device_status(input.heartbeat().managed_endpoint_count() > 0);
-            co_await send(socket, reply);
+            enqueue(session, reply);
             break;
         }
         case pb::Envelope::kCapabilityReport:
@@ -761,7 +797,7 @@ return 1
                 telemetryAck->add_accepted_record_ids(record.record_id());
                 break;
             }
-            co_await send(socket, reply);
+            enqueue(session, reply);
             break;
         }
         case pb::Envelope::kRawPacket: {
@@ -770,7 +806,7 @@ return 1
                 break;
             auto reply = makeEnvelope(session);
             reply.mutable_raw_packet_ack()->set_packet_id(packet.packet_id());
-            co_await send(socket, reply);
+            enqueue(session, reply);
             break;
         }
         case pb::Envelope::kCommandResult: {
@@ -779,7 +815,7 @@ return 1
                 break;
             auto reply = makeEnvelope(session);
             reply.mutable_command_result_ack()->set_command_id(result.command_id());
-            co_await send(socket, reply);
+            enqueue(session, reply);
             break;
         }
         case pb::Envelope::kPing: {
@@ -789,7 +825,7 @@ return 1
             // the negotiated watchdog interval and strands the browser terminal.
             auto reply = makeEnvelope(session);
             reply.mutable_pong()->set_nonce(input.ping().nonce());
-            co_await send(socket, reply);
+            enqueue(session, reply);
             break;
         }
         case pb::Envelope::kTerminalData:
