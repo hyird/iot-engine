@@ -5,7 +5,7 @@
 
 namespace service::config {
 
-inline constexpr std::array<ruvia::DbMigration, 24> kSchemaMigrations{{
+inline constexpr std::array<ruvia::DbMigration, 25> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
@@ -1256,6 +1256,21 @@ CREATE TABLE outbox_event (
 CREATE INDEX idx_outbox_event_pending
     ON outbox_event(available_at, occurred_at, id)
     WHERE published_at IS NULL AND dead_lettered_at IS NULL;
+END
+$schema$;
+)sql"},
+    {"0024_outbox_consumer_receipt", R"sql(
+DO $schema$
+BEGIN
+CREATE TABLE outbox_consumer_receipt (
+    consumer_name VARCHAR(150) NOT NULL,
+    event_id      UUID NOT NULL,
+    processed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (consumer_name, event_id)
+);
+
+CREATE INDEX idx_outbox_consumer_receipt_processed_at
+    ON outbox_consumer_receipt(processed_at);
 END
 $schema$;
 )sql"},

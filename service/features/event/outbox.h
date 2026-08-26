@@ -21,10 +21,19 @@
 
 namespace service::message::outbox {
 
+struct Policy final {
+    std::int64_t pendingAlertThreshold{1000};
+    std::int64_t oldestAgeAlertMs{300000};
+    std::int64_t deadLetterAlertThreshold{1};
+    std::int64_t receiptRetentionDays{30};
+};
+
 class Runtime final {
   public:
-    Runtime(observability::Registry& observability, std::size_t collectorWorkerCount)
-        : observability_(observability), collectorWorkerCount_(collectorWorkerCount) {}
+    Runtime(observability::Registry& observability, std::size_t collectorWorkerCount,
+            Policy policy = {})
+        : observability_(observability), collectorWorkerCount_(collectorWorkerCount),
+          policy_(policy) {}
     Runtime(const Runtime&) = delete;
     Runtime& operator=(const Runtime&) = delete;
     ~Runtime() { stop(); }
@@ -74,7 +83,20 @@ class Runtime final {
         try {
             ready->set_value();
             auto nextMetrics = std::chrono::steady_clock::now();
+            auto nextReceiptCleanup = std::chrono::steady_clock::now();
             while (running_.load() && !context.stopToken().stopRequested()) {
+                if (policy_.receiptRetentionDays > 0 &&
+                    std::chrono::steady_clock::now() >= nextReceiptCleanup) {
+                    try {
+                        co_await cleanupReceipts(context);
+                    } catch (const std::exception& error) {
+                        observability_.increment(
+                            "iot_engine_outbox_receipt_cleanup_failures_total");
+                        std::cerr << "outbox receipt cleanup failed: " << error.what() << '\n';
+                    }
+                    nextReceiptCleanup =
+                        std::chrono::steady_clock::now() + std::chrono::hours(1);
+                }
                 if (std::chrono::steady_clock::now() >= nextMetrics) {
                     try {
                         co_await collectMetrics(context);
@@ -191,16 +213,22 @@ SELECT count(*) FILTER (WHERE dead_lettered_at IS NULL)::text,
        count(*) FILTER (WHERE dead_lettered_at IS NOT NULL)::text
 FROM outbox_event WHERE published_at IS NULL)sql");
         if (!rows.empty()) {
-            observability_.gauge(
-                "iot_engine_outbox_pending",
-                integer(rows.front()[0].value().value_or(std::string_view{})));
-            observability_.gauge(
-                "iot_engine_outbox_oldest_age_ms",
-                integer(rows.front()[1].value().value_or(std::string_view{})));
-            observability_.gauge(
-                "iot_engine_outbox_dead_lettered",
-                integer(rows.front()[2].value().value_or(std::string_view{})));
+            const auto pending =
+                integer(rows.front()[0].value().value_or(std::string_view{}));
+            const auto oldestAge =
+                integer(rows.front()[1].value().value_or(std::string_view{}));
+            const auto deadLettered =
+                integer(rows.front()[2].value().value_or(std::string_view{}));
+            observability_.gauge("iot_engine_outbox_pending", pending);
+            observability_.gauge("iot_engine_outbox_oldest_age_ms", oldestAge);
+            observability_.gauge("iot_engine_outbox_dead_lettered", deadLettered);
+            updateAlert("outbox_pending", pending, policy_.pendingAlertThreshold);
+            updateAlert("outbox_oldest_age", oldestAge, policy_.oldestAgeAlertMs);
+            updateAlert("outbox_dead_lettered", deadLettered,
+                        policy_.deadLetterAlertThreshold);
         }
+        observability_.gauge("iot_engine_outbox_receipt_retention_days",
+                             policy_.receiptRetentionDays);
 
         co_await collectStream(context, "runtime_config",
                                std::string(kRuntimeConfigChangesStream),
@@ -248,8 +276,26 @@ FROM outbox_event WHERE published_at IS NULL)sql");
         return error == std::errc{} && end == value.data() + value.size() ? result : 0;
     }
 
+    ruvia::Task<void> cleanupReceipts(ruvia::WebWorkerContext& context) {
+        (void)co_await context.db().execute(R"sql(
+DELETE FROM outbox_consumer_receipt
+WHERE processed_at < NOW() - make_interval(days => $1::integer))sql",
+                                            service::common::dbParams(
+                                                policy_.receiptRetentionDays));
+    }
+
+    void updateAlert(std::string name, std::int64_t value, std::int64_t threshold) {
+        const bool active = threshold > 0 && value >= threshold;
+        const auto detail = "value=" + std::to_string(value) +
+                            ", threshold=" + std::to_string(threshold);
+        if (observability_.alert(name, active, detail))
+            std::cerr << "operational alert " << (active ? "active" : "cleared")
+                      << ": " << name << " (" << detail << ")\n";
+    }
+
     observability::Registry& observability_;
     std::size_t collectorWorkerCount_{};
+    Policy policy_;
     ruvia::WebWorkerHandle worker_;
     std::shared_future<void> stopped_;
     std::atomic_bool running_{false};

@@ -20,6 +20,7 @@
 #include "service/common/message/contract.h"
 #include "service/features/alert/metadata.h"
 #include "service/features/event/config.h"
+#include "service/features/event/idempotency.h"
 #include "service/features/runtime/projector.h"
 #include "service/features/collector/stream.h"
 
@@ -163,14 +164,27 @@ class Reconciler final {
                         recoveryCursor = next.back().id;
                         batches.push_back(std::move(next));
                     }
+                    std::vector<service::message::StreamMessage> received;
+                    received.reserve(messageCount);
+                    for (const auto& batch : batches)
+                        received.insert(received.end(), batch.begin(), batch.end());
+                    const auto eventIds = service::message::idempotency::eventIds(received);
+                    const auto pendingIds = co_await service::message::idempotency::pending(
+                        context, kGroup, eventIds);
                     const auto projectionRequired = std::ranges::any_of(
-                        batches, [](const auto& batch) {
-                            return std::ranges::any_of(batch, requiresProjection);
+                        batches, [&pendingIds](const auto& batch) {
+                            return std::ranges::any_of(batch, [&pendingIds](const auto& message) {
+                                return service::message::idempotency::shouldProcess(
+                                           message, pendingIds) &&
+                                       requiresProjection(message);
+                            });
                         });
                     const auto alertRefreshRequired = std::ranges::any_of(
-                        batches, [](const auto& batch) {
-                            return std::ranges::any_of(batch, [](const auto& message) {
-                                return message.get("aggregate") == "device";
+                        batches, [&pendingIds](const auto& batch) {
+                            return std::ranges::any_of(batch, [&pendingIds](const auto& message) {
+                                return service::message::idempotency::shouldProcess(
+                                           message, pendingIds) &&
+                                       message.get("aggregate") == "device";
                             });
                         });
                     if (projectionRequired) {
@@ -186,6 +200,8 @@ class Reconciler final {
                     }
                     if (alertRefreshRequired)
                         co_await service::alert::metadata::refresh(context);
+                    co_await service::message::idempotency::markProcessed(
+                        context, kGroup, eventIds);
                     for (const auto& batch : batches)
                         co_await service::message::redis::acknowledgeAndDeleteMany(
                             redis, service::message::kRuntimeConfigChangesStream, kGroup,

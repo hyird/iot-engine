@@ -1,0 +1,57 @@
+groups:
+  - name: iot-engine-outbox
+    rules:
+      - alert: IoTEngineOutboxDeadLetters
+        expr: iot_engine_alert_active{alert="outbox_dead_lettered"} == 1
+        for: 1m
+        labels:
+          severity: critical
+          component: outbox
+        annotations:
+          summary: iot-engine Outbox contains dead-lettered events
+          description: Inspect and replay dead letters after resolving the publish failure.
+          runbook_url: https://github.com/hyird/iot-engine/blob/main/ops/runbooks/outbox.md#dead-lettered-events
+
+      - alert: IoTEngineOutboxBacklog
+        expr: iot_engine_alert_active{alert="outbox_pending"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          component: outbox
+        annotations:
+          summary: iot-engine Outbox pending count exceeds its configured threshold
+          description: Check PostgreSQL, Redis, dispatcher failures, and downstream lag.
+          runbook_url: https://github.com/hyird/iot-engine/blob/main/ops/runbooks/outbox.md#pending-backlog
+
+      - alert: IoTEngineOutboxOldestEvent
+        expr: iot_engine_alert_active{alert="outbox_oldest_age"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          component: outbox
+        annotations:
+          summary: iot-engine Outbox contains an event older than its configured threshold
+          description: Check dispatcher health and whether one repeatedly failing event blocks progress.
+          runbook_url: https://github.com/hyird/iot-engine/blob/main/ops/runbooks/outbox.md#old-events
+
+      - alert: IoTEngineOutboxDispatcherFailures
+        expr: increase(iot_engine_outbox_dispatch_failures_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: outbox
+        annotations:
+          summary: iot-engine Outbox dispatcher is failing
+          description: Review application logs and verify PostgreSQL and Redis connectivity.
+          runbook_url: https://github.com/hyird/iot-engine/blob/main/ops/runbooks/outbox.md#dispatcher-failures
+
+      - alert: IoTEngineOutboxMetricsMissing
+        expr: absent(iot_engine_outbox_pending)
+        for: 10m
+        labels:
+          severity: warning
+          component: outbox
+        annotations:
+          summary: iot-engine Outbox metrics are missing
+          description: Verify the service is running and that /internal/metrics is being scraped.
+          runbook_url: https://github.com/hyird/iot-engine/blob/main/ops/runbooks/outbox.md#metrics-missing

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <memory_resource>
 
 #include <ruvia/http/HttpStatus.h>
@@ -52,8 +53,15 @@ class OperationsController final : public ruvia::Controller<OperationsController
         auto json = registry
                         ? registry->healthJson()
                         : std::string{"{\"status\":\"not_ready\",\"components\":{}}"};
-        if (!dependenciesReady && json.starts_with("{\"status\":\"ready\""))
-            json.replace(11, 5, "not_ready");
+        if (!dependenciesReady) {
+            constexpr std::string_view prefix{"\"status\":\""};
+            if (const auto start = json.find(prefix); start != std::string::npos) {
+                const auto valueStart = start + prefix.size();
+                if (const auto valueEnd = json.find('\"', valueStart);
+                    valueEnd != std::string::npos)
+                    json.replace(valueStart, valueEnd - valueStart, "not_ready");
+            }
+        }
         std::pmr::string body(json, context.resource());
         auto response = context.body(std::move(body));
         response.header("Content-Type", "application/json; charset=UTF-8");

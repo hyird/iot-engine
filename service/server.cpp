@@ -49,6 +49,7 @@
 #include "service/domains/role/role.controller.h"
 #include "service/domains/user/user.controller.h"
 #include "service/domains/system/operations.controller.h"
+#include "service/domains/system/outbox.controller.h"
 
 namespace
 {
@@ -338,8 +339,21 @@ int main(int argc, char *argv[])
                              static_cast<std::int64_t>(serviceWorkerCount));
         observability->gauge("iot_engine_collector_workers",
                              static_cast<std::int64_t>(collectorWorkerCount));
+        service::message::outbox::Policy outboxPolicy;
+        outboxPolicy.pendingAlertThreshold =
+            app.env().get<std::int64_t>("OUTBOX_PENDING_ALERT_THRESHOLD").value_or(1000);
+        outboxPolicy.oldestAgeAlertMs =
+            app.env().get<std::int64_t>("OUTBOX_OLDEST_AGE_ALERT_MS").value_or(300000);
+        outboxPolicy.deadLetterAlertThreshold =
+            app.env().get<std::int64_t>("OUTBOX_DEAD_LETTER_ALERT_THRESHOLD").value_or(1);
+        outboxPolicy.receiptRetentionDays =
+            app.env().get<std::int64_t>("OUTBOX_RECEIPT_RETENTION_DAYS").value_or(30);
+        if (outboxPolicy.pendingAlertThreshold < 0 || outboxPolicy.oldestAgeAlertMs < 0 ||
+            outboxPolicy.deadLetterAlertThreshold < 0 ||
+            outboxPolicy.receiptRetentionDays < 0 || outboxPolicy.receiptRetentionDays > 3650)
+            throw std::runtime_error("OUTBOX policy values are invalid");
         auto outbox = std::make_shared<service::message::outbox::Runtime>(
-            *observability, collectorWorkerCount);
+            *observability, collectorWorkerCount, outboxPolicy);
         auto applicationRuntime =
             std::make_shared<service::application::Runtime>(*observability);
         app.useDb(std::move(db))

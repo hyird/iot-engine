@@ -40,6 +40,7 @@
 #include "service/features/access/session.h"
 #include "service/features/collector/stream.h"
 #include "service/features/event/config.h"
+#include "service/features/event/idempotency.h"
 #include "service/features/telemetry/latest.h"
 
 namespace service::access {
@@ -456,16 +457,29 @@ public:
                 bool failed = false;
                 try {
                     bool reloadCatalog = false;
+                    std::vector<message::StreamMessage> catalogMessages;
                     for (const auto& batch : batches) {
                         if (batch.stream != service::message::kWebhookCatalogChangesStream)
                             continue;
-                        for (const auto& message : batch.messages)
-                            reloadCatalog = reloadCatalog || catalogChange(message);
+                        catalogMessages.insert(catalogMessages.end(), batch.messages.begin(),
+                                               batch.messages.end());
                     }
+                    const auto catalogEventIds =
+                        service::message::idempotency::eventIds(catalogMessages);
+                    const auto pendingCatalogIds =
+                        co_await service::message::idempotency::pending(
+                            context, kGroup, catalogEventIds);
+                    for (const auto& message : catalogMessages)
+                        reloadCatalog = reloadCatalog ||
+                                        (service::message::idempotency::shouldProcess(
+                                             message, pendingCatalogIds) &&
+                                         catalogChange(message));
                     if (reloadCatalog) {
                         co_await session::refresh(context);
                         catalog_ = co_await loadCatalog(context);
                     }
+                    co_await service::message::idempotency::markProcessed(
+                        context, kGroup, catalogEventIds);
                     for (const auto& batch : batches) {
                         if (batch.stream != service::message::kWebhookCatalogChangesStream)
                             continue;
