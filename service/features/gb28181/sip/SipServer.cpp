@@ -630,6 +630,19 @@ void SipServer::receiveUdp() {
                 self->receiveUdp();
                 return;
             }
+            const auto floodDecision = self->unsupportedRequestGuard_.inspect(
+                std::string_view(self->udpBuffer_.data(), size));
+            if (!floodDecision.allowed) {
+                if (self->sipConfig_.logging && floodDecision.suppressedToReport > 0) {
+                    LOG_WARN << "[GB28181][SIP] Unsupported request flood suppressed, count="
+                             << floodDecision.suppressedToReport
+                             << ", last_remote=UDP "
+                             << self->udpRemote_.address().to_string() << ':'
+                             << self->udpRemote_.port();
+                }
+                self->receiveUdp();
+                return;
+            }
             SipPeer peer;
             peer.transport = SipTransport::Udp;
             peer.udp = self->udpRemote_;
