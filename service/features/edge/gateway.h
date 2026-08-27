@@ -500,6 +500,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         const std::string egressKey = "iot:edge:egress:" + session.nodeId;
         const std::array<std::string_view, 3> blockingKeys{
             configKey, terminalKey, egressKey};
+        const auto blockingRedis = c.redis().withOptions(
+            ruvia::OperationOptions{.stopToken = stopToken});
         std::exception_ptr failure;
         try {
             while (!stopToken.stopRequested()) {
@@ -516,9 +518,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 const auto keystrokes = co_await drainKey(c, socket, session, terminalKey, 64);
                 const auto commands = co_await drainKey(c, socket, session, egressKey, 64);
                 if (replies + configs + keystrokes + commands == 0) {
-                    auto item = co_await c.redis().blpop(
-                        blockingKeys,
-                        ruvia::RedisBlockWait::forDuration(std::chrono::seconds(1)));
+                    auto item = co_await blockingRedis.blpop(
+                        blockingKeys, ruvia::RedisBlockWait::indefinitely());
                     if (item) {
                         const auto key = item->key();
                         const auto sent = co_await deliverQueuedItem(

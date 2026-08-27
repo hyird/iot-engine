@@ -155,8 +155,10 @@ int main() {
                        "edge gateway still sends config frames from the session read loop");
         requireContains(gatewaySource, "co_await c.redis().lpush(key, item)",
                         "edge gateway drops a popped command when its socket send fails");
-        requireContains(gatewaySource, "c.redis().blpop(",
-                        "edge gateway busy-polls empty egress lists");
+        requireContains(gatewaySource, "ruvia::OperationOptions{.stopToken = stopToken}",
+                        "edge gateway blocking pop cannot be cancelled with its session");
+        requireContains(gatewaySource, "ruvia::RedisBlockWait::indefinitely()",
+                        "edge gateway periodically recreates idle blocking pops");
         requireContains(gatewaySource, "co_await socket.close(1011, \"edge egress failed\")",
                         "edge gateway leaves a half-open session online after its egress pump fails");
         requireContains(gatewaySource, "session.protocolVersion < 5",
