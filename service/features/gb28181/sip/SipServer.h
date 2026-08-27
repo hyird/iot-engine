@@ -3,6 +3,7 @@
 #include "config/AppConfig.h"
 #include "device/DeviceRegistry.h"
 #include "media/ZlmSdk.h"
+#include "sip/SipFloodGuard.h"
 #include "sip/SipMessage.h"
 
 #include <asio/ip/tcp.hpp>
@@ -159,6 +160,7 @@ private:
     std::unique_ptr<asio::steady_timer> deadlineTimer_;
     std::array<char, 8192> udpBuffer_{};
     asio::ip::udp::endpoint udpRemote_;
+    SipUnsupportedRequestGuard unsupportedRequestGuard_;
     std::atomic_uint cseq_{1};
     std::unordered_map<std::string, TcpConnectionPtr> tcpConnections_;
     std::map<std::string, PreviewSession> previewSessions_;

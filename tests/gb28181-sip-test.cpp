@@ -2,6 +2,7 @@
 #include "service/features/gb28181/device/DeviceRegistry.h"
 #include "service/features/gb28181/media/ZlmSdk.h"
 #include "service/features/gb28181/sip/DigestAuth.h"
+#include "service/features/gb28181/sip/SipFloodGuard.h"
 #include "service/features/gb28181/sip/SipMessage.h"
 #include "service/features/gb28181/sip/SipServer.h"
 
@@ -414,6 +415,39 @@ int main() {
   std::mutex viewerCountsMutex;
   std::condition_variable viewerCountsChanged;
   try {
+    {
+      SipUnsupportedRequestGuard guard(2.0, 1.0, std::chrono::seconds(2));
+      const auto started = SipUnsupportedRequestGuard::Clock::time_point{};
+      require(!SipUnsupportedRequestGuard::requiresGuard(
+                  "REGISTER sip:test SIP/2.0\r\n\r\n"),
+              "SIP flood guard throttled REGISTER");
+      require(!SipUnsupportedRequestGuard::requiresGuard(
+                  "MESSAGE sip:test SIP/2.0\r\n\r\n"),
+              "SIP flood guard throttled MESSAGE");
+      require(!SipUnsupportedRequestGuard::requiresGuard(
+                  "SIP/2.0 200 OK\r\n\r\n"),
+              "SIP flood guard throttled a response");
+      require(guard.inspect("OPTIONS sip:test SIP/2.0\r\n\r\n", started).allowed,
+              "SIP flood guard rejected the first unsupported request");
+      require(guard.inspect("INVITE sip:test SIP/2.0\r\n\r\n", started).allowed,
+              "SIP flood guard rejected the configured burst");
+      require(!guard.inspect("OPTIONS sip:test SIP/2.0\r\n\r\n", started).allowed,
+              "SIP flood guard exceeded the configured burst");
+      require(guard.inspect("OPTIONS sip:test SIP/2.0\r\n\r\n",
+                            started + std::chrono::seconds(1)).allowed,
+              "SIP flood guard did not refill its budget");
+      const auto suppressed = guard.inspect(
+          "INVITE sip:test SIP/2.0\r\n\r\n",
+          started + std::chrono::seconds(2));
+      require(suppressed.allowed,
+              "SIP flood guard did not preserve its sustained request budget");
+      const auto report = guard.inspect(
+          "INVITE sip:test SIP/2.0\r\n\r\n",
+          started + std::chrono::seconds(2));
+      require(!report.allowed && report.suppressedToReport == 2,
+              "SIP flood guard did not aggregate suppressed requests");
+    }
+
     require(!SipMessage::parse(
                  "MESSAGE sip:platform@example.test SIP/2.0\r\n"
                  "Content-Length: 0\r\n\r\n<Notify>smuggled</Notify>")

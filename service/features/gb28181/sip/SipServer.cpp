@@ -774,6 +774,17 @@ void SipServer::processTcpPending(const TcpConnectionPtr& connection) {
 }
 
 void SipServer::handlePacket(const std::string& packet, const SipPeer& remote) {
+    const auto floodDecision = unsupportedRequestGuard_.inspect(packet);
+    if (!floodDecision.allowed) {
+        if (sipConfig_.logging && floodDecision.suppressedToReport > 0) {
+            LOG_WARN << "[GB28181][SIP] Unsupported request flood suppressed, count="
+                     << floodDecision.suppressedToReport
+                     << ", last_remote=" << transportName(remote.transport) << " "
+                     << peerToString(remote);
+        }
+        return;
+    }
+
     const auto message = SipMessage::parse(packet);
     if (!message.has_value()) {
         LOG_WARN << "[GB28181][SIP] Ignored malformed packet from " << transportName(remote.transport)
