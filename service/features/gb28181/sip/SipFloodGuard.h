@@ -44,7 +44,7 @@ public:
         if (tokenEnd == std::string_view::npos || tokenEnd == 0)
             return true;
         const auto token = packet.substr(0, tokenEnd);
-        return token != "REGISTER" && token != "MESSAGE" && token != "SIP/2.0";
+        return token == "INVITE";
     }
 
 private:

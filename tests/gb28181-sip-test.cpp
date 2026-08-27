@@ -427,10 +427,13 @@ int main() {
       require(!SipUnsupportedRequestGuard::requiresGuard(
                   "SIP/2.0 200 OK\r\n\r\n"),
               "SIP flood guard throttled a response");
-      require(!guard.inspect("OPTIONS sip:test SIP/2.0\r\n\r\n", started).allowed,
-              "SIP flood guard processed the first unsupported request");
+      require(!SipUnsupportedRequestGuard::requiresGuard(
+                  "OPTIONS sip:test SIP/2.0\r\n\r\n"),
+              "SIP flood guard changed unsupported method compatibility");
       require(!guard.inspect("INVITE sip:test SIP/2.0\r\n\r\n", started).allowed,
-              "SIP flood guard processed a repeated unsupported request");
+              "SIP flood guard processed the first INVITE request");
+      require(!guard.inspect("INVITE sip:test SIP/2.0\r\n\r\n", started).allowed,
+              "SIP flood guard processed a repeated INVITE request");
       const auto suppressed = guard.inspect(
           "INVITE sip:test SIP/2.0\r\n\r\n",
           started + std::chrono::seconds(1));
