@@ -498,6 +498,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         const std::string terminalKey = terminalInputKey(session.nodeId);
         const std::string configKey = "iot:edge:config:" + session.nodeId;
         const std::string egressKey = "iot:edge:egress:" + session.nodeId;
+        const std::array<std::string_view, 3> blockingKeys{
+            configKey, terminalKey, egressKey};
         std::exception_ptr failure;
         try {
             while (!stopToken.stopRequested()) {
@@ -513,8 +515,18 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                     session.configSentAtMs = protocol::nowMs();
                 const auto keystrokes = co_await drainKey(c, socket, session, terminalKey, 64);
                 const auto commands = co_await drainKey(c, socket, session, egressKey, 64);
-                if (replies + configs + keystrokes + commands == 0)
-                    (void)co_await ruvia::sleepFor(c.worker(), std::chrono::milliseconds(10));
+                if (replies + configs + keystrokes + commands == 0) {
+                    auto item = co_await c.redis().blpop(
+                        blockingKeys,
+                        ruvia::RedisBlockWait::forDuration(std::chrono::seconds(1)));
+                    if (item) {
+                        const auto key = item->key();
+                        const auto sent = co_await deliverQueuedItem(
+                            c, socket, session, key, item->value());
+                        if (sent && key == configKey)
+                            session.configSentAtMs = protocol::nowMs();
+                    }
+                }
             }
         } catch (...) {
             failure = std::current_exception();
@@ -528,6 +540,33 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         }
     }
 
+    static ruvia::Task<bool> deliverQueuedItem(
+        ruvia::Context& c, ruvia::WebSocket& socket, Session& session,
+        std::string_view key, std::string_view item) {
+        pb::Envelope envelope;
+        if (!protocol::decode(item, envelope))
+            co_return false;
+        protocol::bindSession(
+            envelope,
+            protocol::bytes(session.platformBytes.data(), session.platformBytes.size()),
+            protocol::bytes(session.nodeBytes.data(), session.nodeBytes.size()), session.epoch,
+            ++session.outboundSequence, session.protocolVersion);
+        std::exception_ptr failure;
+        try {
+            co_await send(socket, envelope);
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        if (failure) {
+            // Popping transfers ownership to this session. Put the command back
+            // before forcing a reconnect so a transient socket failure cannot
+            // leave its database task pending forever.
+            (void)co_await c.redis().lpush(key, item);
+            std::rethrow_exception(failure);
+        }
+        co_return true;
+    }
+
     static ruvia::Task<int> drainKey(ruvia::Context& c, ruvia::WebSocket& socket,
                                      Session& session, const std::string& key, int limit) {
         int sent = 0;
@@ -535,28 +574,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             auto item = co_await c.redis().lpop(key);
             if (!item)
                 break;
-            pb::Envelope envelope;
-            if (!protocol::decode(*item, envelope))
-                continue;
-            protocol::bindSession(
-                envelope,
-                protocol::bytes(session.platformBytes.data(), session.platformBytes.size()),
-                protocol::bytes(session.nodeBytes.data(), session.nodeBytes.size()), session.epoch,
-                ++session.outboundSequence, session.protocolVersion);
-            std::exception_ptr failure;
-            try {
-                co_await send(socket, envelope);
-            } catch (...) {
-                failure = std::current_exception();
-            }
-            if (failure) {
-                // LPOP transfers ownership to this session. Put the command back
-                // before forcing a reconnect so a transient socket failure cannot
-                // leave its database task pending forever.
-                (void)co_await c.redis().lpush(key, *item);
-                std::rethrow_exception(failure);
-            }
-            ++sent;
+            if (co_await deliverQueuedItem(c, socket, session, key, *item))
+                ++sent;
         }
         co_return sent;
     }

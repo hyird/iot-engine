@@ -153,8 +153,10 @@ int main() {
                         "edge gateway still writes node acknowledgements outside the egress pump");
         requireMissing(gatewaySource, "co_await drain(c, socket, session)",
                        "edge gateway still sends config frames from the session read loop");
-        requireContains(gatewaySource, "co_await c.redis().lpush(key, *item)",
+        requireContains(gatewaySource, "co_await c.redis().lpush(key, item)",
                         "edge gateway drops a popped command when its socket send fails");
+        requireContains(gatewaySource, "c.redis().blpop(",
+                        "edge gateway busy-polls empty egress lists");
         requireContains(gatewaySource, "co_await socket.close(1011, \"edge egress failed\")",
                         "edge gateway leaves a half-open session online after its egress pump fails");
         requireContains(gatewaySource, "session.protocolVersion < 5",
