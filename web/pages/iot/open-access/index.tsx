@@ -192,6 +192,7 @@ interface WebhookFormValues {
     url: string;
     status: Access.Status;
     timeoutSeconds: number;
+    skipTlsVerify: boolean;
     eventTypes: Access.EventType[];
     secret?: string;
     headers?: WebhookHeaderFormItem[];
@@ -497,6 +498,7 @@ function WebhookFormModal({
                 status: editing.status,
                 eventTypes: editing.eventTypes,
                 timeoutSeconds: editing.timeoutSeconds,
+                skipTlsVerify: editing.skipTlsVerify,
                 secret: '',
                 headers: Object.entries(editing.headers).map(([key, value]) => ({ key, value })),
             });
@@ -507,6 +509,7 @@ function WebhookFormModal({
             accessKeyId: accessKeys.length === 1 ? accessKeys[0]?.id : undefined,
             status: 'enabled',
             timeoutSeconds: 5,
+            skipTlsVerify: false,
             eventTypes: ['device.data.reported'],
             headers: [],
         });
@@ -542,6 +545,7 @@ function WebhookFormModal({
                         url: values.url,
                         status: values.status,
                         timeoutSeconds: values.timeoutSeconds,
+                        skipTlsVerify: values.skipTlsVerify,
                         headers,
                         eventTypes: values.eventTypes,
                         secret: secret || undefined,
@@ -596,6 +600,14 @@ function WebhookFormModal({
 
                 <Form.Item label="回调地址" name="url" required>
                     <Input placeholder="https://example.com/webhook" />
+                </Form.Item>
+                <Form.Item
+                    label="跳过 TLS 证书验证"
+                    name="skipTlsVerify"
+                    valuePropName="checked"
+                    extra="仅用于自签名证书等受控环境；开启后无法验证目标服务器身份。"
+                >
+                    <Switch checkedChildren="已跳过" unCheckedChildren="严格验证" />
                 </Form.Item>
                 <Form.Item label="订阅事件" name="eventTypes" required>
                     <Select
@@ -981,6 +993,13 @@ function AccessContent() {
             dataIndex: 'timeoutSeconds',
             width: 90,
             render: (value: number) => `${value}s`,
+        },
+        {
+            title: 'TLS',
+            dataIndex: 'skipTlsVerify',
+            width: 110,
+            render: (value: boolean) =>
+                value ? <Tag color="warning">跳过验证</Tag> : <Tag color="success">严格验证</Tag>,
         },
         {
             title: '状态',

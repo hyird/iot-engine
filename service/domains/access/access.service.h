@@ -211,6 +211,7 @@ FROM (
     'id', webhook.id, 'accessKeyId', webhook.access_key_id,
     'accessKeyName', key.name, 'name', webhook.name, 'url', webhook.url,
     'status', webhook.status, 'timeoutSeconds', webhook.timeout_seconds,
+    'skipTlsVerify', webhook.skip_tls_verify,
     'headers', webhook.headers, 'eventTypes', webhook.event_types,
     'deviceIds', COALESCE(jsonb_agg(binding.device_id)
       FILTER (WHERE binding.device_id IS NOT NULL), '[]'::jsonb),
@@ -237,6 +238,7 @@ FROM (
         validateWebhookUrl(url);
         const auto status = optionalStatus(payload, "enabled");
         const auto timeout = optionalInteger(payload, "timeoutSeconds", 5, 1, 30);
+        const auto skipTlsVerify = optionalBoolean(payload, "skipTlsVerify", false);
         const auto headers = objectJson(payload, "headers", "{}");
         co_await validateHeaders(c, headers);
         const auto events = eventTypes(payload);
@@ -248,17 +250,21 @@ FROM (
         auto transaction = co_await c.db().beginTransaction();
         (void)co_await transaction.execute(R"sql(
 INSERT INTO open_webhook(
-  id, access_key_id, name, url, status, timeout_seconds, headers, event_types, secret)
-VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8::jsonb, NULLIF($9, ''))
+  id, access_key_id, name, url, status, timeout_seconds, skip_tls_verify,
+  headers, event_types, secret)
+VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::boolean, $8::jsonb, $9::jsonb,
+        NULLIF($10, ''))
 )sql",
                                       service::common::dbParams(id, accessKeyId, name, url, status,
-                                                                 timeout, headers, eventJson,
-                                                                 secretValue));
+                                                                 timeout,
+                                                                 skipTlsVerify ? "true" : "false",
+                                                                 headers, eventJson, secretValue));
         co_await service::message::enqueueConfigEvent(transaction, "webhook", "created", id);
         co_await transaction.commit();
         co_return "{\"id\":" + jsonQuoted(id) + ",\"accessKeyId\":" + jsonQuoted(accessKeyId) +
             ",\"name\":" + jsonQuoted(name) + ",\"url\":" + jsonQuoted(url) +
             ",\"status\":" + jsonQuoted(status) + ",\"timeoutSeconds\":" + std::to_string(timeout) +
+            ",\"skipTlsVerify\":" + (skipTlsVerify ? "true" : "false") +
             ",\"headers\":" + headers + ",\"eventTypes\":" + stringArrayJson(events) +
             ",\"hasSecret\":" + (secret && !secret->empty() ? "true" : "false") + "}";
     }
@@ -281,6 +287,10 @@ VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8::jsonb, NULLIF($9, '')
             jsonField(payload, "timeoutSeconds")
                 ? optionalInteger(payload, "timeoutSeconds", existing.timeout, 1, 30)
                 : existing.timeout;
+        const auto skipTlsVerify =
+            jsonField(payload, "skipTlsVerify")
+                ? optionalBoolean(payload, "skipTlsVerify", existing.skipTlsVerify)
+                : existing.skipTlsVerify;
         const auto headers =
             jsonField(payload, "headers") ? objectJson(payload, "headers", "{}") : existing.headers;
         co_await validateHeaders(c, headers);
@@ -296,12 +306,13 @@ VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8::jsonb, NULLIF($9, '')
         (void)co_await transaction.execute(R"sql(
 UPDATE open_webhook
 SET access_key_id = $2::uuid, name = $3, url = $4, status = $5,
-    timeout_seconds = $6, headers = $7::jsonb, event_types = $8::jsonb,
-    secret = NULLIF($9, ''), updated_at = NOW()
+    timeout_seconds = $6, skip_tls_verify = $7::boolean, headers = $8::jsonb,
+    event_types = $9::jsonb, secret = NULLIF($10, ''), updated_at = NOW()
 WHERE id = $1::uuid AND deleted_at IS NULL)sql",
                                       service::common::dbParams(id, accessKeyId, name, url, status,
-                                                                 timeout, headers, eventJson,
-                                                                 secretValue));
+                                                                 timeout,
+                                                                 skipTlsVerify ? "true" : "false",
+                                                                 headers, eventJson, secretValue));
         co_await service::message::enqueueConfigEvent(transaction, "webhook", "updated", id);
         co_await transaction.commit();
     }
@@ -592,6 +603,7 @@ SELECT jsonb_build_object(
         std::string url;
         std::string status;
         std::int64_t timeout{5};
+        bool skipTlsVerify{false};
         std::string headers{"{}"};
         std::set<std::string, std::less<>> events;
         std::optional<std::string> secret;
@@ -662,6 +674,17 @@ SELECT jsonb_build_object(
         if (result < minimum || result > maximum)
             service::common::fail(19002, std::string(field) + " 超出允许范围", 400);
         return result;
+    }
+
+    static bool optionalBoolean(const ruvia::JsonValue& payload, std::string_view field,
+                                bool fallback) {
+        const auto raw = jsonField(payload, field);
+        if (!raw)
+            return fallback;
+        const auto value = payload.get<ruvia::Bool>(field);
+        if (!value)
+            service::common::fail(19002, std::string(field) + " 必须是布尔值", 400);
+        return static_cast<bool>(*value);
     }
 
     static std::set<std::string, std::less<>> requiredScopes(const ruvia::JsonValue& payload) {
@@ -879,7 +902,7 @@ FROM open_access_key WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
     ruvia::Task<WebhookState> requireWebhook(ruvia::Context& c, std::string_view id) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT access_key_id::text, name, url, status, timeout_seconds,
-       headers::text, event_types::text, secret
+       skip_tls_verify::text, headers::text, event_types::text, secret
 FROM open_webhook WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
                                                 service::common::dbParams(id));
         if (rows.empty())
@@ -893,10 +916,11 @@ FROM open_webhook WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
         state.timeout =
             service::common::parseInt64(std::optional<std::string_view>{row[4].value().value_or(std::string_view{})})
                 .value_or(state.timeout);
-        state.headers = std::string(row[5].value().value_or(std::string_view{}));
-        state.events = parseStringArray(row[6].value().value_or(std::string_view{}));
-        if (row[7].value().has_value())
-            state.secret = std::string(row[7].value().value_or(std::string_view{}));
+        state.skipTlsVerify = row[5].value().value_or(std::string_view{}) == "t";
+        state.headers = std::string(row[6].value().value_or(std::string_view{}));
+        state.events = parseStringArray(row[7].value().value_or(std::string_view{}));
+        if (row[8].value().has_value())
+            state.secret = std::string(row[8].value().value_or(std::string_view{}));
         co_return state;
     }
 

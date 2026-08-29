@@ -118,6 +118,11 @@ int main() {
         require(service::access::managedWebhookHeader("Transfer-Encoding", true) &&
                     service::access::managedWebhookHeader("X-IOT-Signature", true),
                 "custom webhook headers could override transport or signature metadata");
+        require(service::access::WebhookHttpClient::tlsVerifyMode(false) ==
+                        asio::ssl::verify_peer &&
+                    service::access::WebhookHttpClient::tlsVerifyMode(true) ==
+                        asio::ssl::verify_none,
+                "webhook TLS verification opt-out policy changed");
         bool unsafeUrlRejected = false;
         try {
             (void)service::access::parseWebhookUrl("https://example.test/callback\r\nX-Injected: yes");

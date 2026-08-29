@@ -5,7 +5,7 @@
 
 namespace service::config {
 
-inline constexpr std::array<ruvia::DbMigration, 25> kSchemaMigrations{{
+inline constexpr std::array<ruvia::DbMigration, 26> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
@@ -1273,6 +1273,10 @@ CREATE INDEX idx_outbox_consumer_receipt_processed_at
     ON outbox_consumer_receipt(processed_at);
 END
 $schema$;
+)sql"},
+    {"0025_webhook_tls_verification", R"sql(
+ALTER TABLE open_webhook
+    ADD COLUMN skip_tls_verify BOOLEAN NOT NULL DEFAULT FALSE;
 )sql"},
 }};
 

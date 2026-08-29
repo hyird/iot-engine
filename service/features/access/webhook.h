@@ -170,13 +170,14 @@ class WebhookHttpClient final {
     WebhookHttpClient& operator=(const WebhookHttpClient&) = delete;
 
     void post(WebhookUrl url, std::string request, std::chrono::seconds timeout,
+              bool skipTlsVerify,
               std::function<void(WebhookHttpResponse)> done) {
         asio::co_spawn(
             io_,
-            [this, url = std::move(url), request = std::move(request),
-             timeout]() -> asio::awaitable<WebhookHttpResponse> {
+            [this, url = std::move(url), request = std::move(request), timeout,
+             skipTlsVerify]() -> asio::awaitable<WebhookHttpResponse> {
                 if (url.tls)
-                    co_return co_await exchangeTls(url, request, timeout);
+                    co_return co_await exchangeTls(url, request, timeout, skipTlsVerify);
                 co_return co_await exchangePlain(url, request, timeout);
             },
             [done = std::move(done)](std::exception_ptr error, WebhookHttpResponse response) {
@@ -212,6 +213,10 @@ class WebhookHttpClient final {
     }
 
   public:
+    static asio::ssl::verify_mode tlsVerifyMode(bool skipTlsVerify) noexcept {
+        return skipTlsVerify ? asio::ssl::verify_none : asio::ssl::verify_peer;
+    }
+
     static WebhookHttpResponse parseResponse(std::string response) {
         std::size_t offset = 0;
         for (int informational = 0; informational < 8; ++informational) {
@@ -279,14 +284,17 @@ class WebhookHttpClient final {
     }
 
     asio::awaitable<WebhookHttpResponse>
-    exchangeTls(const WebhookUrl& url, const std::string& request, std::chrono::seconds timeout) {
+    exchangeTls(const WebhookUrl& url, const std::string& request, std::chrono::seconds timeout,
+                bool skipTlsVerify) {
         auto executor = co_await asio::this_coro::executor;
         using Stream = asio::ssl::stream<asio::ip::tcp::socket>;
         auto stream = std::make_shared<Stream>(executor, tls_);
         auto resolver = std::make_shared<asio::ip::tcp::resolver>(executor);
         if (SSL_set_tlsext_host_name(stream->native_handle(), url.host.c_str()) != 1)
             throw std::runtime_error("Webhook TLS SNI setup failed");
-        stream->set_verify_callback(asio::ssl::host_name_verification(url.host));
+        stream->set_verify_mode(tlsVerifyMode(skipTlsVerify));
+        if (!skipTlsVerify)
+            stream->set_verify_callback(asio::ssl::host_name_verification(url.host));
         auto timer = std::make_shared<asio::steady_timer>(executor, timeout);
         timer->async_wait([resolver, stream](const std::error_code& error) {
             if (!error) {
@@ -383,6 +391,7 @@ public:
         std::string secret;
         std::string headers;
         std::int64_t timeout{5};
+        bool skipTlsVerify{false};
         std::int64_t expiresAtMs{0};
     };
 
@@ -619,6 +628,7 @@ SELECT binding.device_id::text, device.name,
        webhook.id::text, webhook.access_key_id::text, webhook.url,
        COALESCE(webhook.secret, ''), webhook.headers::text,
        webhook.timeout_seconds::text,
+       webhook.skip_tls_verify::text,
        COALESCE((EXTRACT(EPOCH FROM key.expires_at) * 1000)::bigint, 0)::text,
        event_type.value
 FROM open_webhook webhook
@@ -643,13 +653,13 @@ ORDER BY binding.device_id, event_type.value, webhook.id)sql");
                 service::common::parseInt64(std::optional<std::string_view>{row[8].value().value_or(std::string_view{})})
                     .value_or(5);
             const auto expiresAtMs =
-                service::common::parseInt64(std::optional<std::string_view>{row[9].value().value_or(std::string_view{})})
+                service::common::parseInt64(std::optional<std::string_view>{row[10].value().value_or(std::string_view{})})
                     .value_or(0);
-            device.targets[std::string(row[10].value().value_or(std::string_view{}))].push_back(
+            device.targets[std::string(row[11].value().value_or(std::string_view{}))].push_back(
                 {std::string(row[3].value().value_or(std::string_view{})), std::string(row[4].value().value_or(std::string_view{})),
                  std::string(row[5].value().value_or(std::string_view{})), std::string(row[6].value().value_or(std::string_view{})),
                  std::string(row[7].value().value_or(std::string_view{})), timeout > 0 ? timeout : std::int64_t{5},
-                 expiresAtMs});
+                 row[9].value().value_or(std::string_view{}) == "t", expiresAtMs});
         }
         co_return result;
     }
@@ -929,7 +939,7 @@ ORDER BY binding.device_id, event_type.value, webhook.id)sql");
             auto shared = std::make_shared<ruvia::OneShotCompletion<WebhookHttpResponse>>(
                 std::move(completion));
             http_.post(url, WebhookHttpClient::request(url, delivery.body, headers),
-                       std::chrono::seconds(target.timeout),
+                       std::chrono::seconds(target.timeout), target.skipTlsVerify,
                        [shared](WebhookHttpResponse result) mutable {
                            (void)shared->complete(std::move(result));
                        });

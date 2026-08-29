@@ -68,6 +68,7 @@ export namespace Access {
         url: string;
         status: Status;
         timeoutSeconds: number;
+        skipTlsVerify: boolean;
         headers: Record<string, string>;
         eventTypes: EventType[];
         deviceIds: string[];
@@ -87,6 +88,7 @@ export namespace Access {
         url: string;
         status: Status;
         timeoutSeconds: number;
+        skipTlsVerify: boolean;
         headers: Record<string, string>;
         eventTypes: EventType[];
         secret?: string | null;
