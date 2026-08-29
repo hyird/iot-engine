@@ -46,6 +46,10 @@ void requireStrictPresentFieldTypes(std::string_view source) {
             "webhook update ignores present non-array eventTypes");
     require(source.find("payload.get<ruvia::Bool>(field)") != std::string_view::npos,
             "webhook TLS verification flag is not strictly parsed as boolean");
+    require(source.find("CASE WHEN skip_tls_verify THEN '1' ELSE '0' END") !=
+                    std::string_view::npos &&
+                source.find("skip_tls_verify::text") == std::string_view::npos,
+            "stored webhook TLS verification flag is parsed ambiguously");
 }
 
 } // namespace

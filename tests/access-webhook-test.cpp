@@ -24,11 +24,19 @@ void requireNoUnsafeStoll(std::string_view source) {
             "access webhook uses unsafe/partial stoll parsing");
 }
 
+void requireUnambiguousTlsVerificationFlag(std::string_view source) {
+    require(source.find("CASE WHEN webhook.skip_tls_verify THEN '1' ELSE '0' END") !=
+                    std::string_view::npos &&
+                source.find("webhook.skip_tls_verify::text") == std::string_view::npos,
+            "webhook runtime parses PostgreSQL boolean text ambiguously");
+}
+
 } // namespace
 
 int main() {
     try {
         requireNoUnsafeStoll(webhookSource());
+        requireUnambiguousTlsVerificationFlag(webhookSource());
         std::cout << "access webhook tests passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -628,7 +628,7 @@ SELECT binding.device_id::text, device.name,
        webhook.id::text, webhook.access_key_id::text, webhook.url,
        COALESCE(webhook.secret, ''), webhook.headers::text,
        webhook.timeout_seconds::text,
-       webhook.skip_tls_verify::text,
+       CASE WHEN webhook.skip_tls_verify THEN '1' ELSE '0' END,
        COALESCE((EXTRACT(EPOCH FROM key.expires_at) * 1000)::bigint, 0)::text,
        event_type.value
 FROM open_webhook webhook
@@ -659,7 +659,7 @@ ORDER BY binding.device_id, event_type.value, webhook.id)sql");
                 {std::string(row[3].value().value_or(std::string_view{})), std::string(row[4].value().value_or(std::string_view{})),
                  std::string(row[5].value().value_or(std::string_view{})), std::string(row[6].value().value_or(std::string_view{})),
                  std::string(row[7].value().value_or(std::string_view{})), timeout > 0 ? timeout : std::int64_t{5},
-                 row[9].value().value_or(std::string_view{}) == "t", expiresAtMs});
+                 row[9].value().value_or(std::string_view{}) == "1", expiresAtMs});
         }
         co_return result;
     }

@@ -902,7 +902,8 @@ FROM open_access_key WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
     ruvia::Task<WebhookState> requireWebhook(ruvia::Context& c, std::string_view id) {
         const auto rows = co_await c.db().query(R"sql(
 SELECT access_key_id::text, name, url, status, timeout_seconds,
-       skip_tls_verify::text, headers::text, event_types::text, secret
+       CASE WHEN skip_tls_verify THEN '1' ELSE '0' END,
+       headers::text, event_types::text, secret
 FROM open_webhook WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
                                                 service::common::dbParams(id));
         if (rows.empty())
@@ -916,7 +917,7 @@ FROM open_webhook WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
         state.timeout =
             service::common::parseInt64(std::optional<std::string_view>{row[4].value().value_or(std::string_view{})})
                 .value_or(state.timeout);
-        state.skipTlsVerify = row[5].value().value_or(std::string_view{}) == "t";
+        state.skipTlsVerify = row[5].value().value_or(std::string_view{}) == "1";
         state.headers = std::string(row[6].value().value_or(std::string_view{}));
         state.events = parseStringArray(row[7].value().value_or(std::string_view{}));
         if (row[8].value().has_value())
