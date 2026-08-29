@@ -595,7 +595,8 @@ public:
                 break;
 
             std::vector<DeliveryAttempt> attempts(selected.size());
-            ruvia::TaskScope scope(context.worker(), context.resource());
+            ruvia::TaskScope scope(
+                context.worker(), ruvia::TaskScopeOptions{.resource = context.resource()});
             for (std::size_t index = 0; index < selected.size(); ++index) {
                 const auto messageIndex = selected[index]->indexes[selected[index]->next];
                 scope.spawn(deliverCaptured(context, messages[messageIndex], attempts[index]));
@@ -693,7 +694,8 @@ ORDER BY binding.device_id, event_type.value, webhook.id)sql");
             co_return;
         for (std::size_t offset = 0; offset < targets.size(); offset += kTargetConcurrency) {
             const auto end = std::min(targets.size(), offset + kTargetConcurrency);
-            ruvia::TaskScope scope(context.worker(), context.resource());
+            ruvia::TaskScope scope(
+                context.worker(), ruvia::TaskScopeOptions{.resource = context.resource()});
             for (auto index = offset; index < end; ++index)
                 scope.spawn(deliverTarget(context, *targets[index], delivery));
             co_await scope.join();

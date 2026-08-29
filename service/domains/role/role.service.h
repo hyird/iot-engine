@@ -59,7 +59,7 @@ class RoleService {
                 std::to_string(offsetIndex),
             listParams);
 
-        ruvia::BoxedArray<RoleItemDto> roles(c.resource());
+        ruvia::BoxedArray<RoleItemDto> roles(ruvia::ModelOptions{.resource = c.resource()});
         for (const auto& row : rows) {
             auto& role = roles.emplace(c);
             fillBase(role, row);
@@ -92,7 +92,7 @@ FROM sys_role WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
         const auto rows =
             co_await c.db().query("SELECT id, name, code FROM sys_role WHERE status = "
                                   "'enabled' AND deleted_at IS NULL ORDER BY id");
-        ruvia::BoxedArray<RoleOptionDto> result(c.resource());
+        ruvia::BoxedArray<RoleOptionDto> result(ruvia::ModelOptions{.resource = c.resource()});
         for (const auto& row : rows) {
             auto& item = result.emplace(c);
             item.set<"id">(row[0].value().value_or(std::string_view{})).set<"name">(row[1].value().value_or(std::string_view{})).set<"code">(row[2].value().value_or(std::string_view{}));
@@ -224,7 +224,8 @@ WHERE id = $1 ORDER BY permission)sql",
                                                 service::common::dbParams(id));
         ruvia::Array<ruvia::String> result(c.resource());
         for (const auto& row : rows)
-            result.emplace_back(row[0].value().value_or(std::string_view{}), c.resource());
+            result.emplace_back(row[0].value().value_or(std::string_view{}),
+                                ruvia::ModelOptions{.resource = c.resource()});
         co_return result;
     }
 

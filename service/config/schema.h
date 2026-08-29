@@ -2,10 +2,31 @@
 
 #include <array>
 #include <ruvia/web/db/DbMigration.h>
+#include <utility>
 
 namespace service::config {
 
-inline constexpr std::array<ruvia::DbMigration, 26> kSchemaMigrations{{
+class SchemaMigration final {
+  public:
+    SchemaMigration(std::string id, std::string sql)
+        : id_(std::move(id)), sql_(std::move(sql)) {}
+
+    [[nodiscard]] std::string_view id() const noexcept { return id_; }
+    [[nodiscard]] std::string_view sql() const noexcept { return sql_; }
+
+    operator ruvia::DbMigration() const {
+        return ruvia::DbMigration(ruvia::DbMigrationOptions{
+            .id = id_,
+            .sql = sql_,
+        });
+    }
+
+  private:
+    std::string id_;
+    std::string sql_;
+};
+
+inline const std::array<SchemaMigration, 26> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN

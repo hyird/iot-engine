@@ -139,7 +139,7 @@ class CommandService final {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         while (true) {
             ruvia::BoxedArray<service::device::DeviceCommandStatusDto> statuses(
-                context.resource());
+                ruvia::ModelOptions{.resource = context.resource()});
             bool complete = true;
             for (const auto& commandId : commandIds) {
                 const auto fields =
@@ -281,7 +281,8 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
             context.redis(), message::commandStream(route.workerIndex, true),
             PendingQueueKind::Stream, dispatches, submittedBy, 10000);
 
-        ruvia::BoxedArray<ruvia::String> commandIds(context.resource());
+        ruvia::BoxedArray<ruvia::String> commandIds(
+            ruvia::ModelOptions{.resource = context.resource()});
         for (const auto& dispatch : dispatches) {
             const auto& task = dispatch.task;
             std::string data = "{\"commandId\":\"" + task.messageId + "\",\"elements\":{";
@@ -299,7 +300,8 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
             } catch (const std::exception& error) {
                 std::cerr << "open access command event publish failed: " << error.what() << '\n';
             }
-            commandIds.emplace(task.messageId, context.resource());
+            commandIds.emplace(
+                task.messageId, ruvia::ModelOptions{.resource = context.resource()});
         }
 
         service::device::DeviceCommandCreateDto result(context);
@@ -387,7 +389,8 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
             context.redis(), "iot:edge:egress:" + std::string(nodeId), PendingQueueKind::List,
             dispatches, submittedBy, 1024);
 
-        ruvia::BoxedArray<ruvia::String> commandIds(context.resource());
+        ruvia::BoxedArray<ruvia::String> commandIds(
+            ruvia::ModelOptions{.resource = context.resource()});
         for (const auto& dispatch : dispatches) {
             const auto& task = dispatch.task;
             std::string data = "{\"commandId\":\"" + task.messageId + "\",\"elements\":{";
@@ -406,7 +409,8 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
                 std::cerr << "open access edge command event publish failed: " << error.what()
                           << '\n';
             }
-            commandIds.emplace(task.messageId, context.resource());
+            commandIds.emplace(
+                task.messageId, ruvia::ModelOptions{.resource = context.resource()});
         }
 
         service::device::DeviceCommandCreateDto result(context);

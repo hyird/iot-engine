@@ -63,7 +63,8 @@ namespace
 
     ruvia::DbConfig databaseConfig(const ruvia::Env &env)
     {
-        auto config = ruvia::DbConfig::postgreSql();
+        ruvia::DbConfig config;
+        config.driver = ruvia::DbDriver::kPostgreSql;
         assign(config.host, env.get("DB_HOST"));
         assign(config.username, env.get("DB_USERNAME"));
         assign(config.password, env.get("DB_PASSWORD"));
@@ -197,7 +198,7 @@ namespace
         config.root = webRoot;
         config.staticOptions.indexFile = "index.html";
         config.staticOptions.cacheControl = "no-cache";
-        app.setDocumentRoot(std::move(config));
+        app.documentRoot(std::move(config));
     }
 
     ruvia::Task<ruvia::HttpResponse> handleError(ruvia::Context &c, ruvia::HttpErrorInfo info)
@@ -266,8 +267,11 @@ int main(int argc, char *argv[])
         migrations.reserve(service::config::kSchemaMigrations.size() + 1);
         migrations.insert(migrations.end(), service::config::kSchemaMigrations.begin(),
                           service::config::kSchemaMigrations.end());
-        migrations.emplace_back(storagePolicyMigration.id, storagePolicyMigration.sql);
-        ruvia::DbMigrationOptions migrationOptions;
+        migrations.emplace_back(ruvia::DbMigrationOptions{
+            .id = storagePolicyMigration.id,
+            .sql = storagePolicyMigration.sql,
+        });
+        ruvia::DbMigratorOptions migrationOptions;
         migrationOptions.table = "sys_schema_migrations";
         const auto report =
             ruvia::DbMigrator::migrate(db, migrations, std::move(migrationOptions));
@@ -356,8 +360,8 @@ int main(int argc, char *argv[])
             *observability, collectorWorkerCount, outboxPolicy);
         auto applicationRuntime =
             std::make_shared<service::application::Runtime>(*observability);
-        app.useDb(std::move(db))
-            .useRedis(std::move(serviceRedis))
+        app.database(ruvia::DbRegistrationConfig{.config = std::move(db)})
+            .redis(ruvia::RedisRegistrationConfig{.config = std::move(serviceRedis)})
             .onStart([collector, telemetry, commandResults, openWebhooks, configReconciler,
                       edgeProjector, gb28181Projector, alerts, outbox,
                       applicationRuntime,
@@ -448,12 +452,15 @@ int main(int argc, char *argv[])
                 applicationRuntime->start(); })
             .onStop([applicationRuntime] { applicationRuntime->stop(); })
             .onError(&handleError)
-            .setListeners({ruvia::ListenerConfig::http(
-                app.env().get("HOST").value_or("0.0.0.0"),
-                app.env().get<std::uint16_t>("PORT").value_or(1102))})
-            .setStreamBodyLimit(129U * 1024U * 1024U)
-            .setMaxWebSocketMessageBytes(16U * 1024U)
-            .setWorkersPerListener(serviceWorkerCount)
+            .listen(ruvia::ListenConfig{
+                .address = std::string(app.env().get("HOST").value_or("0.0.0.0")),
+                .http = app.env().get<std::uint16_t>("PORT").value_or(1102),
+            })
+            .server(ruvia::ServerConfig{
+                .workerCount = serviceWorkerCount,
+                .maxStreamBodyBytes = 129U * 1024U * 1024U,
+                .maxWebSocketMessageBytes = 16U * 1024U,
+            })
             .run();
         service::common::packet_log::shutdown();
         return 0;

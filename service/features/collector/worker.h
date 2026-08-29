@@ -49,7 +49,7 @@ class Worker final {
                       std::shared_future<void> runtimeReset,
                       ServerSocketRouter serverSocketRouter)
         : loop_(std::move(loop)), workerHandle_(loop_.handle()), resource_(),
-          scope_(workerHandle_, &resource_),
+          scope_(workerHandle_, ruvia::TaskScopeOptions{.resource = &resource_}),
           scheduler_(loop_.ioContext()),
           redis_(loop_.ioContext(), std::move(redisConfig), workerHandle_),
           engine_(protocols()),

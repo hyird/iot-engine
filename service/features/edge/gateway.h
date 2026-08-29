@@ -31,10 +31,12 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
   public:
     RUVIA_CONTROLLER_GROUP("/edge/v1")
     RUVIA_ROUTES_BEGIN
-    const auto webSocketOptions = ruvia::WebSocketRouteOptions{
+    const auto webSocketOptions = ruvia::WebSocketRouteConfig{
         .lifecycle = {
-            .heartbeat = ruvia::WebSocketHeartbeatPolicy::periodic(
-                std::chrono::seconds(30), std::chrono::seconds(15)),
+            .heartbeat = {
+                .pingInterval = std::chrono::seconds(30),
+                .pongTimeout = std::chrono::seconds(15),
+            },
             .closeHandshakeTimeout = std::chrono::seconds(5),
         },
     };
@@ -78,7 +80,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         auto& socket = c.webSocket();
         auto first = co_await socket.read();
         if (!first || !first->binary()) {
-            co_await socket.close(1002, "binary hello required");
+            co_await socket.close(
+                ruvia::WebSocketCloseOptions{.code = 1002, .reason = "binary hello required"});
             co_return;
         }
         pb::Envelope input;
@@ -87,7 +90,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             input.payload_case() != pb::Envelope::kHello ||
             !protocol::validSessionPlatformId(input.platform_id()) ||
             !protocol::validImei(input.hello().imei())) {
-            co_await socket.close(1002, "invalid hello");
+            co_await socket.close(
+                ruvia::WebSocketCloseOptions{.code = 1002, .reason = "invalid hello"});
             co_return;
         }
         co_await publishIngress(c, first->payload(), protocol::nowMs());
@@ -107,7 +111,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         if (status != "approved") {
             co_await sendEnrollment(socket, session, status);
             if (status == "rejected") {
-                co_await socket.close(1008, status);
+                co_await socket.close(ruvia::WebSocketCloseOptions{.code = 1008, .reason = status});
                 co_return;
             }
 
@@ -121,7 +125,10 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                     input.platform_id() !=
                         protocol::bytes(session.platformBytes.data(),
                                         session.platformBytes.size())) {
-                    co_await socket.close(1002, "invalid pending heartbeat");
+                    co_await socket.close(ruvia::WebSocketCloseOptions{
+                        .code = 1002,
+                        .reason = "invalid pending heartbeat",
+                    });
                     co_return;
                 }
                 session.inboundSequence = input.sequence();
@@ -140,7 +147,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                     break;
                 if (status == "rejected") {
                     co_await sendEnrollment(socket, session, status);
-                    co_await socket.close(1008, status);
+                    co_await socket.close(
+                        ruvia::WebSocketCloseOptions{.code = 1008, .reason = status});
                     co_return;
                 }
 
@@ -171,18 +179,25 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         // Egress must not wait for the node to speak first: an idle terminal only
         // produces a heartbeat every few seconds, which would stall keystrokes for
         // that whole interval. The pump owns the egress key from here on.
-        ruvia::TaskScope egressScope(c.worker(), c.resource());
+        ruvia::TaskScope egressScope(
+            c.worker(), ruvia::TaskScopeOptions{.resource = c.resource()});
         egressScope.spawn(pumpEgress(c, socket, session, egressScope.stopToken()));
         try {
             while (auto message = co_await socket.read()) {
                 if (!message->binary() || !protocol::decode(message->payload(), input) ||
                     !validInbound(input, session)) {
-                    co_await socket.close(1002, "invalid envelope");
+                    co_await socket.close(ruvia::WebSocketCloseOptions{
+                        .code = 1002,
+                        .reason = "invalid envelope",
+                    });
                     break;
                 }
                 if (!co_await session_state::refresh(c.redis(), session.nodeId, session.epoch,
                                                      session.protocolVersion)) {
-                    co_await socket.close(1008, "session replaced");
+                    co_await socket.close(ruvia::WebSocketCloseOptions{
+                        .code = 1008,
+                        .reason = "session replaced",
+                    });
                     break;
                 }
                 session.inboundSequence = input.sequence();
@@ -220,13 +235,17 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         const auto ticketKey = "iot:edge:terminal:ticket:" + ticket;
         const auto node = co_await c.redis().getDel(ticketKey);
         if (!node) {
-            co_await socket.close(1008, "invalid terminal ticket");
+            co_await socket.close(ruvia::WebSocketCloseOptions{
+                .code = 1008,
+                .reason = "invalid terminal ticket",
+            });
             co_return;
         }
         const std::string nodeId(*node);
         const auto active = co_await c.redis().get(sessionKey(nodeId));
         if (!active) {
-            co_await socket.close(1013, "edge node offline");
+            co_await socket.close(
+                ruvia::WebSocketCloseOptions{.code = 1013, .reason = "edge node offline"});
             co_return;
         }
         const auto terminalBytes = protocol::randomUuidV7Bytes();
@@ -236,7 +255,10 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             session_state::protocolVersion(nodeSession);
         if (!sessionProtocolVersion ||
             !protocol::supportsProtocolVersion(*sessionProtocolVersion)) {
-            co_await socket.close(1013, "edge node protocol state unavailable");
+            co_await socket.close(ruvia::WebSocketCloseOptions{
+                .code = 1013,
+                .reason = "edge node protocol state unavailable",
+            });
             co_return;
         }
         ruvia::RedisSetOptions terminalOptions;
@@ -262,7 +284,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             co_await sendWebTerminal(socket, ready);
             terminalSession.opened = true;
         }
-        ruvia::TaskScope outputScope(c.worker(), c.resource());
+        ruvia::TaskScope outputScope(
+            c.worker(), ruvia::TaskScopeOptions{.resource = c.resource()});
         outputScope.spawn(pumpTerminal(c, socket, nodeId, nodeSession, terminalId,
                                        terminalBytes, outputScope.stopToken(), terminalSession));
         std::exception_ptr failure;
@@ -359,7 +382,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         }
         co_await releaseTerminalSession(c, nodeId, terminalId, nodeSession);
         if (!terminalSession.nodeClosed && !closeReason.empty())
-            co_await socket.close(closeCode, closeReason);
+            co_await socket.close(
+                ruvia::WebSocketCloseOptions{.code = closeCode, .reason = closeReason});
         if (failure)
             std::rethrow_exception(failure);
     }
@@ -534,7 +558,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         }
         if (failure) {
             try {
-                co_await socket.close(1011, "edge egress failed");
+                co_await socket.close(
+                    ruvia::WebSocketCloseOptions{.code = 1011, .reason = "edge egress failed"});
             } catch (...) {
             }
             std::rethrow_exception(failure);
@@ -701,7 +726,10 @@ return 1
                     webpb::WebTerminalFrame close;
                     close.mutable_close()->set_reason("terminal stream protocol error");
                     co_await sendWebTerminal(socket, close);
-                    co_await socket.close(1011, "terminal stream protocol error");
+                    co_await socket.close(ruvia::WebSocketCloseOptions{
+                        .code = 1011,
+                        .reason = "terminal stream protocol error",
+                    });
                     co_return;
                 }
                 if (terminalSession.protocolVersion >= 5 &&
@@ -710,7 +738,10 @@ return 1
                     webpb::WebTerminalFrame close;
                     close.mutable_close()->set_reason("terminal output sequence missing");
                     co_await sendWebTerminal(socket, close);
-                    co_await socket.close(1011, "terminal output sequence missing");
+                    co_await socket.close(ruvia::WebSocketCloseOptions{
+                        .code = 1011,
+                        .reason = "terminal output sequence missing",
+                    });
                     co_return;
                 }
                 if (frame.payload_case() == webpb::WebTerminalFrame::kReady) {
@@ -729,7 +760,8 @@ return 1
                     co_await queue(c, nodeId, ack);
                 }
                 if (frame.payload_case() == webpb::WebTerminalFrame::kClose) {
-                    co_await socket.close(1000, "terminal closed");
+                    co_await socket.close(
+                        ruvia::WebSocketCloseOptions{.code = 1000, .reason = "terminal closed"});
                     co_return;
                 }
             }
@@ -739,7 +771,10 @@ return 1
                 webpb::WebTerminalFrame close;
                 close.mutable_close()->set_reason("terminal open timed out");
                 co_await sendWebTerminal(socket, close);
-                co_await socket.close(1013, "terminal open timed out");
+                co_await socket.close(ruvia::WebSocketCloseOptions{
+                    .code = 1013,
+                    .reason = "terminal open timed out",
+                });
                 co_return;
             }
 
@@ -753,7 +788,10 @@ return 1
                     close.mutable_close()->set_reason("edge node connection lost");
                     co_await sendWebTerminal(socket, close);
                     terminalSession.nodeClosed = true;
-                    co_await socket.close(1013, "edge node connection lost");
+                    co_await socket.close(ruvia::WebSocketCloseOptions{
+                        .code = 1013,
+                        .reason = "edge node connection lost",
+                    });
                     co_return;
                 }
                 const auto owner = co_await redis.get(ownershipKey);
@@ -763,7 +801,10 @@ return 1
                     webpb::WebTerminalFrame close;
                     close.mutable_close()->set_reason("terminal ownership lost");
                     co_await sendWebTerminal(socket, close);
-                    co_await socket.close(1013, "terminal ownership lost");
+                    co_await socket.close(ruvia::WebSocketCloseOptions{
+                        .code = 1013,
+                        .reason = "terminal ownership lost",
+                    });
                     co_return;
                 }
                 (void)co_await redis.expire(ownershipKey, std::chrono::seconds(120));

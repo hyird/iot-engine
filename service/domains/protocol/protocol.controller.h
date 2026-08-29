@@ -75,14 +75,14 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
 
     ruvia::Task<ruvia::HttpResponse> create(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:protocol:add");
-        const auto payload = co_await c.req().json();
+        const auto payload = co_await c.req().jsonValue();
         co_await protocolService().create(c, payload);
         co_return c.json(service::common::operation(c, "创建成功"));
     }
 
     ruvia::Task<ruvia::HttpResponse> update(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:protocol:edit");
-        const auto payload = co_await c.req().json();
+        const auto payload = co_await c.req().jsonValue();
         co_await protocolService().update(c, id(c), payload);
         co_return c.json(service::common::operation(c, "更新成功"));
     }

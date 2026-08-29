@@ -67,13 +67,13 @@ class AlertController final : public ruvia::Controller<AlertController> {
 
     ruvia::Task<ruvia::HttpResponse> createRule(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:alert:add");
-        co_await alertService().createRule(c, co_await c.req().json());
+        co_await alertService().createRule(c, co_await c.req().jsonValue());
         co_return c.json(service::common::operation(c, "创建成功"));
     }
 
     ruvia::Task<ruvia::HttpResponse> updateRule(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:alert:edit");
-        co_await alertService().updateRule(c, alertId(c), co_await c.req().json());
+        co_await alertService().updateRule(c, alertId(c), co_await c.req().jsonValue());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 
@@ -85,7 +85,7 @@ class AlertController final : public ruvia::Controller<AlertController> {
 
     ruvia::Task<ruvia::HttpResponse> batchRemoveRules(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:alert:delete");
-        co_await alertService().batchRemoveRules(c, co_await c.req().json());
+        co_await alertService().batchRemoveRules(c, co_await c.req().jsonValue());
         co_return c.json(service::common::operation(c, "批量删除成功"));
     }
 
@@ -101,13 +101,13 @@ class AlertController final : public ruvia::Controller<AlertController> {
 
     ruvia::Task<ruvia::HttpResponse> createTemplate(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:alert:add");
-        co_await alertService().createTemplate(c, co_await c.req().json());
+        co_await alertService().createTemplate(c, co_await c.req().jsonValue());
         co_return c.json(service::common::operation(c, "创建成功"));
     }
 
     ruvia::Task<ruvia::HttpResponse> updateTemplate(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:alert:edit");
-        co_await alertService().updateTemplate(c, alertId(c), co_await c.req().json());
+        co_await alertService().updateTemplate(c, alertId(c), co_await c.req().jsonValue());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 
@@ -120,7 +120,7 @@ class AlertController final : public ruvia::Controller<AlertController> {
     ruvia::Task<ruvia::HttpResponse> applyTemplate(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:alert:add");
         co_return alertJson(c,
-                           co_await alertService().applyTemplate(c, co_await c.req().json()),
+                           co_await alertService().applyTemplate(c, co_await c.req().jsonValue()),
                            "应用成功");
     }
 
@@ -137,7 +137,7 @@ class AlertController final : public ruvia::Controller<AlertController> {
 
     ruvia::Task<ruvia::HttpResponse> batchAcknowledge(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:alert:ack");
-        co_await alertService().batchAcknowledge(c, co_await c.req().json());
+        co_await alertService().batchAcknowledge(c, co_await c.req().jsonValue());
         co_return c.json(service::common::operation(c, "批量确认成功"));
     }
 

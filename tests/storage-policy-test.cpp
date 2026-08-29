@@ -86,7 +86,10 @@ int main() {
         migrations.reserve(storage::kSchemaMigrations.size() + 1);
         migrations.insert(migrations.end(), storage::kSchemaMigrations.begin(),
                           storage::kSchemaMigrations.end());
-        migrations.emplace_back(enabled.id, enabled.sql);
+        migrations.emplace_back(ruvia::DbMigrationOptions{
+            .id = enabled.id,
+            .sql = enabled.sql,
+        });
         for (const auto& migration : migrations) {
             try {
                 ruvia::detail::validateMigrationList(

@@ -159,7 +159,8 @@ int main() {
                         "edge gateway blocking pop cannot be cancelled with its session");
         requireContains(gatewaySource, "ruvia::RedisBlockWait::indefinitely()",
                         "edge gateway periodically recreates idle blocking pops");
-        requireContains(gatewaySource, "co_await socket.close(1011, \"edge egress failed\")",
+        requireContains(gatewaySource,
+                        ".reason = \"edge egress failed\"",
                         "edge gateway leaves a half-open session online after its egress pump fails");
         requireContains(gatewaySource, "session.protocolVersion < 5",
                         "edge gateway does not isolate legacy terminal data handling");

@@ -66,7 +66,7 @@ class UserService {
                 std::to_string(offsetIndex),
             listParams);
 
-        ruvia::BoxedArray<UserItemDto> users(c.resource());
+        ruvia::BoxedArray<UserItemDto> users(ruvia::ModelOptions{.resource = c.resource()});
         for (const auto& row : rows) {
             auto& item = users.emplace(c);
             fillBase(item, row);
@@ -111,7 +111,7 @@ WHERE u.id = $1 AND u.deleted_at IS NULL LIMIT 1)sql",
         }
         sql += " ORDER BY username LIMIT 100";
         const auto rows = co_await c.db().query(sql, params);
-        ruvia::BoxedArray<UserOptionDto> result(c.resource());
+        ruvia::BoxedArray<UserOptionDto> result(ruvia::ModelOptions{.resource = c.resource()});
         for (const auto& row : rows) {
             auto& item = result.emplace(c);
             item.set<"id">(row[0].value().value_or(std::string_view{})).set<"username">(row[1].value().value_or(std::string_view{})).set<"nickname">(row[2].value().value_or(std::string_view{}));
@@ -248,7 +248,8 @@ SELECT r.id, r.name, r.code FROM sys_role r
 JOIN sys_user_role ur ON ur.role_id = r.id
 WHERE ur.user_id = $1 AND r.deleted_at IS NULL ORDER BY r.id)sql",
                                                 service::common::dbParams(userId));
-        ruvia::BoxedArray<service::role::RoleOptionDto> roles(c.resource());
+        ruvia::BoxedArray<service::role::RoleOptionDto> roles(
+            ruvia::ModelOptions{.resource = c.resource()});
         for (const auto& row : rows) {
             auto& role = roles.emplace(c);
             role.set<"id">(row[0].value().value_or(std::string_view{})).set<"name">(row[1].value().value_or(std::string_view{})).set<"code">(row[2].value().value_or(std::string_view{}));

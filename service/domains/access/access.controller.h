@@ -63,13 +63,13 @@ class AccessAdminController final : public ruvia::Controller<AccessAdminControll
 
     ruvia::Task<ruvia::HttpResponse> createKey(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:open-access:add");
-        const auto payload = co_await c.req().json();
+        const auto payload = co_await c.req().jsonValue();
         co_return jsonData(c, co_await accessService().createKey(c, payload), "创建成功");
     }
 
     ruvia::Task<ruvia::HttpResponse> updateKey(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:open-access:edit");
-        const auto payload = co_await c.req().json();
+        const auto payload = co_await c.req().jsonValue();
         co_await accessService().updateKey(c, routeId(c), payload);
         co_return c.json(service::common::operation(c, "更新成功"));
     }
@@ -92,13 +92,13 @@ class AccessAdminController final : public ruvia::Controller<AccessAdminControll
 
     ruvia::Task<ruvia::HttpResponse> createWebhook(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:open-access:add");
-        const auto payload = co_await c.req().json();
+        const auto payload = co_await c.req().jsonValue();
         co_return jsonData(c, co_await accessService().createWebhook(c, payload), "创建成功");
     }
 
     ruvia::Task<ruvia::HttpResponse> updateWebhook(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:open-access:edit");
-        const auto payload = co_await c.req().json();
+        const auto payload = co_await c.req().jsonValue();
         co_await accessService().updateWebhook(c, routeId(c), payload);
         co_return c.json(service::common::operation(c, "更新成功"));
     }

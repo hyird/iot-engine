@@ -47,8 +47,12 @@ template <typename... Ts> inline std::vector<ruvia::DbValue> dbParams(Ts&&... va
 }
 
 [[noreturn]] inline void fail(std::int64_t code, std::string message, std::uint16_t status) {
-    throw ruvia::HttpError(ruvia::HttpStatusCode::fromValue(status), std::to_string(code),
-                           std::move(message));
+    const auto codeText = std::to_string(code);
+    throw ruvia::HttpError(ruvia::HttpErrorInfoOptions{
+        .status = ruvia::HttpStatusCode::fromValue(status),
+        .code = codeText,
+        .message = message,
+    });
 }
 
 inline std::int64_t errorCode(std::string_view code, std::uint16_t status) {

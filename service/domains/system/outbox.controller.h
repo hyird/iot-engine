@@ -49,7 +49,8 @@ FROM outbox_event
 WHERE published_at IS NULL AND dead_lettered_at IS NOT NULL
 ORDER BY dead_lettered_at, occurred_at, id
 LIMIT 100)sql");
-    ruvia::BoxedArray<OutboxDeadLetterDto> items(context.resource());
+    ruvia::BoxedArray<OutboxDeadLetterDto> items(
+        ruvia::ModelOptions{.resource = context.resource()});
     for (const auto &row : rows) {
       auto &item = items.emplace(context);
       item.set<"id">(row[0].value().value_or(std::string_view{}))

@@ -26,7 +26,7 @@ class Client final {
            const ruvia::WorkerHandle& worker)
         : resource_(), operationScope_(),
           definitions_{makeDefinition(std::move(config), &resource_)},
-          registry_(ioContext, &resource_, definitions_, &worker) {}
+          registry_(ioContext, &resource_, definitions_, worker) {}
 
     Client(const Client&) = delete;
     Client& operator=(const Client&) = delete;
@@ -70,7 +70,7 @@ class Client final {
         // pool stays on BLOCK 0 until its StopToken fires, with no timer wakeups.
         config.commandTimeout = std::nullopt;
         return {
-            std::pmr::string(ruvia::detail::kDefaultRedisAlias, resource),
+            std::pmr::string(ruvia::detail::kDefaultCapabilityAlias, resource),
             ruvia::detail::RedisConfigStorage(config, resource),
         };
     }

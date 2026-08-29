@@ -61,7 +61,7 @@ class EdgeService {
             nodeSelect() + where + " ORDER BY created_at DESC LIMIT $" +
                 std::to_string(limit) + " OFFSET $" + std::to_string(offset),
             listParams);
-        ruvia::BoxedArray<EdgeNodeDto> nodes(c.resource());
+        ruvia::BoxedArray<EdgeNodeDto> nodes(ruvia::ModelOptions{.resource = c.resource()});
         for (const auto& row : rows) {
             auto& node = nodes.emplace(c);
             fillNode(c, node, row);
@@ -351,7 +351,7 @@ FROM edge_firmware WHERE id = $1::uuid LIMIT 1)sql",
         const auto rows = co_await c.db().query(R"sql(
 SELECT id::text, version, file_name, sha256, size_bytes, iot_utc_timestamp(created_at)
 FROM edge_firmware ORDER BY created_at DESC LIMIT 100)sql");
-        ruvia::BoxedArray<FirmwareDto> result(c.resource());
+        ruvia::BoxedArray<FirmwareDto> result(ruvia::ModelOptions{.resource = c.resource()});
         for (const auto& row : rows) {
             auto& item = result.emplace(c);
             item.set<"id">(row[0].value().value_or(std::string_view{}))
@@ -466,7 +466,8 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
                 if (!result.success())
                     service::common::fail(17020, result.message(), 502);
                 LogsDto output(c);
-                ruvia::BoxedArray<LogLineDto> lines(c.resource());
+                ruvia::BoxedArray<LogLineDto> lines(
+                    ruvia::ModelOptions{.resource = c.resource()});
                 for (const auto& line : result.lines()) {
                     auto& item = lines.emplace(c);
                     item.set<"time">(service::common::utcTimestampFromMilliseconds(line.time_ms()))
@@ -726,13 +727,15 @@ SELECT name, display_name, COALESCE(mac, ''), is_up, is_bridge, COALESCE(ipv4, '
                  FROM jsonb_array_elements_text(bridge_ports) AS values(value)), '')
 FROM edge_node_interface WHERE node_id = $1::uuid ORDER BY name)sql",
                                                 service::common::dbParams(id));
-        ruvia::BoxedArray<InterfaceDto> result(c.resource());
+        ruvia::BoxedArray<InterfaceDto> result(
+            ruvia::ModelOptions{.resource = c.resource()});
         for (const auto& row : rows) {
             auto& item = result.emplace(c);
-            ruvia::BoxedArray<ruvia::String> ports(c.resource());
+            ruvia::BoxedArray<ruvia::String> ports(
+                ruvia::ModelOptions{.resource = c.resource()});
             for (const auto& port : split(row[8].value().value_or(std::string_view{})))
                 if (!port.empty())
-                    ports.emplace(port, c.resource());
+                    ports.emplace(port, ruvia::ModelOptions{.resource = c.resource()});
             item.set<"name">(row[0].value().value_or(std::string_view{}))
                 .set<"displayName">(row[1].value().value_or(std::string_view{}))
                 .set<"mac">(row[2].value().value_or(std::string_view{}))
@@ -755,13 +758,14 @@ SELECT name, address_mode, device, is_up, is_bridge, COALESCE(ipv4, ''),
                  FROM jsonb_array_elements_text(bridge_ports) AS values(value)), '')
 FROM edge_node_network WHERE node_id = $1::uuid ORDER BY name)sql",
                                                 service::common::dbParams(id));
-        ruvia::BoxedArray<NetworkDto> result(c.resource());
+        ruvia::BoxedArray<NetworkDto> result(ruvia::ModelOptions{.resource = c.resource()});
         for (const auto& row : rows) {
             auto& item = result.emplace(c);
-            ruvia::BoxedArray<ruvia::String> ports(c.resource());
+            ruvia::BoxedArray<ruvia::String> ports(
+                ruvia::ModelOptions{.resource = c.resource()});
             for (const auto& port : split(row[8].value().value_or(std::string_view{})))
                 if (!port.empty())
-                    ports.emplace(port, c.resource());
+                    ports.emplace(port, ruvia::ModelOptions{.resource = c.resource()});
             item.set<"name">(row[0].value().value_or(std::string_view{}))
                 .set<"mode">(row[1].value().value_or(std::string_view{}))
                 .set<"device">(row[2].value().value_or(std::string_view{}))
@@ -781,7 +785,7 @@ FROM edge_node_network WHERE node_id = $1::uuid ORDER BY name)sql",
 SELECT path, display_name, available, rs485 FROM edge_node_serial
 WHERE node_id = $1::uuid ORDER BY path)sql",
                                                 service::common::dbParams(id));
-        ruvia::BoxedArray<SerialDto> result(c.resource());
+        ruvia::BoxedArray<SerialDto> result(ruvia::ModelOptions{.resource = c.resource()});
         for (const auto& row : rows) {
             auto& item = result.emplace(c);
             item.set<"path">(row[0].value().value_or(std::string_view{}))
@@ -794,7 +798,7 @@ WHERE node_id = $1::uuid ORDER BY path)sql",
 
     static ruvia::Task<ruvia::BoxedArray<TaskDto>> tasks(ruvia::Context& c, std::string_view id) {
         const auto rows = co_await c.db().query(taskSelect(), service::common::dbParams(id));
-        ruvia::BoxedArray<TaskDto> result(c.resource());
+        ruvia::BoxedArray<TaskDto> result(ruvia::ModelOptions{.resource = c.resource()});
         for (const auto& row : rows) {
             auto& item = result.emplace(c);
             item.set<"id">(row[0].value().value_or(std::string_view{}))

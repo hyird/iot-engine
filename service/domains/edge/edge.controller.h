@@ -222,7 +222,10 @@ class EdgePublicController final : public ruvia::Controller<EdgePublicController
         if (!std::filesystem::is_regular_file(path))
             service::common::fail(17009, "固件文件不存在", 404);
         c.header("Content-Disposition", "attachment; filename=firmware.bin");
-        co_return c.file(path, "application/octet-stream");
+        co_return c.file(ruvia::FileResponseOptions{
+            .path = std::move(path),
+            .contentType = "application/octet-stream",
+        });
     }
 };
 

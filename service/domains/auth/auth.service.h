@@ -170,7 +170,9 @@ ORDER BY p.permission)sql",
                                                        service::common::dbParams(userId));
         auto& permissionItems = user.ensure<"permissions">();
         for (const auto& row : permissions)
-            permissionItems.emplace_back(row[0].value().value_or(std::string_view{}), c.resource());
+            permissionItems.emplace_back(
+                row[0].value().value_or(std::string_view{}),
+                ruvia::ModelOptions{.resource = c.resource()});
         co_return user;
     }
   private:

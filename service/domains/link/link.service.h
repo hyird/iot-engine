@@ -122,7 +122,7 @@ class LinkService {
 	                std::to_string(offsetIndex),
             listParams);
 
-        ruvia::BoxedArray<LinkItemDto> links(c.resource());
+        ruvia::BoxedArray<LinkItemDto> links(ruvia::ModelOptions{.resource = c.resource()});
         for (const auto& row : rows) {
             auto& item = links.emplace(c);
             co_await fill(c, item, row);
@@ -158,7 +158,8 @@ LIMIT 1)sql",
 	            "COALESCE(NULLIF(endpoint->>'port', ''), '0') "
 	            "FROM link WHERE deleted_at IS NULL AND execution = 'collector' AND "
 	            "status = 'enabled' ORDER BY name");
-        ruvia::BoxedArray<LinkOptionDto> result(c.resource());
+        ruvia::BoxedArray<LinkOptionDto> result(
+            ruvia::ModelOptions{.resource = c.resource()});
         for (const auto& row : rows) {
             auto& item = result.emplace(c);
             LinkEndpointDto endpoint(c);
@@ -176,16 +177,17 @@ LIMIT 1)sql",
 
     LinkEnumsDto enums(ruvia::Context& c) {
         LinkEnumsDto result(c);
-        ruvia::BoxedArray<ruvia::String> modes(c.resource());
-        modes.emplace("TCP Server", c.resource());
-        modes.emplace("TCP Client", c.resource());
-        ruvia::BoxedArray<ruvia::String> protocols(c.resource());
-        protocols.emplace("SL651", c.resource());
-        protocols.emplace("Modbus", c.resource());
-        protocols.emplace("S7", c.resource());
-        ruvia::BoxedArray<ruvia::String> statuses(c.resource());
-        statuses.emplace("enabled", c.resource());
-        statuses.emplace("disabled", c.resource());
+        const auto modelOptions = ruvia::ModelOptions{.resource = c.resource()};
+        ruvia::BoxedArray<ruvia::String> modes(modelOptions);
+        modes.emplace("TCP Server", modelOptions);
+        modes.emplace("TCP Client", modelOptions);
+        ruvia::BoxedArray<ruvia::String> protocols(modelOptions);
+        protocols.emplace("SL651", modelOptions);
+        protocols.emplace("Modbus", modelOptions);
+        protocols.emplace("S7", modelOptions);
+        ruvia::BoxedArray<ruvia::String> statuses(modelOptions);
+        statuses.emplace("enabled", modelOptions);
+        statuses.emplace("disabled", modelOptions);
         result.set<"modes">(std::move(modes))
             .set<"protocols">(std::move(protocols))
             .set<"statuses">(std::move(statuses));
@@ -383,14 +385,15 @@ WHERE id = $4 AND execution = 'collector'
     ruvia::Task<void> fill(ruvia::Context& c, LinkItemDto& item, const Row& row) {
         const auto id = std::string(row[0].value().value_or(std::string_view{}));
         const auto runtime = co_await loadRuntimeStatus(c, id);
-        ruvia::BoxedArray<ruvia::String> clients(c.resource());
+        ruvia::BoxedArray<ruvia::String> clients(
+            ruvia::ModelOptions{.resource = c.resource()});
         const auto clientText = runtime.text("clients");
         std::size_t start = 0;
         while (start < clientText.size()) {
             const auto end = clientText.find('\n', start);
             clients.emplace(clientText.substr(start, end == std::string::npos ? std::string::npos
                                                                               : end - start),
-                            c.resource());
+                            ruvia::ModelOptions{.resource = c.resource()});
             if (end == std::string::npos)
                 break;
             start = end + 1;
@@ -429,7 +432,8 @@ FROM link, jsonb_array_elements(COALESCE(endpoint->'targets', '[]'::jsonb))
   WITH ORDINALITY AS value(target, position)
 WHERE link.id = $1 ORDER BY position)sql",
                                                 service::common::dbParams(id));
-        ruvia::BoxedArray<LinkTargetDto> result(c.resource());
+        ruvia::BoxedArray<LinkTargetDto> result(
+            ruvia::ModelOptions{.resource = c.resource()});
         for (const auto& row : rows) {
             auto& target = result.emplace(c);
             const auto targetId = std::string(row[0].value().value_or(std::string_view{}));

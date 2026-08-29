@@ -69,15 +69,18 @@ inline std::string sign(ruvia::Context& c, const core::JwtPayload& payload,
                         std::string_view durationName, std::chrono::seconds fallback) {
     const auto secret = requiredSecret(c.env(), secretName);
     ruvia::JwtSignOptions options;
-    options.secret.assign(secret);
+    options.secret = secret;
     options.issuer.assign("iot-engine");
     options.audience.assign("iot-engine-web");
     options.subject.assign(payload.userId);
     options.expiresIn = duration(c.env().get(durationName).value_or(""), fallback);
-    options.claims.emplace_back("user_id", payload.userId);
-    options.claims.emplace_back("username", payload.username);
-    options.claims.emplace_back("token_type", type);
-    const auto token = ruvia::jwtSign(options, c.resource());
+    options.claims.emplace_back(
+        ruvia::JwtClaimOptions{.name = "user_id", .value = payload.userId});
+    options.claims.emplace_back(
+        ruvia::JwtClaimOptions{.name = "username", .value = payload.username});
+    options.claims.emplace_back(ruvia::JwtClaimOptions{.name = "token_type", .value = type});
+    options.resource = c.resource();
+    const auto token = ruvia::jwtSign(options);
     return std::string(token.data(), token.size());
 }
 
@@ -86,11 +89,13 @@ inline core::JwtPayload verify(ruvia::Context& c, std::string_view token,
     try {
         const auto secret = requiredSecret(c.env(), secretName);
         ruvia::JwtVerifyOptions options;
-        options.secret.assign(secret);
+        options.token = token;
+        options.secret = secret;
         options.issuer.assign("iot-engine");
         options.audience.assign("iot-engine-web");
         options.leeway = std::chrono::seconds(15);
-        const auto decoded = ruvia::jwtVerify(token, options, c.resource());
+        options.resource = c.resource();
+        const auto decoded = ruvia::jwtVerify(options);
         const auto id = decoded.claim("user_id");
         const auto username = decoded.claim("username");
         const auto type = decoded.claim("token_type");
