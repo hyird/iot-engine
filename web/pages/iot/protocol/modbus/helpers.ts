@@ -52,7 +52,7 @@ export const getDeviceTypeFormValues = (data?: Protocol.Item) => {
         enabled: data?.enabled ?? true,
         byteOrder: config?.byteOrder ?? 'BIG_ENDIAN',
         readInterval: numberOrDefault(config?.readInterval, 1),
-        storageInterval: numberOrDefault(config?.storageInterval, 1),
+        storagePolicy: config?.storagePolicy ?? 'report',
         commandFastReadDuration: numberOrDefault(config?.commandFastReadDuration, 60),
         commandFastReadInterval: numberOrDefault(config?.commandFastReadInterval, 1),
         packetMergeGap: packet.mergeGap,

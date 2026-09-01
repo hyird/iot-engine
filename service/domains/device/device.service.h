@@ -1028,7 +1028,7 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
   iot_utc_timestamp(d.created_at), iot_utc_timestamp(d.updated_at),
   COALESCE(l.name, ''), COALESCE(l.endpoint->>'mode', ''), COALESCE(l.protocol, ''), p.name, p.protocol,
   NULLIF(p.config->>'readInterval', ''),
-  NULLIF(p.config->>'storageInterval', ''),
+  NULLIF(p.config->>'storagePolicy', ''),
   CASE p.protocol
       WHEN 'Modbus' THEN jsonb_array_length(COALESCE(p.config->'registers', '[]'::jsonb))
       WHEN 'S7' THEN jsonb_array_length(COALESCE(p.config->'areas', '[]'::jsonb))
@@ -1106,10 +1106,8 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
             if (const auto value = parseDouble(row[26].value().value_or(std::string_view{})))
                 item.set<"readInterval">(*value);
         }
-        if (row[27].value().has_value()) {
-            if (const auto value = parseDouble(row[27].value().value_or(std::string_view{})))
-                item.set<"storageInterval">(*value);
-        }
+        if (row[27].value().has_value())
+            item.set<"storagePolicy">(row[27].value().value_or(std::string_view{}));
         const auto capabilities = DeviceAccessService::capabilities(
             actor, DeviceAccessService::rank(row[29].value().value_or(std::string_view{})), row[9].value().value_or(std::string_view{}) == "t");
         item.set<"elementCount">(toInt(row[28].value().value_or(std::string_view{})));

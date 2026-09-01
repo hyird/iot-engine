@@ -55,8 +55,10 @@ void requireNoUnsafeParsing(std::string_view source) {
             "device service directly casts readInterval");
     require(source.find("p.config->>'pollInterval'") == std::string_view::npos,
             "device service still reads the retired pollInterval field");
-    require(source.find("(p.config->>'storageInterval')::numeric") == std::string_view::npos,
-            "device service directly casts storageInterval");
+    require(source.find("storageInterval") == std::string_view::npos,
+            "device service still reads the retired storage interval");
+    require(source.find("p.config->>'storagePolicy'") != std::string_view::npos,
+            "device service does not expose the canonical storage policy");
     require(source.find("(l.endpoint->>'port')::integer") == std::string_view::npos,
             "device service directly casts edge endpoint port");
     require(source.find("(l.endpoint->>'rs485')::boolean") == std::string_view::npos,

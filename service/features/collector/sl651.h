@@ -696,7 +696,7 @@ class Session final : public ProtocolSession,
         message.occurredAtMs = input.receivedAtMs;
         message.observedAtMs = detail::reportTimeMilliseconds(frame.body, device.timezone)
                                    .value_or(input.receivedAtMs);
-        message.storageInterval = std::clamp<std::int64_t>(device.storageInterval, 1, 86400);
+        message.storagePolicy = device.storagePolicy;
         message.onlineWindowMs = std::clamp<std::int64_t>(device.onlineTimeout, 1, 86400) * 1000;
         message.source = "push";
         message.rawPayloads = frame.rawFrames;

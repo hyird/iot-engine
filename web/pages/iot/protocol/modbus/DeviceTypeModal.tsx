@@ -2,11 +2,11 @@
  * Modbus 设备类型编辑弹窗（从 ModbusConfig 抽离）
  */
 
-import { Flex, Form, Input, InputNumber, Select, Space, Switch } from 'antd';
+import { Divider, Flex, Form, Input, InputNumber, Select, Space, Switch } from 'antd';
 import { forwardRef, useEffect, useImperativeHandle, useState } from 'react';
 import { FormModal } from '@/components/FormModal';
 import type { useProtocolConfigSave } from '../protocol.service';
-import type { Modbus, Protocol } from '../protocol.types';
+import { STORAGE_POLICY_OPTIONS, type Modbus, type Protocol } from '../protocol.types';
 import {
     ByteOrderOptions,
     type DeviceTypeModalRef,
@@ -60,7 +60,7 @@ export const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalPro
                 config: {
                     byteOrder: values.byteOrder,
                     readInterval: values.readInterval,
-                    storageInterval: values.storageInterval,
+                    storagePolicy: values.storagePolicy,
                     commandFastReadDuration: values.commandFastReadDuration,
                     commandFastReadInterval: values.commandFastReadInterval,
                     packet,
@@ -83,6 +83,9 @@ export const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalPro
                 forceRender
             >
                 <Form form={form} layout="vertical" initialValues={getDeviceTypeFormValues()}>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        基础信息
+                    </Divider>
                     <Flex gap={16} align="start">
                         <Form.Item
                             label="名称"
@@ -102,6 +105,9 @@ export const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalPro
                             <Select options={ByteOrderOptions} />
                         </Form.Item>
                     </Flex>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        采集与存储
+                    </Divider>
                     <Flex gap={16} align="start">
                         <Form.Item
                             label="读取间隔（秒）"
@@ -126,28 +132,18 @@ export const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalPro
                             </Space.Compact>
                         </Form.Item>
                         <Form.Item
-                            label="存储间隔（秒）"
-                            extra="历史数据入库的最小间隔，1 表示每次读取都存储"
+                            label="存储策略"
+                            name="storagePolicy"
+                            rules={[{ required: true, message: '请选择存储策略' }]}
+                            extra="上报时存储每条历史数据；数据改变时仅在点位值变化时存储"
                             className={pairedFormItemClassName}
                         >
-                            <Space.Compact block>
-                                <Form.Item name="storageInterval" noStyle>
-                                    <InputNumber
-                                        min={1}
-                                        max={86400}
-                                        className={numericInputClassName}
-                                    />
-                                </Form.Item>
-                                <Input
-                                    value="秒"
-                                    readOnly
-                                    tabIndex={-1}
-                                    className={numericUnitClassName}
-                                    aria-label="单位：秒"
-                                />
-                            </Space.Compact>
+                            <Select options={STORAGE_POLICY_OPTIONS} />
                         </Form.Item>
                     </Flex>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        下发快读
+                    </Divider>
                     <Flex gap={16} align="start">
                         <Form.Item
                             label="下发快读窗口"
@@ -194,6 +190,9 @@ export const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalPro
                             </Space.Compact>
                         </Form.Item>
                     </Flex>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        组包参数
+                    </Divider>
                     <Flex gap={16} align="start">
                         <Form.Item
                             label="组包地址间隙"
@@ -240,6 +239,9 @@ export const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalPro
                             </Space.Compact>
                         </Form.Item>
                     </Flex>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        其他
+                    </Divider>
                     <Form.Item label="备注" name="remark">
                         <Input.TextArea rows={3} placeholder="备注说明" />
                     </Form.Item>

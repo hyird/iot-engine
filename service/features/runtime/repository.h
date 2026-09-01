@@ -208,7 +208,7 @@ SELECT d.id::text, d.protocol_params->>'device_code', d.name, d.link_id::text,
        COALESCE(p.config->'connection'->>'directProbeTimeout', p.config->>'directProbeTimeout', '5000'),
        COALESCE(p.config->'connection'->>'probeMode', p.config->>'probeMode', 'STANDARD'),
        COALESCE(NULLIF(p.config->>'readInterval', ''), '1'),
-       COALESCE(p.config->>'storageInterval', '1'),
+       COALESCE(p.config->>'storagePolicy', 'report'),
        COALESCE(p.config->>'commandFastReadDuration', '60'),
        COALESCE(p.config->>'commandFastReadInterval', '1'),
        COALESCE(p.config->'packet'->>'mergeGap', '100'),
@@ -253,7 +253,7 @@ ORDER BY d.link_id, d.id)sql");
         device.s7DirectProbeTimeoutMs = cellInt(row, 22);
         device.s7ProbeMode = cell(row, 23);
         device.readInterval = cellInt(row, 24);
-        device.storageInterval = cellInt(row, 25);
+        device.storagePolicy = cell(row, 25);
         device.commandFastReadDuration = cellInt(row, 26);
         device.commandFastReadInterval = cellInt(row, 27);
         device.modbusMergeGap = cellInt(row, 28);

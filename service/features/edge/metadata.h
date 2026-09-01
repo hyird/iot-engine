@@ -1,7 +1,6 @@
 #pragma once
 
 #include <charconv>
-#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -19,7 +18,6 @@
 #include "service/features/collector/stream.h"
 #include "service/features/edge/projector-stream.h"
 #include "service/features/edge/session.h"
-#include "service/utils/number.h"
 
 namespace service::edge::metadata {
 
@@ -33,7 +31,7 @@ return #ARGV / 2
 
 inline constexpr std::string_view kLoadNodeSql = R"sql(
 SELECT d.id::text, d.link_id::text, d.protocol_params->>'device_code', p.protocol,
-       COALESCE(NULLIF(p.config->>'storageInterval', ''), '1'),
+       COALESCE(NULLIF(p.config->>'storagePolicy', ''), 'report'),
        COALESCE(NULLIF(d.protocol_params->>'online_timeout', ''), '300')
 FROM device d
 JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
@@ -43,7 +41,7 @@ ORDER BY d.id)sql";
 
 inline constexpr std::string_view kLoadCatalogSql = R"sql(
 SELECT n.id::text, d.id::text, d.link_id::text, d.protocol_params->>'device_code', p.protocol,
-       COALESCE(NULLIF(p.config->>'storageInterval', ''), '1'),
+       COALESCE(NULLIF(p.config->>'storagePolicy', ''), 'report'),
        COALESCE(NULLIF(d.protocol_params->>'online_timeout', ''), '300')
 FROM edge_node n
 LEFT JOIN link l ON l.edge_node_id = n.id AND l.execution = 'edge' AND l.deleted_at IS NULL
@@ -55,7 +53,7 @@ struct Device final {
     std::string linkId;
     std::string deviceCode;
     std::string protocol;
-    std::int64_t storageInterval{1};
+    std::string storagePolicy{"report"};
     std::int64_t onlineWindowMs{300000};
 };
 
@@ -78,7 +76,7 @@ inline std::string encode(const Device& device) {
     appendField(output, device.linkId);
     appendField(output, device.deviceCode);
     appendField(output, device.protocol);
-    appendField(output, std::to_string(device.storageInterval));
+    appendField(output, device.storagePolicy);
     appendField(output, std::to_string(device.onlineWindowMs));
     return output;
 }
@@ -107,21 +105,8 @@ inline std::optional<std::int64_t> integer(std::string_view value) noexcept {
     return result;
 }
 
-inline double number(std::string_view value, double fallback = 0.0) noexcept {
-    if (value.empty())
-        return fallback;
-    const auto result = service::utils::decimal(value);
-    return result.value_or(fallback);
-}
-
-inline std::int64_t positiveCeil(std::string_view value, double fallback = 1.0) noexcept {
-    double parsed = number(value, fallback);
-    if (parsed < 1.0)
-        parsed = 1.0;
-    const auto maximum = static_cast<double>(std::numeric_limits<std::int64_t>::max());
-    if (parsed > maximum)
-        return std::numeric_limits<std::int64_t>::max();
-    return static_cast<std::int64_t>(std::ceil(parsed));
+inline bool validStoragePolicy(std::string_view value) noexcept {
+    return value == "report" || value == "change";
 }
 
 inline std::int64_t onlineWindowMilliseconds(std::string_view value,
@@ -139,17 +124,16 @@ inline std::optional<Device> decode(std::string_view value) {
     const auto linkId = takeField(value, offset);
     const auto deviceCode = takeField(value, offset);
     const auto protocol = takeField(value, offset);
-    const auto storageInterval = takeField(value, offset);
+    const auto storagePolicy = takeField(value, offset);
     const auto onlineWindowMs = takeField(value, offset);
-    if (!linkId || !deviceCode || !protocol || !storageInterval || !onlineWindowMs ||
+    if (!linkId || !deviceCode || !protocol || !storagePolicy || !onlineWindowMs ||
         offset != value.size())
         return std::nullopt;
-    const auto storage = integer(*storageInterval);
     const auto online = integer(*onlineWindowMs);
-    if (!storage || !online || *storage < 1 || *online < 1000)
+    if (!validStoragePolicy(*storagePolicy) || !online || *online < 1000)
         return std::nullopt;
     return Device{std::string(*linkId), std::string(*deviceCode), std::string(*protocol),
-                  *storage, *online};
+                  std::string(*storagePolicy), *online};
 }
 
 template <typename Pipeline>
@@ -177,7 +161,7 @@ ruvia::Task<NodeSnapshot> loadNodeFromDatabase(Context& context, std::string_vie
         snapshot.emplace(
             std::string(row[0].value().value_or(std::string_view{})),
             Device{std::string(row[1].value().value_or(std::string_view{})), std::string(row[2].value().value_or(std::string_view{})),
-                   std::string(row[3].value().value_or(std::string_view{})), positiveCeil(row[4].value().value_or(std::string_view{})),
+                   std::string(row[3].value().value_or(std::string_view{})), std::string(row[4].value().value_or(std::string_view{})),
                    onlineWindowMilliseconds(row[5].value().value_or(std::string_view{}))});
     }
     co_return snapshot;
@@ -194,7 +178,7 @@ ruvia::Task<Catalog> loadCatalogFromDatabase(Context& context) {
         snapshot.emplace(
             std::string(row[1].value().value_or(std::string_view{})),
             Device{std::string(row[2].value().value_or(std::string_view{})), std::string(row[3].value().value_or(std::string_view{})),
-                   std::string(row[4].value().value_or(std::string_view{})), positiveCeil(row[5].value().value_or(std::string_view{})),
+                   std::string(row[4].value().value_or(std::string_view{})), std::string(row[5].value().value_or(std::string_view{})),
                    onlineWindowMilliseconds(row[6].value().value_or(std::string_view{}))});
     }
     co_return catalog;

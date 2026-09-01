@@ -20,13 +20,11 @@ export type SaveMutation = ReturnType<typeof useProtocolConfigSave>;
 /** 设备类型表单默认值与编辑回填值。 */
 export const getDeviceTypeFormValues = (data?: Protocol.Item) => {
     const config = data?.config as SL651.Config | undefined;
-    const storageInterval = Number(config?.storageInterval);
-
     return {
         name: data?.name ?? '',
         enabled: data?.enabled ?? true,
         responseMode: config?.responseMode ?? 'M1',
-        storageInterval: Number.isFinite(storageInterval) ? storageInterval : 1,
+        storagePolicy: config?.storagePolicy ?? 'report',
         remark: data?.remark ?? '',
     };
 };

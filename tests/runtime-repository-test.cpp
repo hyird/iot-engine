@@ -35,6 +35,11 @@ void requireNoUnsafeJsonCasts(std::string_view source) {
             "runtime repository directly casts modbus address in ORDER BY");
     require(source.find("(element->>'start')::integer") == std::string_view::npos,
             "runtime repository directly casts s7 start in ORDER BY");
+    require(source.find("storageInterval") == std::string_view::npos,
+            "runtime repository still reads the retired storage interval");
+    require(source.find("COALESCE(p.config->>'storagePolicy', 'report')") !=
+                std::string_view::npos,
+            "runtime repository does not load the canonical storage policy");
 }
 
 } // namespace

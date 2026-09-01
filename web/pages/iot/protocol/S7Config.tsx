@@ -8,6 +8,7 @@ import {
     Button,
     Card,
     Col,
+    Divider,
     Empty,
     Flex,
     Form,
@@ -40,7 +41,7 @@ import {
     useProtocolConfigList,
     useProtocolConfigSave,
 } from './protocol.service';
-import type { Protocol, S7 } from './protocol.types';
+import { STORAGE_POLICY_OPTIONS, type Protocol, type S7 } from './protocol.types';
 import {
     SortableGroupItemList,
     SortableGroupSectionFrame,
@@ -364,7 +365,7 @@ const S7ConfigPage = () => {
                     ...buildConnectionConfig(values),
                 },
                 readInterval: values.readInterval,
-                storageInterval: values.storageInterval,
+                storagePolicy: values.storagePolicy,
                 commandFastReadDuration: values.commandFastReadDuration,
                 commandFastReadInterval: values.commandFastReadInterval,
             };
@@ -383,7 +384,7 @@ const S7ConfigPage = () => {
                 deviceType: values.deviceType,
                 plcModel: values.plcModel,
                 readInterval: values.readInterval,
-                storageInterval: values.storageInterval,
+                storagePolicy: values.storagePolicy,
                 commandFastReadDuration: values.commandFastReadDuration,
                 commandFastReadInterval: values.commandFastReadInterval,
                 connection: buildConnectionConfig(values),
@@ -674,6 +675,9 @@ const S7ConfigPage = () => {
                     layout="vertical"
                     initialValues={getDeviceTypeFormValues()}
                 >
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        基础信息
+                    </Divider>
                     <Form.Item
                         name="deviceType"
                         label="名称"
@@ -682,6 +686,9 @@ const S7ConfigPage = () => {
                     >
                         <Input placeholder="例如: 温湿度传感器" maxLength={64} />
                     </Form.Item>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        连接参数
+                    </Divider>
                     <Form.Item
                         name="plcModel"
                         label="PLC型号"
@@ -815,6 +822,9 @@ const S7ConfigPage = () => {
                             </Form.Item>
                         </Col>
                     </Row>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        采集与存储
+                    </Divider>
                     <Form.Item
                         name="readInterval"
                         label="读取/上报间隔（秒）"
@@ -824,13 +834,16 @@ const S7ConfigPage = () => {
                         <InputNumber min={1} max={3600} className="w-full" addonAfter="秒" />
                     </Form.Item>
                     <Form.Item
-                        name="storageInterval"
-                        label="存储间隔（秒）"
-                        rules={[{ required: true, message: '请输入存储间隔' }]}
-                        extra="历史数据入库的最小间隔，1 表示每次读取都存储"
+                        name="storagePolicy"
+                        label="存储策略"
+                        rules={[{ required: true, message: '请选择存储策略' }]}
+                        extra="上报时存储每条历史数据；数据改变时仅在点位值变化时存储"
                     >
-                        <InputNumber min={1} max={86400} className="w-full" addonAfter="秒" />
+                        <Select options={STORAGE_POLICY_OPTIONS} />
                     </Form.Item>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        下发快读
+                    </Divider>
                     <Row gutter={12}>
                         <Col xs={24} sm={12}>
                             <Form.Item
@@ -858,6 +871,9 @@ const S7ConfigPage = () => {
                             </Form.Item>
                         </Col>
                     </Row>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        其他
+                    </Divider>
                     <Form.Item name="remark" label="备注">
                         <Input.TextArea rows={3} placeholder="备注说明" />
                     </Form.Item>

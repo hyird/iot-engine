@@ -26,7 +26,7 @@ class SchemaMigration final {
     std::string sql_;
 };
 
-inline const std::array<SchemaMigration, 27> kSchemaMigrations{{
+inline const std::array<SchemaMigration, 28> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
@@ -1311,6 +1311,28 @@ WHERE protocol = 'S7' AND config ? 'pollInterval';
 ALTER TABLE protocol_config
     ADD CONSTRAINT ck_protocol_config_no_poll_interval
     CHECK (NOT (config ? 'pollInterval'));
+END
+$schema$;
+)sql"},
+    {"0027_unify_protocol_storage_policy", R"sql(
+DO $schema$
+BEGIN
+UPDATE protocol_config
+SET config = jsonb_set(
+        config - 'storageInterval',
+        '{storagePolicy}',
+        to_jsonb(CASE WHEN config->>'storagePolicy' IN ('report', 'change')
+                      THEN config->>'storagePolicy' ELSE 'report' END),
+        true),
+    updated_at = NOW()
+WHERE config ? 'storageInterval'
+   OR NOT (config ? 'storagePolicy')
+   OR COALESCE(config->>'storagePolicy' NOT IN ('report', 'change'), TRUE);
+
+ALTER TABLE protocol_config
+    ADD CONSTRAINT ck_protocol_config_storage_policy
+    CHECK (NOT (config ? 'storageInterval')
+           AND COALESCE(config->>'storagePolicy' IN ('report', 'change'), FALSE));
 END
 $schema$;
 )sql"},

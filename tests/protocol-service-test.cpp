@@ -86,6 +86,17 @@ void requireUnifiedReadIntervalValidation(std::string_view source) {
             "protocol service still accepts Modbus pollInterval");
 }
 
+void requireUnifiedStoragePolicyValidation(std::string_view source) {
+    require(source.find("配置不允许 storageInterval，请使用 storagePolicy") !=
+                std::string_view::npos,
+            "protocol service still accepts the retired storage interval");
+    require(source.find("value->>'storagePolicy' IN ('report', 'change')") !=
+                std::string_view::npos,
+            "protocol service does not validate canonical storage policies");
+    require(source.find("配置的 storagePolicy 不能为空") != std::string_view::npos,
+            "protocol create does not require a storage policy");
+}
+
 void requireQualifiedJsonArrayValidation(std::string_view source) {
     require(source.find("jsonb_array_elements(value->'areas')") ==
                 std::string_view::npos,
@@ -135,6 +146,7 @@ int main() {
         requireStrictUpdateFieldTypes(source);
         requireModbusRuntimeFieldValidation(source);
         requireUnifiedReadIntervalValidation(source);
+        requireUnifiedStoragePolicyValidation(source);
         requireQualifiedJsonArrayValidation(source);
         requireEdgeSyncDoesNotLeakAsUpdateFailure(source);
         std::cout << "protocol service tests passed\n";

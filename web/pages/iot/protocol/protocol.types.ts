@@ -7,12 +7,20 @@ import type { PageParams } from '@/utils/types';
 /** 协议类型 */
 export type ProtocolType = 'SL651' | 'Modbus' | 'S7';
 
+/** 历史数据存储策略 */
+export type StoragePolicy = 'report' | 'change';
+
+export const STORAGE_POLICY_OPTIONS: { value: StoragePolicy; label: string }[] = [
+    { value: 'report', label: '上报时' },
+    { value: 'change', label: '数据改变时' },
+];
+
 /** 设备类型采集与存储策略 */
 export interface DeviceTypeTimingConfig {
     /** 定时读取/边缘上报间隔（秒），默认 1 */
     readInterval?: number;
-    /** 历史数据存储间隔（秒），默认 1 */
-    storageInterval?: number;
+    /** 历史数据存储策略，默认每次上报都存储 */
+    storagePolicy?: StoragePolicy;
     /** 下发后快读窗口（秒），0 表示关闭，默认 60 */
     commandFastReadDuration?: number;
     /** 下发后快读间隔（秒），默认 1 */

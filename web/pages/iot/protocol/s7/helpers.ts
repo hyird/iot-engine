@@ -3,7 +3,7 @@
  */
 
 import type { CSSProperties } from 'react';
-import type { Protocol, S7 } from '../protocol.types';
+import type { Protocol, S7, StoragePolicy } from '../protocol.types';
 
 export type DeviceTypeFormValues = {
     deviceType: string;
@@ -18,7 +18,7 @@ export type DeviceTypeFormValues = {
     handshakeTimeout: number;
     directProbeTimeout: number;
     readInterval: number;
-    storageInterval: number;
+    storagePolicy: StoragePolicy;
     commandFastReadDuration: number;
     commandFastReadInterval: number;
     enabled: boolean;
@@ -54,7 +54,7 @@ export const defaultConfig = (): S7.Config => ({
         directProbeTimeout: 5000,
     },
     readInterval: 5,
-    storageInterval: 1,
+    storagePolicy: 'report',
     commandFastReadDuration: 60,
     commandFastReadInterval: 1,
     areas: [],
@@ -204,7 +204,7 @@ export const getDeviceTypeFormValues = (data?: Protocol.Item): DeviceTypeFormVal
         plcModel,
         ...getConnectionFormValues(plcModel, config?.connection),
         readInterval: numberOrDefault(config?.readInterval, 5),
-        storageInterval: numberOrDefault(config?.storageInterval, 1),
+        storagePolicy: config?.storagePolicy ?? 'report',
         commandFastReadDuration: numberOrDefault(config?.commandFastReadDuration, 60),
         commandFastReadInterval: numberOrDefault(config?.commandFastReadInterval, 1),
         enabled: data?.enabled ?? true,

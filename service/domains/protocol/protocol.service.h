@@ -324,6 +324,23 @@ FROM body)sql",
         }
         if (shape.front()[1].value().value_or(std::string_view{}) != "object")
             service::common::fail(16004, "config 必须是对象", 400);
+        const auto storage = co_await c.db().query(R"sql(
+WITH cfg AS (SELECT ($1::jsonb)->'config' AS value)
+SELECT
+  NOT (value ? 'storageInterval'),
+  (NOT (value ? 'storagePolicy') OR
+   (jsonb_typeof(value->'storagePolicy') = 'string' AND
+    value->>'storagePolicy' IN ('report', 'change'))),
+  value ? 'storagePolicy'
+FROM cfg)sql",
+                                                   service::common::dbParams(body));
+        const auto& storageRow = storage.front();
+        if (storageRow[0].value().value_or(std::string_view{}) != "t")
+            service::common::fail(16004, "配置不允许 storageInterval，请使用 storagePolicy", 400);
+        if (storageRow[1].value().value_or(std::string_view{}) != "t")
+            service::common::fail(16004, "配置的 storagePolicy 无效", 400);
+        if (required && storageRow[2].value().value_or(std::string_view{}) != "t")
+            service::common::fail(16004, "配置的 storagePolicy 不能为空", 400);
         if (protocol == "SL651") {
             const auto rows = co_await c.db().query(R"sql(
 WITH cfg AS (SELECT ($1::jsonb)->'config' AS value)

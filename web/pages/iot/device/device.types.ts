@@ -4,7 +4,7 @@
 
 import type { PageParams } from '@/utils/types';
 import type { Link } from '../link/link.types';
-import type { Protocol } from '../protocol/protocol.types';
+import type { Protocol, StoragePolicy } from '../protocol/protocol.types';
 
 /** 设备状态 */
 export type DeviceStatus = 'enabled' | 'disabled';
@@ -86,8 +86,8 @@ export interface DeviceItem extends EdgeConnection {
     remote_control?: boolean;
     /** 读取间隔（秒），来自设备类型配置 */
     read_interval?: number;
-    /** 历史数据存储间隔（秒），来自设备类型配置 */
-    storage_interval?: number;
+    /** 历史数据存储策略，来自设备类型配置 */
+    storage_policy?: StoragePolicy;
     /** 协议配置中的展示要素数量，用于稳定设备卡片布局 */
     element_count?: number;
     /** Modbus 通信模式（仅当链路是 TCP Server 且协议是 Modbus 时使用） */
@@ -209,7 +209,7 @@ export interface DeviceStaticData extends EdgeConnection {
     online_timeout?: number;
     remote_control?: boolean;
     read_interval?: number;
-    storage_interval?: number;
+    storage_policy?: StoragePolicy;
     /** 协议配置中的展示要素数量，用于稳定设备卡片布局 */
     element_count?: number;
     modbus_mode?: ModbusMode;

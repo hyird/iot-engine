@@ -83,7 +83,7 @@ struct DeviceDefinition {
     std::int64_t s7DirectProbeTimeoutMs = 5000;
     std::string s7ProbeMode = "STANDARD";
     std::int64_t readInterval = 1;
-    std::int64_t storageInterval = 1;
+    std::string storagePolicy = "report";
     std::int64_t commandFastReadDuration = 60;
     std::int64_t commandFastReadInterval = 1;
     std::vector<ElementDefinition> elements;

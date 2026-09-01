@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -147,16 +148,34 @@ void testBuildItemSqlAvoidsJsonCasts() {
 }
 
 void testReadIntervalMigrationRemovesLegacyField() {
-    const auto& migration = service::config::kSchemaMigrations.back();
-    require(migration.id() == "0026_unify_protocol_read_interval",
-            "readInterval migration is not the latest schema migration");
-    require(migration.sql().find("config - 'pollInterval'") != std::string_view::npos,
+    const auto migration = std::find_if(
+        service::config::kSchemaMigrations.begin(), service::config::kSchemaMigrations.end(),
+        [](const auto& value) { return value.id() == "0026_unify_protocol_read_interval"; });
+    require(migration != service::config::kSchemaMigrations.end(),
+            "readInterval migration is missing");
+    require(migration->sql().find("config - 'pollInterval'") != std::string_view::npos,
             "readInterval migration does not remove pollInterval");
-    require(migration.sql().find("'{readInterval}'") != std::string_view::npos,
+    require(migration->sql().find("'{readInterval}'") != std::string_view::npos,
             "readInterval migration does not write the canonical field");
-    require(migration.sql().find("ck_protocol_config_no_poll_interval") !=
+    require(migration->sql().find("ck_protocol_config_no_poll_interval") !=
                 std::string_view::npos,
             "schema does not prevent pollInterval from returning");
+}
+
+void testStoragePolicyMigrationRemovesLegacyField() {
+    const auto& migration = service::config::kSchemaMigrations.back();
+    require(migration.id() == "0027_unify_protocol_storage_policy",
+            "storagePolicy migration is not the latest schema migration");
+    require(migration.sql().find("config - 'storageInterval'") != std::string_view::npos &&
+                migration.sql().find("'{storagePolicy}'") != std::string_view::npos,
+            "storagePolicy migration does not replace the retired interval field");
+    require(migration.sql().find("ELSE 'report'") != std::string_view::npos,
+            "storagePolicy migration can silently reduce stored history");
+    require(migration.sql().find("ck_protocol_config_storage_policy") !=
+                std::string_view::npos &&
+                migration.sql().find("COALESCE(config->>'storagePolicy' IN") !=
+                    std::string_view::npos,
+            "schema does not enforce a canonical storage policy");
 }
 
 } // namespace
@@ -170,6 +189,7 @@ int main() {
         testRevisionSqlGuardsCorruptNodeJson();
         testBuildItemSqlAvoidsJsonCasts();
         testReadIntervalMigrationRemovesLegacyField();
+        testStoragePolicyMigrationRemovesLegacyField();
         std::cout << "edge config tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

@@ -134,7 +134,7 @@ struct ParsedDeviceMessage {
     std::string connectionId;
     std::int64_t occurredAtMs = 0;
     std::int64_t observedAtMs = 0;
-    std::int64_t storageInterval = 1;
+    std::string storagePolicy = "report";
     std::int64_t onlineWindowMs = 300000;
     std::string source = "push";
     std::string valuesJson;
@@ -441,7 +441,7 @@ inline std::vector<StreamField> parsedFields(const ParsedDeviceMessage& message)
             {"connection_id", message.connectionId},
             {"occurred_at_ms", std::to_string(message.occurredAtMs)},
             {"observed_at_ms", std::to_string(message.observedAtMs)},
-            {"storage_interval", std::to_string(message.storageInterval)},
+            {"storage_policy", message.storagePolicy},
             {"online_window_ms", std::to_string(message.onlineWindowMs)},
             {"source", message.source},
             {"values_json", message.valuesJson},
@@ -475,15 +475,9 @@ inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
     parsed.occurredAtMs = integer("occurred_at_ms");
     parsed.observedAtMs = integer("observed_at_ms");
     parsed.observedAtMs = effectiveObservedAt(parsed.observedAtMs, parsed.occurredAtMs);
-    const auto storageInterval = message.get("storage_interval");
-    if (!storageInterval.empty()) {
-        std::int64_t result = 0;
-        const auto [end, error] = std::from_chars(
-            storageInterval.data(), storageInterval.data() + storageInterval.size(), result);
-        if (error != std::errc{} || end != storageInterval.data() + storageInterval.size())
-            throw std::runtime_error("Invalid parsed packet storage interval");
-        parsed.storageInterval = std::clamp<std::int64_t>(result, 1, 86400);
-    }
+    parsed.storagePolicy = std::string(require("storage_policy"));
+    if (parsed.storagePolicy != "report" && parsed.storagePolicy != "change")
+        throw std::runtime_error("Invalid parsed packet storage policy");
     const auto onlineWindow = message.get("online_window_ms");
     if (!onlineWindow.empty()) {
         std::int64_t result = 0;

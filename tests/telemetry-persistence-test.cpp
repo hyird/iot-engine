@@ -24,11 +24,28 @@ void requireNoUnsafeUnsignedParsing(std::string_view source) {
             "telemetry persistence uses unsafe/partial stoull parsing");
 }
 
+void requireStoragePolicySemantics(std::string_view source) {
+    require(source.find("storage_interval") == std::string_view::npos,
+            "telemetry persistence still applies interval-based history filtering");
+    require(source.find("storage_policy = 'report'") != std::string_view::npos &&
+                source.find("storage_policy = 'change'") != std::string_view::npos,
+            "telemetry persistence does not implement both storage policies");
+    require(source.find("FROM device_latest_value latest") != std::string_view::npos &&
+                source.find("point.value->'value'") != std::string_view::npos,
+            "change storage does not compare point values with the latest read model");
+    require(source.find("COALESCE(point_changes.changed, FALSE)") != std::string_view::npos,
+            "change storage accepts unchanged or empty telemetry");
+    require(source.find("FROM valid_incoming incoming") != std::string_view::npos,
+            "latest values are not refreshed for every valid report");
+}
+
 } // namespace
 
 int main() {
     try {
-        requireNoUnsafeUnsignedParsing(persistenceSource());
+        const auto source = persistenceSource();
+        requireNoUnsafeUnsignedParsing(source);
+        requireStoragePolicySemantics(source);
         std::cout << "telemetry persistence tests passed\n";
         return 0;
     } catch (const std::exception& error) {

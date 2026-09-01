@@ -547,7 +547,7 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
             deviceValue->set_protocol(protocol);
             deviceValue->set_timezone(row[4].value().value_or(std::string_view{}));
             // Southbound acquisition is fixed at one second. The protocol's configured
-            // read interval controls edge-to-platform reporting; storageInterval remains
+            // read interval controls edge-to-platform reporting; storagePolicy remains
             // a platform-only persistence policy carried by telemetry metadata.
             deviceValue->set_io_interval_ms(1000);
             deviceValue->set_report_interval_sec(positiveCeil(row[5].value().value_or(std::string_view{})));

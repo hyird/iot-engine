@@ -347,9 +347,9 @@ class PersistenceRuntime final {
         for (const auto& message : messages)
             rawPayloadArrays.push_back(message::rawPayloadsJson(message.rawPayloads));
 
-        std::string sql = R"sql(WITH RECURSIVE incoming(
+        std::string sql = R"sql(WITH incoming(
 input_sequence, report_time, id, device_id, link_id, connection_id, protocol, source,
-occurred_at, data, raw_payload_hex, storage_interval, needs_previous) AS (VALUES )sql";
+occurred_at, data, raw_payload_hex, storage_policy, needs_previous) AS (VALUES )sql";
         std::vector<ruvia::DbValue> params;
         params.reserve(messages.size() * 13);
         for (std::size_t index = 0; index < messages.size(); ++index) {
@@ -364,7 +364,7 @@ occurred_at, data, raw_payload_hex, storage_interval, needs_previous) AS (VALUES
                    std::to_string(base + 7) + ",$" + std::to_string(base + 8) + ",to_timestamp($" +
                    std::to_string(base + 9) + "::double precision / 1000.0),$" +
                    std::to_string(base + 10) + "::jsonb,$" + std::to_string(base + 11) +
-                   "::jsonb,$" + std::to_string(base + 12) + "::integer,$" +
+                   "::jsonb,$" + std::to_string(base + 12) + "::text,$" +
                    std::to_string(base + 13) + "::boolean)";
             params.emplace_back(static_cast<std::int64_t>(index));
             params.emplace_back(parsed.observedAtMs);
@@ -377,7 +377,7 @@ occurred_at, data, raw_payload_hex, storage_interval, needs_previous) AS (VALUES
             params.emplace_back(parsed.occurredAtMs);
             params.emplace_back(std::string_view(parsed.valuesJson));
             params.emplace_back(std::string_view(rawPayloadArrays[index]));
-            params.emplace_back(std::clamp<std::int64_t>(parsed.storageInterval, 1, 86400));
+            params.emplace_back(std::string_view(parsed.storagePolicy));
             params.emplace_back(alertActive[index]);
         }
         sql += R"sql(), valid_incoming AS MATERIALIZED (
@@ -439,30 +439,49 @@ occurred_at, data, raw_payload_hex, storage_interval, needs_previous) AS (VALUES
            ELSE COALESCE(baseline_data, '{}'::jsonb)
          END AS previous_data
   FROM lagged
-), filtered AS (
-  SELECT ordered.*,
-         (storage_interval <= 1 OR last_stored IS NULL OR
-          (source = 'edge' AND report_time = last_stored) OR
-          report_time >= last_stored + storage_interval * interval '1 second') AS accepted,
-         CASE WHEN storage_interval <= 1 OR last_stored IS NULL OR
-                   (source = 'edge' AND report_time = last_stored) OR
-                   report_time >= last_stored + storage_interval * interval '1 second'
-              THEN report_time ELSE last_stored END AS last_accepted
-  FROM ordered WHERE sequence = 1
+), incoming_points AS MATERIALIZED (
+  SELECT ordered.input_sequence, ordered.device_id, ordered.report_time,
+         ordered.id AS record_id, point.key AS element_id,
+         CASE WHEN jsonb_typeof(point.value) = 'object' AND point.value ? 'value'
+              THEN point.value->'value' ELSE point.value END AS point_value
+  FROM ordered
+  CROSS JOIN LATERAL jsonb_each(
+    COALESCE(ordered.data->'values', '{}'::jsonb)) point
+), point_timeline AS MATERIALIZED (
+  SELECT input_sequence, device_id, element_id, report_time AS observed_at,
+         record_id, point_value, FALSE AS baseline
+  FROM incoming_points
   UNION ALL
-  SELECT next.*,
-         (next.storage_interval <= 1 OR previous.last_accepted IS NULL OR
-          (next.source = 'edge' AND next.report_time = previous.last_accepted) OR
-          next.report_time >= previous.last_accepted +
-                              next.storage_interval * interval '1 second') AS accepted,
-         CASE WHEN next.storage_interval <= 1 OR previous.last_accepted IS NULL OR
-                   (next.source = 'edge' AND next.report_time = previous.last_accepted) OR
-                   next.report_time >= previous.last_accepted +
-                                       next.storage_interval * interval '1 second'
-              THEN next.report_time ELSE previous.last_accepted END AS last_accepted
-  FROM filtered previous
-  JOIN ordered next ON next.device_id = previous.device_id
-                   AND next.sequence = previous.sequence + 1
+  SELECT NULL::bigint, latest.device_id, latest.element_id, latest.observed_at,
+         latest.record_id,
+         CASE WHEN jsonb_typeof(latest.value) = 'object' AND latest.value ? 'value'
+              THEN latest.value->'value' ELSE latest.value END,
+         TRUE
+  FROM device_latest_value latest
+  JOIN requested USING (device_id)
+), point_lagged AS MATERIALIZED (
+  SELECT timeline.*,
+         lag(point_value) OVER (
+           PARTITION BY device_id, element_id
+           ORDER BY observed_at, record_id, baseline DESC,
+                    input_sequence NULLS FIRST) AS prior_value,
+         lag(TRUE) OVER (
+           PARTITION BY device_id, element_id
+           ORDER BY observed_at, record_id, baseline DESC,
+                    input_sequence NULLS FIRST) AS prior_present
+  FROM point_timeline timeline
+), point_changes AS MATERIALIZED (
+  SELECT input_sequence,
+         bool_or(prior_present IS NULL OR point_value IS DISTINCT FROM prior_value) AS changed
+  FROM point_lagged
+  WHERE NOT baseline
+  GROUP BY input_sequence
+), filtered AS MATERIALIZED (
+  SELECT ordered.*,
+         (storage_policy = 'report' OR
+          (storage_policy = 'change' AND COALESCE(point_changes.changed, FALSE))) AS accepted
+  FROM ordered
+  LEFT JOIN point_changes USING (input_sequence)
 ), inserted AS (
   INSERT INTO device_data(
     report_time, id, device_id, link_id, connection_id, protocol, source,
@@ -473,7 +492,10 @@ occurred_at, data, raw_payload_hex, storage_interval, needs_previous) AS (VALUES
   ON CONFLICT (id, report_time) DO NOTHING
   RETURNING device_id
 ), storage_summary AS MATERIALIZED (
-  SELECT device_id, max(last_accepted) AS last_stored_at
+  SELECT device_id,
+         COALESCE(
+           GREATEST(max(last_stored), max(report_time) FILTER (WHERE accepted)),
+           max(last_stored), max(report_time) FILTER (WHERE accepted)) AS last_stored_at
   FROM filtered
   GROUP BY device_id
 ), new_observed AS MATERIALIZED (

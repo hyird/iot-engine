@@ -2111,8 +2111,8 @@ void testRuntimeWritableContract() {
     expectSignatureChange("Modbus maximum quantity", [](auto& changed, auto&) {
         changed.modbusMaxQuantity -= 1;
     });
-    expectSignatureChange("storage interval", [](auto& changed, auto&) {
-        changed.storageInterval += 1;
+    expectSignatureChange("storage policy", [](auto& changed, auto&) {
+        changed.storagePolicy = "change";
     });
     expectSignatureChange("command fast-read duration", [](auto& changed, auto&) {
         changed.commandFastReadDuration += 1;
@@ -2837,6 +2837,7 @@ void testEdgeParsedMessageContract() {
     parsed.connectionId = "019f8c99-913c-7a0c-b6ad-c43bb9b12764";
     parsed.occurredAtMs = 1784856700000;
     parsed.observedAtMs = 1784856700000;
+    parsed.storagePolicy = "change";
     parsed.source = "edge";
     parsed.valuesJson = R"json({"values":{"VW0":{"name":"VW0","value":1,"unit":""}}})json";
 
@@ -2845,8 +2846,22 @@ void testEdgeParsedMessageContract() {
     const auto roundTrip = service::message::parsedFrom(streamMessage);
     require(roundTrip.linkId == parsed.linkId, "edge parsed message lost its link identity");
     require(roundTrip.rawPayloads.empty(), "edge parsed message changed empty raw payloads");
-    require(roundTrip.deviceCode == "PCS7" && roundTrip.source == "edge",
+    require(roundTrip.deviceCode == "PCS7" && roundTrip.source == "edge" &&
+                roundTrip.storagePolicy == "change",
             "edge parsed message did not round-trip required fields");
+
+    auto invalidPolicy = streamMessage;
+    for (auto& field : invalidPolicy.fields) {
+        if (field.name == "storage_policy")
+            field.value = "interval";
+    }
+    bool rejectedInvalidPolicy = false;
+    try {
+        (void)service::message::parsedFrom(invalidPolicy);
+    } catch (const std::runtime_error&) {
+        rejectedInvalidPolicy = true;
+    }
+    require(rejectedInvalidPolicy, "parsed message accepted an invalid storage policy");
 
     parsed.occurredAtMs = 1784856700000;
     parsed.observedAtMs = 4102444800000;

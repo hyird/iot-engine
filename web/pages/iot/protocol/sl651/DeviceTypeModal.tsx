@@ -2,10 +2,10 @@
  * SL651 设备类型 Modal
  */
 
-import { Form, Input, InputNumber, Select, Switch } from 'antd';
+import { Divider, Form, Input, Select, Switch } from 'antd';
 import { forwardRef, useEffect, useImperativeHandle, useState } from 'react';
 import { FormModal } from '@/components/FormModal';
-import type { Protocol, SL651 } from '../protocol.types';
+import { STORAGE_POLICY_OPTIONS, type Protocol, type SL651 } from '../protocol.types';
 import { getDeviceTypeFormValues, type SaveMutation } from './shared';
 
 export interface DeviceTypeModalRef {
@@ -50,7 +50,7 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
                 config: {
                     ...existingConfig,
                     responseMode: values.responseMode,
-                    storageInterval: values.storageInterval,
+                    storagePolicy: values.storagePolicy,
                 },
                 remark: values.remark,
             });
@@ -69,6 +69,9 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
                 forceRender
             >
                 <Form form={form} layout="vertical" initialValues={getDeviceTypeFormValues()}>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        基础信息
+                    </Divider>
                     <Form.Item
                         label="名称"
                         name="name"
@@ -76,6 +79,9 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
                     >
                         <Input maxLength={64} />
                     </Form.Item>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        协议参数
+                    </Divider>
                     <Form.Item
                         label="应答模式"
                         name="responseMode"
@@ -90,13 +96,20 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
                             ]}
                         />
                     </Form.Item>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        存储策略
+                    </Divider>
                     <Form.Item
-                        label="存储间隔（秒）"
-                        name="storageInterval"
-                        extra="历史数据入库的最小间隔，1 表示每次上报都存储"
+                        label="存储策略"
+                        name="storagePolicy"
+                        rules={[{ required: true, message: '请选择存储策略' }]}
+                        extra="上报时存储每条历史数据；数据改变时仅在点位值变化时存储"
                     >
-                        <InputNumber min={1} max={86400} className="!w-full" addonAfter="秒" />
+                        <Select options={STORAGE_POLICY_OPTIONS} />
                     </Form.Item>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        其他
+                    </Divider>
                     <Form.Item label="启用" name="enabled" valuePropName="checked">
                         <Switch />
                     </Form.Item>
