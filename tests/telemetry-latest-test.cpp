@@ -43,7 +43,12 @@ void requireNoUnsafeParsing(std::string_view source) {
 
 int main() {
     try {
-        requireNoUnsafeParsing(latestSource());
+        const auto source = latestSource();
+        requireNoUnsafeParsing(source);
+        require(source.find("iot:device:realtime:revision") != std::string_view::npos &&
+                    source.find("redis.call('INCR', KEYS[3])") != std::string_view::npos &&
+                    source.find("redis.call('INCR', KEYS[2])") != std::string_view::npos,
+                "telemetry changes do not advance the device realtime revision");
         std::cout << "telemetry latest tests passed\n";
         return 0;
     } catch (const std::exception& error) {

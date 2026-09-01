@@ -2389,6 +2389,12 @@ void testLatestProjectionRefreshesPreservedElementMetadata() {
             "latest projection skipped existing element metadata refresh with HSETNX");
     require(refreshesElementMetadata,
             "latest projection did not write refreshed metadata for an existing element");
+    const auto bumpedRevision = std::ranges::any_of(
+        context.redisClient.state->directCommands, [](const auto& command) {
+            return command.size() == 2 && command[0] == "INCR" &&
+                   command[1] == service::telemetry::latest::kRealtimeRevisionKey;
+        });
+    require(bumpedRevision, "latest projection did not notify device realtime subscribers");
 }
 
 void testLatestProjectionRejectsInvalidPreservedDeadline() {

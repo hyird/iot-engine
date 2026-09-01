@@ -1240,13 +1240,15 @@ local previous_connection = redis.call('HGET', KEYS[1], 'connection_id') or ''
 redis.call('HSET', KEYS[1],
   'device_id', ARGV[1], 'device_code', ARGV[2], 'worker_id', ARGV[3],
   'connection_id', ARGV[4], 'session_epoch', ARGV[5], 'updated_at_ms', ARGV[6])
+if previous_connection ~= ARGV[4] then redis.call('INCR', KEYS[2]) end
 return {previous_worker, previous_connection}
 )lua";
         const auto key = service::telemetry::latest::runtimeKey(action.deviceCode);
+        const auto revisionKey = std::string(service::telemetry::latest::kRealtimeRevisionKey);
         const auto worker = std::to_string(workerIndex_);
         const auto epoch = std::to_string(sessionEpoch);
         const auto now = std::to_string(message::utcNowMilliseconds());
-        const std::string_view keys[]{key};
+        const std::string_view keys[]{key, revisionKey};
         const std::string_view args[]{
             action.deviceId, action.deviceCode, worker, action.connectionId, epoch, now};
         const auto reply = co_await redis_.eval(script, keys, args);
@@ -1290,12 +1292,14 @@ redis.call('HSET', KEYS[2], '_state', cjson.encode({
   onlineUntil = tonumber(redis.call('HGET', KEYS[1], 'online_until_ms') or '0') or 0,
   updatedAt = tonumber(ARGV[3]) or 0
 }), '_updated_at_ms', ARGV[3])
+redis.call('INCR', KEYS[3])
 return 1
 )lua";
         const auto key = service::telemetry::latest::runtimeKey(deviceCode);
         const auto latestKey = service::telemetry::latest::latestKey(deviceCode);
+        const auto revisionKey = std::string(service::telemetry::latest::kRealtimeRevisionKey);
         const auto now = std::to_string(message::utcNowMilliseconds());
-        const std::string_view keys[]{key, latestKey};
+        const std::string_view keys[]{key, latestKey, revisionKey};
         const std::string_view args[]{connectionId, reason, now};
         (void)co_await redis_.eval(script, keys, args);
     }

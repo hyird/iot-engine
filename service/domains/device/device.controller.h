@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <memory_resource>
 #include <string>
 #include <string_view>
@@ -8,6 +9,7 @@
 #include <ruvia/web/Controller.h>
 
 #include "service/common/http.h"
+#include "service/features/telemetry/latest.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/permission.h"
 #include "service/features/command/service.h"
@@ -22,6 +24,7 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
     RUVIA_ROUTES_BEGIN
     // 设备
     RUVIA_GET("/options", options);
+    RUVIA_GET_SSE("/realtime/events", realtimeEvents);
     RUVIA_GET("/realtime", realtime);
     RUVIA_GET("/commands/:id", commandStatus, DeviceIdParamsValidator);
     RUVIA_POST("/commands/wait", commandWait, DeviceCommandWaitValidator);
@@ -74,6 +77,43 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
         co_await service::middleware::requirePermission(c, "iot:device:query");
         co_return c.json(
             service::common::ok<DeviceRealtimeResponse>(c, co_await deviceService().realtime(c)));
+    }
+    ruvia::Task<void> realtimeEvents(ruvia::Context& c) {
+        using namespace std::chrono_literals;
+
+        co_await service::middleware::requirePermission(c, "iot:device:query");
+        auto revision =
+            (co_await c.redis().get(service::telemetry::latest::kRealtimeRevisionKey))
+                .value_or("0");
+        c.header("X-Accel-Buffering", "no");
+        auto events = c.streamSse();
+        co_await events.write({.data = revision,
+                               .event = "ready",
+                               .id = revision,
+                               .retry = 1s});
+
+        auto heartbeatAt = std::chrono::steady_clock::now() + 15s;
+        while (!events.aborted()) {
+            if (co_await events.sleep(500ms) == ruvia::TimerSleepResult::kStopRequested)
+                co_return;
+            if (events.aborted())
+                co_return;
+
+            const auto current =
+                (co_await c.redis().get(service::telemetry::latest::kRealtimeRevisionKey))
+                    .value_or("0");
+            if (current != revision) {
+                revision = current;
+                co_await events.write(
+                    {.data = revision, .event = "realtime", .id = revision});
+                heartbeatAt = std::chrono::steady_clock::now() + 15s;
+                continue;
+            }
+            if (std::chrono::steady_clock::now() >= heartbeatAt) {
+                co_await events.write({.data = revision, .event = "heartbeat"});
+                heartbeatAt = std::chrono::steady_clock::now() + 15s;
+            }
+        }
     }
     ruvia::Task<ruvia::HttpResponse> options(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:device:query");

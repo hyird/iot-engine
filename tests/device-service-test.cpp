@@ -27,6 +27,14 @@ std::string deviceFormSource() {
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
+std::string deviceControllerSource() {
+    auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
+                "service/domains/device/device.controller.h";
+    std::ifstream input(path, std::ios::binary);
+    require(input.good(), "cannot open device controller source");
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
 void requireNoUnsafeParsing(std::string_view source) {
     require(source.find("std::stoll") == std::string_view::npos,
             "device service uses unsafe/partial stoll parsing");
@@ -76,6 +84,13 @@ int main() {
         const auto form = deviceFormSource();
         require(form.find("disabled={!!editing}") == std::string::npos,
                 "device edit form still disables connection fields");
+        const auto controller = deviceControllerSource();
+        require(controller.find("RUVIA_GET_SSE(\"/realtime/events\", realtimeEvents)") !=
+                        std::string::npos &&
+                    controller.find("requirePermission(c, \"iot:device:query\")") !=
+                        std::string::npos &&
+                    controller.find("X-Accel-Buffering") != std::string::npos,
+                "device realtime SSE route is missing permission or proxy-streaming safeguards");
         std::cout << "device service tests passed\n";
         return 0;
     } catch (const std::exception& error) {

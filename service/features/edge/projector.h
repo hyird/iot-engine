@@ -1011,6 +1011,7 @@ WHERE id = $3::uuid)sql",
     static ruvia::Task<void> saveDeviceStatus(ruvia::WebWorkerContext& context,
                                                std::string_view nodeId,
                                                const pb::DeviceStatusReport& report) {
+        bool updated = false;
         for (const auto& status : report.devices()) {
             if (status.device_id().size() != 16)
                 continue;
@@ -1035,7 +1036,10 @@ WHERE id = $3::uuid)sql",
                  {"updated_at_ms", std::to_string(protocol::nowMs())}});
             (void)co_await service::message::redis::command(
                 context.redis(), {"PEXPIRE", key, "300000"});
+            updated = true;
         }
+        if (updated)
+            co_await service::telemetry::latest::bumpRealtimeRevision(context.redis());
     }
 
     static std::string jsonEscape(std::string_view value) {

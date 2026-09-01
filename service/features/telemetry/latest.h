@@ -25,6 +25,16 @@ namespace service::telemetry::latest {
 
 inline constexpr std::string_view kOnlineDeadlinesBase =
     "iot:schedule:device:online-deadlines";
+inline constexpr std::string_view kRealtimeRevisionKey =
+    "iot:device:realtime:revision";
+
+template <typename Redis>
+ruvia::Task<void> bumpRealtimeRevision(const Redis& redis) {
+    const auto reply = co_await service::message::redis::command(
+        redis, {"INCR", std::string(kRealtimeRevisionKey)});
+    if (reply.kind() != ruvia::RedisValue::Kind::kInteger)
+        service::message::redis::throwValue("increment device realtime revision", reply);
+}
 
 inline std::string onlineDeadlinesKey(std::size_t shardIndex) {
     return std::string(kOnlineDeadlinesBase) + ":" +
@@ -125,6 +135,7 @@ ruvia::Task<void> initializeDevice(const Redis& redis, std::string_view deviceId
          {"_device_code", std::string(deviceCode)},
          {"_state", stateJson("offline", "no_connection", {}, {}, now)},
          {"_updated_at_ms", now}});
+    co_await bumpRealtimeRevision(redis);
 }
 
 template <typename Redis>
@@ -134,6 +145,7 @@ ruvia::Task<void> eraseDevice(const Redis& redis, std::string_view deviceCode) {
     (void)co_await service::message::redis::command(
         redis, {"ZREM", onlineDeadlinesKey(service::message::shard::index(deviceCode)),
                 std::string(deviceCode)});
+    co_await bumpRealtimeRevision(redis);
 }
 
 template <typename Redis>
@@ -207,6 +219,7 @@ if observed_at >= current_report then
   end
 end
 local count = 0
+local touched = false
 for element_id, point in pairs(payload.values or {}) do
   if not (has_configured_ids and configured_ids[element_id] == nil) then
     local value = '-'
@@ -245,9 +258,12 @@ for element_id, point in pairs(payload.values or {}) do
       })
       redis.call('HSET', latest_key, element_id, document)
       count = count + 1
+      touched = true
     end
   end
 end
+if observed_at >= current_report then touched = true end
+if touched then redis.call('INCR', KEYS[3]) end
 return count
     )lua";
     const auto scriptSha = co_await redis.scriptLoad(script);
@@ -260,9 +276,9 @@ return count
         const auto deadlinesKey = onlineDeadlinesKey(shardIndex);
         const auto wakeStream = service::message::workerWakeStream(
             service::message::workerForPartition(shardIndex));
-        const std::array<std::string_view, 13> command{
-            "EVALSHA",    scriptSha,         "2",          deadlinesKey,
-            wakeStream,    parsed.deviceId,
+        const std::array<std::string_view, 14> command{
+            "EVALSHA",    scriptSha,         "3",          deadlinesKey,
+            wakeStream,    kRealtimeRevisionKey, parsed.deviceId,
             parsed.deviceCode, parsed.protocol,    observedAt,   updatedAt,
             parsed.source, onlineWindow,      parsed.valuesJson};
         // RedisPipeline copies every argument synchronously.
@@ -305,6 +321,7 @@ if expected <= now then
              'updated_at_ms', ARGV[2])
   redis.call('HSET', latest_key, '_state', state_json, '_updated_at_ms', ARGV[2])
   redis.call('ZREM', KEYS[1], ARGV[1])
+  redis.call('INCR', KEYS[2])
   return 1
 end
 redis.call('ZADD', KEYS[1], expected, ARGV[1])
@@ -317,8 +334,9 @@ return 0
     for (const auto& code : due.array()) {
         if (code.kind() != ruvia::RedisValue::Kind::kString)
             continue;
-        const std::array<std::string_view, 6> command{
-            "EVALSHA", scriptSha, "1", deadlineKey, code.string(), now};
+        const std::array<std::string_view, 7> command{
+            "EVALSHA", scriptSha, "2", deadlineKey, kRealtimeRevisionKey,
+            code.string(), now};
         pipeline.command(command);
     }
     const auto replies = co_await std::move(pipeline).exec();
@@ -687,6 +705,7 @@ return 1
             row[1].value().value_or(std::string_view{})));
     for (const auto shardIndex : changedShards)
         co_await signalFreshness(redis, shardIndex);
+    co_await bumpRealtimeRevision(redis);
 }
 
 template <typename Context> ruvia::Task<void> projectDevice(Context& context, std::string_view id) {

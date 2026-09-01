@@ -1,6 +1,8 @@
 import request from '@/utils/http';
 import { appendQueryParams } from '@/utils/query';
+import { consumeServerSentEvents } from '@/utils/sse';
 import type { PaginatedResult } from '@/utils/types';
+import { useAuthStore } from '@/store/authStore';
 import {
     deviceCommandSchema,
     deviceIdSchema,
@@ -29,6 +31,43 @@ const buildTree = (items: DeviceGroup.TreeItem[]) => {
 export const getDeviceList = () => request.get<PaginatedResult<Device.RealTimeData>>(DEVICE_BASE);
 export const getDeviceRealtime = () =>
     request.get<PaginatedResult<Device.Realtime>>(`${DEVICE_BASE}/realtime`);
+export async function subscribeDeviceRealtime(
+    onEvent: (event: 'ready' | 'realtime') => void,
+    signal: AbortSignal
+) {
+    let refreshed = false;
+    for (;;) {
+        const token = useAuthStore.getState().token;
+        if (!token) throw new Error('登录状态已失效');
+
+        const response = await fetch(`${DEVICE_BASE}/realtime/events`, {
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: {
+                Accept: 'text/event-stream',
+                Authorization: `Bearer ${token}`,
+            },
+            signal,
+        });
+        if (response.status === 401 && !refreshed) {
+            refreshed = true;
+            if (await useAuthStore.getState().refreshAccessToken()) continue;
+        }
+        if (!response.ok) throw new Error(`设备实时事件连接失败（HTTP ${response.status}）`);
+        if (!response.body) throw new Error('浏览器不支持设备实时事件流');
+        const contentType = response.headers.get('content-type') ?? '';
+        if (!contentType.includes('text/event-stream')) throw new Error('设备实时事件响应格式错误');
+
+        await consumeServerSentEvents(
+            response.body,
+            (event) => {
+                if (event.event === 'ready' || event.event === 'realtime') onEvent(event.event);
+            },
+            signal
+        );
+        return;
+    }
+}
 export const getDeviceDetail = (id: string) =>
     request.get<Device.RealTimeData>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}`);
 export const getDeviceHistory = (id: string, query: Device.HistoryRecordQuery) =>

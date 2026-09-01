@@ -69,6 +69,7 @@ import {
     useDeviceHistory,
     useDeviceList,
     useDeviceRealtime,
+    useDeviceRealtimeEvents,
     useDeviceSave,
     useDeviceShares,
     useDeviceShareTargets,
@@ -89,6 +90,7 @@ const DEVICE_CARD_DANGER_BUTTON_CLASS =
 const WIDE_DEVICE_CARD_ITEM_COUNT = 18;
 const DEVICE_VIRTUAL_ROW_GAP = 12;
 const DEVICE_LIST_POLLING_INTERVAL = 5000;
+const DEVICE_REALTIME_FALLBACK_INTERVAL = 30_000;
 
 interface DeviceProtocolStats {
     total: number;
@@ -1289,8 +1291,11 @@ const DevicePage = () => {
         refetch: refetchRealtime,
     } = useDeviceRealtime({
         enabled: canQuery && !!data,
-        pollingInterval: DEVICE_LIST_POLLING_INTERVAL,
+        // SSE drives normal updates; this low-frequency poll repairs any event missed
+        // while a proxy or mobile network is reconnecting.
+        pollingInterval: DEVICE_REALTIME_FALLBACK_INTERVAL,
     });
+    useDeviceRealtimeEvents({ enabled: canQuery && !!data });
     const { data: groupTree = [] } = useDeviceGroupTreeWithCount({
         enabled: canQuery,
         refetchInterval: DEVICE_LIST_POLLING_INTERVAL,

@@ -1,12 +1,15 @@
-import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
+import { type UseQueryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect } from 'react';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { createQueryKeys } from '@/utils/query';
+import { reconnectServerSentEvents } from '@/utils/sse';
 import type { PaginatedResult } from '@/utils/types';
 import * as api from './device.client';
 import type { Device } from './device.types';
 import type { DeviceGroup } from './device-group.types';
 
 const deviceKeys = createQueryKeys('devices');
+const deviceRealtimeKey = [...deviceKeys.all, 'realtime'] as const;
 const groupKeys = createQueryKeys('device-groups');
 const shareKeys = {
     all: ['device-shares'] as const,
@@ -52,13 +55,34 @@ export function useDeviceRealtime(options?: {
     pollingInterval?: number | false;
 }) {
     return useQuery({
-        queryKey: [...deviceKeys.all, 'realtime'],
+        queryKey: deviceRealtimeKey,
         queryFn: api.getDeviceRealtime,
         enabled: options?.enabled ?? true,
         refetchInterval: options?.pollingInterval ?? false,
         refetchOnWindowFocus: false,
         staleTime: 1_000,
     });
+}
+
+export function useDeviceRealtimeEvents(options?: { enabled?: boolean }) {
+    const queryClient = useQueryClient();
+    const enabled = options?.enabled ?? true;
+
+    useEffect(() => {
+        if (!enabled) return;
+        const controller = new AbortController();
+
+        void reconnectServerSentEvents(
+            (connected, signal) =>
+                api.subscribeDeviceRealtime((event) => {
+                    if (event === 'ready') connected();
+                    void queryClient.invalidateQueries({ queryKey: deviceRealtimeKey });
+                }, signal),
+            controller.signal
+        );
+
+        return () => controller.abort();
+    }, [enabled, queryClient]);
 }
 
 export function useDeviceHistory(
