@@ -19,6 +19,14 @@ std::string deviceSource() {
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
+std::string deviceFormSource() {
+    auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
+                "web/pages/iot/device/DeviceFormModal.tsx";
+    std::ifstream input(path, std::ios::binary);
+    require(input.good(), "cannot open device form source");
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
 void requireNoUnsafeParsing(std::string_view source) {
     require(source.find("std::stoll") == std::string_view::npos,
             "device service uses unsafe/partial stoll parsing");
@@ -54,7 +62,18 @@ void requireNoUnsafeParsing(std::string_view source) {
 
 int main() {
     try {
-        requireNoUnsafeParsing(deviceSource());
+        const auto service = deviceSource();
+        requireNoUnsafeParsing(service);
+        require(service.find("设备所属链路不可修改") == std::string::npos &&
+                    service.find("设备所属边缘节点不可修改") == std::string::npos &&
+                    service.find("设备类型不可修改") == std::string::npos,
+                "device connection fields are still immutable");
+        require(service.find("createEdgeLink") != std::string::npos &&
+                    service.find("retireEdgeLink") != std::string::npos,
+                "device connection-mode changes do not migrate edge links");
+        const auto form = deviceFormSource();
+        require(form.find("disabled={!!editing}") == std::string::npos,
+                "device edit form still disables connection fields");
         std::cout << "device service tests passed\n";
         return 0;
     } catch (const std::exception& error) {

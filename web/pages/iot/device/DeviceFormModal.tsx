@@ -369,7 +369,7 @@ const DeviceFormModal = ({
                     rules={[{ required: true }]}
                     extra="边缘节点模式会把设备和要素配置下发到选定 OpenWrt 节点"
                 >
-                    <Radio.Group onChange={handleConnectionModeChange} disabled={!!editing}>
+                    <Radio.Group onChange={handleConnectionModeChange}>
                         <Radio.Button value="link">本地链路</Radio.Button>
                         <Radio.Button value="edge">边缘节点</Radio.Button>
                     </Radio.Group>
@@ -385,7 +385,6 @@ const DeviceFormModal = ({
                         <Select
                             placeholder="选择链路"
                             onChange={handleLinkChange}
-                            disabled={!!editing}
                         >
                             {linkOptions.map((opt) => (
                                 <Select.Option key={opt.id} value={opt.id}>
@@ -435,7 +434,6 @@ const DeviceFormModal = ({
                             <Select
                                 placeholder="选择边缘节点（IMEI）"
                                 onChange={handleEdgeNodeChange}
-                                disabled={!!editing}
                                 loading={edgeListLoading}
                                 showSearch
                                 optionFilterProp="label"
@@ -467,7 +465,6 @@ const DeviceFormModal = ({
                                 <Select
                                     placeholder="选择协议"
                                     onChange={handleEdgeProtocolChange}
-                                    disabled={!!editing}
                                 >
                                     <Select.Option value="Modbus">Modbus</Select.Option>
                                     <Select.Option value="S7">S7</Select.Option>
@@ -621,7 +618,7 @@ const DeviceFormModal = ({
                                   ? '请先选择边缘协议'
                                   : '请先选择链路'
                         }
-                        disabled={!!editing || !protocolType}
+                        disabled={!protocolType}
                         loading={protocolOptionsLoading}
                         notFoundContent={protocolOptionsLoading ? '加载中...' : '暂无数据'}
                     >
