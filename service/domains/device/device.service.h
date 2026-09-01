@@ -1059,21 +1059,25 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
         bindings.reserve(items.size() * 3);
         for (const auto& [id, item] : items) {
             (void)id;
-            if (!item->get<"deviceCode">())
+            if (!item->template get<"deviceCode">())
                 continue;
             // The runtime hash also contains worker/session bookkeeping. The list only needs
             // these two fields, so HMGET avoids transferring and parsing the rest of the hash.
             pipeline.command("HMGET", service::telemetry::latest::runtimeKey(
-                                         item->get<"deviceCode">()->view()),
+                                         item->template get<"deviceCode">()->view()),
                              "connection_id", "last_report_at_ms");
             bindings.push_back({ReplyKind::runtime, item});
-            pipeline.hgetAll(service::telemetry::latest::latestKey(item->get<"deviceCode">()->view()));
+            pipeline.hgetAll(service::telemetry::latest::latestKey(
+                item->template get<"deviceCode">()->view()));
             bindings.push_back({ReplyKind::latest, item});
-            if (item->get<"edgeNodeId">() && item->get<"edgeTransport">() &&
-                item->get<"edgeTransport">()->view() == "tcp") {
+            if (item->template get<"edgeNodeId">() &&
+                item->template get<"edgeTransport">() &&
+                item->template get<"edgeTransport">()->view() == "tcp") {
                 pipeline.command(
                     "HMGET",
-                    edgeDeviceStatusKey(item->get<"edgeNodeId">()->view(), item->get<"id">()->view()),
+                    edgeDeviceStatusKey(
+                        item->template get<"edgeNodeId">()->view(),
+                        item->template get<"id">()->view()),
                     "state", "reason", "client_count", "last_activity_at_ms");
                 bindings.push_back({ReplyKind::edgeDevice, item});
             }
@@ -1355,11 +1359,13 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         if (!reportTime.empty()) {
             const auto milliseconds = toInt(reportTime);
             if (milliseconds > 0)
-                item.set<"reportTime">(service::common::utcTimestampFromMilliseconds(milliseconds));
+                item.template set<"reportTime">(
+                    service::common::utcTimestampFromMilliseconds(milliseconds));
         }
         const bool connected = !redisArrayField(reply, 0).empty();
-        item.set<"connected">(connected)
-            .set<"connectionState">(connected ? "connected" : "disconnected");
+        item.template set<"connected">(connected);
+        item.template set<"connectionState">(
+            connected ? "connected" : "disconnected");
     }
 
     template <typename Item>
@@ -1369,8 +1375,9 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         if (state.empty())
             return;
         const bool connected = state == "connected" || state == "online";
-        item.set<"connected">(connected)
-            .set<"connectionState">(connected ? "connected" : "disconnected");
+        item.template set<"connected">(connected);
+        item.template set<"connectionState">(
+            connected ? "connected" : "disconnected");
         EdgeStatusDto status(c);
         status.set<"state">(state);
         const auto reason = redisArrayField(reply, 1);
@@ -1386,7 +1393,7 @@ ORDER BY device_id, operation_position, operation_key, element_position,
                 status.set<"lastActivityAt">(
                     service::common::utcTimestampFromMilliseconds(milliseconds));
         }
-        item.set<"edgeStatus">(std::move(status));
+        item.template set<"edgeStatus">(std::move(status));
     }
 
     struct LatestElement final {
@@ -1481,9 +1488,10 @@ ORDER BY device_id, operation_position, operation_key, element_position,
                 dto.set<"encode">(element.encode);
             reportTime = std::max(reportTime, element.observedAt);
         }
-        item.set<"elements">(std::move(dtos));
-        if (reportTime > 0 && !item.get<"reportTime">())
-            item.set<"reportTime">(service::common::utcTimestampFromMilliseconds(reportTime));
+        item.template set<"elements">(std::move(dtos));
+        if (reportTime > 0 && !item.template get<"reportTime">())
+            item.template set<"reportTime">(
+                service::common::utcTimestampFromMilliseconds(reportTime));
     }
 
     static std::string str(const std::optional<ruvia::String>& value) {
