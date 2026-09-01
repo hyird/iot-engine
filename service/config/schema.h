@@ -1300,6 +1300,8 @@ ALTER TABLE open_webhook
     ADD COLUMN skip_tls_verify BOOLEAN NOT NULL DEFAULT FALSE;
 )sql"},
     {"0026_unify_protocol_read_interval", R"sql(
+DO $schema$
+BEGIN
 UPDATE protocol_config
 SET config = jsonb_set(config - 'pollInterval', '{readInterval}',
                        config->'pollInterval', true),
@@ -1309,6 +1311,8 @@ WHERE protocol = 'S7' AND config ? 'pollInterval';
 ALTER TABLE protocol_config
     ADD CONSTRAINT ck_protocol_config_no_poll_interval
     CHECK (NOT (config ? 'pollInterval'));
+END
+$schema$;
 )sql"},
 }};
 
