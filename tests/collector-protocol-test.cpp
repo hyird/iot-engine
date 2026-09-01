@@ -2324,23 +2324,26 @@ void testFreshnessDeadlineWait() {
 void testEdgeSessionOwnership() {
     EdgeSessionRedis redis;
     constexpr std::string_view nodeId = "00000000-0000-7000-8000-000000000002";
-    require(runTask(service::edge::session_state::claim(redis, nodeId, 11, 3)),
+    require(runTask(service::edge::session_state::claim(redis, nodeId, 11, 3, 0)),
             "initial edge session claim failed");
-    require(runTask(service::edge::session_state::claim(redis, nodeId, 22, 5)),
+    require(runTask(service::edge::session_state::claim(redis, nodeId, 22, 5, 1)),
             "replacement edge session claim failed");
-    require(!runTask(service::edge::session_state::refresh(redis, nodeId, 11, 3)),
+    require(!runTask(service::edge::session_state::refresh(redis, nodeId, 11, 3, 0)),
             "stale edge session retained ownership");
-    require(redis.value == "22|5", "stale edge session overwrote the replacement state");
-    require(!runTask(service::edge::session_state::release(redis, nodeId, 11, 3)),
+    require(redis.value == "22|5|1", "stale edge session overwrote the replacement state");
+    require(!runTask(service::edge::session_state::release(redis, nodeId, 11, 3, 0)),
             "stale edge session reported replacement cleanup");
-    require(redis.value == "22|5", "stale edge session deleted the replacement state");
+    require(redis.value == "22|5|1", "stale edge session deleted the replacement state");
     require(service::edge::session_state::protocolVersion(*redis.value) == 5,
             "edge session did not expose its negotiated protocol");
-    require(!service::edge::session_state::protocolVersion("22").has_value(),
-            "legacy epoch-only session state was treated as negotiated");
-    require(runTask(service::edge::session_state::refresh(redis, nodeId, 22, 5)),
+    require(service::edge::session_state::workerIndex(*redis.value) == 1,
+            "edge session did not expose its owning worker");
+    require(!service::edge::session_state::protocolVersion("22|5").has_value(),
+            "session state without a worker owner was treated as current");
+    require(runTask(service::edge::session_state::refresh(redis, nodeId, 22, 5, 1)),
             "active edge session failed to refresh ownership");
-    require(runTask(service::edge::session_state::release(redis, nodeId, 22, 5)) && !redis.value,
+    require(runTask(service::edge::session_state::release(redis, nodeId, 22, 5, 1)) &&
+                !redis.value,
             "active edge session failed to release ownership");
 }
 
@@ -2386,13 +2389,15 @@ void testLatestProjectionRejectsInvalidPreservedDeadline() {
 
     bool emittedInvalidDeadline = false;
     bool clearedDeadline = false;
+    const auto deadlineKey = service::telemetry::latest::onlineDeadlinesKey(
+        service::message::shard::index("D1"));
     for (const auto& command : context.redisClient.state->pipelineCommands) {
         if (command.size() >= 4 && command[0] == "ZADD" &&
-            command[1] == "iot:schedule:device:online-deadlines" &&
+            command[1] == deadlineKey &&
             command[2] == "not-a-number")
             emittedInvalidDeadline = true;
         if (command.size() >= 3 && command[0] == "ZREM" &&
-            command[1] == "iot:schedule:device:online-deadlines" && command[2] == "D1")
+            command[1] == deadlineKey && command[2] == "D1")
             clearedDeadline = true;
     }
     require(!emittedInvalidDeadline,

@@ -9,6 +9,8 @@
 
 #include "service/common/http.h"
 #include "service/common/message/contract.h"
+#include "service/common/message/shard.h"
+#include "service/features/access/stream.h"
 #include "service/features/collector/stream.h"
 
 namespace service::message {
@@ -17,6 +19,19 @@ inline constexpr std::string_view kRuntimeConfigChangesStream{
     "iot:channel:runtime:config-change"};
 inline constexpr std::string_view kWebhookCatalogChangesStream{
     "iot:channel:open-access:config-change"};
+
+inline std::string webhookCatalogChangesStream(std::size_t workerIndex) {
+    return service::access::stream::catalogChanges(workerIndex);
+}
+
+inline std::string runtimeConfigChangesStream(std::size_t shardIndex) {
+    return std::string(kRuntimeConfigChangesStream) + ":" +
+           std::to_string(shardIndex);
+}
+
+inline std::string runtimeConfigChangesStream(std::string_view aggregateId) {
+    return runtimeConfigChangesStream(service::message::shard::index(aggregateId));
+}
 
 inline constexpr std::string_view kConfigEventType{"config.changed"};
 inline constexpr std::string_view kConfigEventSchemaVersion{"1"};
@@ -44,12 +59,14 @@ template <typename Redis>
 inline ruvia::Task<void> publishConfigEnvelope(
     const Redis& redis, std::string_view eventId, std::string_view eventType,
     std::string_view aggregate, std::string_view aggregateId, std::string_view action,
-    std::string_view schemaVersion, std::string_view occurredAtMs) {
+    std::string_view schemaVersion, std::string_view occurredAtMs,
+    std::size_t serviceWorkerCount = 1) {
     const bool runtimeChange =
         aggregate == "link" || aggregate == "device" || aggregate == "protocol";
     const bool webhookChange = aggregate == "access_key" || aggregate == "webhook" ||
                                aggregate == "device" || aggregate == "protocol";
-    if (!runtimeChange && !webhookChange)
+    const bool accessSessionChange = aggregate == "access_key" || aggregate == "device";
+    if (!runtimeChange && !webhookChange && !accessSessionChange)
         co_return;
     const std::vector<service::message::StreamField> fields{
         {"message_id", std::string(eventId)},
@@ -65,10 +82,22 @@ inline ruvia::Task<void> publishConfigEnvelope(
     auto pipeline = redis.pipeline();
     if (runtimeChange)
         service::message::redis::queueAdd(
-            pipeline, kRuntimeConfigChangesStream, fields, 10000);
-    if (webhookChange)
+            pipeline, runtimeConfigChangesStream(aggregateId), fields, 10000);
+    if (webhookChange) {
+        if (serviceWorkerCount == 0 ||
+            serviceWorkerCount > service::access::stream::kPartitionCount)
+            throw std::invalid_argument("invalid Service Worker count for webhook catalog");
+        // Every Worker owns an independent in-memory catalog, so each receives one
+        // refresh event. Data events themselves remain partitioned, never broadcast.
+        for (std::size_t workerIndex = 0; workerIndex < serviceWorkerCount;
+             ++workerIndex)
+            service::message::redis::queueAdd(
+                pipeline, webhookCatalogChangesStream(workerIndex), fields, 10000);
+    }
+    if (accessSessionChange)
         service::message::redis::queueAdd(
-            pipeline, kWebhookCatalogChangesStream, fields, 10000);
+            pipeline, service::access::stream::sessionChanges(aggregateId), fields,
+            10000);
     const auto replies = co_await std::move(pipeline).exec();
     service::message::redis::requirePipelineSuccess("publish config change", replies);
     co_return;

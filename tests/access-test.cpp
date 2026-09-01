@@ -64,6 +64,23 @@ int main() {
                                        "019fd9f6-4be5-7272-a194-9e571bce848d",
                                        "device.command.responded"),
                 "different event types incorrectly share an idempotency key");
+        const std::string_view partitionedDevice{
+            "019fd9f6-4be5-7272-a194-9e571bce848e"};
+        const auto partition = service::access::stream::partition(partitionedDevice);
+        require(partition < service::access::stream::kPartitionCount &&
+                    service::access::stream::event(partitionedDevice) ==
+                        service::access::stream::event(partition) &&
+                    service::access::stream::deliveryResult(partitionedDevice) ==
+                        service::access::stream::deliveryResult(partition) &&
+                    service::access::stream::sessionChanges(partitionedDevice) ==
+                        service::access::stream::sessionChanges(partition),
+                "open-access streams do not keep stable partition affinity");
+        require(service::message::webhookCatalogChangesStream(0) !=
+                    service::message::webhookCatalogChangesStream(1),
+                "webhook workers share a catalog refresh Stream");
+        require(service::message::webhookCatalogChangesStream(0) !=
+                    service::access::stream::sessionChanges(0),
+                "worker-local catalog and globally sharded session changes share a Stream");
         require(service::message::kRuntimeConfigChangesStream !=
                     service::message::kWebhookCatalogChangesStream,
                 "independent config consumers must not XDEL from a shared Stream");

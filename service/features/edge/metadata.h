@@ -17,6 +17,8 @@
 
 #include "service/common/http.h"
 #include "service/features/collector/stream.h"
+#include "service/features/edge/projector-stream.h"
+#include "service/features/edge/session.h"
 #include "service/utils/number.h"
 
 namespace service::edge::metadata {
@@ -24,13 +26,10 @@ namespace service::edge::metadata {
 inline constexpr std::string_view kChangesStream{"iot:edge:metadata:changes"};
 inline constexpr std::string_view kStoreNodeScript = R"lua(
 redis.call('DEL', KEYS[1])
-for index = 3, #ARGV, 2 do
+for index = 1, #ARGV, 2 do
   redis.call('HSET', KEYS[1], ARGV[index], ARGV[index + 1])
 end
-if ARGV[1] == '1' then
-  redis.call('XADD', KEYS[2], 'MAXLEN', '~', 10000, '*', 'node_id', ARGV[2])
-end
-return (#ARGV - 2) / 2
+return #ARGV / 2
 )lua";
 
 inline constexpr std::string_view kLoadNodeSql = R"sql(
@@ -156,10 +155,10 @@ inline std::optional<Device> decode(std::string_view value) {
 
 template <typename Pipeline>
 void queueStoreNode(Pipeline& pipeline, std::string_view nodeId,
-                    const NodeSnapshot& snapshot, bool notify) {
-    const std::vector<std::string> keys{key(nodeId), std::string(kChangesStream)};
-    std::vector<std::string> arguments{notify ? "1" : "0", std::string(nodeId)};
-    arguments.reserve(2 + snapshot.size() * 2);
+                     const NodeSnapshot& snapshot) {
+    const std::vector<std::string> keys{key(nodeId)};
+    std::vector<std::string> arguments;
+    arguments.reserve(snapshot.size() * 2);
     for (const auto& [deviceId, device] : snapshot) {
         arguments.push_back(deviceId);
         arguments.push_back(encode(device));
@@ -204,10 +203,10 @@ ruvia::Task<Catalog> loadCatalogFromDatabase(Context& context) {
 
 template <typename Redis>
 ruvia::Task<void> storeNode(const Redis& redis, std::string_view nodeId,
-                            const NodeSnapshot& snapshot, bool notify) {
-    const std::vector<std::string> keyStore{key(nodeId), std::string(kChangesStream)};
-    std::vector<std::string> argumentStore{notify ? "1" : "0", std::string(nodeId)};
-    argumentStore.reserve(2 + snapshot.size() * 2);
+                             const NodeSnapshot& snapshot, bool notify) {
+    const std::vector<std::string> keyStore{key(nodeId)};
+    std::vector<std::string> argumentStore;
+    argumentStore.reserve(snapshot.size() * 2);
     for (const auto& [deviceId, device] : snapshot) {
         argumentStore.push_back(deviceId);
         argumentStore.push_back(encode(device));
@@ -219,6 +218,15 @@ ruvia::Task<void> storeNode(const Redis& redis, std::string_view nodeId,
                                            std::span<const std::string_view>(arguments));
     if (reply.kind() != ruvia::RedisValue::Kind::kInteger)
         service::message::redis::throwValue("store edge metadata", reply);
+    if (!notify)
+        co_return;
+    const auto session = co_await redis.get(session_state::key(nodeId));
+    if (!session)
+        co_return;
+    const auto owner = session_state::workerIndex(
+        std::string_view(session->data(), session->size()));
+    if (owner)
+        co_await projector_stream::publishMetadata(redis, *owner, nodeId);
 }
 
 template <typename Redis>
@@ -256,7 +264,7 @@ ruvia::Task<Catalog> hydrate(Context& context) {
     const auto redis = context.redis();
     auto pipeline = redis.pipeline();
     for (const auto& [nodeId, snapshot] : catalog)
-        queueStoreNode(pipeline, nodeId, snapshot, false);
+        queueStoreNode(pipeline, nodeId, snapshot);
     const auto replies = co_await std::move(pipeline).exec();
     service::message::redis::requirePipelineSuccess("hydrate edge metadata", replies);
     co_return catalog;

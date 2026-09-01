@@ -21,13 +21,13 @@
 #include "service/features/alert/metadata.h"
 #include "service/features/event/config.h"
 #include "service/features/event/idempotency.h"
-#include "service/features/runtime/projector.h"
+#include "service/features/runtime/repository.h"
 #include "service/features/collector/stream.h"
 
 namespace service::runtime {
 
-// PostgreSQL is the configuration source of truth. CRUD commits enqueue durable change events;
-// this single Service coroutine blocks on that stream and projects a versioned Redis snapshot.
+// PostgreSQL is the configuration source of truth. Every Service Worker owns a disjoint set
+// of durable config shards and independently projects the versioned Redis snapshot.
 class Reconciler final {
   public:
     Reconciler() = default;
@@ -35,36 +35,47 @@ class Reconciler final {
     Reconciler& operator=(const Reconciler&) = delete;
     ~Reconciler() { stop(); }
 
-    void start(ruvia::WebWorkerHandle worker, std::size_t collectorWorkerCount) {
+    void start(std::vector<ruvia::WebWorkerHandle> workers,
+               std::size_t collectorWorkerCount) {
         if (running_.exchange(true))
             return;
-        worker_ = std::move(worker);
+        workers_ = std::move(workers);
         collectorWorkerCount_ = collectorWorkerCount;
-        if (collectorWorkerCount_ == 0) {
+        if (workers_.empty() || workers_.size() > service::message::shard::kCount ||
+            collectorWorkerCount_ == 0) {
             running_.store(false);
-            throw std::runtime_error("runtime reconciler requires collector workers");
+            throw std::runtime_error(
+                "runtime reconciler requires valid Service and Collector Workers");
         }
-        auto ready = std::make_shared<std::promise<void>>();
-        auto stopped = std::make_shared<std::promise<void>>();
-        auto readiness = ready->get_future();
-        stopped_ = stopped->get_future().share();
-        const auto posted = worker_.post([this, ready, stopped](ruvia::WebWorkerContext& context) {
-            return run(context, ready, stopped);
-        });
-        if (!posted.accepted()) {
-            running_.store(false);
-            throw std::runtime_error("service worker rejected runtime reconciler");
+        std::vector<std::future<void>> readiness;
+        readiness.reserve(workers_.size());
+        stopped_.reserve(workers_.size());
+        for (std::size_t index = 0; index < workers_.size(); ++index) {
+            auto ready = std::make_shared<std::promise<void>>();
+            auto stopped = std::make_shared<std::promise<void>>();
+            readiness.push_back(ready->get_future());
+            stopped_.push_back(stopped->get_future().share());
+            const auto posted = workers_[index].post(
+                [this, index, ready, stopped](ruvia::WebWorkerContext& context) {
+                    return run(context, index, ready, stopped);
+                });
+            if (!posted.accepted()) {
+                running_.store(false);
+                throw std::runtime_error("service worker rejected runtime reconciler");
+            }
         }
-        readiness.get();
+        for (auto& ready : readiness)
+            ready.get();
     }
 
     void stop() noexcept {
         if (!running_.exchange(false))
             return;
-        if (stopped_.valid())
-            (void)stopped_.wait_for(std::chrono::seconds(3));
-        stopped_ = {};
-        worker_ = {};
+        for (const auto& stopped : stopped_)
+            if (stopped.valid())
+                (void)stopped.wait_for(std::chrono::seconds(3));
+        stopped_.clear();
+        workers_.clear();
     }
 
   private:
@@ -78,15 +89,25 @@ class Reconciler final {
         return aggregate == "link" || aggregate == "device" || aggregate == "protocol";
     }
 
-    ruvia::Task<void> run(ruvia::WebWorkerContext& context,
-                          std::shared_ptr<std::promise<void>> ready,
-                          std::shared_ptr<std::promise<void>> stopped) {
+    ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t index,
+                           std::shared_ptr<std::promise<void>> ready,
+                           std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
-            co_await service::message::redis::ensureGroup(
-                redis, service::message::kRuntimeConfigChangesStream, kGroup);
+            std::vector<std::string> streams;
+            for (auto shardIndex = index;
+                 shardIndex < service::message::shard::kCount;
+                 shardIndex += workers_.size())
+                streams.push_back(
+                    service::message::runtimeConfigChangesStream(shardIndex));
+            // Worker 0 drains entries produced before config Streams were sharded.
+            if (index == 0)
+                streams.emplace_back(service::message::kRuntimeConfigChangesStream);
+            for (const auto& stream : streams)
+                co_await service::message::redis::ensureGroup(redis, stream, kGroup);
             ready->set_value();
             bool recovering = true;
+            const auto consumer = "service-" + std::to_string(index);
             std::optional<std::chrono::steady_clock::time_point> cleanupDeadline =
                 std::chrono::steady_clock::now();
             while (running_.load() && !context.stopToken().stopRequested()) {
@@ -103,13 +124,12 @@ class Reconciler final {
                     }
                     continue;
                 }
-                std::vector<service::message::StreamMessage> messages;
+                std::vector<service::message::redis::StreamBatch> batches;
                 bool readFailed = false;
                 try {
                     if (recovering) {
-                        messages = co_await service::message::redis::readGroup(
-                            redis, service::message::kRuntimeConfigChangesStream, kGroup,
-                            "service-0", "0", std::chrono::milliseconds(0), kBatchSize);
+                        batches = co_await service::message::redis::claimGroupMany(
+                            redis, streams, kGroup, consumer, kBatchSize);
                     } else {
                         std::optional<std::chrono::milliseconds> timeout;
                         if (cleanupDeadline) {
@@ -118,9 +138,9 @@ class Reconciler final {
                                 std::chrono::duration_cast<std::chrono::milliseconds>(
                                     *cleanupDeadline - std::chrono::steady_clock::now()));
                         }
-                        messages = co_await service::message::redis::readGroupBlockingUntil(
-                            redis, service::message::kRuntimeConfigChangesStream, kGroup,
-                            "service-0", context.stopToken(), timeout, kBatchSize);
+                        batches = co_await service::message::redis::readGroupManyBlockingUntil(
+                            redis, streams, kGroup, consumer, context.stopToken(), timeout,
+                            kBatchSize);
                     }
                 } catch (const std::exception& error) {
                     if (context.stopToken().stopRequested())
@@ -134,14 +154,12 @@ class Reconciler final {
                                                    std::chrono::milliseconds(250));
                     continue;
                 }
-                if (recovering && messages.empty()) {
+                if (recovering && batches.empty()) {
                     recovering = false;
                     continue;
                 }
-                if (messages.empty())
+                if (batches.empty())
                     continue;
-                std::vector<std::vector<service::message::StreamMessage>> batches;
-                batches.push_back(std::move(messages));
                 bool failed = false;
                 try {
                     if (!recovering) {
@@ -149,31 +167,32 @@ class Reconciler final {
                         // lock. Recovery already has a durable backlog and needs no delay.
                         (void)co_await ruvia::sleepFor(context.worker(), kCoalesceWindow);
                     }
-                    std::size_t messageCount = batches.front().size();
-                    std::string recoveryCursor = batches.front().back().id;
-                    while (messageCount < kCoalesceLimit) {
+                    std::size_t messageCount = 0;
+                    for (const auto& batch : batches)
+                        messageCount += batch.messages.size();
+                    while (!recovering && messageCount < kCoalesceLimit) {
                         const auto remaining = kCoalesceLimit - messageCount;
-                        auto next = co_await service::message::redis::readGroup(
-                            redis, service::message::kRuntimeConfigChangesStream, kGroup,
-                            "service-0", recovering ? std::string_view(recoveryCursor)
-                                                     : std::string_view(">"),
-                            std::chrono::milliseconds(0), std::min(kBatchSize, remaining));
+                        auto next = co_await service::message::redis::readGroupMany(
+                            redis, streams, kGroup, consumer, ">",
+                            std::min(kBatchSize, remaining));
                         if (next.empty())
                             break;
-                        messageCount += next.size();
-                        recoveryCursor = next.back().id;
-                        batches.push_back(std::move(next));
+                        for (auto& batch : next) {
+                            messageCount += batch.messages.size();
+                            batches.push_back(std::move(batch));
+                        }
                     }
                     std::vector<service::message::StreamMessage> received;
                     received.reserve(messageCount);
                     for (const auto& batch : batches)
-                        received.insert(received.end(), batch.begin(), batch.end());
+                        received.insert(received.end(), batch.messages.begin(),
+                                        batch.messages.end());
                     const auto eventIds = service::message::idempotency::eventIds(received);
                     const auto pendingIds = co_await service::message::idempotency::pending(
                         context, kGroup, eventIds);
                     const auto projectionRequired = std::ranges::any_of(
                         batches, [&pendingIds](const auto& batch) {
-                            return std::ranges::any_of(batch, [&pendingIds](const auto& message) {
+                            return std::ranges::any_of(batch.messages, [&pendingIds](const auto& message) {
                                 return service::message::idempotency::shouldProcess(
                                            message, pendingIds) &&
                                        requiresProjection(message);
@@ -181,22 +200,18 @@ class Reconciler final {
                         });
                     const auto alertRefreshRequired = std::ranges::any_of(
                         batches, [&pendingIds](const auto& batch) {
-                            return std::ranges::any_of(batch, [&pendingIds](const auto& message) {
+                            return std::ranges::any_of(batch.messages, [&pendingIds](const auto& message) {
                                 return service::message::idempotency::shouldProcess(
                                            message, pendingIds) &&
                                        message.get("aggregate") == "device";
                             });
                         });
                     if (projectionRequired) {
-                        const auto version = co_await project(context);
+                        co_await projectAndNotify(context);
                         cleanupDeadline = std::chrono::steady_clock::now() +
                                           std::chrono::milliseconds(
                                               service::collector::config::
                                                   kSnapshotGraceMilliseconds);
-                        if (version != lastNotifiedVersion_) {
-                            co_await publishWorkerNotifications(context, version);
-                            lastNotifiedVersion_ = version;
-                        }
                     }
                     if (alertRefreshRequired)
                         co_await service::alert::metadata::refresh(context);
@@ -204,8 +219,7 @@ class Reconciler final {
                         context, kGroup, eventIds);
                     for (const auto& batch : batches)
                         co_await service::message::redis::acknowledgeAndDeleteMany(
-                            redis, service::message::kRuntimeConfigChangesStream, kGroup,
-                            batch);
+                            redis, batch.stream, kGroup, batch.messages);
                 } catch (const std::exception& error) {
                     if (context.stopToken().stopRequested())
                         break;
@@ -231,6 +245,21 @@ class Reconciler final {
 
     static constexpr std::size_t kConfigStreamCapacity = 10000;
 
+    ruvia::Task<void> projectAndNotify(ruvia::WebWorkerContext& context) {
+        auto transaction = co_await context.db().beginTransaction();
+        // Keep snapshot activation and Collector notifications under one global order.
+        // A retry can repeat the same version, but can never publish an older version
+        // after a newer projection has been notified.
+        (void)co_await transaction.query(
+            "SELECT pg_advisory_xact_lock(5282804697543808067::bigint)");
+        auto snapshot =
+            co_await service::runtime::repository::loadRuntimeSnapshot(transaction);
+        const auto version =
+            co_await service::collector::config::project(context.redis(), snapshot);
+        co_await publishWorkerNotifications(context, version);
+        co_await transaction.commit();
+    }
+
     ruvia::Task<void> publishWorkerNotifications(ruvia::WebWorkerContext& context,
                                                  std::string_view version) {
         const auto createdAt = std::to_string(service::message::utcNowMilliseconds());
@@ -245,10 +274,9 @@ class Reconciler final {
         }
     }
 
-    ruvia::WebWorkerHandle worker_;
-    std::shared_future<void> stopped_;
+    std::vector<ruvia::WebWorkerHandle> workers_;
+    std::vector<std::shared_future<void>> stopped_;
     std::size_t collectorWorkerCount_ = 0;
-    std::string lastNotifiedVersion_;
     std::atomic_bool running_{false};
 };
 

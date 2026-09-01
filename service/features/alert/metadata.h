@@ -14,6 +14,7 @@
 #include <ruvia/core/Task.h>
 
 #include "service/common/message/contract.h"
+#include "service/common/message/shard.h"
 #include "service/features/collector/stream.h"
 #include "service/features/telemetry/latest.h"
 
@@ -24,7 +25,13 @@ inline constexpr std::string_view kOfflineRulesKey{"iot:alert:offline-rules"};
 inline constexpr std::string_view kReadyKey{"iot:alert:metadata-ready"};
 inline constexpr std::string_view kOfflineDurationKeys{"iot:alert:offline-duration-keys"};
 inline constexpr std::string_view kOfflineDurationPrefix{"iot:alert:offline-duration:"};
-inline constexpr std::string_view kOfflineDeadlinesKey{"iot:schedule:alert:offline-deadlines"};
+inline constexpr std::string_view kLegacyOfflineDeadlinesKey{
+    "iot:schedule:alert:offline-deadlines"};
+
+inline std::string offlineDeadlinesKey(std::size_t shardIndex) {
+    return std::string(kLegacyOfflineDeadlinesKey) + ":" +
+           std::to_string(shardIndex);
+}
 
 namespace detail {
 
@@ -64,6 +71,7 @@ inline ruvia::Task<void> refresh(Context& context) {
     const auto rows = co_await transaction.query(detail::kRefreshQuery);
 
     struct OfflineEntry final {
+        std::size_t shardIndex{};
         std::string durationKey;
         std::string member;
         std::int64_t durationMs{0};
@@ -87,19 +95,21 @@ inline ruvia::Task<void> refresh(Context& context) {
                 .value_or(0);
         const auto durationMs = *durationSeconds * 1000;
         offlineEntries.push_back(
-            {offlineDurationKey(deviceId),
+            {service::message::shard::index(deviceId), offlineDurationKey(deviceId),
              std::string(row[1].value().value_or(std::string_view{})) + ":" + std::to_string(durationMs),
              durationMs, observedAtMs > 0 ? observedAtMs + durationMs : now,
              std::string(row[4].value().value_or(std::string_view{}))});
     }
 
     std::vector<std::string> arguments;
-    arguments.reserve(2 + devices.size() + offlineEntries.size() * 5);
+    arguments.reserve(3 + devices.size() + offlineEntries.size() * 6);
+    arguments.push_back(std::to_string(service::message::shard::kCount));
     arguments.push_back(std::to_string(devices.size()));
     for (const auto& deviceId : devices)
         arguments.push_back(deviceId);
     arguments.push_back(std::to_string(offlineEntries.size()));
     for (const auto& entry : offlineEntries) {
+        arguments.push_back(std::to_string(entry.shardIndex));
         arguments.push_back(entry.durationKey);
         arguments.push_back(entry.member);
         arguments.push_back(std::to_string(entry.durationMs));
@@ -109,9 +119,16 @@ inline ruvia::Task<void> refresh(Context& context) {
     static constexpr std::string_view script = R"lua(
 local previous = redis.call('SMEMBERS', KEYS[4])
 for _, key in ipairs(previous) do redis.call('DEL', key) end
+local shard_count = tonumber(ARGV[1]) or 0
+local changed = {}
+for partition = 0, shard_count - 1 do
+  local deadlines_key = KEYS[6 + partition]
+  if redis.call('ZCARD', deadlines_key) > 0 then changed[partition] = true end
+  redis.call('DEL', deadlines_key)
+end
 redis.call('DEL', KEYS[1], KEYS[4], KEYS[5])
-local device_count = tonumber(ARGV[1]) or 0
-local cursor = 2
+local device_count = tonumber(ARGV[2]) or 0
+local cursor = 3
 for index = 1, device_count do
   redis.call('SADD', KEYS[1], ARGV[cursor])
   cursor = cursor + 1
@@ -119,39 +136,48 @@ end
 local offline_count = tonumber(ARGV[cursor]) or 0
 cursor = cursor + 1
 for index = 1, offline_count do
-  local duration_key = ARGV[cursor]
-  local member = ARGV[cursor + 1]
-  local duration = tonumber(ARGV[cursor + 2])
-  local deadline = tonumber(ARGV[cursor + 3])
+  local partition = tonumber(ARGV[cursor]) or 0
+  local duration_key = ARGV[cursor + 1]
+  local member = ARGV[cursor + 2]
+  local duration = tonumber(ARGV[cursor + 3])
+  local deadline = tonumber(ARGV[cursor + 4])
   local runtime_observed = redis.call(
-    'HGET', 'iot:runtime:device:' .. ARGV[cursor + 4], 'last_report_at_ms')
+    'HGET', 'iot:runtime:device:' .. ARGV[cursor + 5], 'last_report_at_ms')
   local runtime_observed_ms = runtime_observed and tonumber(runtime_observed) or nil
   if runtime_observed_ms then
     deadline = math.max(deadline, runtime_observed_ms + duration)
   end
   redis.call('HSET', duration_key, member, duration)
   redis.call('SADD', KEYS[4], duration_key)
-  redis.call('ZADD', KEYS[5], deadline, member)
-  cursor = cursor + 5
+  redis.call('ZADD', KEYS[6 + partition], deadline, member)
+  changed[partition] = true
+  cursor = cursor + 6
 end
 redis.call('SET', KEYS[2], offline_count > 0 and '1' or '0')
 redis.call('SET', KEYS[3], '1')
-redis.call('XADD', KEYS[6], 'MAXLEN', '~', '128', '*', 'source', 'alert-metadata')
+for partition, _ in pairs(changed) do
+  redis.call('XADD', KEYS[6 + shard_count + partition],
+             'MAXLEN', '~', '128', '*', 'source', 'alert-metadata')
+end
 return offline_count
 )lua";
-    const std::string devicesKey(kRuleDevicesKey);
-    const std::string offlineKey(kOfflineRulesKey);
-    const std::string readyKey(kReadyKey);
-    const std::string durationKeys(kOfflineDurationKeys);
-    const std::string deadlinesKey(kOfflineDeadlinesKey);
-    const std::string wakeStream(service::telemetry::latest::kFreshnessWakeStream);
-    const std::string_view keys[]{devicesKey, offlineKey, readyKey, durationKeys,
-                                  deadlinesKey, wakeStream};
+    std::vector<std::string> keys{
+        std::string(kRuleDevicesKey), std::string(kOfflineRulesKey),
+        std::string(kReadyKey), std::string(kOfflineDurationKeys),
+        std::string(kLegacyOfflineDeadlinesKey)};
+    keys.reserve(5 + service::message::shard::kCount * 2);
+    for (std::size_t shardIndex = 0; shardIndex < service::message::shard::kCount;
+         ++shardIndex)
+        keys.push_back(offlineDeadlinesKey(shardIndex));
+    for (std::size_t shardIndex = 0; shardIndex < service::message::shard::kCount;
+         ++shardIndex)
+        keys.push_back(service::telemetry::latest::freshnessWakeStream(shardIndex));
+    std::vector<std::string_view> keyViews(keys.begin(), keys.end());
     std::vector<std::string_view> views;
     views.reserve(arguments.size());
     for (const auto& argument : arguments)
         views.push_back(argument);
-    const auto reply = co_await context.redis().eval(script, keys, views);
+    const auto reply = co_await context.redis().eval(script, keyViews, views);
     if (reply.kind() == ruvia::RedisValue::Kind::kError)
         service::message::redis::throwValue("refresh alert metadata", reply);
     co_await transaction.commit();
@@ -191,10 +217,12 @@ return changed
 )lua";
     const auto scriptSha = co_await redis.scriptLoad(script);
     auto pipeline = redis.pipeline();
-    const std::string deadlinesKey(kOfflineDeadlinesKey);
-    const std::string wakeStream(service::telemetry::latest::kFreshnessWakeStream);
     for (const auto& message : messages) {
+        const auto shardIndex = service::message::shard::index(message.deviceId);
         const auto durationKey = offlineDurationKey(message.deviceId);
+        const auto deadlinesKey = offlineDeadlinesKey(shardIndex);
+        const auto wakeStream =
+            service::telemetry::latest::freshnessWakeStream(shardIndex);
         const auto observedAt = std::to_string(message.observedAtMs);
         const std::array<std::string_view, 3> keys{durationKey, deadlinesKey, wakeStream};
         const std::array<std::string_view, 1> arguments{observedAt};
@@ -205,9 +233,10 @@ return changed
 }
 
 template <typename Redis>
-inline ruvia::Task<std::optional<std::int64_t>> nextOfflineDeadline(const Redis& redis) {
+inline ruvia::Task<std::optional<std::int64_t>> nextOfflineDeadline(
+    const Redis& redis, std::size_t shardIndex) {
     const auto reply = co_await service::message::redis::command(
-        redis, {"ZRANGE", std::string(kOfflineDeadlinesKey), "0", "0", "WITHSCORES"});
+        redis, {"ZRANGE", offlineDeadlinesKey(shardIndex), "0", "0", "WITHSCORES"});
     if (reply.kind() != ruvia::RedisValue::Kind::kArray)
         service::message::redis::throwValue("read next offline-alert deadline", reply);
     if (reply.array().empty())
@@ -225,9 +254,10 @@ inline ruvia::Task<std::optional<std::int64_t>> nextOfflineDeadline(const Redis&
 
 template <typename Redis>
 inline ruvia::Task<std::vector<std::string>> dueOffline(
-    const Redis& redis, std::int64_t nowMs, std::size_t maximum = 1000) {
+    const Redis& redis, std::size_t shardIndex, std::int64_t nowMs,
+    std::size_t maximum = 1000) {
     const auto reply = co_await service::message::redis::command(
-        redis, {"ZRANGEBYSCORE", std::string(kOfflineDeadlinesKey), "-inf",
+        redis, {"ZRANGEBYSCORE", offlineDeadlinesKey(shardIndex), "-inf",
                 std::to_string(nowMs), "LIMIT", "0", std::to_string(maximum)});
     if (reply.kind() != ruvia::RedisValue::Kind::kArray)
         service::message::redis::throwValue("read due offline-alert deadlines", reply);
@@ -243,10 +273,11 @@ inline ruvia::Task<std::vector<std::string>> dueOffline(
 
 template <typename Redis>
 inline ruvia::Task<void> removeOfflineDeadlines(
-    const Redis& redis, const std::vector<std::string>& members) {
+    const Redis& redis, std::size_t shardIndex,
+    const std::vector<std::string>& members) {
     if (members.empty())
         co_return;
-    std::vector<std::string> command{"ZREM", std::string(kOfflineDeadlinesKey)};
+    std::vector<std::string> command{"ZREM", offlineDeadlinesKey(shardIndex)};
     command.insert(command.end(), members.begin(), members.end());
     (void)co_await service::message::redis::command(redis, command);
 }

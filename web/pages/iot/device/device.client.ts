@@ -27,6 +27,8 @@ const buildTree = (items: DeviceGroup.TreeItem[]) => {
 };
 
 export const getDeviceList = () => request.get<PaginatedResult<Device.RealTimeData>>(DEVICE_BASE);
+export const getDeviceRealtime = () =>
+    request.get<PaginatedResult<Device.Realtime>>(`${DEVICE_BASE}/realtime`);
 export const getDeviceDetail = (id: string) =>
     request.get<Device.RealTimeData>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}`);
 export const getDeviceHistory = (id: string, query: Device.HistoryRecordQuery) =>

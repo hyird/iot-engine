@@ -157,6 +157,42 @@ void testInjectedSharedState() {
             "command service does not inject device authorization");
 }
 
+void testSymmetricServiceWorkers() {
+    const auto server = source("service/server.cpp");
+    for (const auto expected : {"outbox->start(workers)",
+                                "openWebhooks->start(workers)",
+                                "edgeProjector->start(workers)",
+                                "alerts->start(workers)",
+                                "configReconciler->start(workers"})
+        require(server.find(expected) != std::string::npos,
+                "a Service task is still assigned to a selected Worker");
+
+    const auto freshness = source("service/features/telemetry/persistence.h");
+    const auto reconciler = source("service/features/runtime/reconciler.h");
+    const auto webhook = source("service/features/access/webhook.h");
+    const auto edge = source("service/features/edge/projector.h");
+    for (const auto* component : {&freshness, &reconciler, &webhook, &edge}) {
+        require(component->find("workers_.front().post") == std::string::npos &&
+                    component->find("workers_.back().post") == std::string::npos,
+                "a worker-local task still selects front/back");
+        require(component->find("claimGroupMany") != std::string::npos,
+                "a sharded task cannot recover work after Worker reassignment");
+    }
+    require(freshness.find("freshnessWakeStream(shardIndex)") != std::string::npos,
+            "freshness wakeups are not Worker-owned shards");
+    require(reconciler.find("runtimeConfigChangesStream(shardIndex)") !=
+                std::string::npos,
+            "runtime reconciliation is not sharded");
+    require(webhook.find("stream::event(partitionIndex)") != std::string::npos,
+             "webhook delivery is not device-affine");
+    require(webhook.find("stream::sessionChanges(partitionIndex)") !=
+                std::string::npos &&
+                webhook.find("session::ensure(context)") != std::string::npos,
+            "access-session projection is not sharded with idempotent startup");
+    require(edge.find("projector_stream::stream(streamIndex)") != std::string::npos,
+            "edge projection is not isolated by accepting Worker");
+}
+
 } // namespace
 
 int main() {
@@ -168,6 +204,7 @@ int main() {
         testOutboxOperations();
         testOperationalAlerts();
         testInjectedSharedState();
+        testSymmetricServiceWorkers();
         std::cout << "architecture tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

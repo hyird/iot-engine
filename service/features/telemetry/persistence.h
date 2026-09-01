@@ -118,14 +118,14 @@ class PersistenceRuntime final {
                 throw std::runtime_error("service worker rejected telemetry consumer");
             }
         }
-        {
+        for (std::size_t index = 0; index < workers_.size(); ++index) {
             auto ready = std::make_shared<std::promise<void>>();
             auto stopped = std::make_shared<std::promise<void>>();
             readiness.push_back(ready->get_future());
             stopped_.push_back(stopped->get_future().share());
-            const auto posted = workers_.front().post(
-                [this, ready, stopped](ruvia::WebWorkerContext& context) {
-                    return maintainFreshness(context, ready, stopped);
+            const auto posted = workers_[index].post(
+                [this, index, ready, stopped](ruvia::WebWorkerContext& context) {
+                    return maintainFreshness(context, index, ready, stopped);
                 });
             if (!posted.accepted()) {
                 running_.store(false);
@@ -179,42 +179,67 @@ class PersistenceRuntime final {
     static constexpr std::string_view kGroup = "iot-engine:telemetry-persistence";
     static constexpr std::string_view kFreshnessGroup =
         "iot-engine:telemetry-freshness";
-    static constexpr std::string_view kFreshnessConsumer = "service-0";
     static constexpr std::size_t kBatchSize = 256;
     static constexpr std::size_t kFreshnessWakeBatchSize = 128;
 
     ruvia::Task<void> maintainFreshness(
-        ruvia::WebWorkerContext& context, std::shared_ptr<std::promise<void>> ready,
+        ruvia::WebWorkerContext& context, std::size_t index,
+        std::shared_ptr<std::promise<void>> ready,
         std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
-            co_await service::message::redis::ensureGroup(
-                redis, latest::kFreshnessWakeStream, kFreshnessGroup);
+            std::vector<std::size_t> shards;
+            std::vector<std::string> streams;
+            for (auto shardIndex = index;
+                 shardIndex < service::message::shard::kCount;
+                 shardIndex += workers_.size()) {
+                shards.push_back(shardIndex);
+                streams.push_back(latest::freshnessWakeStream(shardIndex));
+            }
+            // Worker 0 drains the wake/deadline keys from the former singleton layout.
+            if (index == 0) {
+                co_await latest::migrateLegacyDeadlines(redis);
+                streams.emplace_back(latest::kLegacyFreshnessWakeStream);
+            }
+            for (const auto& stream : streams)
+                co_await service::message::redis::ensureGroup(
+                    redis, stream, kFreshnessGroup);
             ready->set_value();
             bool recovering = true;
+            const auto consumer = "service-" + std::to_string(index);
             while (running_.load() && !context.stopToken().stopRequested()) {
                 bool failed = false;
                 try {
                     if (recovering) {
-                        auto pending = co_await service::message::redis::readGroup(
-                            redis, latest::kFreshnessWakeStream, kFreshnessGroup,
-                            kFreshnessConsumer, "0", std::chrono::milliseconds(0),
+                        auto pending = co_await service::message::redis::claimGroupMany(
+                            redis, streams, kFreshnessGroup, consumer,
                             kFreshnessWakeBatchSize);
                         if (!pending.empty()) {
-                            co_await service::message::redis::acknowledgeAndDeleteMany(
-                                redis, latest::kFreshnessWakeStream, kFreshnessGroup, pending);
+                            for (const auto& batch : pending)
+                                co_await service::message::redis::acknowledgeAndDeleteMany(
+                                    redis, batch.stream, kFreshnessGroup,
+                                    batch.messages);
                             continue;
                         }
                         recovering = false;
                     }
-                    co_await latest::expireStale(redis);
-                    co_await service::alert::Runtime::evaluateOfflineDue(context);
-                    const auto onlineDeadline = co_await latest::nextDeadline(redis);
-                    const auto alertDeadline =
-                        co_await service::alert::metadata::nextOfflineDeadline(redis);
-                    auto deadline = onlineDeadline;
-                    if (alertDeadline && (!deadline || *alertDeadline < *deadline))
-                        deadline = alertDeadline;
+                    std::optional<std::int64_t> deadline;
+                    for (const auto shardIndex : shards) {
+                        co_await latest::expireStale(redis, shardIndex);
+                        co_await service::alert::Runtime::evaluateOfflineDue(
+                            context, shardIndex);
+                        const auto onlineDeadline =
+                            co_await latest::nextDeadline(redis, shardIndex);
+                        const auto alertDeadline =
+                            co_await service::alert::metadata::nextOfflineDeadline(
+                                redis, shardIndex);
+                        if (onlineDeadline &&
+                            (!deadline || *onlineDeadline < *deadline))
+                            deadline = onlineDeadline;
+                        if (alertDeadline &&
+                            (!deadline || *alertDeadline < *deadline))
+                            deadline = alertDeadline;
+                    }
                     const auto wait = latest::deadlineWait(
                         service::message::utcNowMilliseconds(),
                         deadline);
@@ -223,13 +248,13 @@ class PersistenceRuntime final {
                     // A finite BLOCK ends at the nearest deadline; BLOCK 0 is used only when
                     // there is no deadline. Earlier inserts publish to the wake Stream.
                     auto signals =
-                        co_await service::message::redis::readGroupBlockingUntil(
-                            redis, latest::kFreshnessWakeStream, kFreshnessGroup,
-                            kFreshnessConsumer, context.stopToken(), wait,
+                        co_await service::message::redis::readGroupManyBlockingUntil(
+                            redis, streams, kFreshnessGroup, consumer,
+                            context.stopToken(), wait,
                             kFreshnessWakeBatchSize);
-                    if (!signals.empty())
+                    for (const auto& batch : signals)
                         co_await service::message::redis::acknowledgeAndDeleteMany(
-                            redis, latest::kFreshnessWakeStream, kFreshnessGroup, signals);
+                            redis, batch.stream, kFreshnessGroup, batch.messages);
                 } catch (const std::exception& error) {
                     if (context.stopToken().stopRequested())
                         break;
@@ -281,8 +306,8 @@ class PersistenceRuntime final {
                 bool readFailed = false;
                 try {
                     batches = recovering
-                        ? co_await message::redis::readGroupMany(
-                              redis, streams, kGroup, consumer, "0", kBatchSize)
+                        ? co_await message::redis::claimGroupMany(
+                              redis, streams, kGroup, consumer, kBatchSize)
                         : co_await message::redis::readGroupManyBlocking(
                               redis, streams, kGroup, consumer,
                               context.stopToken(), kBatchSize);

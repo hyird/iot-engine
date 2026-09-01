@@ -101,8 +101,8 @@ class ResultRuntime final {
                 bool readFailed = false;
                 try {
                     batches = recovering
-                        ? co_await message::redis::readGroupMany(
-                              redis, streams, kGroup, consumer, "0", kBatchSize)
+                        ? co_await message::redis::claimGroupMany(
+                              redis, streams, kGroup, consumer, kBatchSize)
                         : co_await message::redis::readGroupManyBlocking(
                               redis, streams, kGroup, consumer,
                               context.stopToken(), kBatchSize);
@@ -238,7 +238,8 @@ return 1
                                                                           : "FAILED") +
                 ",\"reason\":" + service::access::jsonQuoted(message.get("reason")) + "}";
             const std::string source(sourceStream);
-            const std::string eventStream(service::access::event::kStream);
+            const auto eventStream =
+                service::access::stream::event(message.get("device_id"));
             const auto deadLetter = message::deadLetterStream(partition);
             const std::string_view keys[]{key, eventStream, source, deadLetter};
             std::vector<std::string_view> arguments{

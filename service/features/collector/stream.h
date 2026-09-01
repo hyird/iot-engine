@@ -181,6 +181,52 @@ struct StreamBatch final {
 
 template <typename Redis>
 inline ruvia::Task<std::vector<StreamBatch>>
+claimGroupMany(const Redis& redis, std::span<const std::string> streams,
+               std::string_view group, std::string_view consumer,
+               std::size_t count = 100) {
+    std::vector<StreamBatch> batches;
+    for (const auto& stream : streams) {
+        const auto reply = co_await command(
+            redis, {"XAUTOCLAIM", stream, std::string(group), std::string(consumer),
+                    "0", "0-0", "COUNT", std::to_string(count)});
+        if (reply.kind() != RedisValue::Kind::kArray || reply.array().size() < 2)
+            throwValue("XAUTOCLAIM", reply);
+        const auto& entries = reply.array()[1];
+        if (entries.kind() != RedisValue::Kind::kArray)
+            throwValue("XAUTOCLAIM entries", reply);
+        StreamBatch batch;
+        batch.stream = stream;
+        batch.messages.reserve(entries.array().size());
+        for (const auto& entry : entries.array()) {
+            if (entry.kind() != RedisValue::Kind::kArray || entry.array().size() != 2)
+                continue;
+            const auto& entryId = entry.array()[0];
+            const auto& fieldArray = entry.array()[1];
+            if (entryId.kind() != RedisValue::Kind::kString ||
+                fieldArray.kind() != RedisValue::Kind::kArray)
+                continue;
+            StreamMessage message;
+            message.id.assign(entryId.string());
+            const auto fieldValues = fieldArray.array();
+            for (std::size_t index = 0; index + 1 < fieldValues.size(); index += 2) {
+                const auto& name = fieldValues[index];
+                const auto& value = fieldValues[index + 1];
+                if (name.kind() != RedisValue::Kind::kString ||
+                    value.kind() != RedisValue::Kind::kString)
+                    continue;
+                message.fields.push_back(
+                    {std::string(name.string()), std::string(value.string())});
+            }
+            batch.messages.push_back(std::move(message));
+        }
+        if (!batch.messages.empty())
+            batches.push_back(std::move(batch));
+    }
+    co_return batches;
+}
+
+template <typename Redis>
+inline ruvia::Task<std::vector<StreamBatch>>
 readGroupManyImpl(const Redis& redis, std::span<const std::string> streams,
                   std::string_view group, std::string_view consumer, std::string_view id,
                   std::optional<std::chrono::milliseconds> block, std::size_t count) {

@@ -18,14 +18,26 @@
 
 #include "service/common/http.h"
 #include "service/common/message/contract.h"
+#include "service/common/message/shard.h"
 #include "service/features/collector/stream.h"
 
 namespace service::telemetry::latest {
 
-inline constexpr std::string_view kOnlineDeadlinesKey = "iot:schedule:device:online-deadlines";
-inline constexpr std::string_view kFreshnessWakeStream =
+inline constexpr std::string_view kLegacyOnlineDeadlinesKey =
+    "iot:schedule:device:online-deadlines";
+inline constexpr std::string_view kLegacyFreshnessWakeStream =
     "iot:channel:telemetry:freshness-wake";
 inline constexpr std::size_t kFreshnessWakeCapacity = 128;
+
+inline std::string onlineDeadlinesKey(std::size_t shardIndex) {
+    return std::string(kLegacyOnlineDeadlinesKey) + ":" +
+           std::to_string(shardIndex);
+}
+
+inline std::string freshnessWakeStream(std::size_t shardIndex) {
+    return std::string(kLegacyFreshnessWakeStream) + ":" +
+           std::to_string(shardIndex);
+}
 
 inline std::string latestKey(std::string_view deviceCode) {
     return "iot:device:" + std::string(deviceCode) + ":latest";
@@ -128,15 +140,55 @@ ruvia::Task<void> eraseDevice(const Redis& redis, std::string_view deviceCode) {
     co_await service::message::redis::eraseHash(redis, runtimeKey(deviceCode));
     co_await service::message::redis::eraseHash(redis, latestKey(deviceCode));
     (void)co_await service::message::redis::command(
-        redis, {"ZREM", std::string(kOnlineDeadlinesKey), std::string(deviceCode)});
+        redis, {"ZREM", onlineDeadlinesKey(service::message::shard::index(deviceCode)),
+                std::string(deviceCode)});
 }
 
 template <typename Redis>
-ruvia::Task<void> signalFreshness(const Redis& redis, std::string_view deadline = {}) {
+ruvia::Task<void> signalFreshness(const Redis& redis, std::size_t shardIndex,
+                                  std::string_view deadline = {}) {
     (void)co_await service::message::redis::command(
-        redis, {"XADD", std::string(kFreshnessWakeStream), "MAXLEN", "~",
+        redis, {"XADD", freshnessWakeStream(shardIndex), "MAXLEN", "~",
                 std::to_string(kFreshnessWakeCapacity), "*", "deadline_ms",
                 std::string(deadline)});
+}
+
+template <typename Redis>
+ruvia::Task<void> migrateLegacyDeadlines(const Redis& redis) {
+    const auto reply = co_await service::message::redis::command(
+        redis, {"ZRANGE", std::string(kLegacyOnlineDeadlinesKey), "0", "-1",
+                "WITHSCORES"});
+    if (reply.kind() != ruvia::RedisValue::Kind::kArray)
+        service::message::redis::throwValue("read legacy online deadlines", reply);
+    if (reply.array().empty())
+        co_return;
+    if (reply.array().size() % 2 != 0)
+        service::message::redis::throwValue("parse legacy online deadlines", reply);
+    auto pipeline = redis.pipeline();
+    std::set<std::size_t> changedShards;
+    std::vector<std::vector<std::string>> commands;
+    commands.reserve(reply.array().size() / 2);
+    for (std::size_t index = 0; index < reply.array().size(); index += 2) {
+        const auto& member = reply.array()[index];
+        const auto& score = reply.array()[index + 1];
+        if (member.kind() != ruvia::RedisValue::Kind::kString ||
+            score.kind() != ruvia::RedisValue::Kind::kString)
+            service::message::redis::throwValue("parse legacy online deadlines", reply);
+        const auto shardIndex = service::message::shard::index(member.string());
+        changedShards.emplace(shardIndex);
+        commands.push_back({"ZADD", onlineDeadlinesKey(shardIndex),
+                            std::string(score.string()), std::string(member.string())});
+        std::vector<std::string_view> views(commands.back().begin(),
+                                            commands.back().end());
+        pipeline.command(views);
+    }
+    const auto replies = co_await std::move(pipeline).exec();
+    service::message::redis::requirePipelineSuccess(
+        "migrate legacy online deadlines", replies);
+    (void)co_await service::message::redis::command(
+        redis, {"DEL", std::string(kLegacyOnlineDeadlinesKey)});
+    for (const auto shardIndex : changedShards)
+        co_await signalFreshness(redis, shardIndex);
 }
 
 template <typename Redis>
@@ -171,7 +223,7 @@ local online_until = observed_at + number_or(ARGV[7], 300000)
 local now = number_or(ARGV[5], observed_at)
 local current_report = number_or(redis.call('HGET', runtime_key, 'last_report_at_ms'), -1)
 if observed_at >= current_report then
-  local deadlines_key = 'iot:schedule:device:online-deadlines'
+  local deadlines_key = KEYS[1]
   local earliest = redis.call('ZRANGE', deadlines_key, 0, 0, 'WITHSCORES')
   local wake = #earliest == 0 or online_until < number_or(earliest[2], online_until + 1)
   local state = 'online'
@@ -196,7 +248,7 @@ if observed_at >= current_report then
     '_state', state_json, '_updated_at_ms', ARGV[5])
   redis.call('ZADD', deadlines_key, online_until, ARGV[2])
   if wake then
-    redis.call('XADD', 'iot:channel:telemetry:freshness-wake',
+    redis.call('XADD', KEYS[2],
                'MAXLEN', '~', '128', '*', 'deadline_ms', tostring(online_until))
   end
 end
@@ -250,8 +302,12 @@ return count
         const auto observedAt = std::to_string(parsed.observedAtMs);
         const auto updatedAt = std::to_string(service::message::utcNowMilliseconds());
         const auto onlineWindow = std::to_string(parsed.onlineWindowMs);
-        const std::array<std::string_view, 11> command{
-            "EVALSHA",    scriptSha,         "0",          parsed.deviceId,
+        const auto shardIndex = service::message::shard::index(parsed.deviceCode);
+        const auto deadlinesKey = onlineDeadlinesKey(shardIndex);
+        const auto wakeStream = freshnessWakeStream(shardIndex);
+        const std::array<std::string_view, 13> command{
+            "EVALSHA",    scriptSha,         "2",          deadlinesKey,
+            wakeStream,    parsed.deviceId,
             parsed.deviceCode, parsed.protocol,    observedAt,   updatedAt,
             parsed.source, onlineWindow,      parsed.valuesJson};
         // RedisPipeline copies every argument synchronously.
@@ -263,11 +319,13 @@ return count
             service::message::redis::throwValue("device latest update", reply);
 }
 
-template <typename Redis> ruvia::Task<void> expireStale(const Redis& redis) {
+template <typename Redis>
+ruvia::Task<void> expireStale(const Redis& redis, std::size_t shardIndex) {
     const auto now = std::to_string(service::message::utcNowMilliseconds());
+    const auto deadlineKey = onlineDeadlinesKey(shardIndex);
     const auto due = co_await service::message::redis::command(
         redis,
-        {"ZRANGEBYSCORE", std::string(kOnlineDeadlinesKey), "-inf", now, "LIMIT", "0", "1000"});
+        {"ZRANGEBYSCORE", deadlineKey, "-inf", now, "LIMIT", "0", "1000"});
     if (due.kind() != ruvia::RedisValue::Kind::kArray)
         service::message::redis::throwValue("read device online deadlines", due);
     static constexpr std::string_view script = R"lua(
@@ -301,7 +359,6 @@ return 0
         co_return;
     const auto scriptSha = co_await redis.scriptLoad(script);
     auto pipeline = redis.pipeline();
-    const std::string deadlineKey(kOnlineDeadlinesKey);
     for (const auto& code : due.array()) {
         if (code.kind() != ruvia::RedisValue::Kind::kString)
             continue;
@@ -316,9 +373,10 @@ return 0
 }
 
 template <typename Redis>
-ruvia::Task<std::optional<std::int64_t>> nextDeadline(const Redis& redis) {
+ruvia::Task<std::optional<std::int64_t>> nextDeadline(
+    const Redis& redis, std::size_t shardIndex) {
     const auto reply = co_await service::message::redis::command(
-        redis, {"ZRANGE", std::string(kOnlineDeadlinesKey), "0", "0", "WITHSCORES"});
+        redis, {"ZRANGE", onlineDeadlinesKey(shardIndex), "0", "0", "WITHSCORES"});
     if (reply.kind() != ruvia::RedisValue::Kind::kArray)
         service::message::redis::throwValue("read next device online deadline", reply);
     if (reply.array().empty())
@@ -476,12 +534,15 @@ WHERE d.deleted_at IS NULL)sql" +
         }
         if (recoveryDeviceIds.contains(deviceId)) {
             metaCommands.push_back(
-                {"ZREM", std::string(kOnlineDeadlinesKey), deviceCode});
+                {"ZREM", onlineDeadlinesKey(service::message::shard::index(deviceCode)),
+                 deviceCode});
             std::vector<std::string_view> views(metaCommands.back().begin(),
                                                 metaCommands.back().end());
             metaPipeline.command(views);
         } else if (preservedDeadlines.contains(deviceCode)) {
-            metaCommands.push_back({"ZADD", std::string(kOnlineDeadlinesKey),
+            metaCommands.push_back({"ZADD",
+                                    onlineDeadlinesKey(
+                                        service::message::shard::index(deviceCode)),
                                     preservedDeadlines.at(deviceCode), deviceCode});
             std::vector<std::string_view> views(metaCommands.back().begin(),
                                                 metaCommands.back().end());
@@ -655,15 +716,22 @@ return 1
             std::vector<std::string_view> latestViews(reportCommands.back().begin(),
                                                       reportCommands.back().end());
             reportPipeline.command(latestViews);
-            reportCommands.push_back({"ZADD", std::string(kOnlineDeadlinesKey),
-                                      std::to_string(onlineUntil), deviceCode});
+            reportCommands.push_back({"ZADD",
+                                      onlineDeadlinesKey(
+                                          service::message::shard::index(deviceCode)),
+                                       std::to_string(onlineUntil), deviceCode});
             std::vector<std::string_view> deadlineViews(reportCommands.back().begin(),
                                                         reportCommands.back().end());
             reportPipeline.command(deadlineViews);
         }
         co_await executeProjectionPipeline(std::move(reportPipeline), "project latest state");
     }
-    co_await signalFreshness(redis);
+    std::set<std::size_t> changedShards;
+    for (const auto& row : devices)
+        changedShards.emplace(service::message::shard::index(
+            row[1].value().value_or(std::string_view{})));
+    for (const auto shardIndex : changedShards)
+        co_await signalFreshness(redis, shardIndex);
 }
 
 template <typename Context> ruvia::Task<void> projectDevice(Context& context, std::string_view id) {

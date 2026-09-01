@@ -109,12 +109,24 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
     co_return decode(reply.string());
 }
 
-template <typename Context> ruvia::Task<void> refresh(Context& context) {
+template <typename Context>
+ruvia::Task<void> refresh(Context& context, bool onlyIfMissing = false) {
     // Serialize the database snapshot and Redis pointer swap across service instances.
     // The lock is held only by cold-path configuration projection, never by API reads.
     auto transaction = co_await context.db().beginTransaction();
     (void)co_await transaction.query(
         "SELECT pg_advisory_xact_lock(734622::bigint)");
+    if (onlyIfMissing) {
+        const auto active = co_await service::message::redis::command(
+            context.redis(), {"GET", std::string(kActiveVersionKey)});
+        if (!active.null()) {
+            if (active.kind() != ruvia::RedisValue::Kind::kString)
+                service::message::redis::throwValue(
+                    "read active access-session projection", active);
+            co_await transaction.commit();
+            co_return;
+        }
+    }
     const auto rows = co_await transaction.query(R"sql(
 SELECT key.access_key_hash, key.id::text, key.name, key.status::text,
        COALESCE((EXTRACT(EPOCH FROM key.expires_at) * 1000)::bigint, 0)::text,
@@ -166,6 +178,18 @@ return previous or ''
     if (reply.kind() != ruvia::RedisValue::Kind::kString)
         service::message::redis::throwValue("activate access-session projection", reply);
     co_await transaction.commit();
+}
+
+template <typename Context> ruvia::Task<void> ensure(Context& context) {
+    const auto active = co_await service::message::redis::command(
+        context.redis(), {"GET", std::string(kActiveVersionKey)});
+    if (!active.null()) {
+        if (active.kind() != ruvia::RedisValue::Kind::kString)
+            service::message::redis::throwValue(
+                "read active access-session projection", active);
+        co_return;
+    }
+    co_await refresh(context, true);
 }
 
 inline bool expired(const Entry& entry, std::int64_t nowMs) noexcept {

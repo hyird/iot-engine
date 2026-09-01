@@ -32,32 +32,43 @@ public:
   Runtime &operator=(const Runtime &) = delete;
   ~Runtime() { stop(); }
 
-  void start(ruvia::WebWorkerHandle worker) {
+  void start(std::vector<ruvia::WebWorkerHandle> workers) {
     if (running_.exchange(true))
       return;
-    worker_ = std::move(worker);
-    auto ready = std::make_shared<std::promise<void>>();
-    auto stopped = std::make_shared<std::promise<void>>();
-    stopped_ = stopped->get_future().share();
-    auto readiness = ready->get_future();
-    const auto posted =
-        worker_.post([this, ready, stopped](ruvia::WebWorkerContext &context) {
-          return run(context, ready, stopped);
-        });
-    if (!posted.accepted()) {
+    workers_ = std::move(workers);
+    if (workers_.empty()) {
       running_.store(false);
-      throw std::runtime_error("service worker rejected alert runtime");
+      throw std::runtime_error("alert runtime requires Service Workers");
     }
-    readiness.get();
+    std::vector<std::future<void>> readiness;
+    readiness.reserve(workers_.size());
+    stopped_.reserve(workers_.size());
+    for (auto &worker : workers_) {
+      auto ready = std::make_shared<std::promise<void>>();
+      auto stopped = std::make_shared<std::promise<void>>();
+      readiness.push_back(ready->get_future());
+      stopped_.push_back(stopped->get_future().share());
+      const auto posted =
+          worker.post([this, ready, stopped](ruvia::WebWorkerContext &context) {
+            return run(context, ready, stopped);
+          });
+      if (!posted.accepted()) {
+        running_.store(false);
+        throw std::runtime_error("service worker rejected alert runtime");
+      }
+    }
+    for (auto &ready : readiness)
+      ready.get();
   }
 
   void stop() noexcept {
     if (!running_.exchange(false))
       return;
-    if (stopped_.valid())
-      (void)stopped_.wait_for(std::chrono::seconds(3));
-    stopped_ = {};
-    worker_ = {};
+    for (const auto &stopped : stopped_)
+      if (stopped.valid())
+        (void)stopped.wait_for(std::chrono::seconds(3));
+    stopped_.clear();
+    workers_.clear();
   }
 
   static ruvia::Task<void> evaluateTelemetry(
@@ -110,9 +121,11 @@ public:
   }
 
 	  static ruvia::Task<void>
-	  evaluateOfflineDue(ruvia::WebWorkerContext &context) {
+  evaluateOfflineDue(ruvia::WebWorkerContext &context,
+                     std::size_t shardIndex) {
     const auto now = nowMilliseconds();
-    const auto due = co_await metadata::dueOffline(context.redis(), now);
+    const auto due =
+        co_await metadata::dueOffline(context.redis(), shardIndex, now);
     if (due.empty())
       co_return;
     std::set<std::string, std::less<>> uniqueRules;
@@ -128,7 +141,7 @@ public:
           offlineEvaluationSql(uniqueRules, params), params);
       co_await apply(context, rules, "{}", now);
     }
-	    co_await metadata::removeOfflineDeadlines(context.redis(), due);
+	    co_await metadata::removeOfflineDeadlines(context.redis(), shardIndex, due);
 	  }
 
 #ifdef IOT_ENGINE_TESTING
@@ -632,8 +645,8 @@ FROM evaluated
 ORDER BY input_sequence, id)sql";
   }
 
-  ruvia::WebWorkerHandle worker_;
-  std::shared_future<void> stopped_;
+  std::vector<ruvia::WebWorkerHandle> workers_;
+  std::vector<std::shared_future<void>> stopped_;
   std::atomic_bool running_{false};
 };
 

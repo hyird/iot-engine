@@ -19,6 +19,7 @@
 #include <ruvia/web/Controller.h>
 
 #include "service/common/http.h"
+#include "service/features/edge/dispatch.h"
 #include "service/features/edge/metadata.h"
 #include "service/features/edge/protocol.h"
 #include "service/middleware/auth.h"
@@ -484,6 +485,7 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
         (void)co_await c.redis().eval(config::detail::kReplaceQueueScript,
                                       std::span<const std::string_view>(keys),
                                       std::span<const std::string_view>(values));
+        co_await dispatch::notifyNode(c.redis(), nodeId);
     }
 
     static ruvia::Task<void> rejectBuild(ruvia::Context& c, std::string_view nodeId,

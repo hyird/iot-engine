@@ -9,11 +9,13 @@
 #include <ruvia/core/Task.h>
 
 #include "service/common/message/contract.h"
+#include "service/features/access/stream.h"
 #include "service/features/collector/stream.h"
 
 namespace service::access::event {
 
-inline constexpr std::string_view kStream = "iot:channel:open-access:event";
+// Retained only so a rolling upgrade can drain entries written by the old singleton.
+inline constexpr std::string_view kLegacyStream = stream::kEventBase;
 inline constexpr std::int64_t kPublicationTtlSeconds = 7 * 24 * 60 * 60;
 
 inline std::string publicationKey(std::string_view eventId, std::string_view eventType) {
@@ -38,7 +40,8 @@ inline void queue(Pipeline& pipeline, std::string_view scriptSha,
                   std::string_view dataJson) {
     const auto publishedKey = publicationKey(eventId, eventType);
     const auto occurredAt = std::to_string(occurredAtMs);
-    const std::array<std::string_view, 2> keys{kStream, publishedKey};
+    const auto outputStream = stream::event(deviceId);
+    const std::array<std::string_view, 2> keys{outputStream, publishedKey};
     const std::array<std::string_view, 14> arguments{
         "100000",
         "604800",
@@ -63,8 +66,8 @@ inline ruvia::Task<void> publish(const Redis& redis, std::string_view eventId,
                                  std::string_view eventType, std::string_view deviceId,
                                  std::string_view deviceCode, std::int64_t occurredAtMs,
                                  std::string_view dataJson) {
-    const std::vector<std::string> keyStore{std::string(kStream),
-                                            publicationKey(eventId, eventType)};
+    const std::vector<std::string> keyStore{stream::event(deviceId),
+                                             publicationKey(eventId, eventType)};
     const std::vector<std::string> argumentStore{
         "100000",
         std::to_string(kPublicationTtlSeconds),

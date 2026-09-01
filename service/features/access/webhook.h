@@ -38,6 +38,7 @@
 #include "service/features/access/audit.h"
 #include "service/features/access/event.h"
 #include "service/features/access/session.h"
+#include "service/features/access/stream.h"
 #include "service/features/collector/stream.h"
 #include "service/features/event/config.h"
 #include "service/features/event/idempotency.h"
@@ -343,42 +344,49 @@ public:
     WebhookRuntime& operator=(const WebhookRuntime&) = delete;
     ~WebhookRuntime() { stop(); }
 
-    void start(const std::vector<ruvia::WebWorkerHandle>& workers) {
+    void start(std::vector<ruvia::WebWorkerHandle> workers) {
         if (running_.exchange(true))
             return;
-        if (workers.empty()) {
+        workers_ = std::move(workers);
+        if (workers_.empty() || workers_.size() > stream::kPartitionCount) {
             running_.store(false);
-            throw std::runtime_error("access webhook runtime requires a service worker");
+            throw std::runtime_error("access webhook runtime requires valid Service Workers");
         }
-        auto ready = std::make_shared<std::promise<void>>();
-        auto stopped = std::make_shared<std::promise<void>>();
-        auto readiness = ready->get_future();
-        stopped_ = stopped->get_future().share();
-        // Keep event ordering global. Target HTTP requests inside one event are
-        // bounded-concurrent, while events themselves stay on this single consumer.
-        const auto posted =
-            workers.back().post([this, ready, stopped](ruvia::WebWorkerContext& context) {
-                return run(context, ready, stopped);
-            });
-        if (!posted.accepted()) {
-            running_.store(false);
-            throw std::runtime_error("service worker rejected access webhook runtime");
+        std::vector<std::future<void>> readiness;
+        readiness.reserve(workers_.size());
+        stopped_.reserve(workers_.size());
+        for (std::size_t index = 0; index < workers_.size(); ++index) {
+            auto ready = std::make_shared<std::promise<void>>();
+            auto stopped = std::make_shared<std::promise<void>>();
+            readiness.push_back(ready->get_future());
+            stopped_.push_back(stopped->get_future().share());
+            const auto posted = workers_[index].post(
+                [this, index, ready, stopped](ruvia::WebWorkerContext& context) {
+                    return run(context, index, ready, stopped);
+                });
+            if (!posted.accepted()) {
+                running_.store(false);
+                throw std::runtime_error("service worker rejected access webhook runtime");
+            }
         }
-        readiness.get();
+        for (auto& ready : readiness)
+            ready.get();
     }
 
     void stop() noexcept {
         if (!running_.exchange(false))
             return;
-        if (stopped_.valid())
-            (void)stopped_.wait_for(std::chrono::seconds(3));
-        stopped_ = {};
+        for (const auto& stopped : stopped_)
+            if (stopped.valid())
+                (void)stopped.wait_for(std::chrono::seconds(3));
+        stopped_.clear();
+        workers_.clear();
     }
 
   private:
     static constexpr std::string_view kGroup = "iot-engine:open-webhook";
-    static constexpr std::string_view kDeliveryResultStream =
-        "iot:channel:open-access:delivery-result";
+    static constexpr std::string_view kLegacyDeliveryResultStream =
+        stream::kDeliveryResultBase;
     static constexpr std::size_t kBatchSize = 100;
     static constexpr std::size_t kEventConcurrency = 4;
     static constexpr std::size_t kTargetConcurrency = 4;
@@ -422,30 +430,69 @@ public:
         std::string encode;
     };
 
-    ruvia::Task<void> run(ruvia::WebWorkerContext& context,
-                          std::shared_ptr<std::promise<void>> ready,
-                          std::shared_ptr<std::promise<void>> stopped) {
+    enum class StreamKind {
+        Catalog,
+        Session,
+        LegacyConfig,
+        DeliveryResult,
+        Audit,
+        Event
+    };
+
+    ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t index,
+                           std::shared_ptr<std::promise<void>> ready,
+                           std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
-            const std::vector<std::string> streams{
-                std::string(service::message::kWebhookCatalogChangesStream),
-                std::string(kDeliveryResultStream), std::string(audit::kStream),
-                std::string(event::kStream)};
-            for (const auto& stream : streams)
-                co_await message::redis::ensureGroup(redis, stream, kGroup);
-            co_await session::refresh(context);
-            catalog_ = co_await loadCatalog(context);
+            std::map<std::string, StreamKind, std::less<>> streamKinds;
+            streamKinds.emplace(
+                service::message::webhookCatalogChangesStream(index),
+                StreamKind::Catalog);
+            for (auto partitionIndex = index;
+                 partitionIndex < stream::kPartitionCount;
+                 partitionIndex += workers_.size()) {
+                streamKinds.emplace(stream::sessionChanges(partitionIndex),
+                                    StreamKind::Session);
+                streamKinds.emplace(stream::deliveryResult(partitionIndex),
+                                    StreamKind::DeliveryResult);
+                streamKinds.emplace(stream::audit(partitionIndex), StreamKind::Audit);
+                streamKinds.emplace(stream::event(partitionIndex), StreamKind::Event);
+            }
+            // Worker 0 drains entries written by the old singleton deployment.
+            if (index == 0) {
+                streamKinds.emplace(
+                    std::string(service::message::kWebhookCatalogChangesStream),
+                    StreamKind::LegacyConfig);
+                streamKinds.emplace(std::string(kLegacyDeliveryResultStream),
+                                    StreamKind::DeliveryResult);
+                streamKinds.emplace(std::string(audit::kLegacyStream), StreamKind::Audit);
+                streamKinds.emplace(std::string(event::kLegacyStream), StreamKind::Event);
+            }
+            std::vector<std::string> streams;
+            streams.reserve(streamKinds.size());
+            for (const auto& [streamName, kind] : streamKinds) {
+                (void)kind;
+                streams.push_back(streamName);
+                co_await message::redis::ensureGroup(redis, streamName, kGroup);
+            }
+            WebhookHttpClient http;
+            co_await session::ensure(context);
+            auto catalog = co_await loadCatalog(context);
             ready->set_value();
             bool recovering = true;
+            const auto consumer = "service-" + std::to_string(index);
+            const auto catalogReceiptConsumer =
+                std::string(kGroup) + ":catalog:" + std::to_string(index);
+            const auto sessionReceiptConsumer = std::string(kGroup) + ":session";
             while (running_.load() && !context.stopToken().stopRequested()) {
                 std::vector<message::redis::StreamBatch> batches;
                 bool readFailed = false;
                 try {
                     batches = recovering
-                        ? co_await message::redis::readGroupMany(
-                              redis, streams, kGroup, "service-0", "0", kBatchSize)
+                        ? co_await message::redis::claimGroupMany(
+                              redis, streams, kGroup, consumer, kBatchSize)
                         : co_await message::redis::readGroupManyBlocking(
-                              redis, streams, kGroup, "service-0", context.stopToken(),
+                              redis, streams, kGroup, consumer, context.stopToken(),
                               kBatchSize);
                 } catch (const std::exception& error) {
                     if (context.stopToken().stopRequested())
@@ -465,10 +512,39 @@ public:
                     continue;
                 bool failed = false;
                 try {
+                    bool refreshSessions = false;
+                    std::vector<message::StreamMessage> sessionMessages;
+                    for (const auto& batch : batches) {
+                        const auto kind = streamKinds.at(batch.stream);
+                        if (kind != StreamKind::Session &&
+                            kind != StreamKind::LegacyConfig)
+                            continue;
+                        sessionMessages.insert(sessionMessages.end(),
+                                               batch.messages.begin(),
+                                               batch.messages.end());
+                    }
+                    const auto sessionEventIds =
+                        service::message::idempotency::eventIds(sessionMessages);
+                    const auto pendingSessionIds =
+                        co_await service::message::idempotency::pending(
+                            context, sessionReceiptConsumer, sessionEventIds);
+                    for (const auto& message : sessionMessages)
+                        refreshSessions =
+                            refreshSessions ||
+                            (service::message::idempotency::shouldProcess(
+                                 message, pendingSessionIds) &&
+                             sessionChange(message));
+                    if (refreshSessions)
+                        co_await session::refresh(context);
+                    co_await service::message::idempotency::markProcessed(
+                        context, sessionReceiptConsumer, sessionEventIds);
+
                     bool reloadCatalog = false;
                     std::vector<message::StreamMessage> catalogMessages;
                     for (const auto& batch : batches) {
-                        if (batch.stream != service::message::kWebhookCatalogChangesStream)
+                        const auto kind = streamKinds.at(batch.stream);
+                        if (kind != StreamKind::Catalog &&
+                            kind != StreamKind::LegacyConfig)
                             continue;
                         catalogMessages.insert(catalogMessages.end(), batch.messages.begin(),
                                                batch.messages.end());
@@ -477,42 +553,44 @@ public:
                         service::message::idempotency::eventIds(catalogMessages);
                     const auto pendingCatalogIds =
                         co_await service::message::idempotency::pending(
-                            context, kGroup, catalogEventIds);
+                            context, catalogReceiptConsumer, catalogEventIds);
                     for (const auto& message : catalogMessages)
                         reloadCatalog = reloadCatalog ||
                                         (service::message::idempotency::shouldProcess(
                                              message, pendingCatalogIds) &&
                                          catalogChange(message));
-                    if (reloadCatalog) {
-                        co_await session::refresh(context);
-                        catalog_ = co_await loadCatalog(context);
-                    }
+                    if (reloadCatalog)
+                        catalog = co_await loadCatalog(context);
                     co_await service::message::idempotency::markProcessed(
-                        context, kGroup, catalogEventIds);
+                        context, catalogReceiptConsumer, catalogEventIds);
                     for (const auto& batch : batches) {
-                        if (batch.stream != service::message::kWebhookCatalogChangesStream)
+                        const auto kind = streamKinds.at(batch.stream);
+                        if (kind != StreamKind::Catalog &&
+                            kind != StreamKind::Session &&
+                            kind != StreamKind::LegacyConfig)
                             continue;
                         co_await message::redis::acknowledgeAndDeleteMany(
                             redis, batch.stream, kGroup, batch.messages);
                     }
                     for (const auto& batch : batches) {
-                        if (batch.stream != kDeliveryResultStream)
+                        if (streamKinds.at(batch.stream) != StreamKind::DeliveryResult)
                             continue;
                         co_await persistResults(context, batch.messages);
                         co_await message::redis::acknowledgeAndDeleteMany(
                             redis, batch.stream, kGroup, batch.messages);
                     }
                     for (const auto& batch : batches) {
-                        if (batch.stream != audit::kStream)
+                        if (streamKinds.at(batch.stream) != StreamKind::Audit)
                             continue;
                         co_await persistAudits(context, batch.messages);
                         co_await message::redis::acknowledgeAndDeleteMany(
                             redis, batch.stream, kGroup, batch.messages);
                     }
                     for (const auto& batch : batches) {
-                        if (batch.stream != event::kStream)
+                        if (streamKinds.at(batch.stream) != StreamKind::Event)
                             continue;
-                        co_await deliverEvents(context, batch.messages);
+                        co_await deliverEvents(context, batch.stream, batch.messages,
+                                               catalog, http);
                     }
                 } catch (const std::exception& error) {
                     std::cerr << "open webhook dispatch failed: " << error.what() << '\n';
@@ -541,6 +619,11 @@ public:
                aggregate == "device" || aggregate == "protocol";
     }
 
+    static bool sessionChange(const message::StreamMessage& message) {
+        const auto aggregate = message.get("aggregate");
+        return aggregate == "access_key" || aggregate == "device";
+    }
+
     struct DeliveryAttempt final {
         bool succeeded{false};
         std::string error;
@@ -553,10 +636,12 @@ public:
     };
 
     ruvia::Task<void> deliverCaptured(ruvia::WebWorkerContext& context,
-                                      const message::StreamMessage& message,
-                                      DeliveryAttempt& attempt) {
+                                       const message::StreamMessage& message,
+                                       const Catalog& catalog,
+                                       WebhookHttpClient& http,
+                                       DeliveryAttempt& attempt) {
         try {
-            co_await deliver(context, message);
+            co_await deliver(context, message, catalog, http);
             attempt.succeeded = true;
         } catch (const std::exception& error) {
             attempt.error = error.what();
@@ -567,7 +652,9 @@ public:
 
     ruvia::Task<void> deliverEvents(
         ruvia::WebWorkerContext& context,
-        const std::vector<message::StreamMessage>& messages) {
+        std::string_view sourceStream,
+        const std::vector<message::StreamMessage>& messages,
+        const Catalog& catalog, WebhookHttpClient& http) {
         if (messages.empty())
             co_return;
         std::map<std::string, DeviceEventQueue, std::less<>> queues;
@@ -599,7 +686,8 @@ public:
                 context.worker(), ruvia::TaskScopeOptions{.resource = context.resource()});
             for (std::size_t index = 0; index < selected.size(); ++index) {
                 const auto messageIndex = selected[index]->indexes[selected[index]->next];
-                scope.spawn(deliverCaptured(context, messages[messageIndex], attempts[index]));
+                scope.spawn(deliverCaptured(context, messages[messageIndex], catalog,
+                                            http, attempts[index]));
             }
             co_await scope.join();
             for (std::size_t index = 0; index < selected.size(); ++index) {
@@ -617,7 +705,7 @@ public:
         }
         if (!completed.empty())
             co_await message::redis::acknowledgeAndDeleteMany(
-                context.redis(), event::kStream, kGroup, completed);
+                context.redis(), sourceStream, kGroup, completed);
         if (!firstError.empty())
             throw std::runtime_error(firstError);
     }
@@ -666,13 +754,14 @@ ORDER BY binding.device_id, event_type.value, webhook.id)sql");
     }
 
     ruvia::Task<void> deliver(ruvia::WebWorkerContext& context,
-                              const message::StreamMessage& message) {
+                               const message::StreamMessage& message,
+                               const Catalog& catalog, WebhookHttpClient& http) {
         const auto eventType = message.get("event_type");
         const auto deviceId = message.get("device_id");
         if (!supportedEvent(eventType) || !service::common::isUuid(deviceId))
             co_return;
-        const auto device = catalog_.find(deviceId);
-        if (device == catalog_.end())
+        const auto device = catalog.find(deviceId);
+        if (device == catalog.end())
             co_return;
         const auto targetEntry = device->second.targets.find(eventType);
         if (targetEntry == device->second.targets.end())
@@ -697,7 +786,7 @@ ORDER BY binding.device_id, event_type.value, webhook.id)sql");
             ruvia::TaskScope scope(
                 context.worker(), ruvia::TaskScopeOptions{.resource = context.resource()});
             for (auto index = offset; index < end; ++index)
-                scope.spawn(deliverTarget(context, *targets[index], delivery));
+                scope.spawn(deliverTarget(context, http, *targets[index], delivery));
             co_await scope.join();
         }
     }
@@ -923,8 +1012,9 @@ ORDER BY binding.device_id, event_type.value, webhook.id)sql");
         co_return delivery;
     }
 
-    ruvia::Task<void> deliverTarget(ruvia::WebWorkerContext& context, const Target& target,
-                                    const Delivery& delivery) {
+    ruvia::Task<void> deliverTarget(ruvia::WebWorkerContext& context,
+                                    WebhookHttpClient& http, const Target& target,
+                                     const Delivery& delivery) {
         const auto requestTimestamp = nowIso8601();
         auto headers = parseHeaders(target.headers);
         headers.emplace_back("X-IOT-Event", delivery.eventType);
@@ -940,11 +1030,11 @@ ORDER BY binding.device_id, event_type.value, webhook.id)sql");
             auto [completion, receiver] = ruvia::makeOneShot<WebhookHttpResponse>(context.worker());
             auto shared = std::make_shared<ruvia::OneShotCompletion<WebhookHttpResponse>>(
                 std::move(completion));
-            http_.post(url, WebhookHttpClient::request(url, delivery.body, headers),
-                       std::chrono::seconds(target.timeout), target.skipTlsVerify,
-                       [shared](WebhookHttpResponse result) mutable {
-                           (void)shared->complete(std::move(result));
-                       });
+            http.post(url, WebhookHttpClient::request(url, delivery.body, headers),
+                      std::chrono::seconds(target.timeout), target.skipTlsVerify,
+                      [shared](WebhookHttpResponse result) mutable {
+                          (void)shared->complete(std::move(result));
+                      });
             auto outcome = co_await receiver.wait();
             if (outcome.hasValue())
                 response = std::move(outcome).takeValue();
@@ -997,8 +1087,8 @@ redis.call('HSET', KEYS[2], ARGV[1], '1')
 redis.call('EXPIRE', KEYS[2], ARGV[3])
 return id
 )lua";
-        const std::vector<std::string> keyStore{std::string(kDeliveryResultStream),
-                                                deliveryProgressKey(delivery)};
+        const std::vector<std::string> keyStore{stream::deliveryResult(delivery.deviceId),
+                                                 deliveryProgressKey(delivery)};
         const std::vector<std::string> argumentStore{
             target.id,
             "100000",
@@ -1207,9 +1297,8 @@ ON CONFLICT (id) DO NOTHING)sql";
         (void)co_await context.db().execute(sql, params);
     }
 
-    WebhookHttpClient http_;
-    Catalog catalog_;
-    std::shared_future<void> stopped_;
+    std::vector<ruvia::WebWorkerHandle> workers_;
+    std::vector<std::shared_future<void>> stopped_;
     std::atomic_bool running_{false};
 };
 

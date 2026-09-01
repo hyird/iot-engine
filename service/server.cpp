@@ -30,7 +30,9 @@
 #include "service/domains/gb28181/media.controller.h"
 #include "service/features/gb28181/runtime.h"
 #include "service/domains/edge/edge.controller.h"
+#include "service/features/edge/dispatcher.h"
 #include "service/features/edge/gateway.h"
+#include "service/features/edge/projector.h"
 #include "service/domains/device/device.controller.h"
 #include "service/domains/link/link.controller.h"
 #include "service/domains/access/access.controller.h"
@@ -321,12 +323,9 @@ int main(int argc, char *argv[])
                   << ", gb28181=" << gb28181WorkerCount << '\n';
         auto serviceRedis = redisConfig(app.env());
         auto collectorRedis = serviceRedis;
-        // Each worker has telemetry and command-result readers. The first worker also owns
-        // edge ingress plus the shared telemetry/alert deadline coordinator; config
-        // reconciliation and webhook/audit delivery use the second and last workers when
-        // available. These exact maxima preserve worker-local blocking-connection ownership.
-        serviceRedis.blockingPoolSizePerWorker =
-            serviceWorkerCount == 1 ? 6 : (serviceWorkerCount == 2 ? 5 : 4);
+        // Every Service Worker runs the same seven Stream consumers. Each consumer
+        // combines all of its worker-owned shards on one lazy blocking connection.
+        serviceRedis.blockingPoolSizePerWorker = 7;
         auto collector = std::make_shared<service::collector::Runtime>();
         auto telemetry = std::make_shared<service::telemetry::PersistenceRuntime>();
         auto commandResults = std::make_shared<service::command::ResultRuntime>();
@@ -357,10 +356,11 @@ int main(int argc, char *argv[])
             outboxPolicy.receiptRetentionDays < 0 || outboxPolicy.receiptRetentionDays > 3650)
             throw std::runtime_error("OUTBOX policy values are invalid");
         auto outbox = std::make_shared<service::message::outbox::Runtime>(
-            *observability, collectorWorkerCount, outboxPolicy);
+            *observability, collectorWorkerCount, serviceWorkerCount, outboxPolicy);
         auto applicationRuntime =
             std::make_shared<service::application::Runtime>(*observability);
-        app.database(ruvia::DbRegistrationConfig{.config = std::move(db)})
+        app.useWorkerState<service::edge::Dispatcher>()
+            .database(ruvia::DbRegistrationConfig{.config = std::move(db)})
             .redis(ruvia::RedisRegistrationConfig{.config = std::move(serviceRedis)})
             .onStart([collector, telemetry, commandResults, openWebhooks, configReconciler,
                       edgeProjector, gb28181Projector, alerts, outbox,
@@ -374,7 +374,7 @@ int main(int argc, char *argv[])
                         "service: no worker available for config projection");
                 applicationRuntime->add({
                     .name = "outbox",
-                    .start = [outbox, worker = workers.front()] { outbox->start(worker); },
+                    .start = [outbox, workers] { outbox->start(workers); },
                     .stop = [outbox] { outbox->stop(); }});
                 applicationRuntime->add({
                     .name = "telemetry",
@@ -394,21 +394,27 @@ int main(int argc, char *argv[])
                     .start = [openWebhooks, workers] { openWebhooks->start(workers); },
                     .stop = [openWebhooks] { openWebhooks->stop(); }});
                 applicationRuntime->add({
+                    .name = "edge-dispatcher",
+                    .start = [workers] {
+                        service::edge::dispatcherRuntime().start(workers);
+                    },
+                    .stop = [] { service::edge::dispatcherRuntime().stop(); }});
+                applicationRuntime->add({
                     .name = "edge-projector",
-                    .start = [edgeProjector, worker = workers.front()] {
-                        edgeProjector->start(worker);
+                    .start = [edgeProjector, workers] {
+                        edgeProjector->start(workers);
                     },
                     .stop = [edgeProjector] { edgeProjector->stop(); }});
                 applicationRuntime->add({
                     .name = "alerts",
                     .dependencies = {"telemetry"},
-                    .start = [alerts, worker = workers.front()] { alerts->start(worker); },
+                    .start = [alerts, workers] { alerts->start(workers); },
                     .stop = [alerts] { alerts->stop(); }});
                 if (gb28181Projector) {
                     applicationRuntime->add({
                         .name = "gb28181",
-                        .start = [gb28181Projector, worker = workers.front()] {
-                            auto snapshot = gb28181Projector->start(worker);
+                        .start = [gb28181Projector, workers] {
+                            auto snapshot = gb28181Projector->start(workers);
                             service::gb28181::runtime().attachProjector(
                                 gb28181Projector, std::move(snapshot));
                             service::gb28181::runtime().start();
@@ -443,10 +449,8 @@ int main(int argc, char *argv[])
                 applicationRuntime->add({
                     .name = "config-reconciler",
                     .dependencies = {"collector", "outbox"},
-                    .start = [configReconciler,
-                              worker = workers.size() > 2 ? workers[1] : workers.front(),
-                              collectorWorkerCount] {
-                        configReconciler->start(worker, collectorWorkerCount);
+                    .start = [configReconciler, workers, collectorWorkerCount] {
+                        configReconciler->start(workers, collectorWorkerCount);
                     },
                     .stop = [configReconciler] { configReconciler->stop(); }});
                 applicationRuntime->start(); })

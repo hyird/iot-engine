@@ -17,6 +17,7 @@
 
 #include "service/common/http.h"
 #include "service/common/uuid.h"
+#include "service/features/edge/dispatch.h"
 #include "service/features/edge/protocol.h"
 #include "service/features/command/queue.h"
 #include "service/features/runtime/repository.h"
@@ -388,6 +389,7 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
         (void)co_await dispatchPendingBatch(
             context.redis(), "iot:edge:egress:" + std::string(nodeId), PendingQueueKind::List,
             dispatches, submittedBy, 1024);
+        co_await service::edge::dispatch::notifyNode(context.redis(), nodeId);
 
         ruvia::BoxedArray<ruvia::String> commandIds(
             ruvia::ModelOptions{.resource = context.resource()});

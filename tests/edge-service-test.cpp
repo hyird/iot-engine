@@ -84,6 +84,12 @@ int main() {
         const auto serviceSource = edgeSource("service/domains/edge/edge.service.h");
         const auto controllerSource = edgeSource("service/domains/edge/edge.controller.h");
         const auto gatewaySource = edgeSource("service/features/edge/gateway.h");
+        const auto dispatchSource = edgeSource("service/features/edge/dispatch.h");
+        const auto dispatcherSource = edgeSource("service/features/edge/dispatcher.h");
+        const auto projectorSource = edgeSource("service/features/edge/projector.h");
+        const auto projectorStreamSource =
+            edgeSource("service/features/edge/projector-stream.h");
+        const auto metadataSource = edgeSource("service/features/edge/metadata.h");
         requireMissing(serviceSource, "const std::string status(body.status()->view());",
                        "edge enrollment dereferences optional status without validation");
         requireMissing(serviceSource, "const std::string name(body.name()->view());",
@@ -150,18 +156,46 @@ int main() {
         requireContains(gatewaySource, "std::deque<std::string> outbound",
                         "edge gateway does not serialize established-session replies");
         requireContains(gatewaySource, "enqueue(session, reply)",
-                        "edge gateway still writes node acknowledgements outside the egress pump");
+                        "edge gateway still writes node acknowledgements outside the flush path");
         requireMissing(gatewaySource, "co_await drain(c, socket, session)",
                        "edge gateway still sends config frames from the session read loop");
         requireContains(gatewaySource, "co_await c.redis().lpush(key, item)",
                         "edge gateway drops a popped command when its socket send fails");
-        requireContains(gatewaySource, "ruvia::OperationOptions{.stopToken = stopToken}",
-                        "edge gateway blocking pop cannot be cancelled with its session");
-        requireContains(gatewaySource, "ruvia::RedisBlockWait::indefinitely()",
-                        "edge gateway periodically recreates idle blocking pops");
+        requireMissing(gatewaySource, ".blpop(",
+                       "edge gateway still allocates one blocking Redis connection per node");
+        requireMissing(gatewaySource, "RedisBlockWait::indefinitely()",
+                       "edge gateway still owns a per-session blocking Redis read");
+        requireContains(gatewaySource, "c.workerState<Dispatcher>()",
+                        "edge gateway does not resolve its worker-local dispatcher");
+        requireContains(gatewaySource, "dispatcher.registerSession(",
+                        "edge gateway does not register sessions with its worker dispatcher");
+        requireContains(gatewaySource, "requestFlush(live)",
+                        "edge gateway does not drain queued work on session establishment");
+        requireContains(dispatcherSource, "readGroupBlocking(",
+                        "edge dispatcher does not use one blocking Stream consumer per worker");
+        requireContains(dispatcherSource, "context.workerState<Dispatcher>().run(",
+                        "edge dispatcher does not start the same local state on every worker");
+        requireContains(dispatchSource, "iot:edge:dispatch:",
+                        "edge dispatch notifications do not use worker-isolated Redis keys");
+        requireContains(dispatchSource, "session_state::workerIndex(",
+                        "edge dispatch notifications are not routed by session ownership");
+        requireContains(projectorStreamSource, "iot:edge:projector:",
+                        "edge projection does not use worker-isolated Redis keys");
+        requireContains(gatewaySource, "publishIngress(c, workerIndex",
+                        "edge ingress is not routed by the accepting Worker");
+        requireContains(gatewaySource, "projector_stream::publishMetadata(",
+                        "edge reconnect does not refresh accepting-Worker metadata");
+        requireContains(metadataSource, "session_state::workerIndex(",
+                        "edge metadata updates are not routed by session ownership");
+        requireContains(projectorSource, "projector_stream::stream(streamIndex)",
+                        "edge projector does not own independent Stream shards");
+        requireMissing(dispatcherSource, "workers_.back().post(",
+                       "edge dispatcher still gives one worker a special role");
+        requireMissing(dispatcherSource, "target.worker.post(",
+                       "edge dispatcher still forwards wakeups between workers");
         requireContains(gatewaySource,
                         ".reason = \"edge egress failed\"",
-                        "edge gateway leaves a half-open session online after its egress pump fails");
+                        "edge gateway leaves a half-open session online after its flush fails");
         requireContains(gatewaySource, "session.protocolVersion < 5",
                         "edge gateway does not isolate legacy terminal data handling");
         requireContains(gatewaySource,

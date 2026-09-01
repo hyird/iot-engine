@@ -145,8 +145,49 @@ GROUP BY actor.id, department.id)sql",
     }
 
     static std::string scopedDevicesCte() {
-        return "WITH RECURSIVE scoped_device AS (SELECT source.*, " + effectiveRankSql("source") +
-               " AS access_rank FROM device source WHERE source.deleted_at IS NULL) ";
+        // Calculate the actor's direct and group access once for the whole list. The previous
+        // correlated effectiveRankSql("source") expression ran a recursive group walk for every
+        // device, which made the list latency grow quickly with the number of devices and the
+        // depth of the group tree.
+        return R"sql(WITH RECURSIVE shared_group_access(group_id, access_rank) AS (
+    SELECT access_grant.group_id,
+           CASE access_grant.access_level WHEN 'operate' THEN 2 WHEN 'view' THEN 1 ELSE 0 END
+      FROM device_group_access_grant access_grant
+      JOIN device_group granted_group
+        ON granted_group.id = access_grant.group_id
+       AND granted_group.deleted_at IS NULL
+     WHERE (access_grant.user_id = $1::uuid
+        OR access_grant.department_id = NULLIF($2, '')::uuid)
+       AND NOT $3::boolean
+    UNION
+    SELECT child.id, shared.access_rank
+      FROM device_group child
+      JOIN shared_group_access shared ON shared.group_id = child.parent_id
+     WHERE child.deleted_at IS NULL
+), group_access AS (
+    SELECT group_id, MAX(access_rank) AS access_rank
+      FROM shared_group_access
+     GROUP BY group_id
+), device_access AS (
+    SELECT access_grant.device_id,
+           MAX(CASE access_grant.access_level WHEN 'operate' THEN 2 WHEN 'view' THEN 1 ELSE 0 END)
+             AS access_rank
+      FROM device_access_grant access_grant
+     WHERE (access_grant.user_id = $1::uuid
+        OR access_grant.department_id = NULLIF($2, '')::uuid)
+       AND NOT $3::boolean
+     GROUP BY access_grant.device_id
+), scoped_device AS (
+    SELECT source.*,
+           CASE WHEN $3::boolean OR source.created_by = $1::uuid THEN 4
+                ELSE GREATEST(COALESCE(device_access.access_rank, 0),
+                              COALESCE(group_access.access_rank, 0))
+           END AS access_rank
+      FROM device source
+      LEFT JOIN device_access ON device_access.device_id = source.id
+      LEFT JOIN group_access ON group_access.group_id = source.group_id
+     WHERE source.deleted_at IS NULL
+))sql";
     }
 
     static std::string visibleGroupsCte() {
@@ -285,33 +326,46 @@ class DeviceService {
         const auto actor = co_await deviceAccessService().actor(c);
         const auto rows = co_await c.db().query(
             DeviceAccessService::scopedDevicesCte() +
-                R"sql(SELECT id::text,
-                       CASE WHEN protocol_params ? 'remote_control' THEN
-                         CASE lower(COALESCE(protocol_params->>'remote_control', ''))
+                R"sql(SELECT d.id::text, d.protocol_params->>'device_code',
+                       CASE WHEN d.protocol_params ? 'remote_control' THEN
+                         CASE lower(COALESCE(d.protocol_params->>'remote_control', ''))
                            WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE
                            WHEN 'yes' THEN TRUE WHEN 'y' THEN TRUE WHEN 'on' THEN TRUE
                            ELSE FALSE END
                        ELSE TRUE END,
-                       access_rank FROM scoped_device WHERE access_rank > 0 ORDER BY id)sql",
+                       d.access_rank,
+                       CASE WHEN l.execution = 'edge' THEN l.edge_node_id::text END,
+                       CASE WHEN l.execution = 'edge' THEN l.endpoint->>'transport' END
+                FROM scoped_device d
+                LEFT JOIN link l ON l.id = d.link_id
+                WHERE d.access_rank > 0 ORDER BY d.id)sql",
             service::common::dbParams(actor.userId, actor.departmentId,
                                       actor.superadmin ? "true" : "false"));
         ruvia::BoxedArray<DeviceRealtimeDto> items(
             ruvia::ModelOptions{.resource = c.resource()});
+        std::map<std::string, DeviceRealtimeDto*, std::less<>> itemsById;
         for (const auto& row : rows) {
             const auto capabilities = DeviceAccessService::capabilities(
-                actor, DeviceAccessService::rank(row[2].value().value_or(std::string_view{})), row[1].value().value_or(std::string_view{}) == "t");
+                actor, DeviceAccessService::rank(row[3].value().value_or(std::string_view{})), row[2].value().value_or(std::string_view{}) == "t");
             auto& item = items.emplace(c);
             item.set<"id">(row[0].value().value_or(std::string_view{}))
+                .set<"deviceCode">(row[1].value().value_or(std::string_view{}))
                 .set<"connected">(false)
                 .set<"connectionState">("disconnected")
-                .set<"elements">(ruvia::BoxedArray<ruvia::String>(
+                .set<"elements">(ruvia::BoxedArray<DeviceElementDto>(
                     ruvia::ModelOptions{.resource = c.resource()}))
                 .set<"canEdit">(capabilities.canEdit)
                 .set<"canDelete">(capabilities.canDelete)
                 .set<"canShare">(capabilities.canShare)
                 .set<"canCommand">(capabilities.canCommand)
                 .set<"accessLevel">(capabilities.accessLevel);
+            if (row[4].value().has_value())
+                item.set<"edgeNodeId">(row[4].value().value_or(std::string_view{}));
+            if (row[5].value().has_value())
+                item.set<"edgeTransport">(row[5].value().value_or(std::string_view{}));
+            itemsById.emplace(std::string(row[0].value().value_or(std::string_view{})), &item);
         }
+        co_await fillLatest(c, itemsById);
         DeviceRealtimePageDto result(c);
         result.set<"list">(std::move(items)).set<"total">(static_cast<std::int64_t>(rows.size()));
         co_return result;
@@ -990,15 +1044,16 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
             item.set<"serialRs485">(row[42].value().value_or(std::string_view{}) == "t");
     }
 
+    template <typename Item>
     static ruvia::Task<void>
-    fillLatest(ruvia::Context& c, const std::map<std::string, DeviceItemDto*, std::less<>>& items) {
+    fillLatest(ruvia::Context& c, const std::map<std::string, Item*, std::less<>>& items) {
         if (items.empty())
             co_return;
         auto pipeline = c.redis().pipeline();
         enum class ReplyKind { runtime, latest, edgeDevice };
         struct ReplyBinding {
             ReplyKind kind;
-            DeviceItemDto* item;
+            Item* item;
         };
         std::vector<ReplyBinding> bindings;
         bindings.reserve(items.size() * 3);
@@ -1006,14 +1061,20 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
             (void)id;
             if (!item->get<"deviceCode">())
                 continue;
-            pipeline.hgetAll(service::telemetry::latest::runtimeKey(item->get<"deviceCode">()->view()));
+            // The runtime hash also contains worker/session bookkeeping. The list only needs
+            // these two fields, so HMGET avoids transferring and parsing the rest of the hash.
+            pipeline.command("HMGET", service::telemetry::latest::runtimeKey(
+                                         item->get<"deviceCode">()->view()),
+                             "connection_id", "last_report_at_ms");
             bindings.push_back({ReplyKind::runtime, item});
             pipeline.hgetAll(service::telemetry::latest::latestKey(item->get<"deviceCode">()->view()));
             bindings.push_back({ReplyKind::latest, item});
             if (item->get<"edgeNodeId">() && item->get<"edgeTransport">() &&
                 item->get<"edgeTransport">()->view() == "tcp") {
-                pipeline.hgetAll(
-                    edgeDeviceStatusKey(item->get<"edgeNodeId">()->view(), item->get<"id">()->view()));
+                pipeline.command(
+                    "HMGET",
+                    edgeDeviceStatusKey(item->get<"edgeNodeId">()->view(), item->get<"id">()->view()),
+                    "state", "reason", "client_count", "last_activity_at_ms");
                 bindings.push_back({ReplyKind::edgeDevice, item});
             }
         }
@@ -1236,6 +1297,15 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         return {};
     }
 
+    static std::string redisArrayField(const ruvia::RedisValue& value, std::size_t index) {
+        if (value.kind() != ruvia::RedisValue::Kind::kArray)
+            return {};
+        const auto entries = value.array();
+        if (index >= entries.size() || entries[index].kind() != ruvia::RedisValue::Kind::kString)
+            return {};
+        return std::string(entries[index].string());
+    }
+
     static std::optional<ruvia::JsonValue> jsonField(const ruvia::JsonValue& object,
                                                      std::string_view field) {
         if (!object.isObject())
@@ -1279,21 +1349,23 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         return toDouble(raw->view(), fallback);
     }
 
-    static void applyRuntime(DeviceItemDto& item, const ruvia::RedisValue& reply) {
-        const auto reportTime = redisHashField(reply, "last_report_at_ms");
+    template <typename Item>
+    static void applyRuntime(Item& item, const ruvia::RedisValue& reply) {
+        const auto reportTime = redisArrayField(reply, 1);
         if (!reportTime.empty()) {
             const auto milliseconds = toInt(reportTime);
             if (milliseconds > 0)
                 item.set<"reportTime">(service::common::utcTimestampFromMilliseconds(milliseconds));
         }
-        const bool connected = !redisHashField(reply, "connection_id").empty();
+        const bool connected = !redisArrayField(reply, 0).empty();
         item.set<"connected">(connected)
             .set<"connectionState">(connected ? "connected" : "disconnected");
     }
 
-    static void applyEdgeRuntime(ruvia::Context& c, DeviceItemDto& item,
+    template <typename Item>
+    static void applyEdgeRuntime(ruvia::Context& c, Item& item,
                                  const ruvia::RedisValue& reply) {
-        const auto state = redisHashField(reply, "state");
+        const auto state = redisArrayField(reply, 0);
         if (state.empty())
             return;
         const bool connected = state == "connected" || state == "online";
@@ -1301,13 +1373,13 @@ ORDER BY device_id, operation_position, operation_key, element_position,
             .set<"connectionState">(connected ? "connected" : "disconnected");
         EdgeStatusDto status(c);
         status.set<"state">(state);
-        const auto reason = redisHashField(reply, "reason");
+        const auto reason = redisArrayField(reply, 1);
         if (!reason.empty())
             status.set<"reason">(reason);
-        const auto clientCount = redisHashField(reply, "client_count");
+        const auto clientCount = redisArrayField(reply, 2);
         if (!clientCount.empty())
             status.set<"clientCount">(toInt(clientCount));
-        const auto lastActivity = redisHashField(reply, "last_activity_at_ms");
+        const auto lastActivity = redisArrayField(reply, 3);
         if (!lastActivity.empty()) {
             const auto milliseconds = toInt(lastActivity);
             if (milliseconds > 0)
@@ -1330,7 +1402,8 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         std::string encode;
     };
 
-    static void applyLatestElements(ruvia::Context& c, DeviceItemDto& item,
+    template <typename Item>
+    static void applyLatestElements(ruvia::Context& c, Item& item,
                                     const ruvia::RedisValue& reply) {
         if (reply.kind() != ruvia::RedisValue::Kind::kArray)
             return;

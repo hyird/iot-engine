@@ -23,6 +23,7 @@
 #include "service/common/timestamp.h"
 #include "service/common/uuid.h"
 #include "service/middleware/auth.h"
+#include "service/features/edge/dispatch.h"
 #include "service/features/edge/firmware.h"
 #include "service/features/edge/protocol.h"
 #include "service/domains/edge/edge.types.h"
@@ -1006,6 +1007,7 @@ VALUES ($1::uuid, $2::uuid, $3, $4::jsonb, $5::uuid))sql",
         const auto key = "iot:edge:egress:" + std::string(nodeId);
         (void)co_await c.redis().rpush(key, wire);
         co_await c.redis().ltrim(key, -100, -1);
+        co_await dispatch::notifyNode(c.redis(), nodeId);
     }
 
     static std::string sessionKey(std::string_view nodeId) {

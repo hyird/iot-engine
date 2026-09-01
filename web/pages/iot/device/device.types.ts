@@ -242,12 +242,16 @@ export interface DeviceStaticData extends EdgeConnection {
 /** 设备实时数据（用于轮询） */
 export interface DeviceRealtimeData {
     id: string;
+    device_code?: string;
     reportTime?: string;
     /** 设备南向链路是否已连接；不代表设备在线 */
     connected?: boolean;
     /** 设备南向链路状态；不代表设备在线 */
     connectionState?: 'connected' | 'disconnected';
     elements?: DeviceElement[];
+    edge_node_id?: string;
+    edge_transport?: EdgeTransport;
+    edgeStatus?: EdgeStatus;
     image?: { data: string };
     // 资源权限（realtime 接口同样返回）
     can_edit?: boolean;

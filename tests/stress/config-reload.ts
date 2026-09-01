@@ -146,10 +146,22 @@ async function streamState(key: string, group: string) {
     return { depth: Number(await redis.send('XLEN', [key])), pending: Number(pending[0]) };
 }
 
+async function streamStates(pattern: string, group: string) {
+    const keys = await scan(pattern);
+    const states = await Promise.all(keys.map((key) => streamState(key, group)));
+    return states.reduce(
+        (total, state) => ({
+            depth: total.depth + state.depth,
+            pending: total.pending + state.pending,
+        }),
+        { depth: 0, pending: 0 },
+    );
+}
+
 async function waitForRuntimeIdle(label: string) {
     await waitFor(
         label,
-        () => streamState('iot:channel:runtime:config-change', 'iot-engine:runtime-reconciler'),
+        () => streamStates('iot:channel:runtime:config-change:*', 'iot-engine:runtime-reconciler'),
         (state) => state.depth === 0 && state.pending === 0,
         30000,
     );
@@ -449,7 +461,7 @@ try {
     await waitForRuntimeIdle('runtime config event acknowledgement');
     await waitFor(
         'webhook catalog event acknowledgement',
-        () => streamState('iot:channel:open-access:config-change', 'iot-engine:open-webhook'),
+        () => streamStates('iot:channel:open-access:config-change:*', 'iot-engine:open-webhook'),
         (state) => state.depth === 0 && state.pending === 0,
     );
     const s7Final = await route('SS000');

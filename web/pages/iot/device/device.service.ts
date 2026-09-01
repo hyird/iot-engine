@@ -47,6 +47,20 @@ export function useDeviceList(options?: { enabled?: boolean; pollingInterval?: n
     });
 }
 
+export function useDeviceRealtime(options?: {
+    enabled?: boolean;
+    pollingInterval?: number | false;
+}) {
+    return useQuery({
+        queryKey: [...deviceKeys.all, 'realtime'],
+        queryFn: api.getDeviceRealtime,
+        enabled: options?.enabled ?? true,
+        refetchInterval: options?.pollingInterval ?? false,
+        refetchOnWindowFocus: false,
+        staleTime: 1_000,
+    });
+}
+
 export function useDeviceHistory(
     deviceId: string | undefined,
     query: Device.HistoryRecordQuery,

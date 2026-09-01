@@ -31,39 +31,51 @@ struct Policy final {
 class Runtime final {
   public:
     Runtime(observability::Registry& observability, std::size_t collectorWorkerCount,
+            std::size_t serviceWorkerCount,
             Policy policy = {})
         : observability_(observability), collectorWorkerCount_(collectorWorkerCount),
-          policy_(policy) {}
+          serviceWorkerCount_(serviceWorkerCount), policy_(policy) {}
     Runtime(const Runtime&) = delete;
     Runtime& operator=(const Runtime&) = delete;
     ~Runtime() { stop(); }
 
-    void start(ruvia::WebWorkerHandle worker) {
+    void start(std::vector<ruvia::WebWorkerHandle> workers) {
         if (running_.exchange(true))
             return;
-        worker_ = std::move(worker);
-        auto ready = std::make_shared<std::promise<void>>();
-        auto stopped = std::make_shared<std::promise<void>>();
-        auto readiness = ready->get_future();
-        stopped_ = stopped->get_future().share();
-        const auto posted = worker_.post(
-            [this, ready, stopped](ruvia::WebWorkerContext& context) {
-                return run(context, ready, stopped);
-            });
-        if (!posted.accepted()) {
+        workers_ = std::move(workers);
+        if (workers_.empty()) {
             running_.store(false);
-            throw std::runtime_error("service worker rejected outbox dispatcher");
+            throw std::runtime_error("outbox dispatcher requires Service Workers");
         }
-        readiness.get();
+        std::vector<std::future<void>> readiness;
+        readiness.reserve(workers_.size());
+        stopped_.reserve(workers_.size());
+        for (auto& worker : workers_) {
+            auto ready = std::make_shared<std::promise<void>>();
+            auto stopped = std::make_shared<std::promise<void>>();
+            readiness.push_back(ready->get_future());
+            stopped_.push_back(stopped->get_future().share());
+            const auto posted = worker.post(
+                [this, ready, stopped](ruvia::WebWorkerContext& context) {
+                    return run(context, ready, stopped);
+                });
+            if (!posted.accepted()) {
+                running_.store(false);
+                throw std::runtime_error("service worker rejected outbox dispatcher");
+            }
+        }
+        for (auto& ready : readiness)
+            ready.get();
     }
 
     void stop() noexcept {
         if (!running_.exchange(false))
             return;
-        if (stopped_.valid())
-            (void)stopped_.wait_for(std::chrono::seconds(3));
-        stopped_ = {};
-        worker_ = {};
+        for (const auto& stopped : stopped_)
+            if (stopped.valid())
+                (void)stopped.wait_for(std::chrono::seconds(3));
+        stopped_.clear();
+        workers_.clear();
     }
 
   private:
@@ -170,7 +182,8 @@ LIMIT 100)sql");
             try {
                 co_await publishConfigEnvelope(context.redis(), event.id, event.type,
                                                event.aggregate, event.aggregateId, event.action,
-                                               event.schemaVersion, event.occurredAtMs);
+                                               event.schemaVersion, event.occurredAtMs,
+                                               serviceWorkerCount_);
             } catch (const std::exception& error) {
                 publishError = error.what();
             } catch (...) {
@@ -230,12 +243,22 @@ FROM outbox_event WHERE published_at IS NULL)sql");
         observability_.gauge("iot_engine_outbox_receipt_retention_days",
                              policy_.receiptRetentionDays);
 
-        co_await collectStream(context, "runtime_config",
-                               std::string(kRuntimeConfigChangesStream),
-                               "iot-engine:runtime-reconciler");
-        co_await collectStream(context, "webhook_config",
-                               std::string(kWebhookCatalogChangesStream),
-                               "iot-engine:open-webhook");
+        for (std::size_t shardIndex = 0;
+             shardIndex < service::message::shard::kCount; ++shardIndex)
+            co_await collectStream(context,
+                                   "runtime_config_" + std::to_string(shardIndex),
+                                   runtimeConfigChangesStream(shardIndex),
+                                   "iot-engine:runtime-reconciler");
+        for (std::size_t index = 0; index < serviceWorkerCount_; ++index)
+            co_await collectStream(context, "webhook_config_" + std::to_string(index),
+                                   webhookCatalogChangesStream(index),
+                                   "iot-engine:open-webhook");
+        for (std::size_t shardIndex = 0;
+             shardIndex < service::message::shard::kCount; ++shardIndex)
+            co_await collectStream(
+                context, "access_session_" + std::to_string(shardIndex),
+                service::access::stream::sessionChanges(shardIndex),
+                "iot-engine:open-webhook");
         for (std::size_t index = 0; index < collectorWorkerCount_; ++index) {
             const auto suffix = std::to_string(index);
             co_await collectStream(context, "ingress_" + suffix,
@@ -295,9 +318,10 @@ WHERE processed_at < NOW() - make_interval(days => $1::integer))sql",
 
     observability::Registry& observability_;
     std::size_t collectorWorkerCount_{};
+    std::size_t serviceWorkerCount_{};
     Policy policy_;
-    ruvia::WebWorkerHandle worker_;
-    std::shared_future<void> stopped_;
+    std::vector<ruvia::WebWorkerHandle> workers_;
+    std::vector<std::shared_future<void>> stopped_;
     std::atomic_bool running_{false};
 };
 

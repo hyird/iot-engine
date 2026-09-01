@@ -7,6 +7,7 @@
 #include <cstring>
 #include <deque>
 #include <exception>
+#include <memory>
 #include <random>
 #include <string>
 #include <string_view>
@@ -18,8 +19,9 @@
 #include "service/common/http.h"
 #include "service/common/uuid.h"
 #include "service/features/edge/config.h"
+#include "service/features/edge/dispatcher.h"
 #include "service/features/edge/protocol.h"
-#include "service/features/edge/projector.h"
+#include "service/features/edge/projector-stream.h"
 #include "service/features/edge/session.h"
 #include "service/domains/edge/edge.schema.h"
 
@@ -57,6 +59,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         std::array<std::uint8_t, 16> nodeBytes{};
         std::array<std::uint8_t, 16> platformBytes{};
         std::uint32_t protocolVersion{protocol::kProtocolVersion};
+        std::size_t workerIndex{};
         std::uint64_t epoch{};
         std::uint64_t inboundSequence{};
         std::uint64_t outboundSequence{};
@@ -65,6 +68,16 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         std::array<TelemetryReceipt, 64> telemetryReceipts{};
         std::size_t nextTelemetryReceipt{};
         bool capabilitySeen{};
+    };
+
+    struct LiveSession {
+        ruvia::Context* context{};
+        ruvia::WebSocket* socket{};
+        Session* session{};
+        ruvia::TaskScope* scope{};
+        bool active{true};
+        bool flushPending{};
+        bool flushing{};
     };
 
     struct TerminalSession {
@@ -78,6 +91,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
 
     ruvia::Task<void> connect(ruvia::Context& c) {
         auto& socket = c.webSocket();
+        auto& dispatcher = c.workerState<Dispatcher>();
+        const auto workerIndex = dispatcher.workerIndex();
         auto first = co_await socket.read();
         if (!first || !first->binary()) {
             co_await socket.close(
@@ -94,7 +109,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 ruvia::WebSocketCloseOptions{.code = 1002, .reason = "invalid hello"});
             co_return;
         }
-        co_await publishIngress(c, first->payload(), protocol::nowMs());
+        co_await publishIngress(c, workerIndex, first->payload(), protocol::nowMs());
         const auto authKey = protocol::authKey(input.hello().imei());
         const auto auth = co_await c.redis().get(authKey);
         const auto separator = auth ? auth->find('|') : std::string_view::npos;
@@ -106,8 +121,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             auth && separator != std::string_view::npos
                 ? std::string(auth->substr(separator + 1))
                 : "pending";
-        auto session =
-            makeSession(nodeId, input.protocol_version(), input.platform_id());
+        auto session = makeSession(
+            nodeId, input.protocol_version(), input.platform_id(), workerIndex);
         if (status != "approved") {
             co_await sendEnrollment(socket, session, status);
             if (status == "rejected") {
@@ -160,7 +175,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 co_return;
             session = makeSession(
                 nodeId, session.protocolVersion,
-                protocol::bytes(session.platformBytes.data(), session.platformBytes.size()));
+                protocol::bytes(session.platformBytes.data(), session.platformBytes.size()),
+                workerIndex);
         }
 
         auto ack = makeEnvelope(session);
@@ -174,15 +190,35 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         helloAck->set_platform_time_ms(protocol::nowMs());
         co_await send(socket, ack);
         (void)co_await session_state::claim(c.redis(), session.nodeId, session.epoch,
-                                            session.protocolVersion);
+                                             session.protocolVersion, session.workerIndex);
+        // Rebuild this Worker's local metadata before any subsequent node payload.
+        // Both events use the same worker-isolated Stream, preserving their order.
+        co_await projector_stream::publishMetadata(
+            c.redis(), session.workerIndex, session.nodeId);
         std::exception_ptr sessionFailure;
-        // Egress must not wait for the node to speak first: an idle terminal only
-        // produces a heartbeat every few seconds, which would stall keystrokes for
-        // that whole interval. The pump owns the egress key from here on.
+        // Egress must not wait for the node to speak first. This worker's own
+        // dispatcher wakes only sessions accepted by this worker.
         ruvia::TaskScope egressScope(
             c.worker(), ruvia::TaskScopeOptions{.resource = c.resource()});
-        egressScope.spawn(pumpEgress(c, socket, session, egressScope.stopToken()));
+        auto live = std::make_shared<LiveSession>(LiveSession{
+            .context = &c,
+            .socket = &socket,
+            .session = &session,
+            .scope = &egressScope,
+        });
+        bool registered = false;
         try {
+            std::weak_ptr<LiveSession> weak = live;
+            dispatcher.registerSession(
+                session.nodeId, session.epoch,
+                [weak] {
+                    if (const auto current = weak.lock())
+                        requestFlush(current);
+                });
+            registered = true;
+            // Reliable per-node queues may already contain work from while the
+            // node was offline; connection establishment is itself a wakeup.
+            requestFlush(live);
             while (auto message = co_await socket.read()) {
                 if (!message->binary() || !protocol::decode(message->payload(), input) ||
                     !validInbound(input, session)) {
@@ -193,7 +229,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                     break;
                 }
                 if (!co_await session_state::refresh(c.redis(), session.nodeId, session.epoch,
-                                                     session.protocolVersion)) {
+                                                     session.protocolVersion,
+                                                     session.workerIndex)) {
                     co_await socket.close(ruvia::WebSocketCloseOptions{
                         .code = 1008,
                         .reason = "session replaced",
@@ -203,13 +240,18 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 session.inboundSequence = input.sequence();
                 const auto telemetry = telemetryDecision(session, input);
                 if (shouldProject(input) && telemetry.publish)
-                    co_await publishIngress(c, message->payload(), protocol::nowMs());
+                    co_await publishIngress(c, session.workerIndex, message->payload(),
+                                            protocol::nowMs());
                 if (telemetry.acknowledge)
                     co_await handle(c, session, input);
+                requestFlush(live);
             }
         } catch (...) {
             sessionFailure = std::current_exception();
         }
+        live->active = false;
+        if (registered)
+            dispatcher.unregisterSession(session.nodeId, session.epoch);
         egressScope.requestStop();
         try {
             co_await egressScope.join();
@@ -219,7 +261,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         }
         try {
             (void)co_await session_state::release(c.redis(), session.nodeId, session.epoch,
-                                                  session.protocolVersion);
+                                                  session.protocolVersion,
+                                                  session.workerIndex);
         } catch (...) {
             if (!sessionFailure)
                 sessionFailure = std::current_exception();
@@ -389,10 +432,12 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
     }
 
     static Session makeSession(std::string nodeId, std::uint32_t protocolVersion,
-                               std::string_view platformId) {
+                               std::string_view platformId,
+                               std::size_t workerIndex) {
         Session result;
         result.nodeId = std::move(nodeId);
         result.protocolVersion = protocolVersion;
+        result.workerIndex = workerIndex;
         protocol::uuidBytes(result.nodeId, result.nodeBytes.data());
         std::memcpy(result.platformBytes.data(), platformId.data(), result.platformBytes.size());
         result.epoch = randomEpoch();
@@ -499,68 +544,80 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         session.outbound.emplace_back(std::move(wire));
     }
 
-    static ruvia::Task<void> publishIngress(ruvia::Context& c, std::string_view wire,
-                                            std::int64_t receivedAtMs) {
-        std::vector<service::message::StreamField> fields;
-        fields.push_back({"wire", std::string(wire)});
-        fields.push_back({"received_at_ms", std::to_string(receivedAtMs)});
-        (void)co_await service::message::redis::add(
-            c.redis(), kEdgeIngressStream, fields, 100000);
+    static ruvia::Task<void> publishIngress(ruvia::Context& c,
+                                             std::size_t workerIndex,
+                                             std::string_view wire,
+                                             std::int64_t receivedAtMs) {
+        co_await projector_stream::publishIngress(
+            c.redis(), workerIndex, wire, receivedAtMs);
     }
 
     static std::string sessionKey(std::string_view nodeId) {
         return session_state::key(nodeId);
     }
 
-    // Runs beside the session read loop on the same worker, so it shares
-    // session.outboundSequence and the local queue without a lock. It is the only
-    // coroutine that writes to the node WebSocket after the hello acknowledgement;
-    // concurrent writes can otherwise kill the pump while the read loop keeps the
-    // node looking online.
-    static ruvia::Task<void> pumpEgress(ruvia::Context& c, ruvia::WebSocket& socket,
-                                        Session& session, ruvia::StopToken stopToken) {
+    // This worker's Dispatcher wakes the worker-local session when one of its
+    // reliable queues changes. Redis reads are non-blocking and reuse this
+    // worker's ordinary pool; no callback or socket crosses worker boundaries.
+    static void requestFlush(const std::shared_ptr<LiveSession>& live) {
+        if (!live->active || live->scope->stopRequested())
+            return;
+        live->flushPending = true;
+        if (live->flushing)
+            return;
+        live->flushing = true;
+        try {
+            live->scope->spawn(flushEgress(live));
+        } catch (...) {
+            live->flushing = false;
+            throw;
+        }
+    }
+
+    static ruvia::Task<void> flushEgress(std::shared_ptr<LiveSession> live) {
+        auto& c = *live->context;
+        auto& socket = *live->socket;
+        auto& session = *live->session;
         const std::string terminalKey = terminalInputKey(session.nodeId);
         const std::string configKey = "iot:edge:config:" + session.nodeId;
         const std::string egressKey = "iot:edge:egress:" + session.nodeId;
-        const std::array<std::string_view, 3> blockingKeys{
-            configKey, terminalKey, egressKey};
-        const auto blockingRedis = c.redis().withOptions(
-            ruvia::OperationOptions{.stopToken = stopToken});
         std::exception_ptr failure;
         try {
-            while (!stopToken.stopRequested()) {
-                int replies = 0;
-                while (!session.outbound.empty() && replies < 64) {
-                    auto wire = std::move(session.outbound.front());
-                    session.outbound.pop_front();
-                    co_await socket.binary(wire);
-                    ++replies;
-                }
-                const auto configs = co_await drainKey(c, socket, session, configKey, 64);
-                if (configs != 0)
-                    session.configSentAtMs = protocol::nowMs();
-                const auto keystrokes = co_await drainKey(c, socket, session, terminalKey, 64);
-                const auto commands = co_await drainKey(c, socket, session, egressKey, 64);
-                if (replies + configs + keystrokes + commands == 0) {
-                    auto item = co_await blockingRedis.blpop(
-                        blockingKeys, ruvia::RedisBlockWait::indefinitely());
-                    if (item) {
-                        const auto key = item->key();
-                        const auto sent = co_await deliverQueuedItem(
-                            c, socket, session, key, item->value());
-                        if (sent && key == configKey)
-                            session.configSentAtMs = protocol::nowMs();
+            while (live->active && !live->scope->stopRequested() &&
+                   live->flushPending) {
+                live->flushPending = false;
+                for (;;) {
+                    int replies = 0;
+                    while (!session.outbound.empty() && replies < 64) {
+                        auto wire = std::move(session.outbound.front());
+                        session.outbound.pop_front();
+                        co_await socket.binary(wire);
+                        ++replies;
                     }
+                    const auto configs =
+                        co_await drainKey(c, socket, session, configKey, 64);
+                    if (configs != 0)
+                        session.configSentAtMs = protocol::nowMs();
+                    const auto keystrokes =
+                        co_await drainKey(c, socket, session, terminalKey, 64);
+                    const auto commands =
+                        co_await drainKey(c, socket, session, egressKey, 64);
+                    if (replies + configs + keystrokes + commands == 0)
+                        break;
                 }
             }
         } catch (...) {
             failure = std::current_exception();
         }
+        live->flushing = false;
         if (failure) {
+            live->active = false;
             try {
                 co_await socket.close(
-                    ruvia::WebSocketCloseOptions{.code = 1011, .reason = "edge egress failed"});
+                    ruvia::WebSocketCloseOptions{.code = 1011,
+                                                 .reason = "edge egress failed"});
             } catch (...) {
+                socket.abort();
             }
             std::rethrow_exception(failure);
         }
@@ -624,6 +681,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             (void)co_await c.redis().rpop(key);
             throw std::runtime_error("edge terminal input backlog exceeded");
         }
+        co_await dispatch::notifyNode(c.redis(), nodeId);
     }
 
     static std::string terminalInputKey(std::string_view nodeId) {
@@ -954,8 +1012,8 @@ return 1
 )lua";
         const auto ownershipKey = terminalSessionKey(session.nodeId, terminalId);
         const auto outputKey = terminalOutputKey(session.nodeId, terminalId);
-        const auto epoch =
-            session_state::value(session.epoch, session.protocolVersion);
+        const auto epoch = session_state::value(
+            session.epoch, session.protocolVersion, session.workerIndex);
         const std::string ttl = "120";
         const std::string_view keys[]{ownershipKey, outputKey};
         const std::string_view arguments[]{epoch, wire, ttl};
@@ -998,8 +1056,8 @@ return 1
         const auto ownershipKey = terminalSessionKey(session.nodeId, id);
         const auto outputKey = terminalOutputKey(session.nodeId, id);
         const auto sequenceKey = terminalOutputSequenceKey(session.nodeId, id);
-        const auto epoch =
-            session_state::value(session.epoch, session.protocolVersion);
+        const auto epoch = session_state::value(
+            session.epoch, session.protocolVersion, session.workerIndex);
         const auto sequence = std::to_string(data.sequence());
         const std::string ttl = "120";
         const std::string_view keys[]{ownershipKey, outputKey, sequenceKey};
@@ -1030,8 +1088,8 @@ return 1
 )lua";
         const auto ownershipKey = terminalSessionKey(session.nodeId, id);
         const auto ackKey = terminalInputAckKey(session.nodeId, id);
-        const auto epoch =
-            session_state::value(session.epoch, session.protocolVersion);
+        const auto epoch = session_state::value(
+            session.epoch, session.protocolVersion, session.workerIndex);
         const auto sequence = std::to_string(ack.sequence());
         const std::string ttl = "120";
         const std::string_view keys[]{ownershipKey, ackKey};

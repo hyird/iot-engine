@@ -60,6 +60,7 @@ import CommandPopover from './CommandPopover';
 import DeviceFormModal, { type DeviceFormValues } from './DeviceFormModal';
 import DeviceGroupPanel from './DeviceGroupPanel';
 import { getDeviceDetail } from './device.client';
+import { isDeviceOnline } from './device.runtime';
 import {
     useDeviceDelete,
     useDeviceGroupShares,
@@ -67,13 +68,13 @@ import {
     useDeviceGroupTreeWithCount,
     useDeviceHistory,
     useDeviceList,
+    useDeviceRealtime,
     useDeviceSave,
     useDeviceShares,
     useDeviceShareTargets,
     useReplaceDeviceGroupShares,
     useReplaceDeviceShares,
 } from './device.service';
-import { isDeviceOnline } from './device.runtime';
 import type { Device, EdgeStatus } from './device.types';
 import type { DeviceGroup } from './device-group.types';
 
@@ -1271,8 +1272,23 @@ const DevicePage = () => {
         return () => window.clearInterval(timer);
     }, []);
 
-    const { data, isLoading, isFetching, refetch } = useDeviceList({
+    const {
+        data,
+        isLoading,
+        isFetching: isListFetching,
+        refetch,
+    } = useDeviceList({
         enabled: canQuery,
+        // Device metadata is stable between edits. Realtime polling below keeps the page fresh
+        // without repeatedly rebuilding and transferring the complete device list.
+        pollingInterval: false,
+    });
+    const {
+        data: realtimeData,
+        isFetching: isRealtimeFetching,
+        refetch: refetchRealtime,
+    } = useDeviceRealtime({
+        enabled: canQuery && !!data,
         pollingInterval: DEVICE_LIST_POLLING_INTERVAL,
     });
     const { data: groupTree = [] } = useDeviceGroupTreeWithCount({
@@ -1287,7 +1303,24 @@ const DevicePage = () => {
     });
     const saveMutation = useDeviceSave();
     const { mutateAsync: deleteDevice } = useDeviceDelete();
-    const deviceList = data?.list ?? EMPTY_DEVICE_LIST;
+    const deviceList = useMemo(() => {
+        const realtimeById = new Map(
+            (realtimeData?.list ?? []).map((device) => [device.id, device] as const)
+        );
+        return (data?.list ?? EMPTY_DEVICE_LIST).map((device) => {
+            const realtime = realtimeById.get(device.id);
+            if (!realtime) return device;
+            return {
+                ...device,
+                connected: realtime.connected,
+                connectionState: realtime.connectionState,
+                reportTime: realtime.reportTime,
+                elements: realtime.elements ?? device.elements,
+                edgeStatus: realtime.edgeStatus ?? device.edgeStatus,
+            };
+        });
+    }, [data, realtimeData]);
+    const isFetching = isListFetching || isRealtimeFetching;
     const linkById = useMemo(
         () => new Map(linkOptions.map((link) => [link.id, link])),
         [linkOptions]
@@ -1571,7 +1604,9 @@ const DevicePage = () => {
                         <Tooltip title="刷新">
                             <Button
                                 icon={<ReloadOutlined />}
-                                onClick={() => refetch()}
+                                onClick={() => {
+                                    void Promise.all([refetch(), refetchRealtime()]);
+                                }}
                                 loading={isFetching}
                             />
                         </Tooltip>

@@ -3,6 +3,7 @@
 #include "device/DeviceRegistry.h"
 #include "media/StreamRegistry.h"
 #include "service/common/http.h"
+#include "service/common/message/shard.h"
 #include "service/common/timestamp.h"
 #include "service/features/collector/stream.h"
 
@@ -32,15 +33,19 @@ public:
   Projector(const Projector &) = delete;
   Projector &operator=(const Projector &) = delete;
 
-  Snapshot start(ruvia::WebWorkerHandle worker) {
+  Snapshot start(std::vector<ruvia::WebWorkerHandle> workers) {
     // Supervisor-only startup barrier. Projection I/O itself runs as a
     // coroutine on the selected Service Worker.
     if (running_.exchange(true))
       return snapshot_;
-    worker_ = std::move(worker);
+    workers_ = std::move(workers);
+    if (workers_.empty()) {
+      running_.store(false);
+      throw std::runtime_error("GB28181 projector requires Service Workers");
+    }
     auto ready = std::make_shared<std::promise<Snapshot>>();
     auto future = ready->get_future();
-    const auto posted = worker_.post(
+    const auto posted = workers_.front().post(
         [ready](ruvia::WebWorkerContext &context) -> ruvia::Task<void> {
           try {
             auto snapshot = co_await hydrate(context);
@@ -64,20 +69,22 @@ public:
       return snapshot_;
     } catch (...) {
       running_.store(false);
-      worker_ = {};
+      workers_.clear();
       throw;
     }
   }
 
   void stop() noexcept {
     running_.store(false);
-    worker_ = {};
+    workers_.clear();
   }
 
   void project(Device device, DeviceRegistry::Change change) {
     if (!running_.load())
       return;
-    const auto posted = worker_.post(
+    const auto workerIndex =
+        service::message::shard::index(device.id) % workers_.size();
+    const auto posted = workers_[workerIndex].post(
         [device = std::move(device),
          change](ruvia::WebWorkerContext &context) -> ruvia::Task<void> {
           try {
@@ -94,7 +101,11 @@ public:
   void project(StreamStatus stream) {
     if (!running_.load())
       return;
-    const auto posted = worker_.post(
+    const auto workerIndex = service::message::shard::index(
+                                 StreamRegistry::identity(
+                                     stream.app, stream.stream, stream.schema)) %
+                             workers_.size();
+    const auto posted = workers_[workerIndex].post(
         [stream = std::move(stream)](
             ruvia::WebWorkerContext &context) -> ruvia::Task<void> {
           try {
@@ -472,7 +483,7 @@ WHERE (gb28181_stream.online, gb28181_stream.reader_count)
   }
 
   std::atomic_bool running_{false};
-  ruvia::WebWorkerHandle worker_;
+  std::vector<ruvia::WebWorkerHandle> workers_;
   Snapshot snapshot_;
 };
 

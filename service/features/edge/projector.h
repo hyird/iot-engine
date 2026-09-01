@@ -8,7 +8,6 @@
 #include <iostream>
 #include <memory>
 #include <optional>
-#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -19,16 +18,18 @@
 #include <ruvia/web/WebWorker.h>
 
 #include "service/common/message/contract.h"
+#include "service/common/message/shard.h"
 #include "service/common/http.h"
 #include "service/common/uuid.h"
 #include "service/features/edge/metadata.h"
 #include "service/features/edge/protocol.h"
+#include "service/features/edge/projector-stream.h"
 #include "service/features/collector/stream.h"
 #include "service/features/telemetry/persistence.h"
 
 namespace service::edge {
 
-inline constexpr std::string_view kEdgeIngressStream{"iot:edge:ingress"};
+inline constexpr std::string_view kEdgeIngressStream{projector_stream::kLegacyIngress};
 inline constexpr std::string_view kEdgeIngressGroup{"iot-engine:edge-projector"};
 
 class Projector final {
@@ -38,60 +39,82 @@ class Projector final {
     Projector& operator=(const Projector&) = delete;
     ~Projector() { stop(); }
 
-    void start(ruvia::WebWorkerHandle worker) {
+    void start(std::vector<ruvia::WebWorkerHandle> workers) {
         if (running_.exchange(true))
             return;
-        worker_ = std::move(worker);
-        auto ready = std::make_shared<std::promise<void>>();
-        auto stopped = std::make_shared<std::promise<void>>();
-        auto readyFuture = ready->get_future();
-        stopped_ = stopped->get_future().share();
-        const auto posted = worker_.post([this, ready, stopped](ruvia::WebWorkerContext& context) {
-            return run(context, ready, stopped);
-        });
-        if (!posted.accepted()) {
+        workers_ = std::move(workers);
+        if (workers_.empty()) {
             running_.store(false);
-            throw std::runtime_error("service worker rejected edge projector");
+            throw std::runtime_error("edge projector requires Service Workers");
         }
-        readyFuture.get();
+        std::vector<std::future<void>> readiness;
+        readiness.reserve(workers_.size());
+        stopped_.reserve(workers_.size());
+        for (std::size_t index = 0; index < workers_.size(); ++index) {
+            auto ready = std::make_shared<std::promise<void>>();
+            auto stopped = std::make_shared<std::promise<void>>();
+            readiness.push_back(ready->get_future());
+            stopped_.push_back(stopped->get_future().share());
+            const auto posted = workers_[index].post(
+                [this, index, ready, stopped](ruvia::WebWorkerContext& context) {
+                    return run(context, index, ready, stopped);
+                });
+            if (!posted.accepted()) {
+                running_.store(false);
+                throw std::runtime_error("service worker rejected edge projector");
+            }
+        }
+        for (auto& ready : readiness)
+            ready.get();
     }
 
     void stop() noexcept {
         if (!running_.exchange(false))
             return;
-        if (stopped_.valid())
-            (void)stopped_.wait_for(std::chrono::seconds(3));
-        stopped_ = {};
-        worker_ = {};
+        for (const auto& stopped : stopped_)
+            if (stopped.valid())
+                (void)stopped.wait_for(std::chrono::seconds(3));
+        stopped_.clear();
+        workers_.clear();
     }
 
   private:
     static constexpr std::size_t kBatchSize = 512;
 
-    ruvia::Task<void> run(ruvia::WebWorkerContext& context,
-                          std::shared_ptr<std::promise<void>> ready,
-                          std::shared_ptr<std::promise<void>> stopped) {
+    ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t index,
+                           std::shared_ptr<std::promise<void>> ready,
+                           std::shared_ptr<std::promise<void>> stopped) {
         try {
             const auto redis = context.redis();
-            const std::vector<std::string> streams{std::string(metadata::kChangesStream),
-                                                   std::string(kEdgeIngressStream)};
+            std::vector<std::string> streams;
+            for (auto streamIndex = index;
+                 streamIndex < service::message::shard::kCount;
+                 streamIndex += workers_.size())
+                streams.push_back(projector_stream::stream(streamIndex));
+            if (index == 0) {
+                streams.emplace_back(metadata::kChangesStream);
+                streams.emplace_back(kEdgeIngressStream);
+            }
             for (const auto& stream : streams)
                 co_await service::message::redis::ensureGroup(redis, stream,
-                                                               kEdgeIngressGroup);
+                                                                kEdgeIngressGroup);
             co_await hydrateAuth(context);
-            metadata_ = co_await metadata::hydrate(context);
+            auto catalog = co_await metadata::hydrate(context);
             ready->set_value();
             bool recovering = true;
+            const auto consumer =
+                index == 0 ? std::string("edge-projector")
+                           : "service-" + std::to_string(index);
             while (running_.load() && !context.stopToken().stopRequested()) {
                 std::vector<service::message::redis::StreamBatch> batches;
                 bool readFailed = false;
                 try {
                     batches = recovering
-                        ? co_await service::message::redis::readGroupMany(
-                              redis, streams, kEdgeIngressGroup, "edge-projector", "0",
+                        ? co_await service::message::redis::claimGroupMany(
+                              redis, streams, kEdgeIngressGroup, consumer,
                               kBatchSize)
                         : co_await service::message::redis::readGroupManyBlocking(
-                              redis, streams, kEdgeIngressGroup, "edge-projector",
+                              redis, streams, kEdgeIngressGroup, consumer,
                               context.stopToken(), kBatchSize);
                 } catch (const std::exception& error) {
                     if (context.stopToken().stopRequested())
@@ -111,39 +134,34 @@ class Projector final {
                     continue;
                 bool projectionFailed = false;
                 try {
-                    // Update the worker-local immutable read model before telemetry from
-                    // the same read. Device changes never require a per-record DB query.
                     for (const auto& batch : batches) {
-                        if (batch.stream != metadata::kChangesStream)
-                            continue;
-                        std::set<std::string, std::less<>> nodes;
-                        for (const auto& message : batch.messages) {
-                            const auto nodeId = message.get("node_id");
-                            if (!nodeId.empty())
-                                nodes.emplace(nodeId);
-                        }
-                        for (const auto& nodeId : nodes) {
-                            // Concurrent CRUD requests can publish Redis snapshots out of
-                            // commit order. Re-read the durable final state in this single
-                            // consumer so the last applied projection cannot move backwards.
-                            auto snapshot =
-                                co_await metadata::loadNodeFromDatabase(context, nodeId);
-                            co_await metadata::storeNode(redis, nodeId, snapshot, false);
-                            metadata_[nodeId] = std::move(snapshot);
-                        }
-                        co_await service::message::redis::acknowledgeAndDeleteMany(
-                            redis, batch.stream, kEdgeIngressGroup, batch.messages);
-                    }
-                    for (const auto& batch : batches) {
-                        if (batch.stream != kEdgeIngressStream)
-                            continue;
                         std::vector<service::message::StreamMessage> telemetry;
                         telemetry.reserve(batch.messages.size());
-                        for (const auto& message : batch.messages)
-                            co_await project(context, message.get("wire"),
-                                             message.get("received_at_ms"), telemetry);
+                        for (const auto& message : batch.messages) {
+                            const bool metadataEvent =
+                                batch.stream == metadata::kChangesStream ||
+                                message.get("kind") ==
+                                    projector_stream::kMetadataKind;
+                            if (metadataEvent) {
+                                const auto nodeId = message.get("node_id");
+                                if (!nodeId.empty()) {
+                                    auto snapshot = co_await metadata::loadNodeFromDatabase(
+                                        context, nodeId);
+                                    co_await metadata::storeNode(
+                                        redis, nodeId, snapshot, false);
+                                    catalog[std::string(nodeId)] = std::move(snapshot);
+                                }
+                                continue;
+                            }
+                            const bool ingressEvent =
+                                batch.stream == kEdgeIngressStream ||
+                                message.get("kind") == projector_stream::kIngressKind;
+                            if (ingressEvent)
+                                co_await project(context, catalog, message.get("wire"),
+                                                 message.get("received_at_ms"), telemetry);
+                        }
                         co_await service::telemetry::PersistenceRuntime::ingest(context,
-                                                                                telemetry);
+                                                                                 telemetry);
                         co_await service::message::redis::acknowledgeAndDeleteMany(
                             redis, batch.stream, kEdgeIngressGroup, batch.messages);
                     }
@@ -185,7 +203,8 @@ class Projector final {
     }
 
     ruvia::Task<void> project(
-        ruvia::WebWorkerContext& context, std::string_view wire,
+        ruvia::WebWorkerContext& context, metadata::Catalog& catalog,
+        std::string_view wire,
         std::string_view receivedAtText,
         std::vector<service::message::StreamMessage>& telemetry) {
         pb::Envelope envelope;
@@ -228,15 +247,17 @@ class Projector final {
             co_await saveConfigRejected(context, nodeId, envelope.config_rejected());
             break;
         case pb::Envelope::kTelemetryBatch:
-            co_await ensureMetadata(context, nodeId, envelope.telemetry_batch());
-            collectTelemetry(nodeId, receivedAtMs, envelope.telemetry_batch(), telemetry);
+            co_await ensureMetadata(context, catalog, nodeId,
+                                    envelope.telemetry_batch());
+            collectTelemetry(catalog, nodeId, receivedAtMs,
+                             envelope.telemetry_batch(), telemetry);
             break;
         case pb::Envelope::kCommandResult:
             if (envelope.command_result().device_id().size() == 16)
                 co_await ensureMetadata(
-                    context, nodeId,
+                    context, catalog, nodeId,
                     protocol::uuidText(envelope.command_result().device_id()));
-            co_await saveCommandResult(context, nodeId, receivedAtMs,
+            co_await saveCommandResult(context, catalog, nodeId, receivedAtMs,
                                        envelope.command_result());
             break;
         case pb::Envelope::kDeviceStatusReport:
@@ -248,10 +269,11 @@ class Projector final {
     }
 
     ruvia::Task<void> ensureMetadata(ruvia::WebWorkerContext& context,
-                                     std::string_view nodeId,
-                                     std::string_view deviceId) {
-        const auto existingNode = metadata_.find(std::string(nodeId));
-        if (existingNode != metadata_.end() &&
+                                      metadata::Catalog& catalog,
+                                      std::string_view nodeId,
+                                      std::string_view deviceId) {
+        const auto existingNode = catalog.find(std::string(nodeId));
+        if (existingNode != catalog.end() &&
             existingNode->second.contains(std::string(deviceId)))
             co_return;
         auto snapshot = co_await metadata::loadNode(context.redis(), nodeId);
@@ -259,12 +281,13 @@ class Projector final {
             snapshot = co_await metadata::loadNodeFromDatabase(context, nodeId);
             co_await metadata::storeNode(context.redis(), nodeId, snapshot, false);
         }
-        metadata_[std::string(nodeId)] = std::move(snapshot);
+        catalog[std::string(nodeId)] = std::move(snapshot);
     }
 
     ruvia::Task<void> ensureMetadata(ruvia::WebWorkerContext& context,
-                                     std::string_view nodeId,
-                                     const pb::TelemetryBatch& batch) {
+                                      metadata::Catalog& catalog,
+                                      std::string_view nodeId,
+                                      const pb::TelemetryBatch& batch) {
         const auto containsAll = [&batch](const metadata::NodeSnapshot& snapshot) {
             for (const auto& record : batch.records()) {
                 if (record.device_id().size() == 16 &&
@@ -273,15 +296,15 @@ class Projector final {
             }
             return true;
         };
-        const auto existingNode = metadata_.find(std::string(nodeId));
-        if (existingNode != metadata_.end() && containsAll(existingNode->second))
+        const auto existingNode = catalog.find(std::string(nodeId));
+        if (existingNode != catalog.end() && containsAll(existingNode->second))
             co_return;
         auto snapshot = co_await metadata::loadNode(context.redis(), nodeId);
         if (!containsAll(snapshot)) {
             snapshot = co_await metadata::loadNodeFromDatabase(context, nodeId);
             co_await metadata::storeNode(context.redis(), nodeId, snapshot, false);
         }
-        metadata_[std::string(nodeId)] = std::move(snapshot);
+        catalog[std::string(nodeId)] = std::move(snapshot);
     }
 
     static std::string_view simState(pb::ModemSimState state) {
@@ -851,11 +874,12 @@ WHERE id = $3::uuid)sql",
         return output;
     }
 
-    void collectTelemetry(std::string_view nodeId, std::int64_t receivedAtMs,
+    static void collectTelemetry(const metadata::Catalog& catalog,
+                          std::string_view nodeId, std::int64_t receivedAtMs,
                           const pb::TelemetryBatch& batch,
                           std::vector<service::message::StreamMessage>& messages) {
-        const auto node = metadata_.find(std::string(nodeId));
-        if (node == metadata_.end())
+        const auto node = catalog.find(std::string(nodeId));
+        if (node == catalog.end())
             return;
         for (const auto& record : batch.records()) {
             if (record.record_id().size() != 16 || record.device_id().size() != 16)
@@ -890,6 +914,7 @@ WHERE id = $3::uuid)sql",
     }
 
     ruvia::Task<void> saveCommandResult(ruvia::WebWorkerContext& context,
+                                        const metadata::Catalog& catalog,
                                         std::string_view nodeId,
                                         std::int64_t receivedAtMs,
                                         const pb::CommandResult& result) {
@@ -899,8 +924,8 @@ WHERE id = $3::uuid)sql",
             co_return;
         const auto commandId = protocol::uuidText(result.command_id());
         const auto deviceId = protocol::uuidText(result.device_id());
-        const auto node = metadata_.find(std::string(nodeId));
-        if (node == metadata_.end())
+        const auto node = catalog.find(std::string(nodeId));
+        if (node == catalog.end())
             co_return;
         const auto device = node->second.find(deviceId);
         if (device == node->second.end())
@@ -972,9 +997,8 @@ WHERE id = $3::uuid)sql",
         return output;
     }
 
-    ruvia::WebWorkerHandle worker_;
-    std::shared_future<void> stopped_;
-    metadata::Catalog metadata_;
+    std::vector<ruvia::WebWorkerHandle> workers_;
+    std::vector<std::shared_future<void>> stopped_;
     std::atomic_bool running_{false};
 };
 

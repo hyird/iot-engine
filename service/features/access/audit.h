@@ -10,11 +10,13 @@
 
 #include "service/common/message/contract.h"
 #include "service/common/uuid.h"
+#include "service/features/access/stream.h"
 #include "service/features/collector/stream.h"
 
 namespace service::access::audit {
 
-inline constexpr std::string_view kStream{"iot:channel:open-access:audit"};
+// Retained only so a rolling upgrade can drain entries written by the old singleton.
+inline constexpr std::string_view kLegacyStream{stream::kAuditBase};
 inline constexpr std::size_t kCapacity = 100000;
 
 template <typename Redis>
@@ -37,7 +39,9 @@ ruvia::Task<void> publish(const Redis& redis, std::string_view action,
         {"response_payload", std::string(responsePayload)},
         {"used_at_ms", std::to_string(service::message::utcNowMilliseconds())},
     };
-    (void)co_await service::message::redis::add(redis, kStream, fields, kCapacity);
+    const auto routingKey = deviceId.empty() ? accessKeyId : deviceId;
+    (void)co_await service::message::redis::add(
+        redis, stream::audit(routingKey), fields, kCapacity);
 }
 
 } // namespace service::access::audit
