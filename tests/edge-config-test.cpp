@@ -135,6 +135,12 @@ void testBuildItemSqlAvoidsJsonCasts() {
             "edge config buildItems does not use the unified readInterval for reporting");
     require(kBuildItemsSql.find("pollInterval") == std::string_view::npos,
             "edge config buildItems still reads the retired pollInterval field");
+    require(kBuildItemsSql.find("p.config->>'commandFastReadDuration'") !=
+                std::string_view::npos,
+            "edge config buildItems ignores the configured fast-read window");
+    require(kBuildItemsSql.find("p.config->>'commandFastReadInterval'") !=
+                std::string_view::npos,
+            "edge config buildItems ignores the configured fast-read interval");
     require(kAppendModbusSql.find("COALESCE(NULLIF(item->>'scale', ''), '1')") !=
                 std::string_view::npos,
             "edge config Modbus query does not leave scale for strict C++ parsing");

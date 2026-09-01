@@ -64,6 +64,13 @@ int main() {
         const auto source = commandSource();
         requireNoUnsafeJsonCasts(source);
         requireDuplicateElementRejected(source);
+        require(source.find("command->set_fast_read_duration_sec(10)") == std::string::npos,
+                "edge commands still hard-code the fast-read window");
+        require(source.find("command->set_fast_read_interval_sec(1)") == std::string::npos,
+                "edge commands still hard-code the fast-read interval");
+        require(source.find("p.config->>'commandFastReadDuration'") != std::string::npos &&
+                    source.find("p.config->>'commandFastReadInterval'") != std::string::npos,
+                "edge commands do not load the protocol fast-read policy");
         require(source.find("DeviceCommandWaitDto") != std::string::npos,
                 "command service has no batched wait operation");
         const auto client = projectSource("web/pages/iot/device/device.service.ts");

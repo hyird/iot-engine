@@ -207,7 +207,9 @@ SELECT COALESCE(l.edge_node_id::text, ''), d.protocol_params->>'device_code', p.
                     = COALESCE(
                       CASE WHEN COALESCE(n.status->'config'->>'desiredVersion', '') ~
                                 '^-?[0-9]{1,18}$'
-                           THEN (n.status->'config'->>'desiredVersion')::bigint END, 0), false)
+                           THEN (n.status->'config'->>'desiredVersion')::bigint END, 0), false),
+       COALESCE(NULLIF(p.config->>'commandFastReadDuration', ''), '60'),
+       COALESCE(NULLIF(p.config->>'commandFastReadInterval', ''), '1')
 FROM device d
 JOIN link l ON l.id = d.link_id AND l.deleted_at IS NULL
 JOIN protocol_config p ON p.id = d.protocol_config_id
@@ -222,7 +224,13 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
                                                  edge.front()[0].value().value_or(std::string_view{}),
                                                  edge.front()[1].value().value_or(std::string_view{}),
                                                  edge.front()[2].value().value_or(std::string_view{}),
-                                                 edge.front()[3].value().value_or(std::string_view{}) == "t");
+                                                 edge.front()[3].value().value_or(std::string_view{}) == "t",
+                                                 boundedUnsigned(
+                                                     edge.front()[5].value().value_or(std::string_view{}),
+                                                     60, 0),
+                                                 boundedUnsigned(
+                                                     edge.front()[6].value().value_or(std::string_view{}),
+                                                     1, 1));
         }
 
         auto requested = normalize(body);
@@ -314,7 +322,9 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
     enqueueEdgeDevice(ruvia::Context& context, std::string_view deviceId,
                       const service::device::DeviceCommandBody& body, std::string submittedBy,
                       std::string_view nodeId, std::string_view deviceCode,
-                      std::string_view protocol, bool remoteControl) {
+                      std::string_view protocol, bool remoteControl,
+                      std::uint32_t fastReadDurationSec,
+                      std::uint32_t fastReadIntervalSec) {
         if (!remoteControl)
             service::common::fail(18005, "设备未开启远程控制", 403);
         if (!co_await context.redis().get("iot:edge:session:" + std::string(nodeId)))
@@ -369,8 +379,8 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
                 service::common::fail(18010, "边缘命令标识无效", 500);
             command->set_timeout_ms(5000);
             command->set_readback_count(1);
-            command->set_fast_read_duration_sec(10);
-            command->set_fast_read_interval_sec(1);
+            command->set_fast_read_duration_sec(fastReadDurationSec);
+            command->set_fast_read_interval_sec(fastReadIntervalSec);
             for (const auto& element : elements) {
                 if (element.elementId.size() > 64 || element.value.size() > 128)
                     service::common::fail(
@@ -547,6 +557,17 @@ WHERE d.id = $1::uuid AND p.protocol = 'SL651')sql";
         const auto [end, error] =
             std::from_chars(value.data(), value.data() + value.size(), result);
         return error == std::errc{} && end == value.data() + value.size() ? result : 0;
+    }
+
+    static std::uint32_t boundedUnsigned(std::string_view value, std::uint32_t fallback,
+                                         std::uint32_t minimum) {
+        std::uint32_t result{};
+        const auto [end, error] =
+            std::from_chars(value.data(), value.data() + value.size(), result);
+        if (error != std::errc{} || end != value.data() + value.size() ||
+            result < minimum || result > 3600U)
+            return fallback;
+        return result;
     }
 
     service::device::DeviceAccessService& accessService_;

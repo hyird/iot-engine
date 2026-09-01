@@ -168,7 +168,9 @@ SELECT d.id::text, d.name, d.protocol_params->>'device_code', p.protocol,
        COALESCE(d.protocol_params->'heartbeat'->>'mode', 'OFF'),
        COALESCE(d.protocol_params->'heartbeat'->>'content', ''),
        d.status = 'enabled' AND p.enabled AND l.status = 'enabled',
-       d.link_id::text
+       d.link_id::text,
+       COALESCE(NULLIF(p.config->>'commandFastReadDuration', ''), '60'),
+       COALESCE(NULLIF(p.config->>'commandFastReadInterval', ''), '1')
 FROM device d
 JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
 JOIN protocol_config p ON p.id = d.protocol_config_id AND p.deleted_at IS NULL
@@ -566,8 +568,12 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
                 static_cast<std::uint32_t>(integer(row[24].value().value_or(std::string_view{}), 1)));
             deviceValue->set_s7_local_tsap(row[25].value().value_or(std::string_view{}));
             deviceValue->set_s7_remote_tsap(row[26].value().value_or(std::string_view{}));
-            deviceValue->set_command_fast_read_duration_sec(10);
-            deviceValue->set_command_fast_read_interval_sec(1);
+            deviceValue->set_command_fast_read_duration_sec(static_cast<std::uint32_t>(
+                std::clamp<std::int64_t>(integer(row[31].value().value_or(std::string_view{}), 60),
+                                         0, 3600)));
+            deviceValue->set_command_fast_read_interval_sec(static_cast<std::uint32_t>(
+                std::clamp<std::int64_t>(integer(row[32].value().value_or(std::string_view{}), 1),
+                                         1, 3600)));
             packet(deviceValue->mutable_heartbeat_payload(), row[27].value().value_or(std::string_view{}), row[28].value().value_or(std::string_view{}),
                    "heartbeat_payload");
             deviceValue->set_enabled(row[29].value().value_or(std::string_view{}) == "t");
