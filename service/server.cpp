@@ -253,6 +253,10 @@ int main(int argc, char *argv[])
 
         auto &app = ruvia::app();
         app.loadDotenv();
+        if (!service::edge::protocol::configurePlatformId(
+                app.env().get("EDGE_PLATFORM_ID")
+                    .value_or(service::edge::protocol::kDefaultPlatformId)))
+            throw std::runtime_error("EDGE_PLATFORM_ID is invalid");
         if (!service::edge::protocol::configurePublicBaseUrl(
                 app.env().get("EDGE_PUBLIC_BASE_URL")
                     .value_or(service::edge::protocol::kDefaultPublicBaseUrl)))

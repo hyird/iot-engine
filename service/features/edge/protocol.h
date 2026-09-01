@@ -53,7 +53,12 @@ inline std::string& publicBaseUrlStorage() {
     return value;
 }
 
-inline constexpr std::string_view platformId() { return kDefaultPlatformId; }
+inline std::string& platformIdStorage() {
+    static std::string value(kDefaultPlatformId);
+    return value;
+}
+
+inline std::string_view platformId() { return platformIdStorage(); }
 
 inline std::string_view publicBaseUrl() { return publicBaseUrlStorage(); }
 
@@ -109,6 +114,19 @@ inline bool uuidBytes(std::string_view value, std::uint8_t output[16]) {
         index += 2;
     }
     return byte == 16;
+}
+
+inline bool configurePlatformId(std::string_view platformId) {
+    std::uint8_t value[16]{};
+    if (!uuidBytes(platformId, value))
+        return false;
+    bool nonzero = false;
+    for (const auto byte : value)
+        nonzero = nonzero || byte != 0;
+    if (!nonzero)
+        return false;
+    platformIdStorage().assign(platformId);
+    return true;
 }
 
 inline bool validSessionPlatformId(std::string_view value) noexcept {

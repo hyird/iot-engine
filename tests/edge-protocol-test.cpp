@@ -254,6 +254,30 @@ void testPublicBaseUrlConfiguration() {
             "default public platform URL could not be restored");
 }
 
+void testPlatformIdConfiguration() {
+    constexpr std::string_view secondaryPlatformId{
+        "00000000-0000-7000-8000-000000000002"};
+    require(!service::edge::protocol::configurePlatformId("invalid"),
+            "invalid platform id was accepted");
+    require(!service::edge::protocol::configurePlatformId(
+                "00000000-0000-0000-0000-000000000000"),
+            "nil platform id was accepted");
+    require(service::edge::protocol::configurePlatformId(secondaryPlatformId),
+            "valid platform id was rejected");
+    require(service::edge::protocol::platformId() == secondaryPlatformId,
+            "configured platform id was not retained");
+    std::uint8_t expected[16]{};
+    require(service::edge::protocol::uuidBytes(secondaryPlatformId, expected),
+            "test platform id is invalid");
+    const auto envelope = service::edge::protocol::outbound(
+        "00000000-0000-7000-8000-000000000003");
+    require(envelope.platform_id() == service::edge::protocol::bytes(expected, 16),
+            "outbound envelope ignored the configured platform id");
+    require(service::edge::protocol::configurePlatformId(
+                service::edge::protocol::kDefaultPlatformId),
+            "default platform id could not be restored");
+}
+
 void testSessionPlatformIdentityIsInternal() {
     require(!service::edge::protocol::validSessionPlatformId({}),
             "empty session platform id was accepted");
@@ -386,6 +410,7 @@ int main() {
     testTerminalFlowControlContract();
     testLegacyEdgenodeContract();
     testPublicBaseUrlConfiguration();
+    testPlatformIdConfiguration();
     testSessionPlatformIdentityIsInternal();
     testModemProfileRoundTrip();
     testNanopbBounds();
