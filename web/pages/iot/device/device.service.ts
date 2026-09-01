@@ -100,8 +100,19 @@ export function useDeviceCommand() {
             const failed = result.statuses.find((state) => state.status === 'FAILED');
             if (failed) throw new Error(failed.reason || '设备执行指令失败');
             if (!result.complete) throw new Error('等待设备应答超时');
+            return result;
         },
-        successMessage: '指令下发成功，设备已应答',
+        successMessage: (result) => {
+            const actualValues = result.statuses.flatMap((status) => status.actual_values ?? []);
+            if (!actualValues.length) return '指令下发成功，设备已应答';
+            const readback = actualValues
+                .map(
+                    (actual) =>
+                        `${actual.name || actual.element_id}=${actual.value}${actual.unit || ''}`
+                )
+                .join('，');
+            return `指令下发成功，设备回读：${readback}`;
+        },
         errorMessage: (error) => error.message,
         invalidateKeys: [deviceKeys.all],
     });

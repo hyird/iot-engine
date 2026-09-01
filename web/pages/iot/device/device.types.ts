@@ -409,6 +409,13 @@ export interface CommandStatusResult {
     reason?: string;
     created_at_ms?: number;
     completed_at_ms?: number;
+    actual_values?: Array<{
+        element_id: string;
+        name: string;
+        kind: 'BOOL' | 'SIGNED' | 'UNSIGNED' | 'DOUBLE' | 'STRING' | 'BYTES' | 'UNSPECIFIED';
+        value: string;
+        unit: string;
+    }>;
 }
 
 export interface CommandWaitResult {

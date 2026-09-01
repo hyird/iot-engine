@@ -93,20 +93,7 @@ class CommandService final {
             context, deviceId, service::device::DeviceAccessLevel::operate);
 
         service::device::DeviceCommandStatusDto result(context);
-        result.set<"commandId">(commandId)
-            .set<"deviceId">(deviceId)
-            .set<"deviceCode">(field(fields, "device_code"))
-            .set<"protocol">(field(fields, "protocol"))
-            .set<"status">(field(fields, "status"));
-        const auto reason = field(fields, "reason");
-        if (!reason.empty())
-            result.set<"reason">(reason);
-        const auto createdAt = integer(fields, "created_at_ms");
-        if (createdAt != 0)
-            result.set<"createdAtMs">(createdAt);
-        const auto completedAt = integer(fields, "completed_at_ms");
-        if (completedAt != 0)
-            result.set<"completedAtMs">(completedAt);
+        fillStatus(result, commandId, fields);
         co_return result;
     }
 
@@ -161,6 +148,10 @@ class CommandService final {
     }
 
   private:
+    static std::string actualValueField(std::size_t index, std::string_view name) {
+        return "actual_value_" + std::to_string(index) + "_" + std::string(name);
+    }
+
     static void fillStatus(service::device::DeviceCommandStatusDto& result,
                            std::string_view commandId,
                            const std::vector<message::StreamField>& fields) {
@@ -178,6 +169,22 @@ class CommandService final {
         const auto completedAt = integer(fields, "completed_at_ms");
         if (completedAt != 0)
             result.set<"completedAtMs">(completedAt);
+        const auto actualCount =
+            std::clamp<std::int64_t>(integer(fields, "actual_value_count"), 0, 8);
+        if (actualCount != 0) {
+            ruvia::BoxedArray<service::device::DeviceCommandActualValueDto> actualValues(
+                ruvia::ModelOptions{.resource = result.resource()});
+            for (std::int64_t index = 0; index < actualCount; ++index) {
+                auto& actual = actualValues.emplace();
+                actual.set<"elementId">(
+                          field(fields, actualValueField(index, "element_id")))
+                    .set<"name">(field(fields, actualValueField(index, "name")))
+                    .set<"kind">(field(fields, actualValueField(index, "kind")))
+                    .set<"value">(field(fields, actualValueField(index, "value")))
+                    .set<"unit">(field(fields, actualValueField(index, "unit")));
+            }
+            result.set<"actualValues">(std::move(actualValues));
+        }
     }
 
     ruvia::Task<service::device::DeviceCommandCreateDto>

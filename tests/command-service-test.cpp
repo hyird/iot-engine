@@ -73,9 +73,23 @@ int main() {
                 "edge commands do not load the protocol fast-read policy");
         require(source.find("DeviceCommandWaitDto") != std::string::npos,
                 "command service has no batched wait operation");
+        require(source.find("DeviceCommandActualValueDto") != std::string::npos &&
+                    source.find("actual_value_count") != std::string::npos &&
+                    source.find("result.set<\"actualValues\">") != std::string::npos,
+                "command status API omits readback values");
+        const auto resultProjector = projectSource("service/features/command/result.h");
+        require(resultProjector.find("actualValuesJson(message)") != std::string::npos &&
+                    resultProjector.find("actual_value_count") != std::string::npos,
+                "command result projection omits readback values");
+        const auto types = projectSource("service/domains/device/device.types.h");
+        require(types.find("\"actual_values\", actualValues") != std::string::npos,
+                "command response contract omits actual_values");
         const auto client = projectSource("web/pages/iot/device/device.service.ts");
         require(client.find("waitForDeviceCommands(command.command_ids)") != std::string::npos,
                 "web command flow does not use the batched wait operation");
+        require(client.find("设备回读：") != std::string::npos &&
+                    client.find("return result;") != std::string::npos,
+                "web command flow drops the readback response");
         require(client.find("window.setTimeout(resolve, 150)") == std::string::npos,
                 "web command flow still polls every command at 150 ms");
         std::cout << "command service tests passed\n";

@@ -122,6 +122,13 @@ RUVIA_RESPONSE_MODEL(DeviceCommandCreateDto,
     RUVIA_OPTIONAL_FIELD_NAME("command_ids", commandIds, ruvia::BoxedArray<ruvia::String>),
     RUVIA_OPTIONAL_FIELD(status, ruvia::String));
 
+RUVIA_RESPONSE_MODEL(DeviceCommandActualValueDto,
+    RUVIA_OPTIONAL_FIELD_NAME("element_id", elementId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(kind, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(value, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(unit, ruvia::String));
+
 RUVIA_RESPONSE_MODEL(DeviceCommandStatusDto,
     RUVIA_OPTIONAL_FIELD_NAME("command_id", commandId, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String),
@@ -130,7 +137,9 @@ RUVIA_RESPONSE_MODEL(DeviceCommandStatusDto,
     RUVIA_OPTIONAL_FIELD(status, ruvia::String),
     RUVIA_OPTIONAL_FIELD(reason, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("created_at_ms", createdAtMs, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD_NAME("completed_at_ms", completedAtMs, ruvia::Int64));
+    RUVIA_OPTIONAL_FIELD_NAME("completed_at_ms", completedAtMs, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("actual_values", actualValues,
+                              ruvia::BoxedArray<DeviceCommandActualValueDto>));
 
 RUVIA_RESPONSE_MODEL(DeviceCommandWaitDto,
     RUVIA_OPTIONAL_FIELD(complete, ruvia::Bool),

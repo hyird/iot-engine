@@ -52,6 +52,11 @@ int main() {
                 "edge hello update does not refresh pending and approved presence");
         require(source.find("ELSE edge_node.last_seen_at END") != std::string::npos,
                 "edge hello update refreshes rejected presence");
+        require(source.find("result.actual_values_size()") != std::string::npos &&
+                    source.find("actual_value_count") != std::string::npos &&
+                    source.find("actual.has_value()") != std::string::npos &&
+                    source.find("scalarText(actual.value())") != std::string::npos,
+                "edge command projector drops physical readback values");
         std::cout << "edge projector tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <exception>
@@ -77,6 +79,40 @@ class ResultRuntime final {
     static constexpr std::string_view kGroup = "iot-engine:command-result";
     static constexpr auto kStateTtl = std::chrono::hours(24);
     static constexpr std::size_t kBatchSize = 256;
+
+    static std::size_t actualValueCount(const message::StreamMessage& message) {
+        const auto value = message.get("actual_value_count");
+        std::size_t count{};
+        const auto [end, error] =
+            std::from_chars(value.data(), value.data() + value.size(), count);
+        if (error != std::errc{} || end != value.data() + value.size())
+            return 0;
+        return std::min<std::size_t>(count, 8);
+    }
+
+    static std::string actualValueField(std::size_t index, std::string_view name) {
+        return "actual_value_" + std::to_string(index) + "_" + std::string(name);
+    }
+
+    static std::string actualValuesJson(const message::StreamMessage& message) {
+        std::string output{"["};
+        for (std::size_t index = 0; index < actualValueCount(message); ++index) {
+            if (index != 0)
+                output.push_back(',');
+            output += "{\"elementId\":" + service::access::jsonQuoted(
+                          message.get(actualValueField(index, "element_id"))) +
+                      ",\"name\":" + service::access::jsonQuoted(
+                          message.get(actualValueField(index, "name"))) +
+                      ",\"kind\":" + service::access::jsonQuoted(
+                          message.get(actualValueField(index, "kind"))) +
+                      ",\"value\":" + service::access::jsonQuoted(
+                          message.get(actualValueField(index, "value"))) +
+                      ",\"unit\":" + service::access::jsonQuoted(
+                          message.get(actualValueField(index, "unit"))) + "}";
+        }
+        output.push_back(']');
+        return output;
+    }
 
     ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t index,
                           std::shared_ptr<std::promise<void>> ready,
@@ -245,7 +281,8 @@ return 1
                 ",\"status\":" +
                 service::access::jsonQuoted(message.get("success") == "1" ? "SUCCESS"
                                                                           : "FAILED") +
-                ",\"reason\":" + service::access::jsonQuoted(message.get("reason")) + "}";
+                ",\"reason\":" + service::access::jsonQuoted(message.get("reason")) +
+                ",\"actualValues\":" + actualValuesJson(message) + "}";
             const std::string source(sourceStream);
             const auto eventStream =
                 service::access::stream::event(message.get("device_id"));

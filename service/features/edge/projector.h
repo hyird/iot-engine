@@ -851,6 +851,48 @@ WHERE id = $3::uuid)sql",
         }
     }
 
+    static std::string scalarKind(const pb::ScalarValue& value) {
+        switch (value.kind()) {
+        case pb::VALUE_BOOL:
+            return "BOOL";
+        case pb::VALUE_SIGNED:
+            return "SIGNED";
+        case pb::VALUE_UNSIGNED:
+            return "UNSIGNED";
+        case pb::VALUE_DOUBLE:
+            return "DOUBLE";
+        case pb::VALUE_STRING:
+            return "STRING";
+        case pb::VALUE_BYTES:
+            return "BYTES";
+        default:
+            return "UNSPECIFIED";
+        }
+    }
+
+    static std::string scalarText(const pb::ScalarValue& value) {
+        switch (value.value_case()) {
+        case pb::ScalarValue::kBoolValue:
+            return value.bool_value() ? "true" : "false";
+        case pb::ScalarValue::kSignedValue:
+            return std::to_string(value.signed_value());
+        case pb::ScalarValue::kUnsignedValue:
+            return std::to_string(value.unsigned_value());
+        case pb::ScalarValue::kDoubleValue: {
+            std::ostringstream output;
+            output.precision(15);
+            output << value.double_value();
+            return output.str();
+        }
+        case pb::ScalarValue::kStringValue:
+            return value.string_value();
+        case pb::ScalarValue::kBytesValue:
+            return hex(value.bytes_value());
+        default:
+            return {};
+        }
+    }
+
     static std::string telemetryJson(const pb::TelemetryRecord& record) {
         std::string output = "{\"function_code\":\"" +
                              jsonEscape(record.function_code()) +
@@ -930,20 +972,33 @@ WHERE id = $3::uuid)sql",
         const bool success = result.state() == pb::COMMAND_STATE_SUCCEEDED;
         const auto completedAtMs = message::effectiveObservedAt(
             result.completed_at_ms(), receivedAtMs);
+        std::vector<message::StreamField> fields{
+            {"message_id", message::nextMessageId()},
+            {"causation_id", commandId},
+            {"command_id", commandId},
+            {"device_id", deviceId},
+            {"device_code", device->second.deviceCode},
+            {"protocol", device->second.protocol},
+            {"attempt", "1"},
+            {"success", success ? "1" : "0"},
+            {"reason", result.message()},
+            {"worker_id", "0"},
+            {"created_at_ms", std::to_string(message::utcNowMilliseconds())},
+            {"completed_at_ms", std::to_string(completedAtMs)},
+            {"actual_value_count", std::to_string(result.actual_values_size())}};
+        for (int index = 0; index < result.actual_values_size(); ++index) {
+            const auto& actual = result.actual_values(index);
+            const auto prefix = "actual_value_" + std::to_string(index) + "_";
+            fields.push_back({prefix + "element_id", actual.element_id()});
+            fields.push_back({prefix + "name", actual.name()});
+            fields.push_back({prefix + "kind",
+                              actual.has_value() ? scalarKind(actual.value()) : "UNSPECIFIED"});
+            fields.push_back({prefix + "value",
+                              actual.has_value() ? scalarText(actual.value()) : std::string{}});
+            fields.push_back({prefix + "unit", actual.unit()});
+        }
         (void)co_await message::redis::publishAndWake(
-            context.redis(), message::commandResultStream(0),
-            {{"message_id", message::nextMessageId()},
-             {"causation_id", commandId},
-             {"command_id", commandId},
-             {"device_id", deviceId},
-             {"device_code", device->second.deviceCode},
-             {"protocol", device->second.protocol},
-             {"attempt", "1"},
-             {"success", success ? "1" : "0"},
-             {"reason", result.message()},
-             {"worker_id", "0"},
-             {"created_at_ms", std::to_string(message::utcNowMilliseconds())},
-             {"completed_at_ms", std::to_string(completedAtMs)}},
+            context.redis(), message::commandResultStream(0), fields,
             service::message::workerForPartition(0),
             service::message::WorkerStreamTask::CommandResult, 10000);
     }
