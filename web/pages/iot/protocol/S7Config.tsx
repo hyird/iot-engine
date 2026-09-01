@@ -363,7 +363,7 @@ const S7ConfigPage = () => {
                     ...currentConfig.connection,
                     ...buildConnectionConfig(values),
                 },
-                pollInterval: values.pollInterval,
+                readInterval: values.readInterval,
                 storageInterval: values.storageInterval,
                 commandFastReadDuration: values.commandFastReadDuration,
                 commandFastReadInterval: values.commandFastReadInterval,
@@ -382,7 +382,7 @@ const S7ConfigPage = () => {
                 ...config,
                 deviceType: values.deviceType,
                 plcModel: values.plcModel,
-                pollInterval: values.pollInterval,
+                readInterval: values.readInterval,
                 storageInterval: values.storageInterval,
                 commandFastReadDuration: values.commandFastReadDuration,
                 commandFastReadInterval: values.commandFastReadInterval,
@@ -565,7 +565,7 @@ const S7ConfigPage = () => {
                                     )}
                                     <Tag>
                                         读取间隔{' '}
-                                        {(activeType.config as S7.Config)?.pollInterval ?? 5}s
+                                        {(activeType.config as S7.Config)?.readInterval ?? 5}s
                                     </Tag>
                                 </Space>
                             ) : types.length > 0 ? (
@@ -816,10 +816,10 @@ const S7ConfigPage = () => {
                         </Col>
                     </Row>
                     <Form.Item
-                        name="pollInterval"
-                        label="轮询间隔（秒）"
-                        rules={[{ required: true, message: '请输入轮询间隔' }]}
-                        extra="数值越小采集越频繁，建议 1~300 秒之间按实际场景调整"
+                        name="readInterval"
+                        label="读取/上报间隔（秒）"
+                        rules={[{ required: true, message: '请输入读取/上报间隔' }]}
+                        extra="平台采集时控制读取频率；边缘采集时控制上报频率，底层读取固定为 1 秒"
                     >
                         <InputNumber min={1} max={3600} className="w-full" addonAfter="秒" />
                     </Form.Item>

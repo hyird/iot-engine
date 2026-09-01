@@ -627,7 +627,7 @@ class Session final : public ProtocolSession,
         pollDeadlines_[token] = &device;
         pollDevices_.insert(device.id);
         const auto interval = std::chrono::seconds(
-            std::clamp<std::int64_t>(device.pollInterval, 1, 86400));
+            std::clamp<std::int64_t>(device.readInterval, 1, 86400));
         actions.push_back({.kind = ProtocolActionKind::ScheduleDeadline,
                            .connectionId = connectionId_,
                            .deviceId = device.id,

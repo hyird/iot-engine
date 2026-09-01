@@ -130,7 +130,7 @@ inline std::string signature(const RuntimeSnapshot& snapshot) {
         integer(device.s7HandshakeTimeoutMs);
         integer(device.s7DirectProbeTimeoutMs);
         text(device.s7ProbeMode);
-        integer(device.pollInterval);
+        integer(device.readInterval);
         integer(device.storageInterval);
         integer(device.commandFastReadDuration);
         integer(device.commandFastReadInterval);
@@ -447,7 +447,7 @@ inline DeviceDefinition device(const std::vector<message::StreamField>& fields) 
     result.s7ProbeMode = field(fields, "s7_probe_mode");
     if (result.s7ProbeMode.empty())
         result.s7ProbeMode = "STANDARD";
-    result.pollInterval = integer(fields, "poll_interval", 5);
+    result.readInterval = integer(fields, "read_interval", 1);
     result.storageInterval = integer(fields, "storage_interval", 1);
     result.commandFastReadDuration = integer(fields, "command_fast_read_duration", 60);
     result.commandFastReadInterval = integer(fields, "command_fast_read_interval", 1);
@@ -626,7 +626,7 @@ ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
              {"s7_handshake_timeout_ms", std::to_string(device.s7HandshakeTimeoutMs)},
              {"s7_direct_probe_timeout_ms", std::to_string(device.s7DirectProbeTimeoutMs)},
              {"s7_probe_mode", device.s7ProbeMode},
-             {"poll_interval", std::to_string(device.pollInterval)},
+             {"read_interval", std::to_string(device.readInterval)},
              {"storage_interval", std::to_string(device.storageInterval)},
              {"command_fast_read_duration", std::to_string(device.commandFastReadDuration)},
              {"command_fast_read_interval", std::to_string(device.commandFastReadInterval)}});

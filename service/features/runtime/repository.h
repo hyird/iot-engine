@@ -207,8 +207,7 @@ SELECT d.id::text, d.protocol_params->>'device_code', d.name, d.link_id::text,
        COALESCE(p.config->'connection'->>'handshakeTimeout', p.config->>'handshakeTimeout', '5000'),
        COALESCE(p.config->'connection'->>'directProbeTimeout', p.config->>'directProbeTimeout', '5000'),
        COALESCE(p.config->'connection'->>'probeMode', p.config->>'probeMode', 'STANDARD'),
-       COALESCE(CASE WHEN p.protocol = 'Modbus' THEN p.config->>'readInterval'
-                     ELSE p.config->>'pollInterval' END, '5'),
+       COALESCE(NULLIF(p.config->>'readInterval', ''), '1'),
        COALESCE(p.config->>'storageInterval', '1'),
        COALESCE(p.config->>'commandFastReadDuration', '60'),
        COALESCE(p.config->>'commandFastReadInterval', '1'),
@@ -253,7 +252,7 @@ ORDER BY d.link_id, d.id)sql");
         device.s7HandshakeTimeoutMs = cellInt(row, 21);
         device.s7DirectProbeTimeoutMs = cellInt(row, 22);
         device.s7ProbeMode = cell(row, 23);
-        device.pollInterval = cellInt(row, 24);
+        device.readInterval = cellInt(row, 24);
         device.storageInterval = cellInt(row, 25);
         device.commandFastReadDuration = cellInt(row, 26);
         device.commandFastReadInterval = cellInt(row, 27);

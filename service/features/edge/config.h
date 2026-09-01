@@ -143,12 +143,7 @@ WHERE id = $2::uuid
 inline constexpr std::string_view kBuildItemsSql = R"sql(
 SELECT d.id::text, d.name, d.protocol_params->>'device_code', p.protocol,
        COALESCE(NULLIF(d.protocol_params->>'timezone', ''), '+08:00'),
-       CASE WHEN p.protocol = 'S7'
-            THEN COALESCE(NULLIF(p.config->>'pollInterval', ''),
-                          NULLIF(p.config->>'readInterval', ''), '1')
-            ELSE COALESCE(NULLIF(p.config->>'readInterval', ''),
-                          NULLIF(p.config->>'pollInterval', ''), '1')
-       END,
+       COALESCE(NULLIF(p.config->>'readInterval', ''), '1'),
        COALESCE(NULLIF(d.protocol_params->>'online_timeout', ''), '300'),
        COALESCE(NULLIF(d.protocol_params->>'slave_id', ''), '1'),
        COALESCE(d.protocol_params->>'modbus_mode', 'TCP'),

@@ -45,6 +45,8 @@ void requireNoUnsafeParsing(std::string_view source) {
             "device service directly casts slave_id");
     require(source.find("(p.config->>'readInterval')::numeric") == std::string_view::npos,
             "device service directly casts readInterval");
+    require(source.find("p.config->>'pollInterval'") == std::string_view::npos,
+            "device service still reads the retired pollInterval field");
     require(source.find("(p.config->>'storageInterval')::numeric") == std::string_view::npos,
             "device service directly casts storageInterval");
     require(source.find("(l.endpoint->>'port')::integer") == std::string_view::npos,

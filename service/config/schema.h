@@ -26,7 +26,7 @@ class SchemaMigration final {
     std::string sql_;
 };
 
-inline const std::array<SchemaMigration, 26> kSchemaMigrations{{
+inline const std::array<SchemaMigration, 27> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
@@ -1298,6 +1298,17 @@ $schema$;
     {"0025_webhook_tls_verification", R"sql(
 ALTER TABLE open_webhook
     ADD COLUMN skip_tls_verify BOOLEAN NOT NULL DEFAULT FALSE;
+)sql"},
+    {"0026_unify_protocol_read_interval", R"sql(
+UPDATE protocol_config
+SET config = jsonb_set(config - 'pollInterval', '{readInterval}',
+                       config->'pollInterval', true),
+    updated_at = NOW()
+WHERE protocol = 'S7' AND config ? 'pollInterval';
+
+ALTER TABLE protocol_config
+    ADD CONSTRAINT ck_protocol_config_no_poll_interval
+    CHECK (NOT (config ? 'pollInterval'));
 )sql"},
 }};
 

@@ -6,6 +6,7 @@
 #include <string_view>
 #include <vector>
 
+#include "service/config/schema.h"
 #include "service/features/edge/config.h"
 
 namespace {
@@ -101,9 +102,6 @@ void testBuildItemSqlAvoidsJsonCasts() {
     require(kBuildItemsSql.find("(p.config->>'readInterval')::numeric") ==
                 std::string_view::npos,
             "edge config buildItems directly casts readInterval");
-    require(kBuildItemsSql.find("(p.config->>'pollInterval')::numeric") ==
-                std::string_view::npos,
-            "edge config buildItems directly casts pollInterval");
     require(kBuildItemsSql.find("(d.protocol_params->>'online_timeout')::integer") ==
                 std::string_view::npos,
             "edge config buildItems directly casts online_timeout");
@@ -132,17 +130,27 @@ void testBuildItemSqlAvoidsJsonCasts() {
     require(kAppendSl651ElementsSql.find("(element->>'length')::integer") ==
                 std::string_view::npos,
             "edge config SL651 query directly casts length");
-    require(kBuildItemsSql.find("CASE WHEN p.protocol = 'S7'") != std::string_view::npos,
-            "edge config buildItems does not select the report interval by protocol");
-    require(kBuildItemsSql.find("THEN COALESCE(NULLIF(p.config->>'pollInterval', ''),") !=
+    require(kBuildItemsSql.find("COALESCE(NULLIF(p.config->>'readInterval', ''), '1')") !=
                 std::string_view::npos,
-            "edge config buildItems does not use the S7 pollInterval for reporting");
-    require(kBuildItemsSql.find("ELSE COALESCE(NULLIF(p.config->>'readInterval', ''),") !=
-                std::string_view::npos,
-            "edge config buildItems does not use the Modbus readInterval for reporting");
+            "edge config buildItems does not use the unified readInterval for reporting");
+    require(kBuildItemsSql.find("pollInterval") == std::string_view::npos,
+            "edge config buildItems still reads the retired pollInterval field");
     require(kAppendModbusSql.find("COALESCE(NULLIF(item->>'scale', ''), '1')") !=
                 std::string_view::npos,
             "edge config Modbus query does not leave scale for strict C++ parsing");
+}
+
+void testReadIntervalMigrationRemovesLegacyField() {
+    const auto& migration = service::config::kSchemaMigrations.back();
+    require(migration.id() == "0026_unify_protocol_read_interval",
+            "readInterval migration is not the latest schema migration");
+    require(migration.sql().find("config - 'pollInterval'") != std::string_view::npos,
+            "readInterval migration does not remove pollInterval");
+    require(migration.sql().find("'{readInterval}'") != std::string_view::npos,
+            "readInterval migration does not write the canonical field");
+    require(migration.sql().find("ck_protocol_config_no_poll_interval") !=
+                std::string_view::npos,
+            "schema does not prevent pollInterval from returning");
 }
 
 } // namespace
@@ -155,6 +163,7 @@ int main() {
         testNumberRejectsTrailingGarbage();
         testRevisionSqlGuardsCorruptNodeJson();
         testBuildItemSqlAvoidsJsonCasts();
+        testReadIntervalMigrationRemovesLegacyField();
         std::cout << "edge config tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

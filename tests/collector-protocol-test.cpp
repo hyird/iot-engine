@@ -2566,7 +2566,7 @@ void testRuntimeReconcile() {
     const auto previous = clientReconcileSnapshot();
 
     auto deviceUpdate = previous;
-    deviceUpdate.devices.front().pollInterval = 10;
+    deviceUpdate.devices.front().readInterval = 10;
     const auto devicePlan = collector::planRuntimeReconcile(previous, deviceUpdate);
     require(devicePlan.affectedLinks.contains("client-link"),
             "device update did not affect its link");
@@ -2594,7 +2594,7 @@ void testRuntimeReconcile() {
     for (auto& device : s7Previous.devices)
         device.protocol = "S7";
     auto s7Next = s7Previous;
-    s7Next.devices.front().pollInterval = 10;
+    s7Next.devices.front().readInterval = 10;
     const auto s7Plan = collector::planRuntimeReconcile(s7Previous, s7Next);
     require(s7Plan.restartClientTargets.contains({"client-link", "target-a"}) &&
                 s7Plan.refreshClientSessions.empty(),
@@ -2603,7 +2603,7 @@ void testRuntimeReconcile() {
     auto rtuPrevious = previous;
     rtuPrevious.devices.front().modbusMode = "RTU";
     auto rtuNext = rtuPrevious;
-    rtuNext.devices.front().pollInterval = 10;
+    rtuNext.devices.front().readInterval = 10;
     const auto rtuPlan = collector::planRuntimeReconcile(rtuPrevious, rtuNext);
     require(rtuPlan.restartClientTargets.contains({"client-link", "target-a"}) &&
                 rtuPlan.refreshClientSessions.empty(),
@@ -2615,7 +2615,7 @@ void testRuntimeReconcile() {
     serverPrevious.devices.front().linkMode = "TCP Server";
     serverPrevious.devices.back().linkMode = "TCP Server";
     auto serverNext = serverPrevious;
-    serverNext.devices.front().pollInterval = 10;
+    serverNext.devices.front().readInterval = 10;
     const auto serverPlan = collector::planRuntimeReconcile(serverPrevious, serverNext);
     require(serverPlan.restartLinks.contains("client-link"),
             "TCP Server device update did not restart the server link");
@@ -2639,7 +2639,7 @@ void testRuntimeReconcile() {
          .registerType = "HOLDING_REGISTER",
          .quantity = 1});
     auto pollingUpdate = pollingPrevious;
-    pollingUpdate.devices.front().pollInterval = 10;
+    pollingUpdate.devices.front().readInterval = 10;
     const auto pollingPlan =
         collector::planRuntimeReconcile(pollingPrevious, pollingUpdate);
 
@@ -2751,7 +2751,7 @@ void testTcpClientTargetReconcile() {
     const auto originalSecond = connectedByTarget["target-b"].front();
 
     auto next = previous;
-    next.devices.front().pollInterval = 10;
+    next.devices.front().readInterval = 10;
     const auto plan = collector::planRuntimeReconcile(previous, next);
     tcp.reconcile(next, plan);
     io.restart();

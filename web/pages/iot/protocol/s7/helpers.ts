@@ -17,7 +17,7 @@ export type DeviceTypeFormValues = {
     probeMode: S7.ProbeMode;
     handshakeTimeout: number;
     directProbeTimeout: number;
-    pollInterval: number;
+    readInterval: number;
     storageInterval: number;
     commandFastReadDuration: number;
     commandFastReadInterval: number;
@@ -53,7 +53,7 @@ export const defaultConfig = (): S7.Config => ({
         handshakeTimeout: 5000,
         directProbeTimeout: 5000,
     },
-    pollInterval: 5,
+    readInterval: 5,
     storageInterval: 1,
     commandFastReadDuration: 60,
     commandFastReadInterval: 1,
@@ -203,7 +203,7 @@ export const getDeviceTypeFormValues = (data?: Protocol.Item): DeviceTypeFormVal
         deviceType: data?.name ?? '',
         plcModel,
         ...getConnectionFormValues(plcModel, config?.connection),
-        pollInterval: numberOrDefault(config?.pollInterval, 5),
+        readInterval: numberOrDefault(config?.readInterval, 5),
         storageInterval: numberOrDefault(config?.storageInterval, 1),
         commandFastReadDuration: numberOrDefault(config?.commandFastReadDuration, 60),
         commandFastReadInterval: numberOrDefault(config?.commandFastReadInterval, 1),

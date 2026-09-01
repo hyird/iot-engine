@@ -1027,7 +1027,7 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
   COALESCE(d.remark, ''), d.created_by::text,
   iot_utc_timestamp(d.created_at), iot_utc_timestamp(d.updated_at),
   COALESCE(l.name, ''), COALESCE(l.endpoint->>'mode', ''), COALESCE(l.protocol, ''), p.name, p.protocol,
-  COALESCE(NULLIF(p.config->>'readInterval', ''), NULLIF(p.config->>'pollInterval', '')),
+  NULLIF(p.config->>'readInterval', ''),
   NULLIF(p.config->>'storageInterval', ''),
   CASE p.protocol
       WHEN 'Modbus' THEN jsonb_array_length(COALESCE(p.config->'registers', '[]'::jsonb))

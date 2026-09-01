@@ -1221,7 +1221,7 @@ class Session final : public ProtocolSession,
             return;
         pollDeadlineToken_ = nextDeadlineToken_++;
         const auto interval = std::chrono::seconds(
-            std::clamp<std::int64_t>(device_->pollInterval, 1, 86400));
+            std::clamp<std::int64_t>(device_->readInterval, 1, 86400));
         const auto deadlineAfter =
             delay.value_or(staggeredPollDelay(device_->id, interval));
         actions.push_back({.kind = ProtocolActionKind::ScheduleDeadline,

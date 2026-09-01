@@ -75,6 +75,17 @@ void requireModbusRuntimeFieldValidation(std::string_view source) {
             "protocol service does not validate Modbus register writable");
 }
 
+void requireUnifiedReadIntervalValidation(std::string_view source) {
+    require(source.find("S7 配置的 readInterval 无效") != std::string_view::npos,
+            "protocol service does not validate S7 readInterval");
+    require(source.find("S7 配置不允许 pollInterval，请使用 readInterval") !=
+                std::string_view::npos,
+            "protocol service still accepts S7 pollInterval");
+    require(source.find("Modbus 配置不允许 pollInterval，请使用 readInterval") !=
+                std::string_view::npos,
+            "protocol service still accepts Modbus pollInterval");
+}
+
 void requireQualifiedJsonArrayValidation(std::string_view source) {
     require(source.find("jsonb_array_elements(value->'areas')") ==
                 std::string_view::npos,
@@ -123,6 +134,7 @@ int main() {
         requirePartialModbusUpdateValidation(source);
         requireStrictUpdateFieldTypes(source);
         requireModbusRuntimeFieldValidation(source);
+        requireUnifiedReadIntervalValidation(source);
         requireQualifiedJsonArrayValidation(source);
         requireEdgeSyncDoesNotLeakAsUpdateFailure(source);
         std::cout << "protocol service tests passed\n";

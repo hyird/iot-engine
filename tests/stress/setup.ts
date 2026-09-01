@@ -245,7 +245,7 @@ const sl651Functions = Array.from({ length: 0x20 }, (_, index) => {
 });
 statements.push(
     `INSERT INTO protocol_config(id,protocol,name,enabled,config,created_by) VALUES (${quote(protocols.Modbus)},'Modbus',${quote(`Stress Modbus ${stressRun}`)},TRUE,${json({ readInterval: 2, byteOrder: 'BIG_ENDIAN', packet: { mergeGap: 0, maxQuantity: 125 }, registers: modbusRegisters })},${quote(adminId)})`,
-    `INSERT INTO protocol_config(id,protocol,name,enabled,config,created_by) VALUES (${quote(protocols.S7)},'S7',${quote(`Stress S7 ${stressRun}`)},TRUE,${json({ pollInterval: 2, plcModel: 'S7-1200', connection: { mode: 'RACK_SLOT', connectionType: 'PG', rack: 0, slot: 1 }, areas: s7Areas })},${quote(adminId)})`,
+    `INSERT INTO protocol_config(id,protocol,name,enabled,config,created_by) VALUES (${quote(protocols.S7)},'S7',${quote(`Stress S7 ${stressRun}`)},TRUE,${json({ readInterval: 2, plcModel: 'S7-1200', connection: { mode: 'RACK_SLOT', connectionType: 'PG', rack: 0, slot: 1 }, areas: s7Areas })},${quote(adminId)})`,
     `INSERT INTO protocol_config(id,protocol,name,enabled,config,created_by) VALUES (${quote(protocols.SL651)},'SL651',${quote(`Stress SL651 ${stressRun}`)},TRUE,${json({ responseMode: 'M1', funcs: sl651Functions })},${quote(adminId)})`,
 );
 

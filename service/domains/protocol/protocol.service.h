@@ -355,6 +355,12 @@ SELECT
   CASE WHEN NOT COALESCE(value->'connection' ? 'directProbeTimeout', FALSE) THEN TRUE
        WHEN jsonb_typeof(value->'connection'->'directProbeTimeout') <> 'number' THEN FALSE
        ELSE (value->'connection'->>'directProbeTimeout')::numeric BETWEEN 1000 AND 30000 END,
+  NOT (value ? 'pollInterval'),
+  (NOT (value ? 'readInterval') OR
+   CASE WHEN jsonb_typeof(value->'readInterval') IN ('number', 'string')
+             AND value->>'readInterval' ~ '^[0-9]{1,5}$'
+        THEN (value->>'readInterval')::integer BETWEEN 1 AND 3600
+        ELSE FALSE END),
   value ? 'plcModel', value ? 'connection', value ? 'areas'
 FROM cfg)sql",
                                                     service::common::dbParams(body));
@@ -362,8 +368,12 @@ FROM cfg)sql",
             if (row[0].value().value_or(std::string_view{}) != "t" || row[1].value().value_or(std::string_view{}) != "t" || row[2].value().value_or(std::string_view{}) != "t" ||
                 row[3].value().value_or(std::string_view{}) != "t" || row[4].value().value_or(std::string_view{}) != "t" || row[5].value().value_or(std::string_view{}) != "t" ||
                 (required &&
-                 (row[6].value().value_or(std::string_view{}) != "t" || row[7].value().value_or(std::string_view{}) != "t" || row[8].value().value_or(std::string_view{}) != "t")))
+                 (row[8].value().value_or(std::string_view{}) != "t" || row[9].value().value_or(std::string_view{}) != "t" || row[10].value().value_or(std::string_view{}) != "t")))
                 service::common::fail(16004, "S7 配置无效", 400);
+            if (row[6].value().value_or(std::string_view{}) != "t")
+                service::common::fail(16004, "S7 配置不允许 pollInterval，请使用 readInterval", 400);
+            if (row[7].value().value_or(std::string_view{}) != "t")
+                service::common::fail(16004, "S7 配置的 readInterval 无效", 400);
             const auto areas = co_await c.db().query(R"sql(
 WITH cfg AS (SELECT ($1::jsonb)->'config' AS value),
 areas AS (
@@ -432,14 +442,15 @@ SELECT COALESCE(bool_and(
 	              AND value->'packet'->>'maxQuantity' ~ '^[0-9]{1,5}$'
 	         THEN (value->'packet'->>'maxQuantity')::integer BETWEEN 1 AND 125
 	         ELSE FALSE END,
+	    NOT (value ? 'pollInterval'),
 	    value ? 'byteOrder',
 	    value ? 'registers'
 	FROM cfg)sql",
 	                                                      service::common::dbParams(body));
 	        const auto& config = configRows.front();
-	        if (config[0].value().value_or(std::string_view{}) != "t" || (required && config[6].value().value_or(std::string_view{}) != "t"))
+	        if (config[0].value().value_or(std::string_view{}) != "t" || (required && config[7].value().value_or(std::string_view{}) != "t"))
 	            service::common::fail(16004, "Modbus 配置的 byteOrder 无效", 400);
-	        if (config[1].value().value_or(std::string_view{}) != "t" || (required && config[7].value().value_or(std::string_view{}) != "t"))
+	        if (config[1].value().value_or(std::string_view{}) != "t" || (required && config[8].value().value_or(std::string_view{}) != "t"))
 	            service::common::fail(16004, "Modbus 配置的 registers 必须是数组", 400);
 	        if (config[2].value().value_or(std::string_view{}) != "t")
 	            service::common::fail(16004, "Modbus 配置的 packet 必须是对象", 400);
@@ -449,7 +460,9 @@ SELECT COALESCE(bool_and(
 	            service::common::fail(16004, "Modbus 配置的 packet.mergeGap 无效", 400);
 	        if (config[5].value().value_or(std::string_view{}) != "t")
 	            service::common::fail(16004, "Modbus 配置的 packet.maxQuantity 无效", 400);
-	        if (config[7].value().value_or(std::string_view{}) != "t")
+	        if (config[6].value().value_or(std::string_view{}) != "t")
+	            service::common::fail(16004, "Modbus 配置不允许 pollInterval，请使用 readInterval", 400);
+	        if (config[8].value().value_or(std::string_view{}) != "t")
 	            co_return;
 	
 	        const auto registers = co_await c.db().query(R"sql(

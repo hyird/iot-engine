@@ -9,6 +9,8 @@ export type ProtocolType = 'SL651' | 'Modbus' | 'S7';
 
 /** 设备类型采集与存储策略 */
 export interface DeviceTypeTimingConfig {
+    /** 定时读取/边缘上报间隔（秒），默认 1 */
+    readInterval?: number;
     /** 历史数据存储间隔（秒），默认 1 */
     storageInterval?: number;
     /** 下发后快读窗口（秒），0 表示关闭，默认 60 */
@@ -188,8 +190,6 @@ export interface ModbusPacketConfig {
 export interface ModbusConfig extends DeviceTypeTimingConfig {
     /** 字节序 */
     byteOrder: ModbusByteOrder;
-    /** 读取间隔（秒），默认 1 */
-    readInterval?: number;
     /** 组包配置 */
     packet?: ModbusPacketConfig;
     /** 寄存器列表 */
@@ -262,7 +262,6 @@ export interface S7Config extends DeviceTypeTimingConfig {
     deviceType: string;
     plcModel: S7PlcModel;
     connection: S7Connection;
-    pollInterval?: number;
     areas: S7Area[];
 }
 
