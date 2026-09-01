@@ -81,8 +81,8 @@ int main() {
         require(service::message::webhookCatalogChangesStream(0) !=
                     service::access::stream::sessionChanges(0),
                 "worker-local catalog and globally sharded session changes share a Stream");
-        require(service::message::kRuntimeConfigChangesStream !=
-                    service::message::kWebhookCatalogChangesStream,
+        require(service::message::runtimeConfigChangesStream(0) !=
+                    service::message::webhookCatalogChangesStream(0),
                 "independent config consumers must not XDEL from a shared Stream");
         const auto encodedSession = service::access::session::encode(
             "019fd9f6-4be5-7272-a194-9e571bce848d", "production key", "enabled",

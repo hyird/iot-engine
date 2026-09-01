@@ -15,17 +15,15 @@
 
 namespace service::message {
 
-inline constexpr std::string_view kRuntimeConfigChangesStream{
+inline constexpr std::string_view kRuntimeConfigChangesBase{
     "iot:channel:runtime:config-change"};
-inline constexpr std::string_view kWebhookCatalogChangesStream{
-    "iot:channel:open-access:config-change"};
 
 inline std::string webhookCatalogChangesStream(std::size_t workerIndex) {
     return service::access::stream::catalogChanges(workerIndex);
 }
 
 inline std::string runtimeConfigChangesStream(std::size_t shardIndex) {
-    return std::string(kRuntimeConfigChangesStream) + ":" +
+    return std::string(kRuntimeConfigChangesBase) + ":" +
            std::to_string(shardIndex);
 }
 
@@ -68,6 +66,9 @@ inline ruvia::Task<void> publishConfigEnvelope(
     const bool accessSessionChange = aggregate == "access_key" || aggregate == "device";
     if (!runtimeChange && !webhookChange && !accessSessionChange)
         co_return;
+    if (serviceWorkerCount == 0 ||
+        serviceWorkerCount > service::access::stream::kPartitionCount)
+        throw std::invalid_argument("invalid Service Worker count for config event");
     const std::vector<service::message::StreamField> fields{
         {"message_id", std::string(eventId)},
         {"event_id", std::string(eventId)},
@@ -80,24 +81,25 @@ inline ruvia::Task<void> publishConfigEnvelope(
         {"created_at_ms", std::string(occurredAtMs)},
         {"occurred_at_ms", std::string(occurredAtMs)}};
     auto pipeline = redis.pipeline();
+    const auto partition = service::message::shard::index(aggregateId);
+    const auto targetWorker = partition % serviceWorkerCount;
     if (runtimeChange)
-        service::message::redis::queueAdd(
-            pipeline, runtimeConfigChangesStream(aggregateId), fields, 10000);
+        service::message::redis::queueAddAndWake(
+            pipeline, runtimeConfigChangesStream(partition), fields, targetWorker,
+            WorkerStreamTask::Reconciler, 10000);
     if (webhookChange) {
-        if (serviceWorkerCount == 0 ||
-            serviceWorkerCount > service::access::stream::kPartitionCount)
-            throw std::invalid_argument("invalid Service Worker count for webhook catalog");
         // Every Worker owns an independent in-memory catalog, so each receives one
         // refresh event. Data events themselves remain partitioned, never broadcast.
         for (std::size_t workerIndex = 0; workerIndex < serviceWorkerCount;
              ++workerIndex)
-            service::message::redis::queueAdd(
-                pipeline, webhookCatalogChangesStream(workerIndex), fields, 10000);
+            service::message::redis::queueAddAndWake(
+                pipeline, webhookCatalogChangesStream(workerIndex), fields,
+                workerIndex, WorkerStreamTask::Webhook, 10000);
     }
     if (accessSessionChange)
-        service::message::redis::queueAdd(
-            pipeline, service::access::stream::sessionChanges(aggregateId), fields,
-            10000);
+        service::message::redis::queueAddAndWake(
+            pipeline, service::access::stream::sessionChanges(partition), fields,
+            targetWorker, WorkerStreamTask::Webhook, 10000);
     const auto replies = co_await std::move(pipeline).exec();
     service::message::redis::requirePipelineSuccess("publish config change", replies);
     co_return;

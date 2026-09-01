@@ -23,19 +23,11 @@
 
 namespace service::telemetry::latest {
 
-inline constexpr std::string_view kLegacyOnlineDeadlinesKey =
+inline constexpr std::string_view kOnlineDeadlinesBase =
     "iot:schedule:device:online-deadlines";
-inline constexpr std::string_view kLegacyFreshnessWakeStream =
-    "iot:channel:telemetry:freshness-wake";
-inline constexpr std::size_t kFreshnessWakeCapacity = 128;
 
 inline std::string onlineDeadlinesKey(std::size_t shardIndex) {
-    return std::string(kLegacyOnlineDeadlinesKey) + ":" +
-           std::to_string(shardIndex);
-}
-
-inline std::string freshnessWakeStream(std::size_t shardIndex) {
-    return std::string(kLegacyFreshnessWakeStream) + ":" +
+    return std::string(kOnlineDeadlinesBase) + ":" +
            std::to_string(shardIndex);
 }
 
@@ -147,48 +139,10 @@ ruvia::Task<void> eraseDevice(const Redis& redis, std::string_view deviceCode) {
 template <typename Redis>
 ruvia::Task<void> signalFreshness(const Redis& redis, std::size_t shardIndex,
                                   std::string_view deadline = {}) {
-    (void)co_await service::message::redis::command(
-        redis, {"XADD", freshnessWakeStream(shardIndex), "MAXLEN", "~",
-                std::to_string(kFreshnessWakeCapacity), "*", "deadline_ms",
-                std::string(deadline)});
-}
-
-template <typename Redis>
-ruvia::Task<void> migrateLegacyDeadlines(const Redis& redis) {
-    const auto reply = co_await service::message::redis::command(
-        redis, {"ZRANGE", std::string(kLegacyOnlineDeadlinesKey), "0", "-1",
-                "WITHSCORES"});
-    if (reply.kind() != ruvia::RedisValue::Kind::kArray)
-        service::message::redis::throwValue("read legacy online deadlines", reply);
-    if (reply.array().empty())
-        co_return;
-    if (reply.array().size() % 2 != 0)
-        service::message::redis::throwValue("parse legacy online deadlines", reply);
-    auto pipeline = redis.pipeline();
-    std::set<std::size_t> changedShards;
-    std::vector<std::vector<std::string>> commands;
-    commands.reserve(reply.array().size() / 2);
-    for (std::size_t index = 0; index < reply.array().size(); index += 2) {
-        const auto& member = reply.array()[index];
-        const auto& score = reply.array()[index + 1];
-        if (member.kind() != ruvia::RedisValue::Kind::kString ||
-            score.kind() != ruvia::RedisValue::Kind::kString)
-            service::message::redis::throwValue("parse legacy online deadlines", reply);
-        const auto shardIndex = service::message::shard::index(member.string());
-        changedShards.emplace(shardIndex);
-        commands.push_back({"ZADD", onlineDeadlinesKey(shardIndex),
-                            std::string(score.string()), std::string(member.string())});
-        std::vector<std::string_view> views(commands.back().begin(),
-                                            commands.back().end());
-        pipeline.command(views);
-    }
-    const auto replies = co_await std::move(pipeline).exec();
-    service::message::redis::requirePipelineSuccess(
-        "migrate legacy online deadlines", replies);
-    (void)co_await service::message::redis::command(
-        redis, {"DEL", std::string(kLegacyOnlineDeadlinesKey)});
-    for (const auto shardIndex : changedShards)
-        co_await signalFreshness(redis, shardIndex);
+    (void)deadline;
+    co_await service::message::redis::wakeWorker(
+        redis, service::message::workerForPartition(shardIndex),
+        service::message::WorkerStreamTask::Freshness);
 }
 
 template <typename Redis>
@@ -249,7 +203,7 @@ if observed_at >= current_report then
   redis.call('ZADD', deadlines_key, online_until, ARGV[2])
   if wake then
     redis.call('XADD', KEYS[2],
-               'MAXLEN', '~', '128', '*', 'deadline_ms', tostring(online_until))
+               'MAXLEN', '~', '100000', '*', 'task', 'freshness')
   end
 end
 local count = 0
@@ -304,7 +258,8 @@ return count
         const auto onlineWindow = std::to_string(parsed.onlineWindowMs);
         const auto shardIndex = service::message::shard::index(parsed.deviceCode);
         const auto deadlinesKey = onlineDeadlinesKey(shardIndex);
-        const auto wakeStream = freshnessWakeStream(shardIndex);
+        const auto wakeStream = service::message::workerWakeStream(
+            service::message::workerForPartition(shardIndex));
         const std::array<std::string_view, 13> command{
             "EVALSHA",    scriptSha,         "2",          deadlinesKey,
             wakeStream,    parsed.deviceId,

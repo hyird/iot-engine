@@ -25,11 +25,11 @@
 #include "service/features/edge/protocol.h"
 #include "service/features/edge/projector-stream.h"
 #include "service/features/collector/stream.h"
+#include "service/features/event/stream-multiplexer.h"
 #include "service/features/telemetry/persistence.h"
 
 namespace service::edge {
 
-inline constexpr std::string_view kEdgeIngressStream{projector_stream::kLegacyIngress};
 inline constexpr std::string_view kEdgeIngressGroup{"iot-engine:edge-projector"};
 
 class Projector final {
@@ -71,6 +71,8 @@ class Projector final {
     void stop() noexcept {
         if (!running_.exchange(false))
             return;
+        service::message::workerStreamMultiplexer().signal(
+            service::message::WorkerStreamTask::EdgeProjector);
         for (const auto& stopped : stopped_)
             if (stopped.valid())
                 (void)stopped.wait_for(std::chrono::seconds(3));
@@ -91,10 +93,6 @@ class Projector final {
                  streamIndex < service::message::shard::kCount;
                  streamIndex += workers_.size())
                 streams.push_back(projector_stream::stream(streamIndex));
-            if (index == 0) {
-                streams.emplace_back(metadata::kChangesStream);
-                streams.emplace_back(kEdgeIngressStream);
-            }
             for (const auto& stream : streams)
                 co_await service::message::redis::ensureGroup(redis, stream,
                                                                 kEdgeIngressGroup);
@@ -102,9 +100,7 @@ class Projector final {
             auto catalog = co_await metadata::hydrate(context);
             ready->set_value();
             bool recovering = true;
-            const auto consumer =
-                index == 0 ? std::string("edge-projector")
-                           : "service-" + std::to_string(index);
+            const auto consumer = "service-" + std::to_string(index);
             while (running_.load() && !context.stopToken().stopRequested()) {
                 std::vector<service::message::redis::StreamBatch> batches;
                 bool readFailed = false;
@@ -113,9 +109,9 @@ class Projector final {
                         ? co_await service::message::redis::claimGroupMany(
                               redis, streams, kEdgeIngressGroup, consumer,
                               kBatchSize)
-                        : co_await service::message::redis::readGroupManyBlocking(
-                              redis, streams, kEdgeIngressGroup, consumer,
-                              context.stopToken(), kBatchSize);
+                        : co_await service::message::redis::readGroupMany(
+                              redis, streams, kEdgeIngressGroup, consumer, ">",
+                              kBatchSize);
                 } catch (const std::exception& error) {
                     if (context.stopToken().stopRequested())
                         break;
@@ -130,8 +126,12 @@ class Projector final {
                 }
                 if (recovering && batches.empty())
                     recovering = false;
-                if (batches.empty())
+                if (batches.empty()) {
+                    co_await service::message::workerStreamMultiplexer().wait(
+                        index, service::message::WorkerStreamTask::EdgeProjector,
+                        context.stopToken());
                     continue;
+                }
                 bool projectionFailed = false;
                 try {
                     for (const auto& batch : batches) {
@@ -139,9 +139,7 @@ class Projector final {
                         telemetry.reserve(batch.messages.size());
                         for (const auto& message : batch.messages) {
                             const bool metadataEvent =
-                                batch.stream == metadata::kChangesStream ||
-                                message.get("kind") ==
-                                    projector_stream::kMetadataKind;
+                                message.get("kind") == projector_stream::kMetadataKind;
                             if (metadataEvent) {
                                 const auto nodeId = message.get("node_id");
                                 if (!nodeId.empty()) {
@@ -154,7 +152,6 @@ class Projector final {
                                 continue;
                             }
                             const bool ingressEvent =
-                                batch.stream == kEdgeIngressStream ||
                                 message.get("kind") == projector_stream::kIngressKind;
                             if (ingressEvent)
                                 co_await project(context, catalog, message.get("wire"),
@@ -933,7 +930,7 @@ WHERE id = $3::uuid)sql",
         const bool success = result.state() == pb::COMMAND_STATE_SUCCEEDED;
         const auto completedAtMs = message::effectiveObservedAt(
             result.completed_at_ms(), receivedAtMs);
-        (void)co_await message::redis::publish(
+        (void)co_await message::redis::publishAndWake(
             context.redis(), message::commandResultStream(0),
             {{"message_id", message::nextMessageId()},
              {"causation_id", commandId},
@@ -947,7 +944,8 @@ WHERE id = $3::uuid)sql",
              {"worker_id", "0"},
              {"created_at_ms", std::to_string(message::utcNowMilliseconds())},
              {"completed_at_ms", std::to_string(completedAtMs)}},
-            10000);
+            service::message::workerForPartition(0),
+            service::message::WorkerStreamTask::CommandResult, 10000);
     }
 
     static std::string deviceStatusKey(std::string_view nodeId, std::string_view deviceId) {

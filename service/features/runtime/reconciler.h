@@ -21,6 +21,7 @@
 #include "service/features/alert/metadata.h"
 #include "service/features/event/config.h"
 #include "service/features/event/idempotency.h"
+#include "service/features/event/stream-multiplexer.h"
 #include "service/features/runtime/repository.h"
 #include "service/features/collector/stream.h"
 
@@ -71,6 +72,8 @@ class Reconciler final {
     void stop() noexcept {
         if (!running_.exchange(false))
             return;
+        service::message::workerStreamMultiplexer().signal(
+            service::message::WorkerStreamTask::Reconciler);
         for (const auto& stopped : stopped_)
             if (stopped.valid())
                 (void)stopped.wait_for(std::chrono::seconds(3));
@@ -100,9 +103,6 @@ class Reconciler final {
                  shardIndex += workers_.size())
                 streams.push_back(
                     service::message::runtimeConfigChangesStream(shardIndex));
-            // Worker 0 drains entries produced before config Streams were sharded.
-            if (index == 0)
-                streams.emplace_back(service::message::kRuntimeConfigChangesStream);
             for (const auto& stream : streams)
                 co_await service::message::redis::ensureGroup(redis, stream, kGroup);
             ready->set_value();
@@ -131,16 +131,8 @@ class Reconciler final {
                         batches = co_await service::message::redis::claimGroupMany(
                             redis, streams, kGroup, consumer, kBatchSize);
                     } else {
-                        std::optional<std::chrono::milliseconds> timeout;
-                        if (cleanupDeadline) {
-                            timeout = std::max(
-                                std::chrono::milliseconds(1),
-                                std::chrono::duration_cast<std::chrono::milliseconds>(
-                                    *cleanupDeadline - std::chrono::steady_clock::now()));
-                        }
-                        batches = co_await service::message::redis::readGroupManyBlockingUntil(
-                            redis, streams, kGroup, consumer, context.stopToken(), timeout,
-                            kBatchSize);
+                        batches = co_await service::message::redis::readGroupMany(
+                            redis, streams, kGroup, consumer, ">", kBatchSize);
                     }
                 } catch (const std::exception& error) {
                     if (context.stopToken().stopRequested())
@@ -158,8 +150,19 @@ class Reconciler final {
                     recovering = false;
                     continue;
                 }
-                if (batches.empty())
+                if (batches.empty()) {
+                    std::optional<std::chrono::milliseconds> timeout;
+                    if (cleanupDeadline) {
+                        timeout = std::max(
+                            std::chrono::milliseconds(1),
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                *cleanupDeadline - std::chrono::steady_clock::now()));
+                    }
+                    co_await service::message::workerStreamMultiplexer().wait(
+                        index, service::message::WorkerStreamTask::Reconciler,
+                        context.stopToken(), timeout);
                     continue;
+                }
                 bool failed = false;
                 try {
                     if (!recovering) {

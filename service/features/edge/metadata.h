@@ -23,7 +23,6 @@
 
 namespace service::edge::metadata {
 
-inline constexpr std::string_view kChangesStream{"iot:edge:metadata:changes"};
 inline constexpr std::string_view kStoreNodeScript = R"lua(
 redis.call('DEL', KEYS[1])
 for index = 1, #ARGV, 2 do

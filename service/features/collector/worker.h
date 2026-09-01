@@ -1041,8 +1041,10 @@ class Worker final {
                 service::common::packet_log::write(
                     service::common::packet_log::Level::Debug, "PARSE_SUCCESS",
                     parsedLogContext(action.parsed), {}, action.parsed.source);
-                (void)co_await message::redis::publish(redis_, parsedStream(),
-                                                            message::parsedFields(action.parsed));
+                (void)co_await message::redis::publishAndWake(
+                    redis_, parsedStream(), message::parsedFields(action.parsed),
+                    message::workerForPartition(workerIndex_),
+                    message::WorkerStreamTask::Telemetry);
                 break;
             case ProtocolActionKind::CompleteCommand: {
                 const auto* task = taskForCausation(action.commandId);
@@ -1523,7 +1525,10 @@ return 1
         if (success) {
             (void)co_await message::redis::publishAndAcknowledge(
                 redis_, resultStream, resultFields, 10000, inputStream, commandGroup(),
-                consumer_, inputEntryId);
+                consumer_, inputEntryId,
+                message::redis::StreamWake{
+                    message::workerForPartition(workerIndex_),
+                    message::WorkerStreamTask::CommandResult});
             co_return;
         }
 
@@ -1536,7 +1541,11 @@ return 1
         const std::array publications{
             message::redis::StreamPublication{deadStream, deadFields,
                                                kDeadLetterCapacity},
-            message::redis::StreamPublication{resultStream, resultFields, 10000}};
+            message::redis::StreamPublication{
+                resultStream, resultFields, 10000,
+                message::redis::StreamWake{
+                    message::workerForPartition(workerIndex_),
+                    message::WorkerStreamTask::CommandResult}}};
         (void)co_await message::redis::publishAllAndAcknowledge(
             redis_, publications, inputStream, commandGroup(), consumer_, inputEntryId);
     }

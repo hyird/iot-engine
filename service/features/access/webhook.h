@@ -42,6 +42,7 @@
 #include "service/features/collector/stream.h"
 #include "service/features/event/config.h"
 #include "service/features/event/idempotency.h"
+#include "service/features/event/stream-multiplexer.h"
 #include "service/features/telemetry/latest.h"
 
 namespace service::access {
@@ -376,6 +377,8 @@ public:
     void stop() noexcept {
         if (!running_.exchange(false))
             return;
+        service::message::workerStreamMultiplexer().signal(
+            service::message::WorkerStreamTask::Webhook);
         for (const auto& stopped : stopped_)
             if (stopped.valid())
                 (void)stopped.wait_for(std::chrono::seconds(3));
@@ -385,8 +388,6 @@ public:
 
   private:
     static constexpr std::string_view kGroup = "iot-engine:open-webhook";
-    static constexpr std::string_view kLegacyDeliveryResultStream =
-        stream::kDeliveryResultBase;
     static constexpr std::size_t kBatchSize = 100;
     static constexpr std::size_t kEventConcurrency = 4;
     static constexpr std::size_t kTargetConcurrency = 4;
@@ -433,7 +434,6 @@ public:
     enum class StreamKind {
         Catalog,
         Session,
-        LegacyConfig,
         DeliveryResult,
         Audit,
         Event
@@ -458,16 +458,6 @@ public:
                 streamKinds.emplace(stream::audit(partitionIndex), StreamKind::Audit);
                 streamKinds.emplace(stream::event(partitionIndex), StreamKind::Event);
             }
-            // Worker 0 drains entries written by the old singleton deployment.
-            if (index == 0) {
-                streamKinds.emplace(
-                    std::string(service::message::kWebhookCatalogChangesStream),
-                    StreamKind::LegacyConfig);
-                streamKinds.emplace(std::string(kLegacyDeliveryResultStream),
-                                    StreamKind::DeliveryResult);
-                streamKinds.emplace(std::string(audit::kLegacyStream), StreamKind::Audit);
-                streamKinds.emplace(std::string(event::kLegacyStream), StreamKind::Event);
-            }
             std::vector<std::string> streams;
             streams.reserve(streamKinds.size());
             for (const auto& [streamName, kind] : streamKinds) {
@@ -491,9 +481,8 @@ public:
                     batches = recovering
                         ? co_await message::redis::claimGroupMany(
                               redis, streams, kGroup, consumer, kBatchSize)
-                        : co_await message::redis::readGroupManyBlocking(
-                              redis, streams, kGroup, consumer, context.stopToken(),
-                              kBatchSize);
+                        : co_await message::redis::readGroupMany(
+                              redis, streams, kGroup, consumer, ">", kBatchSize);
                 } catch (const std::exception& error) {
                     if (context.stopToken().stopRequested())
                         break;
@@ -508,16 +497,19 @@ public:
                 }
                 if (recovering && batches.empty())
                     recovering = false;
-                if (batches.empty())
+                if (batches.empty()) {
+                    co_await service::message::workerStreamMultiplexer().wait(
+                        index, service::message::WorkerStreamTask::Webhook,
+                        context.stopToken());
                     continue;
+                }
                 bool failed = false;
                 try {
                     bool refreshSessions = false;
                     std::vector<message::StreamMessage> sessionMessages;
                     for (const auto& batch : batches) {
                         const auto kind = streamKinds.at(batch.stream);
-                        if (kind != StreamKind::Session &&
-                            kind != StreamKind::LegacyConfig)
+                        if (kind != StreamKind::Session)
                             continue;
                         sessionMessages.insert(sessionMessages.end(),
                                                batch.messages.begin(),
@@ -543,8 +535,7 @@ public:
                     std::vector<message::StreamMessage> catalogMessages;
                     for (const auto& batch : batches) {
                         const auto kind = streamKinds.at(batch.stream);
-                        if (kind != StreamKind::Catalog &&
-                            kind != StreamKind::LegacyConfig)
+                        if (kind != StreamKind::Catalog)
                             continue;
                         catalogMessages.insert(catalogMessages.end(), batch.messages.begin(),
                                                batch.messages.end());
@@ -566,8 +557,7 @@ public:
                     for (const auto& batch : batches) {
                         const auto kind = streamKinds.at(batch.stream);
                         if (kind != StreamKind::Catalog &&
-                            kind != StreamKind::Session &&
-                            kind != StreamKind::LegacyConfig)
+                            kind != StreamKind::Session)
                             continue;
                         co_await message::redis::acknowledgeAndDeleteMany(
                             redis, batch.stream, kGroup, batch.messages);
@@ -1081,18 +1071,25 @@ ORDER BY binding.device_id, event_type.value, webhook.id)sql");
         static constexpr std::string_view script = R"lua(
 if redis.call('HEXISTS', KEYS[2], ARGV[1]) ~= 0 then return false end
 local arguments = {'MAXLEN', '~', ARGV[2], '*'}
-for index = 4, #ARGV do arguments[#arguments + 1] = ARGV[index] end
+for index = 6, #ARGV do arguments[#arguments + 1] = ARGV[index] end
 local id = redis.call('XADD', KEYS[1], unpack(arguments))
 redis.call('HSET', KEYS[2], ARGV[1], '1')
 redis.call('EXPIRE', KEYS[2], ARGV[3])
+redis.call('XADD', KEYS[3], 'MAXLEN', '~', ARGV[4], '*', 'task', ARGV[5])
 return id
 )lua";
-        const std::vector<std::string> keyStore{stream::deliveryResult(delivery.deviceId),
-                                                 deliveryProgressKey(delivery)};
+        const auto partition = stream::partition(delivery.deviceId);
+        const std::vector<std::string> keyStore{
+            stream::deliveryResult(partition), deliveryProgressKey(delivery),
+            service::message::workerWakeStream(
+                service::message::workerForPartition(partition))};
         const std::vector<std::string> argumentStore{
             target.id,
             "100000",
             std::to_string(kDeliveryProgressTtlSeconds),
+            std::to_string(service::message::kWorkerWakeCapacity),
+            std::string(service::message::workerStreamTaskName(
+                service::message::WorkerStreamTask::Webhook)),
             "log_id",
             logId,
             "access_key_id",

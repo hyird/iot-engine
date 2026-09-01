@@ -416,6 +416,9 @@ struct RecordingLatestRedis {
     ruvia::Task<ruvia::RedisValue>
     command(std::span<const std::string_view> arguments) const {
         state->directCommands.emplace_back(arguments.begin(), arguments.end());
+        if (!arguments.empty() && arguments.front() == "XADD")
+            co_return ruvia::detail::RedisTypesAccess::stringValue(
+                "1-0", std::pmr::get_default_resource());
         co_return ruvia::detail::RedisTypesAccess::integerValue(
             1, std::pmr::get_default_resource());
     }
@@ -2189,7 +2192,10 @@ void testAtomicStreamFinalizationContract() {
         {"command_id", "command-1"}};
     const std::array publications{
         service::message::redis::StreamPublication{"dead-letter", deadLetterFields, 100},
-        service::message::redis::StreamPublication{"command-result", resultFields, 200}};
+        service::message::redis::StreamPublication{
+            "command-result", resultFields, 200,
+            service::message::redis::StreamWake{
+                0, service::message::WorkerStreamTask::CommandResult}}};
 
     RecordingRedis committed(1);
     require(runTask(service::message::redis::publishAllAndAcknowledge(
@@ -2197,12 +2203,15 @@ void testAtomicStreamFinalizationContract() {
                 "10-0")),
             "pending stream finalization did not report a commit");
     require(committed.keys ==
-                std::vector<std::string>{"dead-letter", "command-result", "command-input"},
+                std::vector<std::string>{"dead-letter", "dead-letter",
+                                         "command-result",
+                                         "iot:service:worker:0:wake",
+                                         "command-input"},
             "atomic stream finalization changed Redis key order");
     require(committed.arguments ==
                 std::vector<std::string>{"collector-group", "10-0", "collector-0", "100",
-                                         "1", "source_entry_id", "10-0", "200", "1",
-                                         "command_id", "command-1"},
+                                         "1", "", "source_entry_id", "10-0", "200", "1",
+                                         "command-result", "command_id", "command-1"},
             "atomic stream finalization encoded invalid arguments");
     const auto pendingCheck = committed.script.find("XPENDING");
     const auto typeCheck = committed.script.find("TYPE");

@@ -157,7 +157,7 @@ redis.call('SET', KEYS[2], offline_count > 0 and '1' or '0')
 redis.call('SET', KEYS[3], '1')
 for partition, _ in pairs(changed) do
   redis.call('XADD', KEYS[6 + shard_count + partition],
-             'MAXLEN', '~', '128', '*', 'source', 'alert-metadata')
+             'MAXLEN', '~', '100000', '*', 'task', 'freshness')
 end
 return offline_count
 )lua";
@@ -171,7 +171,8 @@ return offline_count
         keys.push_back(offlineDeadlinesKey(shardIndex));
     for (std::size_t shardIndex = 0; shardIndex < service::message::shard::kCount;
          ++shardIndex)
-        keys.push_back(service::telemetry::latest::freshnessWakeStream(shardIndex));
+        keys.push_back(service::message::workerWakeStream(
+            service::message::workerForPartition(shardIndex)));
     std::vector<std::string_view> keyViews(keys.begin(), keys.end());
     std::vector<std::string_view> views;
     views.reserve(arguments.size());
@@ -211,7 +212,7 @@ for index = 1, #values, 2 do
   end
 end
 if wake then
-  redis.call('XADD', KEYS[3], 'MAXLEN', '~', '128', '*', 'source', 'alert-telemetry')
+  redis.call('XADD', KEYS[3], 'MAXLEN', '~', '100000', '*', 'task', 'freshness')
 end
 return changed
 )lua";
@@ -221,8 +222,8 @@ return changed
         const auto shardIndex = service::message::shard::index(message.deviceId);
         const auto durationKey = offlineDurationKey(message.deviceId);
         const auto deadlinesKey = offlineDeadlinesKey(shardIndex);
-        const auto wakeStream =
-            service::telemetry::latest::freshnessWakeStream(shardIndex);
+        const auto wakeStream = service::message::workerWakeStream(
+            service::message::workerForPartition(shardIndex));
         const auto observedAt = std::to_string(message.observedAtMs);
         const std::array<std::string_view, 3> keys{durationKey, deadlinesKey, wakeStream};
         const std::array<std::string_view, 1> arguments{observedAt};

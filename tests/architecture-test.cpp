@@ -178,8 +178,8 @@ void testSymmetricServiceWorkers() {
         require(component->find("claimGroupMany") != std::string::npos,
                 "a sharded task cannot recover work after Worker reassignment");
     }
-    require(freshness.find("freshnessWakeStream(shardIndex)") != std::string::npos,
-            "freshness wakeups are not Worker-owned shards");
+    require(freshness.find("WorkerStreamTask::Freshness") != std::string::npos,
+            "freshness task does not wait on its Worker-local wake channel");
     require(reconciler.find("runtimeConfigChangesStream(shardIndex)") !=
                 std::string::npos,
             "runtime reconciliation is not sharded");
@@ -191,6 +191,45 @@ void testSymmetricServiceWorkers() {
             "access-session projection is not sharded with idempotent startup");
     require(edge.find("projector_stream::stream(streamIndex)") != std::string::npos,
             "edge projection is not isolated by accepting Worker");
+}
+
+void testWorkerStreamMultiplexing() {
+    const auto server = source("service/server.cpp");
+    const auto multiplexer =
+        source("service/features/event/stream-multiplexer.h");
+    require(server.find("serviceRedis.blockingPoolSizePerWorker = 1") !=
+                std::string::npos,
+            "Service Workers reserve more than one Redis blocking connection");
+    require(server.find("workerStreamMultiplexer().configure(workers)") !=
+                std::string::npos &&
+                server.find("workerStreamMultiplexer().start(workers)") !=
+                    std::string::npos,
+            "worker-local Stream multiplexer is not in the application lifecycle");
+    require(multiplexer.find("readGroupBlocking") != std::string::npos &&
+                multiplexer.find("workerWakeStream(index)") != std::string::npos &&
+                multiplexer.find("{.capacity = 1}") != std::string::npos,
+            "Stream multiplexer does not use one coalescing blocker per Worker");
+    const auto stream = source("service/features/collector/stream.h");
+    require(stream.find("kAddAndWakeScript") != std::string::npos &&
+                stream.find("atomic XADD/wake") != std::string::npos,
+            "business messages and Worker wakeups are not published atomically");
+
+    for (const auto path : {
+             "service/features/telemetry/persistence.h",
+             "service/features/command/result.h",
+             "service/features/access/webhook.h",
+             "service/features/runtime/reconciler.h",
+             "service/features/edge/projector.h",
+             "service/features/edge/dispatcher.h",
+        }) {
+        const auto consumer = source(path);
+        require(consumer.find("workerStreamMultiplexer().wait") !=
+                        std::string::npos,
+                "Service Stream consumer does not use the worker-local multiplexer");
+        require(consumer.find("readGroupManyBlocking") == std::string::npos &&
+                    consumer.find("readGroupBlocking") == std::string::npos,
+                "Service Stream consumer still owns a Redis blocking connection");
+    }
 }
 
 } // namespace
@@ -205,6 +244,7 @@ int main() {
         testOperationalAlerts();
         testInjectedSharedState();
         testSymmetricServiceWorkers();
+        testWorkerStreamMultiplexing();
         std::cout << "architecture tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

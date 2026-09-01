@@ -38,6 +38,7 @@
 #include "service/domains/access/access.controller.h"
 #include "service/features/access/webhook.h"
 #include "service/features/event/outbox.h"
+#include "service/features/event/stream-multiplexer.h"
 #include "service/features/command/result.h"
 #include "service/features/command/queue.h"
 #include "service/features/runtime/projector.h"
@@ -317,15 +318,16 @@ int main(int argc, char *argv[])
         const auto collectorWorkerCount = resolveWorkerCount(
             app.env().get<unsigned>("COLLECTOR_WORKERS"), businessCpu / 2U,
             "COLLECTOR_WORKERS");
+        service::message::configureWorkerWakeRouting(serviceWorkerCount);
         std::cout << "worker budget: cpu=" << cpu
                   << ", service=" << serviceWorkerCount
                   << ", collector=" << collectorWorkerCount
                   << ", gb28181=" << gb28181WorkerCount << '\n';
         auto serviceRedis = redisConfig(app.env());
         auto collectorRedis = serviceRedis;
-        // Every Service Worker runs the same seven Stream consumers. Each consumer
-        // combines all of its worker-owned shards on one lazy blocking connection.
-        serviceRedis.blockingPoolSizePerWorker = 7;
+        // One worker-local XREAD multiplexes wakeups for all Service Stream tasks.
+        // The tasks retain separate consumer groups and use the ordinary pool to drain.
+        serviceRedis.blockingPoolSizePerWorker = 1;
         auto collector = std::make_shared<service::collector::Runtime>();
         auto telemetry = std::make_shared<service::telemetry::PersistenceRuntime>();
         auto commandResults = std::make_shared<service::command::ResultRuntime>();
@@ -372,6 +374,7 @@ int main(int argc, char *argv[])
                 if (workers.empty())
                     throw std::runtime_error(
                         "service: no worker available for config projection");
+                service::message::workerStreamMultiplexer().configure(workers);
                 applicationRuntime->add({
                     .name = "outbox",
                     .start = [outbox, workers] { outbox->start(workers); },
@@ -453,6 +456,17 @@ int main(int argc, char *argv[])
                         configReconciler->start(workers, collectorWorkerCount);
                     },
                     .stop = [configReconciler] { configReconciler->stop(); }});
+                applicationRuntime->add({
+                    .name = "stream-multiplexer",
+                    .dependencies = {"telemetry", "command-results", "webhooks",
+                                     "edge-dispatcher", "edge-projector",
+                                     "config-reconciler"},
+                    .start = [workers] {
+                        service::message::workerStreamMultiplexer().start(workers);
+                    },
+                    .stop = [] {
+                        service::message::workerStreamMultiplexer().stop();
+                    }});
                 applicationRuntime->start(); })
             .onStop([applicationRuntime] { applicationRuntime->stop(); })
             .onError(&handleError)

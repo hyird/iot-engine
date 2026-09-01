@@ -35,9 +35,10 @@ ruvia::Task<void> notifyNode(const Redis& redis, std::string_view nodeId) {
         std::string_view(session->data(), session->size()));
     if (!owner)
         co_return;
-    (void)co_await service::message::redis::publish(
+    (void)co_await service::message::redis::publishAndWake(
         redis, stream(*owner),
-        {{"kind", std::string(kNodeKind)}, {"node_id", std::string(nodeId)}}, 10000);
+        {{"kind", std::string(kNodeKind)}, {"node_id", std::string(nodeId)}},
+        *owner, service::message::WorkerStreamTask::EdgeDispatcher, 10000);
 }
 
 inline Event eventFrom(const service::message::StreamMessage& message) {

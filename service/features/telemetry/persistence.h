@@ -24,6 +24,7 @@
 #include "service/features/access/event.h"
 #include "service/features/alert/runtime.h"
 #include "service/features/collector/stream.h"
+#include "service/features/event/stream-multiplexer.h"
 #include "service/features/telemetry/latest.h"
 
 namespace service::telemetry {
@@ -139,6 +140,10 @@ class PersistenceRuntime final {
     void stop() noexcept {
         if (!running_.exchange(false))
             return;
+        service::message::workerStreamMultiplexer().signal(
+            service::message::WorkerStreamTask::Telemetry);
+        service::message::workerStreamMultiplexer().signal(
+            service::message::WorkerStreamTask::Freshness);
         for (const auto& stopped : stopped_)
             if (stopped.valid())
                 (void)stopped.wait_for(std::chrono::seconds(3));
@@ -177,10 +182,7 @@ class PersistenceRuntime final {
 
   private:
     static constexpr std::string_view kGroup = "iot-engine:telemetry-persistence";
-    static constexpr std::string_view kFreshnessGroup =
-        "iot-engine:telemetry-freshness";
     static constexpr std::size_t kBatchSize = 256;
-    static constexpr std::size_t kFreshnessWakeBatchSize = 128;
 
     ruvia::Task<void> maintainFreshness(
         ruvia::WebWorkerContext& context, std::size_t index,
@@ -189,40 +191,14 @@ class PersistenceRuntime final {
         try {
             const auto redis = context.redis();
             std::vector<std::size_t> shards;
-            std::vector<std::string> streams;
             for (auto shardIndex = index;
                  shardIndex < service::message::shard::kCount;
-                 shardIndex += workers_.size()) {
+                 shardIndex += workers_.size())
                 shards.push_back(shardIndex);
-                streams.push_back(latest::freshnessWakeStream(shardIndex));
-            }
-            // Worker 0 drains the wake/deadline keys from the former singleton layout.
-            if (index == 0) {
-                co_await latest::migrateLegacyDeadlines(redis);
-                streams.emplace_back(latest::kLegacyFreshnessWakeStream);
-            }
-            for (const auto& stream : streams)
-                co_await service::message::redis::ensureGroup(
-                    redis, stream, kFreshnessGroup);
             ready->set_value();
-            bool recovering = true;
-            const auto consumer = "service-" + std::to_string(index);
             while (running_.load() && !context.stopToken().stopRequested()) {
                 bool failed = false;
                 try {
-                    if (recovering) {
-                        auto pending = co_await service::message::redis::claimGroupMany(
-                            redis, streams, kFreshnessGroup, consumer,
-                            kFreshnessWakeBatchSize);
-                        if (!pending.empty()) {
-                            for (const auto& batch : pending)
-                                co_await service::message::redis::acknowledgeAndDeleteMany(
-                                    redis, batch.stream, kFreshnessGroup,
-                                    batch.messages);
-                            continue;
-                        }
-                        recovering = false;
-                    }
                     std::optional<std::int64_t> deadline;
                     for (const auto shardIndex : shards) {
                         co_await latest::expireStale(redis, shardIndex);
@@ -245,22 +221,14 @@ class PersistenceRuntime final {
                         deadline);
                     if (wait.has_value() && wait->count() == 0)
                         continue;
-                    // A finite BLOCK ends at the nearest deadline; BLOCK 0 is used only when
-                    // there is no deadline. Earlier inserts publish to the wake Stream.
-                    auto signals =
-                        co_await service::message::redis::readGroupManyBlockingUntil(
-                            redis, streams, kFreshnessGroup, consumer,
-                            context.stopToken(), wait,
-                            kFreshnessWakeBatchSize);
-                    for (const auto& batch : signals)
-                        co_await service::message::redis::acknowledgeAndDeleteMany(
-                            redis, batch.stream, kFreshnessGroup, batch.messages);
+                    co_await service::message::workerStreamMultiplexer().wait(
+                        index, service::message::WorkerStreamTask::Freshness,
+                        context.stopToken(), wait);
                 } catch (const std::exception& error) {
                     if (context.stopToken().stopRequested())
                         break;
                     std::cerr << "telemetry freshness maintenance failed: " << error.what()
                               << '\n';
-                    recovering = true;
                     failed = true;
                 }
                 if (failed) {
@@ -308,9 +276,8 @@ class PersistenceRuntime final {
                     batches = recovering
                         ? co_await message::redis::claimGroupMany(
                               redis, streams, kGroup, consumer, kBatchSize)
-                        : co_await message::redis::readGroupManyBlocking(
-                              redis, streams, kGroup, consumer,
-                              context.stopToken(), kBatchSize);
+                        : co_await message::redis::readGroupMany(
+                              redis, streams, kGroup, consumer, ">", kBatchSize);
                 } catch (const std::exception& error) {
                     if (context.stopToken().stopRequested())
                         break;
@@ -326,6 +293,12 @@ class PersistenceRuntime final {
                 }
                 if (recovering && batches.empty()) {
                     recovering = false;
+                    continue;
+                }
+                if (batches.empty()) {
+                    co_await service::message::workerStreamMultiplexer().wait(
+                        index, service::message::WorkerStreamTask::Telemetry,
+                        context.stopToken());
                     continue;
                 }
                 bool failed = false;

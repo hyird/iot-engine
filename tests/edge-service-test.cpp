@@ -86,6 +86,8 @@ int main() {
         const auto gatewaySource = edgeSource("service/features/edge/gateway.h");
         const auto dispatchSource = edgeSource("service/features/edge/dispatch.h");
         const auto dispatcherSource = edgeSource("service/features/edge/dispatcher.h");
+        const auto multiplexerSource =
+            edgeSource("service/features/event/stream-multiplexer.h");
         const auto projectorSource = edgeSource("service/features/edge/projector.h");
         const auto projectorStreamSource =
             edgeSource("service/features/edge/projector-stream.h");
@@ -171,8 +173,10 @@ int main() {
                         "edge gateway does not register sessions with its worker dispatcher");
         requireContains(gatewaySource, "requestFlush(live)",
                         "edge gateway does not drain queued work on session establishment");
-        requireContains(dispatcherSource, "readGroupBlocking(",
-                        "edge dispatcher does not use one blocking Stream consumer per worker");
+        requireMissing(dispatcherSource, "readGroupBlocking(",
+                       "edge dispatcher still owns a dedicated blocking Redis connection");
+        requireContains(multiplexerSource, "readGroupBlocking(",
+                        "Service Worker wake bus has no blocking Stream consumer");
         requireContains(dispatcherSource, "context.workerState<Dispatcher>().run(",
                         "edge dispatcher does not start the same local state on every worker");
         requireContains(dispatchSource, "iot:edge:dispatch:",

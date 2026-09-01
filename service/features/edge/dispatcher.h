@@ -23,6 +23,7 @@
 
 #include "service/features/collector/stream.h"
 #include "service/features/edge/dispatch.h"
+#include "service/features/event/stream-multiplexer.h"
 
 namespace service::edge {
 
@@ -61,6 +62,8 @@ class Dispatcher final {
     void requestStop() noexcept {
         if (stopSource_)
             stopSource_->requestStop();
+        service::message::workerStreamMultiplexer().signal(
+            service::message::WorkerStreamTask::EdgeDispatcher);
     }
 
     ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t workerIndex,
@@ -91,11 +94,20 @@ class Dispatcher final {
                         ? co_await service::message::redis::readGroup(
                               redis, workerStream, dispatch::kGroup, consumer, "0",
                               std::chrono::milliseconds(0), 256)
-                        : co_await service::message::redis::readGroupBlocking(
-                              redis, workerStream, dispatch::kGroup, consumer,
-                              stopToken, 256);
-                    if (recovering && messages.empty())
+                        : co_await service::message::redis::readGroup(
+                              redis, workerStream, dispatch::kGroup, consumer, ">",
+                              std::chrono::milliseconds(0), 256);
+                    if (recovering && messages.empty()) {
                         recovering = false;
+                        continue;
+                    }
+                    if (messages.empty()) {
+                        co_await service::message::workerStreamMultiplexer().wait(
+                            workerIndex,
+                            service::message::WorkerStreamTask::EdgeDispatcher,
+                            stopToken);
+                        continue;
+                    }
                     for (const auto& message : messages) {
                         const auto event = dispatch::eventFrom(message);
                         if (event.kind == dispatch::kNodeKind &&

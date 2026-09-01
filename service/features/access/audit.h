@@ -15,8 +15,6 @@
 
 namespace service::access::audit {
 
-// Retained only so a rolling upgrade can drain entries written by the old singleton.
-inline constexpr std::string_view kLegacyStream{stream::kAuditBase};
 inline constexpr std::size_t kCapacity = 100000;
 
 template <typename Redis>
@@ -40,8 +38,11 @@ ruvia::Task<void> publish(const Redis& redis, std::string_view action,
         {"used_at_ms", std::to_string(service::message::utcNowMilliseconds())},
     };
     const auto routingKey = deviceId.empty() ? accessKeyId : deviceId;
-    (void)co_await service::message::redis::add(
-        redis, stream::audit(routingKey), fields, kCapacity);
+    const auto partition = stream::partition(routingKey);
+    (void)co_await service::message::redis::addAndWake(
+        redis, stream::audit(partition), fields,
+        service::message::workerForPartition(partition),
+        service::message::WorkerStreamTask::Webhook, kCapacity);
 }
 
 } // namespace service::access::audit

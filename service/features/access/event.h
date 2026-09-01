@@ -14,8 +14,6 @@
 
 namespace service::access::event {
 
-// Retained only so a rolling upgrade can drain entries written by the old singleton.
-inline constexpr std::string_view kLegacyStream = stream::kEventBase;
 inline constexpr std::int64_t kPublicationTtlSeconds = 7 * 24 * 60 * 60;
 
 inline std::string publicationKey(std::string_view eventId, std::string_view eventType) {
@@ -26,9 +24,10 @@ inline std::string publicationKey(std::string_view eventId, std::string_view eve
 inline constexpr std::string_view kPublishScript = R"lua(
 if redis.call('EXISTS', KEYS[2]) ~= 0 then return false end
 local arguments = {'MAXLEN', '~', ARGV[1], '*'}
-for index = 3, #ARGV do arguments[#arguments + 1] = ARGV[index] end
+for index = 5, #ARGV do arguments[#arguments + 1] = ARGV[index] end
 local id = redis.call('XADD', KEYS[1], unpack(arguments))
 redis.call('SET', KEYS[2], '1', 'EX', ARGV[2])
+redis.call('XADD', KEYS[3], 'MAXLEN', '~', ARGV[3], '*', 'task', ARGV[4])
 return id
 )lua";
 
@@ -40,11 +39,17 @@ inline void queue(Pipeline& pipeline, std::string_view scriptSha,
                   std::string_view dataJson) {
     const auto publishedKey = publicationKey(eventId, eventType);
     const auto occurredAt = std::to_string(occurredAtMs);
-    const auto outputStream = stream::event(deviceId);
-    const std::array<std::string_view, 2> keys{outputStream, publishedKey};
-    const std::array<std::string_view, 14> arguments{
+    const auto partition = stream::partition(deviceId);
+    const auto outputStream = stream::event(partition);
+    const auto wakeStream = service::message::workerWakeStream(
+        service::message::workerForPartition(partition));
+    const std::array<std::string_view, 3> keys{outputStream, publishedKey,
+                                                wakeStream};
+    const std::array<std::string_view, 16> arguments{
         "100000",
         "604800",
+        "100000",
+        "webhook",
         "event_id",
         eventId,
         "event_type",
@@ -66,11 +71,17 @@ inline ruvia::Task<void> publish(const Redis& redis, std::string_view eventId,
                                  std::string_view eventType, std::string_view deviceId,
                                  std::string_view deviceCode, std::int64_t occurredAtMs,
                                  std::string_view dataJson) {
-    const std::vector<std::string> keyStore{stream::event(deviceId),
-                                             publicationKey(eventId, eventType)};
+    const auto partition = stream::partition(deviceId);
+    const std::vector<std::string> keyStore{
+        stream::event(partition), publicationKey(eventId, eventType),
+        service::message::workerWakeStream(
+            service::message::workerForPartition(partition))};
     const std::vector<std::string> argumentStore{
         "100000",
         std::to_string(kPublicationTtlSeconds),
+        std::to_string(service::message::kWorkerWakeCapacity),
+        std::string(service::message::workerStreamTaskName(
+            service::message::WorkerStreamTask::Webhook)),
         "event_id",
         std::string(eventId),
         "event_type",

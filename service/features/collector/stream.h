@@ -19,6 +19,7 @@
 #include <ruvia/web/redis/RedisTypes.h>
 
 #include "service/common/message/contract.h"
+#include "service/features/event/worker-wake.h"
 
 namespace service::message::redis {
 
@@ -120,6 +121,71 @@ inline ruvia::Task<std::string> add(const Redis& redis, std::string_view stream,
     if (reply.kind() != RedisValue::Kind::kString)
         throwValue("XADD", reply);
     co_return std::string(reply.string());
+}
+
+inline constexpr std::string_view kAddAndWakeScript = R"lua(
+local arguments = {'MAXLEN', '~', ARGV[1], '*'}
+for index = 4, #ARGV do arguments[#arguments + 1] = ARGV[index] end
+local id = redis.call('XADD', KEYS[1], unpack(arguments))
+redis.call('XADD', KEYS[2], 'MAXLEN', '~', ARGV[2], '*', 'task', ARGV[3])
+return id
+)lua";
+
+template <typename Redis>
+inline ruvia::Task<std::string> addAndWake(
+    const Redis& redis, std::string_view stream,
+    const std::vector<StreamField>& fields, std::size_t workerIndex,
+    WorkerStreamTask task, std::size_t maxLength = 100000) {
+    if (fields.empty())
+        throw std::invalid_argument("Redis Stream message must contain fields");
+    const std::vector<std::string> keyStore{
+        std::string(stream), workerWakeStream(workerIndex)};
+    std::vector<std::string> argumentStore{
+        std::to_string(maxLength), std::to_string(kWorkerWakeCapacity),
+        std::string(workerStreamTaskName(task))};
+    argumentStore.reserve(argumentStore.size() + fields.size() * 2);
+    for (const auto& field : fields) {
+        argumentStore.push_back(field.name);
+        argumentStore.push_back(field.value);
+    }
+    const std::vector<std::string_view> keys(keyStore.begin(), keyStore.end());
+    const std::vector<std::string_view> arguments(argumentStore.begin(),
+                                                  argumentStore.end());
+    const auto reply = co_await redis.eval(kAddAndWakeScript, keys, arguments);
+    if (reply.kind() != RedisValue::Kind::kString)
+        throwValue("atomic XADD/wake", reply);
+    co_return std::string(reply.string());
+}
+
+template <typename Pipeline>
+inline void queueAddAndWake(Pipeline& pipeline, std::string_view stream,
+                            const std::vector<StreamField>& fields,
+                            std::size_t workerIndex, WorkerStreamTask task,
+                            std::size_t maxLength = 100000) {
+    if (fields.empty())
+        throw std::invalid_argument("Redis Stream message must contain fields");
+    const std::vector<std::string> keyStore{
+        std::string(stream), workerWakeStream(workerIndex)};
+    std::vector<std::string> argumentStore{
+        std::to_string(maxLength), std::to_string(kWorkerWakeCapacity),
+        std::string(workerStreamTaskName(task))};
+    argumentStore.reserve(argumentStore.size() + fields.size() * 2);
+    for (const auto& field : fields) {
+        argumentStore.push_back(field.name);
+        argumentStore.push_back(field.value);
+    }
+    const std::vector<std::string_view> keys(keyStore.begin(), keyStore.end());
+    const std::vector<std::string_view> arguments(argumentStore.begin(),
+                                                  argumentStore.end());
+    queueEval(pipeline, kAddAndWakeScript, keys, arguments);
+}
+
+template <typename Redis>
+inline ruvia::Task<void> wakeWorker(const Redis& redis, std::size_t workerIndex,
+                                    WorkerStreamTask task) {
+    (void)co_await add(redis, workerWakeStream(workerIndex),
+                       {{"task", std::string(workerStreamTaskName(task))}},
+                       kWorkerWakeCapacity);
 }
 
 template <typename Redis>
@@ -698,10 +764,27 @@ inline ruvia::Task<std::string> publish(const Redis& redis, std::string_view str
     co_return co_await add(redis, stream, fields, maxLength);
 }
 
+template <typename Redis>
+inline ruvia::Task<std::string> publishAndWake(
+    const Redis& redis, std::string_view stream,
+    const std::vector<StreamField>& fields, std::size_t workerIndex,
+    WorkerStreamTask task, std::size_t maxLength = 0) {
+    if (maxLength == 0)
+        maxLength = 10000;
+    co_return co_await addAndWake(redis, stream, fields, workerIndex, task,
+                                  maxLength);
+}
+
+struct StreamWake final {
+    std::size_t workerIndex{};
+    WorkerStreamTask task{};
+};
+
 struct StreamPublication {
     std::string_view stream;
     std::span<const StreamField> fields;
     std::size_t maxLength = 0;
+    std::optional<StreamWake> wake;
 };
 
 template <typename Redis>
@@ -718,25 +801,44 @@ inline ruvia::Task<bool> publishAllAndAcknowledge(
 local input_key = KEYS[#KEYS]
 local pending = redis.call('XPENDING', input_key, ARGV[1], ARGV[2], ARGV[2], 1)
 if #pending == 0 or pending[1][2] ~= ARGV[3] then return 0 end
-for output = 1, #KEYS - 1 do
-  local output_type = redis.call('TYPE', KEYS[output]).ok
+local output_count = (#KEYS - 1) / 2
+local argument = 4
+for output = 1, output_count do
+  local output_key = KEYS[(output - 1) * 2 + 1]
+  local wake_key = KEYS[(output - 1) * 2 + 2]
+  local output_type = redis.call('TYPE', output_key).ok
   if output_type ~= 'none' and output_type ~= 'stream' then
     return redis.error_reply('output key is not a stream')
   end
+  local field_count = tonumber(ARGV[argument + 1])
+  local wake_task = ARGV[argument + 2]
+  if wake_task ~= '' then
+    local wake_type = redis.call('TYPE', wake_key).ok
+    if wake_type ~= 'none' and wake_type ~= 'stream' then
+      return redis.error_reply('wake key is not a stream')
+    end
+  end
+  argument = argument + 3 + field_count * 2
 end
 
-local argument = 4
-for output = 1, #KEYS - 1 do
+argument = 4
+for output = 1, output_count do
   local maximum = ARGV[argument]
   local field_count = tonumber(ARGV[argument + 1])
-  argument = argument + 2
+  local wake_task = ARGV[argument + 2]
+  argument = argument + 3
   local fields = {}
   for field = 1, field_count do
     fields[#fields + 1] = ARGV[argument]
     fields[#fields + 1] = ARGV[argument + 1]
     argument = argument + 2
   end
-  redis.call('XADD', KEYS[output], 'MAXLEN', '~', maximum, '*', unpack(fields))
+  redis.call('XADD', KEYS[(output - 1) * 2 + 1],
+             'MAXLEN', '~', maximum, '*', unpack(fields))
+  if wake_task ~= '' then
+    redis.call('XADD', KEYS[(output - 1) * 2 + 2],
+               'MAXLEN', '~', '100000', '*', 'task', wake_task)
+  end
 end
 
 local acknowledged = redis.call('XACK', input_key, ARGV[1], ARGV[2])
@@ -748,15 +850,19 @@ return 1
 )lua";
 
     std::vector<std::string> ownedKeys;
-    ownedKeys.reserve(publications.size() + 1);
-    for (const auto& publication : publications)
+    ownedKeys.reserve(publications.size() * 2 + 1);
+    for (const auto& publication : publications) {
         ownedKeys.emplace_back(publication.stream);
+        ownedKeys.push_back(publication.wake
+                                ? workerWakeStream(publication.wake->workerIndex)
+                                : std::string(publication.stream));
+    }
     ownedKeys.emplace_back(inputStream);
     const std::vector<std::string_view> keys(ownedKeys.begin(), ownedKeys.end());
 
     std::size_t argumentCount = 3;
     for (const auto& publication : publications)
-        argumentCount += 2 + publication.fields.size() * 2;
+        argumentCount += 3 + publication.fields.size() * 2;
     std::vector<std::string> ownedArguments;
     ownedArguments.reserve(argumentCount);
     ownedArguments.emplace_back(inputGroup);
@@ -766,6 +872,10 @@ return 1
         ownedArguments.push_back(
             std::to_string(publication.maxLength == 0 ? 10000 : publication.maxLength));
         ownedArguments.push_back(std::to_string(publication.fields.size()));
+        ownedArguments.push_back(
+            publication.wake
+                ? std::string(workerStreamTaskName(publication.wake->task))
+                : std::string{});
         for (const auto& field : publication.fields) {
             ownedArguments.push_back(field.name);
             ownedArguments.push_back(field.value);
@@ -783,8 +893,10 @@ inline ruvia::Task<bool> publishAndAcknowledge(
     const Redis& redis, std::string_view outputStream,
     const std::vector<StreamField>& outputFields, std::size_t outputMaxLength,
     std::string_view inputStream, std::string_view inputGroup,
-    std::string_view inputConsumer, std::string_view inputId) {
-    const StreamPublication publication{outputStream, outputFields, outputMaxLength};
+    std::string_view inputConsumer, std::string_view inputId,
+    std::optional<StreamWake> wake = std::nullopt) {
+    const StreamPublication publication{outputStream, outputFields, outputMaxLength,
+                                        wake};
     co_return co_await publishAllAndAcknowledge(
         redis, std::span<const StreamPublication>(&publication, 1), inputStream, inputGroup,
         inputConsumer, inputId);

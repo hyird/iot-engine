@@ -22,6 +22,7 @@
 #include "service/features/access/contract.h"
 #include "service/features/access/event.h"
 #include "service/features/collector/stream.h"
+#include "service/features/event/stream-multiplexer.h"
 
 namespace service::command {
 
@@ -63,6 +64,8 @@ class ResultRuntime final {
     void stop() noexcept {
         if (!running_.exchange(false))
             return;
+        service::message::workerStreamMultiplexer().signal(
+            service::message::WorkerStreamTask::CommandResult);
         for (const auto& stopped : stopped_)
             if (stopped.valid())
                 (void)stopped.wait_for(std::chrono::seconds(3));
@@ -103,9 +106,8 @@ class ResultRuntime final {
                     batches = recovering
                         ? co_await message::redis::claimGroupMany(
                               redis, streams, kGroup, consumer, kBatchSize)
-                        : co_await message::redis::readGroupManyBlocking(
-                              redis, streams, kGroup, consumer,
-                              context.stopToken(), kBatchSize);
+                        : co_await message::redis::readGroupMany(
+                              redis, streams, kGroup, consumer, ">", kBatchSize);
                 } catch (const std::exception& error) {
                     if (context.stopToken().stopRequested())
                         break;
@@ -121,6 +123,12 @@ class ResultRuntime final {
                 }
                 if (recovering && batches.empty()) {
                     recovering = false;
+                    continue;
+                }
+                if (batches.empty()) {
+                    co_await service::message::workerStreamMultiplexer().wait(
+                        index, service::message::WorkerStreamTask::CommandResult,
+                        context.stopToken());
                     continue;
                 }
                 bool failed = false;
@@ -191,6 +199,7 @@ redis.call('XADD', KEYS[2], 'MAXLEN', '~', 100000, '*',
   'event_id', ARGV[4], 'event_type', 'device.command.responded',
   'device_id', ARGV[5], 'device_code', ARGV[6],
   'occurred_at_ms', ARGV[7], 'data_json', ARGV[8])
+redis.call('XADD', KEYS[5], 'MAXLEN', '~', 100000, '*', 'task', 'webhook')
 redis.call('XACK', KEYS[3], ARGV[1], ARGV[2])
 redis.call('XDEL', KEYS[3], ARGV[2])
 return 1
@@ -241,7 +250,12 @@ return 1
             const auto eventStream =
                 service::access::stream::event(message.get("device_id"));
             const auto deadLetter = message::deadLetterStream(partition);
-            const std::string_view keys[]{key, eventStream, source, deadLetter};
+            const auto eventPartition = service::access::stream::partition(
+                message.get("device_id"));
+            const auto eventWake = service::message::workerWakeStream(
+                service::message::workerForPartition(eventPartition));
+            const std::string_view keys[]{key, eventStream, source, deadLetter,
+                                          eventWake};
             std::vector<std::string_view> arguments{
                 kGroup, message.id, ttl, message.get("message_id"),
                 message.get("device_id"), message.get("device_code"), completedAt, data,
