@@ -45,16 +45,6 @@ const buildSections = (items: DeviceCardItem[]): DeviceCardSection[] => {
     return [...sections.values()];
 };
 
-const compactGroupedItemLabel = (groupLabel: string, item: DeviceCardItem): DeviceCardItem => {
-    const groupPrefix = groupLabel.match(/^\d+#/)?.[0];
-    if (!groupPrefix || !item.label.startsWith(`${groupPrefix}闸`)) return item;
-    return {
-        ...item,
-        label: item.label.slice(`${groupPrefix}闸`.length),
-        tooltipLabel: item.label,
-    };
-};
-
 const getAlignedSpan = (item: DeviceCardItem, wide: boolean, columnCount: number) => {
     if (item.span !== undefined) return Math.min(columnCount, Math.max(1, item.span));
 
@@ -180,9 +170,7 @@ const DeviceCard = ({ title, subtitle, items, column = 4, extra }: DeviceCardPro
                                 <span className="h-px flex-1 bg-slate-100" />
                             </div>
                             <DeviceValues
-                                items={section.items.map((item) =>
-                                    compactGroupedItemLabel(section.label, item)
-                                )}
+                                items={section.items}
                                 wide={column >= 8}
                                 compact={section.items.length >= 8}
                             />
