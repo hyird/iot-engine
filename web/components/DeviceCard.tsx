@@ -22,6 +22,8 @@ interface DeviceCardProps {
     items: DeviceCardItem[];
     column?: number;
     extra?: ReactNode;
+    onClick?: () => void;
+    ariaLabel?: string;
 }
 
 const UNGROUPED_GROUP_KEY = '__ungrouped__';
@@ -139,12 +141,20 @@ const DeviceValues = ({
     );
 };
 
-const DeviceCard = ({ title, subtitle, items, column = 4, extra }: DeviceCardProps) => {
+const DeviceCard = ({
+    title,
+    subtitle,
+    items,
+    column = 4,
+    extra,
+    onClick,
+    ariaLabel,
+}: DeviceCardProps) => {
     const sections = useMemo(() => buildSections(items), [items]);
     const hasGroupSections = sections.some((section) => section.key !== UNGROUPED_GROUP_KEY);
 
-    return (
-        <div className="flex h-full flex-col gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 shadow-[0_8px_24px_rgba(15,23,42,0.08)] transition-shadow hover:shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
+    const content = (
+        <>
             <div className="min-w-0 text-[15px] font-semibold leading-5 text-slate-950">
                 {title}
             </div>
@@ -185,8 +195,25 @@ const DeviceCard = ({ title, subtitle, items, column = 4, extra }: DeviceCardPro
                     {extra}
                 </div>
             )}
-        </div>
+        </>
     );
+    const className =
+        'flex h-full w-full flex-col gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-left shadow-[0_8px_24px_rgba(15,23,42,0.08)] transition-all hover:shadow-[0_12px_28px_rgba(15,23,42,0.12)]';
+
+    if (onClick) {
+        return (
+            <button
+                type="button"
+                className={`${className} cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2`}
+                aria-label={ariaLabel}
+                onClick={onClick}
+            >
+                {content}
+            </button>
+        );
+    }
+
+    return <div className={className}>{content}</div>;
 };
 
 export default memo(DeviceCard);

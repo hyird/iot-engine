@@ -56,6 +56,7 @@ jobs:
           ./tests/sse-test.ts
           ./tests/device-card-label-test.tsx
           ./tests/edge-network-view-test.ts
+          ./tests/edge-node-drawer-test.ts
 
   ubuntu_build:
     name: Ubuntu build

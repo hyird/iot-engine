@@ -87,10 +87,6 @@ type NetworkDraftItem = Edge.NetworkConfig & {
 };
 
 const EDGE_CARD_GRID_CLASS = 'grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-4';
-const EDGE_CARD_ACTION_BUTTON_CLASS =
-    '!flex !h-8 !w-8 items-center justify-center !rounded-md text-slate-500 hover:!bg-slate-100 hover:!text-slate-900';
-const EDGE_CARD_DANGER_BUTTON_CLASS =
-    '!flex !h-8 !w-8 items-center justify-center !rounded-md hover:!bg-red-50';
 
 function statusTag(status: string) {
     const map: Record<string, { color: string; text: string }> = {
@@ -777,6 +773,12 @@ export default function EdgeNodePage() {
         setRenamingNode(node);
     };
 
+    const showDetail = (node: Edge.Node) => {
+        setDetailTab('networks');
+        setLogLevel(undefined);
+        setSelectedId(node.id);
+    };
+
     const showFirmware = (node: Edge.Node) => {
         firmwareUpgrade.reset();
         setFirmwareUploadProgress(undefined);
@@ -1112,10 +1114,11 @@ export default function EdgeNodePage() {
                     <div className={EDGE_CARD_GRID_CLASS}>
                         {nodes.map((node) => {
                             const status = node.status;
-                            const capability = node.capability;
                             return (
                                 <div key={node.id} className="flex flex-col">
                                     <DeviceCard
+                                        onClick={() => showDetail(node)}
+                                        ariaLabel={`查看边缘节点 ${node.name || node.hostname || node.imei}`}
                                         title={
                                             <Flex
                                                 justify="space-between"
@@ -1161,170 +1164,11 @@ export default function EdgeNodePage() {
                                             <Flex
                                                 align="center"
                                                 justify="center"
-                                                gap={10}
-                                                wrap
-                                                className="w-full"
+                                                gap={6}
+                                                className="w-full text-slate-500"
                                             >
-                                                <Tooltip title="查看详情">
-                                                    <Button
-                                                        type="text"
-                                                        size="small"
-                                                        className={EDGE_CARD_ACTION_BUTTON_CLASS}
-                                                        icon={<EyeOutlined />}
-                                                        onClick={() => {
-                                                            setDetailTab('networks');
-                                                            setLogLevel(undefined);
-                                                            setSelectedId(node.id);
-                                                        }}
-                                                    />
-                                                </Tooltip>
-                                                {canEdit && (
-                                                    <Tooltip title="修改名称">
-                                                        <Button
-                                                            type="text"
-                                                            size="small"
-                                                            className={
-                                                                EDGE_CARD_ACTION_BUTTON_CLASS
-                                                            }
-                                                            icon={<EditOutlined />}
-                                                            onClick={() => showRename(node)}
-                                                        />
-                                                    </Tooltip>
-                                                )}
-                                                {node.enrollmentStatus === 'approved' &&
-                                                    canConfig &&
-                                                    capability.deviceConfig && (
-                                                        <Tooltip title="同步设备配置">
-                                                            <Button
-                                                                type="text"
-                                                                size="small"
-                                                                className={
-                                                                    EDGE_CARD_ACTION_BUTTON_CLASS
-                                                                }
-                                                                icon={<SyncOutlined />}
-                                                                loading={
-                                                                    deviceConfigSync.isPending &&
-                                                                    deviceConfigSync.variables ===
-                                                                        node.id
-                                                                }
-                                                                onClick={() =>
-                                                                    deviceConfigSync.mutate(node.id)
-                                                                }
-                                                            />
-                                                        </Tooltip>
-                                                    )}
-                                                {node.enrollmentStatus === 'approved' &&
-                                                    canConfig && (
-                                                        <Tooltip
-                                                            title={
-                                                                capability.networkConfig &&
-                                                                capability.networkConfigVersion >= 2
-                                                                    ? '管理网络接口'
-                                                                    : `节点代理 ${node.softwareVersion || '当前版本'} 过旧，请升级至 0.3.0`
-                                                            }
-                                                        >
-                                                            <span>
-                                                                <Button
-                                                                    type="text"
-                                                                    size="small"
-                                                                    disabled={
-                                                                        !capability.networkConfig ||
-                                                                        capability.networkConfigVersion <
-                                                                            2
-                                                                    }
-                                                                    className={
-                                                                        EDGE_CARD_ACTION_BUTTON_CLASS
-                                                                    }
-                                                                    icon={<GlobalOutlined />}
-                                                                    onClick={() =>
-                                                                        void showNetworkManager(
-                                                                            node
-                                                                        )
-                                                                    }
-                                                                />
-                                                            </span>
-                                                        </Tooltip>
-                                                    )}
-                                                {node.enrollmentStatus === 'approved' &&
-                                                    canConfig &&
-                                                    capability.modemControl && (
-                                                        <Tooltip title="移动网络接入设置">
-                                                            <Button
-                                                                type="text"
-                                                                size="small"
-                                                                className={
-                                                                    EDGE_CARD_ACTION_BUTTON_CLASS
-                                                                }
-                                                                icon={<MobileOutlined />}
-                                                                onClick={() => showModem(node)}
-                                                            />
-                                                        </Tooltip>
-                                                    )}
-                                                {node.enrollmentStatus === 'approved' &&
-                                                    canFirmware &&
-                                                    capability.firmwareUpdate && (
-                                                        <Tooltip title="上传固件并刷写">
-                                                            <Button
-                                                                type="text"
-                                                                danger
-                                                                size="small"
-                                                                className={
-                                                                    EDGE_CARD_DANGER_BUTTON_CLASS
-                                                                }
-                                                                icon={<UploadOutlined />}
-                                                                onClick={() => showFirmware(node)}
-                                                            />
-                                                        </Tooltip>
-                                                    )}
-                                                {node.enrollmentStatus === 'approved' &&
-                                                    canTerminal &&
-                                                    capability.terminal && (
-                                                        <Tooltip title="Web 终端">
-                                                            <Button
-                                                                type="text"
-                                                                size="small"
-                                                                className={
-                                                                    EDGE_CARD_ACTION_BUTTON_CLASS
-                                                                }
-                                                                icon={<CodeOutlined />}
-                                                                onClick={() => {
-                                                                    setTerminalNode(node);
-                                                                    setTerminalOpen(true);
-                                                                }}
-                                                            />
-                                                        </Tooltip>
-                                                    )}
-                                                {canEdit && node.enrollmentStatus === 'pending' && (
-                                                    <Tooltip title="批准注册">
-                                                        <Button
-                                                            type="text"
-                                                            size="small"
-                                                            className={
-                                                                EDGE_CARD_ACTION_BUTTON_CLASS
-                                                            }
-                                                            icon={<CheckOutlined />}
-                                                            onClick={() => approveEnrollment(node)}
-                                                        />
-                                                    </Tooltip>
-                                                )}
-                                                {canEdit && node.enrollmentStatus === 'pending' && (
-                                                    <Tooltip title="删除注册申请">
-                                                        <Button
-                                                            type="text"
-                                                            danger
-                                                            size="small"
-                                                            className={
-                                                                EDGE_CARD_DANGER_BUTTON_CLASS
-                                                            }
-                                                            icon={<DeleteOutlined />}
-                                                            loading={
-                                                                edgeDelete.isPending &&
-                                                                edgeDelete.variables === node.id
-                                                            }
-                                                            onClick={() => deleteEnrollment(node)}
-                                                        />
-                                                    </Tooltip>
-                                                )}
+                                                <EyeOutlined />
+                                                <span>查看详情</span>
                                             </Flex>
                                         }
                                     />
@@ -1342,6 +1186,61 @@ export default function EdgeNodePage() {
                     detail
                         ? `${detail.name || detail.hostname || '边缘节点'} · ${detail.imei}`
                         : '边缘节点详情'
+                }
+                extra={
+                    detail ? (
+                        <Space>
+                            {canEdit && (
+                                <Button icon={<EditOutlined />} onClick={() => showRename(detail)}>
+                                    修改名称
+                                </Button>
+                            )}
+                            {detail.enrollmentStatus === 'approved' &&
+                                canTerminal &&
+                                detail.capability.terminal && (
+                                    <Tooltip
+                                        title={detail.status.online ? '打开 Web 终端' : '节点离线'}
+                                    >
+                                        <span>
+                                            <Button
+                                                icon={<CodeOutlined />}
+                                                disabled={!detail.status.online}
+                                                onClick={() => {
+                                                    setTerminalNode(detail);
+                                                    setTerminalOpen(true);
+                                                }}
+                                            >
+                                                Web 终端
+                                            </Button>
+                                        </span>
+                                    </Tooltip>
+                                )}
+                        </Space>
+                    ) : null
+                }
+                footer={
+                    detail?.enrollmentStatus === 'pending' && canEdit ? (
+                        <Flex justify="end" gap={8}>
+                            <Button
+                                danger
+                                icon={<DeleteOutlined />}
+                                loading={edgeDelete.isPending && edgeDelete.variables === detail.id}
+                                onClick={() => deleteEnrollment(detail)}
+                            >
+                                删除注册申请
+                            </Button>
+                            <Button
+                                type="primary"
+                                icon={<CheckOutlined />}
+                                loading={
+                                    enrollment.isPending && enrollment.variables?.id === detail.id
+                                }
+                                onClick={() => approveEnrollment(detail)}
+                            >
+                                批准注册
+                            </Button>
+                        </Flex>
+                    ) : undefined
                 }
                 size="min(960px, 92vw)"
                 loading={detailLoading}
@@ -1374,33 +1273,6 @@ export default function EdgeNodePage() {
                                 {detail.status.outbox.records} 条 /{' '}
                                 {formatBytes(detail.status.outbox.bytes)}
                             </Descriptions.Item>
-                            <Descriptions.Item label="ICCID">
-                                {detail.mobile.iccid || '-'}
-                            </Descriptions.Item>
-                            <Descriptions.Item label="4G 状态">
-                                {mobileState(detail)}
-                            </Descriptions.Item>
-                            <Descriptions.Item label="4G 信号">
-                                {detail.mobile.available
-                                    ? `${detail.mobile.signal.percent}% · ${detail.mobile.signal.rssiDbm} dBm`
-                                    : '-'}
-                            </Descriptions.Item>
-                            <Descriptions.Item label="APN">
-                                {detail.mobile.apn || '-'}
-                            </Descriptions.Item>
-                            <Descriptions.Item label="运营商">
-                                {detail.mobile.operator || '-'}
-                            </Descriptions.Item>
-                            <Descriptions.Item label="设备配置">
-                                {statusTag(detail.status.config.state)}{' '}
-                                {formatConfigVersions(
-                                    detail.status.config.activeVersion,
-                                    detail.status.config.desiredVersion
-                                )}
-                                {detail.status.config.message
-                                    ? ` · ${detail.status.config.message}`
-                                    : ''}
-                            </Descriptions.Item>
                             <Descriptions.Item label="ttyd">
                                 {detail.capability.terminal ? (
                                     <Tag color="success">已检测</Tag>
@@ -1421,14 +1293,58 @@ export default function EdgeNodePage() {
                                     key: 'networks',
                                     label: `逻辑接口 (${detail.networks?.length ?? 0})`,
                                     children: (
-                                        <Table
-                                            rowKey="name"
-                                            size="small"
-                                            pagination={false}
-                                            columns={networkInfoColumns}
-                                            dataSource={detail.networks ?? []}
-                                            scroll={{ x: 'max-content', y: 360 }}
-                                        />
+                                        <>
+                                            <Flex
+                                                justify="space-between"
+                                                align="center"
+                                                gap={12}
+                                                className="mb-3"
+                                            >
+                                                <span className="text-xs text-slate-500">
+                                                    查看逻辑接口及其物理网卡绑定关系。
+                                                </span>
+                                                {detail.enrollmentStatus === 'approved' &&
+                                                    canConfig && (
+                                                        <Tooltip
+                                                            title={
+                                                                detail.capability.networkConfig &&
+                                                                detail.capability
+                                                                    .networkConfigVersion >= 2
+                                                                    ? '集中编辑并原子下发网络配置'
+                                                                    : `节点代理 ${detail.softwareVersion || '当前版本'} 过旧，请升级至 0.3.0`
+                                                            }
+                                                        >
+                                                            <span>
+                                                                <Button
+                                                                    icon={<GlobalOutlined />}
+                                                                    disabled={
+                                                                        !detail.capability
+                                                                            .networkConfig ||
+                                                                        detail.capability
+                                                                            .networkConfigVersion <
+                                                                            2
+                                                                    }
+                                                                    onClick={() =>
+                                                                        void showNetworkManager(
+                                                                            detail
+                                                                        )
+                                                                    }
+                                                                >
+                                                                    管理网络接口
+                                                                </Button>
+                                                            </span>
+                                                        </Tooltip>
+                                                    )}
+                                            </Flex>
+                                            <Table
+                                                rowKey="name"
+                                                size="small"
+                                                pagination={false}
+                                                columns={networkInfoColumns}
+                                                dataSource={detail.networks ?? []}
+                                                scroll={{ x: 'max-content', y: 360 }}
+                                            />
+                                        </>
                                     ),
                                 },
                                 {
@@ -1462,6 +1378,155 @@ export default function EdgeNodePage() {
                                     ),
                                 },
                                 {
+                                    key: 'config',
+                                    label: '设备配置',
+                                    children: (
+                                        <>
+                                            <Flex
+                                                justify="space-between"
+                                                align="center"
+                                                gap={12}
+                                                className="mb-3"
+                                            >
+                                                <span className="text-xs text-slate-500">
+                                                    查看平台目标版本与节点实际应用版本。
+                                                </span>
+                                                {detail.enrollmentStatus === 'approved' &&
+                                                    canConfig &&
+                                                    detail.capability.deviceConfig && (
+                                                        <Button
+                                                            icon={<SyncOutlined />}
+                                                            loading={
+                                                                deviceConfigSync.isPending &&
+                                                                deviceConfigSync.variables ===
+                                                                    detail.id
+                                                            }
+                                                            onClick={() =>
+                                                                deviceConfigSync.mutate(detail.id)
+                                                            }
+                                                        >
+                                                            同步设备配置
+                                                        </Button>
+                                                    )}
+                                            </Flex>
+                                            <Descriptions bordered size="small" column={2}>
+                                                <Descriptions.Item label="状态">
+                                                    {statusTag(detail.status.config.state)}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="配置版本">
+                                                    {formatConfigVersions(
+                                                        detail.status.config.activeVersion,
+                                                        detail.status.config.desiredVersion
+                                                    )}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="节点已应用版本">
+                                                    {validConfigTimestamp(
+                                                        detail.status.config.activeVersion
+                                                    )
+                                                        ? detail.status.config.activeVersion
+                                                        : '-'}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="平台目标版本">
+                                                    {validConfigTimestamp(
+                                                        detail.status.config.desiredVersion
+                                                    )
+                                                        ? detail.status.config.desiredVersion
+                                                        : '-'}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="结果" span={2}>
+                                                    {detail.status.config.message || '-'}
+                                                </Descriptions.Item>
+                                            </Descriptions>
+                                        </>
+                                    ),
+                                },
+                                {
+                                    key: 'mobile',
+                                    label: '移动网络',
+                                    children: (
+                                        <>
+                                            <Flex
+                                                justify="space-between"
+                                                align="center"
+                                                gap={12}
+                                                className="mb-3"
+                                            >
+                                                <span className="text-xs text-slate-500">
+                                                    查看 SIM、信号、运营商与拨号状态。
+                                                </span>
+                                                {detail.enrollmentStatus === 'approved' &&
+                                                    canConfig &&
+                                                    detail.capability.modemControl && (
+                                                        <Space>
+                                                            <Popconfirm
+                                                                title="确认重新拨号？"
+                                                                description="移动网络会短暂中断，节点可能暂时离线。"
+                                                                onConfirm={() =>
+                                                                    modemControl.mutate({
+                                                                        id: detail.id,
+                                                                        data: { action: 'redial' },
+                                                                    })
+                                                                }
+                                                            >
+                                                                <Button
+                                                                    icon={<ReloadOutlined />}
+                                                                    loading={
+                                                                        modemControl.isPending &&
+                                                                        modemControl.variables
+                                                                            ?.id === detail.id
+                                                                    }
+                                                                    disabled={
+                                                                        !detail.mobile.available
+                                                                    }
+                                                                >
+                                                                    重新拨号
+                                                                </Button>
+                                                            </Popconfirm>
+                                                            <Button
+                                                                icon={<MobileOutlined />}
+                                                                onClick={() => showModem(detail)}
+                                                            >
+                                                                修改接入设置
+                                                            </Button>
+                                                        </Space>
+                                                    )}
+                                            </Flex>
+                                            <Descriptions bordered size="small" column={2}>
+                                                <Descriptions.Item label="4G 状态">
+                                                    {mobileState(detail)}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="SIM 状态">
+                                                    {simStateText(detail.mobile.simState)}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="ICCID">
+                                                    {detail.mobile.iccid || '-'}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="运营商">
+                                                    {detail.mobile.operator || '-'}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="信号">
+                                                    {detail.mobile.available
+                                                        ? `${detail.mobile.signal.percent}%${
+                                                              detail.mobile.signal.rssiDbm !== -1
+                                                                  ? ` · ${detail.mobile.signal.rssiDbm} dBm`
+                                                                  : ''
+                                                          }`
+                                                        : '-'}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="APN">
+                                                    {detail.mobile.apn || '-'}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="网络注册">
+                                                    {detail.mobile.registered ? '已注册' : '未注册'}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="IPv4">
+                                                    {detail.mobile.ipv4 || '-'}
+                                                </Descriptions.Item>
+                                            </Descriptions>
+                                        </>
+                                    ),
+                                },
+                                {
                                     key: 'tasks',
                                     label: '任务记录',
                                     children: (
@@ -1473,6 +1538,82 @@ export default function EdgeNodePage() {
                                             dataSource={detail.tasks ?? []}
                                             scroll={{ x: 'max-content', y: 360 }}
                                         />
+                                    ),
+                                },
+                                {
+                                    key: 'firmware',
+                                    label: '固件',
+                                    children: (
+                                        <>
+                                            <Flex
+                                                justify="space-between"
+                                                align="center"
+                                                gap={12}
+                                                className="mb-3"
+                                            >
+                                                <span className="text-xs text-slate-500">
+                                                    查看当前版本、刷写进度与历史升级记录。
+                                                </span>
+                                                {detail.enrollmentStatus === 'approved' &&
+                                                    canFirmware &&
+                                                    detail.capability.firmwareUpdate && (
+                                                        <Button
+                                                            danger
+                                                            icon={<UploadOutlined />}
+                                                            onClick={() => showFirmware(detail)}
+                                                        >
+                                                            上传固件并刷写
+                                                        </Button>
+                                                    )}
+                                            </Flex>
+                                            <Descriptions
+                                                bordered
+                                                size="small"
+                                                column={2}
+                                                className="mb-3"
+                                            >
+                                                <Descriptions.Item label="当前版本">
+                                                    {detail.softwareVersion || '-'}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="升级状态">
+                                                    {detail.firmware.state
+                                                        ? statusTag(detail.firmware.state)
+                                                        : '-'}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="当前进度" span={2}>
+                                                    {detail.firmware.state === 'accepted' ||
+                                                    detail.firmware.state === 'running' ? (
+                                                        <Progress
+                                                            percent={
+                                                                detail.firmware.progressPercent
+                                                            }
+                                                            size="small"
+                                                            status="active"
+                                                            format={(percent) =>
+                                                                `${percent ?? 0}% · ${formatBytes(
+                                                                    detail.firmware.downloadedBytes
+                                                                )} / ${formatBytes(
+                                                                    detail.firmware.totalBytes
+                                                                )}`
+                                                            }
+                                                        />
+                                                    ) : (
+                                                        detail.firmware.message || '-'
+                                                    )}
+                                                </Descriptions.Item>
+                                            </Descriptions>
+                                            <Table
+                                                rowKey="id"
+                                                size="small"
+                                                pagination={false}
+                                                columns={taskColumns}
+                                                dataSource={(detail.tasks ?? []).filter(
+                                                    (item) => item.taskType === 'firmware'
+                                                )}
+                                                locale={{ emptyText: '暂无固件升级记录' }}
+                                                scroll={{ x: 'max-content', y: 300 }}
+                                            />
+                                        </>
                                     ),
                                 },
                                 {
