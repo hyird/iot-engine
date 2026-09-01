@@ -101,6 +101,9 @@ void testBuildItemSqlAvoidsJsonCasts() {
     require(kBuildItemsSql.find("(p.config->>'readInterval')::numeric") ==
                 std::string_view::npos,
             "edge config buildItems directly casts readInterval");
+    require(kBuildItemsSql.find("(p.config->>'pollInterval')::numeric") ==
+                std::string_view::npos,
+            "edge config buildItems directly casts pollInterval");
     require(kBuildItemsSql.find("(d.protocol_params->>'online_timeout')::integer") ==
                 std::string_view::npos,
             "edge config buildItems directly casts online_timeout");
@@ -129,9 +132,14 @@ void testBuildItemSqlAvoidsJsonCasts() {
     require(kAppendSl651ElementsSql.find("(element->>'length')::integer") ==
                 std::string_view::npos,
             "edge config SL651 query directly casts length");
-    require(kBuildItemsSql.find("COALESCE(NULLIF(p.config->>'readInterval', ''), '1')") !=
+    require(kBuildItemsSql.find("CASE WHEN p.protocol = 'S7'") != std::string_view::npos,
+            "edge config buildItems does not select the report interval by protocol");
+    require(kBuildItemsSql.find("THEN COALESCE(NULLIF(p.config->>'pollInterval', ''),") !=
                 std::string_view::npos,
-            "edge config buildItems does not leave readInterval for strict C++ parsing");
+            "edge config buildItems does not use the S7 pollInterval for reporting");
+    require(kBuildItemsSql.find("ELSE COALESCE(NULLIF(p.config->>'readInterval', ''),") !=
+                std::string_view::npos,
+            "edge config buildItems does not use the Modbus readInterval for reporting");
     require(kAppendModbusSql.find("COALESCE(NULLIF(item->>'scale', ''), '1')") !=
                 std::string_view::npos,
             "edge config Modbus query does not leave scale for strict C++ parsing");

@@ -143,7 +143,12 @@ WHERE id = $2::uuid
 inline constexpr std::string_view kBuildItemsSql = R"sql(
 SELECT d.id::text, d.name, d.protocol_params->>'device_code', p.protocol,
        COALESCE(NULLIF(d.protocol_params->>'timezone', ''), '+08:00'),
-       COALESCE(NULLIF(p.config->>'readInterval', ''), '1'),
+       CASE WHEN p.protocol = 'S7'
+            THEN COALESCE(NULLIF(p.config->>'pollInterval', ''),
+                          NULLIF(p.config->>'readInterval', ''), '1')
+            ELSE COALESCE(NULLIF(p.config->>'readInterval', ''),
+                          NULLIF(p.config->>'pollInterval', ''), '1')
+       END,
        COALESCE(NULLIF(d.protocol_params->>'online_timeout', ''), '300'),
        COALESCE(NULLIF(d.protocol_params->>'slave_id', ''), '1'),
        COALESCE(d.protocol_params->>'modbus_mode', 'TCP'),
@@ -544,9 +549,9 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
             deviceValue->set_name(row[1].value().value_or(std::string_view{}));
             deviceValue->set_protocol(protocol);
             deviceValue->set_timezone(row[4].value().value_or(std::string_view{}));
-            // Southbound acquisition is fixed at one second. readInterval controls
-            // edge-to-platform reporting; storageInterval remains a platform-only
-            // persistence policy carried by telemetry metadata.
+            // Southbound acquisition is fixed at one second. The protocol's configured
+            // read interval controls edge-to-platform reporting; storageInterval remains
+            // a platform-only persistence policy carried by telemetry metadata.
             deviceValue->set_io_interval_ms(1000);
             deviceValue->set_report_interval_sec(positiveCeil(row[5].value().value_or(std::string_view{})));
             deviceValue->set_online_timeout_sec(
