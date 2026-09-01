@@ -26,7 +26,7 @@ class SchemaMigration final {
     std::string sql_;
 };
 
-inline const std::array<SchemaMigration, 28> kSchemaMigrations{{
+inline const std::array<SchemaMigration, 29> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
@@ -1333,6 +1333,22 @@ ALTER TABLE protocol_config
     ADD CONSTRAINT ck_protocol_config_storage_policy
     CHECK (NOT (config ? 'storageInterval')
            AND COALESCE(config->>'storagePolicy' IN ('report', 'change'), FALSE));
+END
+$schema$;
+)sql"},
+    {"0028_remove_edge_enrollment_rejection", R"sql(
+DO $schema$
+BEGIN
+UPDATE edge_node
+SET enrollment_status = 'pending', approved_by = NULL, approved_at = NULL,
+    updated_at = NOW()
+WHERE enrollment_status = 'rejected';
+
+ALTER TABLE edge_node
+    DROP CONSTRAINT IF EXISTS edge_node_enrollment_status_check;
+ALTER TABLE edge_node
+    ADD CONSTRAINT edge_node_enrollment_status_check
+    CHECK (enrollment_status IN ('pending', 'approved'));
 END
 $schema$;
 )sql"},

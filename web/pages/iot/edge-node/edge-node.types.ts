@@ -1,5 +1,5 @@
 export namespace Edge {
-    export type EnrollmentStatus = 'pending' | 'approved' | 'rejected';
+    export type EnrollmentStatus = 'pending' | 'approved';
     export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
     export interface Query {

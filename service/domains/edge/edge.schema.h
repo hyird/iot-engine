@@ -71,7 +71,7 @@ class EdgeListValidator final : public ruvia::Middleware<EdgeListValidator> {
         EdgeListQuery, RUVIA_RULE(page, RUVIA_MIN(1, "page 必须大于 0")),
         RUVIA_RULE_NAME("pageSize", pageSize, RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"),
                         RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")),
-        RUVIA_RULE(status, RUVIA_ONE_OF("注册状态无效", "pending", "approved", "rejected")));
+        RUVIA_RULE(status, RUVIA_ONE_OF("注册状态无效", "pending", "approved")));
 };
 
 class EdgeIdValidator final : public ruvia::Middleware<EdgeIdValidator> {
@@ -86,7 +86,7 @@ class EnrollmentValidator final : public ruvia::Middleware<EnrollmentValidator> 
     RUVIA_VALIDATE_JSON(
         EnrollmentBody,
         RUVIA_RULE(status, RUVIA_REQUIRED("注册状态不能为空"),
-                   RUVIA_ONE_OF("注册状态无效", "approved", "rejected")),
+                   RUVIA_ONE_OF("注册状态无效", "approved")),
         RUVIA_RULE(name, RUVIA_MAX(100, "节点名称不能超过 100 个字符")));
 };
 

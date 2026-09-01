@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { pageParamsSchema } from '@/utils/types';
 
-const enrollmentStatusSchema = z.enum(['pending', 'approved', 'rejected']);
+const enrollmentStatusSchema = z.enum(['pending', 'approved']);
 
 function parseIpv4(value: string) {
     const parts = value.split('.');

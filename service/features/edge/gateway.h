@@ -124,11 +124,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         auto session = makeSession(
             nodeId, input.protocol_version(), input.platform_id(), workerIndex);
         if (status != "approved") {
-            co_await sendEnrollment(socket, session, status);
-            if (status == "rejected") {
-                co_await socket.close(ruvia::WebSocketCloseOptions{.code = 1008, .reason = status});
-                co_return;
-            }
+            co_await sendEnrollment(socket, session);
 
             session.inboundSequence = input.sequence();
             while (auto message = co_await socket.read()) {
@@ -160,12 +156,6 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
 
                 if (status == "approved")
                     break;
-                if (status == "rejected") {
-                    co_await sendEnrollment(socket, session, status);
-                    co_await socket.close(
-                        ruvia::WebSocketCloseOptions{.code = 1008, .reason = status});
-                    co_return;
-                }
 
                 auto heartbeat = makeEnvelope(session);
                 heartbeat.mutable_heartbeat_ack()->set_platform_time_ms(protocol::nowMs());
@@ -444,14 +434,11 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         return result;
     }
 
-    static ruvia::Task<void> sendEnrollment(ruvia::WebSocket& socket, Session& session,
-                                            std::string_view status) {
+    static ruvia::Task<void> sendEnrollment(ruvia::WebSocket& socket, Session& session) {
         auto reply = makeEnvelope(session);
-        auto* enrollment = status == "rejected" ? reply.mutable_enrollment_rejected()
-                                                 : reply.mutable_enrollment_pending();
-        enrollment->set_code(status);
-        enrollment->set_message(status == "rejected" ? "registration rejected"
-                                                       : "registration pending approval");
+        auto* enrollment = reply.mutable_enrollment_pending();
+        enrollment->set_code("pending");
+        enrollment->set_message("registration pending approval");
         co_await send(socket, reply);
     }
 

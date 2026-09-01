@@ -30,8 +30,10 @@ export const getLogs = (id: string, query?: Edge.LogsQuery) =>
     );
 export const setLogLevel = (id: string, data: Edge.LogLevelDto) =>
     request.put<void>(`${BASE}/${edgeIdSchema.parse(id)}/logs/level`, logLevelSchema.parse(data));
-export const setEnrollment = (id: string, status: 'approved' | 'rejected', name?: string) =>
+export const setEnrollment = (id: string, status: 'approved', name?: string) =>
     request.put<void>(`${BASE}/${edgeIdSchema.parse(id)}/enrollment`, { status, name });
+export const deleteEnrollment = (id: string) =>
+    request.delete<void>(`${BASE}/${edgeIdSchema.parse(id)}`);
 export const renameEdge = (id: string, data: Edge.NameDto) =>
     request.put<void>(`${BASE}/${edgeIdSchema.parse(id)}/name`, nodeNameSchema.parse(data));
 export const configureNetwork = (id: string, data: Edge.NetworkDto) =>

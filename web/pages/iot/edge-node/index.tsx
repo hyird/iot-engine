@@ -1,10 +1,9 @@
 import {
     CheckOutlined,
-    CloseOutlined,
     CodeOutlined,
+    DeleteOutlined,
     EditOutlined,
     EyeOutlined,
-    FileTextOutlined,
     GlobalOutlined,
     MobileOutlined,
     PlusOutlined,
@@ -57,6 +56,7 @@ import { usePermissions } from '@/hooks/usePermission';
 import { formatDateTime } from '@/utils/dateTime';
 import { validateForm } from '@/utils/validation';
 import { getEdgeDetail, getTerminalTicket } from './edge-node.client';
+import { normalizeReportedNetwork, physicalNetworkInterfaces } from './edge-node.network';
 import {
     firmwareUpgradeSchema,
     modemControlSchema,
@@ -66,6 +66,7 @@ import {
 } from './edge-node.schema';
 import {
     useDeviceConfigSyncMutation,
+    useEdgeDeleteMutation,
     useEdgeDetail,
     useEdgeList,
     useEdgeLogs,
@@ -117,15 +118,19 @@ function logLevelTag(level: string) {
     return <Tag color={map[level] ?? 'default'}>{level || '-'}</Tag>;
 }
 
-function networkDraftFromReported(item: Edge.Network): NetworkDraftItem {
+function networkDraftFromReported(
+    item: Edge.Network,
+    interfaces: Edge.NetworkInterface[]
+): NetworkDraftItem {
+    const binding = normalizeReportedNetwork(item, interfaces);
     return {
         operation: 'upsert',
         name: item.name,
         sourceName: item.name,
         mode: item.mode === 'static' ? 'static' : 'dhcp',
-        device: item.bridge ? '' : item.device,
-        bridge: item.bridge,
-        bridgePorts: item.bridgePorts,
+        device: binding.device,
+        bridge: binding.bridge,
+        bridgePorts: binding.bridgePorts,
         ip: item.mode === 'static' ? item.ipv4 : '',
         prefixLength: item.mode === 'static' ? item.prefixLength : 0,
         gateway: item.mode === 'static' ? item.gateway : '',
@@ -582,6 +587,7 @@ export default function EdgeNodePage() {
     const [keyword, setKeyword] = useState('');
     const [status, setStatus] = useState<Edge.EnrollmentStatus>();
     const [selectedId, setSelectedId] = useState<string>();
+    const [detailTab, setDetailTab] = useState('networks');
     const [renamingNode, setRenamingNode] = useState<Edge.Node>();
     const [networkNode, setNetworkNode] = useState<Edge.Node>();
     const [networkDraft, setNetworkDraft] = useState<NetworkDraftItem[]>([]);
@@ -590,7 +596,6 @@ export default function EdgeNodePage() {
     const [firmwareNode, setFirmwareNode] = useState<Edge.Node>();
     const [modemNode, setModemNode] = useState<Edge.Node>();
     const [terminalNode, setTerminalNode] = useState<Edge.Node>();
-    const [logNode, setLogNode] = useState<Edge.Node>();
     const [logLevel, setLogLevel] = useState<Edge.LogLevel>();
     const [nodeLogLevel, setNodeLogLevel] = useState<Edge.LogLevel>('info');
     const [networkOpen, setNetworkOpen] = useState(false);
@@ -617,13 +622,30 @@ export default function EdgeNodePage() {
     const { data, isLoading } = useEdgeList(query, canQuery);
     const nodes: Edge.Node[] = data?.list ?? [];
     const { data: detail, isLoading: detailLoading } = useEdgeDetail(selectedId);
-    const logsQuery = { limit: 48, level: logLevel };
     const {
-        data: logs,
-        isFetching: logsLoading,
-        refetch: refreshLogs,
-    } = useEdgeLogs(logNode?.id, logsQuery, Boolean(logNode));
+        data: eventLogs,
+        isFetching: eventLogsLoading,
+        refetch: refreshEventLogs,
+    } = useEdgeLogs(
+        selectedId,
+        { limit: 48, level: logLevel },
+        Boolean(
+            selectedId && detailTab === 'events' && detail?.status.online && detail.capability.logs
+        )
+    );
+    const {
+        data: systemLogs,
+        isFetching: systemLogsLoading,
+        refetch: refreshSystemLogs,
+    } = useEdgeLogs(
+        selectedId,
+        { limit: 48, source: 'system' },
+        Boolean(
+            selectedId && detailTab === 'system' && detail?.status.online && detail.capability.logs
+        )
+    );
     const enrollment = useEnrollmentMutation();
+    const edgeDelete = useEdgeDeleteMutation();
     const nodeName = useNodeNameMutation();
     const network = useNetworkMutation();
     const deviceConfigSync = useDeviceConfigSyncMutation();
@@ -637,6 +659,10 @@ export default function EdgeNodePage() {
         if (!exists) setSelectedId(undefined);
     }, [data, selectedId]);
 
+    useEffect(() => {
+        if (detail) setNodeLogLevel(detail.status.log?.level ?? 'info');
+    }, [detail]);
+
     if (!canQuery) {
         return (
             <PageContainer>
@@ -645,27 +671,39 @@ export default function EdgeNodePage() {
         );
     }
 
-    const updateEnrollment = (node: Edge.Node, next: 'approved' | 'rejected') => {
+    const approveEnrollment = (node: Edge.Node) => {
         modal.confirm({
-            title:
-                next === 'approved' ? `批准 IMEI ${node.imei} 注册？` : `拒绝 IMEI ${node.imei}？`,
-            content:
-                next === 'approved'
-                    ? '批准后节点下次连接即可进入在线状态。'
-                    : '拒绝后节点将无法建立管理会话。',
-            okButtonProps: { danger: next === 'rejected' },
+            title: `批准 IMEI ${node.imei} 注册？`,
+            content: '批准后节点下次连接即可进入在线状态。',
             onOk: () =>
                 enrollment.mutateAsync({
                     id: node.id,
-                    status: next,
+                    status: 'approved',
                     name: node.name || node.hostname,
+                }),
+        });
+    };
+
+    const deleteEnrollment = (node: Edge.Node) => {
+        modal.confirm({
+            title: `删除 IMEI ${node.imei} 的注册申请？`,
+            content: '删除后当前连接会断开；节点再次连接时会重新进入待处理状态。',
+            okButtonProps: { danger: true },
+            okText: '删除',
+            onOk: () =>
+                edgeDelete.mutateAsync(node.id).then(() => {
+                    if (selectedId === node.id) setSelectedId(undefined);
                 }),
         });
     };
 
     const showNetworkManager = async (node: Edge.Node) => {
         const current = node.networks && node.interfaces ? node : await getEdgeDetail(node.id);
-        setNetworkDraft((current.networks ?? []).map(networkDraftFromReported));
+        setNetworkDraft(
+            (current.networks ?? []).map((item) =>
+                networkDraftFromReported(item, current.interfaces ?? [])
+            )
+        );
         setNetworkRollbackTimeoutSec(60);
         setEditingNetwork(undefined);
         setNetworkOpen(false);
@@ -674,17 +712,7 @@ export default function EdgeNodePage() {
 
     const showNetworkEditor = (item?: NetworkDraftItem) => {
         const interfaces = networkNode?.interfaces ?? [];
-        const subinterfaceParents = new Set<string>();
-        for (const candidate of interfaces) {
-            let parent = candidate.name;
-            while (parent.includes('.')) {
-                parent = parent.slice(0, parent.lastIndexOf('.'));
-                if (parent) subinterfaceParents.add(parent);
-            }
-        }
-        const firstDevice = interfaces.find(
-            (candidate) => !candidate.bridge && !subinterfaceParents.has(candidate.name)
-        )?.name;
+        const firstDevice = physicalNetworkInterfaces(interfaces)[0]?.name;
         networkForm.setFieldsValue(
             item
                 ? {
@@ -892,7 +920,10 @@ export default function EdgeNodePage() {
                                 setNetworkDraft((current) =>
                                     current.map((candidate) =>
                                         (candidate.sourceName ?? candidate.name) === sourceName
-                                            ? networkDraftFromReported(original)
+                                            ? networkDraftFromReported(
+                                                  original,
+                                                  networkNode?.interfaces ?? []
+                                              )
                                             : candidate
                                     )
                                 );
@@ -954,22 +985,11 @@ export default function EdgeNodePage() {
             .flatMap((item) => (item.bridge ? item.bridgePorts : item.device ? [item.device] : []))
     );
     const networkInterfaces = networkNode?.interfaces ?? [];
-    const subinterfaceParents = new Set<string>();
-    for (const item of networkInterfaces) {
-        let parent = item.name;
-        while (parent.includes('.')) {
-            parent = parent.slice(0, parent.lastIndexOf('.'));
-            if (parent) subinterfaceParents.add(parent);
-        }
-    }
-    const networkDeviceOptions = networkInterfaces
-        .filter((item) => !item.bridge)
-        .filter((item) => !subinterfaceParents.has(item.name))
-        .map((item) => ({
-            value: item.name,
-            label: item.displayName ? `${item.displayName} (${item.name})` : item.name,
-            disabled: assignedNetworkDevices.has(item.name),
-        }));
+    const networkDeviceOptions = physicalNetworkInterfaces(networkInterfaces).map((item) => ({
+        value: item.name,
+        label: item.displayName ? `${item.displayName} (${item.name})` : item.name,
+        disabled: assignedNetworkDevices.has(item.name),
+    }));
     const serialColumns: ColumnsType<Edge.SerialPort> = [
         { title: '串口', dataIndex: 'path' },
         { title: '名称', dataIndex: 'displayName' },
@@ -1058,7 +1078,6 @@ export default function EdgeNodePage() {
                             options={[
                                 { value: 'pending', label: '待处理' },
                                 { value: 'approved', label: '已批准' },
-                                { value: 'rejected', label: '已拒绝' },
                             ]}
                         />
                     </Space>
@@ -1095,152 +1114,201 @@ export default function EdgeNodePage() {
                             const status = node.status;
                             const capability = node.capability;
                             return (
-                            <div key={node.id} className="flex flex-col">
-                                <DeviceCard
-                                    title={
-                                        <Flex
-                                            justify="space-between"
-                                            align="start"
-                                            gap={10}
-                                            className="w-full min-w-0"
-                                        >
-                                            <span className="min-w-0 flex-1 whitespace-normal break-words pr-1 text-left leading-5">
-                                                {node.name || node.hostname || '未命名节点'}
-                                                <span className="ml-2 whitespace-nowrap text-xs font-normal text-slate-400">
-                                                    IMEI：{node.imei}
-                                                </span>
-                                            </span>
-                                            <Tag
-                                                color={status.online ? 'success' : 'default'}
-                                                className="!mr-0 shrink-0 !rounded-md !px-2"
+                                <div key={node.id} className="flex flex-col">
+                                    <DeviceCard
+                                        title={
+                                            <Flex
+                                                justify="space-between"
+                                                align="start"
+                                                gap={10}
+                                                className="w-full min-w-0"
                                             >
-                                                {status.online ? '在线' : '离线'}
-                                            </Tag>
-                                        </Flex>
-                                    }
-                                    subtitle={
-                                        <div className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                                            <span className="flex min-w-0 shrink-0 items-center">
-                                                <Tag color="blue" className="!mr-0 !rounded-md">
-                                                    {node.model || '未知型号'}
+                                                <span className="min-w-0 flex-1 whitespace-normal break-words pr-1 text-left leading-5">
+                                                    {node.name || node.hostname || '未命名节点'}
+                                                    <span className="ml-2 whitespace-nowrap text-xs font-normal text-slate-400">
+                                                        IMEI：{node.imei}
+                                                    </span>
+                                                </span>
+                                                <Tag
+                                                    color={status.online ? 'success' : 'default'}
+                                                    className="!mr-0 shrink-0 !rounded-md !px-2"
+                                                >
+                                                    {status.online ? '在线' : '离线'}
                                                 </Tag>
+                                            </Flex>
+                                        }
+                                        subtitle={
+                                            <div className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                                                <span className="flex min-w-0 shrink-0 items-center">
+                                                    <Tag color="blue" className="!mr-0 !rounded-md">
+                                                        {node.model || '未知型号'}
+                                                    </Tag>
                                                     <Tag
                                                         color="purple"
                                                         className="!mr-0 !rounded-md"
                                                     >
-                                                    {node.softwareVersion || '未知版本'}
-                                                </Tag>
-                                            </span>
-                                            <span className="min-w-0 truncate text-xs text-slate-400">
-                                                上报：{formatDateTime(status.lastSeenAt)}
-                                            </span>
-                                        </div>
-                                    }
-                                    items={buildNodeCardItems(node)}
-                                    column={8}
-                                    extra={
-                                        <Flex
-                                            align="center"
-                                            justify="center"
-                                            gap={10}
-                                            wrap
-                                            className="w-full"
-                                        >
-                                            <Tooltip title="查看详情">
-                                                <Button
-                                                    type="text"
-                                                    size="small"
-                                                    className={EDGE_CARD_ACTION_BUTTON_CLASS}
-                                                    icon={<EyeOutlined />}
-                                                    onClick={() => setSelectedId(node.id)}
-                                                />
-                                            </Tooltip>
-                                            {canEdit && (
-                                                <Tooltip title="修改名称">
+                                                        {node.softwareVersion || '未知版本'}
+                                                    </Tag>
+                                                </span>
+                                                <span className="min-w-0 truncate text-xs text-slate-400">
+                                                    上报：{formatDateTime(status.lastSeenAt)}
+                                                </span>
+                                            </div>
+                                        }
+                                        items={buildNodeCardItems(node)}
+                                        column={8}
+                                        extra={
+                                            <Flex
+                                                align="center"
+                                                justify="center"
+                                                gap={10}
+                                                wrap
+                                                className="w-full"
+                                            >
+                                                <Tooltip title="查看详情">
                                                     <Button
                                                         type="text"
                                                         size="small"
-                                                            className={
-                                                                EDGE_CARD_ACTION_BUTTON_CLASS
-                                                            }
-                                                        icon={<EditOutlined />}
-                                                        onClick={() => showRename(node)}
+                                                        className={EDGE_CARD_ACTION_BUTTON_CLASS}
+                                                        icon={<EyeOutlined />}
+                                                        onClick={() => {
+                                                            setDetailTab('networks');
+                                                            setLogLevel(undefined);
+                                                            setSelectedId(node.id);
+                                                        }}
                                                     />
                                                 </Tooltip>
-                                            )}
-                                            {node.enrollmentStatus === 'approved' &&
-                                                canConfig &&
-                                                capability.deviceConfig && (
-                                                    <Tooltip title="同步设备配置">
+                                                {canEdit && (
+                                                    <Tooltip title="修改名称">
                                                         <Button
                                                             type="text"
                                                             size="small"
                                                             className={
                                                                 EDGE_CARD_ACTION_BUTTON_CLASS
                                                             }
-                                                            icon={<SyncOutlined />}
-                                                            loading={
-                                                                deviceConfigSync.isPending &&
-                                                                deviceConfigSync.variables ===
-                                                                    node.id
-                                                            }
-                                                            onClick={() =>
-                                                                deviceConfigSync.mutate(node.id)
-                                                            }
+                                                            icon={<EditOutlined />}
+                                                            onClick={() => showRename(node)}
                                                         />
                                                     </Tooltip>
                                                 )}
                                                 {node.enrollmentStatus === 'approved' &&
+                                                    canConfig &&
+                                                    capability.deviceConfig && (
+                                                        <Tooltip title="同步设备配置">
+                                                            <Button
+                                                                type="text"
+                                                                size="small"
+                                                                className={
+                                                                    EDGE_CARD_ACTION_BUTTON_CLASS
+                                                                }
+                                                                icon={<SyncOutlined />}
+                                                                loading={
+                                                                    deviceConfigSync.isPending &&
+                                                                    deviceConfigSync.variables ===
+                                                                        node.id
+                                                                }
+                                                                onClick={() =>
+                                                                    deviceConfigSync.mutate(node.id)
+                                                                }
+                                                            />
+                                                        </Tooltip>
+                                                    )}
+                                                {node.enrollmentStatus === 'approved' &&
                                                     canConfig && (
-                                                <Tooltip
-                                                    title={
-                                                        capability.networkConfig &&
-                                                        capability.networkConfigVersion >= 2
-                                                            ? '管理网络接口'
-                                                            : `节点代理 ${node.softwareVersion || '当前版本'} 过旧，请升级至 0.3.0`
-                                                    }
-                                                >
-                                                    <span>
-                                                        <Button
-                                                            type="text"
-                                                            size="small"
-                                                            disabled={
-                                                                !capability.networkConfig ||
+                                                        <Tooltip
+                                                            title={
+                                                                capability.networkConfig &&
+                                                                capability.networkConfigVersion >= 2
+                                                                    ? '管理网络接口'
+                                                                    : `节点代理 ${node.softwareVersion || '当前版本'} 过旧，请升级至 0.3.0`
+                                                            }
+                                                        >
+                                                            <span>
+                                                                <Button
+                                                                    type="text"
+                                                                    size="small"
+                                                                    disabled={
+                                                                        !capability.networkConfig ||
                                                                         capability.networkConfigVersion <
                                                                             2
-                                                            }
-                                                            className={
-                                                                EDGE_CARD_ACTION_BUTTON_CLASS
-                                                            }
-                                                            icon={<GlobalOutlined />}
-                                                            onClick={() =>
+                                                                    }
+                                                                    className={
+                                                                        EDGE_CARD_ACTION_BUTTON_CLASS
+                                                                    }
+                                                                    icon={<GlobalOutlined />}
+                                                                    onClick={() =>
                                                                         void showNetworkManager(
                                                                             node
                                                                         )
-                                                            }
-                                                        />
-                                                    </span>
-                                                </Tooltip>
-                                            )}
-                                            {node.enrollmentStatus === 'approved' &&
-                                                canConfig &&
-                                                capability.modemControl && (
-                                                    <Tooltip title="移动网络接入设置">
+                                                                    }
+                                                                />
+                                                            </span>
+                                                        </Tooltip>
+                                                    )}
+                                                {node.enrollmentStatus === 'approved' &&
+                                                    canConfig &&
+                                                    capability.modemControl && (
+                                                        <Tooltip title="移动网络接入设置">
+                                                            <Button
+                                                                type="text"
+                                                                size="small"
+                                                                className={
+                                                                    EDGE_CARD_ACTION_BUTTON_CLASS
+                                                                }
+                                                                icon={<MobileOutlined />}
+                                                                onClick={() => showModem(node)}
+                                                            />
+                                                        </Tooltip>
+                                                    )}
+                                                {node.enrollmentStatus === 'approved' &&
+                                                    canFirmware &&
+                                                    capability.firmwareUpdate && (
+                                                        <Tooltip title="上传固件并刷写">
+                                                            <Button
+                                                                type="text"
+                                                                danger
+                                                                size="small"
+                                                                className={
+                                                                    EDGE_CARD_DANGER_BUTTON_CLASS
+                                                                }
+                                                                icon={<UploadOutlined />}
+                                                                onClick={() => showFirmware(node)}
+                                                            />
+                                                        </Tooltip>
+                                                    )}
+                                                {node.enrollmentStatus === 'approved' &&
+                                                    canTerminal &&
+                                                    capability.terminal && (
+                                                        <Tooltip title="Web 终端">
+                                                            <Button
+                                                                type="text"
+                                                                size="small"
+                                                                className={
+                                                                    EDGE_CARD_ACTION_BUTTON_CLASS
+                                                                }
+                                                                icon={<CodeOutlined />}
+                                                                onClick={() => {
+                                                                    setTerminalNode(node);
+                                                                    setTerminalOpen(true);
+                                                                }}
+                                                            />
+                                                        </Tooltip>
+                                                    )}
+                                                {canEdit && node.enrollmentStatus === 'pending' && (
+                                                    <Tooltip title="批准注册">
                                                         <Button
                                                             type="text"
                                                             size="small"
                                                             className={
                                                                 EDGE_CARD_ACTION_BUTTON_CLASS
                                                             }
-                                                            icon={<MobileOutlined />}
-                                                            onClick={() => showModem(node)}
+                                                            icon={<CheckOutlined />}
+                                                            onClick={() => approveEnrollment(node)}
                                                         />
                                                     </Tooltip>
                                                 )}
-                                            {node.enrollmentStatus === 'approved' &&
-                                                canFirmware &&
-                                                capability.firmwareUpdate && (
-                                                    <Tooltip title="上传固件并刷写">
+                                                {canEdit && node.enrollmentStatus === 'pending' && (
+                                                    <Tooltip title="删除注册申请">
                                                         <Button
                                                             type="text"
                                                             danger
@@ -1248,107 +1316,19 @@ export default function EdgeNodePage() {
                                                             className={
                                                                 EDGE_CARD_DANGER_BUTTON_CLASS
                                                             }
-                                                            icon={<UploadOutlined />}
-                                                            onClick={() => showFirmware(node)}
+                                                            icon={<DeleteOutlined />}
+                                                            loading={
+                                                                edgeDelete.isPending &&
+                                                                edgeDelete.variables === node.id
+                                                            }
+                                                            onClick={() => deleteEnrollment(node)}
                                                         />
                                                     </Tooltip>
                                                 )}
-                                                {node.enrollmentStatus === 'approved' &&
-                                                    canQuery && (
-                                                <Tooltip
-                                                    title={
-                                                        !status.online
-                                                            ? '节点当前离线'
-                                                            : capability.logs
-                                                              ? '运行事件'
-                                                              : `节点代理 ${node.softwareVersion || '当前版本'} 过旧，请升级至 0.3.4`
-                                                    }
-                                                >
-                                                    <span>
-                                                        <Button
-                                                            type="text"
-                                                            size="small"
-                                                                    disabled={
-                                                                        !status.online ||
-                                                                        !capability.logs
-                                                                    }
-                                                            className={
-                                                                EDGE_CARD_ACTION_BUTTON_CLASS
-                                                            }
-                                                            icon={<FileTextOutlined />}
-                                                            onClick={() => {
-                                                                setLogLevel(undefined);
-                                                                setNodeLogLevel(
-                                                                            node.status.log
-                                                                                ?.level ?? 'info'
-                                                                );
-                                                                setLogNode(node);
-                                                            }}
-                                                        />
-                                                    </span>
-                                                </Tooltip>
-                                            )}
-                                            {node.enrollmentStatus === 'approved' &&
-                                                canTerminal &&
-                                                capability.terminal && (
-                                                    <Tooltip title="Web 终端">
-                                                        <Button
-                                                            type="text"
-                                                            size="small"
-                                                            className={
-                                                                EDGE_CARD_ACTION_BUTTON_CLASS
-                                                            }
-                                                            icon={<CodeOutlined />}
-                                                            onClick={() => {
-                                                                setTerminalNode(node);
-                                                                setTerminalOpen(true);
-                                                            }}
-                                                        />
-                                                    </Tooltip>
-                                                )}
-                                                {canEdit &&
-                                                    node.enrollmentStatus !== 'approved' && (
-                                                <Tooltip title="批准注册">
-                                                    <Button
-                                                        type="text"
-                                                        size="small"
-                                                                className={
-                                                                    EDGE_CARD_ACTION_BUTTON_CLASS
-                                                                }
-                                                        icon={<CheckOutlined />}
-                                                        onClick={() =>
-                                                                    updateEnrollment(
-                                                                        node,
-                                                                        'approved'
-                                                                    )
-                                                        }
-                                                    />
-                                                </Tooltip>
-                                            )}
-                                                {canEdit &&
-                                                    node.enrollmentStatus !== 'rejected' && (
-                                                <Tooltip title="拒绝注册">
-                                                    <Button
-                                                        type="text"
-                                                        danger
-                                                        size="small"
-                                                                className={
-                                                                    EDGE_CARD_DANGER_BUTTON_CLASS
-                                                                }
-                                                        icon={<CloseOutlined />}
-                                                        onClick={() =>
-                                                                    updateEnrollment(
-                                                                        node,
-                                                                        'rejected'
-                                                                    )
-                                                        }
-                                                    />
-                                                </Tooltip>
-                                            )}
-                                        </Flex>
-                                    }
-                                />
-                            </div>
+                                            </Flex>
+                                        }
+                                    />
+                                </div>
                             );
                         })}
                     </div>
@@ -1434,6 +1414,8 @@ export default function EdgeNodePage() {
                         </Descriptions>
                         <Tabs
                             className="mt-4"
+                            activeKey={detailTab}
+                            onChange={setDetailTab}
                             items={[
                                 {
                                     key: 'networks',
@@ -1451,14 +1433,16 @@ export default function EdgeNodePage() {
                                 },
                                 {
                                     key: 'interfaces',
-                                    label: `物理网卡 (${detail.interfaces?.length ?? 0})`,
+                                    label: `物理网卡 (${physicalNetworkInterfaces(detail.interfaces ?? []).length})`,
                                     children: (
                                         <Table
                                             rowKey="name"
                                             size="small"
                                             pagination={false}
                                             columns={interfaceColumns}
-                                            dataSource={detail.interfaces ?? []}
+                                            dataSource={physicalNetworkInterfaces(
+                                                detail.interfaces ?? []
+                                            )}
                                             scroll={{ x: 'max-content', y: 360 }}
                                         />
                                     ),
@@ -1489,6 +1473,125 @@ export default function EdgeNodePage() {
                                             dataSource={detail.tasks ?? []}
                                             scroll={{ x: 'max-content', y: 360 }}
                                         />
+                                    ),
+                                },
+                                {
+                                    key: 'events',
+                                    label: '运行事件',
+                                    children: !detail.status.online ? (
+                                        <Empty description="节点当前离线，无法读取运行事件" />
+                                    ) : !detail.capability.logs ? (
+                                        <Empty
+                                            description={`节点代理 ${detail.softwareVersion || '当前版本'} 过旧，请升级后查看运行事件`}
+                                        />
+                                    ) : (
+                                        <>
+                                            <Flex
+                                                justify="space-between"
+                                                align="center"
+                                                gap={12}
+                                                className="mb-3"
+                                            >
+                                                <Space>
+                                                    <Select<Edge.LogLevel>
+                                                        className="w-[140px]"
+                                                        value={nodeLogLevel}
+                                                        loading={logLevelControl.isPending}
+                                                        disabled={!canConfig}
+                                                        onChange={(value) => {
+                                                            setNodeLogLevel(value);
+                                                            if (selectedId)
+                                                                logLevelControl.mutate(
+                                                                    {
+                                                                        id: selectedId,
+                                                                        data: { level: value },
+                                                                    },
+                                                                    {
+                                                                        onSuccess: () =>
+                                                                            void refreshEventLogs(),
+                                                                    }
+                                                                );
+                                                        }}
+                                                        options={[
+                                                            { value: 'debug', label: 'DEBUG' },
+                                                            { value: 'info', label: 'INFO' },
+                                                            { value: 'warn', label: 'WARN' },
+                                                            { value: 'error', label: 'ERROR' },
+                                                        ]}
+                                                    />
+                                                    <Select<Edge.LogLevel>
+                                                        allowClear
+                                                        className="w-[140px]"
+                                                        placeholder="筛选级别"
+                                                        value={logLevel}
+                                                        onChange={(value) => setLogLevel(value)}
+                                                        options={[
+                                                            { value: 'debug', label: 'debug' },
+                                                            { value: 'info', label: 'info' },
+                                                            { value: 'warn', label: 'warn' },
+                                                            { value: 'error', label: 'error' },
+                                                        ]}
+                                                    />
+                                                </Space>
+                                                <Button
+                                                    icon={<ReloadOutlined />}
+                                                    loading={eventLogsLoading}
+                                                    onClick={() => void refreshEventLogs()}
+                                                >
+                                                    刷新
+                                                </Button>
+                                            </Flex>
+                                            <Table
+                                                rowKey={(item, index) =>
+                                                    `${item.time}-${item.source}-${index ?? 0}`
+                                                }
+                                                size="small"
+                                                pagination={false}
+                                                loading={eventLogsLoading}
+                                                columns={logColumns}
+                                                dataSource={eventLogs?.lines ?? []}
+                                                locale={{ emptyText: '暂无运行事件' }}
+                                                scroll={{ x: 'max-content', y: 420 }}
+                                            />
+                                        </>
+                                    ),
+                                },
+                                {
+                                    key: 'system',
+                                    label: '系统日志',
+                                    children: !detail.status.online ? (
+                                        <Empty description="节点当前离线，无法读取系统日志" />
+                                    ) : !detail.capability.logs ? (
+                                        <Empty
+                                            description={`节点代理 ${detail.softwareVersion || '当前版本'} 过旧，请升级后查看系统日志`}
+                                        />
+                                    ) : (
+                                        <>
+                                            <Flex justify="end" className="mb-3">
+                                                <Button
+                                                    icon={<ReloadOutlined />}
+                                                    loading={systemLogsLoading}
+                                                    onClick={() => void refreshSystemLogs()}
+                                                >
+                                                    刷新
+                                                </Button>
+                                            </Flex>
+                                            <Table
+                                                rowKey={(item, index) =>
+                                                    `${item.time}-${item.message}-${index ?? 0}`
+                                                }
+                                                size="small"
+                                                pagination={false}
+                                                loading={systemLogsLoading}
+                                                columns={logColumns}
+                                                dataSource={systemLogs?.lines ?? []}
+                                                locale={{
+                                                    emptyText:
+                                                        '暂无系统日志；节点版本低于 0.3.29 时请先升级代理',
+                                                }}
+                                                scroll={{ x: 'max-content', y: 420 }}
+                                            />
+                                        </>
                                     ),
                                 },
                             ]}
@@ -1635,8 +1738,11 @@ export default function EdgeNodePage() {
                                     disabled={!networkDraft.some((item) => item.dirty)}
                                     onClick={() =>
                                         setNetworkDraft(
-                                            (networkNode?.networks ?? []).map(
-                                                networkDraftFromReported
+                                            (networkNode?.networks ?? []).map((item) =>
+                                                networkDraftFromReported(
+                                                    item,
+                                                    networkNode?.interfaces ?? []
+                                                )
                                             )
                                         )
                                     }
@@ -1675,74 +1781,6 @@ export default function EdgeNodePage() {
                     </>
                 )}
             </FormModal>
-
-            <Modal
-                open={Boolean(logNode)}
-                onCancel={() => {
-                    setLogNode(undefined);
-                    setLogLevel(undefined);
-                    setNodeLogLevel('info');
-                }}
-                footer={null}
-                width="min(920px, 92vw)"
-                title={`运行事件${logNode ? ` · ${logNode.name || logNode.imei}` : ''}`}
-                destroyOnHidden
-            >
-                <Flex justify="space-between" align="center" gap={12} className="mb-3">
-                    <Space>
-                        <Select<Edge.LogLevel>
-                            className="w-[140px]"
-                            value={nodeLogLevel}
-                            loading={logLevelControl.isPending}
-                            disabled={!canConfig || !logNode?.status.online}
-                            onChange={(value) => {
-                                setNodeLogLevel(value);
-                                if (logNode)
-                                    logLevelControl.mutate(
-                                        { id: logNode.id, data: { level: value } },
-                                        { onSuccess: () => void refreshLogs() }
-                                    );
-                            }}
-                            options={[
-                                { value: 'debug', label: 'DEBUG' },
-                                { value: 'info', label: 'INFO' },
-                                { value: 'warn', label: 'WARN' },
-                                { value: 'error', label: 'ERROR' },
-                            ]}
-                        />
-                        <Select<Edge.LogLevel>
-                            allowClear
-                            className="w-[140px]"
-                            placeholder="筛选级别"
-                            value={logLevel}
-                            onChange={(value) => setLogLevel(value)}
-                            options={[
-                                { value: 'debug', label: 'debug' },
-                                { value: 'info', label: 'info' },
-                                { value: 'warn', label: 'warn' },
-                                { value: 'error', label: 'error' },
-                            ]}
-                        />
-                    </Space>
-                    <Button
-                        icon={<ReloadOutlined />}
-                        loading={logsLoading}
-                        onClick={() => void refreshLogs()}
-                    >
-                        刷新
-                    </Button>
-                </Flex>
-                <Table
-                    rowKey={(item, index) => `${item.time}-${item.source}-${index ?? 0}`}
-                    size="small"
-                    pagination={false}
-                    loading={logsLoading}
-                    columns={logColumns}
-                    dataSource={logs?.lines ?? []}
-                    locale={{ emptyText: '暂无运行事件（正常遥测不会记录）' }}
-                    scroll={{ x: 'max-content', y: 420 }}
-                />
-            </Modal>
 
             <FormModal
                 open={Boolean(renamingNode)}

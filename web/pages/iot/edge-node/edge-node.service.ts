@@ -3,6 +3,7 @@ import { useMutationWithMessage } from '@/hooks/useMutation';
 import {
     configureNetwork,
     controlModem,
+    deleteEnrollment,
     getEdgeDetail,
     getEdgeList,
     getLogs,
@@ -40,9 +41,17 @@ export const useEdgeLogs = (id?: string, query?: Edge.LogsQuery, enabled = true)
 
 export function useEnrollmentMutation() {
     return useMutationWithMessage({
-        mutationFn: (value: { id: string; status: 'approved' | 'rejected'; name?: string }) =>
+        mutationFn: (value: { id: string; status: 'approved'; name?: string }) =>
             setEnrollment(value.id, value.status, value.name),
         successMessage: '注册状态已更新',
+        invalidateKeys: [edgeQueryKeys.all],
+    });
+}
+
+export function useEdgeDeleteMutation() {
+    return useMutationWithMessage({
+        mutationFn: deleteEnrollment,
+        successMessage: '注册申请已删除，节点需要重新注册',
         invalidateKeys: [edgeQueryKeys.all],
     });
 }

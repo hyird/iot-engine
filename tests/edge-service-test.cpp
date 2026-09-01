@@ -122,8 +122,16 @@ int main() {
                        "edge log request clamps invalid limit instead of rejecting it");
         requireMissing(serviceSource, "const auto level = std::string(body.level()->view());",
                        "edge log level dereferences optional level without validation");
-        requireContains(serviceSource, "status != \"approved\" && status != \"rejected\"",
+        requireContains(serviceSource, "status != \"approved\"",
                         "edge enrollment accepts invalid registration status");
+        requireContains(controllerSource, "RUVIA_DELETE(\"/:id\", removeEnrollment",
+                        "edge enrollment deletion route is missing");
+        requireContains(serviceSource, "enrollment_status = 'pending'",
+                        "edge enrollment deletion is not limited to pending registrations");
+        requireContains(serviceSource, "protocol::authKey(imei)",
+                        "edge enrollment deletion leaves stale authorization state");
+        requireContains(serviceSource, "\"iot:edge:session:\" + std::string(id)",
+                        "edge enrollment deletion does not disconnect the pending session");
         requireContains(serviceSource,
                         "level != \"debug\" && level != \"info\" && level != \"warn\"",
                         "edge log level accepts invalid values");

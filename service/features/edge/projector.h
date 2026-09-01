@@ -375,9 +375,7 @@ SET model = EXCLUDED.model, software_version = EXCLUDED.software_version,
         jsonb_set(edge_node.status, '{log}',
                   COALESCE(edge_node.status->'log', '{}'::jsonb), true),
         '{log,level}', to_jsonb(COALESCE(NULLIF($28::text, ''), 'info')::text), true),
-    last_seen_at = CASE
-        WHEN edge_node.enrollment_status IN ('pending', 'approved') THEN NOW()
-        ELSE edge_node.last_seen_at END,
+    last_seen_at = NOW(),
     updated_at = NOW()
 RETURNING id::text, enrollment_status)sql",
                                                      service::common::dbParams(

@@ -47,11 +47,11 @@ int main() {
                 "edge projector does not guard desiredVersion");
         require(source.find("status, last_seen_at, updated_at") != std::string::npos,
                 "edge hello insert does not record presence");
-        require(source.find("WHEN edge_node.enrollment_status IN ('pending', 'approved') THEN NOW()") !=
+        require(source.find("last_seen_at = NOW()") != std::string::npos,
+                "edge hello update does not refresh node presence");
+        require(source.find("edge_node.enrollment_status IN ('pending', 'approved')") ==
                     std::string::npos,
-                "edge hello update does not refresh pending and approved presence");
-        require(source.find("ELSE edge_node.last_seen_at END") != std::string::npos,
-                "edge hello update refreshes rejected presence");
+                "edge hello update still carries rejected enrollment compatibility");
         require(source.find("result.actual_values_size()") != std::string::npos &&
                     source.find("actual_value_count") != std::string::npos &&
                     source.find("actual.has_value()") != std::string::npos &&

@@ -97,7 +97,7 @@ class EdgeService {
         if (!maybeStatus || maybeStatus->view().empty())
             service::common::fail(17003, "注册状态不能为空", 400);
         const std::string status(maybeStatus->view());
-        if (status != "approved" && status != "rejected")
+        if (status != "approved")
             service::common::fail(17003, "注册状态无效", 400);
         const std::string name = body.get<"name">() ? std::string(body.get<"name">()->view()) : std::string{};
         std::string_view stage = "database";
@@ -121,6 +121,44 @@ RETURNING imei)sql",
                       << " status=" << status << " error=" << error.what() << '\n';
             throw;
         }
+    }
+
+    ruvia::Task<void> removeEnrollment(ruvia::Context& c, std::string_view id) {
+        const auto rows = co_await c.db().query(R"sql(
+SELECT imei, enrollment_status,
+       EXISTS(SELECT 1 FROM link WHERE edge_node_id = edge_node.id)
+FROM edge_node
+WHERE id = $1::uuid
+LIMIT 1)sql",
+                                                service::common::dbParams(id));
+        if (rows.empty())
+            service::common::fail(17001, "边缘节点不存在", 404);
+        const auto imei = std::string(rows.front()[0].value().value_or(std::string_view{}));
+        const auto status = rows.front()[1].value().value_or(std::string_view{});
+        if (status != "pending")
+            service::common::fail(17021, "只能删除待处理的注册申请", 409);
+        if (rows.front()[2].value().value_or(std::string_view{}) == "t")
+            service::common::fail(17021, "注册申请仍被采集链路引用，无法删除", 409);
+
+        const std::array<std::string, 5> keys{
+            "iot:edge:session:" + std::string(id),
+            "iot:edge:metadata:" + std::string(id),
+            "iot:edge:egress:" + std::string(id),
+            "iot:edge:config:" + std::string(id),
+            "iot:edge:config-revision:" + std::string(id),
+        };
+        co_await c.redis().set(protocol::authKey(imei),
+                               std::string(id) + "|pending");
+        for (const auto& key : keys)
+            (void)co_await c.redis().del(key);
+        const auto removed = co_await c.db().query(R"sql(
+DELETE FROM edge_node
+WHERE id = $1::uuid AND enrollment_status = 'pending'
+RETURNING id)sql",
+                                                   service::common::dbParams(id));
+        if (removed.empty())
+            service::common::fail(17021, "注册状态已变化，请刷新后重试", 409);
+        (void)co_await c.redis().del(protocol::authKey(imei));
     }
 
     ruvia::Task<void> renameNode(ruvia::Context& c, std::string_view id,

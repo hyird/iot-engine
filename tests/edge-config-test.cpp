@@ -163,19 +163,33 @@ void testReadIntervalMigrationRemovesLegacyField() {
 }
 
 void testStoragePolicyMigrationRemovesLegacyField() {
-    const auto& migration = service::config::kSchemaMigrations.back();
-    require(migration.id() == "0027_unify_protocol_storage_policy",
-            "storagePolicy migration is not the latest schema migration");
-    require(migration.sql().find("config - 'storageInterval'") != std::string_view::npos &&
-                migration.sql().find("'{storagePolicy}'") != std::string_view::npos,
+    const auto migration = std::find_if(
+        service::config::kSchemaMigrations.begin(), service::config::kSchemaMigrations.end(),
+        [](const auto& value) { return value.id() == "0027_unify_protocol_storage_policy"; });
+    require(migration != service::config::kSchemaMigrations.end(),
+            "storagePolicy migration is missing");
+    require(migration->sql().find("config - 'storageInterval'") != std::string_view::npos &&
+                migration->sql().find("'{storagePolicy}'") != std::string_view::npos,
             "storagePolicy migration does not replace the retired interval field");
-    require(migration.sql().find("ELSE 'report'") != std::string_view::npos,
+    require(migration->sql().find("ELSE 'report'") != std::string_view::npos,
             "storagePolicy migration can silently reduce stored history");
-    require(migration.sql().find("ck_protocol_config_storage_policy") !=
+    require(migration->sql().find("ck_protocol_config_storage_policy") !=
                 std::string_view::npos &&
-                migration.sql().find("COALESCE(config->>'storagePolicy' IN") !=
+                migration->sql().find("COALESCE(config->>'storagePolicy' IN") !=
                     std::string_view::npos,
             "schema does not enforce a canonical storage policy");
+}
+
+void testEnrollmentMigrationRemovesRejectedState() {
+    const auto& migration = service::config::kSchemaMigrations.back();
+    require(migration.id() == "0028_remove_edge_enrollment_rejection",
+            "enrollment migration is not the latest schema migration");
+    require(migration.sql().find("WHERE enrollment_status = 'rejected'") !=
+                std::string_view::npos,
+            "enrollment migration does not migrate rejected registrations");
+    require(migration.sql().find("IN ('pending', 'approved')") !=
+                std::string_view::npos,
+            "schema still permits rejected registrations");
 }
 
 } // namespace
@@ -190,6 +204,7 @@ int main() {
         testBuildItemSqlAvoidsJsonCasts();
         testReadIntervalMigrationRemovesLegacyField();
         testStoragePolicyMigrationRemovesLegacyField();
+        testEnrollmentMigrationRemovesRejectedState();
         std::cout << "edge config tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {
