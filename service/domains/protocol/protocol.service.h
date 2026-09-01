@@ -367,8 +367,10 @@ FROM cfg)sql",
             const auto areas = co_await c.db().query(R"sql(
 WITH cfg AS (SELECT ($1::jsonb)->'config' AS value),
 areas AS (
-  SELECT item FROM cfg, jsonb_array_elements(value->'areas') AS item
-  WHERE value ? 'areas'
+  SELECT area.item
+  FROM cfg
+  CROSS JOIN LATERAL jsonb_array_elements(cfg.value->'areas') AS area(item)
+  WHERE cfg.value ? 'areas'
 )
 SELECT COALESCE(bool_and(
     jsonb_typeof(item) = 'object'
@@ -452,7 +454,11 @@ SELECT COALESCE(bool_and(
 	
 	        const auto registers = co_await c.db().query(R"sql(
 	WITH cfg AS (SELECT ($1::jsonb)->'config' AS value),
-registers AS (SELECT item FROM cfg, jsonb_array_elements(value->'registers') AS item)
+registers AS (
+  SELECT entry.item
+  FROM cfg
+  CROSS JOIN LATERAL jsonb_array_elements(cfg.value->'registers') AS entry(item)
+)
 SELECT
   COALESCE(bool_and(
     jsonb_typeof(item) = 'object'

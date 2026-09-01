@@ -75,6 +75,23 @@ void requireModbusRuntimeFieldValidation(std::string_view source) {
             "protocol service does not validate Modbus register writable");
 }
 
+void requireQualifiedJsonArrayValidation(std::string_view source) {
+    require(source.find("jsonb_array_elements(value->'areas')") ==
+                std::string_view::npos,
+            "S7 validation leaves value ambiguous beside jsonb_array_elements");
+    require(source.find("jsonb_array_elements(value->'registers')") ==
+                std::string_view::npos,
+            "Modbus validation leaves value ambiguous beside jsonb_array_elements");
+    require(source.find(
+                "jsonb_array_elements(cfg.value->'areas') AS area(item)") !=
+                std::string_view::npos,
+            "S7 validation does not qualify the config and array element columns");
+    require(source.find(
+                "jsonb_array_elements(cfg.value->'registers') AS entry(item)") !=
+                std::string_view::npos,
+            "Modbus validation does not qualify the config and array element columns");
+}
+
 void requireEdgeSyncDoesNotLeakAsUpdateFailure(std::string_view source) {
     require(source.find("l.edge_node_id IS NOT NULL") != std::string_view::npos,
             "protocol update can queue empty edge node IDs");
@@ -106,6 +123,7 @@ int main() {
         requirePartialModbusUpdateValidation(source);
         requireStrictUpdateFieldTypes(source);
         requireModbusRuntimeFieldValidation(source);
+        requireQualifiedJsonArrayValidation(source);
         requireEdgeSyncDoesNotLeakAsUpdateFailure(source);
         std::cout << "protocol service tests passed\n";
         return 0;
