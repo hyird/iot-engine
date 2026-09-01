@@ -41,3 +41,13 @@ test('edge management actions live in contextual drawer sections', () => {
     expect(drawer).toContain('删除注册申请');
     expect(drawer).toContain('批准注册');
 });
+
+test('drawer actions render above the detail drawer', () => {
+    expect(source).toContain('const EDGE_DETAIL_DRAWER_Z_INDEX = 1000;');
+    expect(source).toContain(
+        'const EDGE_ACTION_MODAL_Z_INDEX = EDGE_DETAIL_DRAWER_Z_INDEX + 100;'
+    );
+    expect(drawer).toContain('zIndex={EDGE_DETAIL_DRAWER_Z_INDEX}');
+    expect(source.match(/zIndex=\{EDGE_ACTION_MODAL_Z_INDEX\}/g)).toHaveLength(5);
+    expect(source.match(/zIndex: EDGE_ACTION_MODAL_Z_INDEX/g)).toHaveLength(2);
+});

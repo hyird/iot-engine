@@ -87,6 +87,8 @@ type NetworkDraftItem = Edge.NetworkConfig & {
 };
 
 const EDGE_CARD_GRID_CLASS = 'grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-4';
+const EDGE_DETAIL_DRAWER_Z_INDEX = 1000;
+const EDGE_ACTION_MODAL_Z_INDEX = EDGE_DETAIL_DRAWER_Z_INDEX + 100;
 
 function statusTag(status: string) {
     const map: Record<string, { color: string; text: string }> = {
@@ -546,6 +548,7 @@ function TerminalModal({
     return (
         <Modal
             open={open}
+            zIndex={EDGE_ACTION_MODAL_Z_INDEX}
             onCancel={onClose}
             footer={null}
             width="min(960px, 94vw)"
@@ -669,6 +672,7 @@ export default function EdgeNodePage() {
 
     const approveEnrollment = (node: Edge.Node) => {
         modal.confirm({
+            zIndex: EDGE_ACTION_MODAL_Z_INDEX,
             title: `批准 IMEI ${node.imei} 注册？`,
             content: '批准后节点下次连接即可进入在线状态。',
             onOk: () =>
@@ -682,6 +686,7 @@ export default function EdgeNodePage() {
 
     const deleteEnrollment = (node: Edge.Node) => {
         modal.confirm({
+            zIndex: EDGE_ACTION_MODAL_Z_INDEX,
             title: `删除 IMEI ${node.imei} 的注册申请？`,
             content: '删除后当前连接会断开；节点再次连接时会重新进入待处理状态。',
             okButtonProps: { danger: true },
@@ -1181,6 +1186,7 @@ export default function EdgeNodePage() {
 
             <Drawer
                 open={Boolean(selectedId)}
+                zIndex={EDGE_DETAIL_DRAWER_Z_INDEX}
                 onClose={() => setSelectedId(undefined)}
                 title={
                     detail
@@ -1743,6 +1749,7 @@ export default function EdgeNodePage() {
 
             <FormModal
                 open={Boolean(networkNode)}
+                zIndex={EDGE_ACTION_MODAL_Z_INDEX}
                 onCancel={() => {
                     if (networkOpen) {
                         setNetworkOpen(false);
@@ -1925,6 +1932,7 @@ export default function EdgeNodePage() {
 
             <FormModal
                 open={Boolean(renamingNode)}
+                zIndex={EDGE_ACTION_MODAL_Z_INDEX}
                 title={`修改节点名称${renamingNode ? ` · ${renamingNode.imei}` : ''}`}
                 onCancel={() => setRenamingNode(undefined)}
                 onOk={() => nameForm.submit()}
@@ -1952,6 +1960,7 @@ export default function EdgeNodePage() {
 
             <FormModal
                 open={modemOpen}
+                zIndex={EDGE_ACTION_MODAL_Z_INDEX}
                 title={`移动网络接入设置${modemNode ? ` · ${modemNode.name || modemNode.imei}` : ''}`}
                 onCancel={() => {
                     setModemOpen(false);
@@ -2076,6 +2085,7 @@ export default function EdgeNodePage() {
 
             <FormModal
                 open={firmwareOpen}
+                zIndex={EDGE_ACTION_MODAL_Z_INDEX}
                 title={`上传固件并刷写${firmwareNode ? ` · ${firmwareNode.name || firmwareNode.imei}` : ''}`}
                 onCancel={() => {
                     if (firmwareUpgrade.isPending) return;
