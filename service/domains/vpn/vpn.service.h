@@ -851,10 +851,15 @@ inline ruvia::Task<void> VpnService::ensureBridgeRoutes(
         Ipv4Cidr target;
     };
 
+    // Older swconfig EdgeNode releases expose the logical LAN as `lan` on an
+    // Ethernet VLAN even when a bridge device definition is present. Treat
+    // that logical LAN as the bridge-facing network without changing its
+    // management interface configuration.
     const auto bridgeRows = co_await db.query(R"sql(
 SELECT name, device, ipv4, prefix_length
 FROM edge_node_network
-WHERE node_id = $1::uuid AND is_bridge = TRUE
+WHERE node_id = $1::uuid
+  AND (is_bridge = TRUE OR lower(name) = 'lan' OR device LIKE 'br-%')
   AND COALESCE(ipv4, '') <> '' AND prefix_length BETWEEN 1 AND 30
 ORDER BY name)sql", service::common::dbParams(edgeNodeId));
     std::vector<BridgeRecord> bridges;
