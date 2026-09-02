@@ -30,7 +30,7 @@ template <typename Context>
 ruvia::Task<void> queueEdgeConfig(Context& c, std::string_view peerId,
                                   std::string_view actorId = {}) {
     const auto rows = co_await c.db().query(R"sql(
-SELECT p.id, p.network_id, p.edge_node_id, p.assigned_ipv4::text, p.config_revision, p.status,
+SELECT p.id, p.network_id, p.edge_node_id, host(p.assigned_ipv4), p.config_revision, p.status,
        n.hub_public_key, n.hub_endpoint, n.hub_listen_port, n.created_by::text, n.status
 FROM vpn_peer p JOIN vpn_network n ON n.id = p.network_id
 JOIN edge_node e ON e.id = p.edge_node_id
