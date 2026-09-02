@@ -6,7 +6,7 @@ Windows 客户端通过 iot-engine 访问 Edge 节点所在局域网设备：
 
 - LAN 设备无需安装客户端或修改默认网关。
 - Edge 支持 NAT、4G 和无公网入站连接。
-- 多个 Edge 可以使用相同的真实 LAN 网段。
+- 真实 LAN 和虚拟 LAN 映射网段全局唯一且不重叠。
 - iot-engine 统一管理 Peer、虚拟地址、路由、权限、撤销和审计。
 - VPN 数据面不进入现有 WebSocket、Redis 或 Protobuf 队列。
 - Edge 固件不引入完整用户态 VPN 守护进程。
@@ -84,7 +84,10 @@ VPN Overlay：100.96.0.0/11，每个 Peer 分配 /32
 Hub：100.96.0.1
 ```
 
-创建网络和映射时拒绝 Overlay、虚拟 LAN、服务端网段及其他映射之间的重叠。
+首期只有一个平台级 WireGuard Server，固定网络名为 `iot-server`，不在 EdgeNode
+页面创建额外 VPN 网络。创建或修改桥接映射时拒绝 Overlay、虚拟 LAN、服务端网段及
+其他映射之间的重叠；真实 LAN 和虚拟 LAN 的前缀长度必须相同，并在所有 EdgeNode
+之间全局唯一。
 
 ### 5.2 首期 NAT 映射
 
@@ -95,7 +98,8 @@ Hub：100.96.0.1
 172.31.10.50:502 -> 192.168.10.50:502
 ```
 
-虚拟地址和真实地址使用相同主机位偏移：
+虚拟网络号由平台自动分配，默认按真实网络号映射；用户只允许修改虚拟网络号，不能
+修改桥接接口、真实 LAN、掩码或 NAT 模式。虚拟地址和真实地址使用相同主机位偏移：
 
 ```text
 virtual_ip = virtual_network_base + host_offset
@@ -129,6 +133,7 @@ iot-engine 在 Linux 服务端维护 `wg-iot` 接口：
 - 从密钥存储读取 Hub 私钥。
 - 为每个 Windows/Edge Peer 配置公钥、地址和 AllowedIPs。
 - 使用 `IWireGuardController` 做幂等创建、更新、删除和状态读取。
+- Linux 实现通过 WireGuard Generic Netlink/UAPI 和 rtnetlink 配置内核接口，不启动 `wg`、`ip` 或其他 shell 子进程。
 - Hub 只处理 WireGuard 数据面，不读取内层业务数据包。
 
 ```text
@@ -297,7 +302,7 @@ VPN 权限独立于设备控制权限，默认 deny。
 ### Windows Peer
 
 ```text
-创建 VPN 网络/Edge LAN 映射
+使用默认 iot-server / 自动生成 Edge LAN 映射
         -> 创建一次性 enrollment token
         -> Windows 本地生成密钥
         -> 提交 token + 公钥
@@ -311,6 +316,8 @@ VPN 权限独立于设备控制权限，默认 deny。
 ```text
 Edge 通过现有身份认证连接 WSS
         -> 上报 VPN 能力和公钥
+        -> 服务端读取桥接 LAN，自动生成等长虚拟映射
+        -> 用户可调整虚拟网络号
         -> 服务端生成期望配置
         -> WSS/Protobuf 下发配置版本
         -> Edge 应用 WireGuard/路由/NAT

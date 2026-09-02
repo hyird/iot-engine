@@ -35,14 +35,14 @@ const vpnInvalidations = [edgeVpnQueryKeys.all, edgeQueryKeys.all];
 export const useVpnNetworkCreate = () =>
     useMutationWithMessage({
         mutationFn: createVpnNetwork,
-        successMessage: 'VPN 网络已创建',
+        successMessage: '默认 iot-server VPN 网络已就绪',
         invalidateKeys: vpnInvalidations,
     });
 
 export const useEdgeVpnPeerCreate = () =>
     useMutationWithMessage({
         mutationFn: createEdgeVpnPeer,
-        successMessage: 'VPN 已加入当前边缘节点，正在下发配置',
+        successMessage: '节点 VPN 已启用，正在下发桥接网段映射',
         invalidateKeys: vpnInvalidations,
     });
 
@@ -71,7 +71,7 @@ export const useEdgeVpnRouteUpdate = () =>
     useMutationWithMessage({
         mutationFn: ({ id, data }: { id: string; data: Partial<EdgeVpn.RouteDto> }) =>
             updateEdgeVpnRoute(id, data),
-        successMessage: 'VPN 路由已更新并下发',
+        successMessage: '虚拟网段已更新，正在下发配置',
         invalidateKeys: vpnInvalidations,
     });
 

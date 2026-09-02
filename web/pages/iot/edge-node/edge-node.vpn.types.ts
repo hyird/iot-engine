@@ -48,7 +48,7 @@ export namespace EdgeVpn {
     }
 
     export interface PeerCreateDto {
-        networkId: string;
+        networkId?: string;
         peerType: 'edge';
         edgeNodeId: string;
         name: string;

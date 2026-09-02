@@ -77,6 +77,17 @@ inline std::optional<Ipv4Cidr> parseCidr(std::string_view input,
     return Ipv4Cidr{*address, static_cast<std::uint8_t>(prefix)};
 }
 
+inline std::optional<Ipv4Cidr> networkCidr(std::string_view address,
+                                           std::uint8_t prefix) noexcept {
+    if (prefix == 0 || prefix > 30)
+        return std::nullopt;
+    const auto parsed = parseIpv4(address);
+    if (!parsed)
+        return std::nullopt;
+    const auto mask = 0xffffffffU << (32U - prefix);
+    return Ipv4Cidr{*parsed & mask, prefix};
+}
+
 inline std::optional<std::uint32_t> hostAddress(const Ipv4Cidr& network,
                                                 std::uint32_t offset) noexcept {
     if (offset >= network.size())
@@ -95,5 +106,22 @@ inline bool isPrivateIpv4(const Ipv4Cidr& cidr) noexcept {
 
 inline constexpr Ipv4Cidr kOverlayPool{0x64600000U, 11}; // 100.96.0.0/11
 inline constexpr Ipv4Cidr kVirtualLanPool{0xac1f0000U, 16}; // 172.31.0.0/16
+
+// Keep the host portion unchanged by assigning the virtual network number from
+// the real network number. If that slot is already occupied, the caller may
+// choose another free slot while preserving the same prefix length.
+inline std::optional<Ipv4Cidr> mappedVirtualCidr(const Ipv4Cidr& real) noexcept {
+    if (real.prefix < kVirtualLanPool.prefix)
+        return std::nullopt;
+    const auto slotBits = static_cast<unsigned>(real.prefix - kVirtualLanPool.prefix);
+    const auto slotCount = std::uint64_t{1} << slotBits;
+    const auto slot = (static_cast<std::uint64_t>(real.network) >> (32U - real.prefix)) &
+                      (slotCount - 1U);
+    const auto network = static_cast<std::uint64_t>(kVirtualLanPool.network) +
+                         slot * static_cast<std::uint64_t>(real.size());
+    return network <= 0xffffffffU
+               ? std::optional<Ipv4Cidr>(Ipv4Cidr{static_cast<std::uint32_t>(network), real.prefix})
+               : std::nullopt;
+}
 
 } // namespace service::vpn

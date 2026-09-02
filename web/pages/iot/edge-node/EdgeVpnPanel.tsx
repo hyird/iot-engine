@@ -1,6 +1,5 @@
 import {
     CloudServerOutlined,
-    PlusOutlined,
     ReloadOutlined,
     SyncOutlined,
 } from '@ant-design/icons';
@@ -8,16 +7,14 @@ import {
     Alert,
     Button,
     Descriptions,
-    Empty,
     Flex,
     Form,
-    Input,
     Modal,
+    Empty,
+    Input,
     Popconfirm,
-    Select,
     Skeleton,
     Space,
-    Switch,
     Table,
     Tag,
 } from 'antd';
@@ -30,10 +27,7 @@ import {
     useEdgeVpnPeerCreate,
     useEdgeVpnPeerRevoke,
     useEdgeVpnPeerSync,
-    useEdgeVpnRouteCreate,
-    useEdgeVpnRouteDelete,
     useEdgeVpnRouteUpdate,
-    useVpnNetworkCreate,
 } from './edge-node.vpn.service';
 import type { EdgeVpn } from './edge-node.vpn.types';
 
@@ -54,66 +48,35 @@ function peerName(node: Edge.Node) {
     return `${node.name || node.hostname || node.imei} VPN`;
 }
 
-type RouteFormValues = Omit<EdgeVpn.RouteDto, 'networkId' | 'edgePeerId'>;
+type RouteFormValues = Pick<EdgeVpn.RouteDto, 'virtualCidr'>;
 
 export default function EdgeVpnPanel({ node }: { node: Edge.Node }) {
     const { has } = usePermissions();
     const canQuery = has('iot:vpn:query');
     const canAdd = has('iot:vpn:add');
     const canEdit = has('iot:vpn:edit');
-    const canDelete = has('iot:vpn:delete');
     const canRevoke = has('iot:vpn:revoke');
     const dataQuery = useEdgeVpn(node.id);
     const data = dataQuery.data;
     const peer = data?.peers.find(
         (item) => item.peerType === 'edge' && item.status !== 'revoked'
     );
-    const network = data?.networks.find((item) => item.id === peer?.networkId);
-    const [peerOpen, setPeerOpen] = useState(false);
-    const [networkOpen, setNetworkOpen] = useState(false);
+    const network = data?.networks[0];
     const [routeOpen, setRouteOpen] = useState(false);
     const [editingRoute, setEditingRoute] = useState<EdgeVpn.Route | undefined>();
-    const [peerForm] = Form.useForm<EdgeVpn.PeerCreateDto>();
-    const [networkForm] = Form.useForm<EdgeVpn.NetworkCreateDto>();
     const [routeForm] = Form.useForm<RouteFormValues>();
     const peerCreate = useEdgeVpnPeerCreate();
     const peerSync = useEdgeVpnPeerSync();
     const peerRevoke = useEdgeVpnPeerRevoke();
-    const networkCreate = useVpnNetworkCreate();
-    const routeCreate = useEdgeVpnRouteCreate();
     const routeUpdate = useEdgeVpnRouteUpdate();
-    const routeDelete = useEdgeVpnRouteDelete();
-
-    useEffect(() => {
-        if (!peerOpen) return;
-        peerForm.setFieldsValue({
-            peerType: 'edge',
-            networkId: data?.networks[0]?.id,
-            edgeNodeId: node.id,
-            name: peerName(node),
-        });
-    }, [data?.networks, node, peerForm, peerOpen]);
+    const bridgeNetworks = node.networks?.filter(
+        (item) => item.bridge && item.ipv4 && item.prefixLength >= 1 && item.prefixLength <= 30
+    );
 
     useEffect(() => {
         if (!routeOpen) return;
-        routeForm.setFieldsValue(
-            editingRoute
-                ? {
-                      lanInterface: editingRoute.lanInterface,
-                      targetCidr: editingRoute.targetCidr,
-                      virtualCidr: editingRoute.virtualCidr,
-                      mode: editingRoute.mode,
-                      enabled: editingRoute.enabled,
-                  }
-                : {
-                      lanInterface: node.networks?.[0]?.name ?? '',
-                      targetCidr: '192.168.1.0/24',
-                      virtualCidr: '172.31.1.0/24',
-                      mode: 'nat',
-                      enabled: true,
-                  }
-        );
-    }, [editingRoute, node.networks, routeForm, routeOpen]);
+        if (editingRoute) routeForm.setFieldsValue({ virtualCidr: editingRoute.virtualCidr });
+    }, [editingRoute, routeForm, routeOpen]);
 
     const routeColumns = useMemo<ColumnsType<EdgeVpn.Route>>(
         () => [
@@ -155,21 +118,11 @@ export default function EdgeVpnPanel({ node }: { node: Edge.Node }) {
                                 编辑
                             </Button>
                         )}
-                        {canDelete && (
-                            <Popconfirm
-                                title="确认删除这条 VPN 路由吗？"
-                                onConfirm={() => routeDelete.mutate(item.id)}
-                            >
-                                <Button type="link" size="small" danger>
-                                    删除
-                                </Button>
-                            </Popconfirm>
-                        )}
                     </Space>
                 ),
             },
         ],
-        [canDelete, canEdit, routeDelete]
+        [canEdit]
     );
 
     if (!canQuery) {
@@ -177,14 +130,9 @@ export default function EdgeVpnPanel({ node }: { node: Edge.Node }) {
     }
 
     const supportsVpn = node.capability.vpn?.supportsVpn === true;
-    const closePeer = () => {
-        if (!peerCreate.isPending) setPeerOpen(false);
-    };
-    const closeNetwork = () => {
-        if (!networkCreate.isPending) setNetworkOpen(false);
-    };
+    const hasBridgeNetwork = Boolean(bridgeNetworks?.length);
     const closeRoute = () => {
-        if (!routeCreate.isPending && !routeUpdate.isPending) {
+        if (!routeUpdate.isPending) {
             setRouteOpen(false);
             setEditingRoute(undefined);
         }
@@ -200,11 +148,20 @@ export default function EdgeVpnPanel({ node }: { node: Edge.Node }) {
                     description="请将节点代理升级到支持 VPN 的版本；旧节点仍可正常使用其他功能。"
                 />
             )}
+            {supportsVpn && !hasBridgeNetwork && (
+                <Alert
+                    type="warning"
+                    showIcon
+                    message="当前节点没有可映射的桥接 LAN"
+                    description="请先让 EdgeNode 上报桥接网段，VPN 会根据该网段自动生成等长的虚拟映射。"
+                />
+            )}
             <Flex justify="space-between" align="center" gap={12} wrap>
                 <div>
-                    <div className="font-medium text-slate-800">节点 VPN</div>
+                    <div className="font-medium text-slate-800">节点 VPN · iot-server</div>
                     <div className="mt-1 text-xs text-slate-500">
-                        配置从当前边缘节点进入，平台只保存公钥和路由，不保存节点私钥。
+                        使用 iot-server 的 WireGuard Server。真实 LAN、桥接接口和掩码由节点上报；
+                        这里只允许修改虚拟网段网络号。
                     </div>
                 </div>
                 <Space wrap>
@@ -219,15 +176,17 @@ export default function EdgeVpnPanel({ node }: { node: Edge.Node }) {
                         <Button
                             type="primary"
                             icon={<CloudServerOutlined />}
-                            disabled={!supportsVpn || !data?.networks.length}
-                            onClick={() => setPeerOpen(true)}
+                            loading={peerCreate.isPending}
+                            disabled={!supportsVpn || !data?.networks.length || !hasBridgeNetwork}
+                            onClick={() =>
+                                peerCreate.mutate({
+                                    peerType: 'edge',
+                                    edgeNodeId: node.id,
+                                    name: peerName(node),
+                                })
+                            }
                         >
-                            加入 VPN 网络
-                        </Button>
-                    )}
-                    {canAdd && (
-                        <Button icon={<PlusOutlined />} onClick={() => setNetworkOpen(true)}>
-                            新建 VPN 网络
+                            启用节点 VPN
                         </Button>
                     )}
                 </Space>
@@ -236,7 +195,7 @@ export default function EdgeVpnPanel({ node }: { node: Edge.Node }) {
             {dataQuery.isLoading ? (
                 <Skeleton active paragraph={{ rows: 4 }} />
             ) : !data?.networks.length ? (
-                <Empty description="暂无可用 VPN 网络，请先新建网络" />
+                <Empty description="默认 iot-server VPN 网络尚未就绪" />
             ) : (
                 <>
                     <Descriptions bordered size="small" column={{ xs: 1, sm: 2, lg: 4 }}>
@@ -291,20 +250,6 @@ export default function EdgeVpnPanel({ node }: { node: Edge.Node }) {
 
                     <Flex justify="space-between" align="center" gap={12}>
                         <span className="text-sm font-medium text-slate-800">LAN 路由映射</span>
-                        {peer && canAdd && (
-                            <Button
-                                type="primary"
-                                ghost
-                                icon={<PlusOutlined />}
-                                disabled={!supportsVpn}
-                                onClick={() => {
-                                    setEditingRoute(undefined);
-                                    setRouteOpen(true);
-                                }}
-                            >
-                                添加路由
-                            </Button>
-                        )}
                     </Flex>
                     <Table
                         rowKey="id"
@@ -319,130 +264,49 @@ export default function EdgeVpnPanel({ node }: { node: Edge.Node }) {
             )}
 
             <Modal
-                open={peerOpen}
-                title="将边缘节点加入 VPN 网络"
-                onCancel={closePeer}
-                onOk={() => peerForm.submit()}
-                confirmLoading={peerCreate.isPending}
-                destroyOnHidden
-            >
-                <Form
-                    form={peerForm}
-                    layout="vertical"
-                    onFinish={(values) =>
-                        peerCreate.mutate(
-                            { ...values, peerType: 'edge', edgeNodeId: node.id },
-                            { onSuccess: () => setPeerOpen(false) }
-                        )
-                    }
-                >
-                    <Form.Item name="networkId" label="VPN 网络" rules={[{ required: true }]}>
-                        <Select
-                            options={data?.networks.map((item) => ({
-                                value: item.id,
-                                label: `${item.name} (${item.overlayCidr})`,
-                            }))}
-                            placeholder="选择 VPN 网络"
-                        />
-                    </Form.Item>
-                    <Form.Item name="name" label="Peer 名称" rules={[{ required: true }]}>
-                        <Input maxLength={100} />
-                    </Form.Item>
-                    <p className="text-xs text-slate-500">
-                        Edge 节点私钥只在节点本地生成；节点首次上报公钥后，平台会自动激活 Peer。
-                    </p>
-                </Form>
-            </Modal>
-
-            <Modal
-                open={networkOpen}
-                title="新建 VPN 网络"
-                onCancel={closeNetwork}
-                onOk={() => networkForm.submit()}
-                confirmLoading={networkCreate.isPending}
-                destroyOnHidden
-            >
-                <Form
-                    form={networkForm}
-                    layout="vertical"
-                    initialValues={{ overlayCidr: '100.96.0.0/24' }}
-                    onFinish={(values) =>
-                        networkCreate.mutate(values, { onSuccess: () => setNetworkOpen(false) })
-                    }
-                >
-                    <Form.Item name="name" label="网络名称" rules={[{ required: true }]}>
-                        <Input maxLength={100} placeholder="例如：生产现场 VPN" />
-                    </Form.Item>
-                    <Form.Item
-                        name="overlayCidr"
-                        label="Overlay CIDR"
-                        rules={[{ required: true, message: '请输入 Overlay CIDR' }]}
-                    >
-                        <Input placeholder="100.96.0.0/24" />
-                    </Form.Item>
-                    <Form.Item name="hubEndpoint" label="Hub 公网地址">
-                        <Input placeholder="vpn.example.com" />
-                    </Form.Item>
-                </Form>
-            </Modal>
-
-            <Modal
                 open={routeOpen}
-                title={editingRoute ? '编辑 VPN 路由' : '添加 VPN 路由'}
+                title="修改虚拟网段"
                 onCancel={closeRoute}
                 onOk={() => routeForm.submit()}
-                confirmLoading={routeCreate.isPending || routeUpdate.isPending}
+                confirmLoading={routeUpdate.isPending}
                 destroyOnHidden
             >
                 <Form
                     form={routeForm}
                     layout="vertical"
                     onFinish={(values) => {
-                        if (!peer || !network) return;
-                        if (editingRoute) {
-                            routeUpdate.mutate(
-                                { id: editingRoute.id, data: values },
-                                { onSuccess: closeRoute }
-                            );
-                        } else {
-                            routeCreate.mutate(
-                                { ...values, networkId: network.id, edgePeerId: peer.id },
-                                { onSuccess: closeRoute }
-                            );
-                        }
+                        if (!editingRoute) return;
+                        routeUpdate.mutate(
+                            { id: editingRoute.id, data: values },
+                            { onSuccess: closeRoute }
+                        );
                     }}
                 >
-                    <Form.Item
-                        name="lanInterface"
-                        label="节点 LAN 接口"
-                        rules={[{ required: true, message: '请输入 LAN 接口' }]}
-                    >
-                        <Input placeholder="例如：br-lan" />
-                    </Form.Item>
-                    <Form.Item
-                        name="targetCidr"
-                        label="真实 LAN CIDR"
-                        rules={[{ required: true, message: '请输入真实 LAN CIDR' }]}
-                    >
-                        <Input placeholder="192.168.1.0/24" />
-                    </Form.Item>
+                    <Descriptions bordered size="small" column={1} className="mb-4">
+                        <Descriptions.Item label="桥接接口">
+                            {editingRoute?.lanInterface ?? '-'}
+                        </Descriptions.Item>
+                        <Descriptions.Item label="真实 LAN">
+                            {editingRoute?.targetCidr ?? '-'}
+                        </Descriptions.Item>
+                        <Descriptions.Item label="模式">NAT（自动）</Descriptions.Item>
+                    </Descriptions>
+                    <p className="mb-4 text-xs text-slate-500">
+                        真实 LAN、桥接接口、掩码和 NAT 模式由 EdgeNode 自动确定；只允许修改虚拟网段网络号，
+                        且必须与真实 LAN 使用相同掩码并保持全局唯一。
+                    </p>
                     <Form.Item
                         name="virtualCidr"
-                        label="虚拟 LAN CIDR"
-                        rules={[{ required: true, message: '请输入虚拟 LAN CIDR' }]}
+                        label="虚拟 LAN 网段"
+                        rules={[
+                            { required: true, message: '请输入虚拟 LAN 网段' },
+                            {
+                                pattern: /^172\.31\.\d{1,3}\.\d{1,3}\/\d{1,2}$/,
+                                message: '请输入 172.31.0.0/16 范围内的网络 CIDR',
+                            },
+                        ]}
                     >
                         <Input placeholder="172.31.1.0/24" />
-                    </Form.Item>
-                    <Form.Item name="mode" label="模式" rules={[{ required: true }]}>
-                        <Select
-                            options={[
-                                { value: 'nat', label: 'NAT（推荐）' },
-                                { value: 'routed', label: '路由' },
-                            ]}
-                        />
-                    </Form.Item>
-                    <Form.Item name="enabled" label="启用" valuePropName="checked">
-                        <Switch />
                     </Form.Item>
                 </Form>
             </Modal>

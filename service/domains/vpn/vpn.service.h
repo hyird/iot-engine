@@ -32,6 +32,11 @@
 
 namespace service::vpn {
 
+inline constexpr std::string_view kDefaultNetworkId{
+    "00000000-0000-7000-8000-000000000004"};
+inline constexpr std::string_view kDefaultNetworkName{"iot-server"};
+inline constexpr std::string_view kDefaultOverlayCidr{"100.96.0.0/16"};
+
 namespace detail {
 
 inline std::string text(const ruvia::JsonValue& object, std::string_view field) {
@@ -164,6 +169,7 @@ class VpnService final {
     static std::int64_t integer(std::string_view, std::int64_t = 0);
     static void requireUuid(std::string_view, std::string_view);
     static wireguard::HubConfig hubConfig(ruvia::Context&);
+    static ruvia::Task<std::string> ensureDefaultNetwork(ruvia::Context&);
     static ruvia::Task<void> audit(ruvia::Context&, std::string_view, std::string_view,
                                    std::string_view, std::string_view, std::string_view,
                                    std::string_view);
@@ -172,6 +178,9 @@ class VpnService final {
                                                      std::string_view);
     static ruvia::Task<std::optional<std::uint32_t>> allocateAddress(
         ruvia::Context&, std::string_view, const Ipv4Cidr&);
+    template <typename Db>
+    static ruvia::Task<void> ensureBridgeRoutes(Db&, std::string_view, std::string_view,
+                                                std::string_view, std::string_view);
     static ruvia::Task<void> validateAllowedRoutes(ruvia::Context&, std::string_view,
                                                    const std::vector<std::string>&);
     static ruvia::Task<wireguard::RuntimeStatus> reconcileHub(ruvia::Context&);
@@ -188,8 +197,10 @@ class VpnService final {
                                       std::optional<std::string> status) {
         page = std::max<std::int64_t>(1, page);
         pageSize = std::clamp<std::int64_t>(pageSize, 1, 100);
+        const auto defaultNetworkId = co_await ensureDefaultNetwork(c);
         std::vector<ruvia::DbValue> params;
-        std::string where{" WHERE deleted_at IS NULL"};
+        params.emplace_back(defaultNetworkId);
+        std::string where{" WHERE deleted_at IS NULL AND id = $1::uuid"};
         if (keyword && !keyword->empty()) {
             const auto pattern = "%" + *keyword + "%";
             params.emplace_back(std::string_view(pattern));
@@ -259,125 +270,23 @@ FROM vpn_network n WHERE n.id = $1::uuid AND n.deleted_at IS NULL)sql",
     }
 
     ruvia::Task<std::string> createNetwork(ruvia::Context& c,
-                                           const ruvia::JsonValue& payload) {
-        const auto name = detail::requiredText(payload, "name", 100, "VPN 网络名称不能为空");
-        const auto overlayText = detail::optionalText(payload, "overlayCidr")
-                                     .value_or("100.96.0.0/24");
-        const auto overlay = parseCidr(overlayText, 16, 30);
-        if (!overlay || !kOverlayPool.contains(overlay->network) ||
-            !kOverlayPool.contains(overlay->network + overlay->size() - 1U))
-            service::common::fail(21001, "Overlay CIDR 必须位于 100.96.0.0/11 且前缀为 /16-/30", 400);
-        const auto existing = co_await c.db().query(
-            "SELECT overlay_cidr FROM vpn_network WHERE deleted_at IS NULL");
-        for (const auto& row : existing) {
-            const auto current = parseCidr(detail::rowValue(row, 0), 1, 32);
-            if (current && current->overlaps(*overlay))
-                service::common::fail(21002, "Overlay CIDR 与现有 VPN 网络重叠", 409);
-        }
-        const auto hub = hubConfig(c);
-        const auto port = detail::optionalInteger(payload, "hubListenPort").value_or(hub.listenPort);
-        if (port < 1 || port > 65535)
-            service::common::fail(21001, "WireGuard 监听端口必须在 1 - 65535", 400);
-        if (port != hub.listenPort)
-            service::common::fail(21003, "VPN 网络监听端口必须与 Hub 监听端口一致", 409);
-        const auto endpoint = detail::optionalText(payload, "hubEndpoint").value_or(hub.endpoint);
-        const auto principal = service::middleware::requireAuth(c);
-        const auto id = service::common::nextUuidV7();
-        const auto overlayCidr = overlay->text();
-        (void)co_await c.db().execute(R"sql(
-INSERT INTO vpn_network(id, name, overlay_cidr, hub_public_key, hub_endpoint, hub_listen_port, created_by)
-VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::uuid))sql",
-                                      service::common::dbParams(id, name, overlayCidr, hub.publicKey,
-                                                                endpoint, port, principal.userId));
-        co_await audit(c, principal.userId, "vpn.network.create", "vpn_network", id,
-                       "success", "{}");
-        (void)co_await reconcileHub(c);
-        co_return id;
+                                           const ruvia::JsonValue&) {
+        (void)co_await ensureDefaultNetwork(c);
+        service::common::fail(21003, "VPN 使用默认 iot-server，无需新建 VPN 网络", 409);
+        co_return std::string{};
     }
 
     ruvia::Task<void> updateNetwork(ruvia::Context& c, std::string_view id,
-                                    const ruvia::JsonValue& payload) {
+                                    const ruvia::JsonValue&) {
         requireUuid(id, "VPN 网络 ID 无效");
-        const auto current = co_await c.db().query(
-            "SELECT id, overlay_cidr FROM vpn_network WHERE id = $1::uuid AND deleted_at IS NULL",
-            service::common::dbParams(id));
-        if (current.empty())
-            service::common::fail(21004, "VPN 网络不存在", 404);
-        const auto hub = hubConfig(c);
-        const auto edgePeers = co_await c.db().query(
-            "SELECT id::text FROM vpn_peer WHERE network_id = $1::uuid AND peer_type = 'edge'",
-            service::common::dbParams(id));
-        const auto activeKeys = co_await c.db().query(
-            "SELECT public_key FROM vpn_peer WHERE network_id = $1::uuid AND status = 'active' "
-            "AND public_key <> ''",
-            service::common::dbParams(id));
-        if (detail::optionalText(payload, "overlayCidr"))
-            service::common::fail(21003, "已创建的 VPN 网络不允许修改 Overlay CIDR", 409);
-        const auto name = detail::optionalText(payload, "name");
-        const auto status = detail::optionalText(payload, "status");
-        const auto endpoint = detail::optionalText(payload, "hubEndpoint");
-        const auto port = detail::optionalInteger(payload, "hubListenPort");
-        if (status && *status != "enabled" && *status != "disabled")
-            service::common::fail(21001, "VPN 网络状态无效", 400);
-        if (port && (*port < 1 || *port > 65535))
-            service::common::fail(21001, "WireGuard 监听端口必须在 1 - 65535", 400);
-        if (port && *port != hub.listenPort)
-            service::common::fail(21003, "VPN 网络监听端口必须与 Hub 监听端口一致", 409);
-        if (!name && !status && !endpoint && !port)
-            service::common::fail(21001, "没有可更新的 VPN 网络字段", 400);
-        std::string set;
-        std::vector<ruvia::DbValue> params;
-        const auto append = [&](std::string_view expression, const auto& value) {
-            if (!set.empty())
-                set += ", ";
-            params.emplace_back(value);
-            set += std::string(expression) + " $" + std::to_string(params.size());
-        };
-        if (name) append("name =", *name);
-        if (status) append("status =", *status);
-        if (endpoint) append("hub_endpoint =", *endpoint);
-        if (port) append("hub_listen_port =", *port);
-        set += ", updated_at = NOW()";
-        params.emplace_back(id);
-        (void)co_await c.db().execute("UPDATE vpn_network SET " + set +
-                                          " WHERE id = $" + std::to_string(params.size()) +
-                                          "::uuid AND deleted_at IS NULL", params);
-        const auto principal = service::middleware::requireAuth(c);
-        co_await audit(c, principal.userId, "vpn.network.update", "vpn_network", id,
-                       "success", "{}");
-        for (const auto& row : edgePeers)
-            co_await service::vpn::queueEdgeConfig(
-                c, detail::rowValue(row, 0), principal.userId);
-        if (status && *status == "disabled") {
-            for (const auto& row : activeKeys) {
-                const auto key = detail::rowValue(row, 0);
-                if (detail::validKey(key))
-                    (void)wireguard::controller().removePeer(hub, key);
-            }
-        }
-        (void)co_await reconcileHub(c);
+        (void)co_await ensureDefaultNetwork(c);
+        service::common::fail(21003, "VPN 使用 iot-server，网络配置不可修改", 409);
     }
 
     ruvia::Task<void> removeNetwork(ruvia::Context& c, std::string_view id) {
         requireUuid(id, "VPN 网络 ID 无效");
-        const auto keys = co_await c.db().query(
-            "SELECT public_key FROM vpn_peer WHERE network_id = $1::uuid AND public_key <> ''",
-            service::common::dbParams(id));
-        const auto removed = co_await c.db().query(
-            "DELETE FROM vpn_network WHERE id = $1::uuid RETURNING id",
-            service::common::dbParams(id));
-        if (removed.empty())
-            service::common::fail(21004, "VPN 网络不存在", 404);
-        const auto config = hubConfig(c);
-        for (const auto& row : keys) {
-            const auto key = detail::rowValue(row, 0);
-            if (detail::validKey(key))
-                (void)wireguard::controller().removePeer(config, key);
-        }
-        const auto principal = service::middleware::requireAuth(c);
-        co_await audit(c, principal.userId, "vpn.network.delete", "vpn_network", id,
-                       "success", "{}");
-        (void)co_await reconcileHub(c);
+        (void)co_await ensureDefaultNetwork(c);
+        service::common::fail(21003, "默认 iot-server VPN 网络不能删除", 409);
     }
 
     ruvia::Task<std::string> routes(ruvia::Context& c,
@@ -420,59 +329,43 @@ FROM vpn_route r JOIN vpn_peer p ON p.id = r.edge_peer_id)sql" + where +
 
     ruvia::Task<std::string> createRoute(ruvia::Context& c,
                                          const ruvia::JsonValue& payload) {
+        const auto defaultNetworkId = co_await ensureDefaultNetwork(c);
         const auto networkId = detail::requiredUuid(payload, "networkId", "VPN 网络 ID 无效");
+        if (networkId != defaultNetworkId)
+            service::common::fail(21003, "VPN 仅使用默认 iot-server 网络", 409);
         const auto edgePeerId = detail::requiredUuid(payload, "edgePeerId", "Edge Peer ID 无效");
-        const auto lanInterface = detail::requiredText(payload, "lanInterface", 32,
-                                                        "LAN 接口不能为空");
-        if (!detail::validInterface(lanInterface))
-            service::common::fail(21001, "LAN 接口名称包含非法字符", 400);
         const auto targetText = detail::requiredText(payload, "targetCidr", 18,
                                                      "真实 LAN CIDR 不能为空");
-        const auto virtualText = detail::requiredText(payload, "virtualCidr", 18,
-                                                      "虚拟 LAN CIDR 不能为空");
         const auto target = parseCidr(targetText, 1, 30);
-        const auto virtualNetwork = parseCidr(virtualText, 1, 30);
-        if (!target || !virtualNetwork || target->prefix != virtualNetwork->prefix ||
-            !isPrivateIpv4(*target) || !kVirtualLanPool.contains(virtualNetwork->network) ||
-            !kVirtualLanPool.contains(virtualNetwork->network + virtualNetwork->size() - 1U))
-            service::common::fail(21001, "真实 LAN 与虚拟 LAN 必须是等长 IPv4 私网 CIDR，虚拟网段必须位于 172.31.0.0/16", 400);
-        const auto mode = detail::optionalText(payload, "mode").value_or("nat");
-        if (mode != "nat" && mode != "routed")
-            service::common::fail(21001, "VPN 路由模式只支持 nat 或 routed", 400);
-        const auto natMode = mode == "nat" ? "masquerade" : "none";
-        if (detail::optionalText(payload, "natMode") &&
-            *detail::optionalText(payload, "natMode") != natMode)
-            service::common::fail(21001, "NAT 模式与路由模式不匹配", 400);
-        const auto enabled = detail::optionalBoolean(payload, "enabled").value_or(true);
+        if (!target || !isPrivateIpv4(*target))
+            service::common::fail(21001, "真实 LAN 必须是有效的私有 IPv4 网段", 400);
         const auto edge = co_await c.db().query(R"sql(
-SELECT p.network_id, p.peer_type, p.edge_node_id, n.overlay_cidr
+SELECT p.network_id, p.peer_type, p.edge_node_id
 FROM vpn_peer p JOIN vpn_network n ON n.id = p.network_id
 WHERE p.id = $1::uuid AND p.status <> 'revoked' AND n.status = 'enabled'
 LIMIT 1)sql", service::common::dbParams(edgePeerId));
         if (edge.empty() || detail::rowValue(edge.front(), 1) != "edge" ||
             detail::rowValue(edge.front(), 0) != networkId)
             service::common::fail(21004, "Edge Peer 不属于指定 VPN 网络", 404);
-        const auto conflicts = co_await c.db().query(
-            "SELECT virtual_cidr FROM vpn_route WHERE network_id = $1::uuid AND enabled",
-            service::common::dbParams(networkId));
-        for (const auto& row : conflicts) {
-            const auto current = parseCidr(detail::rowValue(row, 0), 1, 32);
-            if (current && current->overlaps(*virtualNetwork))
-                service::common::fail(21002, "虚拟 LAN CIDR 与现有路由重叠", 409);
-        }
-        const auto id = service::common::nextUuidV7();
         const auto principal = service::middleware::requireAuth(c);
         const auto targetCidr = target->text();
-        const auto virtualCidr = virtualNetwork->text();
-        (void)co_await c.db().execute(R"sql(
-INSERT INTO vpn_route(id, network_id, edge_peer_id, lan_interface, target_cidr, virtual_cidr,
-                      mode, nat_mode, enabled, created_by)
-VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9, $10::uuid))sql",
-                                      service::common::dbParams(id, networkId, edgePeerId,
-                                                                lanInterface, targetCidr,
-                                                                virtualCidr, mode, natMode,
-                                                                enabled, principal.userId));
-        co_await audit(c, principal.userId, "vpn.route.create", "vpn_route", id,
+        auto transaction = co_await c.db().beginTransaction();
+        (void)co_await transaction.query(
+            "SELECT pg_advisory_xact_lock(5282804697543808068::bigint)");
+        co_await ensureBridgeRoutes(transaction, edgePeerId, networkId,
+                                    detail::rowValue(edge.front(), 2), principal.userId);
+        co_await transaction.commit();
+        const auto mapped = co_await c.db().query(
+            "SELECT id::text, virtual_cidr FROM vpn_route "
+            "WHERE edge_peer_id = $1::uuid AND target_cidr = $2 LIMIT 1",
+            service::common::dbParams(edgePeerId, targetCidr));
+        if (mapped.empty())
+            service::common::fail(21004, "真实 LAN 不是 EdgeNode 的桥接网段", 409);
+        const auto requestedVirtual = detail::optionalText(payload, "virtualCidr");
+        if (requestedVirtual && *requestedVirtual != detail::rowValue(mapped.front(), 1))
+            service::common::fail(21003, "虚拟网段由平台自动生成，请使用编辑修改", 409);
+        const auto id = detail::rowValue(mapped.front(), 0);
+        co_await audit(c, principal.userId, "vpn.route.ensure", "vpn_route", id,
                        "success", "{}");
         co_await queueEdgeConfig(c, edgePeerId);
         (void)co_await reconcileHub(c);
@@ -483,53 +376,55 @@ VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9, $10::uuid))sql",
                                   const ruvia::JsonValue& payload) {
         requireUuid(id, "VPN 路由 ID 无效");
         const auto rows = co_await c.db().query(
-            "SELECT edge_peer_id, network_id, target_cidr, virtual_cidr, mode, enabled "
+            "SELECT edge_peer_id, network_id, lan_interface, target_cidr, virtual_cidr, mode, enabled "
             "FROM vpn_route WHERE id = $1::uuid", service::common::dbParams(id));
         if (rows.empty())
             service::common::fail(21004, "VPN 路由不存在", 404);
         const auto edgePeerId = detail::rowValue(rows.front(), 0);
-        const auto networkId = detail::rowValue(rows.front(), 1);
-        const auto currentTarget = detail::rowValue(rows.front(), 2);
-        const auto currentVirtual = detail::rowValue(rows.front(), 3);
-        const auto targetText = detail::optionalText(payload, "targetCidr").value_or(currentTarget);
+        const auto currentInterface = detail::rowValue(rows.front(), 2);
+        const auto currentTarget = detail::rowValue(rows.front(), 3);
+        const auto currentVirtual = detail::rowValue(rows.front(), 4);
+        const auto currentMode = detail::rowValue(rows.front(), 5);
+        const auto currentEnabled = detail::rowValue(rows.front(), 6) == "t";
+        const auto requestedTarget = detail::optionalText(payload, "targetCidr");
+        const auto requestedInterface = detail::optionalText(payload, "lanInterface");
+        const auto requestedMode = detail::optionalText(payload, "mode");
+        const auto requestedEnabled = detail::optionalBoolean(payload, "enabled");
+        if ((requestedTarget && *requestedTarget != currentTarget) ||
+            (requestedInterface && *requestedInterface != currentInterface) ||
+            (requestedMode && *requestedMode != currentMode) ||
+            (requestedEnabled && *requestedEnabled != currentEnabled))
+            service::common::fail(21003, "VPN 映射中只有虚拟网段可以修改", 409);
+        const auto targetText = currentTarget;
         const auto virtualText = detail::optionalText(payload, "virtualCidr").value_or(currentVirtual);
         const auto target = parseCidr(targetText, 1, 30);
         const auto virtualNetwork = parseCidr(virtualText, 1, 30);
         if (!target || !virtualNetwork || target->prefix != virtualNetwork->prefix ||
             !isPrivateIpv4(*target) || !kVirtualLanPool.contains(virtualNetwork->network) ||
-            !kVirtualLanPool.contains(virtualNetwork->network + virtualNetwork->size() - 1U))
+            !kVirtualLanPool.contains(virtualNetwork->network + virtualNetwork->size() - 1U) ||
+            virtualNetwork->overlaps(*target))
             service::common::fail(21001, "VPN 路由 CIDR 无效或不是等长私网映射", 400);
-        const auto mode = detail::optionalText(payload, "mode").value_or(detail::rowValue(rows.front(), 4));
-        if (mode != "nat" && mode != "routed")
-            service::common::fail(21001, "VPN 路由模式无效", 400);
-        const auto enabled = detail::optionalBoolean(payload, "enabled").value_or(
-            detail::rowValue(rows.front(), 5) == "t");
-        const auto interface = detail::optionalText(payload, "lanInterface");
-        if (interface && !detail::validInterface(*interface))
-            service::common::fail(21001, "LAN 接口名称包含非法字符", 400);
-        const auto natMode = mode == "nat" ? "masquerade" : "none";
-        if (enabled) {
-            const auto conflicts = co_await c.db().query(
-                "SELECT virtual_cidr FROM vpn_route WHERE network_id = $1::uuid "
-                "AND enabled AND id <> $2::uuid",
-                service::common::dbParams(networkId, id));
-            for (const auto& row : conflicts) {
-                const auto current = parseCidr(detail::rowValue(row, 0), 1, 32);
-                if (current && current->overlaps(*virtualNetwork))
-                    service::common::fail(21002, "虚拟 LAN CIDR 与现有路由重叠", 409);
-            }
+        if (currentMode != "nat" || !currentEnabled)
+            service::common::fail(21003, "VPN 自动映射只能保持启用的 NAT 模式", 409);
+        auto transaction = co_await c.db().beginTransaction();
+        (void)co_await transaction.query(
+            "SELECT pg_advisory_xact_lock(5282804697543808068::bigint)");
+        const auto conflicts = co_await transaction.query(
+            "SELECT target_cidr, virtual_cidr FROM vpn_route WHERE id <> $1::uuid",
+            service::common::dbParams(id));
+        for (const auto& row : conflicts) {
+            const auto otherTarget = parseCidr(detail::rowValue(row, 0), 1, 30);
+            const auto otherVirtual = parseCidr(detail::rowValue(row, 1), 1, 30);
+            if ((otherTarget && virtualNetwork->overlaps(*otherTarget)) ||
+                (otherVirtual && virtualNetwork->overlaps(*otherVirtual)))
+                service::common::fail(21002, "虚拟网段与全局已有网段重叠", 409);
         }
-        const auto interfaceName = interface.value_or("");
-        const auto targetCidr = target->text();
         const auto virtualCidr = virtualNetwork->text();
-        (void)co_await c.db().execute(R"sql(
-UPDATE vpn_route SET lan_interface = COALESCE(NULLIF($2, ''), lan_interface), target_cidr = $3,
-    virtual_cidr = $4, mode = $5, nat_mode = $6, enabled = $7,
-    status = CASE WHEN $7 THEN 'active' ELSE 'disabled' END, last_error = '', updated_at = NOW()
-WHERE id = $1::uuid)sql",
-                                      service::common::dbParams(id, interfaceName,
-                                                                targetCidr, virtualCidr,
-                                                                mode, natMode, enabled));
+        (void)co_await transaction.execute(
+            "UPDATE vpn_route SET virtual_cidr = $2, last_error = '', "
+            "updated_at = NOW() WHERE id = $1::uuid",
+            service::common::dbParams(id, virtualCidr));
+        co_await transaction.commit();
         const auto principal = service::middleware::requireAuth(c);
         co_await audit(c, principal.userId, "vpn.route.update", "vpn_route", id,
                        "success", "{}");
@@ -539,16 +434,7 @@ WHERE id = $1::uuid)sql",
 
     ruvia::Task<void> removeRoute(ruvia::Context& c, std::string_view id) {
         requireUuid(id, "VPN 路由 ID 无效");
-        const auto rows = co_await c.db().query(
-            "DELETE FROM vpn_route WHERE id = $1::uuid RETURNING edge_peer_id",
-            service::common::dbParams(id));
-        if (rows.empty())
-            service::common::fail(21004, "VPN 路由不存在", 404);
-        const auto principal = service::middleware::requireAuth(c);
-        co_await audit(c, principal.userId, "vpn.route.delete", "vpn_route", id,
-                       "success", "{}");
-        co_await queueEdgeConfig(c, detail::rowValue(rows.front(), 0));
-        (void)co_await reconcileHub(c);
+        service::common::fail(21003, "VPN 桥接网段映射不能删除，请撤销 Edge Peer", 409);
     }
 
     ruvia::Task<std::string> peers(ruvia::Context& c,
@@ -589,7 +475,13 @@ FROM vpn_peer p)sql" + where + " ORDER BY p.created_at DESC LIMIT 1000", params)
 
     ruvia::Task<std::string> createPeer(ruvia::Context& c,
                                         const ruvia::JsonValue& payload) {
-        const auto networkId = detail::requiredUuid(payload, "networkId", "VPN 网络 ID 无效");
+        const auto defaultNetworkId = co_await ensureDefaultNetwork(c);
+        const auto requestedNetworkId = detail::optionalText(payload, "networkId");
+        if (requestedNetworkId && !service::common::isUuid(*requestedNetworkId))
+            service::common::fail(21001, "VPN 网络 ID 无效", 400);
+        if (requestedNetworkId && *requestedNetworkId != defaultNetworkId)
+            service::common::fail(21003, "VPN 仅使用默认 iot-server 网络", 409);
+        const auto networkId = defaultNetworkId;
         const auto peerType = detail::requiredText(payload, "peerType", 16, "Peer 类型不能为空");
         if (peerType != "windows" && peerType != "edge")
             service::common::fail(21001, "Peer 类型只支持 windows 或 edge", 400);
@@ -636,14 +528,20 @@ FROM vpn_peer p)sql" + where + " ORDER BY p.created_at DESC LIMIT 1000", params)
         const auto status = publicKey.empty() ? "pending" : "active";
         const auto assignedText = detail::hostText(*assigned);
         const auto allowedRoutesJson = detail::jsonArray(allowedRoutes);
-        (void)co_await c.db().execute(R"sql(
+        auto transaction = co_await c.db().beginTransaction();
+        (void)co_await transaction.query(
+            "SELECT pg_advisory_xact_lock(5282804697543808068::bigint)");
+        (void)co_await transaction.execute(R"sql(
 INSERT INTO vpn_peer(id, network_id, peer_type, edge_node_id, user_id, name, public_key,
                      assigned_ipv4, allowed_routes, status)
 VALUES ($1::uuid, $2::uuid, $3, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
         $6, $7, $8::inet, $9::jsonb, $10))sql",
-                                      service::common::dbParams(id, networkId, peerType, edgeNodeId,
-                                                                userId, name, publicKey,
-                                                                assignedText, allowedRoutesJson, status));
+                                              service::common::dbParams(id, networkId, peerType, edgeNodeId,
+                                                                        userId, name, publicKey,
+                                                                        assignedText, allowedRoutesJson, status));
+        if (peerType == "edge")
+            co_await ensureBridgeRoutes(transaction, id, networkId, edgeNodeId, principal.userId);
+        co_await transaction.commit();
         co_await audit(c, principal.userId, "vpn.peer.create", "vpn_peer", id,
                        "success", "{}");
         if (peerType == "edge")
@@ -676,7 +574,7 @@ VALUES ($1::uuid, $2::uuid, $3, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
     ruvia::Task<void> syncPeer(ruvia::Context& c, std::string_view id) {
         requireUuid(id, "VPN Peer ID 无效");
         const auto rows = co_await c.db().query(
-            "SELECT edge_node_id, peer_type, status FROM vpn_peer WHERE id = $1::uuid",
+            "SELECT edge_node_id, peer_type, status, network_id::text FROM vpn_peer WHERE id = $1::uuid",
             service::common::dbParams(id));
         if (rows.empty())
             service::common::fail(21004, "VPN Peer 不存在", 404);
@@ -684,6 +582,14 @@ VALUES ($1::uuid, $2::uuid, $3, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
             service::common::fail(21001, "只有 Edge Peer 支持重新下发", 400);
         if (detail::rowValue(rows.front(), 2) == "revoked")
             service::common::fail(21003, "VPN Peer 已撤销", 409);
+        const auto edgeNodeId = detail::rowValue(rows.front(), 0);
+        const auto networkId = detail::rowValue(rows.front(), 3);
+        const auto principal = service::middleware::requireAuth(c);
+        auto transaction = co_await c.db().beginTransaction();
+        (void)co_await transaction.query(
+            "SELECT pg_advisory_xact_lock(5282804697543808068::bigint)");
+        co_await ensureBridgeRoutes(transaction, id, networkId, edgeNodeId, principal.userId);
+        co_await transaction.commit();
         co_await queueEdgeConfig(c, id);
         (void)co_await reconcileHub(c);
     }
@@ -721,7 +627,13 @@ VALUES ($1::uuid, $2::uuid, $3, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
 
     ruvia::Task<std::string> createEnrollment(ruvia::Context& c,
                                               const ruvia::JsonValue& payload) {
-        const auto networkId = detail::requiredUuid(payload, "networkId", "VPN 网络 ID 无效");
+        const auto defaultNetworkId = co_await ensureDefaultNetwork(c);
+        const auto requestedNetworkId = detail::optionalText(payload, "networkId");
+        if (requestedNetworkId && !service::common::isUuid(*requestedNetworkId))
+            service::common::fail(21001, "VPN 网络 ID 无效", 400);
+        if (requestedNetworkId && *requestedNetworkId != defaultNetworkId)
+            service::common::fail(21003, "VPN 仅使用默认 iot-server 网络", 409);
+        const auto networkId = defaultNetworkId;
         const auto network = co_await c.db().query(
             "SELECT id FROM vpn_network WHERE id = $1::uuid AND status = 'enabled' AND deleted_at IS NULL",
             service::common::dbParams(networkId));
@@ -860,6 +772,206 @@ inline wireguard::HubConfig VpnService::hubConfig(ruvia::Context& c) {
     config.endpoint = std::string(c.env().get("VPN_HUB_ENDPOINT").value_or(""));
     config.listenPort = c.env().get<std::uint16_t>("VPN_HUB_LISTEN_PORT").value_or(51820);
     return config;
+}
+
+inline ruvia::Task<std::string> VpnService::ensureDefaultNetwork(ruvia::Context& c) {
+    const auto principal = service::middleware::requireAuth(c);
+    const auto hub = hubConfig(c);
+    auto transaction = co_await c.db().beginTransaction();
+    (void)co_await transaction.query(
+        "SELECT pg_advisory_xact_lock(5282804697543808067::bigint)");
+    const auto existing = co_await transaction.query(
+        "SELECT id::text FROM vpn_network WHERE name = $1 AND deleted_at IS NULL LIMIT 1",
+        service::common::dbParams(kDefaultNetworkName));
+    std::string networkId = std::string(kDefaultNetworkId);
+    if (!existing.empty()) {
+        networkId = detail::rowValue(existing.front(), 0);
+    } else {
+        const auto inserted = co_await transaction.query(R"sql(
+INSERT INTO vpn_network(id, name, overlay_cidr, hub_public_key, hub_endpoint,
+                        hub_listen_port, created_by)
+VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::uuid)
+ON CONFLICT (id) DO UPDATE SET
+    name = EXCLUDED.name, overlay_cidr = EXCLUDED.overlay_cidr,
+    deleted_at = NULL, updated_at = NOW()
+RETURNING id::text)sql",
+                                                        service::common::dbParams(
+                                                            kDefaultNetworkId, kDefaultNetworkName,
+                                                            kDefaultOverlayCidr, hub.publicKey,
+                                                            hub.endpoint, static_cast<int>(hub.listenPort),
+                                                            principal.userId));
+        if (inserted.empty())
+            service::common::fail(21005, "默认 iot-server VPN 网络创建失败", 500);
+        networkId = detail::rowValue(inserted.front(), 0);
+    }
+    (void)co_await transaction.execute(R"sql(
+UPDATE vpn_network
+SET name = $2, overlay_cidr = $3, hub_public_key = $4, hub_endpoint = $5,
+    hub_listen_port = $6, status = 'enabled', deleted_at = NULL, updated_at = NOW()
+WHERE id = $1::uuid)sql",
+                                        service::common::dbParams(
+                                            networkId, kDefaultNetworkName, kDefaultOverlayCidr,
+                                            hub.publicKey, hub.endpoint,
+                                            static_cast<int>(hub.listenPort)));
+    co_await transaction.commit();
+    co_return networkId;
+}
+
+template <typename Db>
+inline ruvia::Task<void> VpnService::ensureBridgeRoutes(
+    Db& db, std::string_view peerId, std::string_view networkId,
+    std::string_view edgeNodeId, std::string_view actorId) {
+    struct RouteRecord final {
+        std::string id;
+        std::string lanInterface;
+        std::optional<Ipv4Cidr> target;
+        std::optional<Ipv4Cidr> virtualNetwork;
+    };
+    struct BridgeRecord final {
+        std::string lanInterface;
+        Ipv4Cidr target;
+    };
+
+    const auto bridgeRows = co_await db.query(R"sql(
+SELECT name, device, ipv4, prefix_length
+FROM edge_node_network
+WHERE node_id = $1::uuid AND is_bridge = TRUE
+  AND COALESCE(ipv4, '') <> '' AND prefix_length BETWEEN 1 AND 30
+ORDER BY name)sql", service::common::dbParams(edgeNodeId));
+    std::vector<BridgeRecord> bridges;
+    for (const auto& row : bridgeRows) {
+        const auto address = detail::rowValue(row, 2);
+        const auto prefix = integer(detail::rowValue(row, 3));
+        const auto target = networkCidr(address, static_cast<std::uint8_t>(prefix));
+        if (!target || !isPrivateIpv4(*target))
+            continue;
+        const auto name = detail::rowValue(row, 1).empty() ? detail::rowValue(row, 0)
+                                                            : detail::rowValue(row, 1);
+        if (!name.empty())
+            bridges.push_back(BridgeRecord{name, *target});
+    }
+    if (bridges.empty())
+        service::common::fail(21008, "EdgeNode 尚未上报可映射的私有桥接 LAN 网段", 409);
+
+    const auto currentRows = co_await db.query(R"sql(
+SELECT id::text, lan_interface, target_cidr, virtual_cidr
+FROM vpn_route WHERE edge_peer_id = $1::uuid ORDER BY id)sql",
+                                               service::common::dbParams(peerId));
+    std::vector<RouteRecord> current;
+    current.reserve(currentRows.size());
+    for (const auto& row : currentRows)
+        current.push_back(RouteRecord{
+            detail::rowValue(row, 0), detail::rowValue(row, 1),
+            parseCidr(detail::rowValue(row, 2), 1, 30),
+            parseCidr(detail::rowValue(row, 3), 1, 30)});
+
+    const auto allRows = co_await db.query(
+        "SELECT id::text, lan_interface, target_cidr, virtual_cidr FROM vpn_route");
+    std::vector<RouteRecord> allRoutes;
+    allRoutes.reserve(allRows.size());
+    for (const auto& row : allRows)
+        allRoutes.push_back(RouteRecord{
+            detail::rowValue(row, 0), detail::rowValue(row, 1),
+            parseCidr(detail::rowValue(row, 2), 1, 30),
+            parseCidr(detail::rowValue(row, 3), 1, 30)});
+
+    const auto conflicts = [&](const Ipv4Cidr& candidate,
+                               std::string_view excludedId) {
+        for (const auto& route : allRoutes) {
+            if (route.id == excludedId)
+                continue;
+            if ((route.target && candidate.overlaps(*route.target)) ||
+                (route.virtualNetwork && candidate.overlaps(*route.virtualNetwork)))
+                return true;
+        }
+        return false;
+    };
+    const auto chooseVirtual = [&](const Ipv4Cidr& target,
+                                   std::string_view excludedId)
+        -> std::optional<Ipv4Cidr> {
+        if (const auto preferred = mappedVirtualCidr(target);
+            preferred && !preferred->overlaps(target) && !conflicts(*preferred, excludedId))
+            return preferred;
+        if (target.prefix < kVirtualLanPool.prefix)
+            return std::nullopt;
+        const auto blockSize = static_cast<std::uint64_t>(target.size());
+        for (std::uint64_t offset = 0; offset < kVirtualLanPool.size(); offset += blockSize) {
+            const Ipv4Cidr candidate{
+                static_cast<std::uint32_t>(kVirtualLanPool.network + offset), target.prefix};
+            if (!candidate.overlaps(target) && !conflicts(candidate, excludedId))
+                return candidate;
+        }
+        return std::nullopt;
+    };
+
+    std::unordered_set<std::string> claimed;
+    for (const auto& bridge : bridges) {
+        auto existing = std::find_if(
+            current.begin(), current.end(), [&](const auto& route) {
+                return !claimed.contains(route.id) &&
+                       ((route.target && route.target->network == bridge.target.network &&
+                         route.target->prefix == bridge.target.prefix) ||
+                        route.lanInterface == bridge.lanInterface);
+            });
+        std::string routeId;
+        std::optional<Ipv4Cidr> virtualNetwork;
+        if (existing != current.end()) {
+            routeId = existing->id;
+            claimed.emplace(routeId);
+            if (existing->virtualNetwork &&
+                existing->virtualNetwork->prefix == bridge.target.prefix &&
+                kVirtualLanPool.contains(existing->virtualNetwork->network) &&
+                kVirtualLanPool.contains(existing->virtualNetwork->network +
+                                         existing->virtualNetwork->size() - 1U) &&
+                !existing->virtualNetwork->overlaps(bridge.target) &&
+                !conflicts(*existing->virtualNetwork, routeId))
+                virtualNetwork = existing->virtualNetwork;
+            else
+                virtualNetwork = chooseVirtual(bridge.target, routeId);
+        } else {
+            virtualNetwork = chooseVirtual(bridge.target, {});
+        }
+        const auto excludedId = existing != current.end() ? existing->id : std::string{};
+        for (const auto& route : allRoutes) {
+            if (route.id == excludedId)
+                continue;
+            if ((route.target && bridge.target.overlaps(*route.target)) ||
+                (route.virtualNetwork && bridge.target.overlaps(*route.virtualNetwork)))
+                service::common::fail(21002, "真实 LAN 与全局已有网段重叠", 409);
+        }
+        if (!virtualNetwork)
+            service::common::fail(21009, "没有可用的全局唯一虚拟网段", 409);
+        const auto targetCidr = bridge.target.text();
+        const auto virtualCidr = virtualNetwork->text();
+        if (existing != current.end()) {
+            (void)co_await db.execute(R"sql(
+UPDATE vpn_route SET network_id = $2::uuid, lan_interface = $3, target_cidr = $4,
+    virtual_cidr = $5, mode = 'nat', nat_mode = 'masquerade', enabled = TRUE,
+    status = 'active', last_error = '', updated_at = NOW()
+WHERE id = $1::uuid)sql",
+                                      service::common::dbParams(
+                                          routeId, networkId, bridge.lanInterface,
+                                          targetCidr, virtualCidr));
+            for (auto& route : allRoutes)
+                if (route.id == routeId) {
+                    route.lanInterface = bridge.lanInterface;
+                    route.target = bridge.target;
+                    route.virtualNetwork = virtualNetwork;
+                }
+        } else {
+            const auto id = service::common::nextUuidV7();
+            (void)co_await db.execute(R"sql(
+INSERT INTO vpn_route(id, network_id, edge_peer_id, lan_interface, target_cidr,
+                      virtual_cidr, mode, nat_mode, enabled, status, created_by)
+VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6,
+        'nat', 'masquerade', TRUE, 'active', $7::uuid))sql",
+                                      service::common::dbParams(
+                                          id, networkId, peerId, bridge.lanInterface,
+                                          targetCidr, virtualCidr, actorId));
+            allRoutes.push_back(RouteRecord{id, bridge.lanInterface, bridge.target,
+                                            virtualNetwork});
+        }
+    }
 }
 
 inline ruvia::Task<std::optional<std::uint32_t>> VpnService::allocateAddress(

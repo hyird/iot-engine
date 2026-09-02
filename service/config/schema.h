@@ -26,7 +26,7 @@ class SchemaMigration final {
     std::string sql_;
 };
 
-inline const std::array<SchemaMigration, 30> kSchemaMigrations{{
+inline const std::array<SchemaMigration, 31> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
@@ -1464,6 +1464,19 @@ CREATE TABLE vpn_enrollment (
 );
 CREATE INDEX idx_vpn_enrollment_active ON vpn_enrollment(network_id, expires_at)
     WHERE used_at IS NULL;
+    END
+$schema$;
+)sql"},
+    {"0030_vpn_iot_server_default", R"sql(
+DO $schema$
+BEGIN
+INSERT INTO vpn_network(id, name, overlay_cidr, hub_public_key, hub_endpoint,
+                        hub_listen_port, created_by)
+VALUES ('00000000-0000-7000-8000-000000000004', 'iot-server', '100.96.0.0/16',
+        '', '', 51820, '00000000-0000-7000-8000-000000000002')
+ON CONFLICT (id) DO UPDATE
+SET name = 'iot-server', overlay_cidr = '100.96.0.0/16', deleted_at = NULL,
+    updated_at = NOW();
 END
 $schema$;
 )sql"},
