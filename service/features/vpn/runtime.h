@@ -20,6 +20,7 @@
 
 #include "service/common/http.h"
 #include "service/features/vpn/cidr.h"
+#include "service/features/vpn/hub-config.h"
 #include "service/features/vpn/wireguard.h"
 
 namespace service::vpn {
@@ -65,8 +66,11 @@ class Runtime final {
 
   private:
     static ruvia::Task<void> reconcile(ruvia::WebWorkerContext& context,
-                                       const wireguard::HubConfig& config) {
-        if (!wireguard::validKey(config.privateKey) || config.listenPort == 0)
+                                       const wireguard::HubConfig& fallback) {
+        const auto config = co_await hub_config::loadOrInitialize(context, fallback);
+        if (!config)
+            co_return;
+        if (!wireguard::validKey(config->privateKey) || config->listenPort == 0)
             co_return;
         const auto rows = co_await context.db().query(R"sql(
 SELECT p.public_key, host(p.assigned_ipv4), p.peer_type,
@@ -77,7 +81,7 @@ WHERE p.status = 'active' AND n.status = 'enabled' AND p.public_key <> ''
 GROUP BY p.id, p.public_key, p.assigned_ipv4, p.peer_type
 ORDER BY p.id)sql");
         auto& controller = wireguard::controller();
-        const auto configured = controller.configure(config);
+        const auto configured = controller.configure(*config);
         if (!configured.configured)
             co_return;
         for (const auto& row : rows) {
@@ -97,9 +101,9 @@ ORDER BY p.id)sql");
                 if (!route.empty())
                     peer.allowedIps.push_back(std::move(route));
             }
-            (void)controller.upsertPeer(config, peer);
+            (void)controller.upsertPeer(*config, peer);
         }
-        if (const auto currentPeers = controller.peerKeys(config)) {
+        if (const auto currentPeers = controller.peerKeys(*config)) {
             std::unordered_set<std::string> expected;
             expected.reserve(rows.size());
             for (const auto& row : rows) {
@@ -110,9 +114,9 @@ ORDER BY p.id)sql");
             }
             for (const auto& publicKey : *currentPeers)
                 if (!expected.contains(publicKey))
-                    (void)controller.removePeer(config, publicKey);
+                    (void)controller.removePeer(*config, publicKey);
         }
-        if (const auto handshakes = controller.peerHandshakes(config)) {
+        if (const auto handshakes = controller.peerHandshakes(*config)) {
             for (const auto& [publicKey, seconds] : *handshakes) {
                 if (seconds == 0 || seconds >
                                         static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))

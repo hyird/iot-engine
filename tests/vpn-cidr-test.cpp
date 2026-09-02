@@ -3,6 +3,7 @@
 #include <string_view>
 
 #include "service/features/vpn/cidr.h"
+#include "service/features/vpn/hub-config.h"
 #include "service/features/vpn/wireguard.h"
 
 namespace {
@@ -45,5 +46,14 @@ int main() {
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=";
     require(service::vpn::wireguard::validKey(key), "WireGuard public key validation");
     require(!service::vpn::wireguard::validKey("invalid"), "invalid WireGuard key rejection");
+
+    std::string privateKey;
+    std::string publicKey;
+    require(service::vpn::hub_config::generateKeyPair(privateKey, publicKey),
+            "Hub key pair generation");
+    std::string derivedPublicKey;
+    require(service::vpn::hub_config::derivePublicKey(privateKey, derivedPublicKey) &&
+                derivedPublicKey == publicKey,
+            "Hub public key derivation");
     return 0;
 }

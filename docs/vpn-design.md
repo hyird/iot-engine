@@ -130,7 +130,8 @@ Edge 配置：
 iot-engine 在 Linux 服务端维护 `wg-iot` 接口：
 
 - 默认监听 UDP `51820`。
-- 从密钥存储读取 Hub 私钥。
+- 以数据库 `vpn_network` 表中固定的 `iot-server` 记录作为 Hub 配置源。
+- 首次运行自动生成 Hub 私钥和公钥并回写表；私钥不进入 API、Protobuf 或普通日志。
 - 为每个 Windows/Edge Peer 配置公钥、地址和 AllowedIPs。
 - 使用 `IWireGuardController` 做幂等创建、更新、删除和状态读取。
 - Linux 实现通过 WireGuard Generic Netlink/UAPI 和 rtnetlink 配置内核接口，不启动 `wg`、`ip` 或其他 shell 子进程。
@@ -229,7 +230,8 @@ message VpnConfigResult {
 ### `vpn_network`
 
 ```text
-id, name, overlay_cidr, status,
+id, name, overlay_cidr, hub_private_key, hub_public_key,
+hub_endpoint, hub_listen_port, status,
 created_by, created_at, updated_at
 ```
 
@@ -336,7 +338,8 @@ Peer 撤销时删除 Hub Peer、使 enrollment 失效，并下发 Edge 新配置
 
 ## 11. 安全和许可证边界
 
-- Hub、Edge、Windows 私钥不写入普通日志或业务数据库。
+- Hub 私钥只保存在 `vpn_network` 的受限服务端配置字段，不写入 API、Protobuf 或普通日志；
+  Edge 和 Windows 私钥不写入业务数据库。
 - enrollment token 只保存哈希、一次使用、短时有效。
 - AllowedIPs、NAT 和访问规则由服务端生成。
 - Edge 和 Hub 管理面默认不可通过 VPN 访问。

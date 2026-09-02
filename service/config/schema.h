@@ -26,7 +26,7 @@ class SchemaMigration final {
     std::string sql_;
 };
 
-inline const std::array<SchemaMigration, 31> kSchemaMigrations{{
+inline const std::array<SchemaMigration, 32> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
@@ -1477,6 +1477,14 @@ VALUES ('00000000-0000-7000-8000-000000000004', 'iot-server', '100.96.0.0/16',
 ON CONFLICT (id) DO UPDATE
 SET name = 'iot-server', overlay_cidr = '100.96.0.0/16', deleted_at = NULL,
     updated_at = NOW();
+END
+$schema$;
+)sql"},
+    {"0031_vpn_hub_database_config", R"sql(
+DO $schema$
+BEGIN
+ALTER TABLE vpn_network
+    ADD COLUMN IF NOT EXISTS hub_private_key VARCHAR(44) NOT NULL DEFAULT '';
 END
 $schema$;
 )sql"},

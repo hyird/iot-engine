@@ -26,6 +26,7 @@
 #include "service/features/edge/protocol.h"
 #include "service/features/vpn/cidr.h"
 #include "service/features/vpn/edge-config.h"
+#include "service/features/vpn/hub-config.h"
 #include "service/features/vpn/wireguard.h"
 #include "service/middleware/auth.h"
 #include "service/domains/vpn/vpn.types.h"
@@ -732,8 +733,15 @@ FROM vpn_peer p WHERE p.status = 'active' ORDER BY p.updated_at DESC LIMIT 1000)
     }
 
     ruvia::Task<std::string> diagnostics(ruvia::Context& c) {
-        const auto config = hubConfig(c);
-        const auto runtime = wireguard::controller().status(config);
+        const auto config = co_await hub_config::loadOrInitialize(c, hubConfig(c));
+        const auto runtime = config
+                                 ? wireguard::controller().status(*config)
+                                 : wireguard::RuntimeStatus{
+                                       .supported = true,
+                                       .configured = false,
+                                       .code = "hub_config_missing",
+                                       .message = "WireGuard Hub 配置尚未初始化",
+                                       .peerCount = 0};
         const auto peers = co_await c.db().query(
             "SELECT COUNT(*) FILTER (WHERE status = 'active'), "
             "COUNT(*) FILTER (WHERE status = 'revoked') FROM vpn_peer");
@@ -806,13 +814,10 @@ RETURNING id::text)sql",
     }
     (void)co_await transaction.execute(R"sql(
 UPDATE vpn_network
-SET name = $2, overlay_cidr = $3, hub_public_key = $4, hub_endpoint = $5,
-    hub_listen_port = $6, status = 'enabled', deleted_at = NULL, updated_at = NOW()
+SET name = $2, overlay_cidr = $3, status = 'enabled', deleted_at = NULL, updated_at = NOW()
 WHERE id = $1::uuid)sql",
                                         service::common::dbParams(
-                                            networkId, kDefaultNetworkName, kDefaultOverlayCidr,
-                                            hub.publicKey, hub.endpoint,
-                                            static_cast<int>(hub.listenPort)));
+                                            networkId, kDefaultNetworkName, kDefaultOverlayCidr));
     co_await transaction.commit();
     co_return networkId;
 }
@@ -1074,9 +1079,16 @@ VALUES ($1::uuid, $2::uuid, $3, $4, NULLIF($5, '')::uuid, $6, $7::jsonb))sql",
 }
 
 inline ruvia::Task<wireguard::RuntimeStatus> VpnService::reconcileHub(ruvia::Context& c) {
-    const auto config = hubConfig(c);
+    const auto config = co_await hub_config::loadOrInitialize(c, hubConfig(c));
+    if (!config)
+        co_return wireguard::RuntimeStatus{
+            .supported = true,
+            .configured = false,
+            .code = "hub_config_missing",
+            .message = "WireGuard Hub 配置尚未初始化",
+            .peerCount = 0};
     auto& controller = wireguard::controller();
-    auto result = controller.configure(config);
+    auto result = controller.configure(*config);
     if (!result.configured)
         co_return result;
     const auto rows = co_await c.db().query(R"sql(
@@ -1098,16 +1110,16 @@ ORDER BY p.id)sql");
         peer.allowedIps.emplace_back(assigned + "/32");
         for (const auto& route : detail::textArrayJson(detail::rowValue(row, 3)))
             peer.allowedIps.push_back(route);
-        const auto peerResult = controller.upsertPeer(config, peer);
+        const auto peerResult = controller.upsertPeer(*config, peer);
         if (!peerResult.configured)
             co_return peerResult;
         expectedKeys.insert(publicKey);
         ++configuredPeers;
     }
-    if (const auto currentPeers = controller.peerKeys(config)) {
+    if (const auto currentPeers = controller.peerKeys(*config)) {
         for (const auto& publicKey : *currentPeers)
             if (!expectedKeys.contains(publicKey))
-                (void)controller.removePeer(config, publicKey);
+                (void)controller.removePeer(*config, publicKey);
     }
     result.peerCount = configuredPeers;
     result.message = "WireGuard hub is configured";
