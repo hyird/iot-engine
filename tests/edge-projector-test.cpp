@@ -57,6 +57,14 @@ int main() {
                     source.find("actual.has_value()") != std::string::npos &&
                     source.find("scalarText(actual.value())") != std::string::npos,
                 "edge command projector drops physical readback values");
+        require(source.find("return value.bool_value() ? \"true\" : \"false\";") ==
+                    std::string::npos &&
+                    source.find("return value.bool_value() ? \"1\" : \"0\";") !=
+                    std::string::npos,
+                "edge BOOL values are not projected as 0/1");
+        require(source.find(",\\\"dataType\\\":\\\"") != std::string::npos &&
+                    source.find("scalarKind(item.value())") != std::string::npos,
+                "edge telemetry does not retain point data types");
         std::cout << "edge projector tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

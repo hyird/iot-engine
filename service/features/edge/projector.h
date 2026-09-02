@@ -904,7 +904,7 @@ WHERE id = $3::uuid)sql",
     static std::string scalarJson(const pb::ScalarValue& value) {
         switch (value.value_case()) {
         case pb::ScalarValue::kBoolValue:
-            return value.bool_value() ? "true" : "false";
+            return value.bool_value() ? "1" : "0";
         case pb::ScalarValue::kSignedValue:
             return std::to_string(value.signed_value());
         case pb::ScalarValue::kUnsignedValue:
@@ -946,7 +946,7 @@ WHERE id = $3::uuid)sql",
     static std::string scalarText(const pb::ScalarValue& value) {
         switch (value.value_case()) {
         case pb::ScalarValue::kBoolValue:
-            return value.bool_value() ? "true" : "false";
+            return value.bool_value() ? "1" : "0";
         case pb::ScalarValue::kSignedValue:
             return std::to_string(value.signed_value());
         case pb::ScalarValue::kUnsignedValue:
@@ -979,6 +979,9 @@ WHERE id = $3::uuid)sql",
             output += "\"" + jsonEscape(item.element_id()) + "\":{\"name\":\"" +
                       jsonEscape(item.name()) + "\",\"value\":" +
                       (item.has_value() ? scalarJson(item.value()) : "null") +
+                      ",\"dataType\":\"" +
+                      jsonEscape(item.has_value() ? scalarKind(item.value()) : "UNSPECIFIED") +
+                      "\"" +
                       ",\"unit\":\"" + jsonEscape(item.unit()) + "\"}";
             first = false;
         }

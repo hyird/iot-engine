@@ -83,6 +83,12 @@ int main() {
         require(service.find("createEdgeLink") != std::string::npos &&
                     service.find("retireEdgeLink") != std::string::npos,
                 "device connection-mode changes do not migrate edge links");
+        require(service.find("service::telemetry::latest::canonicalPointText(") !=
+                        std::string::npos &&
+                    service.find("normalized_values") != std::string::npos &&
+                    service.find("jsonb_typeof(point.value->'value') = 'boolean'") !=
+                        std::string::npos,
+                "device data does not canonicalize BOOL points to 0/1");
         const auto form = deviceFormSource();
         require(form.find("disabled={!!editing}") == std::string::npos,
                 "device edit form still disables connection fields");

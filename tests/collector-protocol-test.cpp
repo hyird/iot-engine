@@ -2320,6 +2320,23 @@ void testRealtimeProjectionContract() {
             "runtime signature ignored realtime metadata changes");
 }
 
+void testBooleanPointValueContract() {
+    namespace latest = service::telemetry::latest;
+    require(latest::canonicalPointText("true", "BOOL") == "1" &&
+                latest::canonicalPointText("false", "BOOL") == "0" &&
+                latest::canonicalPointText("1", "BOOL") == "1" &&
+                latest::canonicalPointText("0", "BOOL") == "0",
+            "BOOL point text is not canonicalized to 0/1");
+    require(latest::canonicalPointJson("true", "BOOL") == "1" &&
+                latest::canonicalPointJson("false", "BOOL") == "0" &&
+                latest::canonicalPointJson("\"true\"", "BOOL") == "\"1\"" &&
+                latest::canonicalPointJson("\"false\"", "BOOL") == "\"0\"",
+            "BOOL point JSON is not canonicalized to 0/1");
+    require(latest::canonicalPointText("true", "STRING") == "true" &&
+                latest::canonicalPointJson("true", "STRING") == "true",
+            "non-BOOL point values were rewritten");
+}
+
 void testFreshnessDeadlineWait() {
     namespace latest = service::telemetry::latest;
     require(!latest::deadlineWait(1000, std::nullopt).has_value(),
@@ -2940,6 +2957,7 @@ int main() {
         run("runtime projection previous grace", testRuntimeProjectionRefreshesPreviousGrace);
         run("runtime set ordering contract", testRuntimeSetOrderingContract);
         run("realtime projection contract", testRealtimeProjectionContract);
+        run("BOOL point value contract", testBooleanPointValueContract);
         run("freshness deadline wait", testFreshnessDeadlineWait);
         run("edge session ownership", testEdgeSessionOwnership);
         run("latest projection Redis errors", testLatestProjectionRejectsRedisErrors);

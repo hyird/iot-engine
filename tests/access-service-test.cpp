@@ -52,6 +52,14 @@ void requireStrictPresentFieldTypes(std::string_view source) {
             "stored webhook TLS verification flag is parsed ambiguously");
 }
 
+void requireCanonicalBooleanPointValues(std::string_view source) {
+    require(source.find("service::telemetry::latest::canonicalPointJson(") !=
+                    std::string_view::npos &&
+                source.find("jsonb_typeof(filtered.data->'values'->point.id->'value') = "
+                            "'boolean'") != std::string_view::npos,
+            "public device data does not canonicalize BOOL points to 0/1");
+}
+
 } // namespace
 
 int main() {
@@ -59,6 +67,7 @@ int main() {
         const auto source = accessSource();
         requireNoUnsafeParsers(source);
         requireStrictPresentFieldTypes(source);
+        requireCanonicalBooleanPointValues(source);
         std::cout << "access service tests passed\n";
         return 0;
     } catch (const std::exception& error) {

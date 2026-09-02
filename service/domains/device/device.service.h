@@ -427,6 +427,20 @@ WITH counted AS (
     AND jsonb_typeof(record.data->'values') = 'object'
   ORDER BY record.report_time DESC, record.id DESC
   LIMIT $4::bigint OFFSET $5::bigint
+), normalized AS (
+  SELECT filtered.*,
+         COALESCE((
+           SELECT jsonb_object_agg(point.key,
+             CASE WHEN jsonb_typeof(point.value) = 'object'
+                        AND jsonb_typeof(point.value->'value') = 'boolean'
+                  THEN jsonb_set(
+                         point.value, '{value}',
+                         to_jsonb(CASE WHEN (point.value->>'value')::boolean
+                                       THEN 1 ELSE 0 END), false)
+                  ELSE point.value END)
+           FROM jsonb_each(COALESCE(filtered.data->'values', '{}'::jsonb)) point
+         ), '{}'::jsonb) AS normalized_values
+  FROM filtered
 )
 SELECT jsonb_build_object(
   'list', COALESCE(jsonb_agg(jsonb_build_object(
@@ -435,7 +449,7 @@ SELECT jsonb_build_object(
     'reportTime', iot_utc_timestamp(report_time),
     'source', source,
     'functionCode', data->>'function_code',
-    'values', COALESCE(data->'values', '{}'::jsonb)
+    'values', normalized_values
   ) ORDER BY report_time DESC, id DESC), '[]'::jsonb),
   'total', COALESCE((SELECT total FROM counted), 0),
   'page', $6::bigint,
@@ -443,7 +457,7 @@ SELECT jsonb_build_object(
   'totalPages',
     CEIL(COALESCE((SELECT total FROM counted), 0)::numeric / $4::numeric)::bigint
 )::text
-FROM filtered)sql",
+FROM normalized)sql",
                 service::common::dbParams(id, start, end, pageSize, offset, page));
             co_return rows.empty() ? std::string{"{\"list\":[],\"total\":0}"}
                                          : std::string{rows.front()[0].value().value_or(std::string_view{})};
@@ -1508,6 +1522,7 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         std::string name;
         std::string value{"-"};
         std::string unit;
+        std::string dataType;
         std::string group;
         std::string encode;
     };
@@ -1550,7 +1565,9 @@ ORDER BY device_id, operation_position, operation_key, element_position,
             LatestElement element;
             element.id = jsonString(*parsed, "id").value_or(std::string(field));
             element.name = jsonString(*parsed, "name").value_or(element.id);
-            element.value = jsonString(*parsed, "value").value_or("-");
+            element.dataType = jsonString(*parsed, "dataType").value_or("");
+            element.value = service::telemetry::latest::canonicalPointText(
+                jsonString(*parsed, "value").value_or("-"), element.dataType);
             element.unit = jsonString(*parsed, "unit").value_or("");
             element.group = jsonString(*parsed, "group").value_or("");
             element.encode = jsonString(*parsed, "encode").value_or("");

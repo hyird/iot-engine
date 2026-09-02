@@ -31,12 +31,22 @@ void requireUnambiguousTlsVerificationFlag(std::string_view source) {
             "webhook runtime parses PostgreSQL boolean text ambiguously");
 }
 
+void requireCanonicalBooleanPointValues(std::string_view source) {
+    require(source.find("parsed->get<ruvia::String>(\"dataType\")") !=
+                    std::string_view::npos &&
+                source.find("telemetry::latest::canonicalPointJson(") !=
+                    std::string_view::npos,
+            "webhook payloads do not canonicalize BOOL points to 0/1");
+}
+
 } // namespace
 
 int main() {
     try {
-        requireNoUnsafeStoll(webhookSource());
-        requireUnambiguousTlsVerificationFlag(webhookSource());
+        const auto source = webhookSource();
+        requireNoUnsafeStoll(source);
+        requireUnambiguousTlsVerificationFlag(source);
+        requireCanonicalBooleanPointValues(source);
         std::cout << "access webhook tests passed\n";
         return 0;
     } catch (const std::exception& error) {

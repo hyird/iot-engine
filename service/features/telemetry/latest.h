@@ -83,6 +83,32 @@ inline std::string jsonQuoted(std::string_view value) {
     return "\"" + jsonEscape(value) + "\"";
 }
 
+inline std::string canonicalPointText(std::string_view value,
+                                      std::string_view dataType) {
+    if (dataType != "BOOL")
+        return std::string(value);
+    if (value == "true" || value == "1")
+        return "1";
+    if (value == "false" || value == "0")
+        return "0";
+    return std::string(value);
+}
+
+inline std::string canonicalPointJson(std::string_view value,
+                                      std::string_view dataType) {
+    if (dataType != "BOOL")
+        return std::string(value);
+    if (value == "true" || value == "1")
+        return "1";
+    if (value == "false" || value == "0")
+        return "0";
+    if (value == "\"true\"" || value == "\"1\"")
+        return "\"1\"";
+    if (value == "\"false\"" || value == "\"0\"")
+        return "\"0\"";
+    return std::string(value);
+}
+
 inline std::string jsonKeySet(const std::vector<std::string>& keys) {
     std::string result = "{";
     bool first = true;
@@ -168,6 +194,13 @@ local function number_or(value, fallback)
   if number == nil then return fallback end
   return number
 end
+local function point_value(value, data_type)
+  if data_type == 'BOOL' then
+    if value == true or value == 1 or value == '1' or value == 'true' then return '1' end
+    if value == false or value == 0 or value == '0' or value == 'false' then return '0' end
+  end
+  return tostring(value)
+end
 local payload = cjson.decode(ARGV[8])
 local runtime_key = 'iot:runtime:device:' .. ARGV[2]
 local latest_key = 'iot:device:' .. ARGV[2] .. ':latest'
@@ -223,14 +256,15 @@ local touched = false
 for element_id, point in pairs(payload.values or {}) do
   if not (has_configured_ids and configured_ids[element_id] == nil) then
     local value = '-'
-    if point.value ~= nil and point.value ~= cjson.null then
-      value = tostring(point.value)
-    end
     local existing = redis.call('HGET', latest_key, element_id)
     local previous = {}
     if existing ~= false and existing ~= nil and existing ~= '' then
       local ok, decoded = pcall(cjson.decode, existing)
       if ok and type(decoded) == 'table' then previous = decoded end
+    end
+    local data_type = tostring(point.dataType or previous.dataType or '')
+    if point.value ~= nil and point.value ~= cjson.null then
+      value = point_value(point.value, data_type)
     end
     local current = number_or(previous.observedAt, -1)
     if observed_at >= current then
@@ -245,6 +279,7 @@ for element_id, point in pairs(payload.values or {}) do
         id = element_id,
         name = elementName,
         value = value,
+        dataType = data_type,
         unit = unit,
         scale = scale,
         decimals = decimals,
@@ -567,7 +602,10 @@ WITH configured AS (
 )
 SELECT numbered.device_id::text, numbered.device_code, numbered.protocol,
        numbered.element->>'id', numbered.element->>'name',
-       COALESCE(numbered.element->>'unit', ''), COALESCE(point.value->>'value', '-'),
+       COALESCE(numbered.element->>'unit', ''),
+       CASE WHEN jsonb_typeof(point.value->'value') = 'boolean'
+            THEN CASE WHEN (point.value->>'value')::boolean THEN '1' ELSE '0' END
+            ELSE COALESCE(point.value->>'value', '-') END,
        COALESCE((EXTRACT(EPOCH FROM point.observed_at) * 1000)::bigint::text, ''),
        COALESCE(NULLIF(numbered.element->>'scale', ''), '1'),
        COALESCE(NULLIF(COALESCE(numbered.element->>'decimals', numbered.element->>'digits'), ''), '-1'),
@@ -577,7 +615,10 @@ SELECT numbered.device_id::text, numbered.device_code, numbered.protocol,
        jsonb_build_object(
          'id', numbered.element->>'id',
          'name', numbered.element->>'name',
-         'value', COALESCE(point.value->>'value', '-'),
+         'value', CASE WHEN jsonb_typeof(point.value->'value') = 'boolean'
+                       THEN CASE WHEN (point.value->>'value')::boolean THEN '1' ELSE '0' END
+                       ELSE COALESCE(point.value->>'value', '-') END,
+         'dataType', COALESCE(numbered.element->>'dataType', ''),
          'unit', COALESCE(numbered.element->>'unit', ''),
          'scale',
            COALESCE(
@@ -619,7 +660,16 @@ local existing = redis.call('HGET', KEYS[1], element_id)
 if existing ~= false and existing ~= nil and existing ~= '' then
   local decoded_ok, previous = pcall(cjson.decode, existing)
   if decoded_ok and type(previous) == 'table' then
-    if previous.value ~= nil then incoming.value = previous.value end
+    if previous.value ~= nil then
+      incoming.value = previous.value
+      if incoming.dataType == 'BOOL' then
+        if previous.value == true or previous.value == 1 or previous.value == '1' or previous.value == 'true' then
+          incoming.value = '1'
+        elseif previous.value == false or previous.value == 0 or previous.value == '0' or previous.value == 'false' then
+          incoming.value = '0'
+        end
+      end
+    end
     if previous.observedAt ~= nil then incoming.observedAt = previous.observedAt end
     if previous.updatedAt ~= nil then incoming.updatedAt = previous.updatedAt end
     if previous.source ~= nil then incoming.source = previous.source end

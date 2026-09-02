@@ -571,8 +571,10 @@ SELECT jsonb_build_object(
             if (const auto data = latestFields.find(device->points[index].id);
                 data != latestFields.end()) {
                 if (const auto json = ruvia::JsonValue::parse(data->second)) {
+                    const auto dataType = json->template get<ruvia::String>("dataType");
                     if (const auto current = jsonField(*json, "value"))
-                        value.assign(current->view());
+                        value = service::telemetry::latest::canonicalPointJson(
+                            current->view(), dataType ? dataType->view() : std::string_view{});
                     if (const auto observed =
                             json->template get<ruvia::Int64>("observedAt"))
                         time = jsonQuoted(iso8601(static_cast<std::int64_t>(*observed)));
@@ -984,7 +986,12 @@ WITH device_ref AS (
         'name', device_ref.name),
       'points', COALESCE(jsonb_agg(jsonb_build_object(
         'id', point.id, 'name', point.name,
-        'value', filtered.data->'values'->point.id->'value', 'unit', point.unit,
+        'value', CASE
+          WHEN jsonb_typeof(filtered.data->'values'->point.id->'value') = 'boolean'
+          THEN to_jsonb(CASE WHEN (filtered.data->'values'->point.id->>'value')::boolean
+                             THEN 1 ELSE 0 END)
+          ELSE filtered.data->'values'->point.id->'value' END,
+        'unit', point.unit,
         'time', iot_utc_timestamp(filtered.report_time))
         ORDER BY point.protocol_order, point.function_order, point.element_order), '[]'::jsonb)
     ) AS item

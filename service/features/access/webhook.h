@@ -428,6 +428,7 @@ public:
         std::string name;
         std::string value{"null"};
         std::string unit;
+        std::string dataType;
         std::string encode;
     };
 
@@ -928,6 +929,8 @@ ORDER BY binding.device_id, event_type.value, webhook.id)sql");
                     point.name.assign(value->view());
                 if (const auto value = parsed->get<ruvia::String>("unit"))
                     point.unit.assign(value->view());
+                if (const auto value = parsed->get<ruvia::String>("dataType"))
+                    point.dataType.assign(value->view());
                 if (const auto value = parsed->get<ruvia::String>("encode"))
                     point.encode.assign(value->view());
                 if (const auto value = parsed->get<ruvia::Int64>("sort"))
@@ -935,7 +938,8 @@ ORDER BY binding.device_id, event_type.value, webhook.id)sql");
                 if (const auto value = parsed->get<ruvia::Int64>("observedAt"))
                     point.observedAt = static_cast<std::int64_t>(*value);
                 if (const auto value = jsonField(*parsed, "value"))
-                    point.value.assign(value->view());
+                    point.value = telemetry::latest::canonicalPointJson(
+                        value->view(), point.dataType);
                 latest.insert_or_assign(point.id, std::move(point));
             }
         }
