@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -20,6 +21,7 @@
 #include "service/common/uuid.h"
 #include "service/features/edge/config.h"
 #include "service/features/edge/dispatcher.h"
+#include "service/features/edge/firmware.h"
 #include "service/features/edge/protocol.h"
 #include "service/features/edge/projector-stream.h"
 #include "service/features/edge/session.h"
@@ -67,6 +69,10 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         std::deque<std::string> outbound;
         std::array<TelemetryReceipt, 64> telemetryReceipts{};
         std::size_t nextTelemetryReceipt{};
+        std::array<std::uint8_t, 16> firmwareRequestId{};
+        std::filesystem::path firmwarePath;
+        std::uint64_t firmwareSize{};
+        bool firmwareSourceLoaded{};
         bool capabilitySeen{};
     };
 
@@ -924,6 +930,9 @@ return 1
             enqueue(session, reply);
             break;
         }
+        case pb::Envelope::kFirmwareChunkRequest:
+            co_await sendFirmwareChunk(c, session, input.firmware_chunk_request());
+            break;
         case pb::Envelope::kPing: {
             // Older nodes send zero-nonce application pings while a remote
             // terminal is open. They still use the pong as their application
@@ -955,6 +964,65 @@ return 1
         default:
             break;
         }
+    }
+
+    static ruvia::Task<void> sendFirmwareChunk(
+        ruvia::Context& c, Session& session,
+        const pb::FirmwareChunkRequest& request) {
+        if (session.protocolVersion < 6 || request.request_id().size() != 16)
+            co_return;
+        const bool sameRequest =
+            session.firmwareSourceLoaded &&
+            std::memcmp(session.firmwareRequestId.data(), request.request_id().data(), 16) == 0;
+        if (!sameRequest) {
+            const auto requestId = protocol::uuidText(request.request_id());
+            const auto rows = co_await c.db().query(R"sql(
+SELECT firmware.storage_path, firmware.size_bytes
+FROM edge_task task
+JOIN edge_firmware firmware
+  ON firmware.id::text = task.request->>'firmware_id'
+WHERE task.id = $1::uuid AND task.node_id = $2::uuid
+  AND task.task_type = 'firmware'
+LIMIT 1)sql",
+                                                    service::common::dbParams(
+                                                        requestId, session.nodeId));
+            session.firmwareSourceLoaded = false;
+            session.firmwarePath.clear();
+            session.firmwareSize = 0;
+            if (!rows.empty()) {
+                std::memcpy(session.firmwareRequestId.data(), request.request_id().data(), 16);
+                session.firmwarePath = std::filesystem::path(
+                    std::string(rows.front()[0].value().value_or(std::string_view{})));
+                const auto sizeText =
+                    rows.front()[1].value().value_or(std::string_view{});
+                const auto parsed = std::from_chars(
+                    sizeText.data(), sizeText.data() + sizeText.size(),
+                    session.firmwareSize);
+                session.firmwareSourceLoaded = !session.firmwarePath.empty() &&
+                                               session.firmwareSize != 0 &&
+                                               parsed.ec == std::errc{} &&
+                                               parsed.ptr == sizeText.data() + sizeText.size();
+            }
+        }
+
+        auto reply = makeEnvelope(session);
+        auto* chunk = reply.mutable_firmware_chunk();
+        chunk->set_request_id(request.request_id());
+        chunk->set_offset(request.offset());
+        if (!session.firmwareSourceLoaded) {
+            chunk->set_error("firmware transfer source is unavailable");
+            enqueue(session, reply);
+            co_return;
+        }
+        auto value = firmware::readChunk(
+            session.firmwarePath, session.firmwareSize, request.offset());
+        if (!value.error.empty())
+            chunk->set_error(value.error);
+        else {
+            chunk->set_data(std::move(value.data));
+            chunk->set_eof(value.eof);
+        }
+        enqueue(session, reply);
     }
 
     static ruvia::Task<void> saveLogResult(ruvia::Context& c, const pb::LogResult& result) {

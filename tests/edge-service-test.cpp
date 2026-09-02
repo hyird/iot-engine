@@ -118,6 +118,18 @@ int main() {
                        "edge service still exposes remote platform deletion");
         requireMissing(controllerSource, "/:id/platforms",
                        "edge controller still exposes platform management routes");
+        requireContains(controllerSource, "/:id/download",
+                        "legacy firmware download route is missing");
+        requireContains(serviceSource, "download_token",
+                        "legacy firmware download tokens are missing");
+        requireContains(serviceSource, "publicBaseUrl()",
+                        "legacy firmware download URL is missing");
+        requireContains(serviceSource, "capability->>'firmwareStream'",
+                        "firmware transport does not select by node capability");
+        requireContains(gatewaySource, "case pb::Envelope::kFirmwareChunkRequest",
+                        "edge gateway does not serve firmware over the node WebSocket");
+        requireContains(gatewaySource, "firmware::readChunk(",
+                        "edge gateway does not bound firmware WS chunks");
         requireMissing(serviceSource, "std::clamp<std::int64_t>(*query.limit(), 1, 48)",
                        "edge log request clamps invalid limit instead of rejecting it");
         requireMissing(serviceSource, "const auto level = std::string(body.level()->view());",
@@ -201,6 +213,12 @@ int main() {
                         "edge metadata updates are not routed by session ownership");
         requireContains(projectorSource, "projector_stream::stream(streamIndex)",
                         "edge projector does not own independent Stream shards");
+        requireContains(projectorSource,
+                        "'firmwareUpdate', $10::boolean",
+                        "edge projector does not retain legacy firmware capability");
+        requireContains(projectorSource,
+                        "'firmwareStream', $29::boolean",
+                        "edge projector does not record WS firmware capability separately");
         requireMissing(dispatcherSource, "workers_.back().post(",
                        "edge dispatcher still gives one worker a special role");
         requireMissing(dispatcherSource, "target.worker.post(",

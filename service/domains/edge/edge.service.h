@@ -361,9 +361,15 @@ RETURNING id)sql",
         co_await validateFirmwareTarget(c, nodeId);
         const std::string firmwareIdText(firmwareId);
         const auto rows = co_await c.db().query(R"sql(
-SELECT sha256, size_bytes, download_token
-FROM edge_firmware WHERE id = $1::uuid LIMIT 1)sql",
-                                                service::common::dbParams(firmwareIdText));
+SELECT firmware.sha256, firmware.size_bytes, firmware.download_token,
+       CASE lower(COALESCE(node.capability->>'firmwareStream', ''))
+            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+            ELSE false END
+FROM edge_firmware firmware
+JOIN edge_node node ON node.id = $2::uuid
+WHERE firmware.id = $1::uuid
+LIMIT 1)sql",
+                                                service::common::dbParams(firmwareIdText, nodeId));
         if (rows.empty())
             service::common::fail(17009, "固件不存在", 404);
         const auto& row = rows.front();
@@ -373,9 +379,12 @@ FROM edge_firmware WHERE id = $1::uuid LIMIT 1)sql",
         std::uint8_t bytes[32]{};
         protocol::uuidBytes(taskId, bytes);
         const auto requestId = protocol::bytes(bytes, 16);
-        const auto download = std::string(protocol::publicBaseUrl()) +
-                              "/edge/v1/firmware/" + firmwareIdText + "/download?token=" +
-                              std::string(row[2].value().value_or(std::string_view{}));
+        std::string download;
+        if (row[3].value().value_or(std::string_view{}) != "t") {
+            download = std::string(protocol::publicBaseUrl()) +
+                       "/edge/v1/firmware/" + firmwareIdText + "/download?token=" +
+                       std::string(row[2].value().value_or(std::string_view{}));
+        }
         if (!hex(row[0].value().value_or(std::string_view{}), bytes, 32))
             service::common::fail(17010, "固件摘要无效", 500);
         if (!firmware::populateUpdateRequest(

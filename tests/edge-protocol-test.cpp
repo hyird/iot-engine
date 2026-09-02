@@ -1,5 +1,7 @@
 #include <array>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -109,17 +111,18 @@ void testCompatibleProtocolVersionContract() {
     require(service::edge::protocol::supportsProtocolVersion(2) &&
                 service::edge::protocol::supportsProtocolVersion(3) &&
                 service::edge::protocol::supportsProtocolVersion(4) &&
-                service::edge::protocol::supportsProtocolVersion(5),
+                service::edge::protocol::supportsProtocolVersion(5) &&
+                service::edge::protocol::supportsProtocolVersion(6),
             "supported edgenode protocol range changed");
     require(!service::edge::protocol::supportsProtocolVersion(1) &&
-                !service::edge::protocol::supportsProtocolVersion(6),
+                !service::edge::protocol::supportsProtocolVersion(7),
             "unsupported protocol version was accepted");
     require(service::edge::protocol::isCurrentProtocolVersion(
                 service::edge::protocol::kProtocolVersion),
             "current protocol version was rejected");
-    require(service::edge::protocol::kProtocolVersion == 5,
-            "terminal flow control did not advance the wire protocol");
-    require(!service::edge::protocol::isCurrentProtocolVersion(6),
+    require(service::edge::protocol::kProtocolVersion == 6,
+            "firmware streaming did not advance the wire protocol");
+    require(!service::edge::protocol::isCurrentProtocolVersion(7),
             "future protocol version was reported as current");
 
     auto envelope = service::edge::protocol::outbound(
@@ -366,18 +369,49 @@ void testWebTerminalProtobuf() {
 void testFirmwareRequestDefersVersionToNodeHello() {
     service::edge::pb::FirmwareUpdateRequest request;
     require(service::edge::firmware::populateUpdateRequest(
-                request, std::string(16, '\1'), "https://example.test/firmware.bin",
+                request, std::string(16, '\1'),
+                "https://example.test/edge/v1/firmware/id/download?token=legacy",
                 std::string(32, '\2'), 1024, true),
             "valid firmware request metadata was rejected");
     require(request.version().empty(),
             "firmware request must not infer or require a target version");
-    require(request.size_bytes() == 1024 && request.keep_settings(),
+    require(!request.download_url().empty() && request.size_bytes() == 1024 &&
+                request.keep_settings(),
             "firmware request metadata changed unexpectedly");
+    service::edge::pb::FirmwareUpdateRequest stream;
+    require(service::edge::firmware::populateUpdateRequest(
+                stream, std::string(16, '\1'), {}, std::string(32, '\2'), 1024, true) &&
+                stream.download_url().empty(),
+            "WS firmware request without a legacy URL was rejected");
     service::edge::pb::FirmwareUpdateRequest empty;
     require(!service::edge::firmware::populateUpdateRequest(
-                empty, std::string(16, '\1'), "https://example.test/firmware.bin",
-                std::string(32, '\2'), 0, true),
+                empty, std::string(16, '\1'), {}, std::string(32, '\2'), 0, true),
             "zero-length firmware request was accepted");
+}
+
+void testFirmwareChunkSource() {
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("iot-engine-firmware-chunk-" +
+                       std::to_string(service::edge::protocol::nowMs()) + ".bin");
+    const std::string image(service::edge::firmware::kChunkSize + 17, 'x');
+    {
+        std::ofstream output(path, std::ios::binary);
+        output.write(image.data(), static_cast<std::streamsize>(image.size()));
+    }
+    const auto first = service::edge::firmware::readChunk(path, image.size(), 0);
+    require(first.error.empty() && !first.eof &&
+                first.data.size() == service::edge::firmware::kChunkSize,
+            "first firmware WS chunk is invalid");
+    const auto last = service::edge::firmware::readChunk(
+        path, image.size(), service::edge::firmware::kChunkSize);
+    require(last.error.empty() && last.eof && last.data == std::string(17, 'x'),
+            "last firmware WS chunk is invalid");
+    require(!service::edge::firmware::readChunk(path, image.size(), image.size()).error.empty(),
+            "out-of-range firmware WS chunk was accepted");
+    require(!service::edge::firmware::readChunk(path, image.size() + 1, 0).error.empty(),
+            "firmware storage size drift was accepted");
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
 }
 
 void testCommandResultRequiresTerminalState() {
@@ -416,6 +450,7 @@ int main() {
     testNanopbBounds();
     testWebTerminalProtobuf();
     testFirmwareRequestDefersVersionToNodeHello();
+    testFirmwareChunkSource();
     testCommandResultRequiresTerminalState();
     std::cout << "edge protocol tests passed\n";
 }

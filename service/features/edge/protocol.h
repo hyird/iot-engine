@@ -24,7 +24,7 @@ namespace pb = ::iot::edge::v1;
 
 namespace service::edge::protocol {
 
-inline constexpr std::uint32_t kProtocolVersion = 5;
+inline constexpr std::uint32_t kProtocolVersion = 6;
 inline constexpr std::uint32_t kOldestCompatibleProtocolVersion = 2;
 
 inline constexpr std::string_view kDefaultPlatformId{
