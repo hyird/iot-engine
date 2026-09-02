@@ -184,62 +184,6 @@ export const networkSchema = z
         });
     });
 
-const apnSchema = z
-    .string()
-    .max(100, 'APN 不能超过 100 个字符')
-    .refine(
-        (value) =>
-            value.length === 0 ||
-            value
-                .split('.')
-                .every(
-                    (label) =>
-                        label.length <= 63 &&
-                        /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(label)
-                ),
-        'APN 每段必须以字母或数字开头结尾，中间只能包含字母、数字和连字符'
-    );
-
-const modemProfileSchema = z
-    .object({
-        action: z.literal('apply_profile'),
-        automatic: z.boolean(),
-        apn: apnSchema,
-        pdpType: z.enum(['IP', 'IPV6', 'IPV4V6']),
-        authType: z.enum(['none', 'pap', 'chap', 'both']),
-        username: z.string().max(64, '认证用户名不能超过 64 个字符'),
-        password: z.string().max(128, '认证密码不能超过 128 个字符'),
-        pinCode: z.string().regex(/^(?:|\d{4,8})$/, 'SIM PIN 必须是 4 - 8 位数字'),
-        redialAfterApply: z.boolean(),
-    })
-    .superRefine((value, context) => {
-        if (value.automatic && value.apn.length !== 0) {
-            context.addIssue({ code: 'custom', path: ['apn'], message: '自动模式不能填写 APN' });
-        }
-        if (!value.automatic && value.apn.length === 0) {
-            context.addIssue({ code: 'custom', path: ['apn'], message: '手动模式必须填写 APN' });
-        }
-        if (value.authType === 'none' && (value.username || value.password)) {
-            context.addIssue({
-                code: 'custom',
-                path: ['authType'],
-                message: '无认证模式不能填写用户名或密码',
-            });
-        }
-        if (value.authType !== 'none' && (!value.username || !value.password)) {
-            context.addIssue({
-                code: 'custom',
-                path: ['username'],
-                message: '启用认证时必须同时填写用户名和密码',
-            });
-        }
-    });
-
-export const modemControlSchema = z.discriminatedUnion('action', [
-    modemProfileSchema,
-    z.object({ action: z.literal('redial') }),
-]);
-
 export const firmwareUpgradeSchema = z.object({
     file: z
         .instanceof(File)

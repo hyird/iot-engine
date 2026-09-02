@@ -173,20 +173,6 @@ export namespace Edge {
         percent: number;
     }
 
-    export interface ModemProfileDto {
-        action: 'apply_profile';
-        automatic: boolean;
-        apn: string;
-        pdpType: 'IP' | 'IPV6' | 'IPV4V6';
-        authType: 'none' | 'pap' | 'chap' | 'both';
-        username: string;
-        password: string;
-        pinCode: string;
-        redialAfterApply: boolean;
-    }
-
-    export type ModemControlDto = ModemProfileDto | { action: 'redial' };
-
     export interface LogsQuery {
         limit?: number;
         level?: LogLevel;

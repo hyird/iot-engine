@@ -61,17 +61,6 @@ RUVIA_RESPONSE_MODEL(InterfaceDto,
     RUVIA_OPTIONAL_FIELD(gateway, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("bridgePorts", bridgePorts, ruvia::BoxedArray<ruvia::String>));
 
-RUVIA_REQUEST_MODEL(ModemControlBody,
-    RUVIA_OPTIONAL_FIELD(action, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(apn, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(automatic, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD_NAME("pdpType", pdpType, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("authType", authType, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(username, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(password, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("pinCode", pinCode, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("redialAfterApply", redialAfterApply, ruvia::Bool));
-
 RUVIA_RESPONSE_MODEL(NetworkDto,
     RUVIA_OPTIONAL_FIELD(name, ruvia::String),
     RUVIA_OPTIONAL_FIELD(mode, ruvia::String),

@@ -5,6 +5,14 @@ const source = readFileSync(
     new URL('../web/pages/iot/edge-node/index.tsx', import.meta.url),
     'utf8'
 );
+const client = readFileSync(
+    new URL('../web/pages/iot/edge-node/edge-node.client.ts', import.meta.url),
+    'utf8'
+);
+const service = readFileSync(
+    new URL('../web/pages/iot/edge-node/edge-node.service.ts', import.meta.url),
+    'utf8'
+);
 const cardStart = source.indexOf('{nodes.map((node) => {');
 const drawerStart = source.indexOf('<Drawer', cardStart);
 const drawerEnd = source.indexOf('<FormModal', drawerStart);
@@ -33,8 +41,8 @@ test('edge management actions live in contextual drawer sections', () => {
     expect(drawer).toContain("key: 'config'");
     expect(drawer).toContain('同步设备配置');
     expect(drawer).toContain("key: 'mobile'");
-    expect(drawer).toContain('重新拨号');
-    expect(drawer).toContain('修改接入设置');
+    expect(drawer).not.toContain('重新拨号');
+    expect(drawer).not.toContain('修改接入设置');
     expect(drawer).toContain("key: 'firmware'");
     expect(drawer).toContain('上传固件并刷写');
     expect(drawer).toContain("item.taskType === 'firmware'");
@@ -48,6 +56,14 @@ test('drawer actions render above the detail drawer', () => {
         'const EDGE_ACTION_MODAL_Z_INDEX = EDGE_DETAIL_DRAWER_Z_INDEX + 100;'
     );
     expect(drawer).toContain('zIndex={EDGE_DETAIL_DRAWER_Z_INDEX}');
-    expect(source.match(/zIndex=\{EDGE_ACTION_MODAL_Z_INDEX\}/g)).toHaveLength(5);
+    expect(source.match(/zIndex=\{EDGE_ACTION_MODAL_Z_INDEX\}/g)).toHaveLength(4);
     expect(source.match(/zIndex: EDGE_ACTION_MODAL_Z_INDEX/g)).toHaveLength(2);
+});
+
+test('platform exposes mobile status without modem mutation controls', () => {
+    expect(drawer).toContain('APN');
+    expect(drawer).toContain('运营商');
+    expect(source).not.toContain('useModemControlMutation');
+    expect(client).not.toContain('/modem');
+    expect(service).not.toContain('useModemControlMutation');
 });

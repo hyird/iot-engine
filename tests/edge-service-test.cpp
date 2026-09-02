@@ -102,16 +102,10 @@ int main() {
                        "edge network casts optional rollback timeout without validation");
         requireContains(serviceSource, "operation != \"upsert\" && operation != \"delete\"",
                         "edge network config accepts unknown operations as upsert");
-        requireMissing(serviceSource, "const std::string action(body.action()->view());",
-                       "edge modem dereferences optional action without validation");
-        requireContains(serviceSource, "action != \"apply_profile\" && action != \"redial\"",
-                        "edge modem accepts unknown actions as redial");
-        requireContains(serviceSource,
-                        "pdpType != \"IP\" && pdpType != \"IPV6\" && pdpType != \"IPV4V6\"",
-                        "edge modem accepts unknown PDP type as IPv4");
-        requireContains(serviceSource,
-                        "authType != \"none\" && authType != \"pap\" && authType != \"chap\"",
-                        "edge modem accepts unknown auth type as none");
+        requireMissing(controllerSource, "/:id/modem",
+                       "edge controller still exposes modem mutation route");
+        requireMissing(serviceSource, "queueModem(",
+                       "edge service still exposes modem mutation commands");
         requireMissing(serviceSource, "queuePlatform(",
                        "edge service still exposes remote platform configuration");
         requireMissing(serviceSource, "deletePlatform(",
@@ -219,6 +213,18 @@ int main() {
         requireContains(projectorSource,
                         "'firmwareStream', $29::boolean",
                         "edge projector does not record WS firmware capability separately");
+        requireContains(projectorSource,
+                        "NULLIF(EXCLUDED.mobile->>'apn', '')",
+                        "edge hello projection clears the last known mobile APN");
+        requireContains(projectorSource,
+                        "NULLIF(EXCLUDED.mobile->>'operator', '')",
+                        "edge hello projection clears the last known mobile operator");
+        requireContains(projectorSource,
+                        "NULLIF($12::text, ''), mobile->>'apn'",
+                        "edge heartbeat projection clears the last known mobile APN");
+        requireContains(projectorSource,
+                        "NULLIF($13::text, ''), mobile->>'operator'",
+                        "edge heartbeat projection clears the last known mobile operator");
         requireMissing(dispatcherSource, "workers_.back().post(",
                        "edge dispatcher still gives one worker a special role");
         requireMissing(dispatcherSource, "target.worker.post(",

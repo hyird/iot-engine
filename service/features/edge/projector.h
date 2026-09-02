@@ -371,7 +371,14 @@ SET model = EXCLUDED.model, software_version = EXCLUDED.software_version,
 	        'terminal', CASE lower(COALESCE(edge_node.capability->>'terminal', ''))
 	                        WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
 	                        ELSE false END),
-    mobile = EXCLUDED.mobile,
+    mobile = jsonb_set(
+        jsonb_set(
+            EXCLUDED.mobile, '{apn}',
+            to_jsonb(COALESCE(NULLIF(EXCLUDED.mobile->>'apn', ''),
+                              edge_node.mobile->>'apn', '')::text), true),
+        '{operator}',
+        to_jsonb(COALESCE(NULLIF(EXCLUDED.mobile->>'operator', ''),
+                          edge_node.mobile->>'operator', '')::text), true),
     status = jsonb_set(
         jsonb_set(edge_node.status, '{log}',
                   COALESCE(edge_node.status->'log', '{}'::jsonb), true),
@@ -478,8 +485,8 @@ SET status = jsonb_build_object(
                                      'percent', $9::bigint),
         'registered', $10::boolean,
         'registrationStatus', $11::bigint,
-        'apn', $12::text,
-        'operator', $13::text,
+        'apn', COALESCE(NULLIF($12::text, ''), mobile->>'apn', ''),
+        'operator', COALESCE(NULLIF($13::text, ''), mobile->>'operator', ''),
         'connected', $14::boolean,
         'ipv4', $15::text),
     capability = jsonb_set(capability, '{modemControl}', to_jsonb($17::boolean), true),

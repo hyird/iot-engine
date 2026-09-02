@@ -2,7 +2,6 @@ import { useQuery } from '@tanstack/react-query';
 import { useMutationWithMessage } from '@/hooks/useMutation';
 import {
     configureNetwork,
-    controlModem,
     deleteEnrollment,
     getEdgeDetail,
     getEdgeList,
@@ -69,15 +68,6 @@ export function useNetworkMutation() {
         mutationFn: (value: { id: string; data: Edge.NetworkDto }) =>
             configureNetwork(value.id, value.data),
         successMessage: '网络配置已下发',
-        invalidateKeys: [edgeQueryKeys.all],
-    });
-}
-
-export function useModemControlMutation() {
-    return useMutationWithMessage({
-        mutationFn: (value: { id: string; data: Edge.ModemControlDto }) =>
-            controlModem(value.id, value.data),
-        successMessage: '移动网络操作已下发',
         invalidateKeys: [edgeQueryKeys.all],
     });
 }

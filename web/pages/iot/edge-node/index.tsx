@@ -5,7 +5,6 @@ import {
     EditOutlined,
     EyeOutlined,
     GlobalOutlined,
-    MobileOutlined,
     PlusOutlined,
     ReloadOutlined,
     SyncOutlined,
@@ -59,7 +58,6 @@ import { getEdgeDetail, getTerminalTicket } from './edge-node.client';
 import { normalizeReportedNetwork, physicalNetworkInterfaces } from './edge-node.network';
 import {
     firmwareUpgradeSchema,
-    modemControlSchema,
     networkInterfaceSchema,
     networkSchema,
     nodeNameSchema,
@@ -73,7 +71,6 @@ import {
     useEnrollmentMutation,
     useFirmwareUpgradeMutation,
     useLogLevelMutation,
-    useModemControlMutation,
     useNetworkMutation,
     useNodeNameMutation,
 } from './edge-node.service';
@@ -593,7 +590,6 @@ export default function EdgeNodePage() {
     const [networkRollbackTimeoutSec, setNetworkRollbackTimeoutSec] = useState(60);
     const [editingNetwork, setEditingNetwork] = useState<NetworkDraftItem>();
     const [firmwareNode, setFirmwareNode] = useState<Edge.Node>();
-    const [modemNode, setModemNode] = useState<Edge.Node>();
     const [terminalNode, setTerminalNode] = useState<Edge.Node>();
     const [logLevel, setLogLevel] = useState<Edge.LogLevel>();
     const [nodeLogLevel, setNodeLogLevel] = useState<Edge.LogLevel>('info');
@@ -601,16 +597,12 @@ export default function EdgeNodePage() {
     const [firmwareOpen, setFirmwareOpen] = useState(false);
     const [firmwareUploadProgress, setFirmwareUploadProgress] =
         useState<Edge.FirmwareUploadProgress>();
-    const [modemOpen, setModemOpen] = useState(false);
     const [terminalOpen, setTerminalOpen] = useState(false);
     const [networkForm] = Form.useForm<Edge.NetworkConfig>();
     const [firmwareForm] = Form.useForm<Edge.FirmwareUpgradeDto>();
-    const [modemForm] = Form.useForm<Edge.ModemProfileDto>();
     const [nameForm] = Form.useForm<Edge.NameDto>();
     const networkMode = Form.useWatch('mode', networkForm);
     const networkBridge = Form.useWatch('bridge', networkForm);
-    const modemAutomatic = Form.useWatch('automatic', modemForm);
-    const modemAuthType = Form.useWatch('authType', modemForm);
     const firmwareFile = Form.useWatch('file', firmwareForm);
     const { message, modal } = App.useApp();
     const { run: search } = useDebounceFn((value: string) => {
@@ -649,7 +641,6 @@ export default function EdgeNodePage() {
     const network = useNetworkMutation();
     const deviceConfigSync = useDeviceConfigSyncMutation();
     const firmwareUpgrade = useFirmwareUpgradeMutation();
-    const modemControl = useModemControlMutation();
     const logLevelControl = useLogLevelMutation();
 
     useEffect(() => {
@@ -791,35 +782,6 @@ export default function EdgeNodePage() {
         firmwareForm.setFieldsValue({ keepSettings: true });
         setFirmwareNode(node);
         setFirmwareOpen(true);
-    };
-
-    const showModem = (node: Edge.Node) => {
-        modemForm.setFieldsValue({
-            action: 'apply_profile',
-            automatic: !node.mobile.apn,
-            apn: node.mobile.apn || '',
-            pdpType: 'IP',
-            authType: 'none',
-            username: '',
-            password: '',
-            pinCode: '',
-            redialAfterApply: true,
-        });
-        setModemNode(node);
-        setModemOpen(true);
-    };
-
-    const redialModem = () => {
-        if (!modemNode) return;
-        modemControl.mutate(
-            { id: modemNode.id, data: { action: 'redial' } },
-            {
-                onSuccess: () => {
-                    setModemOpen(false);
-                    setModemNode(undefined);
-                },
-            }
-        );
     };
 
     const interfaceColumns: ColumnsType<Edge.NetworkInterface> = [
@@ -1451,52 +1413,9 @@ export default function EdgeNodePage() {
                                     label: '移动网络',
                                     children: (
                                         <>
-                                            <Flex
-                                                justify="space-between"
-                                                align="center"
-                                                gap={12}
-                                                className="mb-3"
-                                            >
-                                                <span className="text-xs text-slate-500">
-                                                    查看 SIM、信号、运营商与拨号状态。
-                                                </span>
-                                                {detail.enrollmentStatus === 'approved' &&
-                                                    canConfig &&
-                                                    detail.capability.modemControl && (
-                                                        <Space>
-                                                            <Popconfirm
-                                                                title="确认重新拨号？"
-                                                                description="移动网络会短暂中断，节点可能暂时离线。"
-                                                                onConfirm={() =>
-                                                                    modemControl.mutate({
-                                                                        id: detail.id,
-                                                                        data: { action: 'redial' },
-                                                                    })
-                                                                }
-                                                            >
-                                                                <Button
-                                                                    icon={<ReloadOutlined />}
-                                                                    loading={
-                                                                        modemControl.isPending &&
-                                                                        modemControl.variables
-                                                                            ?.id === detail.id
-                                                                    }
-                                                                    disabled={
-                                                                        !detail.mobile.available
-                                                                    }
-                                                                >
-                                                                    重新拨号
-                                                                </Button>
-                                                            </Popconfirm>
-                                                            <Button
-                                                                icon={<MobileOutlined />}
-                                                                onClick={() => showModem(detail)}
-                                                            >
-                                                                修改接入设置
-                                                            </Button>
-                                                        </Space>
-                                                    )}
-                                            </Flex>
+                                            <p className="mb-3 text-xs text-slate-500">
+                                                查看 SIM、信号、运营商与拨号状态。
+                                            </p>
                                             <Descriptions bordered size="small" column={2}>
                                                 <Descriptions.Item label="4G 状态">
                                                     {mobileState(detail)}
@@ -1955,131 +1874,6 @@ export default function EdgeNodePage() {
                     <Form.Item label="节点名称" name="name">
                         <Input maxLength={100} showCount placeholder="请输入节点名称" />
                     </Form.Item>
-                </Form>
-            </FormModal>
-
-            <FormModal
-                open={modemOpen}
-                zIndex={EDGE_ACTION_MODAL_Z_INDEX}
-                title={`移动网络接入设置${modemNode ? ` · ${modemNode.name || modemNode.imei}` : ''}`}
-                onCancel={() => {
-                    setModemOpen(false);
-                    setModemNode(undefined);
-                }}
-                onOk={() => modemForm.submit()}
-                okText="应用配置"
-                confirmLoading={modemControl.isPending}
-                forceRender
-                destroyOnHidden
-            >
-                <Form
-                    form={modemForm}
-                    layout="vertical"
-                    onFinish={(values) => {
-                        const parsed = validateForm(modemForm, modemControlSchema, values);
-                        if (parsed && modemNode)
-                            modemControl.mutate(
-                                { id: modemNode.id, data: parsed },
-                                {
-                                    onSuccess: () => {
-                                        setModemOpen(false);
-                                        setModemNode(undefined);
-                                    },
-                                }
-                            );
-                    }}
-                >
-                    <Form.Item name="action" hidden>
-                        <Input />
-                    </Form.Item>
-                    <Form.Item
-                        label="自动获取 APN"
-                        name="automatic"
-                        valuePropName="checked"
-                        extra="由 SIM 卡和运营商自动选择接入点；专网卡通常需要关闭并手动填写"
-                    >
-                        <Switch
-                            onChange={(checked) => {
-                                if (checked) modemForm.setFieldValue('apn', '');
-                            }}
-                        />
-                    </Form.Item>
-                    <Form.Item label="APN" name="apn">
-                        <Input
-                            maxLength={100}
-                            disabled={modemAutomatic}
-                            placeholder="例如 cmnet 或 private.example"
-                        />
-                    </Form.Item>
-                    <div className="grid grid-cols-1 gap-x-4 md:grid-cols-2">
-                        <Form.Item label="PDP 类型" name="pdpType">
-                            <Select
-                                options={[
-                                    { value: 'IP', label: 'IPv4' },
-                                    { value: 'IPV6', label: 'IPv6' },
-                                    { value: 'IPV4V6', label: 'IPv4 / IPv6 双栈' },
-                                ]}
-                            />
-                        </Form.Item>
-                        <Form.Item label="认证方式" name="authType">
-                            <Select
-                                onChange={(value) => {
-                                    if (value === 'none')
-                                        modemForm.setFieldsValue({ username: '', password: '' });
-                                }}
-                                options={[
-                                    { value: 'none', label: '无认证' },
-                                    { value: 'pap', label: 'PAP' },
-                                    { value: 'chap', label: 'CHAP' },
-                                    { value: 'both', label: 'PAP 或 CHAP' },
-                                ]}
-                            />
-                        </Form.Item>
-                    </div>
-                    {modemAuthType && modemAuthType !== 'none' && (
-                        <div className="grid grid-cols-1 gap-x-4 md:grid-cols-2">
-                            <Form.Item label="认证用户名" name="username">
-                                <Input maxLength={64} autoComplete="off" />
-                            </Form.Item>
-                            <Form.Item label="认证密码" name="password">
-                                <Input.Password maxLength={128} autoComplete="new-password" />
-                            </Form.Item>
-                        </div>
-                    )}
-                    <Form.Item
-                        label="SIM PIN"
-                        name="pinCode"
-                        extra="仅在 SIM 已启用 PIN 锁时填写，留空表示不解锁"
-                    >
-                        <Input.Password
-                            maxLength={8}
-                            inputMode="numeric"
-                            autoComplete="new-password"
-                        />
-                    </Form.Item>
-                    <Form.Item
-                        label="应用后重新拨号"
-                        name="redialAfterApply"
-                        valuePropName="checked"
-                    >
-                        <Switch />
-                    </Form.Item>
-                    <Popconfirm
-                        title="确认重新拨号？"
-                        description="移动网络会短暂中断，节点可能暂时离线。"
-                        onConfirm={redialModem}
-                    >
-                        <Button
-                            icon={<ReloadOutlined />}
-                            loading={modemControl.isPending}
-                            disabled={!modemNode?.mobile.available}
-                        >
-                            仅重新拨号
-                        </Button>
-                    </Popconfirm>
-                    <p className="text-xs text-slate-500">
-                        APN 配置按 OpenWrt 移动网络参数下发；密码和 SIM PIN 不写入任务审计记录。
-                    </p>
                 </Form>
             </FormModal>
 
