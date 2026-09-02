@@ -56,19 +56,25 @@ enum : std::uint16_t {
 inline constexpr std::uint32_t kWgPeerRemove = 1U << 0;
 inline constexpr std::uint32_t kWgPeerReplaceAllowedIps = 1U << 1;
 
-static_assert(kWgCmdGetDevice == WG_CMD_GET_DEVICE);
-static_assert(kWgCmdSetDevice == WG_CMD_SET_DEVICE);
-static_assert(kWgDeviceIfname == WGDEVICE_A_IFNAME);
-static_assert(kWgDevicePrivateKey == WGDEVICE_A_PRIVATE_KEY);
-static_assert(kWgDeviceListenPort == WGDEVICE_A_LISTEN_PORT);
-static_assert(kWgDevicePeers == WGDEVICE_A_PEERS);
-static_assert(kWgPeerPublicKey == WGPEER_A_PUBLIC_KEY);
-static_assert(kWgPeerFlags == WGPEER_A_FLAGS);
-static_assert(kWgPeerLastHandshake == WGPEER_A_LAST_HANDSHAKE_TIME);
-static_assert(kWgPeerAllowedIps == WGPEER_A_ALLOWEDIPS);
-static_assert(kWgAllowedIpFamily == WGALLOWEDIP_A_FAMILY);
-static_assert(kWgAllowedIpAddress == WGALLOWEDIP_A_IPADDR);
-static_assert(kWgAllowedIpPrefix == WGALLOWEDIP_A_CIDR_MASK);
+static_assert(static_cast<int>(kWgCmdGetDevice) == static_cast<int>(WG_CMD_GET_DEVICE));
+static_assert(static_cast<int>(kWgCmdSetDevice) == static_cast<int>(WG_CMD_SET_DEVICE));
+static_assert(static_cast<int>(kWgDeviceIfname) == static_cast<int>(WGDEVICE_A_IFNAME));
+static_assert(static_cast<int>(kWgDevicePrivateKey) ==
+              static_cast<int>(WGDEVICE_A_PRIVATE_KEY));
+static_assert(static_cast<int>(kWgDeviceListenPort) ==
+              static_cast<int>(WGDEVICE_A_LISTEN_PORT));
+static_assert(static_cast<int>(kWgDevicePeers) == static_cast<int>(WGDEVICE_A_PEERS));
+static_assert(static_cast<int>(kWgPeerPublicKey) == static_cast<int>(WGPEER_A_PUBLIC_KEY));
+static_assert(static_cast<int>(kWgPeerFlags) == static_cast<int>(WGPEER_A_FLAGS));
+static_assert(static_cast<int>(kWgPeerLastHandshake) ==
+              static_cast<int>(WGPEER_A_LAST_HANDSHAKE_TIME));
+static_assert(static_cast<int>(kWgPeerAllowedIps) == static_cast<int>(WGPEER_A_ALLOWEDIPS));
+static_assert(static_cast<int>(kWgAllowedIpFamily) ==
+              static_cast<int>(WGALLOWEDIP_A_FAMILY));
+static_assert(static_cast<int>(kWgAllowedIpAddress) ==
+              static_cast<int>(WGALLOWEDIP_A_IPADDR));
+static_assert(static_cast<int>(kWgAllowedIpPrefix) ==
+              static_cast<int>(WGALLOWEDIP_A_CIDR_MASK));
 static_assert(kWgPeerRemove == WGPEER_F_REMOVE_ME);
 static_assert(kWgPeerReplaceAllowedIps == WGPEER_F_REPLACE_ALLOWEDIPS);
 
