@@ -161,6 +161,7 @@ class VpnController final : public ruvia::Controller<VpnController> {
 
     ruvia::Task<ruvia::HttpResponse> createEnrollment(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:vpn:enroll");
+        co_await service::middleware::requirePermission(c, "iot:edge:query");
         co_return vpnJson(c, co_await vpnService().createEnrollment(
                                  c, co_await c.req().jsonValue()), "Enrollment 已创建");
     }

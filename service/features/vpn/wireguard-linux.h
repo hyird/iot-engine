@@ -11,6 +11,7 @@
 #include <linux/if_link.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
+#include <linux/wireguard.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <optional>
@@ -47,13 +48,29 @@ enum : std::uint16_t {
 };
 
 enum : std::uint16_t {
-    kWgAllowedIpAddress = 1,
-    kWgAllowedIpPrefix = 2,
-    kWgAllowedIpFamily = 3,
+    kWgAllowedIpFamily = 1,
+    kWgAllowedIpAddress = 2,
+    kWgAllowedIpPrefix = 3,
 };
 
 inline constexpr std::uint32_t kWgPeerRemove = 1U << 0;
 inline constexpr std::uint32_t kWgPeerReplaceAllowedIps = 1U << 1;
+
+static_assert(kWgCmdGetDevice == WG_CMD_GET_DEVICE);
+static_assert(kWgCmdSetDevice == WG_CMD_SET_DEVICE);
+static_assert(kWgDeviceIfname == WGDEVICE_A_IFNAME);
+static_assert(kWgDevicePrivateKey == WGDEVICE_A_PRIVATE_KEY);
+static_assert(kWgDeviceListenPort == WGDEVICE_A_LISTEN_PORT);
+static_assert(kWgDevicePeers == WGDEVICE_A_PEERS);
+static_assert(kWgPeerPublicKey == WGPEER_A_PUBLIC_KEY);
+static_assert(kWgPeerFlags == WGPEER_A_FLAGS);
+static_assert(kWgPeerLastHandshake == WGPEER_A_LAST_HANDSHAKE_TIME);
+static_assert(kWgPeerAllowedIps == WGPEER_A_ALLOWEDIPS);
+static_assert(kWgAllowedIpFamily == WGALLOWEDIP_A_FAMILY);
+static_assert(kWgAllowedIpAddress == WGALLOWEDIP_A_IPADDR);
+static_assert(kWgAllowedIpPrefix == WGALLOWEDIP_A_CIDR_MASK);
+static_assert(kWgPeerRemove == WGPEER_F_REMOVE_ME);
+static_assert(kWgPeerReplaceAllowedIps == WGPEER_F_REPLACE_ALLOWEDIPS);
 
 inline constexpr std::uint16_t kNested = NLA_F_NESTED;
 
@@ -348,6 +365,39 @@ inline bool setInterfaceUp(std::string_view interfaceName, int& errorCode) {
     return reply.ok;
 }
 
+inline bool replaceRoute(std::string_view interfaceName, std::string_view destination,
+                         int& errorCode) {
+    const auto cidr = parseCidr(destination, 0, 32);
+    const auto ifindex = ::if_nametoindex(std::string(interfaceName).c_str());
+    if (!cidr || ifindex == 0) {
+        errorCode = ifindex == 0 ? (errno != 0 ? errno : ENODEV) : EINVAL;
+        return false;
+    }
+    Client client(NETLINK_ROUTE);
+    if (!client.valid()) {
+        errorCode = errno;
+        return false;
+    }
+    MessageBuilder request(RTM_NEWROUTE,
+                           NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_REPLACE, 1);
+    rtmsg route{};
+    route.rtm_family = AF_INET;
+    route.rtm_dst_len = cidr->prefix;
+    route.rtm_table = RT_TABLE_MAIN;
+    route.rtm_protocol = RTPROT_STATIC;
+    route.rtm_scope = RT_SCOPE_LINK;
+    route.rtm_type = RTN_UNICAST;
+    request.append(route);
+    if (cidr->prefix != 0) {
+        const auto destinationAddress = htonl(cidr->network);
+        request.attribute(RTA_DST, destinationAddress);
+    }
+    request.attribute(RTA_OIF, ifindex);
+    const auto reply = client.request(request.finish());
+    errorCode = reply.errorCode;
+    return reply.ok;
+}
+
 inline std::optional<std::array<std::uint8_t, 32>> decodeKey(std::string_view text) {
     if (!validKey(text) || text[43] != '=')
         return std::nullopt;
@@ -517,6 +567,11 @@ class Controller final : public IWireGuardController {
         std::string errorMessage;
         if (!setDevice(generic, *family, config, &peer, errorMessage))
             return failure("peer_configure_failed", std::move(errorMessage));
+        for (const auto& route : peer.allowedIps) {
+            int errorCode = 0;
+            if (!replaceRoute(config.interfaceName, route, errorCode))
+                return failure("peer_route_failed", errorText(errorCode));
+        }
         return success();
     }
 

@@ -26,6 +26,7 @@
 #include "service/features/edge/protocol.h"
 #include "service/features/vpn/cidr.h"
 #include "service/features/vpn/edge-config.h"
+#include "service/features/vpn/firewall.h"
 #include "service/features/vpn/hub-config.h"
 #include "service/features/vpn/wireguard.h"
 #include "service/middleware/auth.h"
@@ -640,9 +641,22 @@ VALUES ($1::uuid, $2::uuid, $3, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
             service::common::dbParams(networkId));
         if (network.empty())
             service::common::fail(21004, "VPN 网络不存在或已停用", 404);
-        const auto routes = detail::textArray(payload, "allowedRoutes");
-        if (routes.empty() || routes.size() > 64)
-            service::common::fail(21001, "Enrollment 至少需要授权一条路由，最多 64 条", 400);
+        const auto routeRows = co_await c.db().query(R"sql(
+SELECT r.virtual_cidr
+FROM vpn_route r
+JOIN vpn_peer p ON p.id = r.edge_peer_id AND p.peer_type = 'edge'
+JOIN edge_node e ON e.id = p.edge_node_id
+WHERE r.network_id = $1::uuid AND r.enabled AND r.status = 'active'
+  AND p.status = 'active' AND e.enrollment_status = 'approved'
+ORDER BY r.virtual_cidr)sql", service::common::dbParams(networkId));
+        std::vector<std::string> routes;
+        routes.reserve(routeRows.size());
+        for (const auto& row : routeRows)
+            routes.push_back(detail::rowValue(row, 0));
+        if (routes.empty())
+            service::common::fail(21003, "当前账户没有可访问的 VPN 设备", 403);
+        if (routes.size() > 64)
+            service::common::fail(21001, "当前账户可访问的 VPN 路由超过 64 条", 409);
         co_await validateAllowedRoutes(c, networkId, routes);
         const auto seconds = detail::optionalInteger(payload, "expiresInSec").value_or(600);
         if (seconds < 60 || seconds > 3600)
@@ -1094,22 +1108,32 @@ inline ruvia::Task<wireguard::RuntimeStatus> VpnService::reconcileHub(ruvia::Con
     const auto rows = co_await c.db().query(R"sql(
 SELECT p.public_key, host(p.assigned_ipv4), p.peer_type,
        COALESCE((SELECT jsonb_agg(r.virtual_cidr ORDER BY r.virtual_cidr)
-                 FROM vpn_route r WHERE r.edge_peer_id = p.id AND r.enabled), '[]'::jsonb)::text
+                 FROM vpn_route r WHERE r.edge_peer_id = p.id AND r.enabled), '[]'::jsonb)::text,
+       p.allowed_routes::text
 FROM vpn_peer p JOIN vpn_network n ON n.id = p.network_id
 WHERE p.status = 'active' AND n.status = 'enabled' AND p.public_key IS NOT NULL
 ORDER BY p.id)sql");
     std::size_t configuredPeers = 0;
     std::unordered_set<std::string> expectedKeys;
+    std::vector<firewall::ClientAccess> clients;
     for (const auto& row : rows) {
         const auto publicKey = detail::rowValue(row, 0);
         const auto assigned = detail::rowValue(row, 1);
+        const auto peerType = detail::rowValue(row, 2);
         if (!wireguard::validKey(publicKey) || !parseIpv4(assigned))
             continue;
         wireguard::Peer peer;
         peer.publicKey = publicKey;
         peer.allowedIps.emplace_back(assigned + "/32");
-        for (const auto& route : detail::textArrayJson(detail::rowValue(row, 3)))
-            peer.allowedIps.push_back(route);
+        if (peerType == "edge") {
+            for (const auto& route : detail::textArrayJson(detail::rowValue(row, 3)))
+                peer.allowedIps.push_back(route);
+        } else if (peerType == "windows") {
+            clients.push_back(firewall::ClientAccess{
+                .assignedIpv4 = assigned,
+                .allowedRoutes = detail::textArrayJson(detail::rowValue(row, 4)),
+            });
+        }
         const auto peerResult = controller.upsertPeer(*config, peer);
         if (!peerResult.configured)
             co_return peerResult;
@@ -1121,6 +1145,15 @@ ORDER BY p.id)sql");
             if (!expectedKeys.contains(publicKey))
                 (void)controller.removePeer(*config, publicKey);
     }
+    const auto firewallResult = firewall::apply(config->interfaceName, clients);
+    if (!firewallResult.configured)
+        co_return wireguard::RuntimeStatus{
+            .supported = true,
+            .configured = false,
+            .code = "firewall_configure_failed",
+            .message = firewallResult.message,
+            .peerCount = configuredPeers,
+        };
     result.peerCount = configuredPeers;
     result.message = "WireGuard hub is configured";
     co_return result;

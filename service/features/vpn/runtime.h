@@ -20,6 +20,7 @@
 
 #include "service/common/http.h"
 #include "service/features/vpn/cidr.h"
+#include "service/features/vpn/firewall.h"
 #include "service/features/vpn/hub-config.h"
 #include "service/features/vpn/wireguard.h"
 
@@ -74,32 +75,50 @@ class Runtime final {
             co_return;
         const auto rows = co_await context.db().query(R"sql(
 SELECT p.public_key, host(p.assigned_ipv4), p.peer_type,
-       COALESCE(string_agg(r.virtual_cidr, ', ' ORDER BY r.virtual_cidr), '')
+       COALESCE(string_agg(r.virtual_cidr, ', ' ORDER BY r.virtual_cidr), ''),
+       COALESCE((SELECT string_agg(value, ', ' ORDER BY value)
+                 FROM jsonb_array_elements_text(p.allowed_routes) value), '')
 FROM vpn_peer p JOIN vpn_network n ON n.id = p.network_id
 LEFT JOIN vpn_route r ON r.edge_peer_id = p.id AND r.enabled
 WHERE p.status = 'active' AND n.status = 'enabled' AND p.public_key <> ''
-GROUP BY p.id, p.public_key, p.assigned_ipv4, p.peer_type
+GROUP BY p.id, p.public_key, p.assigned_ipv4, p.peer_type, p.allowed_routes
 ORDER BY p.id)sql");
         auto& controller = wireguard::controller();
         const auto configured = controller.configure(*config);
         if (!configured.configured)
             co_return;
+        std::vector<firewall::ClientAccess> clients;
         for (const auto& row : rows) {
             const auto publicKey = std::string(row[0].value().value_or(std::string_view{}));
             const auto assigned = std::string(row[1].value().value_or(std::string_view{}));
+            const auto peerType = std::string(row[2].value().value_or(std::string_view{}));
             if (!wireguard::validKey(publicKey) || !parseIpv4(assigned))
                 continue;
             wireguard::Peer peer;
             peer.publicKey = publicKey;
             peer.allowedIps.emplace_back(assigned + "/32");
-            std::stringstream routes(
-                std::string(row[3].value().value_or(std::string_view{})));
-            std::string route;
-            while (std::getline(routes, route, ',')) {
-                if (!route.empty() && route.front() == ' ')
-                    route.erase(route.begin());
-                if (!route.empty())
-                    peer.allowedIps.push_back(std::move(route));
+            if (peerType == "edge") {
+                std::stringstream routes(
+                    std::string(row[3].value().value_or(std::string_view{})));
+                std::string route;
+                while (std::getline(routes, route, ',')) {
+                    if (!route.empty() && route.front() == ' ')
+                        route.erase(route.begin());
+                    if (!route.empty())
+                        peer.allowedIps.push_back(std::move(route));
+                }
+            } else if (peerType == "windows") {
+                firewall::ClientAccess client{.assignedIpv4 = assigned};
+                std::stringstream routes(
+                    std::string(row[4].value().value_or(std::string_view{})));
+                std::string route;
+                while (std::getline(routes, route, ',')) {
+                    if (!route.empty() && route.front() == ' ')
+                        route.erase(route.begin());
+                    if (!route.empty())
+                        client.allowedRoutes.push_back(std::move(route));
+                }
+                clients.push_back(std::move(client));
             }
             (void)controller.upsertPeer(*config, peer);
         }
@@ -116,6 +135,7 @@ ORDER BY p.id)sql");
                 if (!expected.contains(publicKey))
                     (void)controller.removePeer(*config, publicKey);
         }
+        (void)firewall::apply(config->interfaceName, clients);
         if (const auto handshakes = controller.peerHandshakes(*config)) {
             for (const auto& [publicKey, seconds] : *handshakes) {
                 if (seconds == 0 || seconds >

@@ -122,6 +122,9 @@ Edge 配置：
 - Peer Overlay 地址唯一，使用 `/32`。
 - 不自动生成 `0.0.0.0/0`，不做全流量代理。
 - AllowedIPs 由服务端生成，客户端不可任意修改后作为可信配置。
+- 客户端配置默认包含当前账户可访问的全部 Edge 虚拟 LAN，不提供手工选择设备。
+- 客户端 `AllowedIPs` 只负责本机路由；Hub 还必须按客户端 Overlay `/32` 和授权虚拟网段
+  配置 nftables 转发 ACL，客户端自行扩大 `AllowedIPs` 不能越权。
 
 ## 6. WireGuard 运行时
 
