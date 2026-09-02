@@ -674,7 +674,7 @@ export default function EdgeNodePage() {
         modal.confirm({
             zIndex: EDGE_ACTION_MODAL_Z_INDEX,
             title: `批准 IMEI ${node.imei} 注册？`,
-            content: '批准后节点下次连接即可进入在线状态。',
+            content: '批准后当前连接会立即转为已批准会话，节点将上报能力并自动同步当前设备配置。',
             onOk: () =>
                 enrollment.mutateAsync({
                     id: node.id,

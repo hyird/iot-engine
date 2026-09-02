@@ -24,6 +24,7 @@
 #include "service/common/uuid.h"
 #include "service/middleware/auth.h"
 #include "service/features/edge/dispatch.h"
+#include "service/features/edge/config.h"
 #include "service/features/edge/firmware.h"
 #include "service/features/edge/protocol.h"
 #include "service/domains/edge/edge.types.h"
@@ -116,6 +117,24 @@ RETURNING imei)sql",
             const auto value = std::string(id) + "|" + status;
             stage = "redis";
             co_await c.redis().set(key, value);
+            if (status == "approved") {
+                try {
+                    // Approval must be useful without a second manual click. Queue the
+                    // current device snapshot immediately; the gateway will deliver it
+                    // as soon as the pending WebSocket becomes an enrolled session.
+                    (void)co_await configService().queueSnapshot(c, id);
+                } catch (const std::exception& error) {
+                    // A node may be approved before its first capability projection or
+                    // before it has any configurable devices. Approval itself must not
+                    // fail in those compatible/empty cases; the existing heartbeat retry
+                    // and manual sync endpoint remain available.
+                    std::cerr << "edge enrollment initial config sync skipped: node_id=" << id
+                              << " error=" << error.what() << '\n';
+                } catch (...) {
+                    std::cerr << "edge enrollment initial config sync skipped: node_id=" << id
+                              << " error=unknown exception\n";
+                }
+            }
         } catch (const std::exception& error) {
             std::cerr << "edge enrollment update failed: stage=" << stage << " node_id=" << id
                       << " status=" << status << " error=" << error.what() << '\n';
