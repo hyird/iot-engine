@@ -1464,7 +1464,7 @@ CREATE TABLE vpn_enrollment (
 );
 CREATE INDEX idx_vpn_enrollment_active ON vpn_enrollment(network_id, expires_at)
     WHERE used_at IS NULL;
-    END
+END
 $schema$;
 )sql"},
     {"0030_vpn_iot_server_default", R"sql(
