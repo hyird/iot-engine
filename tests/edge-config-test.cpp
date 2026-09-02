@@ -181,13 +181,15 @@ void testStoragePolicyMigrationRemovesLegacyField() {
 }
 
 void testEnrollmentMigrationRemovesRejectedState() {
-    const auto& migration = service::config::kSchemaMigrations.back();
-    require(migration.id() == "0028_remove_edge_enrollment_rejection",
-            "enrollment migration is not the latest schema migration");
-    require(migration.sql().find("WHERE enrollment_status = 'rejected'") !=
+    const auto migration = std::find_if(
+        service::config::kSchemaMigrations.begin(), service::config::kSchemaMigrations.end(),
+        [](const auto& value) { return value.id() == "0028_remove_edge_enrollment_rejection"; });
+    require(migration != service::config::kSchemaMigrations.end(),
+            "enrollment migration is missing");
+    require(migration->sql().find("WHERE enrollment_status = 'rejected'") !=
                 std::string_view::npos,
             "enrollment migration does not migrate rejected registrations");
-    require(migration.sql().find("IN ('pending', 'approved')") !=
+    require(migration->sql().find("IN ('pending', 'approved')") !=
                 std::string_view::npos,
             "schema still permits rejected registrations");
 }
