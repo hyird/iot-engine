@@ -8,7 +8,6 @@
 #include <iostream>
 #include <memory>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -27,6 +26,8 @@
 #include "service/features/collector/stream.h"
 #include "service/features/event/stream-multiplexer.h"
 #include "service/features/telemetry/persistence.h"
+#include "service/features/vpn/edge-config.h"
+#include "service/features/vpn/wireguard.h"
 
 namespace service::edge {
 
@@ -228,6 +229,9 @@ class Projector final {
         case pb::Envelope::kNetworkConfigResult:
             co_await saveNetworkResult(context, nodeId, envelope.network_config_result());
             break;
+        case pb::Envelope::kVpnConfigResult:
+            co_await saveVpnResult(context, nodeId, envelope.vpn_config_result());
+            break;
         case pb::Envelope::kFirmwareUpdateResult:
             co_await saveFirmwareResult(context, nodeId, envelope.firmware_update_result());
             break;
@@ -339,7 +343,9 @@ VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8,
             'networkConfigVersion', $13::bigint,
             'modemControl', $14::boolean,
             'logs', $15::boolean,
-            'terminal', false),
+            'terminal', false,
+            'vpn', jsonb_build_object('supportsVpn', false, 'wireguardVersion', '',
+                                      'agentVersion', '', 'publicKey', '')),
         jsonb_build_object(
             'available', $16::boolean,
             'simState', $17::text,
@@ -370,7 +376,8 @@ SET model = EXCLUDED.model, software_version = EXCLUDED.software_version,
 	    capability = EXCLUDED.capability || jsonb_build_object(
 	        'terminal', CASE lower(COALESCE(edge_node.capability->>'terminal', ''))
 	                        WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
-	                        ELSE false END),
+	                        ELSE false END,
+	        'vpn', COALESCE(edge_node.capability->'vpn', EXCLUDED.capability->'vpn')),
     mobile = jsonb_set(
         jsonb_set(
             EXCLUDED.mobile, '{apn}',
@@ -618,6 +625,30 @@ VALUES ($1::uuid, $2, $3, $4, $5))sql",
             "UPDATE edge_node SET capability = jsonb_set(capability, '{terminal}', "
             "to_jsonb($1::boolean), true), updated_at = NOW() WHERE id = $2::uuid",
             service::common::dbParams(report.ttyd_available(), nodeId));
+        if (report.has_vpn()) {
+            const auto vpnPublicKey = service::vpn::wireguard::validKey(report.vpn().public_key())
+                                          ? std::string(report.vpn().public_key())
+                                          : std::string{};
+            (void)co_await context.db().execute(
+                "UPDATE edge_node SET capability = jsonb_set(capability, '{vpn}', "
+                "jsonb_build_object('supportsVpn', $1::boolean, 'wireguardVersion', $2::text, "
+                "'agentVersion', $3::text, 'publicKey', $4::text), true), "
+                "updated_at = NOW() WHERE id = $5::uuid",
+                service::common::dbParams(report.vpn().supports_vpn(),
+                                          report.vpn().wireguard_version(),
+                                          report.vpn().agent_version(), vpnPublicKey, nodeId));
+        }
+        if (report.has_vpn() && report.vpn().supports_vpn() &&
+            service::vpn::wireguard::validKey(report.vpn().public_key())) {
+            const auto activated = co_await context.db().query(
+                "UPDATE vpn_peer SET public_key = $1, status = 'active', updated_at = NOW() "
+                "WHERE peer_type = 'edge' AND edge_node_id = $2::uuid AND status <> 'revoked' "
+                "RETURNING id::text",
+                service::common::dbParams(report.vpn().public_key(), nodeId));
+            for (const auto& row : activated)
+                co_await service::vpn::queueEdgeConfig(
+                    context, row[0].value().value_or(std::string_view{}));
+        }
     }
 
     static ruvia::Task<void> saveNetworkResult(
@@ -635,6 +666,41 @@ UPDATE edge_task SET status = $1, result = $2::jsonb, updated_at = NOW(), comple
 WHERE id = $3::uuid AND node_id = $4::uuid AND task_type = 'network'
   AND status NOT IN ('succeeded', 'failed'))sql",
                                             service::common::dbParams(status, json, id, nodeId));
+    }
+
+    static ruvia::Task<void> saveVpnResult(
+        ruvia::WebWorkerContext& context, std::string_view nodeId,
+        const pb::VpnConfigResult& result) {
+        if (result.request_id().size() != 16)
+            co_return;
+        const auto id = protocol::uuidText(result.request_id());
+        const bool applied = result.applied();
+        const std::string status = applied ? "succeeded" : "failed";
+        const std::string json = "{\"configVersion\":" +
+                                 std::to_string(result.config_version()) +
+                                 ",\"errorCode\":" + jsonQuoted(result.error_code()) +
+                                 ",\"errorMessage\":" + jsonQuoted(result.error_message()) + "}";
+        (void)co_await context.db().execute(R"sql(
+WITH transitioned AS (
+    UPDATE edge_task
+    SET status = $1, result = $2::jsonb, updated_at = NOW(), completed_at = NOW()
+    WHERE id = $3::uuid AND node_id = $4::uuid AND task_type = 'vpn'
+      AND status NOT IN ('succeeded', 'failed')
+    RETURNING request->>'peerId' AS peer_id
+)
+UPDATE vpn_route route
+SET status = CASE WHEN $5::boolean
+                 THEN CASE WHEN COALESCE((task.request->>'enabled')::boolean, true)
+                                AND route.enabled THEN 'active' ELSE 'disabled' END
+                 ELSE 'error' END,
+    last_error = CASE WHEN $5::boolean THEN '' ELSE $6::text END,
+    updated_at = NOW()
+FROM transitioned task
+WHERE route.edge_peer_id = task.peer_id::uuid
+  AND (SELECT config_revision::text FROM vpn_peer peer
+       WHERE peer.id = task.peer_id::uuid) = task.request->>'configVersion')sql",
+                                            service::common::dbParams(status, json, id, nodeId,
+                                                                      applied, result.error_message()));
     }
 
     static ruvia::Task<void> saveFirmwareResult(
@@ -1059,6 +1125,10 @@ WHERE id = $3::uuid)sql",
                 output.push_back(ch);
         }
         return output;
+    }
+
+    static std::string jsonQuoted(std::string_view value) {
+        return "\"" + jsonEscape(value) + "\"";
     }
 
     std::vector<ruvia::WebWorkerHandle> workers_;

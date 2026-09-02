@@ -84,6 +84,12 @@ export namespace Edge {
         modemControl: boolean;
         terminal: boolean;
         logs: boolean;
+        vpn?: {
+            supportsVpn: boolean;
+            wireguardVersion: string;
+            agentVersion: string;
+            publicKey: string;
+        };
     }
 
     export interface Signal {

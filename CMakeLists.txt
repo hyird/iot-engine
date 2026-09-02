@@ -344,6 +344,9 @@ iot_engine_add_test(edge-protocol
     SOURCES tests/edge-protocol-test.cpp
     LIBRARIES edgenode-protocol)
 
+iot_engine_add_test(vpn-cidr
+    SOURCES tests/vpn-cidr-test.cpp)
+
 iot_engine_add_test(edge-config LARGE
     SOURCES tests/edge-config-test.cpp
     LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)

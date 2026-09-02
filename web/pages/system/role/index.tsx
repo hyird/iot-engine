@@ -65,6 +65,13 @@ const permissionOptions = [
     ['iot:edge:config', '配置边缘节点'],
     ['iot:edge:firmware', '上传与刷写边缘固件'],
     ['iot:edge:terminal', '访问边缘 Web 终端'],
+    ['iot:vpn:query', '查询边缘节点 VPN'],
+    ['iot:vpn:add', '新增 VPN 网络与路由'],
+    ['iot:vpn:edit', '编辑与下发 VPN 配置'],
+    ['iot:vpn:delete', '删除 VPN 网络与路由'],
+    ['iot:vpn:enroll', '创建 VPN Enrollment'],
+    ['iot:vpn:revoke', '撤销 VPN Peer'],
+    ['iot:vpn:diagnose', '诊断 VPN Hub'],
 ].map(([value, label]) => ({ value, label }));
 
 type RoleFormValues = Role.CreateDto & { id?: string };

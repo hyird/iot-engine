@@ -592,7 +592,13 @@ WHERE id = $2::uuid)sql",
                  ORDER BY task.created_at DESC LIMIT 1), 0),
        COALESCE((SELECT task.result->>'message' FROM edge_task task
                  WHERE task.node_id = edge_node.id AND task.task_type = 'firmware'
-                 ORDER BY task.created_at DESC LIMIT 1), '')
+                 ORDER BY task.created_at DESC LIMIT 1), ''),
+       CASE lower(COALESCE(capability->'vpn'->>'supportsVpn', ''))
+            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
+            ELSE false END,
+       COALESCE(capability->'vpn'->>'wireguardVersion', ''),
+       COALESCE(capability->'vpn'->>'agentVersion', ''),
+       COALESCE(capability->'vpn'->>'publicKey', '')
 FROM edge_node)sql";
     }
 
@@ -629,6 +635,12 @@ FROM edge_node)sql";
         capability.set<"modemControl">(row[23].value().value_or(std::string_view{}) == "t");
         capability.set<"terminal">(row[24].value().value_or(std::string_view{}) == "t");
         capability.set<"logs">(row[25].value().value_or(std::string_view{}) == "t");
+        VpnCapabilityDto vpn(c);
+        vpn.set<"supportsVpn">(row[43].value().value_or(std::string_view{}) == "t");
+        vpn.set<"wireguardVersion">(row[44].value().value_or(std::string_view{}));
+        vpn.set<"agentVersion">(row[45].value().value_or(std::string_view{}));
+        vpn.set<"publicKey">(row[46].value().value_or(std::string_view{}));
+        capability.set<"vpn">(std::move(vpn));
 
         SignalDto signal(c);
         signal.set<"csq">(integer(row[29].value().value_or(std::string_view{})));

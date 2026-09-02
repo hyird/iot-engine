@@ -30,6 +30,8 @@
 #include "service/domains/gb28181/media.controller.h"
 #include "service/features/gb28181/runtime.h"
 #include "service/domains/edge/edge.controller.h"
+#include "service/domains/vpn/vpn.controller.h"
+#include "service/features/vpn/runtime.h"
 #include "service/features/edge/dispatcher.h"
 #include "service/features/edge/gateway.h"
 #include "service/features/edge/projector.h"
@@ -91,6 +93,17 @@ namespace
             throw std::runtime_error(
                 "REDIS_POOL_SIZE_PER_WORKER must be between 1 and 16");
         config.poolSizePerWorker = poolSize;
+        return config;
+    }
+
+    service::vpn::wireguard::HubConfig vpnHubConfig(const ruvia::Env &env)
+    {
+        service::vpn::wireguard::HubConfig config;
+        assign(config.interfaceName, env.get("VPN_HUB_INTERFACE"));
+        assign(config.privateKey, env.get("VPN_HUB_PRIVATE_KEY"));
+        assign(config.publicKey, env.get("VPN_HUB_PUBLIC_KEY"));
+        assign(config.endpoint, env.get("VPN_HUB_ENDPOINT"));
+        config.listenPort = env.get<std::uint16_t>("VPN_HUB_LISTEN_PORT").value_or(51820);
         return config;
     }
 
@@ -338,6 +351,7 @@ int main(int argc, char *argv[])
         auto openWebhooks = std::make_shared<service::access::WebhookRuntime>();
         auto configReconciler = std::make_shared<service::runtime::Reconciler>();
         auto edgeProjector = std::make_shared<service::edge::Projector>();
+        auto vpnRuntime = std::make_shared<service::vpn::Runtime>(vpnHubConfig(app.env()));
         auto gb28181Projector = gb28181.enabled
                                     ? std::make_shared<service::gb28181::Projector>()
                                     : nullptr;
@@ -369,7 +383,7 @@ int main(int argc, char *argv[])
             .database(ruvia::DbRegistrationConfig{.config = std::move(db)})
             .redis(ruvia::RedisRegistrationConfig{.config = std::move(serviceRedis)})
             .onStart([collector, telemetry, commandResults, openWebhooks, configReconciler,
-                      edgeProjector, gb28181Projector, alerts, outbox,
+                    edgeProjector, vpnRuntime, gb28181Projector, alerts, outbox,
                       applicationRuntime,
                       collectorRedis = std::move(collectorRedis),
                       collectorWorkerCount, &app]() mutable
@@ -412,6 +426,11 @@ int main(int argc, char *argv[])
                         edgeProjector->start(workers);
                     },
                     .stop = [edgeProjector] { edgeProjector->stop(); }});
+                applicationRuntime->add({
+                    .name = "vpn",
+                    .dependencies = {"edge-projector"},
+                    .start = [vpnRuntime, workers] { vpnRuntime->start(workers); },
+                    .stop = [vpnRuntime] { vpnRuntime->stop(); }});
                 applicationRuntime->add({
                     .name = "alerts",
                     .dependencies = {"telemetry"},

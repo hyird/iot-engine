@@ -98,6 +98,12 @@ RUVIA_RESPONSE_MODEL(NodeStatusDto,
     RUVIA_OPTIONAL_FIELD(outbox, OutboxStatusDto),
     RUVIA_OPTIONAL_FIELD(log, LogStatusDto));
 
+RUVIA_RESPONSE_MODEL(VpnCapabilityDto,
+    RUVIA_OPTIONAL_FIELD_NAME("supportsVpn", supportsVpn, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("wireguardVersion", wireguardVersion, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("agentVersion", agentVersion, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(publicKey, ruvia::String));
+
 RUVIA_RESPONSE_MODEL(CapabilityDto,
     RUVIA_OPTIONAL_FIELD_NAME("networkConfig", networkConfig, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD_NAME("networkConfigVersion", networkConfigVersion, ruvia::Int64),
@@ -105,7 +111,8 @@ RUVIA_RESPONSE_MODEL(CapabilityDto,
     RUVIA_OPTIONAL_FIELD_NAME("deviceConfig", deviceConfig, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD_NAME("modemControl", modemControl, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(terminal, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(logs, ruvia::Bool));
+    RUVIA_OPTIONAL_FIELD(logs, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD(vpn, VpnCapabilityDto));
 
 RUVIA_RESPONSE_MODEL(SignalDto,
     RUVIA_OPTIONAL_FIELD(csq, ruvia::Int64),

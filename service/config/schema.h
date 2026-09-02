@@ -26,7 +26,7 @@ class SchemaMigration final {
     std::string sql_;
 };
 
-inline const std::array<SchemaMigration, 29> kSchemaMigrations{{
+inline const std::array<SchemaMigration, 30> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
@@ -1349,6 +1349,121 @@ ALTER TABLE edge_node
 ALTER TABLE edge_node
     ADD CONSTRAINT edge_node_enrollment_status_check
     CHECK (enrollment_status IN ('pending', 'approved'));
+END
+$schema$;
+)sql"},
+    {"0029_vpn_core", R"sql(
+DO $schema$
+BEGIN
+ALTER TABLE edge_task DROP CONSTRAINT IF EXISTS edge_task_task_type_check;
+ALTER TABLE edge_task ADD CONSTRAINT edge_task_task_type_check
+    CHECK (task_type IN ('network', 'firmware', 'modem', 'vpn',
+                         'platform_upsert', 'platform_delete'));
+
+CREATE TABLE vpn_network (
+    id                UUID PRIMARY KEY,
+    name              VARCHAR(100) NOT NULL,
+    overlay_cidr      VARCHAR(18) NOT NULL,
+    hub_public_key    VARCHAR(64) NOT NULL DEFAULT '',
+    hub_endpoint      VARCHAR(255) NOT NULL DEFAULT '',
+    hub_listen_port   INTEGER NOT NULL DEFAULT 51820 CHECK (hub_listen_port BETWEEN 1 AND 65535),
+    status            status_enum NOT NULL DEFAULT 'enabled',
+    created_by        UUID NOT NULL REFERENCES sys_user(id) ON DELETE RESTRICT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at        TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX idx_vpn_network_name_active ON vpn_network(name) WHERE deleted_at IS NULL;
+CREATE INDEX idx_vpn_network_status_active ON vpn_network(status) WHERE deleted_at IS NULL;
+
+CREATE TABLE vpn_peer (
+    id                UUID PRIMARY KEY,
+    network_id        UUID NOT NULL REFERENCES vpn_network(id) ON DELETE CASCADE,
+    peer_type         VARCHAR(16) NOT NULL CHECK (peer_type IN ('windows', 'edge')),
+    edge_node_id      UUID REFERENCES edge_node(id) ON DELETE CASCADE,
+    user_id           UUID REFERENCES sys_user(id) ON DELETE CASCADE,
+    name              VARCHAR(100) NOT NULL,
+    public_key        VARCHAR(64) NOT NULL DEFAULT '',
+    assigned_ipv4     INET NOT NULL,
+    allowed_routes    JSONB NOT NULL DEFAULT '[]'::jsonb
+                      CHECK (jsonb_typeof(allowed_routes) = 'array'),
+    status            VARCHAR(16) NOT NULL DEFAULT 'active'
+                      CHECK (status IN ('pending', 'active', 'revoked')),
+    config_revision   BIGINT NOT NULL DEFAULT 1,
+    last_handshake_at TIMESTAMPTZ,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    revoked_at        TIMESTAMPTZ,
+    CONSTRAINT ck_vpn_peer_subject CHECK (
+        (peer_type = 'edge' AND edge_node_id IS NOT NULL AND user_id IS NULL)
+        OR (peer_type = 'windows' AND edge_node_id IS NULL AND user_id IS NOT NULL)
+    )
+);
+CREATE UNIQUE INDEX idx_vpn_peer_network_ip ON vpn_peer(network_id, assigned_ipv4);
+CREATE UNIQUE INDEX idx_vpn_peer_public_key ON vpn_peer(public_key) WHERE public_key <> '';
+CREATE INDEX idx_vpn_peer_network_status ON vpn_peer(network_id, status);
+CREATE INDEX idx_vpn_peer_edge ON vpn_peer(edge_node_id) WHERE edge_node_id IS NOT NULL;
+CREATE INDEX idx_vpn_peer_user ON vpn_peer(user_id) WHERE user_id IS NOT NULL;
+
+CREATE TABLE vpn_route (
+    id                UUID PRIMARY KEY,
+    network_id        UUID NOT NULL REFERENCES vpn_network(id) ON DELETE CASCADE,
+    edge_peer_id      UUID NOT NULL REFERENCES vpn_peer(id) ON DELETE CASCADE,
+    lan_interface     VARCHAR(32) NOT NULL,
+    target_cidr       VARCHAR(18) NOT NULL,
+    virtual_cidr      VARCHAR(18) NOT NULL,
+    mode              VARCHAR(16) NOT NULL DEFAULT 'nat' CHECK (mode IN ('nat', 'routed')),
+    nat_mode          VARCHAR(16) NOT NULL DEFAULT 'masquerade'
+                      CHECK (nat_mode IN ('masquerade', 'none')),
+    status            VARCHAR(16) NOT NULL DEFAULT 'active'
+                      CHECK (status IN ('active', 'error', 'disabled')),
+    enabled           BOOLEAN NOT NULL DEFAULT TRUE,
+    last_error        TEXT NOT NULL DEFAULT '',
+    created_by        UUID NOT NULL REFERENCES sys_user(id) ON DELETE RESTRICT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_vpn_route_mode_nat CHECK (
+        (mode = 'nat' AND nat_mode = 'masquerade') OR
+        (mode = 'routed' AND nat_mode = 'none')
+    ),
+    UNIQUE (network_id, virtual_cidr),
+    UNIQUE (edge_peer_id, target_cidr)
+);
+CREATE INDEX idx_vpn_route_network ON vpn_route(network_id, enabled);
+CREATE INDEX idx_vpn_route_edge_peer ON vpn_route(edge_peer_id, enabled);
+
+CREATE TABLE vpn_access_rule (
+    id                UUID PRIMARY KEY,
+    peer_id           UUID REFERENCES vpn_peer(id) ON DELETE CASCADE,
+    user_id           UUID REFERENCES sys_user(id) ON DELETE CASCADE,
+    role_id           UUID REFERENCES sys_role(id) ON DELETE CASCADE,
+    route_id          UUID NOT NULL REFERENCES vpn_route(id) ON DELETE CASCADE,
+    protocol          VARCHAR(8) NOT NULL DEFAULT 'any'
+                      CHECK (protocol IN ('any', 'tcp', 'udp')),
+    port_range        VARCHAR(32) NOT NULL DEFAULT '',
+    action            VARCHAR(8) NOT NULL CHECK (action IN ('allow', 'deny')),
+    priority          INTEGER NOT NULL DEFAULT 100 CHECK (priority >= 0),
+    enabled           BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by        UUID NOT NULL REFERENCES sys_user(id) ON DELETE RESTRICT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_vpn_access_subject CHECK (num_nonnulls(peer_id, user_id, role_id) = 1)
+);
+CREATE INDEX idx_vpn_access_route ON vpn_access_rule(route_id, enabled, priority);
+
+CREATE TABLE vpn_enrollment (
+    id                UUID PRIMARY KEY,
+    token_hash        VARCHAR(64) NOT NULL UNIQUE,
+    network_id        UUID NOT NULL REFERENCES vpn_network(id) ON DELETE CASCADE,
+    allowed_routes    JSONB NOT NULL DEFAULT '[]'::jsonb
+                      CHECK (jsonb_typeof(allowed_routes) = 'array'),
+    expires_at        TIMESTAMPTZ NOT NULL,
+    used_at           TIMESTAMPTZ,
+    created_by        UUID NOT NULL REFERENCES sys_user(id) ON DELETE RESTRICT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_vpn_enrollment_active ON vpn_enrollment(network_id, expires_at)
+    WHERE used_at IS NULL;
 END
 $schema$;
 )sql"},

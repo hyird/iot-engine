@@ -196,6 +196,39 @@ void testTerminalFlowControlContract() {
             "terminal data acknowledgement did not round trip");
 }
 
+void testVpnConfigContract() {
+    auto envelope = service::edge::protocol::outbound(
+        "00000000-0000-7000-8000-000000000002", 42, 10);
+    auto* request = envelope.mutable_vpn_config_request();
+    const std::string requestId(16, '\x06');
+    request->set_request_id(requestId);
+    request->set_config_version(7);
+    request->set_hub_public_key("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=");
+    request->set_hub_endpoint("vpn.example.com");
+    request->set_hub_listen_port(51820);
+    request->set_edge_address("100.96.0.10/32");
+    request->set_enabled(true);
+    auto* route = request->add_routes();
+    route->set_route_id("00000000-0000-7000-8000-000000000003");
+    route->set_virtual_cidr("172.31.10.0/24");
+    route->set_target_cidr("192.168.10.0/24");
+    route->set_mode("nat");
+    route->set_nat_mode("masquerade");
+    route->set_enabled(true);
+
+    const auto wire = service::edge::protocol::encode(envelope);
+    require(!wire.empty(), "VPN config request was not encoded");
+    service::edge::pb::Envelope decoded;
+    require(service::edge::protocol::decode(wire, decoded),
+            "VPN config request was not decoded");
+    require(decoded.payload_case() == service::edge::pb::Envelope::kVpnConfigRequest &&
+                decoded.vpn_config_request().config_version() == 7 &&
+                decoded.vpn_config_request().enabled() &&
+                decoded.vpn_config_request().routes_size() == 1 &&
+                decoded.vpn_config_request().routes(0).virtual_cidr() == "172.31.10.0/24",
+            "VPN config request changed during round trip");
+}
+
 void testLegacyEdgenodeContract() {
     constexpr std::uint32_t legacyVersion = 3;
     const std::string nodeId = "00000000-0000-7000-8000-000000000002";
@@ -442,6 +475,7 @@ int main() {
     testCompatibleProtocolVersionContract();
     testTerminalOpenedContract();
     testTerminalFlowControlContract();
+    testVpnConfigContract();
     testLegacyEdgenodeContract();
     testPublicBaseUrlConfiguration();
     testPlatformIdConfiguration();

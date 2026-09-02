@@ -55,6 +55,7 @@ import { usePermissions } from '@/hooks/usePermission';
 import { formatDateTime } from '@/utils/dateTime';
 import { validateForm } from '@/utils/validation';
 import { getEdgeDetail, getTerminalTicket } from './edge-node.client';
+import EdgeVpnPanel from './EdgeVpnPanel';
 import { normalizeReportedNetwork, physicalNetworkInterfaces } from './edge-node.network';
 import {
     firmwareUpgradeSchema,
@@ -1314,6 +1315,11 @@ export default function EdgeNodePage() {
                                             />
                                         </>
                                     ),
+                                },
+                                {
+                                    key: 'vpn',
+                                    label: 'VPN',
+                                    children: <EdgeVpnPanel node={detail} />,
                                 },
                                 {
                                     key: 'interfaces',
