@@ -488,7 +488,7 @@ FROM vpn_peer p)sql" + where + " ORDER BY p.created_at DESC LIMIT 1000", params)
         if (peerType != "windows" && peerType != "edge")
             service::common::fail(21001, "Peer 类型只支持 windows 或 edge", 400);
         const auto name = detail::requiredText(payload, "name", 100, "Peer 名称不能为空");
-        const auto publicKey = detail::optionalText(payload, "publicKey").value_or("");
+        auto publicKey = detail::optionalText(payload, "publicKey").value_or("");
         if (!publicKey.empty() && !detail::validKey(publicKey))
             service::common::fail(21001, "WireGuard 公钥格式无效", 400);
         const auto principal = service::middleware::requireAuth(c);
@@ -507,10 +507,13 @@ FROM vpn_peer p)sql" + where + " ORDER BY p.created_at DESC LIMIT 1000", params)
             service::common::fail(21003, "VPN 网络已停用", 409);
         if (peerType == "edge") {
             const auto edge = co_await c.db().query(
-                "SELECT id FROM edge_node WHERE id = $1::uuid AND enrollment_status = 'approved'",
+                "SELECT COALESCE(capability->'vpn'->>'publicKey', '') FROM edge_node "
+                "WHERE id = $1::uuid AND enrollment_status = 'approved'",
                 service::common::dbParams(edgeNodeId));
             if (edge.empty())
                 service::common::fail(21004, "Edge 节点不存在或尚未批准", 404);
+            const auto reportedKey = detail::rowValue(edge.front(), 0);
+            publicKey = detail::validKey(reportedKey) ? reportedKey : std::string{};
             const auto duplicate = co_await c.db().query(
                 "SELECT id FROM vpn_peer WHERE network_id = $1::uuid AND edge_node_id = $2::uuid "
                 "AND status <> 'revoked'", service::common::dbParams(networkId, edgeNodeId));
@@ -851,15 +854,10 @@ inline ruvia::Task<void> VpnService::ensureBridgeRoutes(
         Ipv4Cidr target;
     };
 
-    // Older swconfig EdgeNode releases expose the logical LAN as `lan` on an
-    // Ethernet VLAN even when a bridge device definition is present. Treat
-    // that logical LAN as the bridge-facing network without changing its
-    // management interface configuration.
     const auto bridgeRows = co_await db.query(R"sql(
 SELECT name, device, ipv4, prefix_length
 FROM edge_node_network
-WHERE node_id = $1::uuid
-  AND (is_bridge = TRUE OR lower(name) = 'lan' OR device LIKE 'br-%')
+WHERE node_id = $1::uuid AND is_bridge = TRUE
   AND COALESCE(ipv4, '') <> '' AND prefix_length BETWEEN 1 AND 30
 ORDER BY name)sql", service::common::dbParams(edgeNodeId));
     std::vector<BridgeRecord> bridges;
