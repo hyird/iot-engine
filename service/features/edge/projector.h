@@ -686,11 +686,13 @@ WITH transitioned AS (
     SET status = $1, result = $2::jsonb, updated_at = NOW(), completed_at = NOW()
     WHERE id = $3::uuid AND node_id = $4::uuid AND task_type = 'vpn'
       AND status NOT IN ('succeeded', 'failed')
-    RETURNING request->>'peerId' AS peer_id
+    RETURNING request->>'peerId' AS peer_id,
+              request->>'enabled' AS enabled,
+              request->>'configVersion' AS config_version
 )
 UPDATE vpn_route route
 SET status = CASE WHEN $5::boolean
-                 THEN CASE WHEN COALESCE((task.request->>'enabled')::boolean, true)
+                 THEN CASE WHEN COALESCE(task.enabled::boolean, true)
                                 AND route.enabled THEN 'active' ELSE 'disabled' END
                  ELSE 'error' END,
     last_error = CASE WHEN $5::boolean THEN '' ELSE $6::text END,
@@ -698,7 +700,7 @@ SET status = CASE WHEN $5::boolean
 FROM transitioned task
 WHERE route.edge_peer_id = task.peer_id::uuid
   AND (SELECT config_revision::text FROM vpn_peer peer
-       WHERE peer.id = task.peer_id::uuid) = task.request->>'configVersion')sql",
+       WHERE peer.id = task.peer_id::uuid) = task.config_version)sql",
                                             service::common::dbParams(status, json, id, nodeId,
                                                                       applied, result.error_message()));
     }

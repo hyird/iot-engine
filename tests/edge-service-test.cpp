@@ -233,6 +233,14 @@ int main() {
                         "VPN task enabled flag has no explicit PostgreSQL type");
         requireContains(gatewaySource, "case pb::Envelope::kVpnConfigResult:",
                         "edge gateway does not project VPN configuration results");
+        requireContains(projectorSource, "request->>'enabled' AS enabled",
+                        "VPN result transition does not return the requested enabled state");
+        requireContains(projectorSource, "request->>'configVersion' AS config_version",
+                        "VPN result transition does not return the requested config version");
+        requireContains(projectorSource, "COALESCE(task.enabled::boolean, true)",
+                        "VPN result projection reads a column outside the transition CTE");
+        requireContains(projectorSource, "= task.config_version)sql",
+                        "VPN result projection does not compare the returned config version");
         requireContains(vpnEdgeConfigSource, "'errorCode', 'superseded'",
                         "new VPN tasks leave older tasks pending forever");
         requireMissing(dispatcherSource, "workers_.back().post(",
