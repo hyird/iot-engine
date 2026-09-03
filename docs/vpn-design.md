@@ -6,7 +6,7 @@ Windows 客户端通过 iot-engine 访问 Edge 节点所在局域网设备：
 
 - LAN 设备无需安装客户端或修改默认网关。
 - Edge 支持 NAT、4G 和无公网入站连接。
-- 真实 LAN 和虚拟 LAN 映射网段全局唯一且不重叠。
+- 虚拟 LAN 映射网段全局唯一且不重叠；真实 LAN 只在所属 Edge 内生效，允许不同现场重复。
 - iot-engine 统一管理 Peer、虚拟地址、路由、权限、撤销和审计。
 - VPN 数据面不进入现有 WebSocket、Redis 或 Protobuf 队列。
 - Edge 固件不引入完整用户态 VPN 守护进程。
@@ -85,9 +85,10 @@ Hub：100.96.0.1
 ```
 
 首期只有一个平台级 WireGuard Server，固定网络名为 `iot-server`，不在 EdgeNode
-页面创建额外 VPN 网络。创建或修改桥接映射时拒绝 Overlay、虚拟 LAN、服务端网段及
-其他映射之间的重叠；真实 LAN 和虚拟 LAN 的前缀长度必须相同，并在所有 EdgeNode
-之间全局唯一。
+页面创建额外 VPN 网络。创建或修改桥接映射时，虚拟 LAN 必须避开 Overlay、服务端
+网段、所有其他虚拟映射以及所有真实 LAN；真实 LAN 之间允许重复，因为它们只在各自
+Edge 上通过 NAT 使用。真实 LAN 和虚拟 LAN 的前缀长度必须相同，虚拟 LAN 在所有
+EdgeNode 之间全局唯一。
 
 ### 5.2 首期 NAT 映射
 

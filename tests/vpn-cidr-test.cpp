@@ -5,6 +5,7 @@
 #include "service/features/vpn/cidr.h"
 #include "service/features/vpn/client-config.h"
 #include "service/features/vpn/hub-config.h"
+#include "service/features/vpn/route-sync.h"
 #include "service/features/vpn/wireguard.h"
 
 namespace {
@@ -47,6 +48,15 @@ int main() {
             "equal-prefix route contract");
     require(virtualLan && service::vpn::hostAddress(*virtualLan, 2).value() == 0xac1f0102U,
             "host address allocation");
+    const auto duplicateRealLan = service::vpn::parseCidr("192.168.1.0/24", 1, 30);
+    const auto otherVirtualLan = service::vpn::parseCidr("172.31.2.0/24", 1, 30);
+    require(realLan && duplicateRealLan && realLan->overlaps(*duplicateRealLan) &&
+                !service::vpn::realTargetConflictsVirtual(*realLan, std::nullopt),
+            "duplicate real LANs remain independent across Edge peers");
+    require(virtualLan && realLan &&
+                service::vpn::virtualMappingConflicts(*virtualLan, realLan, virtualLan) &&
+                !service::vpn::virtualMappingConflicts(*virtualLan, realLan, otherVirtualLan),
+            "virtual mapping conflicts are checked independently");
 
     constexpr std::string_view key =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq=";

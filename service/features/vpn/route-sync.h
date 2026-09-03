@@ -31,9 +31,26 @@ inline std::int64_t integer(std::string_view value, std::int64_t fallback = 0) {
 
 } // namespace route_sync_detail
 
+// A virtual mapping must not collide with another virtual mapping or with a
+// real target network. Real target networks themselves may repeat: each one
+// is translated behind its owning Edge peer.
+inline bool virtualMappingConflicts(
+    const Ipv4Cidr& candidate, const std::optional<Ipv4Cidr>& realTarget,
+    const std::optional<Ipv4Cidr>& existingVirtual) noexcept {
+    return (realTarget && candidate.overlaps(*realTarget)) ||
+           (existingVirtual && candidate.overlaps(*existingVirtual));
+}
+
+inline bool realTargetConflictsVirtual(
+    const Ipv4Cidr& candidate, const std::optional<Ipv4Cidr>& existingVirtual) noexcept {
+    return existingVirtual && candidate.overlaps(*existingVirtual);
+}
+
 // Reconcile the Edge bridge inventory with its VPN routes. The operation keeps a
 // user-selected virtual network while the bridge prefix remains compatible. A
-// prefix change necessarily selects a new equally-sized virtual network.
+// prefix change necessarily selects a new equally-sized virtual network. Real
+// LAN prefixes are local to each Edge peer and may repeat across sites; virtual
+// prefixes remain globally unique so the Hub can route them unambiguously.
 template <typename Db>
 ruvia::Task<void> syncEdgeBridgeRoutes(Db& db, std::string_view peerId,
                                        std::string_view networkId,
@@ -98,8 +115,7 @@ FROM vpn_route WHERE edge_peer_id = $1::uuid ORDER BY id)sql",
         for (const auto& route : allRoutes) {
             if (route.id == excludedId)
                 continue;
-            if ((route.target && candidate.overlaps(*route.target)) ||
-                (route.virtualNetwork && candidate.overlaps(*route.virtualNetwork)))
+            if (virtualMappingConflicts(candidate, route.target, route.virtualNetwork))
                 return true;
         }
         return false;
@@ -151,9 +167,8 @@ FROM vpn_route WHERE edge_peer_id = $1::uuid ORDER BY id)sql",
         for (const auto& route : allRoutes) {
             if (route.id == excludedId)
                 continue;
-            if ((route.target && bridge.target.overlaps(*route.target)) ||
-                (route.virtualNetwork && bridge.target.overlaps(*route.virtualNetwork)))
-                service::common::fail(21002, "真实 LAN 与全局已有网段重叠", 409);
+            if (realTargetConflictsVirtual(bridge.target, route.virtualNetwork))
+                service::common::fail(21002, "真实 LAN 与已有虚拟网段重叠", 409);
         }
         if (!virtualNetwork)
             service::common::fail(21009, "没有可用的全局唯一虚拟网段", 409);
