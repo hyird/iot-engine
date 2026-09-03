@@ -1149,7 +1149,8 @@ LIMIT 1)sql", service::common::dbParams(peerId, userId));
         service::common::fail(21005, "Hub 公网端点尚未配置", 503);
     const auto config = client_config::render(
         privateKey, detail::rowValue(row, 2), hubKey, endpoint,
-        static_cast<std::uint16_t>(portValue), allowedValues);
+        static_cast<std::uint16_t>(portValue),
+        Ipv4Cidr{kOverlayPool.network + 1U, 32U}.text(), allowedValues);
     co_return "{\"peerId\":" + service::access::jsonQuoted(detail::rowValue(row, 0)) +
               ",\"name\":" + service::access::jsonQuoted(detail::rowValue(row, 1)) +
               ",\"assignedIpv4\":" + service::access::jsonQuoted(detail::rowValue(row, 2)) +
