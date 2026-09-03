@@ -53,6 +53,8 @@ class IWireGuardController {
     virtual RuntimeStatus configure(const HubConfig& config) = 0;
     virtual RuntimeStatus upsertPeer(const HubConfig& config, const Peer& peer) = 0;
     virtual RuntimeStatus removePeer(const HubConfig& config, std::string_view publicKey) = 0;
+    virtual RuntimeStatus reconcileRoutes(const HubConfig& config,
+                                          const std::vector<std::string>& expectedRoutes) = 0;
     virtual RuntimeStatus status(const HubConfig& config) = 0;
     virtual std::optional<std::vector<std::string>> peerKeys(const HubConfig& config) = 0;
     virtual std::optional<std::unordered_map<std::string, std::uint64_t>> peerHandshakes(
@@ -64,6 +66,10 @@ class UnsupportedController final : public IWireGuardController {
     RuntimeStatus configure(const HubConfig&) override { return unsupported(); }
     RuntimeStatus upsertPeer(const HubConfig&, const Peer&) override { return unsupported(); }
     RuntimeStatus removePeer(const HubConfig&, std::string_view) override { return unsupported(); }
+    RuntimeStatus reconcileRoutes(const HubConfig&,
+                                  const std::vector<std::string>&) override {
+        return unsupported();
+    }
     RuntimeStatus status(const HubConfig&) override { return unsupported(); }
     std::optional<std::vector<std::string>> peerKeys(const HubConfig&) override { return std::nullopt; }
     std::optional<std::unordered_map<std::string, std::uint64_t>>

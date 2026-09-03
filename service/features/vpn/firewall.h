@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cerrno>
 #include <cctype>
 #include <cstdlib>
@@ -24,6 +25,7 @@ namespace service::vpn::firewall {
 struct ClientAccess final {
     std::string assignedIpv4;
     std::vector<std::string> allowedRoutes;
+    std::vector<std::string> edgeAddresses;
 };
 
 struct Result final {
@@ -113,13 +115,21 @@ inline Result apply(std::string_view interfaceName,
         if (!assigned)
             return {.configured = false, .message = "invalid VPN client address"};
         std::vector<std::string> routes;
-        routes.reserve(client.allowedRoutes.size());
+        routes.reserve(client.allowedRoutes.size() + client.edgeAddresses.size());
         for (const auto& routeText : client.allowedRoutes) {
             const auto route = parseCidr(routeText, kVirtualLanPool.prefix, 30);
             if (!route || !kVirtualLanPool.contains(route->network) ||
                 !kVirtualLanPool.contains(route->network + route->size() - 1U))
                 return {.configured = false, .message = "invalid VPN client route"};
             routes.push_back(route->text());
+        }
+        for (const auto& addressText : client.edgeAddresses) {
+            const auto address = parseIpv4(addressText);
+            if (!address || !kOverlayPool.contains(*address))
+                return {.configured = false, .message = "invalid VPN Edge address"};
+            const auto route = ipv4Text(*address) + "/32";
+            if (std::find(routes.begin(), routes.end(), route) == routes.end())
+                routes.push_back(route);
         }
         if (routes.empty())
             continue;

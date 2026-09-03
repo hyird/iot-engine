@@ -7,6 +7,7 @@ import {
     createVpnNetwork,
     createWindowsVpnConfig,
     deleteWindowsVpnConfig,
+    downloadWindowsVpnConfig,
     deleteEdgeVpnRoute,
     getEdgeVpnPeers,
     getEdgeVpnRoutes,
@@ -68,6 +69,13 @@ export const useWindowsVpnConfigDelete = () =>
     useMutationWithMessage({
         mutationFn: deleteWindowsVpnConfig,
         successMessage: 'VPN 配置已删除，客户端连接已撤销',
+        invalidateKeys: vpnInvalidations,
+    });
+
+export const useWindowsVpnConfigDownload = () =>
+    useMutationWithMessage({
+        mutationFn: downloadWindowsVpnConfig,
+        successMessage: '已按当前虚拟网段下载 WireGuard 配置',
         invalidateKeys: vpnInvalidations,
     });
 

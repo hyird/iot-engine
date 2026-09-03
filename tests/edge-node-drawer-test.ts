@@ -25,6 +25,22 @@ const vpnClient = readFileSync(
     new URL('../web/pages/iot/edge-node/edge-node.vpn.client.ts', import.meta.url),
     'utf8'
 );
+const vpnService = readFileSync(
+    new URL('../web/pages/iot/edge-node/edge-node.vpn.service.ts', import.meta.url),
+    'utf8'
+);
+const edgeProjector = readFileSync(
+    new URL('../service/features/edge/projector.h', import.meta.url),
+    'utf8'
+);
+const vpnDomain = readFileSync(
+    new URL('../service/domains/vpn/vpn.service.h', import.meta.url),
+    'utf8'
+);
+const vpnFirewall = readFileSync(
+    new URL('../service/features/vpn/firewall.h', import.meta.url),
+    'utf8'
+);
 const cardStart = source.indexOf('{nodes.map((node) => {');
 const drawerStart = source.indexOf('<Drawer', cardStart);
 const drawerEnd = source.indexOf('<FormModal', drawerStart);
@@ -98,6 +114,27 @@ test('edge nodes use hierarchical groups and cards show VPN virtual networks', (
     expect(groupPanel).toContain('新增子分组');
     expect(client).toContain('`${BASE}/groups`');
     expect(client).toContain('`${BASE}/${edgeIdSchema.parse(id)}/group`');
+});
+
+test('Windows VPN configurations can be downloaded again with current routes', () => {
+    expect(vpnClient).toContain('`${BASE}/client/config`');
+    expect(vpnClient).toContain('peerId: edgeIdSchema.parse(id)');
+    expect(vpnService).toContain('useWindowsVpnConfigDownload');
+    expect(source).toContain('配置可重复下载');
+    expect(source).toContain('windowsVpnConfigDownload.mutate');
+    expect(edgeProjector.indexOf('syncEdgeBridgeRoutes')).toBeLessThan(
+        edgeProjector.indexOf('queueEdgeConfig', edgeProjector.indexOf('syncEdgeBridgeRoutes'))
+    );
+});
+
+test('Windows VPN configurations route to accessible Edge tunnel addresses', () => {
+    expect(vpnDomain).toContain('jsonb_agg(host(edge_peer.assigned_ipv4)');
+    expect(vpnDomain).toContain('address += "/32"');
+    expect(vpnDomain).toContain(
+        '.edgeAddresses = detail::textArrayJson(detail::rowValue(row, 5))'
+    );
+    expect(vpnFirewall).toContain('client.edgeAddresses');
+    expect(vpnFirewall).toContain('kOverlayPool.contains(*address)');
 });
 
 test('drawer actions render above the detail drawer', () => {

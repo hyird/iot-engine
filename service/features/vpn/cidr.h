@@ -12,6 +12,8 @@ struct Ipv4Cidr final {
     std::uint32_t network{};
     std::uint8_t prefix{};
 
+    bool operator==(const Ipv4Cidr&) const = default;
+
     [[nodiscard]] std::uint32_t size() const noexcept {
         return prefix == 0 ? 0U : (1U << (32U - prefix));
     }

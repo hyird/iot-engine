@@ -404,6 +404,94 @@ inline bool replaceRoute(std::string_view interfaceName, std::string_view destin
     return reply.ok;
 }
 
+inline std::optional<std::vector<Ipv4Cidr>> managedRoutes(
+    std::string_view interfaceName, int& errorCode) {
+    const auto ifindex = ::if_nametoindex(std::string(interfaceName).c_str());
+    if (ifindex == 0) {
+        errorCode = errno != 0 ? errno : ENODEV;
+        return std::nullopt;
+    }
+    Client client(NETLINK_ROUTE);
+    if (!client.valid()) {
+        errorCode = errno;
+        return std::nullopt;
+    }
+    MessageBuilder request(RTM_GETROUTE, NLM_F_REQUEST | NLM_F_DUMP, 1);
+    rtmsg filter{};
+    filter.rtm_family = AF_INET;
+    request.append(filter);
+    const auto reply = client.request(request.finish(), true);
+    errorCode = reply.errorCode;
+    if (!reply.ok)
+        return std::nullopt;
+
+    std::vector<Ipv4Cidr> routes;
+    for (const auto& message : reply.messages) {
+        const auto* header = reinterpret_cast<const nlmsghdr*>(message.data());
+        if (header->nlmsg_type != RTM_NEWROUTE ||
+            header->nlmsg_len < NLMSG_LENGTH(sizeof(rtmsg)))
+            continue;
+        const auto* route = reinterpret_cast<const rtmsg*>(NLMSG_DATA(header));
+        if (route->rtm_family != AF_INET || route->rtm_table != RT_TABLE_MAIN ||
+            route->rtm_protocol != RTPROT_STATIC || route->rtm_type != RTN_UNICAST ||
+            route->rtm_dst_len > 32)
+            continue;
+        std::optional<std::uint32_t> outputInterface;
+        std::uint32_t destination = 0;
+        const auto* payload = reinterpret_cast<const std::uint8_t*>(route) + sizeof(rtmsg);
+        const auto payloadLength = header->nlmsg_len - NLMSG_HDRLEN - sizeof(rtmsg);
+        Client::forEachAttribute(
+            payload, payloadLength,
+            [&](const Client::nlattr& attribute, const std::uint8_t* value,
+                std::size_t length) {
+                const auto type = attribute.nla_type & NLA_TYPE_MASK;
+                if (type == RTA_OIF && length >= sizeof(std::uint32_t)) {
+                    std::uint32_t index = 0;
+                    std::memcpy(&index, value, sizeof(index));
+                    outputInterface = index;
+                } else if (type == RTA_DST && length >= sizeof(std::uint32_t)) {
+                    std::uint32_t address = 0;
+                    std::memcpy(&address, value, sizeof(address));
+                    destination = ntohl(address);
+                }
+            });
+        if (outputInterface && *outputInterface == ifindex)
+            routes.push_back(Ipv4Cidr{destination, route->rtm_dst_len});
+    }
+    return routes;
+}
+
+inline bool deleteRoute(std::string_view interfaceName, const Ipv4Cidr& destination,
+                        int& errorCode) {
+    const auto ifindex = ::if_nametoindex(std::string(interfaceName).c_str());
+    if (ifindex == 0) {
+        errorCode = errno != 0 ? errno : ENODEV;
+        return false;
+    }
+    Client client(NETLINK_ROUTE);
+    if (!client.valid()) {
+        errorCode = errno;
+        return false;
+    }
+    MessageBuilder request(RTM_DELROUTE, NLM_F_REQUEST | NLM_F_ACK, 1);
+    rtmsg route{};
+    route.rtm_family = AF_INET;
+    route.rtm_dst_len = destination.prefix;
+    route.rtm_table = RT_TABLE_MAIN;
+    route.rtm_protocol = RTPROT_STATIC;
+    route.rtm_scope = RT_SCOPE_LINK;
+    route.rtm_type = RTN_UNICAST;
+    request.append(route);
+    if (destination.prefix != 0) {
+        const auto destinationAddress = htonl(destination.network);
+        request.attribute(RTA_DST, destinationAddress);
+    }
+    request.attribute(RTA_OIF, ifindex);
+    const auto reply = client.request(request.finish());
+    errorCode = reply.errorCode;
+    return reply.ok;
+}
+
 inline std::optional<std::array<std::uint8_t, 32>> decodeKey(std::string_view text) {
     if (!validKey(text) || text[43] != '=')
         return std::nullopt;
@@ -607,6 +695,33 @@ class Controller final : public IWireGuardController {
         const auto reply = generic.request(request.finish());
         if (!reply.ok) {
             return failure("peer_remove_failed", errorText(reply.errorCode));
+        }
+        return success();
+    }
+
+    RuntimeStatus reconcileRoutes(
+        const HubConfig& config,
+        const std::vector<std::string>& expectedRoutes) override {
+        if (!validConfig(config))
+            return failure("invalid_config", "WireGuard hub configuration is invalid");
+        std::vector<Ipv4Cidr> expected;
+        expected.reserve(expectedRoutes.size());
+        for (const auto& route : expectedRoutes) {
+            const auto parsed = parseCidr(route, 0, 32);
+            if (!parsed)
+                return failure("invalid_route", "WireGuard peer route is invalid");
+            if (std::find(expected.begin(), expected.end(), *parsed) == expected.end())
+                expected.push_back(*parsed);
+        }
+        int errorCode = 0;
+        const auto current = managedRoutes(config.interfaceName, errorCode);
+        if (!current)
+            return failure("route_list_failed", errorText(errorCode));
+        for (const auto& route : *current) {
+            if (std::find(expected.begin(), expected.end(), route) != expected.end())
+                continue;
+            if (!deleteRoute(config.interfaceName, route, errorCode) && errorCode != ESRCH)
+                return failure("route_remove_failed", errorText(errorCode));
         }
         return success();
     }

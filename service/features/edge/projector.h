@@ -27,6 +27,7 @@
 #include "service/features/event/stream-multiplexer.h"
 #include "service/features/telemetry/persistence.h"
 #include "service/features/vpn/edge-config.h"
+#include "service/features/vpn/route-sync.h"
 #include "service/features/vpn/wireguard.h"
 
 namespace service::edge {
@@ -640,14 +641,28 @@ VALUES ($1::uuid, $2, $3, $4, $5))sql",
         }
         if (report.has_vpn() && report.vpn().supports_vpn() &&
             service::vpn::wireguard::validKey(report.vpn().public_key())) {
-            const auto activated = co_await context.db().query(
-                "UPDATE vpn_peer SET public_key = $1, status = 'active', updated_at = NOW() "
-                "WHERE peer_type = 'edge' AND edge_node_id = $2::uuid AND status <> 'revoked' "
-                "RETURNING id::text",
-                service::common::dbParams(report.vpn().public_key(), nodeId));
-            for (const auto& row : activated)
+            const auto activated = co_await context.db().query(R"sql(
+UPDATE vpn_peer p
+SET public_key = $1, status = 'active', updated_at = NOW()
+FROM vpn_network n
+WHERE p.peer_type = 'edge' AND p.edge_node_id = $2::uuid AND p.status <> 'revoked'
+  AND n.id = p.network_id
+RETURNING p.id::text, p.network_id::text, n.created_by::text)sql",
+                                                               service::common::dbParams(
+                                                                   report.vpn().public_key(),
+                                                                   nodeId));
+            for (const auto& row : activated) {
+                auto transaction = co_await context.db().beginTransaction();
+                (void)co_await transaction.query(
+                    "SELECT pg_advisory_xact_lock(5282804697543808068::bigint)");
+                co_await service::vpn::syncEdgeBridgeRoutes(
+                    transaction, row[0].value().value_or(std::string_view{}),
+                    row[1].value().value_or(std::string_view{}), nodeId,
+                    row[2].value().value_or(std::string_view{}));
+                co_await transaction.commit();
                 co_await service::vpn::queueEdgeConfig(
                     context, row[0].value().value_or(std::string_view{}));
+            }
         }
     }
 

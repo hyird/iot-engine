@@ -86,6 +86,7 @@ import type { Edge } from './edge-node.types';
 import {
     useWindowsVpnConfigCreate,
     useWindowsVpnConfigDelete,
+    useWindowsVpnConfigDownload,
     useWindowsVpnConfigs,
 } from './edge-node.vpn.service';
 import type { EdgeVpn } from './edge-node.vpn.types';
@@ -707,6 +708,7 @@ export default function EdgeNodePage() {
     const logLevelControl = useLogLevelMutation();
     const windowsVpnConfig = useWindowsVpnConfigCreate();
     const windowsVpnConfigDelete = useWindowsVpnConfigDelete();
+    const windowsVpnConfigDownload = useWindowsVpnConfigDownload();
     const {
         data: windowsVpnConfigs = [],
         isLoading: windowsVpnConfigsLoading,
@@ -2054,7 +2056,7 @@ export default function EdgeNodePage() {
                     showIcon
                     className="mb-4"
                     message="每台 Windows 设备必须单独生成一份配置"
-                    description="配置包含仅显示一次的客户端私钥，并自动放行当前账户可访问的全部边缘节点虚拟网段。"
+                    description="配置可重复下载；每次下载都会写入当前账户可访问的全部边缘节点虚拟网段。"
                 />
                 {canCreateVpnConfig && (
                     <Form
@@ -2133,32 +2135,50 @@ export default function EdgeNodePage() {
                             {
                                 title: '操作',
                                 key: 'actions',
-                                width: 80,
+                                width: 140,
                                 fixed: 'right',
-                                render: (_, item) =>
-                                    canDeleteVpnConfig ? (
-                                        <Popconfirm
-                                            title={`删除 ${item.name} 的 VPN 配置？`}
-                                            description="删除后该客户端会立即失去 VPN 访问权限，已下载文件也无法再使用。"
-                                            okText="删除"
-                                            okButtonProps={{ danger: true }}
-                                            onConfirm={() => windowsVpnConfigDelete.mutate(item.id)}
+                                render: (_, item) => (
+                                    <Flex gap={4}>
+                                        <Button
+                                            type="link"
+                                            size="small"
+                                            loading={
+                                                windowsVpnConfigDownload.isPending &&
+                                                windowsVpnConfigDownload.variables === item.id
+                                            }
+                                            onClick={() =>
+                                                windowsVpnConfigDownload.mutate(item.id, {
+                                                    onSuccess: downloadClientConfig,
+                                                })
+                                            }
                                         >
-                                            <Button
-                                                type="link"
-                                                danger
-                                                size="small"
-                                                loading={
-                                                    windowsVpnConfigDelete.isPending &&
-                                                    windowsVpnConfigDelete.variables === item.id
+                                            下载
+                                        </Button>
+                                        {canDeleteVpnConfig && (
+                                            <Popconfirm
+                                                title={`删除 ${item.name} 的 VPN 配置？`}
+                                                description="删除后该客户端会立即失去 VPN 访问权限，已下载文件也无法再使用。"
+                                                okText="删除"
+                                                okButtonProps={{ danger: true }}
+                                                onConfirm={() =>
+                                                    windowsVpnConfigDelete.mutate(item.id)
                                                 }
                                             >
-                                                删除
-                                            </Button>
-                                        </Popconfirm>
-                                    ) : (
-                                        '-'
-                                    ),
+                                                <Button
+                                                    type="link"
+                                                    danger
+                                                    size="small"
+                                                    loading={
+                                                        windowsVpnConfigDelete.isPending &&
+                                                        windowsVpnConfigDelete.variables === item.id
+                                                    }
+                                                >
+                                                    删除
+                                                </Button>
+                                            </Popconfirm>
+                                        )}
+                                    </Flex>
+                                ),
                             },
                         ]}
                     />

@@ -30,6 +30,7 @@
 #include "service/features/vpn/edge-config.h"
 #include "service/features/vpn/firewall.h"
 #include "service/features/vpn/hub-config.h"
+#include "service/features/vpn/route-sync.h"
 #include "service/features/vpn/wireguard.h"
 #include "service/middleware/auth.h"
 #include "service/domains/vpn/vpn.types.h"
@@ -187,9 +188,6 @@ class VpnService final {
     template <typename Db>
     static ruvia::Task<std::optional<std::uint32_t>> allocateAddressFromDb(
         Db&, std::string_view, const Ipv4Cidr&);
-    template <typename Db>
-    static ruvia::Task<void> ensureBridgeRoutes(Db&, std::string_view, std::string_view,
-                                                std::string_view, std::string_view);
     static ruvia::Task<void> validateAllowedRoutes(ruvia::Context&, std::string_view,
                                                    const std::vector<std::string>&);
     static ruvia::Task<wireguard::RuntimeStatus> reconcileHub(ruvia::Context&);
@@ -361,8 +359,8 @@ LIMIT 1)sql", service::common::dbParams(edgePeerId));
         auto transaction = co_await c.db().beginTransaction();
         (void)co_await transaction.query(
             "SELECT pg_advisory_xact_lock(5282804697543808068::bigint)");
-        co_await ensureBridgeRoutes(transaction, edgePeerId, networkId,
-                                    detail::rowValue(edge.front(), 2), principal.userId);
+        co_await syncEdgeBridgeRoutes(transaction, edgePeerId, networkId,
+                                      detail::rowValue(edge.front(), 2), principal.userId);
         co_await transaction.commit();
         const auto mapped = co_await c.db().query(
             "SELECT id::text, virtual_cidr FROM vpn_route "
@@ -573,7 +571,8 @@ RETURNING id)sql", service::common::dbParams(
                 service::common::fail(21002, "该 Edge 节点已经加入 VPN 网络", 409);
         }
         if (peerType == "edge")
-            co_await ensureBridgeRoutes(transaction, id, networkId, edgeNodeId, principal.userId);
+            co_await syncEdgeBridgeRoutes(transaction, id, networkId, edgeNodeId,
+                                          principal.userId);
         co_await transaction.commit();
         co_await audit(c, principal.userId,
                        reusableEdgePeerId.empty() ? "vpn.peer.create"
@@ -636,12 +635,14 @@ ORDER BY r.virtual_cidr)sql", service::common::dbParams(networkId));
         const auto assigned = co_await allocateAddressFromDb(transaction, networkId, *overlay);
         const auto assignedAddress = detail::hostText(*assigned);
         (void)co_await transaction.execute(R"sql(
-INSERT INTO vpn_peer(id, network_id, peer_type, user_id, name, public_key, assigned_ipv4,
-                     allowed_routes, status)
-VALUES ($1::uuid, $2::uuid, 'windows', $3::uuid, $4, $5, $6::inet, $7::jsonb, 'active'))sql",
+INSERT INTO vpn_peer(id, network_id, peer_type, user_id, name, public_key,
+                     client_private_key, assigned_ipv4, allowed_routes, status)
+VALUES ($1::uuid, $2::uuid, 'windows', $3::uuid, $4, $5, $6, $7::inet,
+        $8::jsonb, 'active'))sql",
                                            service::common::dbParams(
                                                id, networkId, principal.userId, name,
-                                               publicKey, assignedAddress, routesJson));
+                                               publicKey, privateKey, assignedAddress,
+                                               routesJson));
         co_await transaction.commit();
         co_await audit(c, principal.userId, "vpn.client_config.create", "vpn_peer", id,
                        "success", "{}");
@@ -670,7 +671,14 @@ VALUES ($1::uuid, $2::uuid, 'windows', $3::uuid, $4, $5, $6::inet, $7::jsonb, 'a
         const auto rows = co_await c.db().query(R"sql(
 SELECT jsonb_build_object(
   'id', p.id, 'name', p.name, 'assignedIpv4', host(p.assigned_ipv4),
-  'allowedRoutes', p.allowed_routes, 'status', p.status,
+  'allowedRoutes', COALESCE((
+      SELECT jsonb_agg(r.virtual_cidr ORDER BY r.virtual_cidr)
+      FROM vpn_route r
+      JOIN vpn_peer edge_peer ON edge_peer.id = r.edge_peer_id
+      JOIN edge_node e ON e.id = edge_peer.edge_node_id
+      WHERE r.network_id = p.network_id AND r.enabled AND r.status = 'active'
+        AND edge_peer.status = 'active' AND e.enrollment_status = 'approved'
+  ), '[]'::jsonb), 'status', p.status,
   'lastHandshakeAt', iot_utc_timestamp(p.last_handshake_at),
   'createdAt', iot_utc_timestamp(p.created_at))
 FROM vpn_peer p
@@ -742,7 +750,8 @@ RETURNING public_key)sql", service::common::dbParams(id, principal.userId));
         auto transaction = co_await c.db().beginTransaction();
         (void)co_await transaction.query(
             "SELECT pg_advisory_xact_lock(5282804697543808068::bigint)");
-        co_await ensureBridgeRoutes(transaction, id, networkId, edgeNodeId, principal.userId);
+        co_await syncEdgeBridgeRoutes(transaction, id, networkId, edgeNodeId,
+                                      principal.userId);
         co_await transaction.commit();
         co_await queueEdgeConfig(c, id);
         (void)co_await reconcileHub(c);
@@ -877,7 +886,45 @@ VALUES ($1::uuid, $2::uuid, 'windows', $3::uuid, $4, $5, $6::inet, $7::jsonb, 'a
     ruvia::Task<std::string> clientConfig(ruvia::Context& c, std::string_view peerId) {
         requireUuid(peerId, "VPN Peer ID 无效");
         const auto principal = service::middleware::requireAuth(c);
-        co_return co_await clientConfigJson(c, peerId, principal.userId);
+        auto transaction = co_await c.db().beginTransaction();
+        const auto rows = co_await transaction.query(R"sql(
+SELECT public_key, client_private_key
+FROM vpn_peer
+WHERE id = $1::uuid AND peer_type = 'windows' AND user_id = $2::uuid
+  AND status = 'active'
+FOR UPDATE)sql", service::common::dbParams(peerId, principal.userId));
+        if (rows.empty())
+            service::common::fail(21004, "Windows VPN 配置不存在或不属于当前用户", 404);
+
+        const auto oldPublicKey = detail::rowValue(rows.front(), 0);
+        auto privateKey = detail::rowValue(rows.front(), 1);
+        std::string derivedPublicKey;
+        bool rekeyed = !hub_config::derivePublicKey(privateKey, derivedPublicKey) ||
+                       derivedPublicKey != oldPublicKey;
+        if (rekeyed) {
+            if (!hub_config::generateKeyPair(privateKey, derivedPublicKey))
+                service::common::fail(21005, "Windows WireGuard 密钥生成失败", 500);
+            (void)co_await transaction.execute(R"sql(
+UPDATE vpn_peer
+SET public_key = $2, client_private_key = $3,
+    config_revision = config_revision + 1, updated_at = NOW()
+WHERE id = $1::uuid)sql",
+                                               service::common::dbParams(
+                                                   peerId, derivedPublicKey, privateKey));
+        }
+        co_await transaction.commit();
+
+        if (rekeyed) {
+            const auto config = hubConfig(c);
+            if (detail::validKey(oldPublicKey) && oldPublicKey != derivedPublicKey)
+                (void)wireguard::controller().removePeer(config, oldPublicKey);
+            (void)co_await reconcileHub(c);
+        }
+        co_await audit(c, principal.userId,
+                       rekeyed ? "vpn.client_config.rekey_download"
+                               : "vpn.client_config.download",
+                       "vpn_peer", peerId, "success", "{}");
+        co_return co_await clientConfigJson(c, peerId, principal.userId, privateKey);
     }
 
     ruvia::Task<std::string> sessions(ruvia::Context& c) {
@@ -988,163 +1035,6 @@ WHERE id = $1::uuid)sql",
     co_return networkId;
 }
 
-template <typename Db>
-inline ruvia::Task<void> VpnService::ensureBridgeRoutes(
-    Db& db, std::string_view peerId, std::string_view networkId,
-    std::string_view edgeNodeId, std::string_view actorId) {
-    struct RouteRecord final {
-        std::string id;
-        std::string lanInterface;
-        std::optional<Ipv4Cidr> target;
-        std::optional<Ipv4Cidr> virtualNetwork;
-    };
-    struct BridgeRecord final {
-        std::string lanInterface;
-        Ipv4Cidr target;
-    };
-
-    const auto bridgeRows = co_await db.query(R"sql(
-SELECT name, device, ipv4, prefix_length
-FROM edge_node_network
-WHERE node_id = $1::uuid AND is_bridge = TRUE
-  AND COALESCE(ipv4, '') <> '' AND prefix_length BETWEEN 1 AND 30
-ORDER BY name)sql", service::common::dbParams(edgeNodeId));
-    std::vector<BridgeRecord> bridges;
-    for (const auto& row : bridgeRows) {
-        const auto address = detail::rowValue(row, 2);
-        const auto prefix = integer(detail::rowValue(row, 3));
-        const auto target = networkCidr(address, static_cast<std::uint8_t>(prefix));
-        if (!target || !isPrivateIpv4(*target))
-            continue;
-        const auto name = detail::rowValue(row, 1).empty() ? detail::rowValue(row, 0)
-                                                            : detail::rowValue(row, 1);
-        if (!name.empty())
-            bridges.push_back(BridgeRecord{name, *target});
-    }
-    if (bridges.empty())
-        service::common::fail(21008, "EdgeNode 尚未上报可映射的私有桥接 LAN 网段", 409);
-
-    const auto currentRows = co_await db.query(R"sql(
-SELECT id::text, lan_interface, target_cidr, virtual_cidr
-FROM vpn_route WHERE edge_peer_id = $1::uuid ORDER BY id)sql",
-                                               service::common::dbParams(peerId));
-    std::vector<RouteRecord> current;
-    current.reserve(currentRows.size());
-    for (const auto& row : currentRows)
-        current.push_back(RouteRecord{
-            detail::rowValue(row, 0), detail::rowValue(row, 1),
-            parseCidr(detail::rowValue(row, 2), 1, 30),
-            parseCidr(detail::rowValue(row, 3), 1, 30)});
-
-    const auto allRows = co_await db.query(
-        "SELECT id::text, lan_interface, target_cidr, virtual_cidr FROM vpn_route");
-    std::vector<RouteRecord> allRoutes;
-    allRoutes.reserve(allRows.size());
-    for (const auto& row : allRows)
-        allRoutes.push_back(RouteRecord{
-            detail::rowValue(row, 0), detail::rowValue(row, 1),
-            parseCidr(detail::rowValue(row, 2), 1, 30),
-            parseCidr(detail::rowValue(row, 3), 1, 30)});
-
-    const auto conflicts = [&](const Ipv4Cidr& candidate,
-                               std::string_view excludedId) {
-        for (const auto& route : allRoutes) {
-            if (route.id == excludedId)
-                continue;
-            if ((route.target && candidate.overlaps(*route.target)) ||
-                (route.virtualNetwork && candidate.overlaps(*route.virtualNetwork)))
-                return true;
-        }
-        return false;
-    };
-    const auto chooseVirtual = [&](const Ipv4Cidr& target,
-                                   std::string_view excludedId)
-        -> std::optional<Ipv4Cidr> {
-        if (const auto preferred = mappedVirtualCidr(target);
-            preferred && !preferred->overlaps(target) && !conflicts(*preferred, excludedId))
-            return preferred;
-        if (target.prefix < kVirtualLanPool.prefix)
-            return std::nullopt;
-        const auto blockSize = static_cast<std::uint64_t>(target.size());
-        for (std::uint64_t offset = 0; offset < kVirtualLanPool.size(); offset += blockSize) {
-            const Ipv4Cidr candidate{
-                static_cast<std::uint32_t>(kVirtualLanPool.network + offset), target.prefix};
-            if (!candidate.overlaps(target) && !conflicts(candidate, excludedId))
-                return candidate;
-        }
-        return std::nullopt;
-    };
-
-    std::unordered_set<std::string> claimed;
-    for (const auto& bridge : bridges) {
-        auto existing = std::find_if(
-            current.begin(), current.end(), [&](const auto& route) {
-                return !claimed.contains(route.id) &&
-                       ((route.target && route.target->network == bridge.target.network &&
-                         route.target->prefix == bridge.target.prefix) ||
-                        route.lanInterface == bridge.lanInterface);
-            });
-        std::string routeId;
-        std::optional<Ipv4Cidr> virtualNetwork;
-        if (existing != current.end()) {
-            routeId = existing->id;
-            claimed.emplace(routeId);
-            if (existing->virtualNetwork &&
-                existing->virtualNetwork->prefix == bridge.target.prefix &&
-                kVirtualLanPool.contains(existing->virtualNetwork->network) &&
-                kVirtualLanPool.contains(existing->virtualNetwork->network +
-                                         existing->virtualNetwork->size() - 1U) &&
-                !existing->virtualNetwork->overlaps(bridge.target) &&
-                !conflicts(*existing->virtualNetwork, routeId))
-                virtualNetwork = existing->virtualNetwork;
-            else
-                virtualNetwork = chooseVirtual(bridge.target, routeId);
-        } else {
-            virtualNetwork = chooseVirtual(bridge.target, {});
-        }
-        const auto excludedId = existing != current.end() ? existing->id : std::string{};
-        for (const auto& route : allRoutes) {
-            if (route.id == excludedId)
-                continue;
-            if ((route.target && bridge.target.overlaps(*route.target)) ||
-                (route.virtualNetwork && bridge.target.overlaps(*route.virtualNetwork)))
-                service::common::fail(21002, "真实 LAN 与全局已有网段重叠", 409);
-        }
-        if (!virtualNetwork)
-            service::common::fail(21009, "没有可用的全局唯一虚拟网段", 409);
-        const auto targetCidr = bridge.target.text();
-        const auto virtualCidr = virtualNetwork->text();
-        if (existing != current.end()) {
-            (void)co_await db.execute(R"sql(
-UPDATE vpn_route SET network_id = $2::uuid, lan_interface = $3, target_cidr = $4,
-    virtual_cidr = $5, mode = 'nat', nat_mode = 'masquerade', enabled = TRUE,
-    status = 'active', last_error = '', updated_at = NOW()
-WHERE id = $1::uuid)sql",
-                                      service::common::dbParams(
-                                          routeId, networkId, bridge.lanInterface,
-                                          targetCidr, virtualCidr));
-            for (auto& route : allRoutes)
-                if (route.id == routeId) {
-                    route.lanInterface = bridge.lanInterface;
-                    route.target = bridge.target;
-                    route.virtualNetwork = virtualNetwork;
-                }
-        } else {
-            const auto id = service::common::nextUuidV7();
-            (void)co_await db.execute(R"sql(
-INSERT INTO vpn_route(id, network_id, edge_peer_id, lan_interface, target_cidr,
-                      virtual_cidr, mode, nat_mode, enabled, status, created_by)
-VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6,
-        'nat', 'masquerade', TRUE, 'active', $7::uuid))sql",
-                                      service::common::dbParams(
-                                          id, networkId, peerId, bridge.lanInterface,
-                                          targetCidr, virtualCidr, actorId));
-            allRoutes.push_back(RouteRecord{id, bridge.lanInterface, bridge.target,
-                                            virtualNetwork});
-        }
-    }
-}
-
 inline ruvia::Task<std::optional<std::uint32_t>> VpnService::allocateAddress(
     ruvia::Context& c, std::string_view networkId, const Ipv4Cidr& overlay) {
     auto database = c.db();
@@ -1197,7 +1087,19 @@ inline ruvia::Task<std::string> VpnService::clientConfigJson(ruvia::Context& c,
 SELECT p.id, p.name, host(p.assigned_ipv4), p.allowed_routes::text,
        n.hub_public_key, n.hub_endpoint, n.hub_listen_port, n.status, p.status, p.user_id,
        COALESCE((SELECT jsonb_agg(r.virtual_cidr ORDER BY r.virtual_cidr)
-                 FROM vpn_route r WHERE r.network_id = n.id AND r.enabled), '[]'::jsonb)::text
+                 FROM vpn_route r
+                 JOIN vpn_peer edge_peer ON edge_peer.id = r.edge_peer_id
+                 JOIN edge_node e ON e.id = edge_peer.edge_node_id
+                 WHERE r.network_id = n.id AND r.enabled AND r.status = 'active'
+                   AND edge_peer.status = 'active'
+                   AND e.enrollment_status = 'approved'), '[]'::jsonb)::text,
+       COALESCE((SELECT jsonb_agg(host(edge_peer.assigned_ipv4)
+                                  ORDER BY host(edge_peer.assigned_ipv4))
+                 FROM vpn_peer edge_peer
+                 JOIN edge_node e ON e.id = edge_peer.edge_node_id
+                 WHERE edge_peer.network_id = n.id AND edge_peer.peer_type = 'edge'
+                   AND edge_peer.status = 'active'
+                   AND e.enrollment_status = 'approved'), '[]'::jsonb)::text
 FROM vpn_peer p JOIN vpn_network n ON n.id = p.network_id
 WHERE p.id = $1::uuid AND p.peer_type = 'windows' AND p.user_id = $2::uuid
 LIMIT 1)sql", service::common::dbParams(peerId, userId));
@@ -1209,10 +1111,14 @@ LIMIT 1)sql", service::common::dbParams(peerId, userId));
     const auto hubKey = detail::rowValue(row, 4);
     if (!wireguard::validKey(hubKey))
         service::common::fail(21005, "Hub 公钥尚未配置", 503);
-    auto allowed = detail::rowValue(row, 3);
-    if (allowed == "[]" || allowed.empty())
-        allowed = detail::rowValue(row, 10);
-    const auto allowedValues = detail::textArrayJson(allowed);
+    const auto allowed = detail::rowValue(row, 10);
+    auto allowedValues = detail::textArrayJson(allowed);
+    for (auto& address : detail::textArrayJson(detail::rowValue(row, 11))) {
+        address += "/32";
+        if (std::find(allowedValues.begin(), allowedValues.end(), address) ==
+            allowedValues.end())
+            allowedValues.push_back(std::move(address));
+    }
     const auto endpoint = detail::rowValue(row, 5);
     const auto port = detail::rowValue(row, 6);
     const auto portValue = integer(port);
@@ -1266,12 +1172,28 @@ inline ruvia::Task<wireguard::RuntimeStatus> VpnService::reconcileHub(ruvia::Con
 SELECT p.public_key, host(p.assigned_ipv4), p.peer_type,
        COALESCE((SELECT jsonb_agg(r.virtual_cidr ORDER BY r.virtual_cidr)
                  FROM vpn_route r WHERE r.edge_peer_id = p.id AND r.enabled), '[]'::jsonb)::text,
-       p.allowed_routes::text
+       COALESCE((SELECT jsonb_agg(client_route.virtual_cidr
+                                  ORDER BY client_route.virtual_cidr)
+                 FROM vpn_route client_route
+                 JOIN vpn_peer edge_peer ON edge_peer.id = client_route.edge_peer_id
+                 JOIN edge_node edge ON edge.id = edge_peer.edge_node_id
+                 WHERE client_route.network_id = p.network_id
+                   AND client_route.enabled AND client_route.status = 'active'
+                   AND edge_peer.status = 'active'
+                   AND edge.enrollment_status = 'approved'), '[]'::jsonb)::text,
+       COALESCE((SELECT jsonb_agg(host(edge_peer.assigned_ipv4)
+                                  ORDER BY host(edge_peer.assigned_ipv4))
+                 FROM vpn_peer edge_peer
+                 JOIN edge_node edge ON edge.id = edge_peer.edge_node_id
+                 WHERE edge_peer.network_id = p.network_id
+                   AND edge_peer.peer_type = 'edge' AND edge_peer.status = 'active'
+                   AND edge.enrollment_status = 'approved'), '[]'::jsonb)::text
 FROM vpn_peer p JOIN vpn_network n ON n.id = p.network_id
 WHERE p.status = 'active' AND n.status = 'enabled' AND p.public_key IS NOT NULL
 ORDER BY p.id)sql");
     std::size_t configuredPeers = 0;
     std::unordered_set<std::string> expectedKeys;
+    std::vector<std::string> expectedRoutes;
     std::vector<firewall::ClientAccess> clients;
     for (const auto& row : rows) {
         const auto publicKey = detail::rowValue(row, 0);
@@ -1289,11 +1211,14 @@ ORDER BY p.id)sql");
             clients.push_back(firewall::ClientAccess{
                 .assignedIpv4 = assigned,
                 .allowedRoutes = detail::textArrayJson(detail::rowValue(row, 4)),
+                .edgeAddresses = detail::textArrayJson(detail::rowValue(row, 5)),
             });
         }
         const auto peerResult = controller.upsertPeer(*config, peer);
         if (!peerResult.configured)
             co_return peerResult;
+        expectedRoutes.insert(expectedRoutes.end(), peer.allowedIps.begin(),
+                              peer.allowedIps.end());
         expectedKeys.insert(publicKey);
         ++configuredPeers;
     }
@@ -1302,6 +1227,9 @@ ORDER BY p.id)sql");
             if (!expectedKeys.contains(publicKey))
                 (void)controller.removePeer(*config, publicKey);
     }
+    const auto routeResult = controller.reconcileRoutes(*config, expectedRoutes);
+    if (!routeResult.configured)
+        co_return routeResult;
     const auto firewallResult = firewall::apply(config->interfaceName, clients);
     if (!firewallResult.configured)
         co_return wireguard::RuntimeStatus{

@@ -26,7 +26,7 @@ class SchemaMigration final {
     std::string sql_;
 };
 
-inline const std::array<SchemaMigration, 33> kSchemaMigrations{{
+inline const std::array<SchemaMigration, 34> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
@@ -1509,6 +1509,14 @@ CREATE INDEX idx_edge_node_group_parent
     ON edge_node_group(parent_id, sort_order) WHERE deleted_at IS NULL;
 ALTER TABLE edge_node ADD COLUMN group_id UUID REFERENCES edge_node_group(id) ON DELETE RESTRICT;
 CREATE INDEX idx_edge_node_group_id ON edge_node(group_id);
+END
+$schema$;
+)sql"},
+    {"0033_vpn_client_repeat_download", R"sql(
+DO $schema$
+BEGIN
+ALTER TABLE vpn_peer
+    ADD COLUMN IF NOT EXISTS client_private_key VARCHAR(44) NOT NULL DEFAULT '';
 END
 $schema$;
 )sql"},

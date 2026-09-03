@@ -36,6 +36,11 @@ int main() {
                                            : std::nullopt;
     require(smallerMapped && smallerMapped->text() == "172.31.1.128/25",
             "automatic mapping preserves subnet bits");
+    const auto expandedReal = service::vpn::parseCidr("192.168.0.0/16", 1, 30);
+    const auto expandedMapped = expandedReal ? service::vpn::mappedVirtualCidr(*expandedReal)
+                                             : std::nullopt;
+    require(expandedMapped && expandedMapped->text() == "172.31.0.0/16",
+            "automatic mapping follows an expanded bridge prefix");
     require(overlay && service::vpn::parseCidr("100.96.0.1/24", 16, 30) == std::nullopt,
             "non-canonical CIDR rejection");
     require(virtualLan && realLan && virtualLan->prefix == realLan->prefix,
