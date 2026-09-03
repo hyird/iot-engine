@@ -231,6 +231,10 @@ int main() {
                         "VPN task peer id has no explicit PostgreSQL type");
         requireContains(vpnEdgeConfigSource, "'enabled', $6::boolean",
                         "VPN task enabled flag has no explicit PostgreSQL type");
+        requireContains(gatewaySource, "case pb::Envelope::kVpnConfigResult:",
+                        "edge gateway does not project VPN configuration results");
+        requireContains(vpnEdgeConfigSource, "'errorCode', 'superseded'",
+                        "new VPN tasks leave older tasks pending forever");
         requireMissing(dispatcherSource, "workers_.back().post(",
                        "edge dispatcher still gives one worker a special role");
         requireMissing(dispatcherSource, "target.worker.post(",

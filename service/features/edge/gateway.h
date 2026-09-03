@@ -468,6 +468,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         case pb::Envelope::kHeartbeat:
         case pb::Envelope::kCapabilityReport:
         case pb::Envelope::kNetworkConfigResult:
+        case pb::Envelope::kVpnConfigResult:
         case pb::Envelope::kFirmwareUpdateResult:
         case pb::Envelope::kModemControlResult:
         case pb::Envelope::kPlatformConfigResult:

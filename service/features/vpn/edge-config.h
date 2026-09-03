@@ -91,6 +91,18 @@ FROM vpn_route WHERE edge_peer_id = $1::uuid ORDER BY virtual_cidr LIMIT 16)sql"
     if (createdBy.empty())
         co_return;
     (void)co_await c.db().execute(R"sql(
+WITH superseded AS (
+    UPDATE edge_task
+    SET status = 'failed',
+        result = jsonb_build_object(
+            'configVersion', request->>'configVersion',
+            'errorCode', 'superseded',
+            'errorMessage', 'superseded by newer VPN configuration'),
+        updated_at = NOW(), completed_at = NOW()
+    WHERE node_id = $2::uuid AND task_type = 'vpn'
+      AND status NOT IN ('succeeded', 'failed')
+      AND request->>'peerId' = $3::text
+)
 INSERT INTO edge_task(id, node_id, task_type, request, created_by)
 VALUES ($1::uuid, $2::uuid, 'vpn',
         jsonb_build_object('peerId', $3::text, 'configVersion', $4::bigint,
