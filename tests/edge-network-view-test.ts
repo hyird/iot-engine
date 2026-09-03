@@ -28,10 +28,21 @@ const interfaces: Edge.NetworkInterface[] = [
         gateway: '',
         bridgePorts: [],
     },
+    {
+        name: 'wg-iot',
+        displayName: 'wg-iot',
+        mac: '00:00:00:00:00:00',
+        up: true,
+        bridge: false,
+        ipv4: '100.96.0.2',
+        prefixLength: 32,
+        gateway: '',
+        bridgePorts: [],
+    },
 ];
 
 describe('edge network view', () => {
-    test('excludes logical bridges from physical interfaces', () => {
+    test('excludes logical bridges and platform VPN interfaces from physical interfaces', () => {
         expect(physicalNetworkInterfaces(interfaces).map((item) => item.name)).toEqual(['eth0.1']);
     });
 

@@ -1,5 +1,7 @@
 import type { Edge } from './edge-node.types';
 
+const platformVirtualInterfaces = new Set(['lo', 'wg-iot']);
+
 export function physicalNetworkInterfaces(interfaces: Edge.NetworkInterface[]) {
     const subinterfaceParents = new Set<string>();
     for (const item of interfaces) {
@@ -9,7 +11,12 @@ export function physicalNetworkInterfaces(interfaces: Edge.NetworkInterface[]) {
             if (parent) subinterfaceParents.add(parent);
         }
     }
-    return interfaces.filter((item) => !item.bridge && !subinterfaceParents.has(item.name));
+    return interfaces.filter(
+        (item) =>
+            !item.bridge &&
+            !subinterfaceParents.has(item.name) &&
+            !platformVirtualInterfaces.has(item.name)
+    );
 }
 
 export function normalizeReportedNetwork(
