@@ -190,16 +190,19 @@ WHERE id = $1::uuid AND deleted_at IS NULL)sql",
             service::common::dbParams(id));
         if (current.empty())
             service::common::fail(17001, "边缘节点分组不存在", 404);
-        const auto used = co_await c.db().query(R"sql(
-SELECT EXISTS (SELECT 1 FROM edge_node_group WHERE parent_id = $1::uuid AND deleted_at IS NULL)
-    OR EXISTS (SELECT 1 FROM edge_node WHERE group_id = $1::uuid)sql",
-                                              service::common::dbParams(id));
-        if (used.front()[0].value().value_or(std::string_view{}) == "t")
+        const auto removed = co_await c.db().query(R"sql(
+UPDATE edge_node_group target
+SET deleted_at = NOW(), updated_at = NOW()
+WHERE target.id = $1::uuid AND target.deleted_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM edge_node_group child
+      WHERE child.parent_id = target.id AND child.deleted_at IS NULL)
+  AND NOT EXISTS (
+      SELECT 1 FROM edge_node node WHERE node.group_id = target.id)
+RETURNING target.id)sql",
+                                                 service::common::dbParams(id));
+        if (removed.empty())
             service::common::fail(17004, "请先移除子分组和边缘节点", 409);
-        (void)co_await c.db().execute(
-            "UPDATE edge_node_group SET deleted_at = NOW(), updated_at = NOW() "
-            "WHERE id = $1::uuid",
-            service::common::dbParams(id));
     }
 
     ruvia::Task<EdgeNodeDto> detail(ruvia::Context& c, std::string_view id) {
