@@ -93,7 +93,8 @@ FROM vpn_route WHERE edge_peer_id = $1::uuid ORDER BY virtual_cidr LIMIT 16)sql"
     (void)co_await c.db().execute(R"sql(
 INSERT INTO edge_task(id, node_id, task_type, request, created_by)
 VALUES ($1::uuid, $2::uuid, 'vpn',
-        jsonb_build_object('peerId', $3, 'configVersion', $4::bigint, 'enabled', $6), $5::uuid))sql",
+        jsonb_build_object('peerId', $3::text, 'configVersion', $4::bigint,
+                           'enabled', $6::boolean), $5::uuid))sql",
                                   service::common::dbParams(requestId, nodeId, peerId,
                                                             nextVersion, createdBy,
                                                             request->enabled()));

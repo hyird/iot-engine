@@ -92,6 +92,8 @@ int main() {
         const auto projectorStreamSource =
             edgeSource("service/features/edge/projector-stream.h");
         const auto metadataSource = edgeSource("service/features/edge/metadata.h");
+        const auto vpnEdgeConfigSource =
+            edgeSource("service/features/vpn/edge-config.h");
         requireMissing(serviceSource, "const std::string status(body.status()->view());",
                        "edge enrollment dereferences optional status without validation");
         requireMissing(serviceSource, "const std::string name(body.name()->view());",
@@ -225,6 +227,10 @@ int main() {
         requireContains(projectorSource,
                         "NULLIF($13::text, ''), mobile->>'operator'",
                         "edge heartbeat projection clears the last known mobile operator");
+        requireContains(vpnEdgeConfigSource, "'peerId', $3::text",
+                        "VPN task peer id has no explicit PostgreSQL type");
+        requireContains(vpnEdgeConfigSource, "'enabled', $6::boolean",
+                        "VPN task enabled flag has no explicit PostgreSQL type");
         requireMissing(dispatcherSource, "workers_.back().post(",
                        "edge dispatcher still gives one worker a special role");
         requireMissing(dispatcherSource, "target.worker.post(",
