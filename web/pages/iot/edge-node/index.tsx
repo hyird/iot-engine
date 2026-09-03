@@ -1317,11 +1317,6 @@ export default function EdgeNodePage() {
                                     ),
                                 },
                                 {
-                                    key: 'vpn',
-                                    label: 'VPN',
-                                    children: <EdgeVpnPanel node={detail} />,
-                                },
-                                {
                                     key: 'interfaces',
                                     label: `物理网卡 (${physicalNetworkInterfaces(detail.interfaces ?? []).length})`,
                                     children: (
@@ -1458,6 +1453,11 @@ export default function EdgeNodePage() {
                                     ),
                                 },
                                 {
+                                    key: 'vpn',
+                                    label: 'VPN',
+                                    children: <EdgeVpnPanel node={detail} />,
+                                },
+                                {
                                     key: 'tasks',
                                     label: '任务记录',
                                     children: (
@@ -1466,8 +1466,11 @@ export default function EdgeNodePage() {
                                             size="small"
                                             pagination={false}
                                             columns={taskColumns}
-                                            dataSource={detail.tasks ?? []}
+                                            dataSource={(detail.tasks ?? []).filter(
+                                                (item) => item.taskType !== 'firmware'
+                                            )}
                                             scroll={{ x: 'max-content', y: 360 }}
+                                            locale={{ emptyText: '暂无任务记录' }}
                                         />
                                     ),
                                 },

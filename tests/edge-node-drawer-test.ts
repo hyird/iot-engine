@@ -50,6 +50,20 @@ test('edge management actions live in contextual drawer sections', () => {
     expect(drawer).toContain('批准注册');
 });
 
+test('VPN follows mobile status and firmware history stays in its own tab', () => {
+    const mobileTab = drawer.indexOf("key: 'mobile'");
+    const vpnTab = drawer.indexOf("key: 'vpn'");
+    const tasksTab = drawer.indexOf("key: 'tasks'");
+    const firmwareTab = drawer.indexOf("key: 'firmware'");
+
+    expect(mobileTab).toBeGreaterThan(-1);
+    expect(vpnTab).toBeGreaterThan(mobileTab);
+    expect(tasksTab).toBeGreaterThan(vpnTab);
+    expect(firmwareTab).toBeGreaterThan(tasksTab);
+    expect(drawer).toContain("(item) => item.taskType !== 'firmware'");
+    expect(drawer).toContain("(item) => item.taskType === 'firmware'");
+});
+
 test('drawer actions render above the detail drawer', () => {
     expect(source).toContain('const EDGE_DETAIL_DRAWER_Z_INDEX = 1000;');
     expect(source).toContain(
