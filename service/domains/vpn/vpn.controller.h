@@ -49,6 +49,7 @@ class VpnController final : public ruvia::Controller<VpnController> {
     RUVIA_POST("/peers/:id/revoke", revokePeer, VpnIdValidator);
     RUVIA_POST("/peers/:id/sync", syncPeer, VpnIdValidator);
     RUVIA_POST("/peers/:id/rotate-key", rotatePeerKey, VpnIdValidator);
+    RUVIA_POST("/client-configs", createClientConfig);
     RUVIA_POST("/enrollments", createEnrollment);
     RUVIA_GET("/client/config", clientConfig, VpnClientConfigValidator);
     RUVIA_GET("/sessions", sessions);
@@ -164,6 +165,13 @@ class VpnController final : public ruvia::Controller<VpnController> {
         co_await service::middleware::requirePermission(c, "iot:edge:query");
         co_return vpnJson(c, co_await vpnService().createEnrollment(
                                  c, co_await c.req().jsonValue()), "Enrollment 已创建");
+    }
+
+    ruvia::Task<ruvia::HttpResponse> createClientConfig(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:vpn:enroll");
+        co_await service::middleware::requirePermission(c, "iot:edge:query");
+        co_return vpnJson(c, co_await vpnService().createClientConfig(
+                                 c, co_await c.req().jsonValue()), "WireGuard 配置已生成");
     }
 
     ruvia::Task<ruvia::HttpResponse> clientConfig(ruvia::Context& c) {

@@ -1,16 +1,21 @@
 import { useQuery } from '@tanstack/react-query';
-import { useMutationWithMessage } from '@/hooks/useMutation';
+import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import {
     configureNetwork,
+    createEdgeGroup,
+    deleteEdgeGroup,
     deleteEnrollment,
     getEdgeDetail,
     getEdgeList,
+    getEdgeGroups,
     getLogs,
     renameEdge,
+    setEdgeGroup,
     setEnrollment,
     setLogLevel,
     syncDeviceConfig,
     upgradeFirmware,
+    updateEdgeGroup,
 } from './edge-node.client';
 import { type Edge, edgeQueryKeys } from './edge-node.types';
 
@@ -28,6 +33,13 @@ export const useEdgeDetail = (id?: string) =>
         queryFn: () => getEdgeDetail(id as string),
         enabled: Boolean(id),
         refetchInterval: 10_000,
+    });
+
+export const useEdgeGroupTree = () =>
+    useQuery({
+        queryKey: edgeQueryKeys.groups(),
+        queryFn: getEdgeGroups,
+        refetchInterval: 5_000,
     });
 
 export const useEdgeLogs = (id?: string, query?: Edge.LogsQuery, enabled = true) =>
@@ -59,6 +71,38 @@ export function useNodeNameMutation() {
     return useMutationWithMessage({
         mutationFn: (value: { id: string; data: Edge.NameDto }) => renameEdge(value.id, value.data),
         successMessage: '节点名称已更新',
+        invalidateKeys: [edgeQueryKeys.all],
+    });
+}
+
+export function useNodeGroupMutation() {
+    return useMutationWithMessage({
+        mutationFn: (value: { id: string; data: Edge.GroupDto }) =>
+            setEdgeGroup(value.id, value.data),
+        successMessage: '节点分组已更新',
+        invalidateKeys: [edgeQueryKeys.all],
+    });
+}
+
+export function useEdgeGroupSave() {
+    return useSaveMutation<
+        Edge.GroupSaveDto & { id?: string },
+        Edge.GroupSaveDto,
+        Edge.GroupSaveDto
+    >({
+        createFn: createEdgeGroup,
+        updateFn: updateEdgeGroup,
+        toUpdatePayload: ({ id: _id, ...data }) => data,
+        createMessage: '边缘节点分组已创建',
+        updateMessage: '边缘节点分组已更新',
+        invalidateKeys: [edgeQueryKeys.all],
+    });
+}
+
+export function useEdgeGroupDelete() {
+    return useMutationWithMessage({
+        mutationFn: deleteEdgeGroup,
+        successMessage: '边缘节点分组已删除',
         invalidateKeys: [edgeQueryKeys.all],
     });
 }

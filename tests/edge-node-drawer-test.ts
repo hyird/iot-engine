@@ -13,6 +13,18 @@ const service = readFileSync(
     new URL('../web/pages/iot/edge-node/edge-node.service.ts', import.meta.url),
     'utf8'
 );
+const vpnPanel = readFileSync(
+    new URL('../web/pages/iot/edge-node/EdgeVpnPanel.tsx', import.meta.url),
+    'utf8'
+);
+const groupPanel = readFileSync(
+    new URL('../web/pages/iot/edge-node/EdgeNodeGroupPanel.tsx', import.meta.url),
+    'utf8'
+);
+const vpnClient = readFileSync(
+    new URL('../web/pages/iot/edge-node/edge-node.vpn.client.ts', import.meta.url),
+    'utf8'
+);
 const cardStart = source.indexOf('{nodes.map((node) => {');
 const drawerStart = source.indexOf('<Drawer', cardStart);
 const drawerEnd = source.indexOf('<FormModal', drawerStart);
@@ -64,13 +76,33 @@ test('VPN follows mobile status and firmware history stays in its own tab', () =
     expect(drawer).toContain("(item) => item.taskType === 'firmware'");
 });
 
+test('Windows VPN downloads one complete WireGuard config per device', () => {
+    expect(source).toContain('下载 VPN 配置');
+    expect(source).toContain('每台 Windows 设备必须单独生成一份配置');
+    expect(source).toContain('downloadClientConfig(result)');
+    expect(vpnPanel).not.toContain('生成 Windows 配置');
+    expect(vpnClient).toContain('`${BASE}/client-configs`');
+});
+
+test('edge nodes use hierarchical groups and cards show VPN virtual networks', () => {
+    expect(source).toContain('<EdgeNodeGroupPanel');
+    expect(source).toContain('设置分组');
+    expect(source).toContain("label: 'VPN 虚拟网段'");
+    expect(source).toContain("label: '分组'");
+    expect(groupPanel).toContain('全部节点');
+    expect(groupPanel).toContain('未分组');
+    expect(groupPanel).toContain('新增子分组');
+    expect(client).toContain('`${BASE}/groups`');
+    expect(client).toContain('`${BASE}/${edgeIdSchema.parse(id)}/group`');
+});
+
 test('drawer actions render above the detail drawer', () => {
     expect(source).toContain('const EDGE_DETAIL_DRAWER_Z_INDEX = 1000;');
     expect(source).toContain(
         'const EDGE_ACTION_MODAL_Z_INDEX = EDGE_DETAIL_DRAWER_Z_INDEX + 100;'
     );
     expect(drawer).toContain('zIndex={EDGE_DETAIL_DRAWER_Z_INDEX}');
-    expect(source.match(/zIndex=\{EDGE_ACTION_MODAL_Z_INDEX\}/g)).toHaveLength(4);
+    expect(source.match(/zIndex=\{EDGE_ACTION_MODAL_Z_INDEX\}/g)).toHaveLength(6);
     expect(source.match(/zIndex: EDGE_ACTION_MODAL_Z_INDEX/g)).toHaveLength(2);
 });
 

@@ -5,6 +5,7 @@ import {
     createEdgeVpnPeer,
     createEdgeVpnRoute,
     createVpnNetwork,
+    createWindowsVpnConfig,
     deleteEdgeVpnRoute,
     getEdgeVpnPeers,
     getEdgeVpnRoutes,
@@ -43,6 +44,13 @@ export const useEdgeVpnPeerCreate = () =>
     useMutationWithMessage({
         mutationFn: createEdgeVpnPeer,
         successMessage: '节点 VPN 已启用，正在下发桥接网段映射',
+        invalidateKeys: vpnInvalidations,
+    });
+
+export const useWindowsVpnConfigCreate = () =>
+    useMutationWithMessage({
+        mutationFn: createWindowsVpnConfig,
+        successMessage: 'Windows WireGuard 配置已生成并下载',
         invalidateKeys: vpnInvalidations,
     });
 

@@ -27,6 +27,9 @@ export const createVpnNetwork = (data: EdgeVpn.NetworkCreateDto) =>
 export const createEdgeVpnPeer = (data: EdgeVpn.PeerCreateDto) =>
     request.post<{ id: string }>(`${BASE}/peers`, data);
 
+export const createWindowsVpnConfig = (data: EdgeVpn.ClientConfigCreateDto) =>
+    request.post<EdgeVpn.ClientConfig>(`${BASE}/client-configs`, data);
+
 export const syncEdgeVpnPeer = (peerId: string) =>
     request.post<void>(`${BASE}/peers/${edgeIdSchema.parse(peerId)}/sync`);
 

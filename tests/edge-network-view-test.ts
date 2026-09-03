@@ -29,8 +29,8 @@ const interfaces: Edge.NetworkInterface[] = [
         bridgePorts: [],
     },
     {
-        name: 'wg-iot',
-        displayName: 'wg-iot',
+        name: 'wg',
+        displayName: 'wg',
         mac: '00:00:00:00:00:00',
         up: true,
         bridge: false,

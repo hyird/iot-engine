@@ -1,6 +1,6 @@
 import type { Edge } from './edge-node.types';
 
-const platformVirtualInterfaces = new Set(['lo', 'wg-iot']);
+const platformVirtualInterfaces = new Set(['lo', 'wg']);
 
 export function physicalNetworkInterfaces(interfaces: Edge.NetworkInterface[]) {
     const subinterfaceParents = new Set<string>();

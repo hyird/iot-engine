@@ -4,6 +4,7 @@
 #include <array>
 #include <charconv>
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -35,7 +36,8 @@ class EdgeService {
   public:
     ruvia::Task<EdgePageDto> list(ruvia::Context& c, std::int64_t page, std::int64_t pageSize,
                                   std::optional<std::string> keyword,
-                                  std::optional<std::string> status) {
+                                  std::optional<std::string> status,
+                                  std::optional<std::string> groupId) {
         page = std::max<std::int64_t>(1, page);
         pageSize = std::clamp<std::int64_t>(pageSize, 1, 100);
         std::string where = " WHERE 1=1";
@@ -46,11 +48,27 @@ class EdgeService {
             params.emplace_back(*pattern);
             where += " AND (imei ILIKE $" + std::to_string(params.size()) +
                      " OR COALESCE(name, '') ILIKE $" + std::to_string(params.size()) +
+                     " OR COALESCE((SELECT name FROM edge_node_group WHERE id = edge_node.group_id), '') ILIKE $" +
+                     std::to_string(params.size()) +
                      " OR model ILIKE $" + std::to_string(params.size()) + ")";
         }
         if (status && !status->empty()) {
             params.emplace_back(*status);
             where += " AND enrollment_status = $" + std::to_string(params.size());
+        }
+        if (groupId && !groupId->empty()) {
+            if (*groupId == "ungrouped") {
+                where += " AND group_id IS NULL";
+            } else {
+                params.emplace_back(*groupId);
+                const auto parameter = std::to_string(params.size());
+                where += " AND group_id IN (WITH RECURSIVE selected_group AS ("
+                         "SELECT id FROM edge_node_group WHERE id = $" + parameter +
+                         "::uuid AND deleted_at IS NULL UNION ALL "
+                         "SELECT child.id FROM edge_node_group child JOIN selected_group parent "
+                         "ON child.parent_id = parent.id WHERE child.deleted_at IS NULL) "
+                         "SELECT id FROM selected_group)";
+            }
         }
         const auto count = co_await c.db().query("SELECT COUNT(*) FROM edge_node" + where, params);
         const auto total = integer(count.front()[0].value().value_or(std::string_view{}));
@@ -75,6 +93,113 @@ class EdgeService {
             .set<"pageSize">(pageSize)
             .set<"totalPages">(total == 0 ? 0 : (total + pageSize - 1) / pageSize);
         co_return result;
+    }
+
+    ruvia::Task<ruvia::BoxedArray<EdgeGroupDto>> groups(ruvia::Context& c) {
+        const auto rows = co_await c.db().query(R"sql(
+SELECT group_item.id::text, group_item.name, COALESCE(group_item.parent_id::text, ''),
+       group_item.status, group_item.sort_order, COALESCE(group_item.remark, ''),
+       (SELECT COUNT(*) FROM edge_node node WHERE node.group_id = group_item.id)
+FROM edge_node_group group_item
+WHERE group_item.deleted_at IS NULL
+ORDER BY group_item.sort_order, group_item.id)sql");
+        ruvia::BoxedArray<EdgeGroupDto> result(
+            ruvia::ModelOptions{.resource = c.resource()});
+        for (const auto& row : rows) {
+            auto& item = result.emplace(c);
+            item.set<"id">(row[0].value().value_or(std::string_view{}));
+            item.set<"name">(row[1].value().value_or(std::string_view{}));
+            item.set<"parentId">(row[2].value().value_or(std::string_view{}));
+            item.set<"status">(row[3].value().value_or(std::string_view{}));
+            item.set<"sortOrder">(integer(row[4].value().value_or(std::string_view{})));
+            item.set<"remark">(row[5].value().value_or(std::string_view{}));
+            item.set<"nodeCount">(integer(row[6].value().value_or(std::string_view{})));
+        }
+        co_return result;
+    }
+
+    ruvia::Task<void> createGroup(ruvia::Context& c, const EdgeGroupBody& body) {
+        const auto principal = service::middleware::requireAuth(c);
+        const auto name = std::string(body.get<"name">()->view());
+        const auto parentId = body.get<"parentId">()
+                                  ? std::string(body.get<"parentId">()->view())
+                                  : std::string{};
+        co_await validateGroupParent(c, parentId, {});
+        const auto duplicate = co_await c.db().query(
+            "SELECT 1 FROM edge_node_group WHERE name = $1 AND deleted_at IS NULL",
+            service::common::dbParams(name));
+        if (!duplicate.empty())
+            service::common::fail(17002, "边缘节点分组名称已存在", 409);
+        const auto status = body.get<"status">()
+                                ? std::string(body.get<"status">()->view())
+                                : std::string{"enabled"};
+        const auto sortOrder = body.get<"sortOrder">()
+                                   ? static_cast<std::int64_t>(*body.get<"sortOrder">())
+                                   : 0;
+        const auto remark = body.get<"remark">()
+                                ? std::string(body.get<"remark">()->view())
+                                : std::string{};
+        const auto groupId = service::common::nextUuidV7();
+        (void)co_await c.db().execute(R"sql(
+INSERT INTO edge_node_group(id, name, parent_id, status, sort_order, remark, created_by)
+VALUES ($1::uuid, $2, NULLIF($3, '')::uuid, $4::status_enum, $5, NULLIF($6, ''), $7::uuid))sql",
+                                      service::common::dbParams(
+                                          groupId, name, parentId,
+                                          status, sortOrder, remark, principal.userId));
+    }
+
+    ruvia::Task<void> updateGroup(ruvia::Context& c, std::string_view id,
+                                  const EdgeGroupBody& body) {
+        const auto current = co_await c.db().query(
+            "SELECT 1 FROM edge_node_group WHERE id = $1::uuid AND deleted_at IS NULL",
+            service::common::dbParams(id));
+        if (current.empty())
+            service::common::fail(17001, "边缘节点分组不存在", 404);
+        const auto name = std::string(body.get<"name">()->view());
+        const auto parentId = body.get<"parentId">()
+                                  ? std::string(body.get<"parentId">()->view())
+                                  : std::string{};
+        co_await validateGroupParent(c, parentId, id);
+        const auto duplicate = co_await c.db().query(
+            "SELECT 1 FROM edge_node_group WHERE name = $1 AND id <> $2::uuid "
+            "AND deleted_at IS NULL",
+            service::common::dbParams(name, id));
+        if (!duplicate.empty())
+            service::common::fail(17002, "边缘节点分组名称已存在", 409);
+        const auto status = body.get<"status">()
+                                ? std::string(body.get<"status">()->view())
+                                : std::string{"enabled"};
+        const auto sortOrder = body.get<"sortOrder">()
+                                   ? static_cast<std::int64_t>(*body.get<"sortOrder">())
+                                   : 0;
+        const auto remark = body.get<"remark">()
+                                ? std::string(body.get<"remark">()->view())
+                                : std::string{};
+        (void)co_await c.db().execute(R"sql(
+UPDATE edge_node_group
+SET name = $2, parent_id = NULLIF($3, '')::uuid, status = $4::status_enum,
+    sort_order = $5, remark = NULLIF($6, ''), updated_at = NOW()
+WHERE id = $1::uuid AND deleted_at IS NULL)sql",
+                                      service::common::dbParams(
+                                          id, name, parentId, status, sortOrder, remark));
+    }
+
+    ruvia::Task<void> removeGroup(ruvia::Context& c, std::string_view id) {
+        const auto current = co_await c.db().query(
+            "SELECT 1 FROM edge_node_group WHERE id = $1::uuid AND deleted_at IS NULL",
+            service::common::dbParams(id));
+        if (current.empty())
+            service::common::fail(17001, "边缘节点分组不存在", 404);
+        const auto used = co_await c.db().query(R"sql(
+SELECT EXISTS (SELECT 1 FROM edge_node_group WHERE parent_id = $1::uuid AND deleted_at IS NULL)
+    OR EXISTS (SELECT 1 FROM edge_node WHERE group_id = $1::uuid)sql",
+                                              service::common::dbParams(id));
+        if (used.front()[0].value().value_or(std::string_view{}) == "t")
+            service::common::fail(17004, "请先移除子分组和边缘节点", 409);
+        (void)co_await c.db().execute(
+            "UPDATE edge_node_group SET deleted_at = NOW(), updated_at = NOW() "
+            "WHERE id = $1::uuid",
+            service::common::dbParams(id));
     }
 
     ruvia::Task<EdgeNodeDto> detail(ruvia::Context& c, std::string_view id) {
@@ -191,6 +316,28 @@ UPDATE edge_node SET name = $1::text, updated_at = NOW()
 WHERE id = $2::uuid
 RETURNING id)sql",
                                                    service::common::dbParams(name, id));
+        if (updated.empty())
+            service::common::fail(17001, "边缘节点不存在", 404);
+    }
+
+    ruvia::Task<void> setNodeGroup(ruvia::Context& c, std::string_view id,
+                                   const NodeGroupBody& body) {
+        const auto& maybeGroup = body.get<"groupId">();
+        if (!maybeGroup)
+            service::common::fail(17003, "节点分组参数不能为空", 400);
+        const std::string groupId(maybeGroup->view());
+        if (!groupId.empty()) {
+            const auto group = co_await c.db().query(
+                "SELECT 1 FROM edge_node_group WHERE id = $1::uuid "
+                "AND status = 'enabled' AND deleted_at IS NULL",
+                service::common::dbParams(groupId));
+            if (group.empty())
+                service::common::fail(17001, "边缘节点分组不存在或已停用", 404);
+        }
+        const auto updated = co_await c.db().query(
+            "UPDATE edge_node SET group_id = NULLIF($1, '')::uuid, updated_at = NOW() "
+            "WHERE id = $2::uuid RETURNING id",
+            service::common::dbParams(groupId, id));
         if (updated.empty())
             service::common::fail(17001, "边缘节点不存在", 404);
     }
@@ -517,6 +664,34 @@ WHERE id = $2::uuid)sql",
 #endif
 
   private:
+    static ruvia::Task<void> validateGroupParent(ruvia::Context& c,
+                                                  std::string_view parentId,
+                                                  std::string_view groupId) {
+        if (parentId.empty())
+            co_return;
+        if (parentId == groupId)
+            service::common::fail(17003, "上级分组不能是自身", 409);
+        const auto parent = co_await c.db().query(
+            "SELECT 1 FROM edge_node_group WHERE id = $1::uuid AND deleted_at IS NULL",
+            service::common::dbParams(parentId));
+        if (parent.empty())
+            service::common::fail(17001, "上级分组不存在", 404);
+        if (!groupId.empty()) {
+            const auto cycle = co_await c.db().query(R"sql(
+WITH RECURSIVE descendants AS (
+    SELECT id FROM edge_node_group WHERE parent_id = $1::uuid AND deleted_at IS NULL
+    UNION ALL
+    SELECT child.id FROM edge_node_group child
+    JOIN descendants parent ON child.parent_id = parent.id
+    WHERE child.deleted_at IS NULL
+)
+SELECT 1 FROM descendants WHERE id = $2::uuid LIMIT 1)sql",
+                                                    service::common::dbParams(groupId, parentId));
+            if (!cycle.empty())
+                service::common::fail(17003, "不能把分组移动到自己的子分组", 409);
+        }
+    }
+
     static std::string nodeSelect() {
         return R"sql(SELECT id::text, imei, COALESCE(name, ''), model, software_version,
        hostname, architecture, openwrt_release, enrollment_status,
@@ -598,7 +773,14 @@ WHERE id = $2::uuid)sql",
             ELSE false END,
        COALESCE(capability->'vpn'->>'wireguardVersion', ''),
        COALESCE(capability->'vpn'->>'agentVersion', ''),
-       COALESCE(capability->'vpn'->>'publicKey', '')
+       COALESCE(capability->'vpn'->>'publicKey', ''),
+       COALESCE(group_id::text, ''),
+       COALESCE((SELECT name FROM edge_node_group WHERE id = edge_node.group_id), ''),
+       COALESCE((SELECT string_agg(route.virtual_cidr, ',' ORDER BY route.virtual_cidr)
+                 FROM vpn_route route
+                 JOIN vpn_peer peer ON peer.id = route.edge_peer_id
+                 WHERE peer.edge_node_id = edge_node.id AND peer.status = 'active'
+                   AND route.enabled AND route.status = 'active'), '')
 FROM edge_node)sql";
     }
 
@@ -671,6 +853,8 @@ FROM edge_node)sql";
         node.set<"id">(row[0].value().value_or(std::string_view{}));
         node.set<"imei">(row[1].value().value_or(std::string_view{}));
         node.set<"name">(row[2].value().value_or(std::string_view{}));
+        node.set<"groupId">(row[47].value().value_or(std::string_view{}));
+        node.set<"groupName">(row[48].value().value_or(std::string_view{}));
         node.set<"model">(row[3].value().value_or(std::string_view{}));
         node.set<"softwareVersion">(row[4].value().value_or(std::string_view{}));
         node.set<"hostname">(row[5].value().value_or(std::string_view{}));
@@ -681,6 +865,13 @@ FROM edge_node)sql";
         node.set<"capability">(std::move(capability));
         node.set<"mobile">(std::move(mobile));
         node.set<"firmware">(std::move(firmware));
+        ruvia::BoxedArray<ruvia::String> virtualCidrs(
+            ruvia::ModelOptions{.resource = c.resource()});
+        for (const auto& cidr : split(row[49].value().value_or(std::string_view{})))
+            if (!cidr.empty())
+                virtualCidrs.emplace(cidr,
+                                     ruvia::ModelOptions{.resource = c.resource()});
+        node.set<"vpnVirtualCidrs">(std::move(virtualCidrs));
         node.set<"createdAt">(row[11].value().value_or(std::string_view{}));
     }
 

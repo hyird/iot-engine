@@ -71,6 +71,18 @@ export namespace EdgeVpn {
         enabled: boolean;
     }
 
+    export interface ClientConfigCreateDto {
+        name: string;
+    }
+
+    export interface ClientConfig {
+        peerId: string;
+        name: string;
+        assignedIpv4: string;
+        allowedRoutes: string[];
+        config: string;
+    }
+
     export interface Data {
         networks: Network[];
         peers: Peer[];

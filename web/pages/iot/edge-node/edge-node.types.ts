@@ -7,6 +7,7 @@ export namespace Edge {
         pageSize?: number;
         keyword?: string;
         status?: EnrollmentStatus;
+        groupId?: string;
     }
 
     export interface NetworkInterface {
@@ -129,6 +130,8 @@ export namespace Edge {
         id: string;
         imei: string;
         name: string;
+        groupId: string;
+        groupName: string;
         model: string;
         softwareVersion: string;
         hostname: string;
@@ -139,6 +142,7 @@ export namespace Edge {
         capability: Capability;
         mobile: Mobile;
         firmware: FirmwareStatus;
+        vpnVirtualCidrs: string[];
         createdAt: string;
         interfaces?: NetworkInterface[];
         networks?: Network[];
@@ -166,6 +170,34 @@ export namespace Edge {
 
     export interface NameDto {
         name: string;
+    }
+
+    export interface GroupDto {
+        groupId: string;
+    }
+
+    export type GroupStatus = 'enabled' | 'disabled';
+
+    export interface GroupItem {
+        id: string;
+        name: string;
+        parentId: string;
+        status: GroupStatus;
+        sortOrder: number;
+        remark: string;
+        nodeCount: number;
+    }
+
+    export interface GroupTreeItem extends GroupItem {
+        children?: GroupTreeItem[];
+    }
+
+    export interface GroupSaveDto {
+        name: string;
+        parentId?: string;
+        status: GroupStatus;
+        sortOrder: number;
+        remark?: string;
     }
 
     export interface FirmwareUpgradeDto {
@@ -208,4 +240,5 @@ export const edgeQueryKeys = {
     detail: (id?: string) => [...edgeQueryKeys.all, 'detail', id ?? ''] as const,
     logs: (id?: string, query?: Edge.LogsQuery) =>
         [...edgeQueryKeys.all, 'logs', id ?? '', query ?? {}] as const,
+    groups: () => [...edgeQueryKeys.all, 'groups'] as const,
 };

@@ -130,7 +130,7 @@ Edge 配置：
 
 ### 6.1 iot-engine Linux Hub
 
-iot-engine 在 Linux 服务端维护 `wg-iot` 接口：
+iot-engine 在 Linux 服务端维护 `wg` 接口：
 
 - 默认监听 UDP `51820`。
 - 以数据库 `vpn_network` 表中固定的 `iot-server` 记录作为 Hub 配置源。

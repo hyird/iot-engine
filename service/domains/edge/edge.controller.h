@@ -25,10 +25,15 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
     RUVIA_CONTROLLER_GROUP("/v1/edge", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
     RUVIA_GET("/", list, EdgeListValidator);
+    RUVIA_GET("/groups", groups);
+    RUVIA_POST("/groups", createGroup, EdgeGroupValidator);
+    RUVIA_PUT("/groups/:id", updateGroup, EdgeIdValidator, EdgeGroupValidator);
+    RUVIA_DELETE("/groups/:id", removeGroup, EdgeIdValidator);
     RUVIA_GET("/firmware", firmwares);
     RUVIA_PUT("/:id/enrollment", enrollment, EdgeIdValidator, EnrollmentValidator);
     RUVIA_DELETE("/:id", removeEnrollment, EdgeIdValidator);
     RUVIA_PUT("/:id/name", renameNode, EdgeIdValidator, NodeNameValidator);
+    RUVIA_PUT("/:id/group", setNodeGroup, EdgeIdValidator, NodeGroupValidator);
     RUVIA_POST("/:id/network", network, EdgeIdValidator, NetworkValidator);
     RUVIA_POST("/:id/sync", sync, EdgeIdValidator);
     RUVIA_POST_STREAM("/:id/firmware", uploadFirmware, EdgeIdValidator);
@@ -52,7 +57,32 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
         const auto& query = c.req().validated<EdgeListQuery>();
         co_return c.json(service::common::ok<EdgePageResponse>(
             c, co_await edgeService().list(c, *query.get<"page">(), *query.get<"pageSize">(),
-                                           text(query.get<"keyword">()), text(query.get<"status">()))));
+                                           text(query.get<"keyword">()), text(query.get<"status">()),
+                                           text(query.get<"groupId">()))));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> groups(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:edge:query");
+        co_return c.json(service::common::ok<EdgeGroupListResponse>(
+            c, co_await edgeService().groups(c)));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> createGroup(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:edge:edit");
+        co_await edgeService().createGroup(c, c.req().validated<EdgeGroupBody>());
+        co_return c.json(service::common::operation(c, "边缘节点分组已创建"));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> updateGroup(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:edge:edit");
+        co_await edgeService().updateGroup(c, id(c), c.req().validated<EdgeGroupBody>());
+        co_return c.json(service::common::operation(c, "边缘节点分组已更新"));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> removeGroup(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:edge:edit");
+        co_await edgeService().removeGroup(c, id(c));
+        co_return c.json(service::common::operation(c, "边缘节点分组已删除"));
     }
 
     ruvia::Task<ruvia::HttpResponse> detail(ruvia::Context& c) {
@@ -77,6 +107,12 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
         co_await service::middleware::requirePermission(c, "iot:edge:edit");
         co_await edgeService().renameNode(c, id(c), c.req().validated<NodeNameBody>());
         co_return c.json(service::common::operation(c, "节点名称已更新"));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> setNodeGroup(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:edge:edit");
+        co_await edgeService().setNodeGroup(c, id(c), c.req().validated<NodeGroupBody>());
+        co_return c.json(service::common::operation(c, "节点分组已更新"));
     }
 
     ruvia::Task<ruvia::HttpResponse> network(ruvia::Context& c) {

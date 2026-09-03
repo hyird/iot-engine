@@ -1,7 +1,9 @@
 import {
+    ApartmentOutlined,
     CheckOutlined,
     CodeOutlined,
     DeleteOutlined,
+    DownloadOutlined,
     EditOutlined,
     EyeOutlined,
     GlobalOutlined,
@@ -15,6 +17,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
 import {
+    Alert,
     App,
     Button,
     Descriptions,
@@ -37,11 +40,12 @@ import {
     Tabs,
     Tag,
     Tooltip,
+    TreeSelect,
     Upload,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import '@xterm/xterm/css/xterm.css';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import DeviceCard, { type DeviceCardItem } from '@/components/DeviceCard';
 import { FormModal } from '@/components/FormModal';
 import { PageContainer } from '@/components/PageContainer';
@@ -55,6 +59,7 @@ import { usePermissions } from '@/hooks/usePermission';
 import { formatDateTime } from '@/utils/dateTime';
 import { validateForm } from '@/utils/validation';
 import { getEdgeDetail, getTerminalTicket } from './edge-node.client';
+import EdgeNodeGroupPanel from './EdgeNodeGroupPanel';
 import EdgeVpnPanel from './EdgeVpnPanel';
 import { normalizeReportedNetwork, physicalNetworkInterfaces } from './edge-node.network';
 import {
@@ -67,15 +72,19 @@ import {
     useDeviceConfigSyncMutation,
     useEdgeDeleteMutation,
     useEdgeDetail,
+    useEdgeGroupTree,
     useEdgeList,
     useEdgeLogs,
     useEnrollmentMutation,
     useFirmwareUpgradeMutation,
     useLogLevelMutation,
     useNetworkMutation,
+    useNodeGroupMutation,
     useNodeNameMutation,
 } from './edge-node.service';
 import type { Edge } from './edge-node.types';
+import { useWindowsVpnConfigCreate } from './edge-node.vpn.service';
+import type { EdgeVpn } from './edge-node.vpn.types';
 
 type NetworkDraftItem = Edge.NetworkConfig & {
     sourceName?: string;
@@ -87,6 +96,32 @@ type NetworkDraftItem = Edge.NetworkConfig & {
 const EDGE_CARD_GRID_CLASS = 'grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-4';
 const EDGE_DETAIL_DRAWER_Z_INDEX = 1000;
 const EDGE_ACTION_MODAL_Z_INDEX = EDGE_DETAIL_DRAWER_Z_INDEX + 100;
+
+function downloadClientConfig(result: EdgeVpn.ClientConfig) {
+    const safeName = result.name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+    const fileName = `${safeName || 'wireguard'}.conf`;
+    const url = URL.createObjectURL(
+        new Blob([result.config], { type: 'text/plain;charset=utf-8' })
+    );
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+}
+
+function groupSelectOptions(
+    groups: Edge.GroupTreeItem[]
+): { value: string; title: string; disabled: boolean; children?: ReturnType<typeof groupSelectOptions> }[] {
+    return groups.map((group) => ({
+        value: group.id,
+        title: group.name,
+        disabled: group.status === 'disabled',
+        children: group.children?.length ? groupSelectOptions(group.children) : undefined,
+    }));
+}
 
 function statusTag(status: string) {
     const map: Record<string, { color: string; text: string }> = {
@@ -186,6 +221,12 @@ function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
     const mobile = node.mobile;
     const firmware = node.firmware;
     return [
+        { key: 'group', label: '分组', children: node.groupName || '未分组' },
+        {
+            key: 'vpnVirtualCidrs',
+            label: 'VPN 虚拟网段',
+            children: node.vpnVirtualCidrs?.length ? node.vpnVirtualCidrs.join('、') : '-',
+        },
         { key: 'hostname', label: '主机名', children: node.hostname || '-' },
         { key: 'architecture', label: '系统架构', children: node.architecture || '-' },
         { key: 'openwrt', label: 'OpenWrt', children: node.openwrtRelease || '-' },
@@ -580,12 +621,15 @@ export default function EdgeNodePage() {
     const canConfig = has('iot:edge:config');
     const canFirmware = has('iot:edge:firmware');
     const canTerminal = has('iot:edge:terminal');
+    const canDownloadVpn = has('iot:vpn:enroll') && has('iot:edge:query');
     const [pagination, setPagination] = useState({ page: 1, pageSize: 20 });
     const [keyword, setKeyword] = useState('');
     const [status, setStatus] = useState<Edge.EnrollmentStatus>();
+    const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
     const [selectedId, setSelectedId] = useState<string>();
     const [detailTab, setDetailTab] = useState('networks');
     const [renamingNode, setRenamingNode] = useState<Edge.Node>();
+    const [groupingNode, setGroupingNode] = useState<Edge.Node>();
     const [networkNode, setNetworkNode] = useState<Edge.Node>();
     const [networkDraft, setNetworkDraft] = useState<NetworkDraftItem[]>([]);
     const [networkRollbackTimeoutSec, setNetworkRollbackTimeoutSec] = useState(60);
@@ -599,9 +643,12 @@ export default function EdgeNodePage() {
     const [firmwareUploadProgress, setFirmwareUploadProgress] =
         useState<Edge.FirmwareUploadProgress>();
     const [terminalOpen, setTerminalOpen] = useState(false);
+    const [clientConfigOpen, setClientConfigOpen] = useState(false);
     const [networkForm] = Form.useForm<Edge.NetworkConfig>();
     const [firmwareForm] = Form.useForm<Edge.FirmwareUpgradeDto>();
     const [nameForm] = Form.useForm<Edge.NameDto>();
+    const [groupForm] = Form.useForm<Edge.GroupDto>();
+    const [clientConfigForm] = Form.useForm<EdgeVpn.ClientConfigCreateDto>();
     const networkMode = Form.useWatch('mode', networkForm);
     const networkBridge = Form.useWatch('bridge', networkForm);
     const firmwareFile = Form.useWatch('file', firmwareForm);
@@ -610,9 +657,16 @@ export default function EdgeNodePage() {
         setKeyword(value);
         setPagination((current) => ({ ...current, page: 1 }));
     }, 300);
-    const query = { ...pagination, keyword: keyword || undefined, status };
+    const query = {
+        ...pagination,
+        keyword: keyword || undefined,
+        status,
+        groupId: selectedGroupId ?? undefined,
+    };
     const { data, isLoading } = useEdgeList(query, canQuery);
     const nodes: Edge.Node[] = data?.list ?? [];
+    const { data: edgeGroups = [] } = useEdgeGroupTree();
+    const edgeGroupOptions = useMemo(() => groupSelectOptions(edgeGroups), [edgeGroups]);
     const { data: detail, isLoading: detailLoading } = useEdgeDetail(selectedId);
     const {
         data: eventLogs,
@@ -639,10 +693,12 @@ export default function EdgeNodePage() {
     const enrollment = useEnrollmentMutation();
     const edgeDelete = useEdgeDeleteMutation();
     const nodeName = useNodeNameMutation();
+    const nodeGroup = useNodeGroupMutation();
     const network = useNetworkMutation();
     const deviceConfigSync = useDeviceConfigSyncMutation();
     const firmwareUpgrade = useFirmwareUpgradeMutation();
     const logLevelControl = useLogLevelMutation();
+    const windowsVpnConfig = useWindowsVpnConfigCreate();
 
     useEffect(() => {
         if (!selectedId) return;
@@ -768,6 +824,26 @@ export default function EdgeNodePage() {
     const showRename = (node: Edge.Node) => {
         nameForm.setFieldsValue({ name: node.name || node.hostname });
         setRenamingNode(node);
+    };
+
+    const showGroup = (node: Edge.Node) => {
+        groupForm.setFieldsValue({ groupId: node.groupId || '' });
+        setGroupingNode(node);
+    };
+
+    const showClientConfig = () => {
+        windowsVpnConfig.reset();
+        clientConfigForm.resetFields();
+        setClientConfigOpen(true);
+    };
+
+    const submitClientConfig = (values: EdgeVpn.ClientConfigCreateDto) => {
+        windowsVpnConfig.mutate(values, {
+            onSuccess: (result) => {
+                downloadClientConfig(result);
+                setClientConfigOpen(false);
+            },
+        });
     };
 
     const showDetail = (node: Edge.Node) => {
@@ -1030,6 +1106,19 @@ export default function EdgeNodePage() {
                         </p>
                     </div>
                     <Space wrap>
+                        <EdgeNodeGroupPanel
+                            selectedGroupId={selectedGroupId}
+                            canManageGroup={canEdit}
+                            onSelect={(groupId) => {
+                                setSelectedGroupId(groupId);
+                                setPagination((current) => ({ ...current, page: 1 }));
+                            }}
+                        />
+                        {canDownloadVpn && (
+                            <Button icon={<DownloadOutlined />} onClick={showClientConfig}>
+                                下载 VPN 配置
+                            </Button>
+                        )}
                         <Input.Search
                             allowClear
                             className="w-[240px]"
@@ -1160,9 +1249,20 @@ export default function EdgeNodePage() {
                     detail ? (
                         <Space>
                             {canEdit && (
-                                <Button icon={<EditOutlined />} onClick={() => showRename(detail)}>
-                                    修改名称
-                                </Button>
+                                <>
+                                    <Button
+                                        icon={<EditOutlined />}
+                                        onClick={() => showRename(detail)}
+                                    >
+                                        修改名称
+                                    </Button>
+                                    <Button
+                                        icon={<ApartmentOutlined />}
+                                        onClick={() => showGroup(detail)}
+                                    >
+                                        设置分组
+                                    </Button>
+                                </>
                             )}
                             {detail.enrollmentStatus === 'approved' &&
                                 canTerminal &&
@@ -1882,6 +1982,83 @@ export default function EdgeNodePage() {
                 >
                     <Form.Item label="节点名称" name="name">
                         <Input maxLength={100} showCount placeholder="请输入节点名称" />
+                    </Form.Item>
+                </Form>
+            </FormModal>
+
+            <FormModal
+                open={Boolean(groupingNode)}
+                zIndex={EDGE_ACTION_MODAL_Z_INDEX}
+                title={`设置节点分组${groupingNode ? ` · ${groupingNode.name || groupingNode.imei}` : ''}`}
+                onCancel={() => setGroupingNode(undefined)}
+                onOk={() => groupForm.submit()}
+                confirmLoading={nodeGroup.isPending}
+                forceRender
+                destroyOnHidden
+            >
+                <Form
+                    form={groupForm}
+                    layout="vertical"
+                    onFinish={(values) => {
+                        if (!groupingNode) return;
+                        nodeGroup.mutate(
+                            {
+                                id: groupingNode.id,
+                                data: { groupId: values.groupId || '' },
+                            },
+                            { onSuccess: () => setGroupingNode(undefined) }
+                        );
+                    }}
+                >
+                    <Form.Item label="所属分组" name="groupId">
+                        <TreeSelect
+                            allowClear
+                            treeDefaultExpandAll
+                            treeData={edgeGroupOptions}
+                            placeholder="不选则为未分组"
+                        />
+                    </Form.Item>
+                </Form>
+            </FormModal>
+
+            <FormModal
+                open={clientConfigOpen}
+                zIndex={EDGE_ACTION_MODAL_Z_INDEX}
+                title="下载 Windows VPN 配置"
+                okText="生成并下载"
+                onCancel={() => {
+                    if (!windowsVpnConfig.isPending) setClientConfigOpen(false);
+                }}
+                onOk={() => clientConfigForm.submit()}
+                confirmLoading={windowsVpnConfig.isPending}
+                cancelButtonProps={{ disabled: windowsVpnConfig.isPending }}
+                closable={!windowsVpnConfig.isPending}
+                keyboard={!windowsVpnConfig.isPending}
+                maskClosable={!windowsVpnConfig.isPending}
+                forceRender
+                destroyOnHidden
+            >
+                <Alert
+                    type="info"
+                    showIcon
+                    className="mb-4"
+                    message="每台 Windows 设备必须单独生成一份配置"
+                    description="配置包含仅显示一次的客户端私钥，并自动放行当前账户可访问的全部边缘节点虚拟网段。"
+                />
+                <Form
+                    form={clientConfigForm}
+                    layout="vertical"
+                    onFinish={submitClientConfig}
+                >
+                    <Form.Item
+                        label="客户端名称"
+                        name="name"
+                        rules={[
+                            { required: true, message: '请输入客户端名称' },
+                            { max: 100, message: '客户端名称不能超过 100 个字符' },
+                        ]}
+                    >
+                        <Input placeholder="例如：张三办公电脑" maxLength={100} showCount />
                     </Form.Item>
                 </Form>
             </FormModal>

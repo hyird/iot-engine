@@ -50,6 +50,8 @@ function peerName(node: Edge.Node) {
 
 type RouteFormValues = Pick<EdgeVpn.RouteDto, 'virtualCidr'>;
 
+const VPN_MODAL_Z_INDEX = 1100;
+
 export default function EdgeVpnPanel({ node }: { node: Edge.Node }) {
     const { has } = usePermissions();
     const canQuery = has('iot:vpn:query');
@@ -270,6 +272,7 @@ export default function EdgeVpnPanel({ node }: { node: Edge.Node }) {
                 onOk={() => routeForm.submit()}
                 confirmLoading={routeUpdate.isPending}
                 destroyOnHidden
+                zIndex={VPN_MODAL_Z_INDEX}
             >
                 <Form
                     form={routeForm}
@@ -310,6 +313,7 @@ export default function EdgeVpnPanel({ node }: { node: Edge.Node }) {
                     </Form.Item>
                 </Form>
             </Modal>
+
         </div>
     );
 }

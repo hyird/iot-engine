@@ -30,13 +30,19 @@ inline bool isOptionalNetworkDevice(const ruvia::String& value) {
     return true;
 }
 
+inline bool isEdgeGroupFilter(const ruvia::String& value) {
+    return value.view() == "ungrouped" || service::common::isOptionalUuidField(value);
+}
+
 class EdgeListValidator final : public ruvia::Middleware<EdgeListValidator> {
   public:
     RUVIA_VALIDATE_QUERY(
         EdgeListQuery, RUVIA_RULE(page, RUVIA_MIN(1, "page 必须大于 0")),
         RUVIA_RULE_NAME("pageSize", pageSize, RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"),
                         RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")),
-        RUVIA_RULE(status, RUVIA_ONE_OF("注册状态无效", "pending", "approved")));
+        RUVIA_RULE(status, RUVIA_ONE_OF("注册状态无效", "pending", "approved")),
+        RUVIA_RULE_NAME("groupId", groupId,
+                        RUVIA_CUSTOM("节点分组筛选无效", isEdgeGroupFilter)));
 };
 
 class EdgeIdValidator final : public ruvia::Middleware<EdgeIdValidator> {
@@ -60,6 +66,31 @@ class NodeNameValidator final : public ruvia::Middleware<NodeNameValidator> {
     RUVIA_VALIDATE_JSON(
         NodeNameBody, RUVIA_RULE(name, RUVIA_REQUIRED("节点名称不能为空"),
                                  RUVIA_MAX(100, "节点名称不能超过 100 个字符")));
+};
+
+class NodeGroupValidator final : public ruvia::Middleware<NodeGroupValidator> {
+  public:
+    RUVIA_VALIDATE_JSON(
+        NodeGroupBody,
+        RUVIA_RULE_NAME("groupId", groupId,
+                        RUVIA_CUSTOM("节点分组 ID 无效",
+                                     service::common::isOptionalUuidField)));
+};
+
+class EdgeGroupValidator final : public ruvia::Middleware<EdgeGroupValidator> {
+  public:
+    RUVIA_VALIDATE_JSON(
+        EdgeGroupBody,
+        RUVIA_RULE(name, RUVIA_REQUIRED("分组名称不能为空"),
+                   RUVIA_MIN(1, "分组名称不能为空"),
+                   RUVIA_MAX(100, "分组名称不能超过 100 个字符")),
+        RUVIA_RULE_NAME("parentId", parentId,
+                        RUVIA_CUSTOM("上级分组 ID 无效",
+                                     service::common::isOptionalUuidField)),
+        RUVIA_RULE(status, RUVIA_ONE_OF("分组状态无效", "enabled", "disabled")),
+        RUVIA_RULE_NAME("sortOrder", sortOrder,
+                        RUVIA_MIN(0, "分组排序不能小于 0")),
+        RUVIA_RULE(remark, RUVIA_MAX(500, "分组备注不能超过 500 个字符")));
 };
 
 class NetworkInterfaceValidator final : public ruvia::Middleware<NetworkInterfaceValidator> {

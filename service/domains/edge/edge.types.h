@@ -8,7 +8,8 @@ RUVIA_REQUEST_MODEL(EdgeListQuery,
     RUVIA_OPTIONAL_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1)),
     RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64, RUVIA_DEFAULT(20)),
     RUVIA_OPTIONAL_FIELD(keyword, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(status, ruvia::String));
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("groupId", groupId, ruvia::String));
 
 RUVIA_REQUEST_MODEL(EdgeIdParams,
     RUVIA_OPTIONAL_FIELD(id, ruvia::String));
@@ -19,6 +20,16 @@ RUVIA_REQUEST_MODEL(EnrollmentBody,
 
 RUVIA_REQUEST_MODEL(NodeNameBody,
     RUVIA_OPTIONAL_FIELD(name, ruvia::String));
+
+RUVIA_REQUEST_MODEL(NodeGroupBody,
+    RUVIA_OPTIONAL_FIELD_NAME("groupId", groupId, ruvia::String));
+
+RUVIA_REQUEST_MODEL(EdgeGroupBody,
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("parentId", parentId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("sortOrder", sortOrder, ruvia::Int64, RUVIA_DEFAULT(0)),
+    RUVIA_OPTIONAL_FIELD(remark, ruvia::String));
 
 RUVIA_REQUEST_MODEL(NetworkInterfaceBody,
     RUVIA_OPTIONAL_FIELD(operation, ruvia::String),
@@ -153,6 +164,8 @@ RUVIA_RESPONSE_MODEL(EdgeNodeDto,
     RUVIA_OPTIONAL_FIELD(id, ruvia::String),
     RUVIA_OPTIONAL_FIELD(imei, ruvia::String),
     RUVIA_OPTIONAL_FIELD(name, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("groupId", groupId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("groupName", groupName, ruvia::String),
     RUVIA_OPTIONAL_FIELD(model, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("softwareVersion", softwareVersion, ruvia::String),
     RUVIA_OPTIONAL_FIELD(hostname, ruvia::String),
@@ -163,11 +176,22 @@ RUVIA_RESPONSE_MODEL(EdgeNodeDto,
     RUVIA_OPTIONAL_FIELD(capability, CapabilityDto),
     RUVIA_OPTIONAL_FIELD(mobile, MobileDto),
     RUVIA_OPTIONAL_FIELD(firmware, FirmwareStatusDto),
+    RUVIA_OPTIONAL_FIELD_NAME("vpnVirtualCidrs", vpnVirtualCidrs,
+                              ruvia::BoxedArray<ruvia::String>),
     RUVIA_OPTIONAL_FIELD_NAME("createdAt", createdAt, ruvia::String),
     RUVIA_OPTIONAL_FIELD(interfaces, ruvia::BoxedArray<InterfaceDto>),
     RUVIA_OPTIONAL_FIELD(networks, ruvia::BoxedArray<NetworkDto>),
     RUVIA_OPTIONAL_FIELD_NAME("serialPorts", serialPorts, ruvia::BoxedArray<SerialDto>),
     RUVIA_OPTIONAL_FIELD(tasks, ruvia::BoxedArray<TaskDto>));
+
+RUVIA_RESPONSE_MODEL(EdgeGroupDto,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("parentId", parentId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("sortOrder", sortOrder, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(remark, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("nodeCount", nodeCount, ruvia::Int64));
 
 RUVIA_RESPONSE_MODEL(EdgePageDto,
     RUVIA_OPTIONAL_FIELD(list, ruvia::BoxedArray<EdgeNodeDto>),
@@ -208,6 +232,7 @@ EDGE_RESPONSE(EdgeDetailResponse, EdgeNodeDto);
 EDGE_RESPONSE(FirmwareListResponse, ruvia::BoxedArray<FirmwareDto>);
 EDGE_RESPONSE(TerminalTicketResponse, TerminalTicketDto);
 EDGE_RESPONSE(LogsResponse, LogsDto);
+EDGE_RESPONSE(EdgeGroupListResponse, ruvia::BoxedArray<EdgeGroupDto>);
 
 #undef EDGE_RESPONSE
 

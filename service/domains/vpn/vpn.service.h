@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cctype>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -25,6 +26,7 @@
 #include "service/features/edge/dispatch.h"
 #include "service/features/edge/protocol.h"
 #include "service/features/vpn/cidr.h"
+#include "service/features/vpn/client-config.h"
 #include "service/features/vpn/edge-config.h"
 #include "service/features/vpn/firewall.h"
 #include "service/features/vpn/hub-config.h"
@@ -177,9 +179,14 @@ class VpnService final {
                                    std::string_view);
     static ruvia::Task<void> queueEdgeConfig(ruvia::Context&, std::string_view);
     static ruvia::Task<std::string> clientConfigJson(ruvia::Context&, std::string_view,
-                                                     std::string_view);
+                                                     std::string_view,
+                                                     std::string_view =
+                                                         "<client-private-key>");
     static ruvia::Task<std::optional<std::uint32_t>> allocateAddress(
         ruvia::Context&, std::string_view, const Ipv4Cidr&);
+    template <typename Db>
+    static ruvia::Task<std::optional<std::uint32_t>> allocateAddressFromDb(
+        Db&, std::string_view, const Ipv4Cidr&);
     template <typename Db>
     static ruvia::Task<void> ensureBridgeRoutes(Db&, std::string_view, std::string_view,
                                                 std::string_view, std::string_view);
@@ -524,18 +531,18 @@ FROM vpn_peer p)sql" + where + " ORDER BY p.created_at DESC LIMIT 1000", params)
         const auto overlay = parseCidr(detail::rowValue(network.front(), 0), 16, 30);
         if (!overlay)
             service::common::fail(21005, "VPN 网络 Overlay 配置损坏", 500);
-        const auto assigned = co_await allocateAddress(c, networkId, *overlay);
         const auto allowedRoutes = detail::textArray(payload, "allowedRoutes");
         if (allowedRoutes.size() > 64)
             service::common::fail(21001, "Peer 最多授权 64 条路由", 400);
         co_await validateAllowedRoutes(c, networkId, allowedRoutes);
         const auto id = service::common::nextUuidV7();
         const auto status = publicKey.empty() ? "pending" : "active";
-        const auto assignedText = detail::hostText(*assigned);
         const auto allowedRoutesJson = detail::jsonArray(allowedRoutes);
         auto transaction = co_await c.db().beginTransaction();
         (void)co_await transaction.query(
             "SELECT pg_advisory_xact_lock(5282804697543808068::bigint)");
+        const auto assigned = co_await allocateAddressFromDb(transaction, networkId, *overlay);
+        const auto assignedText = detail::hostText(*assigned);
         (void)co_await transaction.execute(R"sql(
 INSERT INTO vpn_peer(id, network_id, peer_type, edge_node_id, user_id, name, public_key,
                      assigned_ipv4, allowed_routes, status)
@@ -553,6 +560,77 @@ VALUES ($1::uuid, $2::uuid, $3, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
             co_await queueEdgeConfig(c, id);
         (void)co_await reconcileHub(c);
         co_return id;
+    }
+
+    ruvia::Task<std::string> createClientConfig(ruvia::Context& c,
+                                                const ruvia::JsonValue& payload) {
+        const auto networkId = co_await ensureDefaultNetwork(c);
+        const auto name = detail::requiredText(payload, "name", 100,
+                                               "Windows 设备名称不能为空");
+        const auto network = co_await c.db().query(
+            "SELECT overlay_cidr FROM vpn_network WHERE id = $1::uuid "
+            "AND status = 'enabled' AND deleted_at IS NULL",
+            service::common::dbParams(networkId));
+        if (network.empty())
+            service::common::fail(21004, "VPN 网络不存在或已停用", 404);
+        const auto overlay = parseCidr(detail::rowValue(network.front(), 0), 16, 30);
+        if (!overlay)
+            service::common::fail(21005, "VPN 网络 Overlay 配置损坏", 500);
+        const auto routeRows = co_await c.db().query(R"sql(
+SELECT r.virtual_cidr
+FROM vpn_route r
+JOIN vpn_peer p ON p.id = r.edge_peer_id AND p.peer_type = 'edge'
+JOIN edge_node e ON e.id = p.edge_node_id
+WHERE r.network_id = $1::uuid AND r.enabled AND r.status = 'active'
+  AND p.status = 'active' AND e.enrollment_status = 'approved'
+ORDER BY r.virtual_cidr)sql", service::common::dbParams(networkId));
+        std::vector<std::string> routes;
+        routes.reserve(routeRows.size());
+        for (const auto& row : routeRows)
+            routes.push_back(detail::rowValue(row, 0));
+        if (routes.empty())
+            service::common::fail(21003, "当前账户没有可访问的 VPN 设备", 403);
+        std::string privateKey;
+        std::string publicKey;
+        if (!hub_config::generateKeyPair(privateKey, publicKey))
+            service::common::fail(21005, "Windows WireGuard 密钥生成失败", 500);
+
+        const auto principal = service::middleware::requireAuth(c);
+        const auto id = service::common::nextUuidV7();
+        const auto routesJson = detail::jsonArray(routes);
+        auto transaction = co_await c.db().beginTransaction();
+        (void)co_await transaction.query(
+            "SELECT pg_advisory_xact_lock(5282804697543808068::bigint)");
+        const auto assigned = co_await allocateAddressFromDb(transaction, networkId, *overlay);
+        const auto assignedAddress = detail::hostText(*assigned);
+        (void)co_await transaction.execute(R"sql(
+INSERT INTO vpn_peer(id, network_id, peer_type, user_id, name, public_key, assigned_ipv4,
+                     allowed_routes, status)
+VALUES ($1::uuid, $2::uuid, 'windows', $3::uuid, $4, $5, $6::inet, $7::jsonb, 'active'))sql",
+                                           service::common::dbParams(
+                                               id, networkId, principal.userId, name,
+                                               publicKey, assignedAddress, routesJson));
+        co_await transaction.commit();
+        co_await audit(c, principal.userId, "vpn.client_config.create", "vpn_peer", id,
+                       "success", "{}");
+        std::exception_ptr reconcileFailure;
+        try {
+            (void)co_await reconcileHub(c);
+        } catch (...) {
+            reconcileFailure = std::current_exception();
+        }
+        if (reconcileFailure) {
+            (void)co_await c.db().execute(
+                "DELETE FROM vpn_peer WHERE id = $1::uuid",
+                service::common::dbParams(id));
+            try {
+                (void)co_await reconcileHub(c);
+            } catch (...) {
+                // The periodic reconciler will remove any partially applied peer.
+            }
+            std::rethrow_exception(reconcileFailure);
+        }
+        co_return co_await clientConfigJson(c, id, principal.userId, privateKey);
     }
 
     ruvia::Task<void> revokePeer(ruvia::Context& c, std::string_view id) {
@@ -791,7 +869,7 @@ inline void VpnService::requireUuid(std::string_view id, std::string_view messag
 
 inline wireguard::HubConfig VpnService::hubConfig(ruvia::Context& c) {
     wireguard::HubConfig config;
-    config.interfaceName = std::string(c.env().get("VPN_HUB_INTERFACE").value_or("wg-iot"));
+    config.interfaceName = std::string(c.env().get("VPN_HUB_INTERFACE").value_or("wg"));
     config.privateKey = std::string(c.env().get("VPN_HUB_PRIVATE_KEY").value_or(""));
     config.publicKey = std::string(c.env().get("VPN_HUB_PUBLIC_KEY").value_or(""));
     config.endpoint = std::string(c.env().get("VPN_HUB_ENDPOINT").value_or(""));
@@ -998,7 +1076,14 @@ VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6,
 
 inline ruvia::Task<std::optional<std::uint32_t>> VpnService::allocateAddress(
     ruvia::Context& c, std::string_view networkId, const Ipv4Cidr& overlay) {
-    const auto rows = co_await c.db().query(
+    auto database = c.db();
+    co_return co_await allocateAddressFromDb(database, networkId, overlay);
+}
+
+template <typename Db>
+inline ruvia::Task<std::optional<std::uint32_t>> VpnService::allocateAddressFromDb(
+    Db& db, std::string_view networkId, const Ipv4Cidr& overlay) {
+    const auto rows = co_await db.query(
         "SELECT host(assigned_ipv4) FROM vpn_peer WHERE network_id = $1::uuid",
         service::common::dbParams(networkId));
     std::unordered_set<std::uint32_t> used;
@@ -1034,7 +1119,8 @@ inline ruvia::Task<void> VpnService::validateAllowedRoutes(
 
 inline ruvia::Task<std::string> VpnService::clientConfigJson(ruvia::Context& c,
                                                              std::string_view peerId,
-                                                             std::string_view userId) {
+                                                             std::string_view userId,
+                                                             std::string_view privateKey) {
     requireUuid(peerId, "VPN Peer ID 无效");
     const auto rows = co_await c.db().query(R"sql(
 SELECT p.id, p.name, host(p.assigned_ipv4), p.allowed_routes::text,
@@ -1058,16 +1144,12 @@ LIMIT 1)sql", service::common::dbParams(peerId, userId));
     const auto allowedValues = detail::textArrayJson(allowed);
     const auto endpoint = detail::rowValue(row, 5);
     const auto port = detail::rowValue(row, 6);
-    const auto endpointText = endpoint.empty() ? std::string{} : endpoint + ":" + port;
-    std::string config{"[Interface]\nPrivateKey = <client-private-key>\nAddress = " +
-                       detail::rowValue(row, 2) + "/32\nMTU = 1280\n\n[Peer]\nPublicKey = " +
-                       hubKey + "\nEndpoint = " + endpointText + "\nAllowedIPs = "};
-    for (std::size_t index = 0; index < allowedValues.size(); ++index) {
-        if (index != 0)
-            config += ", ";
-        config += allowedValues[index];
-    }
-    config += "\nPersistentKeepalive = 25\n";
+    const auto portValue = integer(port);
+    if (endpoint.empty() || portValue < 1 || portValue > 65535)
+        service::common::fail(21005, "Hub 公网端点尚未配置", 503);
+    const auto config = client_config::render(
+        privateKey, detail::rowValue(row, 2), hubKey, endpoint,
+        static_cast<std::uint16_t>(portValue), allowedValues);
     co_return "{\"peerId\":" + service::access::jsonQuoted(detail::rowValue(row, 0)) +
               ",\"name\":" + service::access::jsonQuoted(detail::rowValue(row, 1)) +
               ",\"assignedIpv4\":" + service::access::jsonQuoted(detail::rowValue(row, 2)) +

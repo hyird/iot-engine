@@ -3,11 +3,13 @@ import { appendQueryParams } from '@/utils/query';
 import type { PaginatedResult } from '@/utils/types';
 import {
     edgeIdSchema,
+    edgeGroupSchema,
     edgeListQuerySchema,
     firmwareUpgradeSchema,
     logLevelSchema,
     logsQuerySchema,
     networkSchema,
+    nodeGroupSchema,
     nodeNameSchema,
 } from './edge-node.schema';
 import type { Edge } from './edge-node.types';
@@ -20,6 +22,25 @@ export const getEdgeList = (query?: Edge.Query) =>
     );
 export const getEdgeDetail = (id: string) =>
     request.get<Edge.Node>(`${BASE}/${edgeIdSchema.parse(id)}`);
+const buildGroupTree = (items: Edge.GroupItem[]) => {
+    const index = new Map<string, Edge.GroupTreeItem>();
+    const roots: Edge.GroupTreeItem[] = [];
+    for (const item of items) index.set(item.id, { ...item, children: [] });
+    for (const item of index.values()) {
+        const parent = item.parentId ? index.get(item.parentId) : undefined;
+        if (parent) parent.children?.push(item);
+        else roots.push(item);
+    }
+    return roots;
+};
+export const getEdgeGroups = async () =>
+    buildGroupTree(await request.get<Edge.GroupItem[]>(`${BASE}/groups`));
+export const createEdgeGroup = (data: Edge.GroupSaveDto) =>
+    request.post<void>(`${BASE}/groups`, edgeGroupSchema.parse(data));
+export const updateEdgeGroup = (id: string, data: Edge.GroupSaveDto) =>
+    request.put<void>(`${BASE}/groups/${edgeIdSchema.parse(id)}`, edgeGroupSchema.parse(data));
+export const deleteEdgeGroup = (id: string) =>
+    request.delete<void>(`${BASE}/groups/${edgeIdSchema.parse(id)}`);
 export const getLogs = (id: string, query?: Edge.LogsQuery) =>
     request.get<Edge.Logs>(
         appendQueryParams(
@@ -35,6 +56,8 @@ export const deleteEnrollment = (id: string) =>
     request.delete<void>(`${BASE}/${edgeIdSchema.parse(id)}`);
 export const renameEdge = (id: string, data: Edge.NameDto) =>
     request.put<void>(`${BASE}/${edgeIdSchema.parse(id)}/name`, nodeNameSchema.parse(data));
+export const setEdgeGroup = (id: string, data: Edge.GroupDto) =>
+    request.put<void>(`${BASE}/${edgeIdSchema.parse(id)}/group`, nodeGroupSchema.parse(data));
 export const configureNetwork = (id: string, data: Edge.NetworkDto) =>
     request.post<void>(`${BASE}/${edgeIdSchema.parse(id)}/network`, networkSchema.parse(data));
 export const syncDeviceConfig = (id: string) =>

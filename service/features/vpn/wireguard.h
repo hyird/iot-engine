@@ -19,7 +19,7 @@ struct Peer final {
 };
 
 struct HubConfig final {
-    std::string interfaceName{"wg-iot"};
+    std::string interfaceName{"wg"};
     std::string privateKey;
     std::string publicKey;
     std::string endpoint;

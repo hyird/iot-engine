@@ -198,9 +198,22 @@ export const nodeNameSchema = z.object({
     name: z.string().min(1, '节点名称不能为空').max(100, '节点名称不能超过 100 个字符'),
 });
 
+export const nodeGroupSchema = z.object({
+    groupId: z.union([z.literal(''), z.uuid('节点分组 ID 无效')]),
+});
+
+export const edgeGroupSchema = z.object({
+    name: z.string().trim().min(1, '分组名称不能为空').max(100, '分组名称不能超过 100 个字符'),
+    parentId: z.union([z.literal(''), z.uuid('上级分组 ID 无效')]).optional(),
+    status: z.enum(['enabled', 'disabled']),
+    sortOrder: z.number().int().min(0, '分组排序不能小于 0'),
+    remark: z.string().max(500, '分组备注不能超过 500 个字符').optional(),
+});
+
 export const edgeListQuerySchema = pageParamsSchema.extend({
     status: enrollmentStatusSchema.optional(),
     keyword: z.string().optional(),
+    groupId: z.union([z.literal('ungrouped'), z.uuid()]).optional(),
 });
 export const logsQuerySchema = z.object({
     limit: z.number().int().min(1).max(48).optional(),
