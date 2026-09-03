@@ -94,6 +94,8 @@ int main() {
         const auto metadataSource = edgeSource("service/features/edge/metadata.h");
         const auto vpnEdgeConfigSource =
             edgeSource("service/features/vpn/edge-config.h");
+        const auto vpnServiceSource =
+            edgeSource("service/domains/vpn/vpn.service.h");
         requireMissing(serviceSource, "const std::string status(body.status()->view());",
                        "edge enrollment dereferences optional status without validation");
         requireMissing(serviceSource, "const std::string name(body.name()->view());",
@@ -243,6 +245,15 @@ int main() {
                         "VPN result projection does not compare the returned config version");
         requireContains(vpnEdgeConfigSource, "'errorCode', 'superseded'",
                         "new VPN tasks leave older tasks pending forever");
+        requireContains(vpnServiceSource,
+                        "reusableEdgePeerId.empty() ? service::common::nextUuidV7()",
+                        "revoked Edge VPN peers are not reused when VPN is enabled again");
+        requireContains(vpnServiceSource, "revoked_at = NULL, updated_at = NOW()",
+                        "reactivating an Edge VPN peer does not clear its revoked state");
+        requireContains(vpnServiceSource, "\"vpn.peer.reactivate\"",
+                        "Edge VPN peer reactivation is not audited separately");
+        requireContains(vpnServiceSource, "lower(name) = lower($2)",
+                        "one active VPN config per named client device is not enforced");
         requireMissing(dispatcherSource, "workers_.back().post(",
                        "edge dispatcher still gives one worker a special role");
         requireMissing(dispatcherSource, "target.worker.post(",

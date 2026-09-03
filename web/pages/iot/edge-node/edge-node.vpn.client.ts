@@ -30,6 +30,12 @@ export const createEdgeVpnPeer = (data: EdgeVpn.PeerCreateDto) =>
 export const createWindowsVpnConfig = (data: EdgeVpn.ClientConfigCreateDto) =>
     request.post<EdgeVpn.ClientConfig>(`${BASE}/client-configs`, data);
 
+export const getWindowsVpnConfigs = () =>
+    request.get<EdgeVpn.ClientConfigSummary[]>(`${BASE}/client-configs`);
+
+export const deleteWindowsVpnConfig = (id: string) =>
+    request.delete<void>(`${BASE}/client-configs/${edgeIdSchema.parse(id)}`);
+
 export const syncEdgeVpnPeer = (peerId: string) =>
     request.post<void>(`${BASE}/peers/${edgeIdSchema.parse(peerId)}/sync`);
 

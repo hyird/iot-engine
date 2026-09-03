@@ -501,6 +501,7 @@ FROM vpn_peer p)sql" + where + " ORDER BY p.created_at DESC LIMIT 1000", params)
         const auto principal = service::middleware::requireAuth(c);
         std::string edgeNodeId;
         std::string userId = principal.userId;
+        std::string reusableEdgePeerId;
         if (peerType == "edge")
             edgeNodeId = detail::requiredUuid(payload, "edgeNodeId", "Edge 节点 ID 无效");
         else if (publicKey.empty())
@@ -521,11 +522,17 @@ FROM vpn_peer p)sql" + where + " ORDER BY p.created_at DESC LIMIT 1000", params)
                 service::common::fail(21004, "Edge 节点不存在或尚未批准", 404);
             const auto reportedKey = detail::rowValue(edge.front(), 0);
             publicKey = detail::validKey(reportedKey) ? reportedKey : std::string{};
-            const auto duplicate = co_await c.db().query(
-                "SELECT id FROM vpn_peer WHERE network_id = $1::uuid AND edge_node_id = $2::uuid "
-                "AND status <> 'revoked'", service::common::dbParams(networkId, edgeNodeId));
-            if (!duplicate.empty())
-                service::common::fail(21002, "该 Edge 节点已经加入 VPN 网络", 409);
+            const auto existing = co_await c.db().query(R"sql(
+SELECT id::text, status
+FROM vpn_peer
+WHERE network_id = $1::uuid AND edge_node_id = $2::uuid
+ORDER BY CASE WHEN status = 'revoked' THEN 1 ELSE 0 END, created_at DESC
+LIMIT 1)sql", service::common::dbParams(networkId, edgeNodeId));
+            if (!existing.empty()) {
+                if (detail::rowValue(existing.front(), 1) != "revoked")
+                    service::common::fail(21002, "该 Edge 节点已经加入 VPN 网络", 409);
+                reusableEdgePeerId = detail::rowValue(existing.front(), 0);
+            }
             userId.clear();
         }
         const auto overlay = parseCidr(detail::rowValue(network.front(), 0), 16, 30);
@@ -535,26 +542,43 @@ FROM vpn_peer p)sql" + where + " ORDER BY p.created_at DESC LIMIT 1000", params)
         if (allowedRoutes.size() > 64)
             service::common::fail(21001, "Peer 最多授权 64 条路由", 400);
         co_await validateAllowedRoutes(c, networkId, allowedRoutes);
-        const auto id = service::common::nextUuidV7();
+        const auto id = reusableEdgePeerId.empty() ? service::common::nextUuidV7()
+                                                   : reusableEdgePeerId;
         const auto status = publicKey.empty() ? "pending" : "active";
         const auto allowedRoutesJson = detail::jsonArray(allowedRoutes);
         auto transaction = co_await c.db().beginTransaction();
         (void)co_await transaction.query(
             "SELECT pg_advisory_xact_lock(5282804697543808068::bigint)");
-        const auto assigned = co_await allocateAddressFromDb(transaction, networkId, *overlay);
-        const auto assignedText = detail::hostText(*assigned);
-        (void)co_await transaction.execute(R"sql(
+        if (reusableEdgePeerId.empty()) {
+            const auto assigned = co_await allocateAddressFromDb(transaction, networkId, *overlay);
+            const auto assignedText = detail::hostText(*assigned);
+            (void)co_await transaction.execute(R"sql(
 INSERT INTO vpn_peer(id, network_id, peer_type, edge_node_id, user_id, name, public_key,
                      assigned_ipv4, allowed_routes, status)
 VALUES ($1::uuid, $2::uuid, $3, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
         $6, $7, $8::inet, $9::jsonb, $10))sql",
-                                              service::common::dbParams(id, networkId, peerType, edgeNodeId,
-                                                                        userId, name, publicKey,
-                                                                        assignedText, allowedRoutesJson, status));
+                                                  service::common::dbParams(
+                                                      id, networkId, peerType, edgeNodeId,
+                                                      userId, name, publicKey, assignedText,
+                                                      allowedRoutesJson, status));
+        } else {
+            const auto reactivated = co_await transaction.query(R"sql(
+UPDATE vpn_peer
+SET name = $2, public_key = $3, allowed_routes = $4::jsonb, status = $5,
+    revoked_at = NULL, updated_at = NOW()
+WHERE id = $1::uuid AND peer_type = 'edge' AND status = 'revoked'
+RETURNING id)sql", service::common::dbParams(
+                           id, name, publicKey, allowedRoutesJson, status));
+            if (reactivated.empty())
+                service::common::fail(21002, "该 Edge 节点已经加入 VPN 网络", 409);
+        }
         if (peerType == "edge")
             co_await ensureBridgeRoutes(transaction, id, networkId, edgeNodeId, principal.userId);
         co_await transaction.commit();
-        co_await audit(c, principal.userId, "vpn.peer.create", "vpn_peer", id,
+        co_await audit(c, principal.userId,
+                       reusableEdgePeerId.empty() ? "vpn.peer.create"
+                                                  : "vpn.peer.reactivate",
+                       "vpn_peer", id,
                        "success", "{}");
         if (peerType == "edge")
             co_await queueEdgeConfig(c, id);
@@ -567,6 +591,15 @@ VALUES ($1::uuid, $2::uuid, $3, NULLIF($4, '')::uuid, NULLIF($5, '')::uuid,
         const auto networkId = co_await ensureDefaultNetwork(c);
         const auto name = detail::requiredText(payload, "name", 100,
                                                "Windows 设备名称不能为空");
+        const auto principal = service::middleware::requireAuth(c);
+        const auto duplicate = co_await c.db().query(R"sql(
+SELECT id
+FROM vpn_peer
+WHERE peer_type = 'windows' AND user_id = $1::uuid AND status = 'active'
+  AND lower(name) = lower($2)
+LIMIT 1)sql", service::common::dbParams(principal.userId, name));
+        if (!duplicate.empty())
+            service::common::fail(21002, "该客户端设备已有 VPN 配置，请先删除旧配置", 409);
         const auto network = co_await c.db().query(
             "SELECT overlay_cidr FROM vpn_network WHERE id = $1::uuid "
             "AND status = 'enabled' AND deleted_at IS NULL",
@@ -595,7 +628,6 @@ ORDER BY r.virtual_cidr)sql", service::common::dbParams(networkId));
         if (!hub_config::generateKeyPair(privateKey, publicKey))
             service::common::fail(21005, "Windows WireGuard 密钥生成失败", 500);
 
-        const auto principal = service::middleware::requireAuth(c);
         const auto id = service::common::nextUuidV7();
         const auto routesJson = detail::jsonArray(routes);
         auto transaction = co_await c.db().beginTransaction();
@@ -631,6 +663,45 @@ VALUES ($1::uuid, $2::uuid, 'windows', $3::uuid, $4, $5, $6::inet, $7::jsonb, 'a
             std::rethrow_exception(reconcileFailure);
         }
         co_return co_await clientConfigJson(c, id, principal.userId, privateKey);
+    }
+
+    ruvia::Task<std::string> clientConfigs(ruvia::Context& c) {
+        const auto principal = service::middleware::requireAuth(c);
+        const auto rows = co_await c.db().query(R"sql(
+SELECT jsonb_build_object(
+  'id', p.id, 'name', p.name, 'assignedIpv4', host(p.assigned_ipv4),
+  'allowedRoutes', p.allowed_routes, 'status', p.status,
+  'lastHandshakeAt', iot_utc_timestamp(p.last_handshake_at),
+  'createdAt', iot_utc_timestamp(p.created_at))
+FROM vpn_peer p
+WHERE p.peer_type = 'windows' AND p.user_id = $1::uuid AND p.status = 'active'
+ORDER BY p.created_at DESC, p.id DESC
+LIMIT 1000)sql", service::common::dbParams(principal.userId));
+        std::string result{"["};
+        for (std::size_t index = 0; index < rows.size(); ++index) {
+            if (index != 0)
+                result.push_back(',');
+            result += detail::rowValue(rows[index], 0);
+        }
+        result.push_back(']');
+        co_return result;
+    }
+
+    ruvia::Task<void> removeClientConfig(ruvia::Context& c, std::string_view id) {
+        requireUuid(id, "VPN 配置 ID 无效");
+        const auto principal = service::middleware::requireAuth(c);
+        const auto rows = co_await c.db().query(R"sql(
+DELETE FROM vpn_peer
+WHERE id = $1::uuid AND peer_type = 'windows' AND user_id = $2::uuid
+RETURNING public_key)sql", service::common::dbParams(id, principal.userId));
+        if (rows.empty())
+            service::common::fail(21004, "VPN 配置不存在或不属于当前用户", 404);
+        const auto key = detail::rowValue(rows.front(), 0);
+        if (detail::validKey(key))
+            (void)wireguard::controller().removePeer(hubConfig(c), key);
+        co_await audit(c, principal.userId, "vpn.client_config.delete", "vpn_peer", id,
+                       "success", "{}");
+        (void)co_await reconcileHub(c);
     }
 
     ruvia::Task<void> revokePeer(ruvia::Context& c, std::string_view id) {

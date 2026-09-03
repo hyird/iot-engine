@@ -77,11 +77,15 @@ test('VPN follows mobile status and firmware history stays in its own tab', () =
 });
 
 test('Windows VPN downloads one complete WireGuard config per device', () => {
-    expect(source).toContain('下载 VPN 配置');
+    expect(source).toContain('VPN 配置管理');
+    expect(source).toContain('新增并下载');
     expect(source).toContain('每台 Windows 设备必须单独生成一份配置');
     expect(source).toContain('downloadClientConfig(result)');
+    expect(source).toContain('windowsVpnConfigDelete.mutate(item.id)');
     expect(vpnPanel).not.toContain('生成 Windows 配置');
     expect(vpnClient).toContain('`${BASE}/client-configs`');
+    expect(vpnClient).toContain('request.get<EdgeVpn.ClientConfigSummary[]>');
+    expect(vpnClient).toContain('request.delete<void>');
 });
 
 test('edge nodes use hierarchical groups and cards show VPN virtual networks', () => {

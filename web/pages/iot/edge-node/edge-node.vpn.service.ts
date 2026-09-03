@@ -6,10 +6,12 @@ import {
     createEdgeVpnRoute,
     createVpnNetwork,
     createWindowsVpnConfig,
+    deleteWindowsVpnConfig,
     deleteEdgeVpnRoute,
     getEdgeVpnPeers,
     getEdgeVpnRoutes,
     getVpnNetworks,
+    getWindowsVpnConfigs,
     revokeEdgeVpnPeer,
     syncEdgeVpnPeer,
     updateEdgeVpnRoute,
@@ -51,6 +53,21 @@ export const useWindowsVpnConfigCreate = () =>
     useMutationWithMessage({
         mutationFn: createWindowsVpnConfig,
         successMessage: 'Windows WireGuard 配置已生成并下载',
+        invalidateKeys: vpnInvalidations,
+    });
+
+export const useWindowsVpnConfigs = (enabled: boolean) =>
+    useQuery({
+        queryKey: edgeVpnQueryKeys.clientConfigs(),
+        queryFn: getWindowsVpnConfigs,
+        enabled,
+        refetchInterval: enabled ? 10_000 : false,
+    });
+
+export const useWindowsVpnConfigDelete = () =>
+    useMutationWithMessage({
+        mutationFn: deleteWindowsVpnConfig,
+        successMessage: 'VPN 配置已删除，客户端连接已撤销',
         invalidateKeys: vpnInvalidations,
     });
 
