@@ -132,8 +132,6 @@ FOR UPDATE)sql");
     }
 
     auto config = fallback;
-    config.interfaceName = "wg";
-    config.address = "100.96.0.1/32";
     const auto storedPrivateKey = rowValue(rows.front(), 0);
     const auto storedPublicKey = rowValue(rows.front(), 1);
     const auto storedEndpoint = rowValue(rows.front(), 2);

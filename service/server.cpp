@@ -107,6 +107,11 @@ namespace
         return config;
     }
 
+    bool vpnHubEnabled(const ruvia::Env &env)
+    {
+        return env.get<bool>("VPN_HUB_ENABLED").value_or(true);
+    }
+
     std::filesystem::path runtimeDirectory(const char *executable)
     {
         if (!executable || *executable == '\0')
@@ -351,7 +356,10 @@ int main(int argc, char *argv[])
         auto openWebhooks = std::make_shared<service::access::WebhookRuntime>();
         auto configReconciler = std::make_shared<service::runtime::Reconciler>();
         auto edgeProjector = std::make_shared<service::edge::Projector>();
-        auto vpnRuntime = std::make_shared<service::vpn::Runtime>(vpnHubConfig(app.env()));
+        const auto enableVpnHub = vpnHubEnabled(app.env());
+        auto vpnRuntime = enableVpnHub
+                              ? std::make_shared<service::vpn::Runtime>(vpnHubConfig(app.env()))
+                              : nullptr;
         auto gb28181Projector = gb28181.enabled
                                     ? std::make_shared<service::gb28181::Projector>()
                                     : nullptr;
@@ -426,11 +434,13 @@ int main(int argc, char *argv[])
                         edgeProjector->start(workers);
                     },
                     .stop = [edgeProjector] { edgeProjector->stop(); }});
-                applicationRuntime->add({
-                    .name = "vpn",
-                    .dependencies = {"edge-projector"},
-                    .start = [vpnRuntime, workers] { vpnRuntime->start(workers); },
-                    .stop = [vpnRuntime] { vpnRuntime->stop(); }});
+                if (vpnRuntime) {
+                    applicationRuntime->add({
+                        .name = "vpn",
+                        .dependencies = {"edge-projector"},
+                        .start = [vpnRuntime, workers] { vpnRuntime->start(workers); },
+                        .stop = [vpnRuntime] { vpnRuntime->stop(); }});
+                }
                 applicationRuntime->add({
                     .name = "alerts",
                     .dependencies = {"telemetry"},
