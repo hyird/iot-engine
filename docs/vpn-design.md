@@ -80,7 +80,7 @@ IWireGuardController
 
 ```text
 VPN Overlay：100.96.0.0/11，每个 Peer 分配 /32
-虚拟 LAN 池：172.0.0.0/8
+虚拟 LAN 池：172.16.0.0/12（仅使用 RFC1918 私有地址）
 Hub：100.96.0.1
 ```
 
