@@ -1092,13 +1092,6 @@ SELECT p.id, p.name, host(p.assigned_ipv4), p.allowed_routes::text,
                  JOIN edge_node e ON e.id = edge_peer.edge_node_id
                  WHERE r.network_id = n.id AND r.enabled AND r.status = 'active'
                    AND edge_peer.status = 'active'
-                   AND e.enrollment_status = 'approved'), '[]'::jsonb)::text,
-       COALESCE((SELECT jsonb_agg(host(edge_peer.assigned_ipv4)
-                                  ORDER BY host(edge_peer.assigned_ipv4))
-                 FROM vpn_peer edge_peer
-                 JOIN edge_node e ON e.id = edge_peer.edge_node_id
-                 WHERE edge_peer.network_id = n.id AND edge_peer.peer_type = 'edge'
-                   AND edge_peer.status = 'active'
                    AND e.enrollment_status = 'approved'), '[]'::jsonb)::text
 FROM vpn_peer p JOIN vpn_network n ON n.id = p.network_id
 WHERE p.id = $1::uuid AND p.peer_type = 'windows' AND p.user_id = $2::uuid
@@ -1113,12 +1106,8 @@ LIMIT 1)sql", service::common::dbParams(peerId, userId));
         service::common::fail(21005, "Hub 公钥尚未配置", 503);
     const auto allowed = detail::rowValue(row, 10);
     auto allowedValues = detail::textArrayJson(allowed);
-    for (auto& address : detail::textArrayJson(detail::rowValue(row, 11))) {
-        address += "/32";
-        if (std::find(allowedValues.begin(), allowedValues.end(), address) ==
-            allowedValues.end())
-            allowedValues.push_back(std::move(address));
-    }
+    if (allowedValues.empty())
+        service::common::fail(21008, "VPN 当前没有可用虚拟网段", 409);
     const auto endpoint = detail::rowValue(row, 5);
     const auto port = detail::rowValue(row, 6);
     const auto portValue = integer(port);
@@ -1126,8 +1115,7 @@ LIMIT 1)sql", service::common::dbParams(peerId, userId));
         service::common::fail(21005, "Hub 公网端点尚未配置", 503);
     const auto config = client_config::render(
         privateKey, detail::rowValue(row, 2), hubKey, endpoint,
-        static_cast<std::uint16_t>(portValue),
-        Ipv4Cidr{kOverlayPool.network + 1U, 32U}.text(), allowedValues);
+        static_cast<std::uint16_t>(portValue), allowedValues);
     co_return "{\"peerId\":" + service::access::jsonQuoted(detail::rowValue(row, 0)) +
               ",\"name\":" + service::access::jsonQuoted(detail::rowValue(row, 1)) +
               ",\"assignedIpv4\":" + service::access::jsonQuoted(detail::rowValue(row, 2)) +

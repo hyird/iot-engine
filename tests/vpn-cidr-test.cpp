@@ -75,15 +75,17 @@ int main() {
             "Hub public key derivation");
     const auto clientConfig = service::vpn::client_config::render(
         privateKey, "100.96.0.3", publicKey, "vpn.example.com", 51820,
-        "100.96.0.1/32", {"172.31.1.0/24", "172.31.2.0/24"});
+        {"172.31.1.0/24", "172.31.2.0/24"});
     require(clientConfig.find("PrivateKey = " + privateKey) != std::string::npos,
             "client configuration includes its one-time private key");
     require(clientConfig.find("Address = 100.96.0.3/32") != std::string::npos,
             "client configuration uses a unique overlay host address");
     require(clientConfig.find(
-                "AllowedIPs = 100.96.0.1/32, 172.31.1.0/24, 172.31.2.0/24") !=
+                "AllowedIPs = 172.31.1.0/24, 172.31.2.0/24") !=
                 std::string::npos,
-            "client configuration includes the Hub and every accessible virtual route");
+            "client configuration includes only accessible virtual routes");
+    require(clientConfig.find("AllowedIPs = 100.96.") == std::string::npos,
+            "client configuration excludes VPN overlay routes");
     require(clientConfig.find("<client-private-key>") == std::string::npos,
             "generated client configuration has no private-key placeholder");
     return 0;

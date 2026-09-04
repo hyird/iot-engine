@@ -127,9 +127,14 @@ test('Windows VPN configurations can be downloaded again with current routes', (
     );
 });
 
-test('Windows VPN configurations route to accessible Edge tunnel addresses', () => {
+test('Windows VPN configurations contain only active virtual LAN routes', () => {
+    expect(vpnDomain).toContain("r.enabled AND r.status = 'active'");
+    expect(vpnDomain).toContain('VPN 当前没有可用虚拟网段');
+    expect(vpnDomain).not.toContain('address += "/32"');
+});
+
+test('Hub firewall still isolates Windows clients from unauthorized Edge tunnels', () => {
     expect(vpnDomain).toContain('jsonb_agg(host(edge_peer.assigned_ipv4)');
-    expect(vpnDomain).toContain('address += "/32"');
     expect(vpnDomain).toContain(
         '.edgeAddresses = detail::textArrayJson(detail::rowValue(row, 5))'
     );

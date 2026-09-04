@@ -9,7 +9,7 @@ namespace service::vpn::client_config {
 
 inline std::string render(std::string_view privateKey, std::string_view address,
                           std::string_view hubPublicKey, std::string_view hubEndpoint,
-                          std::uint16_t hubPort, std::string_view hubAddress,
+                          std::uint16_t hubPort,
                           const std::vector<std::string>& allowedRoutes) {
     std::string config{"[Interface]\nPrivateKey = "};
     config += privateKey;
@@ -21,9 +21,9 @@ inline std::string render(std::string_view privateKey, std::string_view address,
     config += hubEndpoint;
     config += ":" + std::to_string(hubPort);
     config += "\nAllowedIPs = ";
-    config += hubAddress;
     for (std::size_t index = 0; index < allowedRoutes.size(); ++index) {
-        config += ", ";
+        if (index != 0)
+            config += ", ";
         config += allowedRoutes[index];
     }
     config += "\nPersistentKeepalive = 25\n";
