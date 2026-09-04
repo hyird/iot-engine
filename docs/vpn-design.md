@@ -156,6 +156,12 @@ get_runtime_status(...)
 - Edge Agent 通过内核控制接口配置 WireGuard、路由和 nftables。
 - 不加入 `wireguard-go`、`wg-quick`、LuCI VPN 页面或独立 VPN daemon。
 - Edge 私钥在本地生成和保存。
+- Edge 到 Hub 的 Peer 使用 `100.96.0.0/11` 和 `172.16.0.0/12` 作为
+  `AllowedIPs`，因此边缘节点自身访问虚拟 LAN 时始终经由 Hub。
+- LAN 发往虚拟 LAN 的流量在源 Edge 上按前缀从真实网段转换为本 Edge 的
+  虚拟网段；目标 Edge 再按前缀转换到目标真实 LAN，主机位保持不变。
+- Hub 只允许同一 `vpn_network` 内的 Edge 地址和虚拟 LAN 互通；不同网络仍
+  由 nftables 默认拒绝。
 
 ### 6.3 Windows 客户端
 
@@ -174,9 +180,12 @@ MTU = 1280
 [Peer]
 PublicKey = <hub-public-key>
 Endpoint = vpn.example.com:51820
-AllowedIPs = 172.168.10.0/24
+AllowedIPs = 172.24.1.0/24
 PersistentKeepalive = 25
 ```
+
+Windows 配置只下发当前 VPN 网络中被授权的虚拟 LAN，不下发整个 Overlay
+地址池；Edge 节点则需要整个虚拟池路由，才能承载站点到站点转发。
 
 ## 7. 控制面
 

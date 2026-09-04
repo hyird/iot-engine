@@ -4,6 +4,7 @@
 
 #include "service/features/vpn/cidr.h"
 #include "service/features/vpn/client-config.h"
+#include "service/features/vpn/firewall.h"
 #include "service/features/vpn/hub-config.h"
 #include "service/features/vpn/route-sync.h"
 #include "service/features/vpn/wireguard.h"
@@ -92,5 +93,29 @@ int main() {
             "client configuration excludes VPN overlay routes");
     require(clientConfig.find("<client-private-key>") == std::string::npos,
             "generated client configuration has no private-key placeholder");
+
+    std::string firewallScript;
+    const auto firewallResult = service::vpn::firewall::render(
+        "wg0",
+        {{.assignedIpv4 = "100.96.0.2",
+          .sourceRoutes = {"172.24.1.0/24"},
+          .allowedRoutes = {"172.24.1.0/24", "172.24.2.0/24"}},
+         {.assignedIpv4 = "100.96.0.3",
+          .allowedRoutes = {"172.24.1.0/24"},
+          .edgeAddresses = {"100.96.0.2"}}},
+        firewallScript);
+    require(firewallResult.configured, "site-to-site firewall rendering");
+    require(firewallScript.find(
+                "ip saddr { 100.96.0.2/32, 172.24.1.0/24 } ip daddr { "
+                "172.24.1.0/24, 172.24.2.0/24 } accept") != std::string::npos,
+            "Edge overlay and virtual LAN sources can reach same-network virtual routes");
+    require(firewallScript.find(
+                "ip saddr 100.96.0.3/32 ip daddr { 172.24.1.0/24, "
+                "100.96.0.2/32 } accept") != std::string::npos,
+            "Windows clients retain virtual route and Edge address access");
+    require(firewallScript.find(
+                "ip saddr { 100.96.0.0/11, 172.16.0.0/12 } drop") !=
+                std::string::npos,
+            "unapproved overlay and virtual LAN forwarding is denied");
     return 0;
 }

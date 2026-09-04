@@ -1193,8 +1193,13 @@ ORDER BY p.id)sql");
         peer.publicKey = publicKey;
         peer.allowedIps.emplace_back(assigned + "/32");
         if (peerType == "edge") {
-            for (const auto& route : detail::textArrayJson(detail::rowValue(row, 3)))
+            firewall::ClientAccess client{.assignedIpv4 = assigned};
+            for (const auto& route : detail::textArrayJson(detail::rowValue(row, 3))) {
                 peer.allowedIps.push_back(route);
+                client.sourceRoutes.push_back(route);
+            }
+            client.allowedRoutes = detail::textArrayJson(detail::rowValue(row, 4));
+            clients.push_back(std::move(client));
         } else if (peerType == "windows") {
             clients.push_back(firewall::ClientAccess{
                 .assignedIpv4 = assigned,

@@ -113,15 +113,27 @@ ORDER BY p.id)sql");
             peer.publicKey = publicKey;
             peer.allowedIps.emplace_back(assigned + "/32");
             if (peerType == "edge") {
+                firewall::ClientAccess client{.assignedIpv4 = assigned};
                 std::stringstream routes(
                     std::string(row[3].value().value_or(std::string_view{})));
                 std::string route;
                 while (std::getline(routes, route, ',')) {
                     if (!route.empty() && route.front() == ' ')
                         route.erase(route.begin());
-                    if (!route.empty())
-                        peer.allowedIps.push_back(std::move(route));
+                    if (!route.empty()) {
+                        peer.allowedIps.push_back(route);
+                        client.sourceRoutes.push_back(std::move(route));
+                    }
                 }
+                std::stringstream allowedRoutes(
+                    std::string(row[4].value().value_or(std::string_view{})));
+                while (std::getline(allowedRoutes, route, ',')) {
+                    if (!route.empty() && route.front() == ' ')
+                        route.erase(route.begin());
+                    if (!route.empty())
+                        client.allowedRoutes.push_back(std::move(route));
+                }
+                clients.push_back(std::move(client));
             } else if (peerType == "windows") {
                 firewall::ClientAccess client{.assignedIpv4 = assigned};
                 std::stringstream routes(
