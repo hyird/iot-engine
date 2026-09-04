@@ -107,7 +107,7 @@ inline bool isPrivateIpv4(const Ipv4Cidr& cidr) noexcept {
 }
 
 inline constexpr Ipv4Cidr kOverlayPool{0x64600000U, 11}; // 100.96.0.0/11
-inline constexpr Ipv4Cidr kVirtualLanPool{0xac1f0000U, 16}; // 172.31.0.0/16
+inline constexpr Ipv4Cidr kVirtualLanPool{0xac000000U, 8}; // 172.0.0.0/8
 
 // Keep the host portion unchanged by assigning the virtual network number from
 // the real network number. If that slot is already occupied, the caller may

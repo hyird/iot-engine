@@ -24,23 +24,25 @@ int main() {
     const auto virtualLan = service::vpn::parseCidr("172.31.1.0/24", 1, 30);
     const auto realLan = service::vpn::parseCidr("192.168.1.0/24", 1, 30);
     require(overlay && overlay->text() == "100.96.0.0/24", "overlay CIDR parsing");
+    require(service::vpn::kVirtualLanPool.text() == "172.0.0.0/8",
+            "virtual LAN pool size");
     require(virtualLan && service::vpn::kVirtualLanPool.contains(virtualLan->network),
             "virtual LAN pool membership");
     require(realLan && service::vpn::isPrivateIpv4(*realLan), "private LAN detection");
     const auto mapped = realLan ? service::vpn::mappedVirtualCidr(*realLan) : std::nullopt;
-    require(mapped && mapped->text() == "172.31.1.0/24", "automatic network mapping");
-    require(mapped && service::vpn::hostAddress(*mapped, 50).value() == 0xac1f0132U &&
+    require(mapped && mapped->text() == "172.168.1.0/24", "automatic network mapping");
+    require(mapped && service::vpn::hostAddress(*mapped, 50).value() == 0xaca80132U &&
                          service::vpn::hostAddress(*realLan, 50).value() == 0xc0a80132U,
             "host offset is preserved");
     const auto smallerReal = service::vpn::parseCidr("192.168.1.128/25", 1, 30);
     const auto smallerMapped = smallerReal ? service::vpn::mappedVirtualCidr(*smallerReal)
                                            : std::nullopt;
-    require(smallerMapped && smallerMapped->text() == "172.31.1.128/25",
+    require(smallerMapped && smallerMapped->text() == "172.168.1.128/25",
             "automatic mapping preserves subnet bits");
     const auto expandedReal = service::vpn::parseCidr("192.168.0.0/16", 1, 30);
     const auto expandedMapped = expandedReal ? service::vpn::mappedVirtualCidr(*expandedReal)
                                              : std::nullopt;
-    require(expandedMapped && expandedMapped->text() == "172.31.0.0/16",
+    require(expandedMapped && expandedMapped->text() == "172.168.0.0/16",
             "automatic mapping follows an expanded bridge prefix");
     require(overlay && service::vpn::parseCidr("100.96.0.1/24", 16, 30) == std::nullopt,
             "non-canonical CIDR rejection");

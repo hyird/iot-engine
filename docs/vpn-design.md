@@ -39,7 +39,7 @@ Windows 客户端通过 iot-engine 访问 Edge 节点所在局域网设备：
              Windows WireGuard     Edge WireGuard
                  100.96.0.10/32      100.96.0.20/32
                                            |
-                              172.31.10.0/24 虚拟 LAN
+                              172.168.10.0/24 虚拟 LAN
                                            |
                                   Edge DNAT + MASQUERADE
                                            |
@@ -80,7 +80,7 @@ IWireGuardController
 
 ```text
 VPN Overlay：100.96.0.0/11，每个 Peer 分配 /32
-虚拟 LAN 池：172.31.0.0/16
+虚拟 LAN 池：172.0.0.0/8
 Hub：100.96.0.1
 ```
 
@@ -94,9 +94,9 @@ EdgeNode 之间全局唯一。
 
 ```text
 真实 LAN：192.168.10.0/24
-虚拟 LAN：172.31.10.0/24
+虚拟 LAN：172.168.10.0/24
 
-172.31.10.50:502 -> 192.168.10.50:502
+172.168.10.50:502 -> 192.168.10.50:502
 ```
 
 虚拟网络号由平台自动分配，默认按真实网络号映射；用户只允许修改虚拟网络号，不能
@@ -174,7 +174,7 @@ MTU = 1280
 [Peer]
 PublicKey = <hub-public-key>
 Endpoint = vpn.example.com:51820
-AllowedIPs = 172.31.10.0/24
+AllowedIPs = 172.168.10.0/24
 PersistentKeepalive = 25
 ```
 
@@ -398,11 +398,11 @@ LuCI VPN 页面
 
 ## 14. MVP 验收
 
-1. Edge 的 `192.168.10.0/24` 映射为 `172.31.10.0/24`。
+1. Edge 的 `192.168.10.0/24` 映射为 `172.168.10.0/24`。
 2. Windows 导入 iot-engine 生成的标准配置。
 3. Windows 与 Hub 通过 UDP WireGuard 建立握手。
 4. Edge 通过 WSS/Protobuf 应用 WireGuard、路由和 NAT。
-5. Windows 访问 `172.31.10.50:502`，实际到达 `192.168.10.50:502`。
+5. Windows 访问 `172.168.10.50:502`，实际到达 `192.168.10.50:502`。
 6. Edge、Hub 重启后自动恢复配置。
 7. Peer 撤销后访问立即失效。
 8. 未授权网段和端口保持拒绝。

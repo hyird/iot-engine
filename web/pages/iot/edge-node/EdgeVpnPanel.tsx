@@ -304,12 +304,12 @@ export default function EdgeVpnPanel({ node }: { node: Edge.Node }) {
                         rules={[
                             { required: true, message: '请输入虚拟 LAN 网段' },
                             {
-                                pattern: /^172\.31\.\d{1,3}\.\d{1,3}\/\d{1,2}$/,
-                                message: '请输入 172.31.0.0/16 范围内的网络 CIDR',
+                                pattern: /^172\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/,
+                                message: '请输入 172.0.0.0/8 范围内的网络 CIDR',
                             },
                         ]}
                     >
-                        <Input placeholder="172.31.1.0/24" />
+                        <Input placeholder="172.168.1.0/24" />
                     </Form.Item>
                 </Form>
             </Modal>
