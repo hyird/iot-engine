@@ -314,6 +314,8 @@ function TerminalModal({
     const terminalHostRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
+        // A manual retry creates a new socket and terminal session.
+        void connectionAttempt;
         const host = terminalHostRef.current;
         if (!open || !nodeId || !host) return;
 
