@@ -308,6 +308,8 @@ function TerminalModal({
     onClose: () => void;
 }) {
     const [state, setState] = useState('正在连接…');
+    const [connectionEnded, setConnectionEnded] = useState(false);
+    const [connectionAttempt, setConnectionAttempt] = useState(0);
     const socketRef = useRef<WebSocket | null>(null);
     const terminalHostRef = useRef<HTMLDivElement | null>(null);
 
@@ -315,6 +317,7 @@ function TerminalModal({
         const host = terminalHostRef.current;
         if (!open || !nodeId || !host) return;
 
+        setConnectionEnded(false);
         let disposed = false;
         let fitFrame: number | undefined;
         let resizeTimer: number | undefined;
@@ -529,10 +532,12 @@ function TerminalModal({
                 socket.binaryType = 'arraybuffer';
                 socketRef.current = socket;
                 socket.onopen = () => {
+                    if (disposed) return;
                     setState('已连接，正在启动终端…');
                     terminal.focus();
                 };
                 socket.onmessage = (event) => {
+                    if (disposed) return;
                     if (!(event.data instanceof ArrayBuffer)) {
                         setState('终端协议错误');
                         socket.close(1003, 'terminal frames must use protobuf');
@@ -565,14 +570,32 @@ function TerminalModal({
                     }
                 };
                 socket.onerror = () => {
+                    if (disposed) return;
                     terminalCloseReason ||= '终端连接失败';
                     setState(terminalCloseReason);
                 };
                 socket.onclose = (event) => {
+                    if (disposed) return;
+                    terminalReady = false;
+                    terminal.options.disableStdin = true;
+                    pendingInput.length = 0;
+                    pendingInputBytes = 0;
+                    if (inputTimer !== undefined) window.clearTimeout(inputTimer);
+                    inputTimer = undefined;
+                    setConnectionEnded(true);
                     setState(terminalCloseReason || event.reason || '终端已关闭');
                 };
             })
-            .catch(() => setState('无法建立终端连接'));
+            .catch(() => {
+                if (disposed) return;
+                terminal.options.disableStdin = true;
+                pendingInput.length = 0;
+                pendingInputBytes = 0;
+                if (inputTimer !== undefined) window.clearTimeout(inputTimer);
+                inputTimer = undefined;
+                setConnectionEnded(true);
+                setState('无法建立终端连接');
+            });
         return () => {
             disposed = true;
             if (fitFrame !== undefined) window.cancelAnimationFrame(fitFrame);
@@ -587,7 +610,7 @@ function TerminalModal({
             socketRef.current = null;
             terminal.dispose();
         };
-    }, [nodeId, open]);
+    }, [nodeId, open, connectionAttempt]);
 
     return (
         <Modal
@@ -596,7 +619,16 @@ function TerminalModal({
             onCancel={onClose}
             footer={null}
             width="min(960px, 94vw)"
-            title={`Web 终端 · ${state}`}
+            title={
+                <Space>
+                    <span>{`Web 终端 · ${state}`}</span>
+                    {connectionEnded && (
+                        <Button size="small" onClick={() => setConnectionAttempt((value) => value + 1)}>
+                            重新连接
+                        </Button>
+                    )}
+                </Space>
+            }
             forceRender
             destroyOnHidden
             styles={{
