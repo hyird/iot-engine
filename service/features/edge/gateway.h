@@ -181,7 +181,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             protocol::bytes(session.nodeBytes.data(), session.nodeBytes.size()));
         helloAck->set_session_epoch(session.epoch);
         helloAck->set_negotiated_protocol_version(session.protocolVersion);
-        helloAck->set_heartbeat_interval_sec(5);
+        helloAck->set_heartbeat_interval_sec(300);
         helloAck->set_max_message_size(static_cast<std::uint32_t>(protocol::kMaxMessageSize));
         helloAck->set_platform_time_ms(protocol::nowMs());
         co_await send(socket, ack);
@@ -212,6 +212,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                         requestFlush(current);
                 });
             registered = true;
+            egressScope.spawn(maintainSession(live));
             // Reliable per-node queues may already contain work from while the
             // node was offline; connection establishment is itself a wakeup.
             requestFlush(live);
@@ -568,6 +569,29 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         }
     }
 
+    static ruvia::Task<void> maintainSession(std::shared_ptr<LiveSession> live) {
+        // Renew the routing lease while the authenticated WS is alive, independently
+        // of application traffic. WS Ping/Pong closes silent, broken connections.
+        try {
+            while (live->active && !live->scope->stopRequested()) {
+                (void)co_await ruvia::sleepFor(live->context->worker(),
+                                             std::chrono::seconds(20),
+                                             live->scope->stopToken());
+                if (!live->active || live->scope->stopRequested())
+                    break;
+                const auto& session = *live->session;
+                if (!co_await session_state::refresh(
+                        live->context->redis(), session.nodeId, session.epoch,
+                        session.protocolVersion, session.workerIndex)) {
+                    live->socket->abort();
+                    break;
+                }
+            }
+        } catch (...) {
+            live->socket->abort();
+        }
+    }
+
     static ruvia::Task<void> flushEgress(std::shared_ptr<LiveSession> live) {
         auto& c = *live->context;
         auto& socket = *live->socket;
@@ -623,6 +647,18 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         pb::Envelope envelope;
         if (!protocol::decode(item, envelope))
             co_return false;
+        if (envelope.has_command_request()) {
+            const auto id = protocol::uuidText(envelope.command_request().command_id());
+            // Claim physical transmission once, including across reconnects. Other Edge tasks
+            // retain their existing retry contract; device control cannot safely be replayed.
+            const auto claimed = co_await c.db().query(R"sql(
+UPDATE command_attempt a SET sent_at=NOW() FROM command_operation o
+WHERE a.operation_id=$1::uuid AND o.id=a.operation_id AND a.node_id=$2
+ AND a.sent_at IS NULL AND a.deadline>NOW()
+ AND o.status IN ('DISPATCHING','AWAITING_RESULT') RETURNING a.operation_id)sql",
+                service::common::dbParams(id,session.nodeId));
+            if (claimed.empty()) co_return false;
+        }
         protocol::bindSession(
             envelope,
             protocol::bytes(session.platformBytes.data(), session.platformBytes.size()),
@@ -638,7 +674,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             // Popping transfers ownership to this session. Put the command back
             // before forcing a reconnect so a transient socket failure cannot
             // leave its database task pending forever.
-            (void)co_await c.redis().lpush(key, item);
+            if (!envelope.has_command_request())
+                (void)co_await c.redis().lpush(key, item);
             std::rethrow_exception(failure);
         }
         co_return true;
@@ -894,7 +931,7 @@ return 1
             auto* heartbeatAck = reply.mutable_heartbeat_ack();
             heartbeatAck->set_platform_time_ms(protocol::nowMs());
             heartbeatAck->set_request_capability_report(!session.capabilitySeen);
-            heartbeatAck->set_request_device_status(input.heartbeat().managed_endpoint_count() > 0);
+            heartbeatAck->set_request_device_status(false);
             enqueue(session, reply);
             break;
         }
@@ -902,6 +939,16 @@ return 1
             session.capabilitySeen = true;
             break;
         case pb::Envelope::kTelemetryBatch: {
+            // Legacy firmware cannot attach status to telemetry. Request it at
+            // report time using the existing acknowledgement it understands.
+            if (std::any_of(input.telemetry_batch().records().begin(),
+                            input.telemetry_batch().records().end(),
+                            [](const auto& record) { return !record.has_device_status(); })) {
+                auto statusRequest = makeEnvelope(session);
+                statusRequest.mutable_heartbeat_ack()->set_request_device_status(true);
+                statusRequest.mutable_heartbeat_ack()->set_platform_time_ms(protocol::nowMs());
+                enqueue(session, statusRequest);
+            }
             auto reply = makeEnvelope(session);
             auto* telemetryAck = reply.mutable_telemetry_ack();
             for (const auto& record : input.telemetry_batch().records()) {

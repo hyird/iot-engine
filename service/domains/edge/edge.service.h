@@ -84,7 +84,7 @@ class EdgeService {
         ruvia::BoxedArray<EdgeNodeDto> nodes(ruvia::ModelOptions{.resource = c.resource()});
         for (const auto& row : rows) {
             auto& node = nodes.emplace(c);
-            fillNode(c, node, row);
+            co_await fillNode(c, node, row);
         }
         EdgePageDto result(c);
         result.set<"list">(std::move(nodes))
@@ -211,7 +211,7 @@ RETURNING target.id)sql",
         if (rows.empty())
             service::common::fail(17001, "边缘节点不存在", 404);
         EdgeNodeDto node(c);
-        fillNode(c, node, rows.front());
+        co_await fillNode(c, node, rows.front());
         node.set<"interfaces">(co_await interfaces(c, id));
         node.set<"networks">(co_await networks(c, id));
         node.set<"serialPorts">(co_await serialPorts(c, id));
@@ -528,8 +528,7 @@ WHERE id = $1::uuid AND download_token = $2 LIMIT 1)sql",
 SELECT enrollment_status,
        CASE lower(COALESCE(capability->>'terminal', ''))
             WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
-            ELSE false END,
-       (last_seen_at IS NOT NULL AND last_seen_at > NOW() - INTERVAL '90 seconds')
+            ELSE false END
 FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
                                                 service::common::dbParams(nodeId));
         if (rows.empty())
@@ -537,8 +536,6 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
         if (rows.front()[0].value().value_or(std::string_view{}) != "approved" ||
             rows.front()[1].value().value_or(std::string_view{}) != "t")
             service::common::fail(17018, "节点未检测到 ttyd", 409);
-        if (rows.front()[2].value().value_or(std::string_view{}) != "t")
-            service::common::fail(17019, "节点当前离线", 409);
         const auto sessionKey = "iot:edge:session:" + std::string(nodeId);
         const auto session = co_await c.redis().get(sessionKey);
         if (!session)
@@ -698,7 +695,7 @@ SELECT 1 FROM descendants WHERE id = $2::uuid LIMIT 1)sql",
     static std::string nodeSelect() {
         return R"sql(SELECT id::text, imei, COALESCE(name, ''), model, software_version,
        hostname, architecture, openwrt_release, enrollment_status,
-       (last_seen_at IS NOT NULL AND last_seen_at > NOW() - INTERVAL '90 seconds'),
+       false,
        COALESCE(iot_utc_timestamp(last_seen_at), ''), iot_utc_timestamp(created_at),
        COALESCE(CASE WHEN status->'config'->>'activeVersion' ~ '^-?[0-9]{1,18}$'
                      THEN (status->'config'->>'activeVersion')::bigint END, 0),
@@ -793,7 +790,7 @@ FROM edge_node)sql";
         return error == std::errc{} && end == value.data() + value.size() ? result : 0;
     }
 
-    template <typename Row> static void fillNode(ruvia::Context& c, EdgeNodeDto& node, const Row& row) {
+    template <typename Row> static ruvia::Task<void> fillNode(ruvia::Context& c, EdgeNodeDto& node, const Row& row) {
         NodeStatusDto status(c);
         ConfigStatusDto config(c);
         config.set<"activeVersion">(integer(row[12].value().value_or(std::string_view{})));
@@ -805,7 +802,10 @@ FROM edge_node)sql";
         outbox.set<"bytes">(integer(row[17].value().value_or(std::string_view{})));
         LogStatusDto log(c);
         log.set<"level">(row[18].value().value_or(std::string_view{}));
-        status.set<"online">(row[9].value().value_or(std::string_view{}) == "t");
+        const auto session = co_await c.redis().get(
+            "iot:edge:session:" + std::string(row[0].value().value_or(std::string_view{})));
+        status.set<"online">(row[8].value().value_or(std::string_view{}) == "approved" &&
+                               session.has_value());
         status.set<"lastSeenAt">(row[10].value().value_or(std::string_view{}));
         status.set<"config">(std::move(config));
         status.set<"outbox">(std::move(outbox));
