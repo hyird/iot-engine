@@ -88,6 +88,7 @@ const DEVICE_CARD_ACTION_BUTTON_CLASS =
     '!flex !h-8 !w-8 items-center justify-center !rounded-md text-slate-500 hover:!bg-slate-100 hover:!text-slate-900';
 const DEVICE_CARD_DANGER_BUTTON_CLASS =
     '!flex !h-8 !w-8 items-center justify-center !rounded-md hover:!bg-red-50';
+const WIDE_DEVICE_CARD_ITEM_COUNT = 18;
 const DEVICE_VIRTUAL_ROW_GAP = 12;
 const DEVICE_LIST_POLLING_INTERVAL = 5000;
 const DEVICE_REALTIME_FALLBACK_INTERVAL = 30_000;
@@ -210,6 +211,9 @@ const buildCardItems = (device: Device.RealTimeData): DeviceCardItem[] => {
     const count = device.element_count ?? 0;
     return count > 0 ? [{ key: 'elements', label: '采集要素', children: `${count} 个` }] : [];
 };
+
+const getDeviceDisplayElementCount = (device: Device.RealTimeData) =>
+    device.element_count ?? device.elements?.length ?? 0;
 
 const edgeNodeLabel = (device: Device.RealTimeData) =>
     device.edge_node_name || device.edge_node_imei || device.edge_node_id || '未绑定节点';
@@ -890,6 +894,7 @@ const DeviceGridItem = memo(
         onCloseCommandPopover,
     }: DeviceGridItemProps) => {
         const items = useMemo(() => buildCardItems(device), [device]);
+        const wide = getDeviceDisplayElementCount(device) >= WIDE_DEVICE_CARD_ITEM_COUNT;
         const activeCommandDevice =
             commandPopoverOpen && commandDeviceId === device.id ? commandDevice : null;
         const commandOperations =
@@ -908,7 +913,9 @@ const DeviceGridItem = memo(
             !!device.registration.content?.trim();
 
         return (
-            <div className="flex h-full min-w-0 flex-col">
+            <div
+                className={`flex h-full min-w-0 flex-col ${wide ? 'lg:col-span-2' : ''}`}
+            >
                 <DeviceCard
                     title={
                         <Flex
@@ -989,7 +996,7 @@ const DeviceGridItem = memo(
                         </div>
                     }
                     items={items}
-                    column={4}
+                    column={wide ? 8 : 4}
                     extra={
                         <Flex align="center" justify="center" gap={10} wrap className="w-full">
                             <Popover
@@ -1133,8 +1140,28 @@ const useResponsiveDeviceColumnCount = () => {
 
 const buildDeviceRows = (devices: Device.RealTimeData[], columnCount: number) => {
     const rows: Device.RealTimeData[][] = [];
-    for (let index = 0; index < devices.length; index += columnCount)
-        rows.push(devices.slice(index, index + columnCount));
+    let row: Device.RealTimeData[] = [];
+    let occupiedColumns = 0;
+
+    devices.forEach((device) => {
+        const wide = getDeviceDisplayElementCount(device) >= WIDE_DEVICE_CARD_ITEM_COUNT;
+        const span = wide && columnCount > 1 ? 2 : 1;
+        if (row.length && occupiedColumns + span > columnCount) {
+            rows.push(row);
+            row = [];
+            occupiedColumns = 0;
+        }
+
+        row.push(device);
+        occupiedColumns += span;
+        if (occupiedColumns >= columnCount) {
+            rows.push(row);
+            row = [];
+            occupiedColumns = 0;
+        }
+    });
+
+    if (row.length) rows.push(row);
     return rows;
 };
 

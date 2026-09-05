@@ -65,9 +65,9 @@ test('edge cards only navigate to the detail drawer', () => {
     expect(card).not.toContain('deleteEnrollment(node)');
 });
 
-test('device cards use one uniform grid footprint and stretch to equal row height', () => {
-    expect(deviceSource).not.toContain('xl:col-span-2');
-    expect(deviceSource).not.toContain('WIDE_DEVICE_CARD_ITEM_COUNT');
+test('dense device cards span two tracks while every card stretches to its row height', () => {
+    expect(deviceSource).toContain('WIDE_DEVICE_CARD_ITEM_COUNT');
+    expect(deviceSource).toContain("wide ? 'lg:col-span-2' : ''");
     expect(deviceSource).toContain('flex h-full min-w-0 flex-col');
 });
 
