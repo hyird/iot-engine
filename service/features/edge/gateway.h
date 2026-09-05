@@ -647,18 +647,6 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         pb::Envelope envelope;
         if (!protocol::decode(item, envelope))
             co_return false;
-        if (envelope.has_command_request()) {
-            const auto id = protocol::uuidText(envelope.command_request().command_id());
-            // Claim physical transmission once, including across reconnects. Other Edge tasks
-            // retain their existing retry contract; device control cannot safely be replayed.
-            const auto claimed = co_await c.db().query(R"sql(
-UPDATE command_attempt a SET sent_at=NOW() FROM command_operation o
-WHERE a.operation_id=$1::uuid AND o.id=a.operation_id AND a.node_id=$2
- AND a.sent_at IS NULL AND a.deadline>NOW()
- AND o.status IN ('DISPATCHING','AWAITING_RESULT') RETURNING a.operation_id)sql",
-                service::common::dbParams(id,session.nodeId));
-            if (claimed.empty()) co_return false;
-        }
         protocol::bindSession(
             envelope,
             protocol::bytes(session.platformBytes.data(), session.platformBytes.size()),
@@ -674,8 +662,7 @@ WHERE a.operation_id=$1::uuid AND o.id=a.operation_id AND a.node_id=$2
             // Popping transfers ownership to this session. Put the command back
             // before forcing a reconnect so a transient socket failure cannot
             // leave its database task pending forever.
-            if (!envelope.has_command_request())
-                (void)co_await c.redis().lpush(key, item);
+            (void)co_await c.redis().lpush(key, item);
             std::rethrow_exception(failure);
         }
         co_return true;

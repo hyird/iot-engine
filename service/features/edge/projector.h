@@ -102,7 +102,7 @@ class Projector final {
             auto catalog = co_await metadata::hydrate(context);
             ready->set_value();
             bool recovering = true;
-            const auto consumer = service::runtime::instanceId() + ":service-" + std::to_string(index);
+            const auto consumer = "service-" + std::to_string(index);
             while (running_.load() && !context.stopToken().stopRequested()) {
                 std::vector<service::message::redis::StreamBatch> batches;
                 bool readFailed = false;
@@ -1071,11 +1071,6 @@ WHERE id = $3::uuid)sql",
         if (device == node->second.end())
             co_return;
         const bool success = result.state() == pb::COMMAND_STATE_SUCCEEDED;
-        const std::string state = success ? "SUCCEEDED" :
-            result.state() == pb::COMMAND_STATE_READBACK_MISMATCH ? "READBACK_MISMATCH" :
-            result.state() == pb::COMMAND_STATE_DEVICE_OFFLINE ||
-            result.state() == pb::COMMAND_STATE_REJECTED ? "REJECTED" :
-            result.state() == pb::COMMAND_STATE_FAILED ? "FAILED" : "UNKNOWN";
         const auto completedAtMs = message::effectiveObservedAt(
             result.completed_at_ms(), receivedAtMs);
         std::vector<message::StreamField> fields{
@@ -1087,7 +1082,6 @@ WHERE id = $3::uuid)sql",
             {"protocol", device->second.protocol},
             {"attempt", "1"},
             {"success", success ? "1" : "0"},
-            {"result_state", state},
             {"reason", result.message()},
             {"worker_id", "0"},
             {"created_at_ms", std::to_string(message::utcNowMilliseconds())},
@@ -1105,8 +1099,8 @@ WHERE id = $3::uuid)sql",
             fields.push_back({prefix + "unit", actual.unit()});
         }
         (void)co_await message::redis::publishAndWake(
-            context.redis(), message::commandResultStream(message::shard::index(deviceId)), fields,
-            service::message::workerForPartition(message::shard::index(deviceId)),
+            context.redis(), message::commandResultStream(0), fields,
+            service::message::workerForPartition(0),
             service::message::WorkerStreamTask::CommandResult, 10000);
     }
 
