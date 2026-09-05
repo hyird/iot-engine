@@ -925,9 +925,11 @@ const DeviceGridItem = memo(
                             className="w-full min-w-0"
                         >
                             <div className="min-w-0 flex-1 pr-1 text-left">
-                                <div className="whitespace-normal break-words leading-5">
-                                    {device.name}
-                                </div>
+                                <Tooltip title={device.name}>
+                                    <div className="truncate whitespace-nowrap leading-5">
+                                        {device.name}
+                                    </div>
+                                </Tooltip>
                                 <div className="mt-0.5 min-w-0 text-xs font-normal leading-4 text-slate-400">
                                     <div className="truncate">编码：{device.device_code}</div>
                                     <Tooltip title={`设备 ID：${device.id}`}>

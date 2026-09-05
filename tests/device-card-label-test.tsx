@@ -19,6 +19,8 @@ test('grouped device cards preserve configured element names', () => {
 
     expect(markup).toContain('>1#闸当前闸位值<');
     expect(markup).not.toContain('>当前闸位值<');
+    expect(markup).toContain('truncate whitespace-nowrap');
+    expect(markup).toContain('title="0.00 mm"');
 });
 
 test('clickable device cards expose an accessible detail entry', () => {

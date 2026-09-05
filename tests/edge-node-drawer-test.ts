@@ -114,11 +114,11 @@ test('Windows VPN downloads one complete WireGuard config per device', () => {
     expect(vpnClient).toContain('request.delete<void>');
 });
 
-test('edge nodes use hierarchical groups and cards show VPN virtual networks', () => {
+test('edge nodes use hierarchical groups without repeating the group inside cards', () => {
     expect(source).toContain('<EdgeNodeGroupPanel');
     expect(source).toContain('设置分组');
     expect(source).toContain("label: 'VPN 虚拟网段'");
-    expect(source).toContain("label: '分组'");
+    expect(source).not.toContain("{ key: 'group', label: '分组'");
     expect(groupPanel).toContain('全部节点');
     expect(groupPanel).toContain('未分组');
     expect(groupPanel).toContain('新增子分组');

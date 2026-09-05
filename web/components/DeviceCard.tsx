@@ -53,11 +53,18 @@ const DeviceValues = ({ items, wide = false }: { items: DeviceCardItem[]; wide?:
                 style={item.span && item.span > 1 ? { gridColumn: '1 / -1' } : undefined}
             >
                 <Tooltip title={item.tooltipLabel ?? item.label}>
-                    <dt className="min-w-0 break-words text-center text-[11px] leading-4 text-slate-500">
+                    <dt className="min-w-0 truncate whitespace-nowrap text-center text-[11px] leading-4 text-slate-500">
                         {item.label}
                     </dt>
                 </Tooltip>
-                <dd className="m-0 min-w-0 break-words text-center text-[13px] font-semibold leading-5 tabular-nums text-slate-950">
+                <dd
+                    className="m-0 min-w-0 truncate whitespace-nowrap text-center text-[13px] font-semibold leading-5 tabular-nums text-slate-950"
+                    title={
+                        typeof item.children === 'string' || typeof item.children === 'number'
+                            ? String(item.children)
+                            : undefined
+                    }
+                >
                     {item.children}
                 </dd>
             </div>
@@ -92,7 +99,7 @@ const DeviceCard = ({
                             className="flex flex-col border-t border-slate-100 pt-1 first:border-0 first:pt-0"
                         >
                             <div className="flex shrink-0 items-center gap-2">
-                                <span className="text-[11px] font-semibold leading-5 text-slate-600">
+                                <span className="min-w-0 truncate whitespace-nowrap text-[11px] font-semibold leading-5 text-slate-600">
                                     {section.label}
                                 </span>
                                 <span className="h-px flex-1 bg-slate-100" />

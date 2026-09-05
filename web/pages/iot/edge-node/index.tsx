@@ -230,7 +230,6 @@ function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
     const mobile = node.mobile;
     const firmware = node.firmware;
     return [
-        { key: 'group', label: '分组', children: node.groupName || '未分组' },
         {
             key: 'vpnVirtualCidrs',
             label: 'VPN 虚拟网段',
@@ -1157,6 +1156,7 @@ export default function EdgeNodePage() {
             <div className={EDGE_CARD_GRID_CLASS}>
                 {items.map((node) => {
                     const status = node.status;
+                    const nodeTitle = node.name || node.hostname || '未命名节点';
                     return (
                         <div key={node.id} className="flex flex-col">
                             <DeviceCard
@@ -1169,12 +1169,14 @@ export default function EdgeNodePage() {
                                         gap={10}
                                         className="w-full min-w-0"
                                     >
-                                        <span className="min-w-0 flex-1 whitespace-normal break-words pr-1 text-left leading-5">
-                                            {node.name || node.hostname || '未命名节点'}
-                                            <span className="ml-2 whitespace-nowrap text-xs font-normal text-slate-400">
-                                                IMEI：{node.imei}
+                                        <Tooltip title={`${nodeTitle} · IMEI：${node.imei}`}>
+                                            <span className="min-w-0 flex-1 truncate whitespace-nowrap pr-1 text-left leading-5">
+                                                {nodeTitle}
+                                                <span className="ml-2 text-xs font-normal text-slate-400">
+                                                    IMEI：{node.imei}
+                                                </span>
                                             </span>
-                                        </span>
+                                        </Tooltip>
                                         <Tag
                                             color={status.online ? 'success' : 'default'}
                                             className="!mr-0 shrink-0 !rounded-md !px-2"
