@@ -27,14 +27,6 @@ interface DeviceCardProps {
 }
 
 const UNGROUPED_GROUP_KEY = '__ungrouped__';
-const AUTO_LAYOUT_COLUMNS = 12;
-
-const weightedLength = (value: string) =>
-    Array.from(value).reduce(
-        (length, character) => length + ((character.codePointAt(0) ?? 0) > 0xff ? 2 : 1),
-        0
-    );
-
 const buildSections = (items: DeviceCardItem[]): DeviceCardSection[] => {
     const sections = new Map<string, DeviceCardSection>();
     for (const item of items) {
@@ -47,99 +39,31 @@ const buildSections = (items: DeviceCardItem[]): DeviceCardSection[] => {
     return [...sections.values()];
 };
 
-const getAlignedSpan = (item: DeviceCardItem, wide: boolean, columnCount: number) => {
-    if (item.span !== undefined) return Math.min(columnCount, Math.max(1, item.span));
-
-    const value =
-        typeof item.children === 'string' || typeof item.children === 'number'
-            ? String(item.children)
-            : '';
-    const visualLength = Math.max(weightedLength(item.label), weightedLength(value) + 2) + 2.5;
-    const rawSpan = Math.min(
-        AUTO_LAYOUT_COLUMNS,
-        Math.max(2, Math.ceil(visualLength / (wide ? 8 : 4)))
-    );
-    const alignedTrackSize = AUTO_LAYOUT_COLUMNS / columnCount;
-    return Math.min(columnCount, Math.max(1, Math.ceil(rawSpan / alignedTrackSize)));
-};
-
-const buildAlignedLayout = (items: DeviceCardItem[], wide: boolean, columnCount: number) => {
-    if (columnCount === 1) return items.map((item) => ({ item, span: 1 }));
-
-    const layout: Array<{ item: DeviceCardItem; span: number }> = [];
-    let pendingItem: DeviceCardItem | undefined;
-
-    for (const item of items) {
-        const span = getAlignedSpan(item, wide, columnCount);
-        if (span >= columnCount) {
-            if (pendingItem) {
-                layout.push({ item: pendingItem, span: columnCount });
-                pendingItem = undefined;
-            }
-            layout.push({ item, span: columnCount });
-            continue;
-        }
-
-        if (pendingItem) {
-            layout.push({ item: pendingItem, span: 1 }, { item, span: 1 });
-            pendingItem = undefined;
-        } else {
-            pendingItem = item;
-        }
-    }
-
-    if (pendingItem) layout.push({ item: pendingItem, span: columnCount });
-    return layout;
-};
-
-const DeviceValues = ({
-    items,
-    wide = false,
-    compact = false,
-}: {
-    items: DeviceCardItem[];
-    wide?: boolean;
-    compact?: boolean;
-}) => {
-    // A normal card is wide enough for two compact value cells. Keeping every
-    // element on its own row wastes half of the card and makes small device
-    // types unnecessarily tall. Long labels still expand to a full row via
-    // buildAlignedLayout.
-    const columnCount = wide || items.length > 1 ? 2 : 1;
-    const layoutItems = buildAlignedLayout(items, wide, columnCount);
-
-    return (
-        <div
-            className="grid items-stretch gap-1.5"
-            style={{ gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))` }}
-        >
-            {layoutItems.map(({ item, span }) => (
-                <div
-                    key={item.key}
-                    className={`h-full min-w-0 rounded-md bg-white/80 px-1 py-1 leading-[18px] shadow-[inset_0_0_0_1px_rgba(148,163,184,0.12)] ${compact ? 'text-[12px]' : 'text-[13px]'}`}
-                    style={{ gridColumn: `span ${span}` }}
-                >
-                    <Tooltip title={item.tooltipLabel ?? item.label}>
-                        <div className="min-w-0 truncate text-center text-[10px] font-medium text-slate-500">
-                            {item.label}
-                        </div>
-                    </Tooltip>
-                    {typeof item.children === 'string' || typeof item.children === 'number' ? (
-                        <Tooltip title={item.children}>
-                            <div className="min-w-0 truncate whitespace-nowrap text-center font-semibold tabular-nums text-slate-950">
-                                {String(item.children)}
-                            </div>
-                        </Tooltip>
-                    ) : (
-                        <div className="min-w-0 text-center font-semibold text-slate-950">
-                            {item.children}
-                        </div>
-                    )}
-                </div>
-            ))}
-        </div>
-    );
-};
+const DeviceValues = ({ items, wide = false }: { items: DeviceCardItem[]; wide?: boolean }) => (
+    <dl
+        className="m-0 grid items-start gap-x-2 gap-y-1"
+        style={{
+            gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, ${wide ? '130px' : '120px'}), 1fr))`,
+        }}
+    >
+        {items.map((item) => (
+            <div
+                key={item.key}
+                className="min-w-0 rounded bg-slate-50/70 px-1 py-0.5 text-xs leading-4"
+                style={item.span && item.span > 1 ? { gridColumn: '1 / -1' } : undefined}
+            >
+                <Tooltip title={item.tooltipLabel ?? item.label}>
+                    <dt className="min-w-0 break-words text-center text-[11px] leading-4 text-slate-500">
+                        {item.label}
+                    </dt>
+                </Tooltip>
+                <dd className="m-0 min-w-0 break-words text-center text-[13px] font-semibold leading-5 tabular-nums text-slate-950">
+                    {item.children}
+                </dd>
+            </div>
+        ))}
+    </dl>
+);
 
 const DeviceCard = ({
     title,
@@ -160,30 +84,20 @@ const DeviceCard = ({
             </div>
             {subtitle && <div className="text-xs leading-5 text-slate-500">{subtitle}</div>}
             <div className="h-px bg-slate-100" />
-            <div
-                className={
-                    hasGroupSections
-                        ? 'flex flex-1 flex-col gap-1'
-                        : 'flex flex-1 flex-col justify-between gap-1'
-                }
-            >
+            <div className="flex flex-col gap-1">
                 {hasGroupSections ? (
                     sections.map((section) => (
                         <section
                             key={section.key}
-                            className="flex flex-col rounded-md border border-slate-100 bg-slate-50/70 px-2 py-1.5"
+                            className="flex flex-col border-t border-slate-100 pt-1 first:border-0 first:pt-0"
                         >
-                            <div className="mb-1.5 flex shrink-0 items-center gap-2">
-                                <span className="rounded-full bg-white px-2 py-0 text-[11px] font-semibold leading-5 text-slate-600 shadow-sm">
+                            <div className="flex shrink-0 items-center gap-2">
+                                <span className="text-[11px] font-semibold leading-5 text-slate-600">
                                     {section.label}
                                 </span>
                                 <span className="h-px flex-1 bg-slate-100" />
                             </div>
-                            <DeviceValues
-                                items={section.items}
-                                wide={column >= 8}
-                                compact={section.items.length >= 8}
-                            />
+                            <DeviceValues items={section.items} wide={column >= 8} />
                         </section>
                     ))
                 ) : (
@@ -198,7 +112,7 @@ const DeviceCard = ({
         </>
     );
     const className =
-        'flex h-full w-full flex-col gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-left shadow-[0_8px_24px_rgba(15,23,42,0.08)] transition-all hover:shadow-[0_12px_28px_rgba(15,23,42,0.12)]';
+        'flex w-full flex-col gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left shadow-[0_8px_24px_rgba(15,23,42,0.08)] transition-all hover:shadow-[0_12px_28px_rgba(15,23,42,0.12)]';
 
     if (onClick) {
         return (

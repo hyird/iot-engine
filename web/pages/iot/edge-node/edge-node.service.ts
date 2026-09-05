@@ -27,6 +27,25 @@ export const useEdgeList = (query?: Edge.Query, enabled = true) =>
         refetchInterval: 2_000,
     });
 
+// Match device management: group complete inventories, never just one page.
+export const useEdgeInventory = (enabled = true) =>
+    useQuery({
+        queryKey: [...edgeQueryKeys.all, 'inventory'],
+        queryFn: async () => {
+            const first = await getEdgeList({ page: 1, pageSize: 100 });
+            const nodes = new Map(first.list.map((node) => [node.id, node]));
+            const pages = Math.ceil(first.total / 100);
+            for (let page = 2; page <= pages; page++) {
+                const result = await getEdgeList({ page, pageSize: 100 });
+                for (const node of result.list) nodes.set(node.id, node);
+            }
+            return [...nodes.values()];
+        },
+        enabled,
+        refetchInterval: 5_000,
+        refetchOnWindowFocus: false,
+    });
+
 export const useEdgeDetail = (id?: string) =>
     useQuery({
         queryKey: edgeQueryKeys.detail(id),

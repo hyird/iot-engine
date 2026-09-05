@@ -41,7 +41,7 @@ const vpnFirewall = readFileSync(
     new URL('../service/features/vpn/firewall.h', import.meta.url),
     'utf8'
 );
-const cardStart = source.indexOf('{nodes.map((node) => {');
+const cardStart = source.indexOf('{items.map((node) => {');
 const drawerStart = source.indexOf('<Drawer', cardStart);
 const drawerEnd = source.indexOf('<FormModal', drawerStart);
 const card = source.slice(cardStart, drawerStart);

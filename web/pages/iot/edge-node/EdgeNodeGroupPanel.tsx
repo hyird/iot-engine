@@ -9,17 +9,14 @@ import { App, Button, Dropdown, Popover, Space, Spin, Tree } from 'antd';
 import type { DataNode, TreeProps } from 'antd/es/tree';
 import { useMemo, useState } from 'react';
 import EdgeNodeGroupFormModal from './EdgeNodeGroupFormModal';
-import {
-    useEdgeGroupDelete,
-    useEdgeGroupSave,
-    useEdgeGroupTree,
-} from './edge-node.service';
+import { useEdgeGroupDelete, useEdgeGroupSave, useEdgeGroupTree } from './edge-node.service';
 import type { Edge } from './edge-node.types';
 
 interface Props {
     selectedGroupId: string | null;
     onSelect: (groupId: string | null) => void;
     canManageGroup: boolean;
+    ungroupedCount: number;
 }
 
 type TreeKey = string | number;
@@ -28,6 +25,7 @@ export default function EdgeNodeGroupPanel({
     selectedGroupId,
     onSelect,
     canManageGroup,
+    ungroupedCount,
 }: Props) {
     const { modal } = App.useApp();
     const [popoverOpen, setPopoverOpen] = useState(false);
@@ -59,10 +57,12 @@ export default function EdgeNodeGroupPanel({
             }));
         return [
             { key: 'all', title: '全部节点', isLeaf: true },
-            { key: 'ungrouped', title: '未分组', isLeaf: true },
+            ...(ungroupedCount > 0
+                ? [{ key: 'ungrouped', title: `未分组 (${ungroupedCount})`, isLeaf: true }]
+                : []),
             ...convert(groups),
         ];
-    }, [groups]);
+    }, [groups, ungroupedCount]);
 
     const selectedLabel = useMemo(() => {
         if (selectedGroupId === null) return '全部节点';

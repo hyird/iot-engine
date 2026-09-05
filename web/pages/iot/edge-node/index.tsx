@@ -28,7 +28,6 @@ import {
     Input,
     InputNumber,
     Modal,
-    Pagination,
     Popconfirm,
     Progress,
     Result,
@@ -45,7 +44,7 @@ import {
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import '@xterm/xterm/css/xterm.css';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import DeviceCard, { type DeviceCardItem } from '@/components/DeviceCard';
 import { FormModal } from '@/components/FormModal';
 import { PageContainer } from '@/components/PageContainer';
@@ -54,12 +53,12 @@ import {
     WebTerminalFrameSchema,
     WebTerminalResizeSchema,
 } from '@/generated/edge/terminal-pb';
-import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermissions } from '@/hooks/usePermission';
 import { formatDateTime } from '@/utils/dateTime';
 import { validateForm } from '@/utils/validation';
 import { getEdgeDetail, getTerminalTicket } from './edge-node.client';
 import EdgeNodeGroupPanel from './EdgeNodeGroupPanel';
+import { edgeGroupView } from './edge-node.groups';
 import EdgeVpnPanel from './EdgeVpnPanel';
 import { normalizeReportedNetwork, physicalNetworkInterfaces } from './edge-node.network';
 import {
@@ -73,7 +72,7 @@ import {
     useEdgeDeleteMutation,
     useEdgeDetail,
     useEdgeGroupTree,
-    useEdgeList,
+    useEdgeInventory,
     useEdgeLogs,
     useEnrollmentMutation,
     useFirmwareUpgradeMutation,
@@ -119,7 +118,12 @@ function downloadClientConfig(result: EdgeVpn.ClientConfig) {
 
 function groupSelectOptions(
     groups: Edge.GroupTreeItem[]
-): { value: string; title: string; disabled: boolean; children?: ReturnType<typeof groupSelectOptions> }[] {
+): {
+    value: string;
+    title: string;
+    disabled: boolean;
+    children?: ReturnType<typeof groupSelectOptions>;
+}[] {
     return groups.map((group) => ({
         value: group.id,
         title: group.name,
@@ -625,7 +629,10 @@ function TerminalModal({
                 <Space>
                     <span>{`Web 终端 · ${state}`}</span>
                     {connectionEnded && (
-                        <Button size="small" onClick={() => setConnectionAttempt((value) => value + 1)}>
+                        <Button
+                            size="small"
+                            onClick={() => setConnectionAttempt((value) => value + 1)}
+                        >
                             重新连接
                         </Button>
                     )}
@@ -664,7 +671,8 @@ export default function EdgeNodePage() {
     const canCreateVpnConfig = has('iot:vpn:enroll') && has('iot:edge:query');
     const canDeleteVpnConfig = has('iot:vpn:revoke');
     const canManageVpnConfigs = canQueryVpnConfigs || canCreateVpnConfig;
-    const [pagination, setPagination] = useState({ page: 1, pageSize: 20 });
+    const [searchText, setSearchText] = useState('');
+    const scrollContainerRef = useRef<HTMLDivElement>(null);
     const [keyword, setKeyword] = useState('');
     const [status, setStatus] = useState<Edge.EnrollmentStatus>();
     const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
@@ -695,19 +703,18 @@ export default function EdgeNodePage() {
     const networkBridge = Form.useWatch('bridge', networkForm);
     const firmwareFile = Form.useWatch('file', firmwareForm);
     const { message, modal } = App.useApp();
-    const { run: search } = useDebounceFn((value: string) => {
-        setKeyword(value);
-        setPagination((current) => ({ ...current, page: 1 }));
-    }, 300);
-    const query = {
-        ...pagination,
-        keyword: keyword || undefined,
-        status,
-        groupId: selectedGroupId ?? undefined,
-    };
-    const { data, isLoading } = useEdgeList(query, canQuery);
-    const nodes: Edge.Node[] = data?.list ?? [];
+    const { data, isLoading, isFetching, refetch } = useEdgeInventory(canQuery);
     const { data: edgeGroups = [] } = useEdgeGroupTree();
+    const groupView = useMemo(
+        () => edgeGroupView(edgeGroups, data ?? [], selectedGroupId, keyword, status),
+        [edgeGroups, data, selectedGroupId, keyword, status]
+    );
+    const nodes = groupView.filtered;
+    const scrollScope = `${selectedGroupId ?? 'all'}:${keyword}:${status ?? 'all'}`;
+    useEffect(() => {
+        void scrollScope;
+        if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0;
+    }, [scrollScope]);
     const edgeGroupOptions = useMemo(() => groupSelectOptions(edgeGroups), [edgeGroups]);
     const { data: detail, isLoading: detailLoading } = useEdgeDetail(selectedId);
     const {
@@ -752,7 +759,7 @@ export default function EdgeNodePage() {
 
     useEffect(() => {
         if (!selectedId) return;
-        const exists = data?.list.some((node) => node.id === selectedId) ?? true;
+        const exists = data?.some((node) => node.id === selectedId) ?? true;
         if (!exists) setSelectedId(undefined);
     }, [data, selectedId]);
 
@@ -1145,24 +1152,146 @@ export default function EdgeNodePage() {
         { title: '详情', dataIndex: 'detail', render: (value) => value || '-' },
     ];
 
+    const renderNodeCards = (items: Edge.Node[]) => (
+        <div className="mt-4">
+            <div className={EDGE_CARD_GRID_CLASS}>
+                {items.map((node) => {
+                    const status = node.status;
+                    return (
+                        <div key={node.id} className="flex flex-col">
+                            <DeviceCard
+                                onClick={() => showDetail(node)}
+                                ariaLabel={`查看边缘节点 ${node.name || node.hostname || node.imei}`}
+                                title={
+                                    <Flex
+                                        justify="space-between"
+                                        align="start"
+                                        gap={10}
+                                        className="w-full min-w-0"
+                                    >
+                                        <span className="min-w-0 flex-1 whitespace-normal break-words pr-1 text-left leading-5">
+                                            {node.name || node.hostname || '未命名节点'}
+                                            <span className="ml-2 whitespace-nowrap text-xs font-normal text-slate-400">
+                                                IMEI：{node.imei}
+                                            </span>
+                                        </span>
+                                        <Tag
+                                            color={status.online ? 'success' : 'default'}
+                                            className="!mr-0 shrink-0 !rounded-md !px-2"
+                                        >
+                                            {status.online ? '在线' : '离线'}
+                                        </Tag>
+                                    </Flex>
+                                }
+                                subtitle={
+                                    <div className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                                        <span className="flex min-w-0 shrink-0 items-center">
+                                            <Tag color="blue" className="!mr-0 !rounded-md">
+                                                {node.model || '未知型号'}
+                                            </Tag>
+                                            <Tag color="purple" className="!mr-0 !rounded-md">
+                                                {node.softwareVersion || '未知版本'}
+                                            </Tag>
+                                        </span>
+                                        <span className="min-w-0 truncate text-xs text-slate-400">
+                                            上报：{formatDateTime(status.lastSeenAt)}
+                                        </span>
+                                    </div>
+                                }
+                                items={buildNodeCardItems(node)}
+                                column={8}
+                                extra={
+                                    <Flex
+                                        align="center"
+                                        justify="center"
+                                        gap={6}
+                                        className="w-full text-slate-500"
+                                    >
+                                        <EyeOutlined />
+                                        <span>查看详情</span>
+                                    </Flex>
+                                }
+                            />
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+    const renderSectionStats = (
+        items: Edge.Node[],
+        aggregate?: { total: number; online: number; offline: number }
+    ) => {
+        const stats = aggregate ?? {
+            total: items.length,
+            online: items.filter((node) => node.status.online).length,
+            offline: items.filter((node) => !node.status.online).length,
+        };
+        return (
+            <Space size={6} wrap>
+                <Tag color="blue">{stats.total} 个</Tag>
+                {stats.online > 0 && <Tag color="green">{stats.online} 在线</Tag>}
+                {stats.offline > 0 && <Tag color="red">{stats.offline} 离线</Tag>}
+            </Space>
+        );
+    };
+    const renderGroupSection = (group: Edge.GroupTreeItem, depth = 0): ReactNode => {
+        const stats = groupView.stats.get(group.id);
+        if (!stats?.total) return null;
+        const direct = groupView.direct.get(group.id) ?? [];
+        const children = (group.children ?? []).filter(
+            (child) => (groupView.stats.get(child.id)?.total ?? 0) > 0
+        );
+        return (
+            <section
+                key={group.id}
+                className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 [margin-left:var(--group-depth-offset)]"
+                style={
+                    {
+                        '--group-depth-offset': depth > 0 ? `${depth * 16}px` : '0px',
+                    } as CSSProperties
+                }
+            >
+                <Flex justify="space-between" align="center" gap={12} wrap>
+                    <div className="text-sm font-semibold text-slate-800">{group.name}</div>
+                    {renderSectionStats(direct, stats)}
+                </Flex>
+                {direct.length > 0 && renderNodeCards(direct)}
+                {children.length > 0 && (
+                    <Space direction="vertical" className="mt-4 w-full" size="middle">
+                        {children.map((child) => renderGroupSection(child, depth + 1))}
+                    </Space>
+                )}
+            </section>
+        );
+    };
+    const renderUngroupedSection = (items: Edge.Node[]) =>
+        items.length > 0 && (
+            <section className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                <Flex justify="space-between" align="center" gap={12} wrap>
+                    <div className="min-w-0">
+                        <div className="text-sm font-semibold text-slate-800">未分组</div>
+                        <div className="mt-1 text-xs text-slate-500">
+                            没有绑定节点分组的卡片会统一在这里展示
+                        </div>
+                    </div>
+                    {renderSectionStats(items)}
+                </Flex>
+                {renderNodeCards(items)}
+            </section>
+        );
+
     return (
         <PageContainer
             header={
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                        <h2 className="m-0 text-lg font-semibold text-slate-900">边缘节点</h2>
-                        <p className="m-0 mt-1 text-xs text-slate-500">
-                            节点平台入口由 LuCI/UCI 管理，可同时连接多个 HTTP(S) 平台
-                        </p>
-                    </div>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="m-0 text-base font-medium">边缘节点</h3>
                     <Space wrap>
                         <EdgeNodeGroupPanel
                             selectedGroupId={selectedGroupId}
                             canManageGroup={canEdit}
-                            onSelect={(groupId) => {
-                                setSelectedGroupId(groupId);
-                                setPagination((current) => ({ ...current, page: 1 }));
-                            }}
+                            onSelect={setSelectedGroupId}
+                            ungroupedCount={groupView.ungroupedCount}
                         />
                         {canManageVpnConfigs && (
                             <Button icon={<DownloadOutlined />} onClick={showClientConfig}>
@@ -1173,38 +1302,37 @@ export default function EdgeNodePage() {
                             allowClear
                             className="w-[240px]"
                             placeholder="IMEI / 名称 / 型号"
-                            onChange={(event) => search(event.target.value)}
+                            enterButton
+                            value={searchText}
+                            onChange={(event) => {
+                                setSearchText(event.target.value);
+                                if (!event.target.value) setKeyword('');
+                            }}
+                            onSearch={(value) => setKeyword(value.trim())}
                         />
                         <Select
                             allowClear
                             className="w-[130px]"
                             placeholder="注册状态"
                             value={status}
-                            onChange={(value) => {
-                                setStatus(value);
-                                setPagination((current) => ({ ...current, page: 1 }));
-                            }}
+                            onChange={setStatus}
                             options={[
                                 { value: 'pending', label: '待处理' },
                                 { value: 'approved', label: '已批准' },
                             ]}
                         />
+                        <Tooltip title="刷新">
+                            <Button
+                                icon={<ReloadOutlined />}
+                                loading={isFetching}
+                                onClick={() => void refetch()}
+                            />
+                        </Tooltip>
                     </Space>
                 </div>
             }
-            footer={
-                <div className="flex justify-end">
-                    <Pagination
-                        {...pagination}
-                        total={data?.total ?? 0}
-                        showSizeChanger
-                        showTotal={(total) => `共 ${total} 条`}
-                        onChange={(page, pageSize) => setPagination({ page, pageSize })}
-                    />
-                </div>
-            }
         >
-            <div className="h-full overflow-y-auto overflow-x-hidden">
+            <div ref={scrollContainerRef} className="h-full overflow-y-auto overflow-x-hidden">
                 {isLoading && nodes.length === 0 ? (
                     <div className={EDGE_CARD_GRID_CLASS}>
                         {['first', 'second', 'third', 'fourth'].map((key) => (
@@ -1218,71 +1346,27 @@ export default function EdgeNodePage() {
                         <Empty description={keyword ? '未找到匹配的边缘节点' : '暂无边缘节点'} />
                     </div>
                 ) : (
-                    <div className={EDGE_CARD_GRID_CLASS}>
-                        {nodes.map((node) => {
-                            const status = node.status;
-                            return (
-                                <div key={node.id} className="flex flex-col">
-                                    <DeviceCard
-                                        onClick={() => showDetail(node)}
-                                        ariaLabel={`查看边缘节点 ${node.name || node.hostname || node.imei}`}
-                                        title={
-                                            <Flex
-                                                justify="space-between"
-                                                align="start"
-                                                gap={10}
-                                                className="w-full min-w-0"
-                                            >
-                                                <span className="min-w-0 flex-1 whitespace-normal break-words pr-1 text-left leading-5">
-                                                    {node.name || node.hostname || '未命名节点'}
-                                                    <span className="ml-2 whitespace-nowrap text-xs font-normal text-slate-400">
-                                                        IMEI：{node.imei}
-                                                    </span>
-                                                </span>
-                                                <Tag
-                                                    color={status.online ? 'success' : 'default'}
-                                                    className="!mr-0 shrink-0 !rounded-md !px-2"
-                                                >
-                                                    {status.online ? '在线' : '离线'}
-                                                </Tag>
-                                            </Flex>
-                                        }
-                                        subtitle={
-                                            <div className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                                                <span className="flex min-w-0 shrink-0 items-center">
-                                                    <Tag color="blue" className="!mr-0 !rounded-md">
-                                                        {node.model || '未知型号'}
-                                                    </Tag>
-                                                    <Tag
-                                                        color="purple"
-                                                        className="!mr-0 !rounded-md"
-                                                    >
-                                                        {node.softwareVersion || '未知版本'}
-                                                    </Tag>
-                                                </span>
-                                                <span className="min-w-0 truncate text-xs text-slate-400">
-                                                    上报：{formatDateTime(status.lastSeenAt)}
-                                                </span>
-                                            </div>
-                                        }
-                                        items={buildNodeCardItems(node)}
-                                        column={8}
-                                        extra={
-                                            <Flex
-                                                align="center"
-                                                justify="center"
-                                                gap={6}
-                                                className="w-full text-slate-500"
-                                            >
-                                                <EyeOutlined />
-                                                <span>查看详情</span>
-                                            </Flex>
-                                        }
-                                    />
-                                </div>
-                            );
-                        })}
-                    </div>
+                    <Space direction="vertical" className="w-full" size="large">
+                        {groupView.roots.length > 0 ? (
+                            <>
+                                {groupView.roots.map((group) => renderGroupSection(group))}
+                                {selectedGroupId === null &&
+                                    renderUngroupedSection(groupView.ungrouped)}
+                            </>
+                        ) : selectedGroupId === 'ungrouped' ? (
+                            renderUngroupedSection(nodes)
+                        ) : (
+                            <section className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                                <Flex justify="space-between" align="center" gap={12} wrap>
+                                    <div className="text-sm font-semibold text-slate-800">
+                                        全部节点
+                                    </div>
+                                    {renderSectionStats(nodes)}
+                                </Flex>
+                                {renderNodeCards(nodes)}
+                            </section>
+                        )}
+                    </Space>
                 )}
             </div>
 
