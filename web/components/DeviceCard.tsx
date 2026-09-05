@@ -43,7 +43,7 @@ const DeviceValues = ({ items, wide = false }: { items: DeviceCardItem[]; wide?:
     <dl
         className="m-0 grid items-start gap-x-2 gap-y-1"
         style={{
-            gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, ${wide ? '130px' : '120px'}), 1fr))`,
+            gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, ${wide ? '100px' : '104px'}), 1fr))`,
         }}
     >
         {items.map((item) => (
@@ -105,14 +105,14 @@ const DeviceCard = ({
                 )}
             </div>
             {extra && (
-                <div className="mt-0.5 border-t border-slate-100 pt-1.5 text-[11px] leading-4 text-slate-500">
+                <div className="mt-auto border-t border-slate-100 pt-1.5 text-[11px] leading-4 text-slate-500">
                     {extra}
                 </div>
             )}
         </>
     );
     const className =
-        'flex w-full flex-col gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left shadow-[0_8px_24px_rgba(15,23,42,0.08)] transition-all hover:shadow-[0_12px_28px_rgba(15,23,42,0.12)]';
+        'flex h-full w-full flex-col gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left shadow-[0_8px_24px_rgba(15,23,42,0.08)] transition-all hover:shadow-[0_12px_28px_rgba(15,23,42,0.12)]';
 
     if (onClick) {
         return (

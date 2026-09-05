@@ -5,6 +5,10 @@ const source = readFileSync(
     new URL('../web/pages/iot/edge-node/index.tsx', import.meta.url),
     'utf8'
 );
+const deviceSource = readFileSync(
+    new URL('../web/pages/iot/device/index.tsx', import.meta.url),
+    'utf8'
+);
 const client = readFileSync(
     new URL('../web/pages/iot/edge-node/edge-node.client.ts', import.meta.url),
     'utf8'
@@ -59,6 +63,12 @@ test('edge cards only navigate to the detail drawer', () => {
     expect(card).not.toContain('showFirmware(node)');
     expect(card).not.toContain('approveEnrollment(node)');
     expect(card).not.toContain('deleteEnrollment(node)');
+});
+
+test('device cards use one uniform grid footprint and stretch to equal row height', () => {
+    expect(deviceSource).not.toContain('xl:col-span-2');
+    expect(deviceSource).not.toContain('WIDE_DEVICE_CARD_ITEM_COUNT');
+    expect(deviceSource).toContain('flex h-full min-w-0 flex-col');
 });
 
 test('edge management actions live in contextual drawer sections', () => {

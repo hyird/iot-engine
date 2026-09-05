@@ -36,4 +36,5 @@ test('clickable device cards expose an accessible detail entry', () => {
     expect(markup).toContain('type="button"');
     expect(markup).toContain('aria-label="查看边缘节点 860406088541915"');
     expect(markup).toContain('>查看详情<');
+    expect(markup).toContain('h-full w-full');
 });

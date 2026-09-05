@@ -82,12 +82,12 @@ import type { DeviceGroup } from './device-group.types';
 const { Search } = Input;
 const EMPTY_DEVICE_LIST: Device.RealTimeData[] = [];
 const EMPTY_COMMAND_OPERATIONS: Device.CommandOperation[] = [];
-const DEVICE_CARD_GRID_CLASS = 'grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-4';
+const DEVICE_CARD_GRID_CLASS =
+    'grid grid-cols-1 items-stretch gap-3 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4';
 const DEVICE_CARD_ACTION_BUTTON_CLASS =
     '!flex !h-8 !w-8 items-center justify-center !rounded-md text-slate-500 hover:!bg-slate-100 hover:!text-slate-900';
 const DEVICE_CARD_DANGER_BUTTON_CLASS =
     '!flex !h-8 !w-8 items-center justify-center !rounded-md hover:!bg-red-50';
-const WIDE_DEVICE_CARD_ITEM_COUNT = 18;
 const DEVICE_VIRTUAL_ROW_GAP = 12;
 const DEVICE_LIST_POLLING_INTERVAL = 5000;
 const DEVICE_REALTIME_FALLBACK_INTERVAL = 30_000;
@@ -210,9 +210,6 @@ const buildCardItems = (device: Device.RealTimeData): DeviceCardItem[] => {
     const count = device.element_count ?? 0;
     return count > 0 ? [{ key: 'elements', label: '采集要素', children: `${count} 个` }] : [];
 };
-
-const getDeviceDisplayElementCount = (device: Device.RealTimeData) =>
-    device.element_count ?? device.elements?.length ?? 0;
 
 const edgeNodeLabel = (device: Device.RealTimeData) =>
     device.edge_node_name || device.edge_node_imei || device.edge_node_id || '未绑定节点';
@@ -893,7 +890,6 @@ const DeviceGridItem = memo(
         onCloseCommandPopover,
     }: DeviceGridItemProps) => {
         const items = useMemo(() => buildCardItems(device), [device]);
-        const wide = getDeviceDisplayElementCount(device) >= WIDE_DEVICE_CARD_ITEM_COUNT;
         const activeCommandDevice =
             commandPopoverOpen && commandDeviceId === device.id ? commandDevice : null;
         const commandOperations =
@@ -912,7 +908,7 @@ const DeviceGridItem = memo(
             !!device.registration.content?.trim();
 
         return (
-            <div className={`flex flex-col ${wide ? 'xl:col-span-2' : ''}`}>
+            <div className="flex h-full min-w-0 flex-col">
                 <DeviceCard
                     title={
                         <Flex
@@ -993,7 +989,7 @@ const DeviceGridItem = memo(
                         </div>
                     }
                     items={items}
-                    column={wide ? 8 : 4}
+                    column={4}
                     extra={
                         <Flex align="center" justify="center" gap={10} wrap className="w-full">
                             <Popover
@@ -1109,7 +1105,8 @@ interface DeviceGridProps extends Omit<DeviceGridItemProps, 'device' | 'online'>
 
 const getDeviceColumnCount = () => {
     if (window.matchMedia('(min-width: 1536px)').matches) return 4;
-    if (window.matchMedia('(min-width: 1280px)').matches) return 2;
+    if (window.matchMedia('(min-width: 1280px)').matches) return 3;
+    if (window.matchMedia('(min-width: 1024px)').matches) return 2;
     return 1;
 };
 
@@ -1118,11 +1115,14 @@ const useResponsiveDeviceColumnCount = () => {
 
     useEffect(() => {
         const updateColumnCount = () => setColumnCount(getDeviceColumnCount());
+        const tabletQuery = window.matchMedia('(min-width: 1024px)');
         const desktopQuery = window.matchMedia('(min-width: 1280px)');
         const wideQuery = window.matchMedia('(min-width: 1536px)');
+        tabletQuery.addEventListener('change', updateColumnCount);
         desktopQuery.addEventListener('change', updateColumnCount);
         wideQuery.addEventListener('change', updateColumnCount);
         return () => {
+            tabletQuery.removeEventListener('change', updateColumnCount);
             desktopQuery.removeEventListener('change', updateColumnCount);
             wideQuery.removeEventListener('change', updateColumnCount);
         };
@@ -1133,26 +1133,8 @@ const useResponsiveDeviceColumnCount = () => {
 
 const buildDeviceRows = (devices: Device.RealTimeData[], columnCount: number) => {
     const rows: Device.RealTimeData[][] = [];
-    let row: Device.RealTimeData[] = [];
-    let occupiedColumns = 0;
-
-    for (const device of devices) {
-        const wide = getDeviceDisplayElementCount(device) >= WIDE_DEVICE_CARD_ITEM_COUNT;
-        const span = wide && columnCount > 1 ? 2 : 1;
-        if (row.length > 0 && occupiedColumns + span > columnCount) {
-            rows.push(row);
-            row = [];
-            occupiedColumns = 0;
-        }
-        row.push(device);
-        occupiedColumns += span;
-        if (occupiedColumns >= columnCount) {
-            rows.push(row);
-            row = [];
-            occupiedColumns = 0;
-        }
-    }
-    if (row.length > 0) rows.push(row);
+    for (let index = 0; index < devices.length; index += columnCount)
+        rows.push(devices.slice(index, index + columnCount));
     return rows;
 };
 
