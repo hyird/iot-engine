@@ -1,5 +1,5 @@
 import { useLiveQuery } from '@/hooks/useLiveQuery';
-import { type UseQueryOptions } from '@tanstack/react-query';
+import type { UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage } from '@/hooks/useMutation';
 import * as api from './gb28181.client';
 import type { GB28181 } from './gb28181.types';

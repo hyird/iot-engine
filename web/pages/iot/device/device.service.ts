@@ -1,6 +1,6 @@
 import { LiveResource } from '@/utils/live-resource';
 import { useLiveQuery } from '@/hooks/useLiveQuery';
-import { type UseQueryOptions } from '@tanstack/react-query';
+import type { UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { createQueryKeys } from '@/utils/query';
 import type { PaginatedResult } from '@/utils/types';

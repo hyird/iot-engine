@@ -21,7 +21,7 @@ export default function DeviceFormModal({ open, editing, loading, linkOptions, o
     const protocol = channel?.protocol;
     const { data: models } = useProtocolConfigOptions(protocol ?? 'Modbus', { enabled: open && !!protocol });
     const { data: revisions = [] } = useLiveQuery({ queryKey: ['protocol-configs', 'revisions', modelId],
-        queryFn: () => getRevisions(modelId!), enabled: open && !!modelId });
+        queryFn: () => getRevisions(modelId ?? ''), enabled: open && !!modelId });
     const { data: groups = [] } = useDeviceGroupTree();
     const flatten = (nodes: DeviceGroup.TreeItem[]): { value: string; label: string }[] =>
         nodes.flatMap((node) => [{ value: node.id, label: node.name }, ...flatten(node.children ?? [])]);

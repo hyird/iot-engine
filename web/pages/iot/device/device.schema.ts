@@ -42,13 +42,6 @@ const packetSchema = z
         }
     });
 
-const ipv4Schema = z
-    .string()
-    .regex(
-        /^(?:0|[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])(?:\.(?:0|[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])){3}$/,
-        '请输入合法 IPv4 地址'
-    );
-
 export const saveDeviceSchema = z
     .object({
         name: z.string().trim().min(1, '设备名称不能为空').max(100, '设备名称最多100个字符'),

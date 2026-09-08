@@ -81,16 +81,18 @@ export function liveRead<T>(url: string, _options?: { _silent?: boolean }): Live
             connection = { controller: new AbortController(), observers: new Set(), received: false };
             connections.set(key, connection);
             // Register observers before fetch can synchronously fail.
-            queueMicrotask(() => { if (!connection!.controller.signal.aborted) void run(url, connection!); });
+            const created = connection;
+            queueMicrotask(() => { if (!created.controller.signal.aborted) void run(url, created); });
         }
         const untyped = observer as LiveObserver<unknown>;
         connection.observers.add(untyped);
         if (connection.received) observer.next(connection.value as T);
+        const subscribed = connection;
         return () => {
-            connection!.observers.delete(untyped);
-            if (connection!.observers.size === 0) {
-                connection!.controller.abort();
-                if (connections.get(key) === connection) connections.delete(key);
+            subscribed.observers.delete(untyped);
+            if (subscribed.observers.size === 0) {
+                subscribed.controller.abort();
+                if (connections.get(key) === subscribed) connections.delete(key);
             }
         };
     });

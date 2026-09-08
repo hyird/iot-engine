@@ -3,7 +3,7 @@ import { useLiveQuery } from '@/hooks/useLiveQuery';
  * 用户管理 Service
  */
 
-import { type UseQueryOptions } from '@tanstack/react-query';
+import type { UseQueryOptions } from '@tanstack/react-query';
 import type { User } from './user.types';
 import { roleOptionQueryKey, userQueryKeys } from './user.types';
 import type { PaginatedResult } from '@/utils/types';

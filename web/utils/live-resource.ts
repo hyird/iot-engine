@@ -80,6 +80,7 @@ export class LiveResource<T> implements PromiseLike<T> {
         });
     }
 
+    // biome-ignore lint/suspicious/noThenProperty: Implements PromiseLike so awaiting a resource reads and releases its first snapshot.
     then<TResult1 = T, TResult2 = never>(
         fulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
         rejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,

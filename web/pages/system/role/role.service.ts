@@ -1,5 +1,5 @@
 import { useLiveQuery } from '@/hooks/useLiveQuery';
-import { type UseQueryOptions } from '@tanstack/react-query';
+import type { UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import type { PaginatedResult } from '@/utils/types';
 import { create, getList, remove, update } from './role.client';
