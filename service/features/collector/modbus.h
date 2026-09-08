@@ -1135,6 +1135,8 @@ class Session final : public ProtocolSession,
             causationId.empty() ? std::string(input.messageId) : std::string(causationId);
         message.linkId = link_.id;
         message.deviceId = device.id;
+        message.modelId = device.modelId;
+        message.modelRevision = device.modelRevision;
         message.deviceCode = device.code;
         message.protocol = "Modbus";
         message.connectionId = connectionId_;

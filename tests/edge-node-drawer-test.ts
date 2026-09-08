@@ -5,6 +5,10 @@ const source = readFileSync(
     new URL('../web/pages/iot/edge-node/index.tsx', import.meta.url),
     'utf8'
 );
+const deviceSource = readFileSync(
+    new URL('../web/pages/iot/device/index.tsx', import.meta.url),
+    'utf8'
+);
 const client = readFileSync(
     new URL('../web/pages/iot/edge-node/edge-node.client.ts', import.meta.url),
     'utf8'
@@ -41,7 +45,7 @@ const vpnFirewall = readFileSync(
     new URL('../service/features/vpn/firewall.h', import.meta.url),
     'utf8'
 );
-const cardStart = source.indexOf('{nodes.map((node) => {');
+const cardStart = source.indexOf('{items.map((node) => {');
 const drawerStart = source.indexOf('<Drawer', cardStart);
 const drawerEnd = source.indexOf('<FormModal', drawerStart);
 const card = source.slice(cardStart, drawerStart);
@@ -59,6 +63,12 @@ test('edge cards only navigate to the detail drawer', () => {
     expect(card).not.toContain('showFirmware(node)');
     expect(card).not.toContain('approveEnrollment(node)');
     expect(card).not.toContain('deleteEnrollment(node)');
+});
+
+test('dense device cards span two tracks while every card stretches to its row height', () => {
+    expect(deviceSource).toContain('WIDE_DEVICE_CARD_ITEM_COUNT');
+    expect(deviceSource).toContain("wide ? 'lg:col-span-2' : ''");
+    expect(deviceSource).toContain('flex h-full min-w-0 flex-col');
 });
 
 test('edge management actions live in contextual drawer sections', () => {
@@ -100,15 +110,15 @@ test('Windows VPN downloads one complete WireGuard config per device', () => {
     expect(source).toContain('windowsVpnConfigDelete.mutate(item.id)');
     expect(vpnPanel).not.toContain('生成 Windows 配置');
     expect(vpnClient).toContain('`${BASE}/client-configs`');
-    expect(vpnClient).toContain('request.get<EdgeVpn.ClientConfigSummary[]>');
+    expect(vpnClient).toContain('liveRead<EdgeVpn.ClientConfigSummary[]>');
     expect(vpnClient).toContain('request.delete<void>');
 });
 
-test('edge nodes use hierarchical groups and cards show VPN virtual networks', () => {
+test('edge nodes use hierarchical groups without repeating the group inside cards', () => {
     expect(source).toContain('<EdgeNodeGroupPanel');
     expect(source).toContain('设置分组');
     expect(source).toContain("label: 'VPN 虚拟网段'");
-    expect(source).toContain("label: '分组'");
+    expect(source).not.toContain("{ key: 'group', label: '分组'");
     expect(groupPanel).toContain('全部节点');
     expect(groupPanel).toContain('未分组');
     expect(groupPanel).toContain('新增子分组');

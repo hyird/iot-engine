@@ -8,6 +8,7 @@
 #include <ruvia/web/Controller.h>
 
 #include "service/common/http.h"
+#include "service/features/live/query.h"
 #include "service/domains/system/outbox.schema.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/permission.h"
@@ -20,7 +21,7 @@ public:
   RUVIA_CONTROLLER_GROUP("/v1/system/outbox",
                          service::middleware::AuthMiddleware)
   RUVIA_ROUTES_BEGIN
-  RUVIA_GET("/dead-letters", deadLetters);
+  RUVIA_GET_SSE("/dead-letters", deadLetters);
   RUVIA_POST("/dead-letters/:id/replay", replay, OutboxEventIdValidator);
   RUVIA_ROUTES_END
 
@@ -38,7 +39,11 @@ private:
         context.req().validated<OutboxEventIdParams>().get<"id">()->view());
   }
 
-  ruvia::Task<ruvia::HttpResponse> deadLetters(ruvia::Context &context) {
+  ruvia::Task<void> deadLetters(ruvia::Context& context) {
+        co_await service::live::serve(context, "system", [this, &context]() { return deadLettersSnapshot(context); });
+    }
+
+    ruvia::Task<std::string> deadLettersSnapshot(ruvia::Context& context) {
     co_await service::middleware::requirePermission(context,
                                                     "system:outbox:manage");
     const auto rows = co_await context.db().query(R"sql(
@@ -65,7 +70,7 @@ LIMIT 100)sql");
           .set<"occurredAt">(row[8].value().value_or(std::string_view{}))
           .set<"deadLetteredAt">(row[9].value().value_or(std::string_view{}));
     }
-    co_return context.json(service::common::ok<OutboxDeadLetterListResponse>(
+    co_return service::live::json(service::common::ok<OutboxDeadLetterListResponse>(
         context, std::move(items)));
   }
 

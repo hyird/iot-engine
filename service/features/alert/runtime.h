@@ -476,11 +476,11 @@ LIMIT 256)sql");
     AND device.deleted_at IS NULL AND device.status = 'enabled'
 ), samples AS (
   SELECT rules.*,
-         state.last_data AS data,
-         state.last_observed_at AS observed_at,
+         state.data AS data,
+         to_timestamp(state.observed_at_ms / 1000.0) AS observed_at,
          state.previous_data
   FROM rules
-  LEFT JOIN device_data_ingest_state state ON state.device_id = rules.device_id
+  LEFT JOIN alert_input_state state ON state.device_id = rules.device_id
 )
 )sql";
     return input + evaluationTail();

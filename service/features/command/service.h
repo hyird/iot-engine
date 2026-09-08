@@ -19,7 +19,7 @@
 #include "service/common/uuid.h"
 #include "service/features/edge/dispatch.h"
 #include "service/features/edge/protocol.h"
-#include "service/features/command/queue.h"
+#include "service/features/command/repository.h"
 #include "service/features/runtime/repository.h"
 #include "service/domains/device/device.service.h"
 #include "service/domains/device/device.types.h"
@@ -83,9 +83,9 @@ class CommandService final {
     ruvia::Task<service::device::DeviceCommandStatusDto> status(ruvia::Context& context,
                                                                 std::string_view commandId) {
         const auto fields =
-            co_await message::redis::hashEntries(context.redis(), stateKey(commandId));
+            co_await repository::status(context, commandId);
         if (fields.empty())
-            service::common::fail(18012, "下发记录不存在或已过期", 404);
+            service::common::fail(18012, "下发记录不存在", 404);
         const auto deviceId = field(fields, "device_id");
         if (deviceId.empty())
             service::common::fail(18012, "下发状态数据无效", 500);
@@ -97,54 +97,29 @@ class CommandService final {
         co_return result;
     }
 
-    ruvia::Task<service::device::DeviceCommandWaitDto>
-    wait(ruvia::Context& context, const service::device::DeviceCommandWaitBody& body) {
-        std::vector<std::string> commandIds;
-        commandIds.reserve(body.get<"commandIds">()->size());
-        std::set<std::string, std::less<>> authorizedDevices;
-        for (const auto& value : *body.get<"commandIds">()) {
-            const std::string commandId(value.view());
-            if (!service::common::isUuid(commandId))
-                service::common::fail(18012, "指令 ID 无效", 400);
-            const auto fields =
-                co_await message::redis::hashEntries(context.redis(), stateKey(commandId));
-            if (fields.empty())
-                service::common::fail(18012, "下发记录不存在或已过期", 404);
-            const std::string deviceId(field(fields, "device_id"));
-            if (deviceId.empty())
-                service::common::fail(18012, "下发状态数据无效", 500);
-            if (authorizedDevices.insert(deviceId).second)
-                (void)co_await accessService_.require(
-                    context, deviceId, service::device::DeviceAccessLevel::operate);
-            commandIds.push_back(std::move(commandId));
+    ruvia::Task<service::device::DeviceCommandStatusesDto>
+    statuses(ruvia::Context& context) {
+        const auto ids = context.req().query("ids").value_or("");
+        if (ids.empty() || ids.size() > 256 * 37)
+            service::common::fail(18012, "Provide between 1 and 256 command IDs", 400);
+        ruvia::BoxedArray<service::device::DeviceCommandStatusDto> statuses(
+            ruvia::ModelOptions{.resource = context.resource()});
+        bool complete = true;
+        std::size_t offset = 0, count = 0;
+        for (;;) {
+            const auto end = ids.find(',', offset);
+            const auto commandId = ids.substr(offset, end == std::string_view::npos ? end : end - offset);
+            if (!service::common::isUuid(commandId) || ++count > 256)
+                service::common::fail(18012, "Invalid command ID list", 400);
+            auto result = co_await status(context, commandId);
+            complete = complete && terminalState(result.get<"status">()->view());
+            statuses.emplace(std::move(result));
+            if (end == std::string_view::npos) break;
+            offset = end + 1;
         }
-
-        const auto timeout = std::chrono::milliseconds(
-            body.get<"timeoutMs">()
-                ? std::clamp<std::int64_t>(static_cast<std::int64_t>(*body.get<"timeoutMs">()),
-                                           0, 60000)
-                : 60000);
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (true) {
-            ruvia::BoxedArray<service::device::DeviceCommandStatusDto> statuses(
-                ruvia::ModelOptions{.resource = context.resource()});
-            bool complete = true;
-            for (const auto& commandId : commandIds) {
-                const auto fields =
-                    co_await message::redis::hashEntries(context.redis(), stateKey(commandId));
-                if (fields.empty())
-                    service::common::fail(18012, "下发记录不存在或已过期", 404);
-                auto& result = statuses.emplace(context);
-                fillStatus(result, commandId, fields);
-                complete = complete && field(fields, "status") != "PENDING";
-            }
-            if (complete || std::chrono::steady_clock::now() >= deadline) {
-                service::device::DeviceCommandWaitDto result(context);
-                result.set<"complete">(complete).set<"statuses">(std::move(statuses));
-                co_return result;
-            }
-            (void)co_await ruvia::sleepFor(context.worker(), std::chrono::milliseconds(100));
-        }
+        service::device::DeviceCommandStatusesDto result(context);
+        result.set<"complete">(complete).set<"statuses">(std::move(statuses));
+        co_return result;
     }
 
   private:
@@ -190,8 +165,60 @@ class CommandService final {
     ruvia::Task<service::device::DeviceCommandCreateDto>
     enqueueDevice(ruvia::Context& context, std::string_view deviceId,
                   const service::device::DeviceCommandBody& body, std::string submittedBy) {
+        const auto& keyField = body.get<"idempotencyKey">();
+        if (!keyField || !service::common::isUuid(keyField->view()))
+            service::common::fail(18010, "idempotency_key 必须是 UUID", 400);
+        const std::string key(keyField->view());
+        const auto elements = normalize(body);
+        std::string payload = "[";
+        for (const auto& element : elements) {
+            if (payload.size() > 1) payload += ',';
+            payload += "[" + access::jsonQuoted(element.elementId) + "," +
+                       access::jsonQuoted(element.value) + "]";
+        }
+        payload += ']';
+        auto transaction = co_await context.db().beginTransaction();
+        const std::string lockKey = submittedBy + ":" + key;
+        (void)co_await transaction.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+                                         common::dbParams(lockKey));
+        const auto prior = co_await transaction.query(
+            "SELECT id::text,device_id=$3::uuid AND payload=$4::jsonb FROM command_request "
+            "WHERE actor=$1 AND idempotency_key=$2::uuid",
+            common::dbParams(submittedBy,key,deviceId,payload));
+        if (!prior.empty()) {
+            if (prior.front()[1].value().value_or(std::string_view{}) != "t")
+                common::fail(18014, "幂等键已用于不同的指令请求", 409);
+            const auto commands = co_await transaction.query(
+                "SELECT id::text FROM command_operation WHERE request_id=$1::uuid ORDER BY ordinal",
+                common::dbParams(prior.front()[0].value().value_or(std::string_view{})));
+            ruvia::BoxedArray<ruvia::String> ids(ruvia::ModelOptions{.resource=context.resource()});
+            for (const auto& row : commands)
+                ids.emplace(row[0].value().value_or(std::string_view{}),
+                            ruvia::ModelOptions{.resource=context.resource()});
+            co_await transaction.commit();
+            service::device::DeviceCommandCreateDto result(context);
+            result.set<"commandIds">(std::move(ids)).set<"status">("ACCEPTED");
+            co_return result;
+        }
+        const auto requestId = common::nextUuidV7();
+        (void)co_await transaction.execute(
+            "INSERT INTO command_request(id,actor,idempotency_key,device_id,payload) "
+            "VALUES($1::uuid,$2,$3::uuid,$4::uuid,$5::jsonb)",
+            common::dbParams(requestId,submittedBy,key,deviceId,payload));
+        auto result = co_await compileDevice(context,deviceId,body,submittedBy,transaction,requestId);
+        co_await transaction.commit();
+        co_return result;
+    }
 
-        const auto edge = co_await context.db().query(R"sql(
+    ruvia::Task<service::device::DeviceCommandCreateDto>
+    compileDevice(ruvia::Context& context, std::string_view deviceId,
+                  const service::device::DeviceCommandBody& body, std::string submittedBy,
+                  ruvia::DbTransaction& transaction, std::string_view requestId) {
+
+        (void)co_await transaction.query("SELECT id FROM device WHERE id=$1::uuid FOR SHARE",
+                                        common::dbParams(deviceId));
+
+        const auto edge = co_await transaction.query(R"sql(
 SELECT COALESCE(l.edge_node_id::text, ''), d.protocol_params->>'device_code', p.protocol,
        CASE
          WHEN d.protocol_params ? 'remote_control' THEN
@@ -219,7 +246,7 @@ SELECT COALESCE(l.edge_node_id::text, ''), d.protocol_params->>'device_code', p.
        COALESCE(NULLIF(p.config->>'commandFastReadInterval', ''), '1')
 FROM device d
 JOIN link l ON l.id = d.link_id AND l.deleted_at IS NULL
-JOIN protocol_config p ON p.id = d.protocol_config_id
+JOIN device_model p ON p.device_id = d.id
              AND p.deleted_at IS NULL AND p.enabled
 LEFT JOIN edge_node n ON n.id = l.edge_node_id
 WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)sql",
@@ -237,13 +264,12 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
                                                      60, 0),
                                                  boundedUnsigned(
                                                      edge.front()[6].value().value_or(std::string_view{}),
-                                                     1, 1));
+                                                     1, 1), transaction, requestId);
         }
 
         auto requested = normalize(body);
-        auto database = context.db();
         const auto snapshot =
-            co_await service::runtime::repository::loadRuntimeSnapshot(database);
+            co_await service::runtime::repository::loadRuntimeSnapshot(transaction);
         const auto device =
             std::find_if(snapshot.devices.begin(), snapshot.devices.end(),
                          [deviceId](const auto& current) { return current.id == deviceId; });
@@ -257,7 +283,7 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
 
         DeviceRoute route;
         try {
-            route = co_await deviceRoute(context.redis(), device->code);
+            route = co_await deviceRoute(context.redis(), device->id);
         } catch (const DeviceRouteError&) {
             service::common::fail(18013, "设备离线或没有可用的南桥连接", 409);
         }
@@ -276,7 +302,7 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
             PendingDispatch dispatch;
             auto& task = dispatch.task;
             task.messageId = service::common::nextUuidV7();
-            task.groupKey = "device:" + device->code;
+            task.groupKey = "device:" + device->id;
             task.protocol = device->protocol;
             task.transport = device->protocol == "Modbus" ? device->modbusMode : "RAW";
             task.kind = "command";
@@ -293,35 +319,20 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
             dispatch.streamFields = message::protocolTaskFields(task);
             dispatches.push_back(std::move(dispatch));
         }
-        (void)co_await dispatchPendingBatch(
-            context.redis(), message::commandStream(route.workerIndex, true),
+        co_await repository::append(
+            transaction, requestId, message::commandStream(route.workerIndex, true, route.instanceId),
             PendingQueueKind::Stream, dispatches, submittedBy, 10000);
 
         ruvia::BoxedArray<ruvia::String> commandIds(
             ruvia::ModelOptions{.resource = context.resource()});
         for (const auto& dispatch : dispatches) {
             const auto& task = dispatch.task;
-            std::string data = "{\"commandId\":\"" + task.messageId + "\",\"elements\":{";
-            for (std::size_t index = 0; index < task.elements.size(); ++index) {
-                if (index != 0)
-                    data.push_back(',');
-                data += "\"" + task.elements[index].first + "\":\"" +
-                        service::access::jsonEscape(task.elements[index].second) + "\"";
-            }
-            data += "}}";
-            try {
-                co_await service::access::event::publish(
-                    context.redis(), task.messageId, "device.command.dispatched", task.deviceId,
-                    task.deviceCode, message::utcNowMilliseconds(), data);
-            } catch (const std::exception& error) {
-                std::cerr << "open access command event publish failed: " << error.what() << '\n';
-            }
             commandIds.emplace(
                 task.messageId, ruvia::ModelOptions{.resource = context.resource()});
         }
 
         service::device::DeviceCommandCreateDto result(context);
-        result.set<"commandIds">(std::move(commandIds)).set<"status">("PENDING");
+        result.set<"commandIds">(std::move(commandIds)).set<"status">("ACCEPTED");
         co_return result;
     }
 
@@ -331,7 +342,8 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
                       std::string_view nodeId, std::string_view deviceCode,
                       std::string_view protocol, bool remoteControl,
                       std::uint32_t fastReadDurationSec,
-                      std::uint32_t fastReadIntervalSec) {
+                      std::uint32_t fastReadIntervalSec,
+                      ruvia::DbTransaction& transaction, std::string_view requestId) {
         if (!remoteControl)
             service::common::fail(18005, "设备未开启远程控制", 403);
         if (!co_await context.redis().get("iot:edge:session:" + std::string(nodeId)))
@@ -342,7 +354,7 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
         device.id = std::string(deviceId);
         device.code = std::string(deviceCode);
         device.protocol = std::string(protocol);
-        co_await loadEdgeElements(context, device);
+        co_await loadEdgeElements(transaction, device);
         service::collector::command::ResolvedCommand resolved;
         try {
             resolved = service::collector::command::resolve(device, requested);
@@ -367,7 +379,7 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
             PendingDispatch dispatch;
             auto& task = dispatch.task;
             task.messageId = service::common::nextUuidV7();
-            task.groupKey = "edge-device:" + device.code;
+            task.groupKey = "device:" + device.id;
             task.protocol = device.protocol;
             task.transport = "EDGE";
             task.kind = "command";
@@ -403,41 +415,24 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
                 service::common::fail(18010, "边缘命令编码失败", 500);
             dispatches.push_back(std::move(dispatch));
         }
-        (void)co_await dispatchPendingBatch(
-            context.redis(), "iot:edge:egress:" + std::string(nodeId), PendingQueueKind::List,
-            dispatches, submittedBy, 1024);
-        co_await service::edge::dispatch::notifyNode(context.redis(), nodeId);
+        co_await repository::append(
+            transaction, requestId, "iot:v2:edge:commands:" + std::string(nodeId), PendingQueueKind::List,
+            dispatches, submittedBy, 1024, nodeId);
 
         ruvia::BoxedArray<ruvia::String> commandIds(
             ruvia::ModelOptions{.resource = context.resource()});
         for (const auto& dispatch : dispatches) {
             const auto& task = dispatch.task;
-            std::string data = "{\"commandId\":\"" + task.messageId + "\",\"elements\":{";
-            for (std::size_t index = 0; index < task.elements.size(); ++index) {
-                if (index != 0)
-                    data.push_back(',');
-                data += "\"" + task.elements[index].first + "\":\"" +
-                        service::access::jsonEscape(task.elements[index].second) + "\"";
-            }
-            data += "}}";
-            try {
-                co_await service::access::event::publish(
-                    context.redis(), task.messageId, "device.command.dispatched", task.deviceId,
-                    task.deviceCode, message::utcNowMilliseconds(), data);
-            } catch (const std::exception& error) {
-                std::cerr << "open access edge command event publish failed: " << error.what()
-                          << '\n';
-            }
             commandIds.emplace(
                 task.messageId, ruvia::ModelOptions{.resource = context.resource()});
         }
 
         service::device::DeviceCommandCreateDto result(context);
-        result.set<"commandIds">(std::move(commandIds)).set<"status">("PENDING");
+        result.set<"commandIds">(std::move(commandIds)).set<"status">("ACCEPTED");
         co_return result;
     }
 
-    static ruvia::Task<void> loadEdgeElements(ruvia::Context& context,
+    static ruvia::Task<void> loadEdgeElements(ruvia::DbTransaction& transaction,
                                                service::collector::DeviceDefinition& device) {
         std::string sql;
         if (device.protocol == "Modbus") {
@@ -451,7 +446,7 @@ SELECT item->>'id', item->>'name', COALESCE(item->>'unit', ''), item->>'dataType
        false, '', ''
 FROM device d
 JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN protocol_config p ON p.id = d.protocol_config_id
+JOIN device_model p ON p.device_id = d.id
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]')) item
 WHERE d.id = $1::uuid AND p.protocol = 'Modbus')sql";
         } else if (device.protocol == "S7") {
@@ -468,7 +463,7 @@ SELECT item->>'id', item->>'name', COALESCE(item->>'unit', ''),
        false, '', ''
 FROM device d
 JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN protocol_config p ON p.id = d.protocol_config_id
+JOIN device_model p ON p.device_id = d.id
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]')) item
 WHERE d.id = $1::uuid AND p.protocol = 'S7')sql";
         } else if (device.protocol == "SL651") {
@@ -483,7 +478,7 @@ SELECT item->>'id', item->>'name', COALESCE(item->>'unit', ''), '',
        func->>'funcCode', item->>'encode'
 FROM device d
 JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN protocol_config p ON p.id = d.protocol_config_id
+JOIN device_model p ON p.device_id = d.id
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]')) func
 CROSS JOIN LATERAL (
   SELECT value AS item, false AS response_element
@@ -496,7 +491,7 @@ WHERE d.id = $1::uuid AND p.protocol = 'SL651')sql";
         } else {
             service::common::fail(18010, "边缘节点不支持该设备协议", 400);
         }
-        const auto rows = co_await context.db().query(sql, service::common::dbParams(device.id));
+        const auto rows = co_await transaction.query(sql, service::common::dbParams(device.id));
         for (const auto& row : rows) {
             service::collector::ElementDefinition element;
             element.id = std::string(row[0].value().value_or(std::string_view{}));
@@ -530,9 +525,7 @@ WHERE d.id = $1::uuid AND p.protocol = 'SL651')sql";
         return true;
     }
 
-    static std::string stateKey(std::string_view commandId) {
-        return "iot:state:command:" + std::string(commandId);
-    }
+
 
     static std::vector<service::collector::CommandElementValue>
     normalize(const service::device::DeviceCommandBody& body) {

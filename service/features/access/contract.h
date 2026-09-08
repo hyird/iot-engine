@@ -31,8 +31,8 @@ inline constexpr std::string_view kScopeCommand = "device:command";
 inline constexpr std::string_view kScopeAlert = "alert:read";
 
 inline constexpr std::array<std::string_view, 6> kWebhookEvents{
-    "device.data.reported",     "device.image.reported",  "device.command.dispatched",
-    "device.command.responded", "device.alert.triggered", "device.alert.resolved",
+    "device.data.reported",     "device.image.reported",  "device.command.accepted",
+    "device.command.updated", "device.alert.triggered", "device.alert.resolved",
 };
 
 struct Page final {

@@ -212,11 +212,11 @@ SELECT d.id::text, d.protocol_params->>'device_code', d.name, d.link_id::text,
        COALESCE(p.config->>'commandFastReadDuration', '60'),
        COALESCE(p.config->>'commandFastReadInterval', '1'),
        COALESCE(p.config->'packet'->>'mergeGap', '100'),
-       COALESCE(p.config->'packet'->>'maxQuantity', '125')
+       COALESCE(p.config->'packet'->>'maxQuantity', '125'), p.id::text, p.revision
 FROM device d
 JOIN link l ON l.id = d.link_id AND l.deleted_at IS NULL
   AND l.status = 'enabled' AND l.execution = 'collector'
-JOIN protocol_config p ON p.id = d.protocol_config_id
+JOIN device_model p ON p.device_id = d.id
   AND p.deleted_at IS NULL AND p.enabled = TRUE
 WHERE d.deleted_at IS NULL AND d.status = 'enabled'
 ORDER BY d.link_id, d.id)sql");
@@ -258,6 +258,8 @@ ORDER BY d.link_id, d.id)sql");
         device.commandFastReadInterval = cellInt(row, 27);
         device.modbusMergeGap = cellInt(row, 28);
         device.modbusMaxQuantity = cellInt(row, 29);
+        device.modelId = cell(row, 30);
+        device.modelRevision = cellInt(row, 31);
         snapshot.devices.push_back(std::move(device));
     }
     std::unordered_map<std::string_view, std::size_t> deviceIndexes;
@@ -275,19 +277,19 @@ ORDER BY d.link_id, d.id)sql");
 WITH configured AS (
   SELECT d.id AS device_id, element,
          1 AS protocol_order, position AS function_order, 0::bigint AS element_order
-  FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'Modbus'
+  FROM device d JOIN device_model p ON p.device_id = d.id AND p.protocol = 'Modbus'
   CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]'::jsonb))
     WITH ORDINALITY AS entry(element, position)
   WHERE d.deleted_at IS NULL AND COALESCE(element->>'encode', '') <> 'JPEG'
   UNION ALL
   SELECT d.id, element, 2, position, 0::bigint
-  FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'S7'
+  FROM device d JOIN device_model p ON p.device_id = d.id AND p.protocol = 'S7'
   CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]'::jsonb))
     WITH ORDINALITY AS entry(element, position)
   WHERE d.deleted_at IS NULL AND COALESCE(element->>'encode', '') <> 'JPEG'
   UNION ALL
   SELECT d.id, element, 3, function_position, element_position
-  FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'SL651'
+  FROM device d JOIN device_model p ON p.device_id = d.id AND p.protocol = 'SL651'
   CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]'::jsonb))
     WITH ORDINALITY AS functions(function, function_position)
   CROSS JOIN LATERAL jsonb_array_elements(COALESCE(function->'elements', '[]'::jsonb))
@@ -329,7 +331,7 @@ SELECT d.id::text, element->>'id', element->>'name', COALESCE(element->>'unit', 
        CASE lower(COALESCE(element->>'writable', 'false'))
          WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE ELSE FALSE END
 FROM device d
-JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'Modbus'
+JOIN device_model p ON p.device_id = d.id AND p.protocol = 'Modbus'
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]'::jsonb)) element
 WHERE d.deleted_at IS NULL AND d.status = 'enabled' AND p.deleted_at IS NULL AND p.enabled = TRUE
 ORDER BY d.id,
@@ -364,7 +366,7 @@ SELECT d.id::text, element->>'id', element->>'name', COALESCE(element->>'unit', 
        CASE lower(COALESCE(element->>'writable', 'false'))
          WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE ELSE FALSE END
 FROM device d
-JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'S7'
+JOIN device_model p ON p.device_id = d.id AND p.protocol = 'S7'
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]'::jsonb)) element
 WHERE d.deleted_at IS NULL AND d.status = 'enabled' AND p.deleted_at IS NULL AND p.enabled = TRUE
 ORDER BY d.id,
@@ -397,7 +399,7 @@ SELECT d.id::text, configured.element->>'id', configured.element->>'name',
        configured.element->>'length', COALESCE(configured.element->>'digits', '0'),
        configured.response_element
 FROM device d
-JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'SL651'
+JOIN device_model p ON p.device_id = d.id AND p.protocol = 'SL651'
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]'::jsonb)) func
 CROSS JOIN LATERAL (
     SELECT element, FALSE AS response_element

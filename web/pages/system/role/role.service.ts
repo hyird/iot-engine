@@ -1,4 +1,5 @@
-import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
+import { useLiveQuery } from '@/hooks/useLiveQuery';
+import { type UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import type { PaginatedResult } from '@/utils/types';
 import { create, getList, remove, update } from './role.client';
@@ -8,7 +9,7 @@ export function useRoleList(
     params?: Role.Query,
     options?: Omit<UseQueryOptions<PaginatedResult<Role.Item>>, 'queryKey' | 'queryFn'>
 ) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: roleQueryKeys.list(params),
         queryFn: () => getList(params),
         ...options,

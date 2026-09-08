@@ -1,3 +1,4 @@
+import { liveRead } from '@/utils/live-request';
 /**
  * 用户管理 API
  */
@@ -22,16 +23,16 @@ const ENDPOINTS = {
 
 export function getList(params?: User.Query) {
     const query = userListQuerySchema.parse(params ?? {});
-    return request.get<PaginatedResult<User.Item>>(appendQueryParams(ENDPOINTS.BASE, query));
+    return liveRead<PaginatedResult<User.Item>>(appendQueryParams(ENDPOINTS.BASE, query));
 }
 
 export function getOptions(params?: Pick<User.Query, 'keyword'>) {
     const query = userOptionsQuerySchema.parse(params ?? {});
-    return request.get<User.Option[]>(appendQueryParams(ENDPOINTS.OPTIONS, query));
+    return liveRead<User.Option[]>(appendQueryParams(ENDPOINTS.OPTIONS, query));
 }
 
 export function getRoleOptions() {
-    return request.get<User.Role[]>('/v1/roles/options');
+    return liveRead<User.Role[]>('/v1/roles/options');
 }
 
 export function create(data: User.CreateDto) {

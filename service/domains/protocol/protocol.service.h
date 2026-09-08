@@ -87,7 +87,7 @@ class ProtocolService {
         const auto total = toInt(countRows.front()[0].value().value_or(std::string_view{}));
         const auto rows = co_await c.db().query(
             R"sql(
-SELECT jsonb_build_object('id', id, 'name', name)::text
+SELECT jsonb_build_object('id', id, 'name', name, 'revision', revision)::text
 FROM protocol_config
 WHERE deleted_at IS NULL AND enabled = TRUE AND protocol = $1
 ORDER BY name LIMIT $2 OFFSET $3)sql",
@@ -248,7 +248,7 @@ ORDER BY l.edge_node_id::text)sql",
 
     static std::string itemExpression() {
         return R"sql(jsonb_build_object(
-    'id', id, 'protocol', protocol, 'name', name, 'enabled', enabled,
+    'id', id, 'protocol', protocol, 'name', name, 'enabled', enabled, 'revision', revision,
     'config', config, 'remark', COALESCE(remark, ''),
     'created_at', iot_utc_timestamp(created_at),
     'updated_at', iot_utc_timestamp(updated_at)))sql";

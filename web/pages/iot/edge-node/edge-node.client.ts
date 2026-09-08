@@ -1,3 +1,4 @@
+import { liveRead } from '@/utils/live-request';
 import request from '@/utils/http';
 import { appendQueryParams } from '@/utils/query';
 import type { PaginatedResult } from '@/utils/types';
@@ -17,11 +18,11 @@ import type { Edge } from './edge-node.types';
 const BASE = '/v1/edge';
 
 export const getEdgeList = (query?: Edge.Query) =>
-    request.get<PaginatedResult<Edge.Node>>(
+    liveRead<PaginatedResult<Edge.Node>>(
         appendQueryParams(BASE, edgeListQuerySchema.parse(query ?? {}))
     );
 export const getEdgeDetail = (id: string) =>
-    request.get<Edge.Node>(`${BASE}/${edgeIdSchema.parse(id)}`);
+    liveRead<Edge.Node>(`${BASE}/${edgeIdSchema.parse(id)}`);
 const buildGroupTree = (items: Edge.GroupItem[]) => {
     const index = new Map<string, Edge.GroupTreeItem>();
     const roots: Edge.GroupTreeItem[] = [];
@@ -33,8 +34,8 @@ const buildGroupTree = (items: Edge.GroupItem[]) => {
     }
     return roots;
 };
-export const getEdgeGroups = async () =>
-    buildGroupTree(await request.get<Edge.GroupItem[]>(`${BASE}/groups`));
+export const getEdgeGroups = () =>
+    liveRead<Edge.GroupItem[]>(`${BASE}/groups`).map(buildGroupTree);
 export const createEdgeGroup = (data: Edge.GroupSaveDto) =>
     request.post<void>(`${BASE}/groups`, edgeGroupSchema.parse(data));
 export const updateEdgeGroup = (id: string, data: Edge.GroupSaveDto) =>
@@ -42,12 +43,13 @@ export const updateEdgeGroup = (id: string, data: Edge.GroupSaveDto) =>
 export const deleteEdgeGroup = (id: string) =>
     request.delete<void>(`${BASE}/groups/${edgeIdSchema.parse(id)}`);
 export const getLogs = (id: string, query?: Edge.LogsQuery) =>
-    request.get<Edge.Logs>(
+    liveRead<Edge.Logs>(
         appendQueryParams(
             `${BASE}/${edgeIdSchema.parse(id)}/logs`,
             logsQuerySchema.parse(query ?? {})
         )
     );
+export const captureLogs = (id: string) => request.post<void>(`${BASE}/${edgeIdSchema.parse(id)}/logs/capture`);
 export const setLogLevel = (id: string, data: Edge.LogLevelDto) =>
     request.put<void>(`${BASE}/${edgeIdSchema.parse(id)}/logs/level`, logLevelSchema.parse(data));
 export const setEnrollment = (id: string, status: 'approved', name?: string) =>

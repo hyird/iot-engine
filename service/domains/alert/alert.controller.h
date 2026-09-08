@@ -7,6 +7,7 @@
 #include <ruvia/web/Controller.h>
 
 #include "service/common/http.h"
+#include "service/features/live/query.h"
 #include "service/domains/alert/alert.schema.h"
 #include "service/domains/alert/alert.service.h"
 #include "service/middleware/auth.h"
@@ -35,34 +36,42 @@ class AlertController final : public ruvia::Controller<AlertController> {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/alert", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
-    RUVIA_GET("/rules", rules, AlertListValidator);
+    RUVIA_GET_SSE("/rules", rules, AlertListValidator);
     RUVIA_POST("/rules/apply-template", applyTemplate);
-    RUVIA_GET("/rules/:id", ruleDetail, AlertIdValidator);
+    RUVIA_GET_SSE("/rules/:id", ruleDetail, AlertIdValidator);
     RUVIA_POST("/rules", createRule);
     RUVIA_PUT("/rules/:id", updateRule, AlertIdValidator);
     RUVIA_DELETE("/rules/:id", removeRule, AlertIdValidator);
     RUVIA_DELETE("/rules", batchRemoveRules);
-    RUVIA_GET("/templates", templates, AlertListValidator);
-    RUVIA_GET("/templates/:id", templateDetail, AlertIdValidator);
+    RUVIA_GET_SSE("/templates", templates, AlertListValidator);
+    RUVIA_GET_SSE("/templates/:id", templateDetail, AlertIdValidator);
     RUVIA_POST("/templates", createTemplate);
     RUVIA_PUT("/templates/:id", updateTemplate, AlertIdValidator);
     RUVIA_DELETE("/templates/:id", removeTemplate, AlertIdValidator);
-    RUVIA_GET("/records/grouped", grouped);
+    RUVIA_GET_SSE("/records/grouped", grouped);
     RUVIA_POST("/records/batch-ack", batchAcknowledge);
-    RUVIA_GET("/records", records, AlertListValidator);
+    RUVIA_GET_SSE("/records", records, AlertListValidator);
     RUVIA_POST("/records/:id/ack", acknowledge, AlertIdValidator);
-    RUVIA_GET("/stats", stats);
+    RUVIA_GET_SSE("/stats", stats);
     RUVIA_ROUTES_END
 
   private:
-    ruvia::Task<ruvia::HttpResponse> rules(ruvia::Context& c) {
-        co_await service::middleware::requirePermission(c, "iot:alert:query");
-        co_return alertJson(c, co_await alertService().listRules(c));
+    ruvia::Task<void> rules(ruvia::Context& c) {
+        co_await service::live::serve(c, "alert", [this, &c]() { return rulesSnapshot(c); });
     }
 
-    ruvia::Task<ruvia::HttpResponse> ruleDetail(ruvia::Context& c) {
+    ruvia::Task<std::string> rulesSnapshot(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:alert:query");
-        co_return alertJson(c, co_await alertService().ruleDetail(c, alertId(c)));
+        co_return service::live::data(c, co_await alertService().listRules(c));
+    }
+
+    ruvia::Task<void> ruleDetail(ruvia::Context& c) {
+        co_await service::live::serve(c, "alert", [this, &c]() { return ruleDetailSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> ruleDetailSnapshot(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:alert:query");
+        co_return service::live::data(c, co_await alertService().ruleDetail(c, alertId(c)));
     }
 
     ruvia::Task<ruvia::HttpResponse> createRule(ruvia::Context& c) {
@@ -89,14 +98,22 @@ class AlertController final : public ruvia::Controller<AlertController> {
         co_return c.json(service::common::operation(c, "批量删除成功"));
     }
 
-    ruvia::Task<ruvia::HttpResponse> templates(ruvia::Context& c) {
-        co_await service::middleware::requirePermission(c, "iot:alert:query");
-        co_return alertJson(c, co_await alertService().listTemplates(c));
+    ruvia::Task<void> templates(ruvia::Context& c) {
+        co_await service::live::serve(c, "alert", [this, &c]() { return templatesSnapshot(c); });
     }
 
-    ruvia::Task<ruvia::HttpResponse> templateDetail(ruvia::Context& c) {
+    ruvia::Task<std::string> templatesSnapshot(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:alert:query");
-        co_return alertJson(c, co_await alertService().templateDetail(c, alertId(c)));
+        co_return service::live::data(c, co_await alertService().listTemplates(c));
+    }
+
+    ruvia::Task<void> templateDetail(ruvia::Context& c) {
+        co_await service::live::serve(c, "alert", [this, &c]() { return templateDetailSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> templateDetailSnapshot(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:alert:query");
+        co_return service::live::data(c, co_await alertService().templateDetail(c, alertId(c)));
     }
 
     ruvia::Task<ruvia::HttpResponse> createTemplate(ruvia::Context& c) {
@@ -124,9 +141,13 @@ class AlertController final : public ruvia::Controller<AlertController> {
                            "应用成功");
     }
 
-    ruvia::Task<ruvia::HttpResponse> records(ruvia::Context& c) {
+    ruvia::Task<void> records(ruvia::Context& c) {
+        co_await service::live::serve(c, "alert", [this, &c]() { return recordsSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> recordsSnapshot(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:alert:query");
-        co_return alertJson(c, co_await alertService().listRecords(c));
+        co_return service::live::data(c, co_await alertService().listRecords(c));
     }
 
     ruvia::Task<ruvia::HttpResponse> acknowledge(ruvia::Context& c) {
@@ -141,14 +162,22 @@ class AlertController final : public ruvia::Controller<AlertController> {
         co_return c.json(service::common::operation(c, "批量确认成功"));
     }
 
-    ruvia::Task<ruvia::HttpResponse> grouped(ruvia::Context& c) {
-        co_await service::middleware::requirePermission(c, "iot:alert:query");
-        co_return alertJson(c, co_await alertService().grouped(c));
+    ruvia::Task<void> grouped(ruvia::Context& c) {
+        co_await service::live::serve(c, "alert", [this, &c]() { return groupedSnapshot(c); });
     }
 
-    ruvia::Task<ruvia::HttpResponse> stats(ruvia::Context& c) {
+    ruvia::Task<std::string> groupedSnapshot(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:alert:query");
-        co_return alertJson(c, co_await alertService().stats(c));
+        co_return service::live::data(c, co_await alertService().grouped(c));
+    }
+
+    ruvia::Task<void> stats(ruvia::Context& c) {
+        co_await service::live::serve(c, "alert", [this, &c]() { return statsSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> statsSnapshot(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:alert:query");
+        co_return service::live::data(c, co_await alertService().stats(c));
     }
 };
 

@@ -17,6 +17,8 @@
 
 #include "service/common/http.h"
 #include "service/features/event/config.h"
+#include "service/features/access/event.h"
+#include "service/features/live/runtime.h"
 #include "service/observability/registry.h"
 
 namespace service::message::outbox {
@@ -87,6 +89,8 @@ class Runtime final {
         std::string action;
         std::string schemaVersion;
         std::string occurredAtMs;
+        std::string deviceCode;
+        std::string data;
     };
 
     ruvia::Task<void> run(ruvia::WebWorkerContext& context,
@@ -151,7 +155,8 @@ class Runtime final {
         const auto rows = co_await transaction.query(R"sql(
 SELECT id::text, event_type, aggregate_type, aggregate_id, action,
        schema_version::text,
-       floor(extract(epoch FROM occurred_at) * 1000)::bigint::text
+       floor(extract(epoch FROM occurred_at) * 1000)::bigint::text,
+       COALESCE(payload->>'device_code',''), COALESCE(payload->'data','{}'::jsonb)::text
 FROM outbox_event
 WHERE published_at IS NULL AND dead_lettered_at IS NULL AND available_at <= NOW()
 ORDER BY occurred_at, id
@@ -174,13 +179,20 @@ LIMIT 100)sql");
             event.action = std::string(row[4].value().value_or(std::string_view{}));
             event.schemaVersion = std::string(row[5].value().value_or(std::string_view{"1"}));
             event.occurredAtMs = std::string(row[6].value().value_or(std::string_view{"0"}));
+            event.deviceCode = row[7].value().value_or(std::string_view{});
+            event.data = row[8].value().value_or(std::string_view{});
             events.push_back(std::move(event));
         }
 
         for (const auto& event : events) {
             std::string publishError;
             try {
-                co_await publishConfigEnvelope(context.redis(), event.id, event.type,
+                if (event.type == "query.changed") {
+                    co_await service::live::publish(context.redis(), event.aggregate);
+                } else if (event.aggregate == "command") {
+                    co_await service::access::event::publish(context.redis(),event.id,event.type,
+                        event.aggregateId,event.deviceCode,integer(event.occurredAtMs),event.data);
+                } else co_await publishConfigEnvelope(context.redis(), event.id, event.type,
                                                event.aggregate, event.aggregateId, event.action,
                                                event.schemaVersion, event.occurredAtMs,
                                                serviceWorkerCount_);

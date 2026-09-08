@@ -271,6 +271,26 @@ void testLegacyEdgenodeContract() {
             "legacy unsequenced terminal data contract changed");
 }
 
+void testLegacyTelemetryWithoutModelRevision() {
+    // Golden wire with only fields present in deployed firmware: record/device
+    // UUIDs, observed time and a raw frame. No new model fields are serialized.
+    std::string wire("\x0a\x10", 2);
+    wire.append(16, '\x01');
+    wire.append("\x12\x10", 2);
+    wire.append(16, '\x02');
+    wire.append("\x40\x7b\x52\x02\x01\x03", 6);
+    service::edge::pb::TelemetryRecord record;
+    require(record.ParseFromString(wire), "deployed telemetry wire was rejected");
+    require(record.record_id() == std::string(16, '\x01') &&
+                record.device_id() == std::string(16, '\x02') &&
+                record.observed_at_ms() == 123 && record.raw_payload().size() == 2,
+            "deployed telemetry fields changed");
+    require(record.model_id().empty() && record.model_revision() == 0,
+            "legacy telemetry acquired a fabricated model revision");
+    require(record.SerializeAsString() == wire,
+            "new optional model fields changed legacy wire encoding");
+}
+
 void testPublicBaseUrlConfiguration() {
     require(!service::edge::protocol::configurePublicBaseUrl("ftp://secondary.example"),
             "invalid public platform URL was accepted");
@@ -477,6 +497,7 @@ int main() {
     testTerminalFlowControlContract();
     testVpnConfigContract();
     testLegacyEdgenodeContract();
+    testLegacyTelemetryWithoutModelRevision();
     testPublicBaseUrlConfiguration();
     testPlatformIdConfiguration();
     testSessionPlatformIdentityIsInternal();

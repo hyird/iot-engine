@@ -20,6 +20,8 @@
 #include <ruvia/web/db/Db.h>
 
 #include "service/features/event/config.h"
+#include "service/features/edge/config.h"
+#include <ruvia/web/ModelJson.h>
 #include "service/common/http.h"
 #include "service/common/timestamp.h"
 #include "service/common/uuid.h"
@@ -94,7 +96,7 @@ class LinkService {
                                       std::optional<std::string> status) {
         page = std::max<std::int64_t>(1, page);
         pageSize = std::clamp<std::int64_t>(pageSize, 1, 100);
-        std::string where = " WHERE deleted_at IS NULL AND execution = 'collector'";
+        std::string where = " WHERE deleted_at IS NULL";
         std::vector<ruvia::DbValue> params;
         std::optional<std::string> keywordPattern;
         if (keyword && !keyword->empty()) {
@@ -117,7 +119,7 @@ class LinkService {
 	        const auto rows = co_await c.db().query(
 	            "SELECT id::text, name, protocol, endpoint->>'mode', COALESCE(endpoint->>'ip', ''), "
 	            "COALESCE(NULLIF(endpoint->>'port', ''), '0'), status, created_by::text, "
-	            "iot_utc_timestamp(created_at), iot_utc_timestamp(updated_at) FROM link" +
+	            "iot_utc_timestamp(created_at), iot_utc_timestamp(updated_at), execution, COALESCE(edge_node_id::text,'') FROM link" +
 	                where + " ORDER BY id DESC LIMIT $" + std::to_string(limitIndex) + " OFFSET $" +
 	                std::to_string(offsetIndex),
             listParams);
@@ -140,9 +142,9 @@ class LinkService {
 	        const auto rows = co_await c.db().query(R"sql(
 	SELECT id::text, name, protocol, endpoint->>'mode', COALESCE(endpoint->>'ip', ''),
 	       COALESCE(NULLIF(endpoint->>'port', ''), '0'), status, created_by::text,
-	       iot_utc_timestamp(created_at), iot_utc_timestamp(updated_at)
+	       iot_utc_timestamp(created_at), iot_utc_timestamp(updated_at), execution, COALESCE(edge_node_id::text,'')
 	FROM link
-	WHERE id = $1 AND deleted_at IS NULL AND execution = 'collector'
+	WHERE id = $1 AND deleted_at IS NULL
 LIMIT 1)sql",
                                                 service::common::dbParams(id));
         if (rows.empty())
@@ -155,8 +157,8 @@ LIMIT 1)sql",
 	    ruvia::Task<ruvia::BoxedArray<LinkOptionDto>> options(ruvia::Context& c) {
 	        const auto rows = co_await c.db().query(
 	            "SELECT id::text, name, protocol, endpoint->>'mode', COALESCE(endpoint->>'ip', ''), "
-	            "COALESCE(NULLIF(endpoint->>'port', ''), '0') "
-	            "FROM link WHERE deleted_at IS NULL AND execution = 'collector' AND "
+	            "COALESCE(NULLIF(endpoint->>'port', ''), '0'), execution, COALESCE(edge_node_id::text,'') "
+	            "FROM link WHERE deleted_at IS NULL AND "
 	            "status = 'enabled' ORDER BY name");
         ruvia::BoxedArray<LinkOptionDto> result(
             ruvia::ModelOptions{.resource = c.resource()});
@@ -167,6 +169,9 @@ LIMIT 1)sql",
                 .set<"ip">(row[4].value().value_or(std::string_view{}))
                 .set<"port">(toInt(row[5].value().value_or(std::string_view{})))
                 .set<"targets">(co_await loadTargets(c, row[0].value().value_or(std::string_view{}), RuntimeStatus{}));
+            item.set<"execution">(row[6].value().value_or("collector"));
+            item.set<"edgeNodeId">(row[7].value().value_or(""));
+            co_await fillEndpoint(c, endpoint, row[0].value().value_or(""));
             item.set<"id">(row[0].value().value_or(std::string_view{}))
                 .set<"name">(row[1].value().value_or(std::string_view{}))
                 .set<"protocol">(row[2].value().value_or(std::string_view{}))
@@ -223,6 +228,9 @@ LIMIT 1)sql",
     }
 
     ruvia::Task<void> create(ruvia::Context& c, const SaveLinkBody& body) {
+        if (body.get<"execution">() && body.get<"execution">()->view() == "edge") {
+            co_await saveEdgeChannel(c, {}, body); co_return;
+        }
         const auto principal = service::middleware::requireAuth(c);
         const auto name = required(body.get<"name">(), "链路名称不能为空");
         const auto protocol = required(body.get<"protocol">(), "协议不能为空");
@@ -249,6 +257,9 @@ VALUES ($1::uuid, $2, $3, $4::jsonb, $5, $6, 'collector'))sql",
     }
 
     ruvia::Task<void> update(ruvia::Context& c, std::string_view id, const SaveLinkBody& body) {
+        if (body.get<"execution">() && body.get<"execution">()->view() == "edge") {
+            co_await saveEdgeChannel(c, id, body); co_return;
+        }
         const auto rows = co_await c.db().query(
             "SELECT endpoint->>'mode', protocol, created_by FROM link WHERE id = $1 "
             "AND deleted_at IS NULL AND execution = 'collector' LIMIT 1",
@@ -277,7 +288,7 @@ VALUES ($1::uuid, $2, $3, $4::jsonb, $5, $6, 'collector'))sql",
             R"sql(
 UPDATE link
 SET name = $1, endpoint = $2::jsonb, status = $3, updated_at = NOW()
-WHERE id = $4 AND execution = 'collector'
+WHERE id = $4
   AND (
     name IS DISTINCT FROM $1
     OR endpoint IS DISTINCT FROM $2::jsonb
@@ -292,7 +303,7 @@ WHERE id = $4 AND execution = 'collector'
     ruvia::Task<void> remove(ruvia::Context& c, std::string_view id) {
         const auto rows = co_await c.db().query(
             "SELECT created_by FROM link WHERE id = $1 AND deleted_at IS NULL "
-            "AND execution = 'collector' LIMIT 1",
+            "LIMIT 1",
             service::common::dbParams(id));
         if (rows.empty())
             service::common::fail(15001, "链路不存在", 404);
@@ -312,6 +323,116 @@ WHERE id = $4 AND execution = 'collector'
     }
 
   private:
+    static ruvia::Task<void> fillEndpoint(ruvia::Context& c, LinkEndpointDto& endpoint, std::string_view id) {
+        const auto rows = co_await c.db().query(R"sql(
+SELECT endpoint->>'transport',endpoint->>'interface',endpoint->>'baud_rate',
+endpoint->>'data_bits',endpoint->>'stop_bits',endpoint->>'parity',endpoint->>'rs485'
+FROM link WHERE id=$1::uuid AND execution='edge')sql", service::common::dbParams(id));
+        if (rows.empty()) co_return;
+        const auto& row = rows.front();
+        endpoint.set<"transport">(row[0].value().value_or(""));
+        endpoint.set<"interfaceName">(row[1].value().value_or(""));
+        endpoint.set<"baudRate">(toInt(row[2].value().value_or("9600")));
+        endpoint.set<"dataBits">(toInt(row[3].value().value_or("8")));
+        endpoint.set<"stopBits">(toInt(row[4].value().value_or("1")));
+        endpoint.set<"parity">(row[5].value().value_or("none"));
+        endpoint.set<"rs485">(row[6].value().value_or("false") == "true");
+    }
+
+    ruvia::Task<void> saveEdgeChannel(ruvia::Context& c, std::string_view existingId, const SaveLinkBody& body) {
+        const auto principal = service::middleware::requireAuth(c);
+        const auto name = required(body.get<"name">(), "通道名称不能为空");
+        const auto protocol = required(body.get<"protocol">(), "协议不能为空");
+        const auto nodeId = required(body.get<"edgeNodeId">(), "请选择边缘节点");
+        if (!service::common::isUuid(nodeId)) service::common::fail(15002, "节点 ID 无效", 400);
+        const auto& endpoint = requiredEndpoint(body);
+        const auto transport = required(endpoint.get<"transport">(), "请选择传输类型");
+        const auto interfaceName = required(endpoint.get<"interfaceName">(), "请选择接口");
+        if (interfaceName.size() > 96) service::common::fail(15002, "接口名称过长", 400);
+        if (transport == "serial") {
+            if (protocol == "S7") service::common::fail(15002, "S7 不支持串口", 400);
+            const auto baud = endpoint.get<"baudRate">().value_or(9600);
+            const auto bits = endpoint.get<"dataBits">().value_or(8);
+            const auto stops = endpoint.get<"stopBits">().value_or(1);
+            const auto parity = endpoint.get<"parity">() ? endpoint.get<"parity">()->view() : std::string_view("none");
+            if (baud < 300 || baud > 4000000 || bits < 5 || bits > 8 || stops < 1 || stops > 2 ||
+                (parity != "none" && parity != "odd" && parity != "even"))
+                service::common::fail(15002, "串口参数无效", 400);
+        } else if (transport == "tcp") {
+            const auto mode = required(endpoint.get<"mode">(), "请选择 TCP 模式");
+            const auto ip = required(endpoint.get<"ip">(), "请输入 IP 地址");
+            std::error_code error;
+            (void)asio::ip::make_address_v4(ip, error);
+            const auto port = endpoint.get<"port">().value_or(0);
+            if (error || port < 1 || port > 65535 || (mode != "TCP Client" && mode != "TCP Server"))
+                service::common::fail(15002, "TCP 参数无效", 400);
+        } else service::common::fail(15002, "传输类型无效", 400);
+        const auto node = co_await c.db().query(
+            "SELECT 1 FROM edge_node WHERE id=$1::uuid AND enrollment_status='approved' AND capability->>'deviceConfig'='true'",
+            service::common::dbParams(nodeId));
+        if (node.empty()) service::common::fail(15002, "节点未批准或不支持采集配置", 400);
+        if (transport == "serial") {
+            const auto serial = co_await c.db().query(
+                "SELECT 1 FROM edge_node_serial WHERE node_id=$1::uuid AND path=$2 AND available",
+                service::common::dbParams(nodeId,interfaceName));
+            if (serial.empty()) service::common::fail(15002, "所选串口不存在或当前不可用", 409);
+        } else {
+            const auto network = co_await c.db().query(
+                "SELECT ipv4 FROM edge_node_interface WHERE node_id=$1::uuid AND name=$2 AND COALESCE(ipv4,'')<>''",
+                service::common::dbParams(nodeId,interfaceName));
+            if (network.empty()) service::common::fail(15002, "所选网口不存在或未上报 IPv4", 409);
+            const auto mode = endpoint.get<"mode">()->view();
+            const auto ip = endpoint.get<"ip">()->view();
+            if ((protocol == "S7" && mode != "TCP Client") || (protocol == "SL651" && mode != "TCP Server"))
+                service::common::fail(15002, "协议不支持所选 TCP 模式", 400);
+            if (mode == "TCP Server" && ip != "0.0.0.0" && ip != network.front()[0].value().value_or(""))
+                service::common::fail(15002, "监听地址必须是所选网口地址", 400);
+        }
+        std::string priorNode;
+        if (!existingId.empty()) {
+            const auto current = co_await c.db().query(
+                "SELECT created_by,edge_node_id::text FROM link WHERE id=$1::uuid AND execution='edge' AND deleted_at IS NULL",
+                service::common::dbParams(existingId));
+            if (current.empty()) service::common::fail(15001, "通道不存在", 404);
+            co_await requireOwner(c, current.front()[0].value().value_or(""));
+            priorNode = current.front()[1].value().value_or("");
+        }
+        const auto id = existingId.empty() ? service::common::nextUuidV7() : std::string(existingId);
+        std::string endpointJson = "{\"transport\":";
+        appendJsonString(endpointJson, transport);
+        endpointJson += ",\"interface\":";
+        appendJsonString(endpointJson, interfaceName);
+        if (transport == "serial") {
+            endpointJson += ",\"baud_rate\":" + std::to_string(endpoint.get<"baudRate">().value_or(9600));
+            endpointJson += ",\"data_bits\":" + std::to_string(endpoint.get<"dataBits">().value_or(8));
+            endpointJson += ",\"stop_bits\":" + std::to_string(endpoint.get<"stopBits">().value_or(1));
+            endpointJson += ",\"parity\":";
+            appendJsonString(endpointJson, endpoint.get<"parity">() ? endpoint.get<"parity">()->view() : std::string_view("none"));
+            endpointJson += endpoint.get<"rs485">().value_or(false) ? ",\"rs485\":true" : ",\"rs485\":false";
+        } else {
+            endpointJson += ",\"mode\":"; appendJsonString(endpointJson, endpoint.get<"mode">()->view());
+            endpointJson += ",\"ip\":"; appendJsonString(endpointJson, endpoint.get<"ip">()->view());
+            endpointJson += ",\"port\":" + std::to_string(*endpoint.get<"port">());
+        }
+        endpointJson += '}';
+        const auto status = body.get<"status">() ? body.get<"status">()->view() : std::string_view("enabled");
+        auto tx = co_await c.db().beginTransaction();
+        if (existingId.empty()) {
+            (void)co_await tx.execute(R"sql(INSERT INTO link(id,name,protocol,endpoint,status,created_by,execution,edge_node_id)
+VALUES($1::uuid,$2,$3,$4::jsonb,$5,$6::uuid,'edge',$7::uuid))sql",
+                service::common::dbParams(id,name,protocol,endpointJson,status,principal.userId,nodeId));
+        } else {
+            (void)co_await tx.execute(R"sql(UPDATE link SET name=$2,protocol=$3,endpoint=$4::jsonb,status=$5,
+edge_node_id=$6::uuid,updated_at=NOW() WHERE id=$1::uuid)sql",
+                service::common::dbParams(id,name,protocol,endpointJson,status,nodeId));
+        }
+        co_await service::message::enqueueConfigEvent(tx,"link",existingId.empty()?"created":"updated",id);
+        co_await tx.commit();
+        (void)co_await service::edge::configService().queueSnapshot(c,nodeId);
+        if (!priorNode.empty() && priorNode != nodeId)
+            (void)co_await service::edge::configService().queueSnapshot(c,priorNode);
+    }
+
     struct RuntimeStatus {
         std::map<std::string, std::string> fields;
 
@@ -416,11 +537,14 @@ WHERE id = $4 AND execution = 'collector'
         item.set<"createdBy">(row[7].value().value_or(std::string_view{}));
         item.set<"createdAt">(row[8].value().value_or(std::string_view{}));
         item.set<"updatedAt">(row[9].value().value_or(std::string_view{}));
+        item.set<"execution">(row[10].value().value_or("collector"));
+        item.set<"edgeNodeId">(row[11].value().value_or(""));
         LinkEndpointDto endpoint(c);
         endpoint.set<"mode">(row[3].value().value_or(std::string_view{}));
         endpoint.set<"ip">(row[4].value().value_or(std::string_view{}));
         endpoint.set<"port">(toInt(row[5].value().value_or(std::string_view{})));
         endpoint.set<"targets">(co_await loadTargets(c, id, runtime));
+        co_await fillEndpoint(c, endpoint, id);
         item.set<"endpoint">(std::move(endpoint));
     }
 
@@ -459,7 +583,10 @@ WHERE link.id = $1 ORDER BY position)sql",
     static ruvia::Task<RuntimeStatus> loadRuntimeStatus(ruvia::Context& c, std::string_view id) {
         RuntimeStatus status;
         try {
-            const auto pattern = "iot:runtime:link:" + std::string(id) + ":worker:*";
+            const auto owner = co_await c.redis().get("iot:v2:owner:link:" + std::string(id));
+            if (!owner) co_return status;
+            const auto pattern = "iot:runtime:link:" + std::string(id) + ":worker:" +
+                                 std::string(owner->data(),owner->size()) + ":*";
             std::string cursor = "0";
             std::vector<std::string> keys;
             do {
@@ -696,9 +823,9 @@ WHERE link.id = $1 ORDER BY position)sql",
                                       const std::string& mode, const std::string& ip,
                                       std::int64_t port, std::optional<std::string> excludedId) {
         std::string sql =
-            "SELECT 1 FROM link WHERE deleted_at IS NULL AND execution = 'collector' AND "
+            "SELECT 1 FROM link WHERE deleted_at IS NULL AND "
             "(name = $1 OR "
-                          "($2 = 'TCP Server' AND endpoint->>'mode' = $2 "
+                          "(execution = 'collector' AND $2 = 'TCP Server' AND endpoint->>'mode' = $2 "
                           "AND endpoint->>'ip' = $3 "
                           "AND COALESCE("
                           "CASE WHEN COALESCE(endpoint->>'port', '') ~ '^[0-9]{1,5}$' "

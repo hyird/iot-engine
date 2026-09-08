@@ -55,7 +55,7 @@ void requireStrictPresentFieldTypes(std::string_view source) {
 void requireCanonicalBooleanPointValues(std::string_view source) {
     require(source.find("service::telemetry::latest::canonicalPointJson(") !=
                     std::string_view::npos &&
-                source.find("jsonb_typeof(filtered.data->'values'->point.id->'value') = "
+                source.find("jsonb_typeof(point.value->'value') = "
                             "'boolean'") != std::string_view::npos,
             "public device data does not canonicalize BOOL points to 0/1");
 }

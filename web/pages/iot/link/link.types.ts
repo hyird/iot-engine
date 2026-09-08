@@ -38,6 +38,8 @@ interface RuntimeStatus {
 }
 
 interface LinkEndpoint {
+    transport?: 'serial' | 'tcp'; interface?: string; baud_rate?: number; data_bits?: number;
+    stop_bits?: number; parity?: 'none' | 'even' | 'odd'; rs485?: boolean;
     mode: LinkMode;
     ip: string;
     port: number;
@@ -45,6 +47,7 @@ interface LinkEndpoint {
 }
 
 interface LinkItem {
+    execution?: 'collector' | 'edge'; edge_node_id?: string;
     id: string;
     name: string;
     protocol: LinkProtocol;
@@ -63,6 +66,7 @@ interface LinkQuery extends PageParams {
 }
 
 interface SaveLinkDto {
+    execution?: 'collector' | 'edge'; edge_node_id?: string;
     name: string;
     protocol: LinkProtocol;
     endpoint: LinkEndpoint;

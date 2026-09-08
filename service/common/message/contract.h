@@ -12,10 +12,12 @@
 #include <vector>
 
 #include "service/common/uuid.h"
+#include "service/common/instance.h"
+#include "service/common/message/shard.h"
 
 namespace service::message {
 
-inline constexpr std::string_view kMessageSchemaVersion{"1"};
+inline constexpr std::string_view kMessageSchemaVersion{"2"};
 
 inline constexpr std::string_view kConfigStreamPrefix = "iot:channel:config:worker:";
 inline constexpr std::string_view kIngressStreamPrefix = "iot:channel:packet:raw:worker:";
@@ -31,12 +33,13 @@ inline constexpr std::string_view kProtocolInflightPrefix = "iot:state:protocol:
 inline constexpr std::string_view kSessionStatePrefix = "iot:state:session:";
 
 inline std::string workerStream(std::string_view prefix, std::size_t workerIndex,
-                                std::string_view suffix = {}) {
-    return std::string(prefix) + std::to_string(workerIndex) + std::string(suffix);
+                                std::string_view suffix = {},
+                                std::string_view instance = service::runtime::instanceId()) {
+    return std::string(prefix) + std::string(instance) + ":" + std::to_string(workerIndex) + std::string(suffix);
 }
 
-inline std::string configStream(std::size_t workerIndex) {
-    return workerStream(kConfigStreamPrefix, workerIndex);
+inline std::string configStream(std::size_t workerIndex, std::string_view instance = service::runtime::instanceId()) {
+    return workerStream(kConfigStreamPrefix, workerIndex, {}, instance);
 }
 
 inline std::string ingressStream(std::size_t workerIndex) {
@@ -44,19 +47,20 @@ inline std::string ingressStream(std::size_t workerIndex) {
 }
 
 inline std::string parsedStream(std::size_t workerIndex) {
-    return workerStream(kParsedStreamPrefix, workerIndex);
+    return "iot:v2:telemetry:partition:" + std::to_string(workerIndex);
 }
 
 inline std::string egressStream(std::size_t workerIndex) {
     return workerStream(kEgressStreamPrefix, workerIndex);
 }
 
-inline std::string commandStream(std::size_t workerIndex, bool highPriority) {
-    return workerStream(kCommandStreamPrefix, workerIndex, highPriority ? ":high" : ":normal");
+inline std::string commandStream(std::size_t workerIndex, bool highPriority,
+                                  std::string_view instance = service::runtime::instanceId()) {
+    return workerStream(kCommandStreamPrefix, workerIndex, highPriority ? ":high" : ":normal", instance);
 }
 
 inline std::string commandResultStream(std::size_t workerIndex) {
-    return workerStream(kCommandResultStreamPrefix, workerIndex);
+    return "iot:v2:command-result:partition:" + std::to_string(workerIndex);
 }
 
 inline std::string linkEventStream(std::size_t workerIndex) {
@@ -125,10 +129,13 @@ struct EgressPacket {
 };
 
 struct ParsedDeviceMessage {
+    std::string eventKind = "sample";
     std::string messageId;
     std::string causationId;
     std::string linkId;
     std::string deviceId;
+    std::string modelId;
+    std::int64_t modelRevision = 0;
     std::string deviceCode;
     std::string protocol;
     std::string connectionId;
@@ -432,6 +439,9 @@ inline std::vector<StreamField> parsedFields(const ParsedDeviceMessage& message)
             {"event_type", "device.data.parsed"},
             {"schema_version", std::string(kMessageSchemaVersion)},
             {"aggregate_id", message.deviceId},
+            {"model_id", message.modelId},
+             {"model_revision", std::to_string(message.modelRevision)},
+             {"event_kind", message.eventKind},
             {"message_id", message.messageId},
             {"causation_id", message.causationId},
             {"link_id", message.linkId},
@@ -465,6 +475,15 @@ inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
         return result;
     };
     ParsedDeviceMessage parsed;
+    parsed.eventKind = message.get("event_kind").empty() ? "sample" : std::string(message.get("event_kind"));
+    if (parsed.eventKind != "sample" && parsed.eventKind != "image")
+        throw std::runtime_error("Invalid telemetry event kind");
+    parsed.modelId = std::string(message.get("model_id"));
+    parsed.modelRevision = message.get("model_revision").empty() ? 0 : integer("model_revision");
+    if (parsed.modelId.empty() != (parsed.modelRevision == 0) || parsed.modelRevision < 0)
+        throw std::runtime_error("Invalid telemetry model reference");
+    if (!parsed.modelId.empty() && !service::common::isUuid(parsed.modelId))
+        throw std::runtime_error("Invalid telemetry model UUID");
     parsed.messageId = std::string(require("message_id"));
     parsed.causationId = std::string(require("causation_id"));
     parsed.linkId = std::string(require("link_id"));

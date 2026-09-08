@@ -247,14 +247,22 @@ struct StreamBatch final {
 
 template <typename Redis>
 inline ruvia::Task<std::vector<StreamBatch>>
+readGroupManyImpl(const Redis& redis, std::span<const std::string> streams,
+                  std::string_view group, std::string_view consumer, std::string_view id,
+                  std::optional<std::chrono::milliseconds> block, std::size_t count);
+
+template <typename Redis>
+inline ruvia::Task<std::vector<StreamBatch>>
 claimGroupMany(const Redis& redis, std::span<const std::string> streams,
                std::string_view group, std::string_view consumer,
                std::size_t count = 100) {
+    auto own = co_await readGroupManyImpl(redis,streams,group,consumer,"0",std::nullopt,count);
+    if (!own.empty()) co_return own;
     std::vector<StreamBatch> batches;
     for (const auto& stream : streams) {
         const auto reply = co_await command(
             redis, {"XAUTOCLAIM", stream, std::string(group), std::string(consumer),
-                    "0", "0-0", "COUNT", std::to_string(count)});
+                    "60000", "0-0", "COUNT", std::to_string(count)});
         if (reply.kind() != RedisValue::Kind::kArray || reply.array().size() < 2)
             throwValue("XAUTOCLAIM", reply);
         const auto& entries = reply.array()[1];
@@ -357,8 +365,10 @@ inline ruvia::Task<std::vector<StreamBatch>>
 readGroupMany(const Redis& redis, std::span<const std::string> streams,
               std::string_view group, std::string_view consumer, std::string_view id,
               std::size_t count = 100) {
-    co_return co_await readGroupManyImpl(redis, streams, group, consumer, id, std::nullopt,
-                                         count);
+    auto batches = co_await readGroupManyImpl(redis,streams,group,consumer,id,std::nullopt,count);
+    if (batches.empty() && id == ">")
+        co_return co_await claimGroupMany(redis,streams,group,consumer,count);
+    co_return batches;
 }
 
 template <typename Redis>
@@ -927,7 +937,7 @@ inline ruvia::Task<void> writeLinkStatus(const Redis& redis, std::size_t workerI
                                          bool publishEvent = true) {
     const auto id = std::string(linkId);
     const auto key =
-        "iot:runtime:link:" + id + ":worker:" + std::to_string(workerIndex);
+        "iot:runtime:link:" + id + ":worker:" + service::runtime::instanceId() + ":" + std::to_string(workerIndex);
     co_await eraseHash(redis, key);
     co_await setHash(redis, key, fields);
     if (publishEvent) {
@@ -944,7 +954,7 @@ inline ruvia::Task<void> removeLinkStatus(const Redis& redis, std::size_t worker
                                           std::string_view linkId) {
     const auto id = std::string(linkId);
     co_await eraseHash(redis, "iot:runtime:link:" + id +
-                                  ":worker:" + std::to_string(workerIndex));
+                                  ":worker:" + service::runtime::instanceId() + ":" + std::to_string(workerIndex));
     (void)co_await add(redis, linkEventStream(workerIndex),
                        {{"message_id", nextMessageId()},
                         {"link_id", id},

@@ -1,8 +1,9 @@
+import { useLiveQuery } from '@/hooks/useLiveQuery';
 /**
  * 用户管理 Service
  */
 
-import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
+import { type UseQueryOptions } from '@tanstack/react-query';
 import type { User } from './user.types';
 import { roleOptionQueryKey, userQueryKeys } from './user.types';
 import type { PaginatedResult } from '@/utils/types';
@@ -17,7 +18,7 @@ export function useUserList(
     params?: User.Query,
     options?: Omit<UseQueryOptions<UserListResult>, 'queryKey' | 'queryFn'>
 ) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: userQueryKeys.list(params),
         queryFn: () => getList(params),
         ...options,
@@ -27,7 +28,7 @@ export function useUserList(
 export function useUserOptions(
     options?: Omit<UseQueryOptions<User.Option[]>, 'queryKey' | 'queryFn'>
 ) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: userQueryKeys.options(),
         queryFn: () => getOptions(),
         staleTime: 5 * 60 * 1000,
@@ -36,7 +37,7 @@ export function useUserOptions(
 }
 
 export function useRoleOptions(options?: { enabled?: boolean }) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: roleOptionQueryKey,
         queryFn: getRoleOptions,
         staleTime: 5 * 60 * 1000,

@@ -1,4 +1,5 @@
 #pragma once
+#include <limits>
 
 #include <atomic>
 #include <chrono>
@@ -102,7 +103,7 @@ class Projector final {
             auto catalog = co_await metadata::hydrate(context);
             ready->set_value();
             bool recovering = true;
-            const auto consumer = "service-" + std::to_string(index);
+            const auto consumer = service::runtime::instanceId() + ":service-" + std::to_string(index);
             while (running_.load() && !context.stopToken().stopRequested()) {
                 std::vector<service::message::redis::StreamBatch> batches;
                 bool readFailed = false;
@@ -220,6 +221,8 @@ class Projector final {
         if (envelope.node_id().size() != 16)
             co_return;
         const auto nodeId = protocol::uuidText(envelope.node_id());
+        if (envelope.has_telemetry_batch() || envelope.has_command_result())
+            catalog[nodeId] = co_await metadata::loadNode(context.redis(),nodeId);
         switch (envelope.payload_case()) {
         case pb::Envelope::kHeartbeat:
             co_await saveHeartbeat(context, nodeId, envelope.heartbeat());
@@ -1029,6 +1032,13 @@ WHERE id = $3::uuid)sql",
             if (device == node->second.end())
                 continue;
             message::ParsedDeviceMessage parsed;
+            if (record.model_id().size() == 16 && record.model_revision() > 0 &&
+                record.model_revision() <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+                parsed.modelId = protocol::uuidText(record.model_id());
+                parsed.modelRevision = static_cast<std::int64_t>(record.model_revision());
+            } else if (!record.model_id().empty() || record.model_revision() != 0) {
+                throw std::runtime_error("invalid edge telemetry model reference");
+            }
             parsed.messageId = protocol::uuidText(record.record_id());
             parsed.causationId = parsed.messageId;
             parsed.linkId = device->second.linkId;
@@ -1071,6 +1081,11 @@ WHERE id = $3::uuid)sql",
         if (device == node->second.end())
             co_return;
         const bool success = result.state() == pb::COMMAND_STATE_SUCCEEDED;
+        const std::string state = success ? "SUCCEEDED" :
+            result.state() == pb::COMMAND_STATE_READBACK_MISMATCH ? "READBACK_MISMATCH" :
+            result.state() == pb::COMMAND_STATE_DEVICE_OFFLINE ||
+            result.state() == pb::COMMAND_STATE_REJECTED ? "REJECTED" :
+            result.state() == pb::COMMAND_STATE_FAILED ? "FAILED" : "UNKNOWN";
         const auto completedAtMs = message::effectiveObservedAt(
             result.completed_at_ms(), receivedAtMs);
         std::vector<message::StreamField> fields{
@@ -1082,6 +1097,7 @@ WHERE id = $3::uuid)sql",
             {"protocol", device->second.protocol},
             {"attempt", "1"},
             {"success", success ? "1" : "0"},
+            {"result_state", state},
             {"reason", result.message()},
             {"worker_id", "0"},
             {"created_at_ms", std::to_string(message::utcNowMilliseconds())},
@@ -1099,8 +1115,8 @@ WHERE id = $3::uuid)sql",
             fields.push_back({prefix + "unit", actual.unit()});
         }
         (void)co_await message::redis::publishAndWake(
-            context.redis(), message::commandResultStream(0), fields,
-            service::message::workerForPartition(0),
+            context.redis(), message::commandResultStream(message::shard::index(deviceId)), fields,
+            service::message::workerForPartition(message::shard::index(deviceId)),
             service::message::WorkerStreamTask::CommandResult, 10000);
     }
 
@@ -1140,7 +1156,7 @@ WHERE id = $3::uuid)sql",
             updated = true;
         }
         if (updated)
-            co_await service::telemetry::latest::bumpRealtimeRevision(context.redis());
+            co_await service::telemetry::latest::publishRealtimeChange(context.redis());
     }
 
     static std::string jsonEscape(std::string_view value) {

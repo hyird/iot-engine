@@ -1,3 +1,4 @@
+import { liveRead } from '@/utils/live-request';
 import request from '@/utils/http';
 import { appendQueryParams } from '@/utils/query';
 import type { PaginatedResult } from '@/utils/types';
@@ -12,7 +13,7 @@ import {
 const BASE = '/v1/roles';
 
 export const getList = (params?: Role.Query) =>
-    request.get<PaginatedResult<Role.Item>>(
+    liveRead<PaginatedResult<Role.Item>>(
         appendQueryParams(BASE, roleListQuerySchema.parse(params ?? {}))
     );
 export const create = (data: Role.CreateDto) =>

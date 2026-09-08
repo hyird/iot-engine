@@ -1,3 +1,4 @@
+import { liveRead } from '@/utils/live-request';
 import request from '@/utils/http';
 import { appendQueryParams } from '@/utils/query';
 import {
@@ -18,10 +19,8 @@ const ACCESS_KEYS = '/api/open-access-key';
 const WEBHOOKS = '/api/open-webhook';
 const ACCESS_LOGS = '/api/open-access-log';
 
-export const getDevices = async () =>
-    deviceOptionSchema.array().parse(await request.get<unknown>(DEVICE_OPTIONS));
-export const getKeys = async () =>
-    keyItemSchema.array().parse(await request.get<unknown>(ACCESS_KEYS));
+export const getDevices = () => liveRead<unknown>(DEVICE_OPTIONS).map((value) => deviceOptionSchema.array().parse(value));
+export const getKeys = () => liveRead<unknown>(ACCESS_KEYS).map((value) => keyItemSchema.array().parse(value));
 export const createKey = async (data: Access.KeySaveDto) =>
     keySecretSchema.parse(await request.post<unknown>(ACCESS_KEYS, keySaveSchema.parse(data)));
 export const updateKey = (id: string, data: Access.KeySaveDto) =>
@@ -33,14 +32,9 @@ export const rotateKey = async (id: string) =>
 export const deleteKey = (id: string) =>
     request.delete<void>(`${ACCESS_KEYS}/${accessIdSchema.parse(id)}`);
 
-export const getWebhooks = async (accessKeyId?: string) =>
-    webhookItemSchema
-        .array()
-        .parse(
-            await request.get<unknown>(
-                appendQueryParams(WEBHOOKS, accessKeyId ? { accessKeyId } : {})
-            )
-        );
+export const getWebhooks = (accessKeyId?: string) =>
+    liveRead<unknown>(appendQueryParams(WEBHOOKS, accessKeyId ? { accessKeyId } : {}))
+        .map((value) => webhookItemSchema.array().parse(value));
 export const createWebhook = (data: Access.WebhookSaveDto) =>
     request.post<void>(WEBHOOKS, webhookSaveSchema.parse(data));
 export const updateWebhook = (id: string, data: Access.WebhookSaveDto) =>
@@ -51,7 +45,6 @@ export const updateWebhook = (id: string, data: Access.WebhookSaveDto) =>
 export const deleteWebhook = (id: string) =>
     request.delete<void>(`${WEBHOOKS}/${accessIdSchema.parse(id)}`);
 
-export const getLogs = async (query: Access.LogQuery) =>
-    logPageSchema.parse(
-        await request.get<unknown>(appendQueryParams(ACCESS_LOGS, logQuerySchema.parse(query)))
-    );
+export const getLogs = (query: Access.LogQuery) =>
+    liveRead<unknown>(appendQueryParams(ACCESS_LOGS, logQuerySchema.parse(query)))
+        .map((value) => logPageSchema.parse(value));

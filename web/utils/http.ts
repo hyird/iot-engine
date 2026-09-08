@@ -86,8 +86,7 @@ export interface RequestConfig extends AxiosRequestConfig {
     _silent?: boolean;
 }
 
-interface RequestInstance extends AxiosInstance {
-    get<T = unknown>(url: string, config?: RequestConfig): Promise<T>;
+interface RequestInstance extends Omit<AxiosInstance, 'get'> {
     post<T = unknown>(url: string, data?: unknown, config?: RequestConfig): Promise<T>;
     put<T = unknown>(url: string, data?: unknown, config?: RequestConfig): Promise<T>;
     delete<T = unknown>(url: string, config?: RequestConfig): Promise<T>;
@@ -282,7 +281,7 @@ request.interceptors.response.use(
                             if (originalRequest.headers) {
                                 originalRequest.headers.Authorization = `Bearer ${token}`;
                             }
-                            resolve(request(originalRequest));
+                            resolve(request.request(originalRequest));
                         },
                         (refreshError: ApiError) => {
                             reject(refreshError);
@@ -303,7 +302,7 @@ request.interceptors.response.use(
                     if (originalRequest.headers) {
                         originalRequest.headers.Authorization = `Bearer ${newToken}`;
                     }
-                    return request(originalRequest);
+                    return request.request(originalRequest);
                 }
 
                 return handleAuthExpired(createExpiredAuthError());

@@ -1,4 +1,5 @@
-import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
+import { useLiveQuery } from '@/hooks/useLiveQuery';
+import { type UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { createQueryKeys } from '@/utils/query';
 import type { PaginatedResult } from '@/utils/types';
@@ -16,7 +17,7 @@ export const alertKeys = {
 };
 
 export function useAlertRuleList(params?: Record<string, unknown>) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: alertKeys.rules(params),
         queryFn: () => alertApi.getRules(params),
     });
@@ -26,7 +27,7 @@ export function useAlertRecordList(
     params?: Record<string, unknown>,
     options?: Omit<UseQueryOptions<PaginatedResult<Alert.RecordItem>>, 'queryKey' | 'queryFn'>
 ) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: alertKeys.records(params),
         queryFn: () => alertApi.getRecords(params),
         ...options,
@@ -34,7 +35,7 @@ export function useAlertRecordList(
 }
 
 export function useAlertTemplateList(params?: Record<string, unknown>) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: alertKeys.templates(params),
         queryFn: () => alertApi.getTemplates(params),
     });
@@ -43,10 +44,9 @@ export function useAlertTemplateList(params?: Record<string, unknown>) {
 export function useAlertStats(
     options?: Omit<UseQueryOptions<Alert.ActiveStats>, 'queryKey' | 'queryFn'>
 ) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: alertKeys.stats(),
         queryFn: alertApi.getStats,
-        refetchInterval: 10_000,
         ...options,
     });
 }
@@ -126,7 +126,7 @@ export function useAlertBatchAcknowledge() {
 }
 
 export function useDeviceOptions(options?: { enabled?: boolean }) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: ['devices', 'options'],
         queryFn: alertApi.getDeviceOptions,
         enabled: options?.enabled ?? true,

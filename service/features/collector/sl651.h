@@ -276,7 +276,8 @@ class Session final : public ProtocolSession,
         : link_(std::move(link)), connectionId_(std::move(connectionId)),
           snapshot_(std::move(snapshot)), devices_(std::move(devices)) {
         for (const auto* device : devices_)
-            devicesByCode_.emplace(normalizeCode(device->code), device);
+            if (!devicesByCode_.emplace(normalizeCode(device->code), device).second)
+                throw std::invalid_argument("duplicate SL651 station address within link");
     }
 
     [[nodiscard]] std::vector<ProtocolAction> consume(const ProtocolInput& input) override {
@@ -467,8 +468,7 @@ class Session final : public ProtocolSession,
             const auto current =
                 std::find_if(devices_.begin(), devices_.end(),
                              [&](const auto* item) { return item->id == command.deviceId; });
-            if (current != devices_.end())
-                return *current;
+            return current == devices_.end() ? nullptr : *current;
         }
         const auto current = devicesByCode_.find(normalizeCode(command.deviceCode));
         return current == devicesByCode_.end() ? nullptr : current->second;
@@ -690,6 +690,8 @@ class Session final : public ProtocolSession,
         message.causationId = input.messageId;
         message.linkId = link_.id;
         message.deviceId = device.id;
+        message.modelId = device.modelId;
+        message.modelRevision = device.modelRevision;
         message.deviceCode = device.code;
         message.protocol = "SL651";
         message.connectionId = connectionId_;

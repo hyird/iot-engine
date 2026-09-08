@@ -28,6 +28,7 @@
 #include "service/features/edge/config.h"
 #include "service/features/edge/firmware.h"
 #include "service/features/edge/protocol.h"
+#include "service/features/live/bus.h"
 #include "service/domains/edge/edge.types.h"
 
 namespace service::edge {
@@ -550,6 +551,31 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
         co_return result;
     }
 
+    ruvia::Task<LogsDto> logSnapshot(ruvia::Context& c, std::string_view nodeId,
+                                   const LogsQuery& query) {
+        co_await requireNodeCapability(c, nodeId, "logs", "节点日志");
+        LogsDto output(c);
+        ruvia::BoxedArray<LogLineDto> lines(ruvia::ModelOptions{.resource = c.resource()});
+        const auto payload = co_await c.redis().get("iot:edge:logs:snapshot:" + std::string(nodeId));
+        if (payload) {
+            pb::LogResult result;
+            if (!result.ParseFromArray(payload->data(), static_cast<int>(payload->size())))
+                service::common::fail(17020, "节点日志快照解析失败", 502);
+            const auto limit = std::clamp<std::int64_t>(query.get<"limit">().value_or(48), 1, 48);
+            std::int64_t count = 0;
+            for (const auto& line : result.lines()) {
+                if (query.get<"level">() && query.get<"level">()->view() != line.level()) continue;
+                if (query.get<"source">() && query.get<"source">()->view() != line.source()) continue;
+                if (count++ >= limit) break;
+                lines.emplace(c).set<"time">(service::common::utcTimestampFromMilliseconds(line.time_ms()))
+                    .set<"level">(line.level()).set<"source">(line.source())
+                    .set<"message">(line.message()).set<"detail">(line.detail());
+            }
+        }
+        output.set<"lines">(std::move(lines));
+        co_return output;
+    }
+
     ruvia::Task<LogsDto> logs(ruvia::Context& c, std::string_view nodeId,
                               const LogsQuery& query) {
         co_await requireNodeCapability(c, nodeId, "logs", "节点日志");
@@ -579,9 +605,9 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
                 service::common::fail(17020, "日志来源不能超过 16 个字符", 400);
             request->set_source(sourceValue);
         }
-        co_await push(c, nodeId, envelope);
-
         const auto key = logResultKey(requestId);
+        const auto changed = service::live::bus().subscribe(c.worker(), key);
+        co_await push(c, nodeId, envelope);
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
         while (std::chrono::steady_clock::now() < deadline) {
             if (auto payload = co_await c.redis().get(key)) {
@@ -605,7 +631,10 @@ FROM edge_node WHERE id = $1::uuid LIMIT 1)sql",
                 output.set<"lines">(std::move(lines));
                 co_return output;
             }
-            (void)co_await ruvia::sleepFor(c.worker(), std::chrono::milliseconds(50));
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now());
+            if (remaining.count() <= 0 || c.stopToken().stopRequested()) break;
+            (void)co_await changed->receiver.receiveFor(remaining, c.stopToken());
         }
         service::common::fail(17020, "节点日志请求超时", 504);
     }

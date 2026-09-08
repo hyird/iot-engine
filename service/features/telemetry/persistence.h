@@ -26,6 +26,7 @@
 #include "service/features/collector/stream.h"
 #include "service/features/event/stream-multiplexer.h"
 #include "service/features/telemetry/latest.h"
+#include "service/features/telemetry/fanout.h"
 
 namespace service::telemetry {
 
@@ -105,31 +106,35 @@ class PersistenceRuntime final {
             throw std::runtime_error("telemetry persistence requires north and collector workers");
         }
         std::vector<std::future<void>> readiness;
+        for (const auto consumer : {Consumer::Dispatch,Consumer::History,Consumer::Latest,Consumer::Alerts,Consumer::Delivery})
         for (std::size_t index = 0; index < workers_.size(); ++index) {
             auto ready = std::make_shared<std::promise<void>>();
             auto stopped = std::make_shared<std::promise<void>>();
             readiness.push_back(ready->get_future());
             stopped_.push_back(stopped->get_future().share());
             const auto posted = workers_[index].post(
-                [this, index, ready, stopped](ruvia::WebWorkerContext& context) {
-                    return run(context, index, ready, stopped);
+                [this, index, consumer, ready, stopped](ruvia::WebWorkerContext& context) {
+                    return run(context, index, consumer, ready, stopped);
                 });
             if (!posted.accepted()) {
-                running_.store(false);
+                stopped->set_value();
+                stop();
                 throw std::runtime_error("service worker rejected telemetry consumer");
             }
         }
+        for (const auto alerts : {false,true})
         for (std::size_t index = 0; index < workers_.size(); ++index) {
             auto ready = std::make_shared<std::promise<void>>();
             auto stopped = std::make_shared<std::promise<void>>();
             readiness.push_back(ready->get_future());
             stopped_.push_back(stopped->get_future().share());
             const auto posted = workers_[index].post(
-                [this, index, ready, stopped](ruvia::WebWorkerContext& context) {
-                    return maintainFreshness(context, index, ready, stopped);
+                [this, index, alerts, ready, stopped](ruvia::WebWorkerContext& context) {
+                    return maintainFreshness(context, index, alerts, ready, stopped);
                 });
             if (!posted.accepted()) {
-                running_.store(false);
+                stopped->set_value();
+                stop();
                 throw std::runtime_error("service worker rejected telemetry freshness task");
             }
         }
@@ -140,20 +145,32 @@ class PersistenceRuntime final {
     void stop() noexcept {
         if (!running_.exchange(false))
             return;
-        service::message::workerStreamMultiplexer().signal(
-            service::message::WorkerStreamTask::Telemetry);
+        for (const auto task : {message::WorkerStreamTask::Telemetry,
+             message::WorkerStreamTask::TelemetryHistory,message::WorkerStreamTask::TelemetryLatest,
+             message::WorkerStreamTask::TelemetryAlerts,message::WorkerStreamTask::TelemetryDelivery})
+            message::workerStreamMultiplexer().signal(task);
         service::message::workerStreamMultiplexer().signal(
             service::message::WorkerStreamTask::Freshness);
+        service::message::workerStreamMultiplexer().signal(
+            service::message::WorkerStreamTask::FreshnessAlerts);
         for (const auto& stopped : stopped_)
             if (stopped.valid())
-                (void)stopped.wait_for(std::chrono::seconds(3));
+                stopped.wait();
         stopped_.clear();
         workers_.clear();
     }
 
-    static ruvia::Task<void> ingest(
-        ruvia::WebWorkerContext& context,
+    static ruvia::Task<void> ingest(ruvia::WebWorkerContext& context,
         const std::vector<message::StreamMessage>& messages) {
+        co_await fanout(context.redis(), messages);
+        for (const auto task : {message::WorkerStreamTask::TelemetryHistory,message::WorkerStreamTask::TelemetryLatest,
+             message::WorkerStreamTask::TelemetryAlerts,message::WorkerStreamTask::TelemetryDelivery})
+            message::workerStreamMultiplexer().signal(task);
+    }
+
+    static ruvia::Task<void> apply(ruvia::WebWorkerContext& context,
+        Consumer consumer, const std::vector<message::StreamMessage>& messages) {
+        if (consumer == Consumer::Dispatch) { co_await ingest(context,messages); co_return; }
         if (messages.empty())
             co_return;
         std::vector<message::ParsedDeviceMessage> parsedMessages;
@@ -164,28 +181,51 @@ class PersistenceRuntime final {
             parsedMessages.push_back(std::move(parsed));
         }
         const auto redis = context.redis();
-        const auto alertMetadata =
-            co_await service::alert::metadata::activity(context, parsedMessages);
-        auto previousData =
-            co_await persist(context, parsedMessages, alertMetadata.devices);
-        co_await latest::update(redis, parsedMessages);
-        // Offline alert deadlines are part of durable ingestion. A Redis failure keeps
-        // the Stream entry pending so the schedule is rebuilt on retry.
-        if (alertMetadata.offlineRules)
-            co_await service::alert::metadata::schedule(redis, parsedMessages);
-        // Alert state and its transactional outbox must complete before acknowledging the
-        // telemetry Stream. Retries are idempotent at both PostgreSQL and Redis boundaries.
-        co_await service::alert::Runtime::evaluateTelemetry(
-            context, parsedMessages, previousData, alertMetadata.devices);
-        co_await service::access::event::publishMany(redis, parsedMessages);
+        switch (consumer) {
+        case Consumer::History:
+            (void)co_await persist(context,parsedMessages,std::vector<bool>(parsedMessages.size(),false));
+            co_await latest::publishRealtimeChange(redis);
+            break;
+        case Consumer::Latest: co_await latest::update(redis,parsedMessages); break;
+        case Consumer::Delivery: co_await service::access::event::publishMany(redis,parsedMessages); break;
+        case Consumer::Alerts: {
+            const auto metadata = co_await service::alert::metadata::activity(context,parsedMessages);
+            std::vector<std::string> previous;
+            for (const auto& parsed : parsedMessages)
+                previous.push_back(co_await prepareAlert(context,parsed));
+            co_await service::alert::Runtime::evaluateTelemetry(context,parsedMessages,previous,metadata.devices);
+            if (metadata.offlineRules) co_await service::alert::metadata::schedule(redis,parsedMessages);
+            break;
+        }
+        case Consumer::Dispatch: break;
+        }
+
     }
 
   private:
+    static ruvia::Task<std::string> prepareAlert(ruvia::WebWorkerContext& context,
+        const message::ParsedDeviceMessage& value) {
+        const auto rows = co_await context.db().query(R"sql(
+INSERT INTO alert_input_state(device_id,observed_at_ms,message_id,data,previous_data)
+VALUES($1::uuid,$2::bigint,$3::uuid,$4::jsonb,'{}')
+ON CONFLICT(device_id) DO UPDATE SET
+ previous_data=CASE WHEN (EXCLUDED.observed_at_ms,EXCLUDED.message_id) >
+   (alert_input_state.observed_at_ms,alert_input_state.message_id) THEN alert_input_state.data ELSE alert_input_state.previous_data END,
+ data=CASE WHEN (EXCLUDED.observed_at_ms,EXCLUDED.message_id) >
+   (alert_input_state.observed_at_ms,alert_input_state.message_id) THEN EXCLUDED.data ELSE alert_input_state.data END,
+ observed_at_ms=GREATEST(EXCLUDED.observed_at_ms,alert_input_state.observed_at_ms),
+ message_id=CASE WHEN (EXCLUDED.observed_at_ms,EXCLUDED.message_id) >
+   (alert_input_state.observed_at_ms,alert_input_state.message_id) THEN EXCLUDED.message_id ELSE alert_input_state.message_id END
+RETURNING CASE WHEN message_id=$3::uuid THEN previous_data ELSE '{}'::jsonb END::text)sql",
+            service::common::dbParams(value.deviceId,value.observedAtMs,value.messageId,value.valuesJson));
+        co_return std::string(rows.front()[0].value().value_or("{}"));
+    }
+
     static constexpr std::string_view kGroup = "iot-engine:telemetry-persistence";
     static constexpr std::size_t kBatchSize = 256;
 
     ruvia::Task<void> maintainFreshness(
-        ruvia::WebWorkerContext& context, std::size_t index,
+        ruvia::WebWorkerContext& context, std::size_t index, bool alerts,
         std::shared_ptr<std::promise<void>> ready,
         std::shared_ptr<std::promise<void>> stopped) {
         try {
@@ -201,20 +241,15 @@ class PersistenceRuntime final {
                 try {
                     std::optional<std::int64_t> deadline;
                     for (const auto shardIndex : shards) {
-                        co_await latest::expireStale(redis, shardIndex);
-                        co_await service::alert::Runtime::evaluateOfflineDue(
-                            context, shardIndex);
-                        const auto onlineDeadline =
-                            co_await latest::nextDeadline(redis, shardIndex);
-                        const auto alertDeadline =
-                            co_await service::alert::metadata::nextOfflineDeadline(
-                                redis, shardIndex);
-                        if (onlineDeadline &&
-                            (!deadline || *onlineDeadline < *deadline))
-                            deadline = onlineDeadline;
-                        if (alertDeadline &&
-                            (!deadline || *alertDeadline < *deadline))
-                            deadline = alertDeadline;
+                        std::optional<std::int64_t> next;
+                        if (alerts) {
+                            co_await service::alert::Runtime::evaluateOfflineDue(context, shardIndex);
+                            next = co_await service::alert::metadata::nextOfflineDeadline(redis, shardIndex);
+                        } else {
+                            co_await latest::expireStale(redis, shardIndex);
+                            next = co_await latest::nextDeadline(redis, shardIndex);
+                        }
+                        if (next && (!deadline || *next < *deadline)) deadline = next;
                     }
                     const auto wait = latest::deadlineWait(
                         service::message::utcNowMilliseconds(),
@@ -222,7 +257,7 @@ class PersistenceRuntime final {
                     if (wait.has_value() && wait->count() == 0)
                         continue;
                     co_await service::message::workerStreamMultiplexer().wait(
-                        index, service::message::WorkerStreamTask::Freshness,
+                        index, alerts ? service::message::WorkerStreamTask::FreshnessAlerts : service::message::WorkerStreamTask::Freshness,
                         context.stopToken(), wait);
                 } catch (const std::exception& error) {
                     if (context.stopToken().stopRequested())
@@ -248,23 +283,25 @@ class PersistenceRuntime final {
         }
     }
 
-    ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t index,
+    ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t index, Consumer consumerKind,
                           std::shared_ptr<std::promise<void>> ready,
                           std::shared_ptr<std::promise<void>> stopped) {
+        const auto group = std::string(kGroup) + ":" + std::string(consumerNames[static_cast<std::size_t>(consumerKind)]);
+        const auto wakeTask = static_cast<message::WorkerStreamTask>(static_cast<unsigned>(message::WorkerStreamTask::Telemetry) + static_cast<unsigned>(consumerKind));
         try {
             const auto redis = context.redis();
             std::vector<std::string> streams;
             std::map<std::string, std::size_t, std::less<>> streamPartitions;
-            for (auto partition = index; partition < collectorWorkerCount_;
+            for (auto partition = index; partition < message::shard::kCount;
                   partition += workers_.size()) {
-                streams.push_back(message::parsedStream(partition));
+                streams.push_back(consumerStream(partition,consumerKind));
                 streamPartitions.emplace(streams.back(), partition);
                 co_await message::redis::ensureGroup(
-                    redis, streams.back(), kGroup);
+                    redis, streams.back(), group);
             }
             ready->set_value();
             bool recovering = true;
-            const auto consumer = "service-" + std::to_string(index);
+            const auto consumer = service::runtime::instanceId() + ":service-" + std::to_string(index);
             while (running_.load() && !context.stopToken().stopRequested()) {
                 if (streams.empty()) {
                     (void)co_await ruvia::sleepFor(context.worker(), std::chrono::seconds(1));
@@ -275,9 +312,9 @@ class PersistenceRuntime final {
                 try {
                     batches = recovering
                         ? co_await message::redis::claimGroupMany(
-                              redis, streams, kGroup, consumer, kBatchSize)
+                              redis, streams, group, consumer, kBatchSize)
                         : co_await message::redis::readGroupMany(
-                              redis, streams, kGroup, consumer, ">", kBatchSize);
+                              redis, streams, group, consumer, ">", kBatchSize);
                 } catch (const std::exception& error) {
                     if (context.stopToken().stopRequested())
                         break;
@@ -297,7 +334,7 @@ class PersistenceRuntime final {
                 }
                 if (batches.empty()) {
                     co_await service::message::workerStreamMultiplexer().wait(
-                        index, service::message::WorkerStreamTask::Telemetry,
+                        index, wakeTask,
                         context.stopToken());
                     continue;
                 }
@@ -308,9 +345,14 @@ class PersistenceRuntime final {
                         continue;
                     const auto partition = partitionEntry->second;
                     try {
-                        co_await ingest(context, batch.messages);
-                        co_await message::redis::acknowledgeAndDeleteMany(
-                            redis, batch.stream, kGroup, batch.messages);
+                        if (consumerKind != Consumer::Alerts) {
+                            co_await apply(context,consumerKind,batch.messages);
+                            co_await message::redis::acknowledgeAndDeleteMany(redis,batch.stream,group,batch.messages);
+                        } else for (const auto& entry : batch.messages) {
+                            const std::vector<message::StreamMessage> one{entry};
+                            co_await apply(context,consumerKind,one);
+                            co_await message::redis::acknowledgeAndDeleteMany(redis,batch.stream,group,one);
+                        }
                     } catch (const std::exception& error) {
                         std::cerr << "telemetry persistence failed for collector worker " << partition
                                   << ": " << error.what() << '\n';
@@ -387,25 +429,11 @@ occurred_at, data, raw_payload_hex, storage_policy, needs_previous) AS (VALUES )
                              AND current_device.link_id = incoming.link_id
 ), requested AS MATERIALIZED (
   SELECT DISTINCT device_id FROM valid_incoming
-), locks AS MATERIALIZED (
-  SELECT pg_advisory_xact_lock(hashtextextended(device_id::text, 734621))
-  FROM requested
-  ORDER BY device_id
-), seeded AS (
-  INSERT INTO device_data_ingest_state(device_id)
-  SELECT requested.device_id
-  FROM requested
-  CROSS JOIN (SELECT count(*) AS lock_count FROM locks) lock_barrier
-  WHERE lock_barrier.lock_count >= 0
-  ON CONFLICT (device_id) DO NOTHING
-  RETURNING device_id
 ), states AS MATERIALIZED (
   SELECT state.device_id, state.last_stored_at, state.last_observed_at,
          state.last_observed_id, state.last_data
   FROM device_data_ingest_state state
   JOIN requested USING (device_id)
-  CROSS JOIN (SELECT count(*) AS seeded_count FROM seeded) seeded_barrier
-  WHERE seeded_barrier.seeded_count >= 0
 ), ordered AS (
   SELECT incoming.*,
          row_number() OVER (PARTITION BY device_id ORDER BY report_time, id) AS sequence,
@@ -485,9 +513,10 @@ occurred_at, data, raw_payload_hex, storage_policy, needs_previous) AS (VALUES )
 ), inserted AS (
   INSERT INTO device_data(
     report_time, id, device_id, link_id, connection_id, protocol, source,
-    occurred_at, data, raw_payload_hex)
+    occurred_at, data, raw_payload_hex, model_id, model_revision)
   SELECT report_time, id, device_id, link_id, connection_id, protocol, source,
-         occurred_at, data, raw_payload_hex
+         occurred_at, data, raw_payload_hex,
+         (data#>>'{model,id}')::uuid, (data#>>'{model,revision}')::bigint
   FROM filtered WHERE accepted
   ON CONFLICT (id, report_time) DO NOTHING
   RETURNING device_id
@@ -565,7 +594,28 @@ CROSS JOIN (SELECT count(*) AS updated_count FROM state_updated) update_barrier
 CROSS JOIN (SELECT count(*) AS latest_count FROM latest_values) latest_barrier
 WHERE update_barrier.updated_count >= 0 AND latest_barrier.latest_count >= 0
 ORDER BY incoming.input_sequence)sql";
-        const auto rows = co_await context.db().query(sql, params);
+        // Acquire per-device locks before taking the statement snapshot. Seeding
+        // in a data-modifying CTE is invisible to sibling SELECTs and drops a
+        // newly created device's first sample.
+        auto transaction = co_await context.db("telemetry-history").beginTransaction();
+        std::set<std::string_view> deviceIds;
+        for (const auto& value : messages) deviceIds.insert(value.deviceId);
+        std::vector<ruvia::DbValue> deviceParams;
+        std::string requested = "WITH requested(device_id) AS (VALUES ";
+        for (const auto deviceId : deviceIds) {
+            if (!deviceParams.empty()) requested += ',';
+            deviceParams.emplace_back(deviceId);
+            requested += "($" + std::to_string(deviceParams.size()) + "::uuid)";
+        }
+        requested += ") ";
+        (void)co_await transaction.query(requested +
+            "SELECT pg_advisory_xact_lock(hashtextextended(device_id::text,734621)) FROM requested ORDER BY device_id",
+            deviceParams);
+        (void)co_await transaction.execute(requested +
+            "INSERT INTO device_data_ingest_state(device_id) SELECT device_id FROM requested ON CONFLICT(device_id) DO NOTHING",
+            deviceParams);
+        const auto rows = co_await transaction.query(sql, params);
+        co_await transaction.commit();
         std::vector<std::string> previous(messages.size(), "{}");
         for (const auto& row : rows) {
             const auto parsedSequence =

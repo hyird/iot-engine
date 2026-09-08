@@ -71,8 +71,9 @@ int main() {
         require(source.find("p.config->>'commandFastReadDuration'") != std::string::npos &&
                     source.find("p.config->>'commandFastReadInterval'") != std::string::npos,
                 "edge commands do not load the protocol fast-read policy");
-        require(source.find("DeviceCommandWaitDto") != std::string::npos,
-                "command service has no batched wait operation");
+        require(source.find("DeviceCommandStatusesDto") != std::string::npos &&
+                    source.find("milliseconds(100)") == std::string::npos,
+                "command status snapshots must not poll for results");
         require(source.find("DeviceCommandActualValueDto") != std::string::npos &&
                     source.find("actual_value_count") != std::string::npos &&
                     source.find("result.set<\"actualValues\">") != std::string::npos,
@@ -85,8 +86,9 @@ int main() {
         require(types.find("\"actual_values\", actualValues") != std::string::npos,
                 "command response contract omits actual_values");
         const auto client = projectSource("web/pages/iot/device/device.service.ts");
-        require(client.find("waitForDeviceCommands(command.command_ids)") != std::string::npos,
-                "web command flow does not use the batched wait operation");
+        require(client.find("getDeviceCommandStatuses(command.command_ids)") != std::string::npos &&
+                    client.find(".filter((snapshot) => snapshot.complete)") != std::string::npos,
+                "web command flow does not await the terminal SSE snapshot");
         require(client.find("设备回读：") != std::string::npos &&
                     client.find("return result;") != std::string::npos,
                 "web command flow drops the readback response");

@@ -24,16 +24,16 @@
 namespace service::telemetry::latest {
 
 inline constexpr std::string_view kOnlineDeadlinesBase =
-    "iot:schedule:device:online-deadlines";
-inline constexpr std::string_view kRealtimeRevisionKey =
-    "iot:device:realtime:revision";
+    "iot:v2:schedule:device:online-deadlines";
+inline constexpr std::string_view kRealtimeChangesStream =
+    "iot:live:changes";
 
 template <typename Redis>
-ruvia::Task<void> bumpRealtimeRevision(const Redis& redis) {
+ruvia::Task<void> publishRealtimeChange(const Redis& redis) {
     const auto reply = co_await service::message::redis::command(
-        redis, {"INCR", std::string(kRealtimeRevisionKey)});
-    if (reply.kind() != ruvia::RedisValue::Kind::kInteger)
-        service::message::redis::throwValue("increment device realtime revision", reply);
+        redis, {"XADD", std::string(kRealtimeChangesStream), "MAXLEN", "~", "100000", "*", "topic", "device"});
+    if (reply.kind() != ruvia::RedisValue::Kind::kString)
+        service::message::redis::throwValue("publish device change", reply);
 }
 
 inline std::string onlineDeadlinesKey(std::size_t shardIndex) {
@@ -41,12 +41,12 @@ inline std::string onlineDeadlinesKey(std::size_t shardIndex) {
            std::to_string(shardIndex);
 }
 
-inline std::string latestKey(std::string_view deviceCode) {
-    return "iot:device:" + std::string(deviceCode) + ":latest";
+inline std::string latestKey(std::string_view deviceId) {
+    return "iot:v2:device:" + std::string(deviceId) + ":latest";
 }
 
-inline std::string runtimeKey(std::string_view deviceCode) {
-    return "iot:runtime:device:" + std::string(deviceCode);
+inline std::string runtimeKey(std::string_view deviceId) {
+    return "iot:v2:runtime:device:" + std::string(deviceId);
 }
 
 inline std::string jsonEscape(std::string_view value) {
@@ -149,29 +149,29 @@ ruvia::Task<void> initializeDevice(const Redis& redis, std::string_view deviceId
                                    std::string_view deviceCode) {
     const auto now = std::to_string(service::message::utcNowMilliseconds());
     co_await service::message::redis::setHash(
-        redis, runtimeKey(deviceCode),
+        redis, runtimeKey(deviceId),
         {{"device_id", std::string(deviceId)},
          {"device_code", std::string(deviceCode)},
          {"state", "offline"},
          {"state_reason", "no_connection"},
          {"updated_at_ms", now}});
     co_await service::message::redis::setHash(
-        redis, latestKey(deviceCode),
+        redis, latestKey(deviceId),
         {{"_device_id", std::string(deviceId)},
          {"_device_code", std::string(deviceCode)},
          {"_state", stateJson("offline", "no_connection", {}, {}, now)},
          {"_updated_at_ms", now}});
-    co_await bumpRealtimeRevision(redis);
+    co_await publishRealtimeChange(redis);
 }
 
 template <typename Redis>
-ruvia::Task<void> eraseDevice(const Redis& redis, std::string_view deviceCode) {
-    co_await service::message::redis::eraseHash(redis, runtimeKey(deviceCode));
-    co_await service::message::redis::eraseHash(redis, latestKey(deviceCode));
+ruvia::Task<void> eraseDevice(const Redis& redis, std::string_view deviceId) {
+    co_await service::message::redis::eraseHash(redis, runtimeKey(deviceId));
+    co_await service::message::redis::eraseHash(redis, latestKey(deviceId));
     (void)co_await service::message::redis::command(
-        redis, {"ZREM", onlineDeadlinesKey(service::message::shard::index(deviceCode)),
-                std::string(deviceCode)});
-    co_await bumpRealtimeRevision(redis);
+        redis, {"ZREM", onlineDeadlinesKey(service::message::shard::index(deviceId)),
+                std::string(deviceId)});
+    co_await publishRealtimeChange(redis);
 }
 
 template <typename Redis>
@@ -202,8 +202,8 @@ local function point_value(value, data_type)
   return tostring(value)
 end
 local payload = cjson.decode(ARGV[8])
-local runtime_key = 'iot:runtime:device:' .. ARGV[2]
-local latest_key = 'iot:device:' .. ARGV[2] .. ':latest'
+local runtime_key = 'iot:v2:runtime:device:' .. ARGV[1]
+local latest_key = 'iot:v2:device:' .. ARGV[1] .. ':latest'
 if redis.call('HGET', runtime_key, 'device_id') ~= ARGV[1] then
   return -1
 end
@@ -245,7 +245,7 @@ if observed_at >= current_report then
   redis.call('HSET', latest_key,
     '_device_id', ARGV[1], '_device_code', ARGV[2],
     '_state', state_json, '_updated_at_ms', ARGV[5])
-  redis.call('ZADD', deadlines_key, online_until, ARGV[2])
+  redis.call('ZADD', deadlines_key, online_until, ARGV[1])
   if wake then
     redis.call('XADD', KEYS[2],
                'MAXLEN', '~', '100000', '*', 'task', 'freshness')
@@ -298,7 +298,7 @@ for element_id, point in pairs(payload.values or {}) do
   end
 end
 if observed_at >= current_report then touched = true end
-if touched then redis.call('INCR', KEYS[3]) end
+if touched then redis.call('XADD', KEYS[3], 'MAXLEN', '~', '100000', '*', 'topic', 'device') end
 return count
     )lua";
     const auto scriptSha = co_await redis.scriptLoad(script);
@@ -307,13 +307,13 @@ return count
         const auto observedAt = std::to_string(parsed.observedAtMs);
         const auto updatedAt = std::to_string(service::message::utcNowMilliseconds());
         const auto onlineWindow = std::to_string(parsed.onlineWindowMs);
-        const auto shardIndex = service::message::shard::index(parsed.deviceCode);
+        const auto shardIndex = service::message::shard::index(parsed.deviceId);
         const auto deadlinesKey = onlineDeadlinesKey(shardIndex);
         const auto wakeStream = service::message::workerWakeStream(
             service::message::workerForPartition(shardIndex));
         const std::array<std::string_view, 14> command{
             "EVALSHA",    scriptSha,         "3",          deadlinesKey,
-            wakeStream,    kRealtimeRevisionKey, parsed.deviceId,
+            wakeStream,    kRealtimeChangesStream, parsed.deviceId,
             parsed.deviceCode, parsed.protocol,    observedAt,   updatedAt,
             parsed.source, onlineWindow,      parsed.valuesJson};
         // RedisPipeline copies every argument synchronously.
@@ -340,8 +340,8 @@ local function number_or(value, fallback)
   if number == nil then return fallback end
   return number
 end
-local runtime_key = 'iot:runtime:device:' .. ARGV[1]
-local latest_key = 'iot:device:' .. ARGV[1] .. ':latest'
+local runtime_key = 'iot:v2:runtime:device:' .. ARGV[1]
+local latest_key = 'iot:v2:device:' .. ARGV[1] .. ':latest'
 local expected = tonumber(redis.call('HGET', runtime_key, 'online_until_ms') or '-1')
 local now = tonumber(ARGV[2])
 if expected <= now then
@@ -356,7 +356,7 @@ if expected <= now then
              'updated_at_ms', ARGV[2])
   redis.call('HSET', latest_key, '_state', state_json, '_updated_at_ms', ARGV[2])
   redis.call('ZREM', KEYS[1], ARGV[1])
-  redis.call('INCR', KEYS[2])
+  redis.call('XADD', KEYS[2], 'MAXLEN', '~', '100000', '*', 'topic', 'device')
   return 1
 end
 redis.call('ZADD', KEYS[1], expected, ARGV[1])
@@ -370,7 +370,7 @@ return 0
         if (code.kind() != ruvia::RedisValue::Kind::kString)
             continue;
         const std::array<std::string_view, 7> command{
-            "EVALSHA", scriptSha, "2", deadlineKey, kRealtimeRevisionKey,
+            "EVALSHA", scriptSha, "2", deadlineKey, kRealtimeChangesStream,
             code.string(), now};
         pipeline.command(command);
     }
@@ -430,7 +430,6 @@ WHERE d.deleted_at IS NULL)sql" +
         co_return;
 
     std::set<std::string, std::less<>> recoveryDeviceIds;
-    std::set<std::string, std::less<>> recoveryDeviceCodes;
     std::map<std::string, std::string, std::less<>> preservedDeadlines;
     if (preserveExisting) {
         auto existencePipeline = redis.pipeline();
@@ -438,12 +437,12 @@ WHERE d.deleted_at IS NULL)sql" +
         existenceCommands.reserve(devices.size() * 2);
         for (const auto& row : devices) {
             existenceCommands.push_back(
-                {"HMGET", latestKey(row[1].value().value_or(std::string_view{})), "_device_id", "_element_ids"});
+                {"HMGET", latestKey(row[0].value().value_or(std::string_view{})), "_device_id", "_element_ids"});
             std::vector<std::string_view> views(existenceCommands.back().begin(),
                                                 existenceCommands.back().end());
             existencePipeline.command(views);
             existenceCommands.push_back(
-                {"HMGET", runtimeKey(row[1].value().value_or(std::string_view{})), "device_id", "online_until_ms"});
+                {"HMGET", runtimeKey(row[0].value().value_or(std::string_view{})), "device_id", "online_until_ms"});
             std::vector<std::string_view> runtimeViews(existenceCommands.back().begin(),
                                                        existenceCommands.back().end());
             existencePipeline.command(runtimeViews);
@@ -467,24 +466,21 @@ WHERE d.deleted_at IS NULL)sql" +
                 replies[runtimeIndex].array()[0].string() == row[0].value().value_or(std::string_view{});
             if (!matches) {
                 recoveryDeviceIds.emplace(row[0].value().value_or(std::string_view{}));
-                recoveryDeviceCodes.emplace(row[1].value().value_or(std::string_view{}));
             } else if (replies[runtimeIndex].array()[1].kind() ==
                        ruvia::RedisValue::Kind::kString) {
                 const auto deadline = service::common::parseInt64(
                     std::optional<std::string_view>{replies[runtimeIndex].array()[1].string()});
                 if (deadline) {
-                    preservedDeadlines.insert_or_assign(std::string(row[1].value().value_or(std::string_view{})),
+                    preservedDeadlines.insert_or_assign(std::string(row[0].value().value_or(std::string_view{})),
                                                         std::to_string(*deadline));
                 } else {
                     recoveryDeviceIds.emplace(row[0].value().value_or(std::string_view{}));
-                    recoveryDeviceCodes.emplace(row[1].value().value_or(std::string_view{}));
                 }
             }
         }
     } else {
         for (const auto& row : devices) {
             recoveryDeviceIds.emplace(row[0].value().value_or(std::string_view{}));
-            recoveryDeviceCodes.emplace(row[1].value().value_or(std::string_view{}));
         }
     }
 
@@ -497,35 +493,35 @@ WHERE d.deleted_at IS NULL)sql" +
         const std::string deviceId(row[0].value().value_or(std::string_view{}));
         const std::string deviceCode(row[1].value().value_or(std::string_view{}));
         onlineWindows.insert_or_assign(
-            deviceCode,
+            deviceId,
             service::common::parseInt64(std::optional<std::string_view>{row[2].value().value_or(std::string_view{})})
                 .value_or(300000));
-        elementIds.insert_or_assign(deviceCode, std::vector<std::string>{});
+        elementIds.insert_or_assign(deviceId, std::vector<std::string>{});
         if (recoveryDeviceIds.contains(deviceId)) {
-            metaCommands.push_back({"DEL", latestKey(deviceCode)});
+            metaCommands.push_back({"DEL", latestKey(deviceId)});
             std::vector<std::string_view> views(metaCommands.back().begin(),
                                                 metaCommands.back().end());
             metaPipeline.command(views);
-            metaCommands.push_back({"DEL", runtimeKey(deviceCode)});
+            metaCommands.push_back({"DEL", runtimeKey(deviceId)});
             std::vector<std::string_view> runtimeViews(metaCommands.back().begin(),
                                                        metaCommands.back().end());
             metaPipeline.command(runtimeViews);
         }
-        metaCommands.push_back({"HSET", latestKey(deviceCode), "_device_id", deviceId,
+        metaCommands.push_back({"HSET", latestKey(deviceId), "_device_id", deviceId,
                                 "_device_code", deviceCode, "_updated_at_ms", now});
         {
             std::vector<std::string_view> views(metaCommands.back().begin(),
                                                 metaCommands.back().end());
             metaPipeline.command(views);
         }
-        metaCommands.push_back({"HSETNX", latestKey(deviceCode), "_state",
+        metaCommands.push_back({"HSETNX", latestKey(deviceId), "_state",
                                 stateJson("offline", "no_data", {}, {}, now)});
         {
             std::vector<std::string_view> views(metaCommands.back().begin(),
                                                 metaCommands.back().end());
             metaPipeline.command(views);
         }
-        metaCommands.push_back({"HSET", runtimeKey(deviceCode), "device_id", deviceId,
+        metaCommands.push_back({"HSET", runtimeKey(deviceId), "device_id", deviceId,
                                 "device_code", deviceCode, "updated_at_ms", now});
         if (resetRuntime || recoveryDeviceIds.contains(deviceId)) {
             metaCommands.back().push_back("state");
@@ -542,16 +538,16 @@ WHERE d.deleted_at IS NULL)sql" +
         }
         if (recoveryDeviceIds.contains(deviceId)) {
             metaCommands.push_back(
-                {"ZREM", onlineDeadlinesKey(service::message::shard::index(deviceCode)),
-                 deviceCode});
+                {"ZREM", onlineDeadlinesKey(service::message::shard::index(deviceId)),
+                 deviceId});
             std::vector<std::string_view> views(metaCommands.back().begin(),
                                                 metaCommands.back().end());
             metaPipeline.command(views);
-        } else if (preservedDeadlines.contains(deviceCode)) {
+        } else if (preservedDeadlines.contains(deviceId)) {
             metaCommands.push_back({"ZADD",
                                     onlineDeadlinesKey(
-                                        service::message::shard::index(deviceCode)),
-                                    preservedDeadlines.at(deviceCode), deviceCode});
+                                        service::message::shard::index(deviceId)),
+                                    preservedDeadlines.at(deviceId), deviceId});
             std::vector<std::string_view> views(metaCommands.back().begin(),
                                                 metaCommands.back().end());
             metaPipeline.command(views);
@@ -565,7 +561,7 @@ WITH configured AS (
          p.protocol, element,
          1 AS protocol_order, position AS function_order, 0::bigint AS element_order
   FROM device d
-  JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'Modbus'
+  JOIN device_model p ON p.device_id = d.id AND p.protocol = 'Modbus'
   CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]'::jsonb))
     WITH ORDINALITY AS entry(element, position)
   WHERE d.deleted_at IS NULL)sql" +
@@ -574,7 +570,7 @@ WITH configured AS (
   SELECT d.id, d.protocol_params->>'device_code', p.protocol,
          element, 2, position, 0::bigint
   FROM device d
-  JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'S7'
+  JOIN device_model p ON p.device_id = d.id AND p.protocol = 'S7'
   CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]'::jsonb))
     WITH ORDINALITY AS entry(element, position)
   WHERE d.deleted_at IS NULL)sql" +
@@ -583,7 +579,7 @@ WITH configured AS (
   SELECT d.id, d.protocol_params->>'device_code', p.protocol, element, 3,
          function_position, element_position
   FROM device d
-  JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'SL651'
+  JOIN device_model p ON p.device_id = d.id AND p.protocol = 'SL651'
   CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]'::jsonb))
     WITH ORDINALITY AS functions(function, function_position)
   CROSS JOIN LATERAL jsonb_array_elements(
@@ -683,11 +679,11 @@ return 1
     commands.reserve(elements.size() + elementIds.size());
     std::map<std::string, std::int64_t, std::less<>> lastReports;
     for (const auto& row : elements) {
-        const std::string deviceCode(row[1].value().value_or(std::string_view{}));
+        const std::string deviceId(row[0].value().value_or(std::string_view{}));
         const std::string elementId(row[3].value().value_or(std::string_view{}));
-        elementIds[deviceCode].push_back(elementId);
+        elementIds[deviceId].push_back(elementId);
         commands.push_back({"EVAL", std::string(kRefreshElementMetadataScript), "1",
-                            latestKey(deviceCode), elementId, std::string(row[13].value().value_or(std::string_view{}))});
+                            latestKey(deviceId), elementId, std::string(row[13].value().value_or(std::string_view{}))});
         std::vector<std::string_view> views;
         views.reserve(commands.back().size());
         for (const auto& argument : commands.back())
@@ -697,13 +693,13 @@ return 1
             const auto parsed = service::common::parseInt64(
                 std::optional<std::string_view>{row[7].value().value_or(std::string_view{})});
             if (parsed) {
-                auto& lastReport = lastReports[deviceCode];
+                auto& lastReport = lastReports[deviceId];
                 lastReport = std::max(lastReport, *parsed);
             }
         }
     }
-    for (const auto& [deviceCode, ids] : elementIds) {
-        commands.push_back({"HSET", latestKey(deviceCode), "_element_ids", jsonKeySet(ids)});
+    for (const auto& [deviceId, ids] : elementIds) {
+        commands.push_back({"HSET", latestKey(deviceId), "_element_ids", jsonKeySet(ids)});
         std::vector<std::string_view> views;
         views.reserve(commands.back().size());
         for (const auto& argument : commands.back())
@@ -717,9 +713,9 @@ return 1
         auto reportPipeline = redis.pipeline();
         std::vector<std::vector<std::string>> reportCommands;
         reportCommands.reserve(lastReports.size() * 2);
-        for (const auto& [deviceCode, lastReport] : lastReports) {
+        for (const auto& [deviceId, lastReport] : lastReports) {
             const auto window =
-                onlineWindows.contains(deviceCode) ? onlineWindows.at(deviceCode) : 300000;
+                onlineWindows.contains(deviceId) ? onlineWindows.at(deviceId) : 300000;
             const auto onlineUntil = lastReport + window;
             const auto online = onlineUntil >= nowMs;
             const auto state = online ? std::string_view("online") : std::string_view("offline");
@@ -727,13 +723,13 @@ return 1
             const auto lastReportText = std::to_string(lastReport);
             const auto onlineUntilText = std::to_string(onlineUntil);
             reportCommands.push_back(
-                {"HSET", runtimeKey(deviceCode), "last_report_at_ms", lastReportText,
+                {"HSET", runtimeKey(deviceId), "last_report_at_ms", lastReportText,
                  "online_until_ms", onlineUntilText, "state", std::string(state), "state_reason",
                  std::string(reason), "updated_at_ms", now});
             std::vector<std::string_view> views(reportCommands.back().begin(),
                                                 reportCommands.back().end());
             reportPipeline.command(views);
-            reportCommands.push_back({"HSET", latestKey(deviceCode), "_state",
+            reportCommands.push_back({"HSET", latestKey(deviceId), "_state",
                                       stateJson(state, reason, lastReportText, onlineUntilText, now),
                                       "_updated_at_ms", now});
             std::vector<std::string_view> latestViews(reportCommands.back().begin(),
@@ -741,8 +737,8 @@ return 1
             reportPipeline.command(latestViews);
             reportCommands.push_back({"ZADD",
                                       onlineDeadlinesKey(
-                                          service::message::shard::index(deviceCode)),
-                                       std::to_string(onlineUntil), deviceCode});
+                                          service::message::shard::index(deviceId)),
+                                       std::to_string(onlineUntil), deviceId});
             std::vector<std::string_view> deadlineViews(reportCommands.back().begin(),
                                                         reportCommands.back().end());
             reportPipeline.command(deadlineViews);
@@ -755,7 +751,7 @@ return 1
             row[1].value().value_or(std::string_view{})));
     for (const auto shardIndex : changedShards)
         co_await signalFreshness(redis, shardIndex);
-    co_await bumpRealtimeRevision(redis);
+    co_await publishRealtimeChange(redis);
 }
 
 template <typename Context> ruvia::Task<void> projectDevice(Context& context, std::string_view id) {

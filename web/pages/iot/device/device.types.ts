@@ -76,6 +76,7 @@ export interface DeviceItem extends EdgeConnection {
     target_id?: string;
     /** 关联协议配置 ID */
     protocol_config_id: string;
+    protocol_revision: number;
     /** 启用状态 */
     status: DeviceStatus;
     /** 所属分组 ID */
@@ -141,12 +142,13 @@ export interface DeviceQuery extends PageParams {
 }
 
 /** 创建设备 DTO */
-export interface CreateDeviceDto extends EdgeConnection {
+export interface CreateDeviceDto {
     name: string;
     device_code: string;
     link_id?: string;
     target_id?: string;
     protocol_config_id: string;
+    protocol_revision: number;
     group_id?: string | null;
     status?: DeviceStatus;
     /** 在线超时时间（秒），默认 300 秒（5分钟） */
@@ -167,7 +169,7 @@ export interface CreateDeviceDto extends EdgeConnection {
 }
 
 /** 更新设备 DTO */
-export interface UpdateDeviceDto extends EdgeConnection {
+export interface UpdateDeviceDto {
     name?: string;
     device_code?: string;
     link_id?: string;
@@ -204,6 +206,7 @@ export interface DeviceStaticData extends EdgeConnection {
     link_id: string;
     target_id?: string;
     protocol_config_id: string;
+    protocol_revision: number;
     status: DeviceStatus;
     group_id?: string | null;
     online_timeout?: number;
@@ -392,12 +395,13 @@ export interface ReplaceDeviceSharesDto {
 
 /** 指令下发参数 */
 export interface CommandPayload {
+    idempotency_key?: string;
     elements: Array<{ elementId: string; value: string }>;
 }
 
 export interface CommandCreateResult {
     command_ids: string[];
-    status: 'PENDING';
+    status: 'ACCEPTED';
 }
 
 export interface CommandStatusResult {
@@ -405,7 +409,7 @@ export interface CommandStatusResult {
     device_id: string;
     device_code: string;
     protocol: Protocol.Type;
-    status: 'PENDING' | 'SUCCESS' | 'FAILED';
+    status: 'ACCEPTED' | 'DISPATCHING' | 'AWAITING_RESULT' | 'SUCCEEDED' | 'REJECTED' | 'UNKNOWN' | 'READBACK_MISMATCH' | 'FAILED';
     reason?: string;
     created_at_ms?: number;
     completed_at_ms?: number;
@@ -418,7 +422,7 @@ export interface CommandStatusResult {
     }>;
 }
 
-export interface CommandWaitResult {
+export interface CommandStatusesResult {
     complete: boolean;
     statuses: CommandStatusResult[];
 }
@@ -436,7 +440,7 @@ export interface HistoryDeviceItem {
 }
 
 /** 指令状态 */
-export type CommandStatus = 'PENDING' | 'SUCCESS' | 'FAILED';
+export type CommandStatus = 'ACCEPTED' | 'DISPATCHING' | 'AWAITING_RESULT' | 'SUCCEEDED' | 'REJECTED' | 'UNKNOWN' | 'READBACK_MISMATCH' | 'FAILED';
 
 /** 要素历史记录 */
 export interface ElementRecord {
@@ -518,7 +522,7 @@ type ReplaceDeviceSharesDtoType = ReplaceDeviceSharesDto;
 type DeviceCommandStatus = CommandStatus;
 type DeviceCommandCreateResult = CommandCreateResult;
 type DeviceCommandStatusResult = CommandStatusResult;
-type DeviceCommandWaitResult = CommandWaitResult;
+type DeviceCommandStatusesResult = CommandStatusesResult;
 type DeviceHistoryRecord = HistoryRecord;
 type DeviceHistoryPointValue = HistoryPointValue;
 type DeviceHistoryRecordQuery = DeviceHistoryQuery;
@@ -553,7 +557,7 @@ export namespace Device {
     export type Command = CommandPayload;
     export type CommandCreateResult = DeviceCommandCreateResult;
     export type CommandStatusResult = DeviceCommandStatusResult;
-    export type CommandWaitResult = DeviceCommandWaitResult;
+    export type CommandStatusesResult = DeviceCommandStatusesResult;
     export type CommandOperation = DeviceCommandOperation;
     export type CommandOperationElement = DeviceCommandOperationElement;
     export type ImageOperation = DeviceImageOperation;

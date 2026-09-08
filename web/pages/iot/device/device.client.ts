@@ -1,8 +1,8 @@
+import { liveRead } from '@/utils/live-request';
+import { LiveResource } from '@/utils/live-resource';
 import request from '@/utils/http';
 import { appendQueryParams } from '@/utils/query';
-import { consumeServerSentEvents } from '@/utils/sse';
 import type { PaginatedResult } from '@/utils/types';
-import { useAuthStore } from '@/store/authStore';
 import {
     deviceCommandSchema,
     deviceIdSchema,
@@ -28,50 +28,13 @@ const buildTree = (items: DeviceGroup.TreeItem[]) => {
     return roots;
 };
 
-export const getDeviceList = () => request.get<PaginatedResult<Device.RealTimeData>>(DEVICE_BASE);
+export const getDeviceList = () => liveRead<PaginatedResult<Device.RealTimeData>>(DEVICE_BASE);
 export const getDeviceRealtime = () =>
-    request.get<PaginatedResult<Device.Realtime>>(`${DEVICE_BASE}/realtime`);
-export async function subscribeDeviceRealtime(
-    onEvent: (event: 'ready' | 'realtime') => void,
-    signal: AbortSignal
-) {
-    let refreshed = false;
-    for (;;) {
-        const token = useAuthStore.getState().token;
-        if (!token) throw new Error('登录状态已失效');
-
-        const response = await fetch(`${DEVICE_BASE}/realtime/events`, {
-            cache: 'no-store',
-            credentials: 'same-origin',
-            headers: {
-                Accept: 'text/event-stream',
-                Authorization: `Bearer ${token}`,
-            },
-            signal,
-        });
-        if (response.status === 401 && !refreshed) {
-            refreshed = true;
-            if (await useAuthStore.getState().refreshAccessToken()) continue;
-        }
-        if (!response.ok) throw new Error(`设备实时事件连接失败（HTTP ${response.status}）`);
-        if (!response.body) throw new Error('浏览器不支持设备实时事件流');
-        const contentType = response.headers.get('content-type') ?? '';
-        if (!contentType.includes('text/event-stream')) throw new Error('设备实时事件响应格式错误');
-
-        await consumeServerSentEvents(
-            response.body,
-            (event) => {
-                if (event.event === 'ready' || event.event === 'realtime') onEvent(event.event);
-            },
-            signal
-        );
-        return;
-    }
-}
+    liveRead<PaginatedResult<Device.Realtime>>(`${DEVICE_BASE}/realtime`);
 export const getDeviceDetail = (id: string) =>
-    request.get<Device.RealTimeData>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}`);
+    liveRead<Device.RealTimeData>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}`);
 export const getDeviceHistory = (id: string, query: Device.HistoryRecordQuery) =>
-    request.get<PaginatedResult<Device.HistoryRecord>>(
+    liveRead<PaginatedResult<Device.HistoryRecord>>(
         appendQueryParams(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}/history`, query)
     );
 export const createDevice = (data: Device.CreateDto) =>
@@ -83,34 +46,41 @@ export const removeDevice = (id: string) =>
 export const createDeviceCommand = (id: string, data: Device.Command) =>
     request.post<Device.CommandCreateResult>(
         `${DEVICE_BASE}/${deviceIdSchema.parse(id)}/commands`,
-        deviceCommandSchema.parse(data)
+        { ...deviceCommandSchema.parse(data), idempotency_key: data.idempotency_key ?? crypto.randomUUID() }
     );
 export const getDeviceCommandStatus = (id: string) =>
-    request.get<Device.CommandStatusResult>(`${DEVICE_BASE}/commands/${deviceIdSchema.parse(id)}`, {
+    liveRead<Device.CommandStatusResult>(`${DEVICE_BASE}/commands/${deviceIdSchema.parse(id)}`, {
         _silent: true,
     });
-export const waitForDeviceCommands = (commandIds: string[], timeoutMs = 60_000) =>
-    request.post<Device.CommandWaitResult>(
-        `${DEVICE_BASE}/commands/wait`,
-        { command_ids: commandIds.map((id) => deviceIdSchema.parse(id)), timeout_ms: timeoutMs },
-        { timeout: timeoutMs + 5_000, _silent: true }
-    );
+export const getDeviceCommandStatuses = (commandIds: string[]) => {
+    const ids = [...new Set(commandIds.map((id) => deviceIdSchema.parse(id)))];
+    if (!ids.length) return LiveResource.value<Device.CommandStatusesResult>({ complete: true, statuses: [] });
+    // Keep each request line below common reverse-proxy limits, including URL encoding.
+    const batches: LiveResource<Device.CommandStatusesResult>[] = [];
+    for (let offset = 0; offset < ids.length; offset += 64) {
+        batches.push(liveRead<Device.CommandStatusesResult>(appendQueryParams(
+            `${DEVICE_BASE}/commands`, { ids: ids.slice(offset, offset + 64).join(',') }
+        ), { _silent: true }));
+    }
+    return LiveResource.combine(batches).map((snapshots) => ({
+        complete: snapshots.every((snapshot) => snapshot.complete),
+        statuses: snapshots.flatMap((snapshot) => snapshot.statuses),
+    }));
+};
 export const getDeviceShares = (id: string) =>
-    request.get<Device.ShareItem[]>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}/shares`);
+    liveRead<Device.ShareItem[]>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}/shares`);
 export const getDeviceShareTargets = (id: string) =>
-    request.get<Device.ShareTarget[]>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}/share-targets`);
+    liveRead<Device.ShareTarget[]>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}/share-targets`);
 export const replaceDeviceShares = (id: string, data: Device.ReplaceSharesDto) =>
     request.put<void>(
         `${DEVICE_BASE}/${deviceIdSchema.parse(id)}/shares`,
         replaceDeviceSharesSchema.parse(data)
     );
 
-export const getDeviceGroupTree = async (withCount = false) =>
-    buildTree(
-        await request.get<DeviceGroup.TreeItem[]>(
-            `${GROUP_BASE}/${withCount ? 'tree-count' : 'tree'}`
-        )
-    );
+export const getDeviceGroupTree = (withCount = false) =>
+    liveRead<DeviceGroup.TreeItem[]>(
+        `${GROUP_BASE}/${withCount ? 'tree-count' : 'tree'}`
+    ).map(buildTree);
 export const createDeviceGroup = (data: DeviceGroup.CreateDto) =>
     request.post<void>(GROUP_BASE, saveDeviceGroupSchema.parse(data));
 export const updateDeviceGroup = (id: string, data: DeviceGroup.UpdateDto) =>
@@ -121,9 +91,9 @@ export const updateDeviceGroup = (id: string, data: DeviceGroup.UpdateDto) =>
 export const removeDeviceGroup = (id: string) =>
     request.delete<void>(`${GROUP_BASE}/${deviceIdSchema.parse(id)}`);
 export const getDeviceGroupShares = (id: string) =>
-    request.get<Device.ShareItem[]>(`${GROUP_BASE}/${deviceIdSchema.parse(id)}/shares`);
+    liveRead<Device.ShareItem[]>(`${GROUP_BASE}/${deviceIdSchema.parse(id)}/shares`);
 export const getDeviceGroupShareTargets = (id: string) =>
-    request.get<Device.ShareTarget[]>(`${GROUP_BASE}/${deviceIdSchema.parse(id)}/share-targets`);
+    liveRead<Device.ShareTarget[]>(`${GROUP_BASE}/${deviceIdSchema.parse(id)}/share-targets`);
 export const replaceDeviceGroupShares = (id: string, data: Device.ReplaceSharesDto) =>
     request.put<void>(
         `${GROUP_BASE}/${deviceIdSchema.parse(id)}/shares`,

@@ -69,7 +69,6 @@ import {
     useDeviceHistory,
     useDeviceList,
     useDeviceRealtime,
-    useDeviceRealtimeEvents,
     useDeviceSave,
     useDeviceShares,
     useDeviceShareTargets,
@@ -82,15 +81,14 @@ import type { DeviceGroup } from './device-group.types';
 const { Search } = Input;
 const EMPTY_DEVICE_LIST: Device.RealTimeData[] = [];
 const EMPTY_COMMAND_OPERATIONS: Device.CommandOperation[] = [];
-const DEVICE_CARD_GRID_CLASS = 'grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-4';
+const DEVICE_CARD_GRID_CLASS =
+    'grid grid-cols-1 items-stretch gap-3 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4';
 const DEVICE_CARD_ACTION_BUTTON_CLASS =
     '!flex !h-8 !w-8 items-center justify-center !rounded-md text-slate-500 hover:!bg-slate-100 hover:!text-slate-900';
 const DEVICE_CARD_DANGER_BUTTON_CLASS =
     '!flex !h-8 !w-8 items-center justify-center !rounded-md hover:!bg-red-50';
 const WIDE_DEVICE_CARD_ITEM_COUNT = 18;
 const DEVICE_VIRTUAL_ROW_GAP = 12;
-const DEVICE_LIST_POLLING_INTERVAL = 5000;
-const DEVICE_REALTIME_FALLBACK_INTERVAL = 30_000;
 
 interface DeviceProtocolStats {
     total: number;
@@ -912,7 +910,9 @@ const DeviceGridItem = memo(
             !!device.registration.content?.trim();
 
         return (
-            <div className={`flex flex-col ${wide ? 'xl:col-span-2' : ''}`}>
+            <div
+                className={`flex h-full min-w-0 flex-col ${wide ? 'lg:col-span-2' : ''}`}
+            >
                 <DeviceCard
                     title={
                         <Flex
@@ -922,9 +922,11 @@ const DeviceGridItem = memo(
                             className="w-full min-w-0"
                         >
                             <div className="min-w-0 flex-1 pr-1 text-left">
-                                <div className="whitespace-normal break-words leading-5">
-                                    {device.name}
-                                </div>
+                                <Tooltip title={device.name}>
+                                    <div className="truncate whitespace-nowrap leading-5">
+                                        {device.name}
+                                    </div>
+                                </Tooltip>
                                 <div className="mt-0.5 min-w-0 text-xs font-normal leading-4 text-slate-400">
                                     <div className="truncate">编码：{device.device_code}</div>
                                     <Tooltip title={`设备 ID：${device.id}`}>
@@ -1109,7 +1111,8 @@ interface DeviceGridProps extends Omit<DeviceGridItemProps, 'device' | 'online'>
 
 const getDeviceColumnCount = () => {
     if (window.matchMedia('(min-width: 1536px)').matches) return 4;
-    if (window.matchMedia('(min-width: 1280px)').matches) return 2;
+    if (window.matchMedia('(min-width: 1280px)').matches) return 3;
+    if (window.matchMedia('(min-width: 1024px)').matches) return 2;
     return 1;
 };
 
@@ -1118,11 +1121,14 @@ const useResponsiveDeviceColumnCount = () => {
 
     useEffect(() => {
         const updateColumnCount = () => setColumnCount(getDeviceColumnCount());
+        const tabletQuery = window.matchMedia('(min-width: 1024px)');
         const desktopQuery = window.matchMedia('(min-width: 1280px)');
         const wideQuery = window.matchMedia('(min-width: 1536px)');
+        tabletQuery.addEventListener('change', updateColumnCount);
         desktopQuery.addEventListener('change', updateColumnCount);
         wideQuery.addEventListener('change', updateColumnCount);
         return () => {
+            tabletQuery.removeEventListener('change', updateColumnCount);
             desktopQuery.removeEventListener('change', updateColumnCount);
             wideQuery.removeEventListener('change', updateColumnCount);
         };
@@ -1136,14 +1142,15 @@ const buildDeviceRows = (devices: Device.RealTimeData[], columnCount: number) =>
     let row: Device.RealTimeData[] = [];
     let occupiedColumns = 0;
 
-    for (const device of devices) {
+    devices.forEach((device) => {
         const wide = getDeviceDisplayElementCount(device) >= WIDE_DEVICE_CARD_ITEM_COUNT;
         const span = wide && columnCount > 1 ? 2 : 1;
-        if (row.length > 0 && occupiedColumns + span > columnCount) {
+        if (row.length && occupiedColumns + span > columnCount) {
             rows.push(row);
             row = [];
             occupiedColumns = 0;
         }
+
         row.push(device);
         occupiedColumns += span;
         if (occupiedColumns >= columnCount) {
@@ -1151,8 +1158,9 @@ const buildDeviceRows = (devices: Device.RealTimeData[], columnCount: number) =>
             row = [];
             occupiedColumns = 0;
         }
-    }
-    if (row.length > 0) rows.push(row);
+    });
+
+    if (row.length) rows.push(row);
     return rows;
 };
 
@@ -1283,7 +1291,6 @@ const DevicePage = () => {
         enabled: canQuery,
         // Device metadata is stable between edits. Realtime polling below keeps the page fresh
         // without repeatedly rebuilding and transferring the complete device list.
-        pollingInterval: false,
     });
     const {
         data: realtimeData,
@@ -1291,19 +1298,13 @@ const DevicePage = () => {
         refetch: refetchRealtime,
     } = useDeviceRealtime({
         enabled: canQuery && !!data,
-        // SSE drives normal updates; this low-frequency poll repairs any event missed
-        // while a proxy or mobile network is reconnecting.
-        pollingInterval: DEVICE_REALTIME_FALLBACK_INTERVAL,
     });
-    useDeviceRealtimeEvents({ enabled: canQuery && !!data });
     const { data: groupTree = [] } = useDeviceGroupTreeWithCount({
         enabled: canQuery,
-        refetchInterval: DEVICE_LIST_POLLING_INTERVAL,
         refetchOnWindowFocus: false,
     });
     const { data: linkOptions = [] } = useLinkOptions({
         enabled: canQuery,
-        refetchInterval: DEVICE_LIST_POLLING_INTERVAL,
         refetchOnWindowFocus: false,
     });
     const saveMutation = useDeviceSave();
@@ -1427,7 +1428,7 @@ const DevicePage = () => {
         setEditing(null);
     };
     const save = (values: DeviceFormValues) => {
-        const { connection_mode: _connectionMode, edge_protocol: _edgeProtocol, ...dto } = values;
+        const dto = values;
         saveMutation.mutate({ ...dto, id: editing?.id }, { onSuccess: closeForm });
     };
     const remove = useCallback(

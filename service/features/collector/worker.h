@@ -29,6 +29,7 @@
 #include "service/features/collector/tcp.h"
 #include "service/features/collector/modbus.h"
 #include "service/features/collector/engine.h"
+#include "service/features/collector/ownership.h"
 #include "service/features/collector/s7.h"
 #include "service/features/collector/sl651.h"
 #include "service/features/collector/stream.h"
@@ -95,9 +96,9 @@ class Worker final {
             for (const auto& deviceCode : deviceCodes)
                 co_await markDeviceOffline(deviceCode, connectionId, "local_closed");
         routes_.clear();
-        co_await message::redis::eraseMatching(redis_, "iot:runtime:link:*:worker:" +
+        co_await message::redis::eraseMatching(redis_, "iot:runtime:link:*:worker:" + service::runtime::instanceId() + ":" +
                                                                 std::to_string(workerIndex_));
-        co_await message::redis::eraseHash(redis_, "iot:runtime:collector:" +
+        co_await message::redis::eraseHash(redis_, "iot:runtime:collector:" + service::runtime::instanceId() + ":" +
                                                             std::to_string(workerIndex_));
         redis_.close();
         scheduler_.stop();
@@ -344,12 +345,7 @@ class Worker final {
             co_await redis_.connect();
             if (runtimeResetOwner_) {
                 try {
-                    // Runtime hashes are an ephemeral projection. Reset the complete namespace
-                    // once per process so an unclean exit or a reduced worker count cannot leave
-                    // authoritative-looking state owned by workers that no longer exist.
-                    co_await message::redis::eraseMatching(redis_, "iot:runtime:collector:*");
-                    co_await message::redis::eraseMatching(redis_, "iot:runtime:link:*");
-                    co_await message::redis::eraseMatching(redis_, "iot:runtime:device:*");
+                    // Shared read models belong to live owners; a new process must not erase them.
                     runtimeResetOwner_->set_value();
                     runtimeResetSettled_ = true;
                 } catch (...) {
@@ -370,7 +366,8 @@ class Worker final {
             co_await message::redis::ensureGroup(redis_, commandStream(false), commandGroup());
             co_await message::redis::ensureGroup(redis_, controlStream(), collectorGroup());
             loadedConfigVersion_ = co_await config::activeVersion(redis_);
-            auto snapshot = co_await config::load(redis_, loadedConfigVersion_);
+            auto snapshot = co_await ownership::retain(redis_,
+                co_await config::load(redis_, loadedConfigVersion_));
             engine_.reload(snapshot);
             tcp_.reload(snapshot);
             loadedSnapshot_ = std::move(snapshot);
@@ -453,10 +450,12 @@ class Worker final {
         const auto group = configGroup();
         const auto messages = co_await readAvailable(stream, group, configRecovering_, 16);
         bool changed = false;
-        if (!messages.empty()) {
+        const auto now = std::chrono::steady_clock::now();
+        if (!messages.empty() || now >= nextOwnershipRefresh_) {
+            nextOwnershipRefresh_ = now + std::chrono::seconds(5);
             const auto version = co_await config::activeVersion(redis_);
-            if (version != loadedConfigVersion_) {
-                auto snapshot = co_await config::load(redis_, version);
+            auto snapshot = co_await ownership::retain(redis_, co_await config::load(redis_, version));
+            if (version != loadedConfigVersion_ || config::signature(snapshot) != config::signature(loadedSnapshot_)) {
                 const auto plan = planRuntimeReconcile(loadedSnapshot_, snapshot);
                 tcp_.reconcile(snapshot, plan);
                 engine_.reload(snapshot, plan.affectedLinks);
@@ -481,7 +480,7 @@ class Worker final {
                             [&link](const auto& current) { return current.id == link.id; }))
                         co_await message::redis::eraseHash(
                             redis_, "iot:runtime:link:" + link.id +
-                                        ":worker:" + std::to_string(workerIndex_));
+                                        ":worker:" + service::runtime::instanceId() + ":" + std::to_string(workerIndex_));
                 }
                 loadedSnapshot_ = std::move(snapshot);
                 loadedConfigVersion_ = version;
@@ -586,6 +585,21 @@ class Worker final {
                 co_await failUndeliverable(stream, message.id, task.messageId, task,
                                            "stale_session_epoch");
                 continue;
+            }
+            if (task.kind == "command") {
+                if (message::utcNowMilliseconds() - task.createdAtMs >= 60000) {
+                    co_await failUndeliverable(stream,message.id,task.messageId,task,"dispatch_deadline_expired");
+                    continue;
+                }
+                const auto receipt = "iot:v2:command:sent:" + task.messageId;
+                const auto claimed = co_await message::redis::command(redis_,
+                    {"SET",receipt,"1","NX","EX","86400"});
+                if (claimed.kind() == ruvia::RedisValue::Kind::kNull) {
+                    co_await message::redis::acknowledgeAndDelete(redis_,stream,commandGroup(),message.id);
+                    continue;
+                }
+                if (claimed.kind() == ruvia::RedisValue::Kind::kError)
+                    message::redis::throwValue("claim command transmission",claimed);
             }
             pendingCommands_.insert_or_assign(task.messageId,
                                               PendingCommand{stream, message.id, task});
@@ -906,6 +920,14 @@ class Worker final {
                                               group);
             co_return true;
         }
+        const auto connection = networkConnections_.find(packet.connectionId);
+        const auto owner = co_await message::redis::command(redis_,
+            {"GET",ownership::key(connection == networkConnections_.end() ? std::string_view{} : connection->second.linkId)});
+        if (owner.kind() != ruvia::RedisValue::Kind::kString || owner.string() != service::runtime::instanceId()) {
+            tcp_.close(packet.connectionId,"link_ownership_lost");
+            co_await message::redis::acknowledgeAndDelete(redis_,stream,group,message.id);
+            co_return true;
+        }
         const auto epoch = connectionEpochs_.find(packet.connectionId);
         if (epoch == connectionEpochs_.end() || epoch->second != packet.sessionEpoch) {
             service::common::packet_log::Context logContext;
@@ -1042,8 +1064,8 @@ class Worker final {
                     service::common::packet_log::Level::Debug, "PARSE_SUCCESS",
                     parsedLogContext(action.parsed), {}, action.parsed.source);
                 (void)co_await message::redis::publishAndWake(
-                    redis_, parsedStream(), message::parsedFields(action.parsed),
-                    message::workerForPartition(workerIndex_),
+                    redis_, message::parsedStream(message::shard::index(action.parsed.deviceId)), message::parsedFields(action.parsed),
+                    message::workerForPartition(message::shard::index(action.parsed.deviceId)),
                     message::WorkerStreamTask::Telemetry);
                 break;
             case ProtocolActionKind::CompleteCommand: {
@@ -1125,8 +1147,8 @@ class Worker final {
                 configStream(),       controlStream(), commandStream(true),
                 commandStream(false), ingressStream(), egressStream(),
                 linkEventStream()};
-            auto batches = co_await message::redis::readGroupManyBlocking(
-                redis_, streams, collectorGroup(), consumer_, scope_.stopToken(), 1);
+            auto batches = co_await message::redis::readGroupManyBlockingUntil(
+                redis_, streams, collectorGroup(), consumer_, scope_.stopToken(), std::chrono::seconds(1), 1);
             for (auto& batch : batches) {
                 auto& ready = readyMessages_[batch.stream];
                 ready.insert(ready.end(), std::make_move_iterator(batch.messages.begin()),
@@ -1173,7 +1195,7 @@ class Worker final {
         std::set<std::string, std::less<>> nextDeviceCodes;
         for (const auto& action : refresh.startedActions)
             if (action.kind == ProtocolActionKind::BindDevice)
-                nextDeviceCodes.insert(action.deviceCode);
+                nextDeviceCodes.insert(action.deviceId);
 
         const auto bound = routes_.find(refresh.connectionId);
         if (bound != routes_.end()) {
@@ -1226,33 +1248,37 @@ class Worker final {
         // HSET was in flight; compensate before making it locally routable.
         const auto current = connectionEpochs_.find(action.connectionId);
         if (current == connectionEpochs_.end() || current->second != epoch) {
-            co_await markDeviceOffline(action.deviceCode, action.connectionId,
+            co_await markDeviceOffline(action.deviceId, action.connectionId,
                                        "connection_closed_during_registration");
             co_return;
         }
-        routes_[action.connectionId].insert(action.deviceCode);
+        routes_[action.connectionId].insert(action.deviceId);
     }
 
     ruvia::Task<void> bindRoute(const ProtocolAction& action, std::uint64_t sessionEpoch) {
         static constexpr std::string_view script = R"lua(
 local previous_worker = redis.call('HGET', KEYS[1], 'worker_id') or ''
+local previous_instance = redis.call('HGET', KEYS[1], 'instance_id') or ''
 local previous_connection = redis.call('HGET', KEYS[1], 'connection_id') or ''
 redis.call('HSET', KEYS[1],
   'device_id', ARGV[1], 'device_code', ARGV[2], 'worker_id', ARGV[3],
-  'connection_id', ARGV[4], 'session_epoch', ARGV[5], 'updated_at_ms', ARGV[6])
-if previous_connection ~= ARGV[4] then redis.call('INCR', KEYS[2]) end
-return {previous_worker, previous_connection}
+  'connection_id', ARGV[4], 'session_epoch', ARGV[5], 'updated_at_ms', ARGV[6],
+  'instance_id', ARGV[7], 'link_id', ARGV[8])
+if previous_connection ~= ARGV[4] then redis.call('XADD', KEYS[2], 'MAXLEN', '~', '100000', '*', 'topic', 'device') end
+return {previous_worker, previous_connection, previous_instance}
 )lua";
-        const auto key = service::telemetry::latest::runtimeKey(action.deviceCode);
-        const auto revisionKey = std::string(service::telemetry::latest::kRealtimeRevisionKey);
+        const auto connection = networkConnections_.find(action.connectionId);
+        if (connection == networkConnections_.end()) co_return;
+        const auto key = service::telemetry::latest::runtimeKey(action.deviceId);
+        const auto revisionKey = std::string(service::telemetry::latest::kRealtimeChangesStream);
         const auto worker = std::to_string(workerIndex_);
         const auto epoch = std::to_string(sessionEpoch);
         const auto now = std::to_string(message::utcNowMilliseconds());
         const std::string_view keys[]{key, revisionKey};
         const std::string_view args[]{
-            action.deviceId, action.deviceCode, worker, action.connectionId, epoch, now};
+            action.deviceId, action.deviceCode, worker, action.connectionId, epoch, now, service::runtime::instanceId(), connection->second.linkId};
         const auto reply = co_await redis_.eval(script, keys, args);
-        if (reply.kind() != ruvia::RedisValue::Kind::kArray || reply.array().size() != 2)
+        if (reply.kind() != ruvia::RedisValue::Kind::kArray || reply.array().size() != 3)
             message::redis::throwValue("bind device route", reply);
         const auto oldWorker = reply.array()[0].kind() == ruvia::RedisValue::Kind::kString
                                    ? std::string(reply.array()[0].string())
@@ -1262,12 +1288,13 @@ return {previous_worker, previous_connection}
                                        : std::string{};
         if (oldConnection.empty() || oldConnection == action.connectionId || oldWorker.empty())
             co_return;
-        if (oldWorker == worker) {
+        const auto oldInstance = reply.array()[2].string();
+        if (oldWorker == worker && oldInstance == service::runtime::instanceId()) {
             tcp_.close(oldConnection, "device_re_registered");
             co_return;
         }
         (void)co_await message::redis::publish(
-            redis_, std::string(message::kControlStreamPrefix) + oldWorker,
+            redis_, std::string(message::kControlStreamPrefix) + std::string(oldInstance) + ":" + oldWorker,
             {{"message_id", message::nextMessageId()},
              {"connection_id", oldConnection},
              {"device_code", action.deviceCode},
@@ -1276,11 +1303,11 @@ return {previous_worker, previous_connection}
             1000);
     }
 
-    ruvia::Task<void> markDeviceOffline(std::string_view deviceCode, std::string_view connectionId,
+    ruvia::Task<void> markDeviceOffline(std::string_view deviceId, std::string_view connectionId,
                                         std::string_view reason) {
         static constexpr std::string_view script = R"lua(
 if redis.call('HGET', KEYS[1], 'connection_id') ~= ARGV[1] then return 0 end
-redis.call('HDEL', KEYS[1], 'worker_id', 'connection_id', 'session_epoch')
+redis.call('HDEL', KEYS[1], 'instance_id', 'worker_id', 'connection_id', 'session_epoch')
 if not redis.call('HGET', KEYS[1], 'last_report_at_ms') then
   redis.call('HSET', KEYS[1], 'state', 'offline', 'state_reason', ARGV[2])
 end
@@ -1292,12 +1319,12 @@ redis.call('HSET', KEYS[2], '_state', cjson.encode({
   onlineUntil = tonumber(redis.call('HGET', KEYS[1], 'online_until_ms') or '0') or 0,
   updatedAt = tonumber(ARGV[3]) or 0
 }), '_updated_at_ms', ARGV[3])
-redis.call('INCR', KEYS[3])
+redis.call('XADD', KEYS[3], 'MAXLEN', '~', '100000', '*', 'topic', 'device')
 return 1
 )lua";
-        const auto key = service::telemetry::latest::runtimeKey(deviceCode);
-        const auto latestKey = service::telemetry::latest::latestKey(deviceCode);
-        const auto revisionKey = std::string(service::telemetry::latest::kRealtimeRevisionKey);
+        const auto key = service::telemetry::latest::runtimeKey(deviceId);
+        const auto latestKey = service::telemetry::latest::latestKey(deviceId);
+        const auto revisionKey = std::string(service::telemetry::latest::kRealtimeChangesStream);
         const auto now = std::to_string(message::utcNowMilliseconds());
         const std::string_view keys[]{key, latestKey, revisionKey};
         const std::string_view args[]{connectionId, reason, now};
@@ -1472,7 +1499,7 @@ return 1
             fields.push_back({"updated_at_ms", std::to_string(message::utcNowMilliseconds())});
             const auto key =
                 "iot:runtime:link:" + std::string(linkId) +
-                ":worker:" + std::to_string(workerIndex_);
+                ":worker:" + service::runtime::instanceId() + ":" + std::to_string(workerIndex_);
             co_await message::redis::eraseHash(redis_, key);
             co_await message::redis::setHash(redis_, key, fields);
             co_await message::redis::acknowledgeAndDelete(redis_, stream, group, message.id);
@@ -1525,13 +1552,14 @@ return 1
                                       const message::ProtocolTask& task, bool success,
                                       std::string_view reason) {
         auto resultFields = commandResultFields(commandId, task, success, reason);
-        const auto resultStream = commandResultStream();
+        const auto resultPartition = message::shard::index(task.deviceId);
+        const auto resultStream = message::commandResultStream(resultPartition);
         if (success) {
             (void)co_await message::redis::publishAndAcknowledge(
                 redis_, resultStream, resultFields, 10000, inputStream, commandGroup(),
                 consumer_, inputEntryId,
                 message::redis::StreamWake{
-                    message::workerForPartition(workerIndex_),
+                    message::workerForPartition(resultPartition),
                     message::WorkerStreamTask::CommandResult});
             co_return;
         }
@@ -1548,7 +1576,7 @@ return 1
             message::redis::StreamPublication{
                 resultStream, resultFields, 10000,
                 message::redis::StreamWake{
-                    message::workerForPartition(workerIndex_),
+                    message::workerForPartition(resultPartition),
                     message::WorkerStreamTask::CommandResult}}};
         (void)co_await message::redis::publishAllAndAcknowledge(
             redis_, publications, inputStream, commandGroup(), consumer_, inputEntryId);
@@ -1557,7 +1585,7 @@ return 1
     ruvia::Task<void> publishRuntimeState() {
         const auto now = std::to_string(message::utcNowMilliseconds());
         co_await message::redis::setHash(
-            redis_, "iot:runtime:collector:" + std::to_string(workerIndex_),
+            redis_, "iot:runtime:collector:" + service::runtime::instanceId() + ":" + std::to_string(workerIndex_),
             {{"worker_id", std::to_string(workerIndex_)},
              {"version", loadedConfigVersion_},
              {"state", "applied"},
@@ -1598,6 +1626,7 @@ return 1
     Timer::Token tickToken_ = 0;
     std::string lastCoordinatorError_;
     std::string loadedConfigVersion_;
+    std::chrono::steady_clock::time_point nextOwnershipRefresh_{};
     RuntimeSnapshot loadedSnapshot_;
     bool configRecovering_ = true;
     bool highRecovering_ = true;

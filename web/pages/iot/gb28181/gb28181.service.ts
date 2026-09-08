@@ -1,4 +1,5 @@
-import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
+import { useLiveQuery } from '@/hooks/useLiveQuery';
+import { type UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage } from '@/hooks/useMutation';
 import * as api from './gb28181.client';
 import type { GB28181 } from './gb28181.types';
@@ -17,10 +18,9 @@ export const gb28181Keys = {
 export function useGb28181Health(
     options?: Omit<UseQueryOptions<GB28181.Health>, 'queryKey' | 'queryFn'>
 ) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: gb28181Keys.health(),
         queryFn: api.getHealth,
-        refetchInterval: 10_000,
         retry: false,
         ...options,
     });
@@ -29,11 +29,9 @@ export function useGb28181Health(
 export function useGb28181Devices(
     options?: Omit<UseQueryOptions<GB28181.Items<GB28181.Device>>, 'queryKey' | 'queryFn'>
 ) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: gb28181Keys.devices(),
         queryFn: api.getDevices,
-        refetchInterval: 3_000,
-        refetchIntervalInBackground: false,
         ...options,
     });
 }
@@ -79,11 +77,10 @@ export function useGb28181PreviewStop() {
 }
 
 export function useGb28181Recording(streamId?: string, enabled = true) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: gb28181Keys.recording(streamId ?? ''),
         queryFn: () => api.getRecording({ streamId: streamId ?? '' }),
         enabled: enabled && Boolean(streamId),
-        refetchInterval: 3_000,
     });
 }
 

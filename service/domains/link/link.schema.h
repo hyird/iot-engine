@@ -30,6 +30,7 @@ class SaveLinkValidator final : public ruvia::Middleware<SaveLinkValidator> {
                         RUVIA_RULE(protocol, RUVIA_REQUIRED("协议不能为空"),
                                    RUVIA_ONE_OF("协议无效", "SL651", "Modbus", "S7")),
                         RUVIA_RULE(endpoint, RUVIA_REQUIRED("链路端点不能为空")),
+                        RUVIA_RULE(execution, RUVIA_ONE_OF("采集位置无效", "collector", "edge")),
                         RUVIA_RULE(status, RUVIA_ONE_OF("状态无效", "enabled", "disabled")))
 };
 

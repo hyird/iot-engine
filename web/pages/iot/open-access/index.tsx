@@ -75,8 +75,8 @@ const EVENT_TYPE_OPTIONS: Array<{
 }> = [
     { label: '数据上报', value: 'device.data.reported', color: 'blue' },
     { label: '图片上报', value: 'device.image.reported', color: 'cyan' },
-    { label: '命令下发', value: 'device.command.dispatched', color: 'orange' },
-    { label: '命令应答', value: 'device.command.responded', color: 'geekblue' },
+    { label: '命令已接受', value: 'device.command.accepted', color: 'orange' },
+    { label: '命令状态更新', value: 'device.command.updated', color: 'geekblue' },
     { label: '告警触发', value: 'device.alert.triggered', color: 'red' },
     { label: '告警恢复', value: 'device.alert.resolved', color: 'green' },
 ];

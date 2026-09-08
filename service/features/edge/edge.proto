@@ -473,6 +473,9 @@ message TelemetryRecord {
   repeated TelemetryValue values = 9 [(nanopb).type = FT_POINTER];
   bytes raw_payload = 10 [(nanopb).max_size = 2048];
   DeviceStatus device_status = 11;
+  // Absent in deployed v1 firmware: never infer provenance from current config.
+  bytes model_id = 12 [(nanopb).max_size = 16];
+  uint64 model_revision = 13;
 }
 
 message TelemetryBatch {

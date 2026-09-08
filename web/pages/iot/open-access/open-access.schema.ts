@@ -11,8 +11,8 @@ export const openScopeSchema = z.enum([
 export const webhookEventSchema = z.enum([
     'device.data.reported',
     'device.image.reported',
-    'device.command.dispatched',
-    'device.command.responded',
+    'device.command.accepted',
+    'device.command.updated',
     'device.alert.triggered',
     'device.alert.resolved',
 ]);

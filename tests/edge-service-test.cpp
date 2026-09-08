@@ -197,11 +197,11 @@ int main() {
                         "Service Worker wake bus has no blocking Stream consumer");
         requireContains(dispatcherSource, "context.workerState<Dispatcher>().run(",
                         "edge dispatcher does not start the same local state on every worker");
-        requireContains(dispatchSource, "iot:edge:dispatch:",
+        requireContains(dispatchSource, "iot:v2:edge:dispatch:",
                         "edge dispatch notifications do not use worker-isolated Redis keys");
-        requireContains(dispatchSource, "session_state::workerIndex(",
+        requireContains(dispatchSource, "session_state::parse(",
                         "edge dispatch notifications are not routed by session ownership");
-        requireContains(projectorStreamSource, "iot:edge:projector:",
+        requireContains(projectorStreamSource, "iot:v2:edge:projector:",
                         "edge projection does not use worker-isolated Redis keys");
         requireContains(gatewaySource, "publishIngress(c, workerIndex",
                         "edge ingress is not routed by the accepting Worker");

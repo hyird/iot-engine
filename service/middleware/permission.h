@@ -16,8 +16,11 @@ inline ruvia::Task<void> requirePermission(ruvia::Context& c, std::string_view p
 SELECT EXISTS (
     SELECT 1
     FROM sys_user_role ur
+    JOIN sys_user u ON u.id = ur.user_id
     JOIN sys_role r ON r.id = ur.role_id
     WHERE ur.user_id = $1
+      AND u.deleted_at IS NULL
+      AND u.status = 'enabled'
       AND r.deleted_at IS NULL
       AND r.status = 'enabled'
       AND (r.code = 'superadmin' OR r.permissions ? '*' OR r.permissions ? $2)

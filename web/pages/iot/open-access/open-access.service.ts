@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useLiveQuery } from '@/hooks/useLiveQuery';
 import { useMutationWithMessage } from '@/hooks/useMutation';
 import {
     createKey,
@@ -16,16 +16,16 @@ import {
 import { type Access, accessQueryKeys } from './open-access.types';
 
 export const useOpenDevices = () =>
-    useQuery({ queryKey: accessQueryKeys.devices(), queryFn: getDevices });
+    useLiveQuery({ queryKey: accessQueryKeys.devices(), queryFn: getDevices });
 export const useOpenKeys = () =>
-    useQuery({ queryKey: accessQueryKeys.keys(), queryFn: getKeys });
+    useLiveQuery({ queryKey: accessQueryKeys.keys(), queryFn: getKeys });
 export const useOpenWebhooks = (accessKeyId?: string) =>
-    useQuery({
+    useLiveQuery({
         queryKey: accessQueryKeys.webhooks(accessKeyId),
         queryFn: () => getWebhooks(accessKeyId),
     });
 export const useOpenLogs = (query: Access.LogQuery) =>
-    useQuery({ queryKey: accessQueryKeys.logs(query), queryFn: () => getLogs(query) });
+    useLiveQuery({ queryKey: accessQueryKeys.logs(query), queryFn: () => getLogs(query) });
 
 export const useKeyCreate = () =>
     useMutationWithMessage({

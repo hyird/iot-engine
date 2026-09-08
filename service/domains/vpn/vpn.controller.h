@@ -7,6 +7,7 @@
 #include <ruvia/web/Controller.h>
 
 #include "service/common/http.h"
+#include "service/features/live/query.h"
 #include "service/domains/vpn/vpn.schema.h"
 #include "service/domains/vpn/vpn.service.h"
 #include "service/middleware/auth.h"
@@ -35,31 +36,35 @@ class VpnController final : public ruvia::Controller<VpnController> {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/vpn", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
-    RUVIA_GET("/networks", listNetworks, VpnListValidator);
-    RUVIA_GET("/networks/:id", network, VpnIdValidator);
+    RUVIA_GET_SSE("/networks", listNetworks, VpnListValidator);
+    RUVIA_GET_SSE("/networks/:id", network, VpnIdValidator);
     RUVIA_POST("/networks", createNetwork);
     RUVIA_PATCH("/networks/:id", updateNetwork, VpnIdValidator);
     RUVIA_DELETE("/networks/:id", removeNetwork, VpnIdValidator);
-    RUVIA_GET("/routes", routes);
+    RUVIA_GET_SSE("/routes", routes);
     RUVIA_POST("/routes", createRoute);
     RUVIA_PATCH("/routes/:id", updateRoute, VpnIdValidator);
     RUVIA_DELETE("/routes/:id", removeRoute, VpnIdValidator);
-    RUVIA_GET("/peers", peers);
+    RUVIA_GET_SSE("/peers", peers);
     RUVIA_POST("/peers", createPeer);
     RUVIA_POST("/peers/:id/revoke", revokePeer, VpnIdValidator);
     RUVIA_POST("/peers/:id/sync", syncPeer, VpnIdValidator);
     RUVIA_POST("/peers/:id/rotate-key", rotatePeerKey, VpnIdValidator);
-    RUVIA_GET("/client-configs", clientConfigs);
+    RUVIA_GET_SSE("/client-configs", clientConfigs);
     RUVIA_POST("/client-configs", createClientConfig);
     RUVIA_DELETE("/client-configs/:id", removeClientConfig, VpnIdValidator);
     RUVIA_POST("/enrollments", createEnrollment);
-    RUVIA_GET("/client/config", clientConfig, VpnClientConfigValidator);
-    RUVIA_GET("/sessions", sessions);
-    RUVIA_GET("/diagnostics", diagnostics);
+    RUVIA_GET_SSE("/client/config", clientConfig, VpnClientConfigValidator);
+    RUVIA_GET_SSE("/sessions", sessions);
+    RUVIA_GET_SSE("/diagnostics", diagnostics);
     RUVIA_ROUTES_END
 
   private:
-    ruvia::Task<ruvia::HttpResponse> listNetworks(ruvia::Context& c) {
+    ruvia::Task<void> listNetworks(ruvia::Context& c) {
+        co_await service::live::serve(c, "vpn", [this, &c]() { return listNetworksSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> listNetworksSnapshot(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:vpn:query");
         const auto& query = c.req().validated<VpnListQuery>();
         const auto keyword = query.get<"keyword">()
@@ -68,13 +73,17 @@ class VpnController final : public ruvia::Controller<VpnController> {
         const auto status = query.get<"status">()
                                 ? std::optional<std::string>(std::string(query.get<"status">()->view()))
                                 : std::nullopt;
-        co_return vpnJson(c, co_await vpnService().networks(
+        co_return service::live::data(c, co_await vpnService().networks(
                                  c, *query.get<"page">(), *query.get<"pageSize">(), keyword, status));
     }
 
-    ruvia::Task<ruvia::HttpResponse> network(ruvia::Context& c) {
+    ruvia::Task<void> network(ruvia::Context& c) {
+        co_await service::live::serve(c, "vpn", [this, &c]() { return networkSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> networkSnapshot(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:vpn:query");
-        co_return vpnJson(c, co_await vpnService().network(c, vpnId(c)));
+        co_return service::live::data(c, co_await vpnService().network(c, vpnId(c)));
     }
 
     ruvia::Task<ruvia::HttpResponse> createNetwork(ruvia::Context& c) {
@@ -96,11 +105,15 @@ class VpnController final : public ruvia::Controller<VpnController> {
         co_return c.json(service::common::operation(c, "删除成功"));
     }
 
-    ruvia::Task<ruvia::HttpResponse> routes(ruvia::Context& c) {
+    ruvia::Task<void> routes(ruvia::Context& c) {
+        co_await service::live::serve(c, "vpn", [this, &c]() { return routesSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> routesSnapshot(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:vpn:query");
         const auto networkId = c.req().query("networkId");
         const auto edgeNodeId = c.req().query("edgeNodeId");
-        co_return vpnJson(c, co_await vpnService().routes(
+        co_return service::live::data(c, co_await vpnService().routes(
                                  c, networkId ? std::optional<std::string>(std::string(*networkId))
                                               : std::nullopt,
                                  edgeNodeId ? std::optional<std::string>(std::string(*edgeNodeId))
@@ -126,11 +139,15 @@ class VpnController final : public ruvia::Controller<VpnController> {
         co_return c.json(service::common::operation(c, "删除成功"));
     }
 
-    ruvia::Task<ruvia::HttpResponse> peers(ruvia::Context& c) {
+    ruvia::Task<void> peers(ruvia::Context& c) {
+        co_await service::live::serve(c, "vpn", [this, &c]() { return peersSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> peersSnapshot(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:vpn:query");
         const auto networkId = c.req().query("networkId");
         const auto edgeNodeId = c.req().query("edgeNodeId");
-        co_return vpnJson(c, co_await vpnService().peers(
+        co_return service::live::data(c, co_await vpnService().peers(
                                  c, networkId ? std::optional<std::string>(std::string(*networkId))
                                               : std::nullopt,
                                  edgeNodeId ? std::optional<std::string>(std::string(*edgeNodeId))
@@ -176,10 +193,14 @@ class VpnController final : public ruvia::Controller<VpnController> {
                                  c, co_await c.req().jsonValue()), "WireGuard 配置已生成");
     }
 
-    ruvia::Task<ruvia::HttpResponse> clientConfigs(ruvia::Context& c) {
+    ruvia::Task<void> clientConfigs(ruvia::Context& c) {
+        co_await service::live::serve(c, "vpn", [this, &c]() { return clientConfigsSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> clientConfigsSnapshot(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:vpn:query");
         co_await service::middleware::requirePermission(c, "iot:edge:query");
-        co_return vpnJson(c, co_await vpnService().clientConfigs(c));
+        co_return service::live::data(c, co_await vpnService().clientConfigs(c));
     }
 
     ruvia::Task<ruvia::HttpResponse> removeClientConfig(ruvia::Context& c) {
@@ -188,20 +209,32 @@ class VpnController final : public ruvia::Controller<VpnController> {
         co_return c.json(service::common::operation(c, "VPN 配置已删除并撤销"));
     }
 
-    ruvia::Task<ruvia::HttpResponse> clientConfig(ruvia::Context& c) {
+    ruvia::Task<void> clientConfig(ruvia::Context& c) {
+        co_await service::live::serve(c, "vpn", [this, &c]() { return clientConfigSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> clientConfigSnapshot(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:vpn:query");
-        co_return vpnJson(c, co_await vpnService().clientConfig(
+        co_return service::live::data(c, co_await vpnService().clientConfig(
                                  c, c.req().validated<VpnClientConfigQuery>().get<"peerId">()->view()));
     }
 
-    ruvia::Task<ruvia::HttpResponse> sessions(ruvia::Context& c) {
-        co_await service::middleware::requirePermission(c, "iot:vpn:query");
-        co_return vpnJson(c, co_await vpnService().sessions(c));
+    ruvia::Task<void> sessions(ruvia::Context& c) {
+        co_await service::live::serve(c, "vpn", [this, &c]() { return sessionsSnapshot(c); });
     }
 
-    ruvia::Task<ruvia::HttpResponse> diagnostics(ruvia::Context& c) {
+    ruvia::Task<std::string> sessionsSnapshot(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:vpn:query");
+        co_return service::live::data(c, co_await vpnService().sessions(c));
+    }
+
+    ruvia::Task<void> diagnostics(ruvia::Context& c) {
+        co_await service::live::serve(c, "vpn", [this, &c]() { return diagnosticsSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> diagnosticsSnapshot(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:vpn:diagnose");
-        co_return vpnJson(c, co_await vpnService().diagnostics(c));
+        co_return service::live::data(c, co_await vpnService().diagnostics(c));
     }
 };
 

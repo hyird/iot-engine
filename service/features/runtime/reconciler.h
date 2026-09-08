@@ -107,7 +107,7 @@ class Reconciler final {
                 co_await service::message::redis::ensureGroup(redis, stream, kGroup);
             ready->set_value();
             bool recovering = true;
-            const auto consumer = "service-" + std::to_string(index);
+            const auto consumer = service::runtime::instanceId() + ":service-" + std::to_string(index);
             std::optional<std::chrono::steady_clock::time_point> cleanupDeadline =
                 std::chrono::steady_clock::now();
             while (running_.load() && !context.stopToken().stopRequested()) {

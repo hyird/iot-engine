@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <set>
 
 #include <openssl/evp.h>
 #include <google/protobuf/io/coded_stream.h>
@@ -170,10 +171,11 @@ SELECT d.id::text, d.name, d.protocol_params->>'device_code', p.protocol,
        d.status = 'enabled' AND p.enabled AND l.status = 'enabled',
        d.link_id::text,
        COALESCE(NULLIF(p.config->>'commandFastReadDuration', ''), '60'),
-       COALESCE(NULLIF(p.config->>'commandFastReadInterval', ''), '1')
+       COALESCE(NULLIF(p.config->>'commandFastReadInterval', ''), '1'),
+       l.name, l.status = 'enabled'
 FROM device d
 JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN protocol_config p ON p.id = d.protocol_config_id AND p.deleted_at IS NULL
+JOIN device_model p ON p.device_id = d.id AND p.deleted_at IS NULL
 WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
 ORDER BY d.id)sql";
 
@@ -190,7 +192,7 @@ SELECT d.id::text, item->>'id', item->>'name', COALESCE(item->>'unit', ''),
             ELSE false END
 FROM device d
 JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'Modbus'
+JOIN device_model p ON p.device_id = d.id AND p.protocol = 'Modbus'
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]')) item
 WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
 ORDER BY d.id, item->>'id')sql";
@@ -207,7 +209,7 @@ SELECT d.id::text, item->>'id', item->>'name', COALESCE(item->>'unit', ''),
             ELSE false END
 FROM device d
 JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'S7'
+JOIN device_model p ON p.device_id = d.id AND p.protocol = 'S7'
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]')) item
 WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
 ORDER BY d.id, item->>'id')sql";
@@ -216,7 +218,7 @@ inline constexpr std::string_view kAppendSl651FunctionsSql = R"sql(
 SELECT d.id::text, func->>'funcCode', func->>'name', func->>'dir'
 FROM device d
 JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'SL651'
+JOIN device_model p ON p.device_id = d.id AND p.protocol = 'SL651'
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]')) func
 WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
 ORDER BY d.id, func->>'funcCode')sql";
@@ -230,7 +232,7 @@ SELECT d.id::text, func->>'funcCode', element->>'id', element->>'name',
        func->>'dir' = 'DOWN'
 FROM device d
 JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'SL651'
+JOIN device_model p ON p.device_id = d.id AND p.protocol = 'SL651'
 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]')) func
 CROSS JOIN LATERAL (
   SELECT value AS element, false AS response_element
@@ -500,6 +502,7 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
     static ruvia::Task<std::vector<pb::ConfigItem>>
     buildItems(ruvia::Context& c, std::string_view nodeId) {
         std::vector<pb::ConfigItem> items;
+        std::set<std::string> endpoints;
         const auto devices = co_await c.db().query(config::detail::kBuildItemsSql,
                                                      service::common::dbParams(nodeId));
         for (const auto& row : devices) {
@@ -509,10 +512,10 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
             auto* endpointValue = endpoint.mutable_endpoint();
             if (!setUuid(endpointValue->mutable_endpoint_id(), row[30].value().value_or(std::string_view{})))
                 throw std::runtime_error("invalid edge link UUID");
-            endpointValue->set_name(row[1].value().value_or(std::string_view{}));
+            endpointValue->set_name(row[33].value().value_or(std::string_view{}));
             endpointValue->set_interface_name(row[10].value().value_or(std::string_view{}));
             endpointValue->set_protocol(protocol);
-            endpointValue->set_enabled(row[29].value().value_or(std::string_view{}) == "t");
+            endpointValue->set_enabled(row[34].value().value_or(std::string_view{}) == "t");
             if (row[9].value().value_or(std::string_view{}) == "serial") {
                 endpointValue->set_transport(pb::TRANSPORT_SERIAL);
                 endpointValue->set_mode(pb::LINK_MODE_SERIAL);
@@ -535,7 +538,8 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
                 endpointValue->set_port(
                     static_cast<std::uint32_t>(integer(row[13].value().value_or(std::string_view{}))));
             }
-            items.push_back(std::move(endpoint));
+            if (endpoints.emplace(row[30].value().value_or("")).second)
+                items.push_back(std::move(endpoint));
 
             pb::ConfigItem device;
             device.set_kind(pb::CONFIG_ITEM_DEVICE);

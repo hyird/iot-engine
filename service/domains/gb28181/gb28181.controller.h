@@ -5,6 +5,7 @@
 #include <ruvia/web/Controller.h>
 
 #include "service/common/http.h"
+#include "service/features/live/query.h"
 #include "service/domains/gb28181/gb28181.schema.h"
 #include "service/domains/gb28181/gb28181.service.h"
 #include "service/middleware/auth.h"
@@ -16,10 +17,10 @@ class Gb28181Controller final : public ruvia::Controller<Gb28181Controller> {
 public:
   RUVIA_CONTROLLER_GROUP("/v1/gb28181", service::middleware::AuthMiddleware)
   RUVIA_ROUTES_BEGIN
-  RUVIA_GET("/health", health);
-  RUVIA_GET("/config/sip", sipConfig);
-  RUVIA_GET("/devices", devices);
-  RUVIA_GET("/streams", streams);
+  RUVIA_GET_SSE("/health", health);
+  RUVIA_GET_SSE("/config/sip", sipConfig);
+  RUVIA_GET_SSE("/devices", devices);
+  RUVIA_GET_SSE("/streams", streams);
   RUVIA_PUT("/devices/:deviceId/name", renameDevice, GbNameValidator);
   RUVIA_PUT("/devices/:deviceId/channels/:channelId/name", renameChannel,
             GbNameValidator);
@@ -36,53 +37,77 @@ public:
              startPlayback);
   RUVIA_POST("/previews/:sessionId/heartbeat", heartbeatPreview);
   RUVIA_POST("/previews/:sessionId/stop", stopPreview);
-  RUVIA_GET("/devices/:deviceId", device);
-  RUVIA_GET("/streams/:streamId", stream);
-  RUVIA_GET("/streams/:streamId/recording", recording);
+  RUVIA_GET_SSE("/devices/:deviceId", device);
+  RUVIA_GET_SSE("/streams/:streamId", stream);
+  RUVIA_GET_SSE("/streams/:streamId/recording", recording);
   RUVIA_POST("/streams/:streamId/recording/start", startRecording);
   RUVIA_POST("/streams/:streamId/recording/stop", stopRecording);
   RUVIA_ROUTES_END
 
 private:
-  ruvia::Task<ruvia::HttpResponse> health(ruvia::Context &c) {
+  ruvia::Task<void> health(ruvia::Context& c) {
+        co_await service::live::serve(c, "gb28181", [this, &c]() { return healthSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> healthSnapshot(ruvia::Context& c) {
     co_await service::middleware::requirePermission(c, "iot:gb28181:query");
-    co_return c.json(
+    co_return service::live::json(
         service::common::ok<GbHealthResponse>(c, gb28181Service().health(c)));
   }
 
-  ruvia::Task<ruvia::HttpResponse> sipConfig(ruvia::Context &c) {
+  ruvia::Task<void> sipConfig(ruvia::Context& c) {
+        co_await service::live::serve(c, "gb28181", [this, &c]() { return sipConfigSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> sipConfigSnapshot(ruvia::Context& c) {
     co_await service::middleware::requirePermission(c, "iot:gb28181:query");
     requireEnabled();
-    co_return c.json(service::common::ok<GbSipConfigResponse>(
+    co_return service::live::json(service::common::ok<GbSipConfigResponse>(
         c, gb28181Service().sipConfig(c)));
   }
 
-  ruvia::Task<ruvia::HttpResponse> devices(ruvia::Context &c) {
+  ruvia::Task<void> devices(ruvia::Context& c) {
+        co_await service::live::serve(c, "gb28181", [this, &c]() { return devicesSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> devicesSnapshot(ruvia::Context& c) {
     co_await service::middleware::requirePermission(c, "iot:gb28181:query");
     requireEnabled();
-    co_return c.json(service::common::ok<GbDeviceListResponse>(
+    co_return service::live::json(service::common::ok<GbDeviceListResponse>(
         c, co_await gb28181Service().devices(c)));
   }
 
-  ruvia::Task<ruvia::HttpResponse> device(ruvia::Context &c) {
+  ruvia::Task<void> device(ruvia::Context& c) {
+        co_await service::live::serve(c, "gb28181", [this, &c]() { return deviceSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> deviceSnapshot(ruvia::Context& c) {
     co_await service::middleware::requirePermission(c, "iot:gb28181:query");
     requireEnabled();
-    co_return c.json(service::common::ok<GbDeviceResponse>(
+    co_return service::live::json(service::common::ok<GbDeviceResponse>(
         c, co_await gb28181Service().device(
                c, requiredRoute(c, "deviceId", "设备编号不能为空"))));
   }
 
-  ruvia::Task<ruvia::HttpResponse> streams(ruvia::Context &c) {
+  ruvia::Task<void> streams(ruvia::Context& c) {
+        co_await service::live::serve(c, "gb28181", [this, &c]() { return streamsSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> streamsSnapshot(ruvia::Context& c) {
     co_await service::middleware::requirePermission(c, "iot:gb28181:query");
     requireEnabled();
-    co_return c.json(service::common::ok<GbStreamListResponse>(
+    co_return service::live::json(service::common::ok<GbStreamListResponse>(
         c, co_await gb28181Service().streams(c)));
   }
 
-  ruvia::Task<ruvia::HttpResponse> stream(ruvia::Context &c) {
+  ruvia::Task<void> stream(ruvia::Context& c) {
+        co_await service::live::serve(c, "gb28181", [this, &c]() { return streamSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> streamSnapshot(ruvia::Context& c) {
     co_await service::middleware::requirePermission(c, "iot:gb28181:query");
     requireEnabled();
-    co_return c.json(service::common::ok<GbStreamResponse>(
+    co_return service::live::json(service::common::ok<GbStreamResponse>(
         c, co_await gb28181Service().stream(
                c, requiredRoute(c, "streamId", "流编号不能为空"))));
   }
@@ -237,13 +262,17 @@ private:
         c, Gb28181Service::previewStart(c, *result)));
   }
 
-  ruvia::Task<ruvia::HttpResponse> recording(ruvia::Context &c) {
+  ruvia::Task<void> recording(ruvia::Context& c) {
+        co_await service::live::serve(c, "gb28181", [this, &c]() { return recordingSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> recordingSnapshot(ruvia::Context& c) {
     co_await service::middleware::requirePermission(c, "iot:gb28181:record");
     requireEnabled();
     const auto streamId = requiredRoute(c, "streamId", "流编号不能为空");
     GbActionDto data(c);
     data.set<"recording">(co_await gb28181Service().recording(c, streamId));
-    co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
+    co_return service::live::json(service::common::ok<GbActionResponse>(c, std::move(data)));
   }
 
   ruvia::Task<ruvia::HttpResponse> startRecording(ruvia::Context &c) {

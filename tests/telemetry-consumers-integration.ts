@@ -1,0 +1,83 @@
+// Fault injection uses only the disposable local PostgreSQL/Redis fixture.
+import assert from 'node:assert/strict';
+const db = new Bun.SQL('postgres://architecture_test@127.0.0.1:55439/iot_architecture');
+const redis = new Bun.RedisClient('redis://127.0.0.1:56439');
+const id = () => crypto.randomUUID();
+const device=id(), link=id(), model=id(), event=id(), point=id();
+const admin='00000000-0000-7000-8000-000000000002';
+let unlock: (() => void) | undefined;
+let blocking: Promise<unknown> | undefined;
+async function until(test: () => Promise<boolean>, message: string) {
+    const deadline=Date.now()+15000;
+    while(Date.now()<deadline) { if(await test())return; await Bun.sleep(50); }
+    throw new Error(message);
+}
+function shard(value: string) {
+    let hash=14695981039346656037n;
+    for(const byte of new TextEncoder().encode(value))hash=BigInt.asUintN(64,(hash^BigInt(byte))*1099511628211n);
+    return Number(hash%64n);
+}
+const stream=`iot:v2:telemetry:partition:${shard(device)}`;
+try {
+    const config={registers:[{id:point,name:'temperature',unit:'C',registerType:'HOLDING_REGISTER',dataType:'UINT16',address:0,quantity:1}],storagePolicy:'report'};
+    await db`INSERT INTO protocol_config(id,name,protocol,config,created_by) VALUES(${model},${model},'Modbus',${config}::jsonb,${admin})`;
+    await db`INSERT INTO link(id,name,protocol,endpoint,created_by,execution,status)
+        VALUES(${link},${link},'Modbus','{"transport":"tcp","mode":"TCP Server","ip":"0.0.0.0","port":55199,"targets":[]}'::jsonb,${admin},'collector','disabled')`;
+    await db`INSERT INTO device(id,name,link_id,protocol_config_id,protocol_revision,protocol_params,created_by)
+        VALUES(${device},${device},${link},${model},1,'{"device_code":"1","slave_id":1,"modbus_mode":"TCP"}'::jsonb,${admin})`;
+    // The API create path initializes these before acknowledging creation.
+    await redis.send('HSET',[`iot:v2:runtime:device:${device}`,'device_id',device,'device_code','1']);
+    const now=String(Date.now());
+    const values=JSON.stringify({values:{[point]:{name:'temperature',unit:'C',value:42}}});
+    const fields=['message_id',event,'causation_id',event,'link_id',link,'device_id',device,
+        'device_code','1','protocol','Modbus','connection_id',id(),'occurred_at_ms',now,'observed_at_ms',now,
+        'model_id',model,'model_revision','1','storage_policy','report','source','collector',
+        'online_window_ms','60000','values_json',values,'raw_payload_hex','[]'];
+    let locked!: () => void;
+    const acquired=new Promise<void>(resolve=>{locked=resolve;});
+    const release=new Promise<void>(resolve=>{unlock=resolve;});
+    blocking=db.begin(async tx=>{
+        await tx`LOCK TABLE device_data IN ACCESS EXCLUSIVE MODE`;
+        locked(); await release;
+    });
+    await acquired;
+    await redis.send('XADD',[stream,'*',...fields]);
+    await until(async()=>!!await redis.send('HGET',[`iot:v2:device:${device}:latest`,point]),
+        'latest consumer was blocked by history persistence');
+    await until(async()=>(await db`SELECT 1 FROM alert_input_state WHERE device_id=${device}`).length===1,
+        'alert consumer was blocked by history persistence');
+    assert(Number(await redis.send('XLEN',[`${stream}:history`]))>=1);
+    console.log('PASS latest and alert consumers progress while history table is locked');
+    unlock();await blocking;blocking=undefined;
+    await until(async()=>(await db`SELECT 1 FROM device_data WHERE device_id=${device}`).length===1,
+        'history consumer did not recover after lock release');
+    const rows=await db`SELECT model_id,model_revision,data FROM device_data WHERE device_id=${device}`;
+    assert.equal(rows[0].model_id,model);assert.equal(Number(rows[0].model_revision),1);
+    assert.equal(rows[0].data.values[point].value_type,'number');
+    assert.equal(rows[0].data.values[point].quality,'good');
+    assert.equal(rows[0].data.values[point].sample_time_ms,Number(now));
+    await redis.send('XADD',[stream,'*',...fields]);
+    await Bun.sleep(500);
+    assert.equal((await db`SELECT count(*)::int AS count FROM device_data WHERE device_id=${device}`)[0].count,1);
+    console.log('PASS history recovery, typed provenance and duplicate ingestion');
+
+    const source=await Bun.file('service/features/telemetry/fanout.h').text();
+    const lua=source.match(/R"lua\(([\s\S]*?)\)lua"/)![1];
+    const keys=Array.from({length:5},(_,i)=>`test:fanout:${event}:${i}`);
+    try {
+        await redis.send('SET',[keys[3],'wrong-type']);
+        await assert.rejects(redis.send('EVAL',[lua,'5',...keys,...fields]));
+        assert.equal(await redis.send('EXISTS',[keys[0],keys[1],keys[2],keys[4]]),0);
+        await redis.send('DEL',[keys[3]]);
+        assert.equal(await redis.send('EVAL',[lua,'5',...keys,...fields]),1);
+        assert.equal(await redis.send('EVAL',[lua,'5',...keys,...fields]),0);
+        for(const key of keys.slice(1))assert.equal(await redis.send('XLEN',[key]),1);
+    } finally {await redis.send('DEL',keys);}
+    console.log('PASS fanout validation fails before writes and retry emits one copy per consumer');
+} finally {
+    unlock?.();if(blocking)await blocking;
+    await db`UPDATE device SET deleted_at=NOW() WHERE id=${device}`;
+    await db`UPDATE link SET deleted_at=NOW() WHERE id=${link}`;
+    await db`UPDATE protocol_config SET deleted_at=NOW() WHERE id=${model}`;
+    await db.close();redis.close();
+}

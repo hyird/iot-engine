@@ -19,6 +19,8 @@ test('grouped device cards preserve configured element names', () => {
 
     expect(markup).toContain('>1#闸当前闸位值<');
     expect(markup).not.toContain('>当前闸位值<');
+    expect(markup).toContain('truncate whitespace-nowrap');
+    expect(markup).toContain('title="0.00 mm"');
 });
 
 test('clickable device cards expose an accessible detail entry', () => {
@@ -36,4 +38,5 @@ test('clickable device cards expose an accessible detail entry', () => {
     expect(markup).toContain('type="button"');
     expect(markup).toContain('aria-label="查看边缘节点 860406088541915"');
     expect(markup).toContain('>查看详情<');
+    expect(markup).toContain('h-full w-full');
 });

@@ -471,7 +471,7 @@ public:
             auto catalog = co_await loadCatalog(context);
             ready->set_value();
             bool recovering = true;
-            const auto consumer = "service-" + std::to_string(index);
+            const auto consumer = service::runtime::instanceId() + ":service-" + std::to_string(index);
             const auto catalogReceiptConsumer =
                 std::string(kGroup) + ":catalog:" + std::to_string(index);
             const auto sessionReceiptConsumer = std::string(kGroup) + ":session";
@@ -532,7 +532,7 @@ public:
                     co_await service::message::idempotency::markProcessed(
                         context, sessionReceiptConsumer, sessionEventIds);
 
-                    bool reloadCatalog = false;
+                    bool reloadCatalog = true; // Each instance consumes shared data with current authorization.
                     std::vector<message::StreamMessage> catalogMessages;
                     for (const auto& batch : batches) {
                         const auto kind = streamKinds.at(batch.stream);
@@ -870,18 +870,13 @@ ORDER BY binding.device_id, event_type.value, webhook.id)sql");
 
     static std::string commandEventData(std::string_view deviceJson,
                                         const ruvia::JsonValue& payload, bool dispatched) {
-        const auto commandId = jsonFieldOr(payload, "commandId", "null");
-        if (dispatched) {
-            const auto elements = jsonFieldOr(payload, "elements", "{}");
-            return "{\"accepted\":true,\"device\":" + std::string(deviceJson) +
-                   ",\"command\":{\"key\":" + commandId + ",\"elements\":" + elements + "}}";
-        }
-        const auto status = payload.get<ruvia::String>("status");
-        const auto success = status && status->view() == "SUCCESS";
-        return "{\"device\":" + std::string(deviceJson) + ",\"command\":{\"key\":" +
-               commandId + ",\"success\":" + (success ? "true" : "false") +
-               ",\"status\":" + jsonFieldOr(payload, "status", "null") +
-               ",\"reason\":" + jsonFieldOr(payload, "reason", "null") + "},\"points\":[]}";
+        (void)dispatched;
+        return "{\"device\":" + std::string(deviceJson) + ",\"command\":{\"id\":" +
+            jsonFieldOr(payload,"commandId","null") + ",\"status\":" +
+            jsonFieldOr(payload,"status","null") + ",\"reason\":" +
+            jsonFieldOr(payload,"reason","null") + ",\"elements\":" +
+            jsonFieldOr(payload,"elements","[]") + ",\"actual_values\":" +
+            jsonFieldOr(payload,"actualValues","[]") + "}}";
     }
 
     static ruvia::Task<std::string> realtimeData(ruvia::WebWorkerContext& context,
@@ -889,7 +884,7 @@ ORDER BY binding.device_id, event_type.value, webhook.id)sql");
                                                  const DeviceCatalog& device) {
         const auto reply = co_await message::redis::command(
             context.redis(),
-            std::vector<std::string>{"HGETALL", telemetry::latest::latestKey(device.code)});
+            std::vector<std::string>{"HGETALL", telemetry::latest::latestKey(deviceId)});
         std::set<std::string, std::less<>> configured;
         std::map<std::string, LatestPoint, std::less<>> latest;
         bool hasConfigured = false;
@@ -991,12 +986,12 @@ ORDER BY binding.device_id, event_type.value, webhook.id)sql");
             data = co_await realtimeData(context, delivery.deviceId, catalog);
         } else if (delivery.eventType == "device.image.reported") {
             data = imageEventData(device, rawData, delivery.occurredAt);
-        } else if (delivery.eventType == "device.command.dispatched" ||
-                   delivery.eventType == "device.command.responded") {
+        } else if (delivery.eventType == "device.command.accepted" ||
+                   delivery.eventType == "device.command.updated") {
             const auto payload = ruvia::JsonValue::parse(rawData);
             data = payload && payload->isObject()
                        ? commandEventData(device, *payload,
-                                          delivery.eventType == "device.command.dispatched")
+                                          delivery.eventType == "device.command.accepted")
                        : mergeEventData(device, rawData);
         } else {
             data = mergeEventData(device, rawData);

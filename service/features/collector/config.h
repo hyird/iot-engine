@@ -105,6 +105,8 @@ inline std::string signature(const RuntimeSnapshot& snapshot) {
     number(snapshot.devices.size());
     for (const auto& device : snapshot.devices) {
         text(device.id);
+        text(device.modelId);
+        integer(device.modelRevision);
         text(device.code);
         text(device.name);
         text(device.linkId);
@@ -420,6 +422,8 @@ inline double decimal(const std::vector<message::StreamField>& fields, std::stri
 inline DeviceDefinition device(const std::vector<message::StreamField>& fields) {
     DeviceDefinition result;
     result.id = field(fields, "id");
+    result.modelId = field(fields, "model_id");
+    result.modelRevision = integer(fields, "model_revision", 0);
     result.code = field(fields, "code");
     result.name = field(fields, "name");
     result.linkId = field(fields, "link_id");
@@ -603,6 +607,8 @@ ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
         detail::appendHash(
             commands, version, deviceKey(version, device.id),
             {{"id", device.id},
+             {"model_id", device.modelId},
+             {"model_revision", std::to_string(device.modelRevision)},
              {"code", device.code},
              {"name", device.name},
              {"link_id", device.linkId},

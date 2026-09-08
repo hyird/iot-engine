@@ -75,19 +75,9 @@ RUVIA_REQUEST_MODEL(SaveDeviceBody,
     RUVIA_OPTIONAL_FIELD(name, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("device_code", deviceCode, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("link_id", linkId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("edge_node_id", edgeNodeId, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("edge_transport", edgeTransport, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("edge_interface", edgeInterface, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("edge_mode", edgeMode, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("edge_ip", edgeIp, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("edge_port", edgePort, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD_NAME("serial_baud_rate", serialBaudRate, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD_NAME("serial_data_bits", serialDataBits, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD_NAME("serial_stop_bits", serialStopBits, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD_NAME("serial_parity", serialParity, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("serial_rs485", serialRs485, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD_NAME("target_id", targetId, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("protocol_config_id", protocolConfigId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("protocol_revision", protocolRevision, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD_NAME("group_id", groupId, ruvia::String),
     RUVIA_OPTIONAL_FIELD(status, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("online_timeout", onlineTimeout, ruvia::Int64),
@@ -111,12 +101,10 @@ RUVIA_REQUEST_MODEL(DeviceCommandElementBody,
     RUVIA_OPTIONAL_FIELD(value, ruvia::String));
 
 RUVIA_REQUEST_MODEL(DeviceCommandBody,
+    RUVIA_OPTIONAL_FIELD_NAME("idempotency_key", idempotencyKey, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("deviceId", deviceId, ruvia::String),
     RUVIA_OPTIONAL_FIELD(elements, ruvia::Array<DeviceCommandElementBody>));
 
-RUVIA_REQUEST_MODEL(DeviceCommandWaitBody,
-    RUVIA_OPTIONAL_FIELD_NAME("command_ids", commandIds, ruvia::Array<ruvia::String>),
-    RUVIA_OPTIONAL_FIELD_NAME("timeout_ms", timeoutMs, ruvia::Int64));
 
 RUVIA_RESPONSE_MODEL(DeviceCommandCreateDto,
     RUVIA_OPTIONAL_FIELD_NAME("command_ids", commandIds, ruvia::BoxedArray<ruvia::String>),
@@ -141,7 +129,7 @@ RUVIA_RESPONSE_MODEL(DeviceCommandStatusDto,
     RUVIA_OPTIONAL_FIELD_NAME("actual_values", actualValues,
                               ruvia::BoxedArray<DeviceCommandActualValueDto>));
 
-RUVIA_RESPONSE_MODEL(DeviceCommandWaitDto,
+RUVIA_RESPONSE_MODEL(DeviceCommandStatusesDto,
     RUVIA_OPTIONAL_FIELD(complete, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(statuses, ruvia::BoxedArray<DeviceCommandStatusDto>));
 
@@ -202,6 +190,7 @@ RUVIA_RESPONSE_MODEL(DeviceItemDto,
     RUVIA_OPTIONAL_FIELD_NAME("serial_rs485", serialRs485, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD_NAME("target_id", targetId, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("protocol_config_id", protocolConfigId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("protocol_revision", protocolRevision, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD_NAME("group_id", groupId, ruvia::String),
     RUVIA_OPTIONAL_FIELD(status, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("online_timeout", onlineTimeout, ruvia::Int64),
@@ -284,10 +273,10 @@ RUVIA_RESPONSE_MODEL(DeviceCommandStatusResponse,
     RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(message, ruvia::String),
     RUVIA_OPTIONAL_FIELD(data, DeviceCommandStatusDto));
-RUVIA_RESPONSE_MODEL(DeviceCommandWaitResponse,
+RUVIA_RESPONSE_MODEL(DeviceCommandStatusesResponse,
     RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(message, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(data, DeviceCommandWaitDto));
+    RUVIA_OPTIONAL_FIELD(data, DeviceCommandStatusesDto));
 RUVIA_RESPONSE_MODEL(DeviceOptionsResponse,
     RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(message, ruvia::String),

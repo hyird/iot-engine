@@ -1,4 +1,6 @@
-import { useQuery } from '@tanstack/react-query';
+import { LiveResource } from '@/utils/live-resource';
+import { useEffect } from 'react';
+import { useLiveQuery } from '@/hooks/useLiveQuery';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import {
     configureNetwork,
@@ -9,6 +11,7 @@ import {
     getEdgeList,
     getEdgeGroups,
     getLogs,
+    captureLogs,
     renameEdge,
     setEdgeGroup,
     setEnrollment,
@@ -20,35 +23,51 @@ import {
 import { type Edge, edgeQueryKeys } from './edge-node.types';
 
 export const useEdgeList = (query?: Edge.Query, enabled = true) =>
-    useQuery({
+    useLiveQuery({
         queryKey: edgeQueryKeys.list(query),
         queryFn: () => getEdgeList(query),
         enabled,
-        refetchInterval: 2_000,
+    });
+
+// Match device management: group complete inventories, never just one page.
+export const useEdgeInventory = (enabled = true) =>
+    useLiveQuery({
+        queryKey: [...edgeQueryKeys.all, 'inventory'],
+        queryFn: () => getEdgeList({ page: 1, pageSize: 100 }).switchMap((first) => {
+            const pages = Array.from({ length: Math.max(1, Math.ceil(first.total / 100)) }, (_, index) =>
+                index === 0 ? LiveResource.value(first) : getEdgeList({ page: index + 1, pageSize: 100 }));
+            return LiveResource.combine(pages).map((results) =>
+                [...new Map(results.flatMap((result) => result.list).map((node) => [node.id, node])).values()]);
+        }),
+        enabled,
+        refetchOnWindowFocus: false,
     });
 
 export const useEdgeDetail = (id?: string) =>
-    useQuery({
+    useLiveQuery({
         queryKey: edgeQueryKeys.detail(id),
         queryFn: () => getEdgeDetail(id as string),
         enabled: Boolean(id),
-        refetchInterval: 10_000,
     });
 
 export const useEdgeGroupTree = () =>
-    useQuery({
+    useLiveQuery({
         queryKey: edgeQueryKeys.groups(),
         queryFn: getEdgeGroups,
-        refetchInterval: 5_000,
     });
 
-export const useEdgeLogs = (id?: string, query?: Edge.LogsQuery, enabled = true) =>
-    useQuery({
+export const useEdgeLogs = (id?: string, query?: Edge.LogsQuery, enabled = true) => {
+    const result = useLiveQuery({
         queryKey: edgeQueryKeys.logs(id, query),
         queryFn: () => getLogs(id as string, query),
         enabled: enabled && Boolean(id),
         staleTime: 0,
     });
+    useEffect(() => {
+        if (enabled && id) void captureLogs(id).catch(() => undefined);
+    }, [enabled, id]);
+    return { ...result, refetch: () => id ? captureLogs(id) : Promise.resolve() };
+};
 
 export function useEnrollmentMutation() {
     return useMutationWithMessage({

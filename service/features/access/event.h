@@ -111,7 +111,7 @@ inline ruvia::Task<void> publishMany(
     auto pipeline = redis.pipeline();
     for (const auto& parsed : messages) {
         const auto eventType =
-            parsed.valuesJson.find("\"type\":\"JPEG\"") != std::string::npos
+            parsed.eventKind == "image"
                 ? "device.image.reported"
                 : "device.data.reported";
         queue(pipeline, scriptSha, parsed.messageId, eventType, parsed.deviceId,

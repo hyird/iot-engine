@@ -16,8 +16,8 @@ export namespace Access {
     export type EventType =
         | 'device.data.reported'
         | 'device.image.reported'
-        | 'device.command.dispatched'
-        | 'device.command.responded'
+        | 'device.command.accepted'
+        | 'device.command.updated'
         | 'device.alert.triggered'
         | 'device.alert.resolved';
 

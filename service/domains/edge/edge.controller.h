@@ -11,6 +11,7 @@
 #include <ruvia/web/Controller.h>
 
 #include "service/common/http.h"
+#include "service/features/live/query.h"
 #include "service/common/uuid.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/permission.h"
@@ -24,12 +25,12 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/edge", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
-    RUVIA_GET("/", list, EdgeListValidator);
-    RUVIA_GET("/groups", groups);
+    RUVIA_GET_SSE("/", list, EdgeListValidator);
+    RUVIA_GET_SSE("/groups", groups);
     RUVIA_POST("/groups", createGroup, EdgeGroupValidator);
     RUVIA_PUT("/groups/:id", updateGroup, EdgeIdValidator, EdgeGroupValidator);
     RUVIA_DELETE("/groups/:id", removeGroup, EdgeIdValidator);
-    RUVIA_GET("/firmware", firmwares);
+    RUVIA_GET_SSE("/firmware", firmwares);
     RUVIA_PUT("/:id/enrollment", enrollment, EdgeIdValidator, EnrollmentValidator);
     RUVIA_DELETE("/:id", removeEnrollment, EdgeIdValidator);
     RUVIA_PUT("/:id/name", renameNode, EdgeIdValidator, NodeNameValidator);
@@ -38,9 +39,10 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
     RUVIA_POST("/:id/sync", sync, EdgeIdValidator);
     RUVIA_POST_STREAM("/:id/firmware", uploadFirmware, EdgeIdValidator);
     RUVIA_POST("/:id/terminal-ticket", terminalTicket, EdgeIdValidator);
-    RUVIA_GET("/:id/logs", logs, EdgeIdValidator, LogsValidator);
+    RUVIA_GET_SSE("/:id/logs", logs, EdgeIdValidator, LogsValidator);
+    RUVIA_POST("/:id/logs/capture", captureLogs, EdgeIdValidator);
     RUVIA_PUT("/:id/logs/level", logLevel, EdgeIdValidator, LogLevelValidator);
-    RUVIA_GET("/:id", detail, EdgeIdValidator);
+    RUVIA_GET_SSE("/:id", detail, EdgeIdValidator);
     RUVIA_ROUTES_END
 
   private:
@@ -52,18 +54,26 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
         return value ? std::optional<std::string>(std::string(value->view())) : std::nullopt;
     }
 
-    ruvia::Task<ruvia::HttpResponse> list(ruvia::Context& c) {
+    ruvia::Task<void> list(ruvia::Context& c) {
+        co_await service::live::serve(c, "edge", [this, &c]() { return listSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> listSnapshot(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:edge:query");
         const auto& query = c.req().validated<EdgeListQuery>();
-        co_return c.json(service::common::ok<EdgePageResponse>(
+        co_return service::live::json(service::common::ok<EdgePageResponse>(
             c, co_await edgeService().list(c, *query.get<"page">(), *query.get<"pageSize">(),
                                            text(query.get<"keyword">()), text(query.get<"status">()),
                                            text(query.get<"groupId">()))));
     }
 
-    ruvia::Task<ruvia::HttpResponse> groups(ruvia::Context& c) {
+    ruvia::Task<void> groups(ruvia::Context& c) {
+        co_await service::live::serve(c, "edge", [this, &c]() { return groupsSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> groupsSnapshot(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:edge:query");
-        co_return c.json(service::common::ok<EdgeGroupListResponse>(
+        co_return service::live::json(service::common::ok<EdgeGroupListResponse>(
             c, co_await edgeService().groups(c)));
     }
 
@@ -85,9 +95,13 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
         co_return c.json(service::common::operation(c, "边缘节点分组已删除"));
     }
 
-    ruvia::Task<ruvia::HttpResponse> detail(ruvia::Context& c) {
+    ruvia::Task<void> detail(ruvia::Context& c) {
+        co_await service::live::serve(c, "edge", [this, &c]() { return detailSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> detailSnapshot(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:edge:query");
-        co_return c.json(service::common::ok<EdgeDetailResponse>(
+        co_return service::live::json(service::common::ok<EdgeDetailResponse>(
             c, co_await edgeService().detail(c, id(c))));
     }
 
@@ -127,9 +141,13 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
         co_return c.json(service::common::operation(c, "设备配置已生成并下发"));
     }
 
-    ruvia::Task<ruvia::HttpResponse> firmwares(ruvia::Context& c) {
+    ruvia::Task<void> firmwares(ruvia::Context& c) {
+        co_await service::live::serve(c, "edge", [this, &c]() { return firmwaresSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> firmwaresSnapshot(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:edge:query");
-        co_return c.json(service::common::ok<FirmwareListResponse>(
+        co_return service::live::json(service::common::ok<FirmwareListResponse>(
             c, co_await edgeService().firmwares(c)));
     }
 
@@ -139,10 +157,22 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
             c, co_await edgeService().terminalTicket(c, id(c))));
     }
 
-    ruvia::Task<ruvia::HttpResponse> logs(ruvia::Context& c) {
+    ruvia::Task<void> logs(ruvia::Context& c) {
+        const auto topic = "iot:edge:logs:snapshot:" + id(c);
+        co_await service::live::serve(c, topic, [this, &c]() { return logsSnapshot(c); });
+    }
+
+    ruvia::Task<ruvia::HttpResponse> captureLogs(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:edge:query");
-        co_return c.json(service::common::ok<LogsResponse>(
-            c, co_await edgeService().logs(c, id(c), c.req().validated<LogsQuery>())));
+        const LogsQuery query;
+        (void)co_await edgeService().logs(c, id(c), query);
+        co_return c.json(service::common::operation(c, "日志已采集"));
+    }
+
+    ruvia::Task<std::string> logsSnapshot(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:edge:query");
+        co_return service::live::json(service::common::ok<LogsResponse>(
+            c, co_await edgeService().logSnapshot(c, id(c), c.req().validated<LogsQuery>())));
     }
 
     ruvia::Task<ruvia::HttpResponse> logLevel(ruvia::Context& c) {

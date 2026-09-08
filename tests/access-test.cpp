@@ -62,7 +62,7 @@ int main() {
                 "open-access publication idempotency key changed");
         require(dataPublication != service::access::event::publicationKey(
                                        "019fd9f6-4be5-7272-a194-9e571bce848d",
-                                       "device.command.responded"),
+                                       "device.command.updated"),
                 "different event types incorrectly share an idempotency key");
         const std::string_view partitionedDevice{
             "019fd9f6-4be5-7272-a194-9e571bce848e"};

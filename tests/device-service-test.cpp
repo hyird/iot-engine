@@ -80,9 +80,10 @@ int main() {
                     service.find("设备所属边缘节点不可修改") == std::string::npos &&
                     service.find("设备类型不可修改") == std::string::npos,
                 "device connection fields are still immutable");
-        require(service.find("createEdgeLink") != std::string::npos &&
-                    service.find("retireEdgeLink") != std::string::npos,
-                "device connection-mode changes do not migrate edge links");
+        require(service.find("createEdgeLink") == std::string::npos &&
+                    service.find("retireEdgeLink") == std::string::npos &&
+                    service.find("INSERT INTO link") == std::string::npos,
+                "device writes must not create or retire shared physical channels");
         require(service.find("service::telemetry::latest::canonicalPointText(") !=
                         std::string::npos &&
                     service.find("normalized_values") != std::string::npos &&
@@ -93,11 +94,12 @@ int main() {
         require(form.find("disabled={!!editing}") == std::string::npos,
                 "device edit form still disables connection fields");
         const auto controller = deviceControllerSource();
-        require(controller.find("RUVIA_GET_SSE(\"/realtime/events\", realtimeEvents)") !=
+        require(controller.find("RUVIA_GET_SSE(\"/realtime\", realtime)") !=
                         std::string::npos &&
+                    controller.find("/realtime/events") == std::string::npos &&
                     controller.find("requirePermission(c, \"iot:device:query\")") !=
                         std::string::npos &&
-                    controller.find("X-Accel-Buffering") != std::string::npos,
+                    controller.find("service::live::serve") != std::string::npos,
                 "device realtime SSE route is missing permission or proxy-streaming safeguards");
         std::cout << "device service tests passed\n";
         return 0;

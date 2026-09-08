@@ -27,6 +27,7 @@
 #include "service/common/packet-log.h"
 #include "service/features/alert/metadata.h"
 #include "service/features/collector/command.h"
+#include "service/features/command/state.h"
 #include "service/features/collector/modbus.h"
 #include "service/features/collector/engine.h"
 #include "service/features/collector/poll.h"
@@ -138,7 +139,7 @@ struct RuntimeRepositoryScaleDb {
                 "device-1", "MODBUS001", "modbus device", "link-1", "TCP Client", "",
                 "Modbus", "+08:00", "300", "OFF", "", "OFF", "", "TCP", "1",
                 "RACK_SLOT", "PG", "0", "1", "0100", "0101", "5000", "5000",
-                "STANDARD", "5", "1", "60", "1", "100", "125"});
+                "STANDARD", "5", "1", "60", "1", "100", "125", "model-1", "1"});
         } else if (sql.find("p.protocol = 'Modbus'") != std::string_view::npos &&
                    sql.find("ORDER BY d.id,") != std::string_view::npos) {
             result.values.emplace_back(FakeDbRow{
@@ -169,33 +170,6 @@ struct RecordingRedis {
     ruvia::RedisValue reply;
 };
 
-struct EdgeSessionRedis {
-    ruvia::Task<void> set(std::string_view, std::string_view epoch,
-                          ruvia::RedisSetOptions) const {
-        value = std::string(epoch);
-        co_return;
-    }
-
-    ruvia::Task<std::int64_t> del(std::string_view) const {
-        const auto removed = value.has_value();
-        value.reset();
-        co_return removed ? 1 : 0;
-    }
-
-    ruvia::Task<ruvia::RedisValue>
-    eval(std::string_view script, std::span<const std::string_view>,
-         std::span<const std::string_view> arguments) const {
-        if (arguments.empty() || !value || *value != arguments.front())
-            co_return ruvia::detail::RedisTypesAccess::integerValue(
-                0, std::pmr::get_default_resource());
-        if (script.find("redis.call('DEL'") != std::string_view::npos)
-            value.reset();
-        co_return ruvia::detail::RedisTypesAccess::integerValue(
-            1, std::pmr::get_default_resource());
-    }
-
-    mutable std::optional<std::string> value;
-};
 
 struct AlertScheduleRedisState {
     std::string script;
@@ -398,10 +372,10 @@ struct RecordingLatestRedis {
             replies.reserve(commands.size());
             for (const auto& command : commands) {
                 if (command.size() >= 3 && command[0] == "HMGET" &&
-                    command[1] == "iot:device:D1:latest")
+                    command[1] == "iot:v2:device:device-1:latest")
                     replies.push_back(existingLatestReply());
                 else if (command.size() >= 3 && command[0] == "HMGET" &&
-                         command[1] == "iot:runtime:device:D1")
+                         command[1] == "iot:v2:runtime:device:device-1")
                     replies.push_back(existingRuntimeReply());
                 else
                     replies.push_back(ruvia::detail::RedisTypesAccess::integerValue(
@@ -906,6 +880,44 @@ void testCapabilities() {
             "Modbus discovery capability missing");
     require(registry.require("S7").capabilities().has(collector::ProtocolCapability::Polling),
             "S7 polling capability missing");
+}
+
+void testStationScopeAndInstanceIdentity() {
+    collector::RuntimeSnapshot snapshot;
+    for (const auto* link : {"station-link-a","station-link-b"}) {
+        snapshot.links.push_back({.id=link,.mode="TCP Server",.protocol="SL651",.status="enabled"});
+        collector::DeviceDefinition device;
+        device.id=std::string(link)+"-device"; device.linkId=link;
+        device.code="0000000001"; device.protocol="SL651";
+        device.elements.push_back({.id="water",.name="Water",.functionCode="32",
+            .guideHex="3900",.encoding="BCD",.length=2,.digits=2});
+        snapshot.devices.push_back(device);
+    }
+    collector::ProtocolEngine engine(runtimes()); engine.reload(snapshot);
+    for (const auto* link : {"station-link-a","station-link-b"}) {
+        const auto connection=std::string(link)+"-connection";
+        (void)engine.connected({.connectionId=connection,.linkId=link,.sessionEpoch=1});
+        service::message::IngressPacket packet{.messageId="frame",.linkId=link,
+            .connectionId=connection,.occurredAtMs=1000};
+        packet.payload=slFrame(0x32,{0x00,0x01,0x24,0x01,0x02,0x03,0x04,0x05,0x39,0x00,0x12,0x34});
+        const auto actions=engine.consume(packet);
+        const auto& parsed=first(actions,collector::ProtocolActionKind::PublishParsed).parsed;
+        require(parsed.deviceId==std::string(link)+"-device", "same SL651 station code crossed link identity");
+        require(parsed.deviceCode=="0000000001", "SL651 wire address was replaced by UUID");
+    }
+    auto alias=snapshot.devices.front(); alias.id="alias"; alias.code="1";
+    snapshot.devices.push_back(alias);
+    engine.reload(snapshot);
+    bool rejected=false;
+    try { (void)engine.connected({.connectionId="duplicate",.linkId="station-link-a",.sessionEpoch=1}); }
+    catch (const std::invalid_argument&) { rejected=true; }
+    require(rejected,"normalized station address alias was silently accepted");
+    require(service::message::commandStream(0,true,"instance-a") !=
+            service::message::commandStream(0,true,"instance-b"),"worker 0 aliases across instances");
+    require(service::command::collectorResultState(false,"response_timeout")=="UNKNOWN",
+            "transport timeout was misrepresented as confirmed failure");
+    require(service::command::terminalState("UNKNOWN") && !service::command::terminalState("AWAITING_RESULT"),
+            "command wait completion semantics are incorrect");
 }
 
 void testSl651() {
@@ -2205,7 +2217,7 @@ void testAtomicStreamFinalizationContract() {
     require(committed.keys ==
                 std::vector<std::string>{"dead-letter", "dead-letter",
                                          "command-result",
-                                         "iot:service:worker:0:wake",
+                                         service::message::workerWakeStream(0),
                                          "command-input"},
             "atomic stream finalization changed Redis key order");
     require(committed.arguments ==
@@ -2348,29 +2360,15 @@ void testFreshnessDeadlineWait() {
 }
 
 void testEdgeSessionOwnership() {
-    EdgeSessionRedis redis;
-    constexpr std::string_view nodeId = "00000000-0000-7000-8000-000000000002";
-    require(runTask(service::edge::session_state::claim(redis, nodeId, 11, 3, 0)),
-            "initial edge session claim failed");
-    require(runTask(service::edge::session_state::claim(redis, nodeId, 22, 5, 1)),
-            "replacement edge session claim failed");
-    require(!runTask(service::edge::session_state::refresh(redis, nodeId, 11, 3, 0)),
-            "stale edge session retained ownership");
-    require(redis.value == "22|5|1", "stale edge session overwrote the replacement state");
-    require(!runTask(service::edge::session_state::release(redis, nodeId, 11, 3, 0)),
-            "stale edge session reported replacement cleanup");
-    require(redis.value == "22|5|1", "stale edge session deleted the replacement state");
-    require(service::edge::session_state::protocolVersion(*redis.value) == 5,
-            "edge session did not expose its negotiated protocol");
-    require(service::edge::session_state::workerIndex(*redis.value) == 1,
-            "edge session did not expose its owning worker");
-    require(!service::edge::session_state::protocolVersion("22|5").has_value(),
-            "session state without a worker owner was treated as current");
-    require(runTask(service::edge::session_state::refresh(redis, nodeId, 22, 5, 1)),
-            "active edge session failed to refresh ownership");
-    require(runTask(service::edge::session_state::release(redis, nodeId, 22, 5, 1)) &&
-                !redis.value,
-            "active edge session failed to release ownership");
+    const auto encoded=service::edge::session_state::value(22,5,1);
+    const auto parsed=service::edge::session_state::parse(encoded);
+    require(parsed && parsed->epoch==22 && parsed->protocolVersion==5 && parsed->workerIndex==1,
+            "edge routing identity did not round trip");
+    require(parsed->instanceId==service::runtime::instanceId(),"edge owner instance was lost");
+    require(!service::edge::session_state::parse("22|5").has_value(),
+            "incomplete routing identity was accepted");
+    require(!service::edge::session_state::parse("22|5|1|bad-instance").has_value(),
+            "invalid owner instance was accepted");
 }
 
 void testLatestProjectionRejectsRedisErrors() {
@@ -2392,7 +2390,7 @@ void testLatestProjectionRefreshesPreservedElementMetadata() {
     bool refreshesElementMetadata = false;
     for (const auto& command : context.redisClient.state->pipelineCommands) {
         if (command.size() >= 4 && command[0] == "HSETNX" &&
-            command[1] == "iot:device:D1:latest" && command[2] == "temperature")
+            command[1] == "iot:v2:device:device-1:latest" && command[2] == "temperature")
             skippedExistingElement = true;
         if (!command.empty() && command[0] != "HSETNX") {
             const auto hasElement = std::ranges::find(command, "temperature") != command.end();
@@ -2406,12 +2404,13 @@ void testLatestProjectionRefreshesPreservedElementMetadata() {
             "latest projection skipped existing element metadata refresh with HSETNX");
     require(refreshesElementMetadata,
             "latest projection did not write refreshed metadata for an existing element");
-    const auto bumpedRevision = std::ranges::any_of(
+    const auto publishedChange = std::ranges::any_of(
         context.redisClient.state->directCommands, [](const auto& command) {
-            return command.size() == 2 && command[0] == "INCR" &&
-                   command[1] == service::telemetry::latest::kRealtimeRevisionKey;
+            return command.size() == 8 && command[0] == "XADD" &&
+                   command[1] == service::telemetry::latest::kRealtimeChangesStream &&
+                   command[6] == "topic" && command[7] == "device";
         });
-    require(bumpedRevision, "latest projection did not notify device realtime subscribers");
+    require(publishedChange, "latest projection did not notify device realtime subscribers");
 }
 
 void testLatestProjectionRejectsInvalidPreservedDeadline() {
@@ -2422,14 +2421,14 @@ void testLatestProjectionRejectsInvalidPreservedDeadline() {
     bool emittedInvalidDeadline = false;
     bool clearedDeadline = false;
     const auto deadlineKey = service::telemetry::latest::onlineDeadlinesKey(
-        service::message::shard::index("D1"));
+        service::message::shard::index("device-1"));
     for (const auto& command : context.redisClient.state->pipelineCommands) {
         if (command.size() >= 4 && command[0] == "ZADD" &&
             command[1] == deadlineKey &&
             command[2] == "not-a-number")
             emittedInvalidDeadline = true;
         if (command.size() >= 3 && command[0] == "ZREM" &&
-            command[1] == deadlineKey && command[2] == "D1")
+            command[1] == deadlineKey && command[2] == "device-1")
             clearedDeadline = true;
     }
     require(!emittedInvalidDeadline,
@@ -2916,12 +2915,15 @@ void testAtomicPendingCommandDispatch() {
     runTask(service::command::dispatchPendingBatch(
         redis, "iot:channel:command:worker:0:high",
         service::command::PendingQueueKind::Stream, dispatches, "user-1", 10'000));
-    require(redis.keys.size() == 3 &&
-                redis.keys[1] == "iot:state:command:" + first.messageId &&
-                redis.keys[2] == "iot:state:command:" + second.messageId,
-            "pending command batch did not bind every state key to one Redis script");
-    require(redis.script.find("redis.call('XADD'") < redis.script.find("redis.call('HSET'"),
-            "pending state was written before the command queue entry");
+    require(redis.keys.size() == 1, "queue must not own a second command status model");
+    require(redis.script.find("depth+count>tonumber(ARGV[2])") != std::string::npos,
+            "queue must reject capacity overflow before writing");
+    require(redis.script.find("LTRIM") == std::string::npos && redis.script.find("MAXLEN") == std::string::npos,
+            "accepted commands must never be trimmed");
+    RecordingRedis full(0);
+    require(!runTask(service::command::dispatchPendingBatch(full,"queue",
+        service::command::PendingQueueKind::Stream,dispatches,"user",1)),
+        "capacity rejection must be observable");
 }
 
 } // namespace
@@ -2937,6 +2939,7 @@ int main() {
         run("poll stagger", testPollStagger);
         run("TCP Client target reconcile", testTcpClientTargetReconcile);
         run("TCP close during pending write", testTcpCloseDuringPendingWrite);
+        run("station scope and instance identity", testStationScopeAndInstanceIdentity);
         run("sl651", testSl651);
         run("sl651 encodings", testSl651AllEncodingsAndFunctionCodes);
         run("sl651 multi-packet images", testSl651MultiPacketImages);

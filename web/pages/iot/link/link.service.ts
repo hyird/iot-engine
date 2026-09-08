@@ -1,4 +1,5 @@
-import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
+import { useLiveQuery } from '@/hooks/useLiveQuery';
+import { type UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import type { PaginatedResult } from '@/utils/types';
 import { create, getEnums, getList, getPublicIp, remove, update } from './link.client';
@@ -8,7 +9,7 @@ export function useLinkList(
     params?: Link.Query,
     options?: Omit<UseQueryOptions<PaginatedResult<Link.Item>>, 'queryKey' | 'queryFn'>
 ) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: linkQueryKeys.list(params),
         queryFn: () => getList(params),
         ...options,
@@ -16,7 +17,7 @@ export function useLinkList(
 }
 
 export function useLinkEnums(options?: { enabled?: boolean }) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: [...linkQueryKeys.all, 'enums'],
         queryFn: getEnums,
         enabled: options?.enabled ?? true,
@@ -25,7 +26,7 @@ export function useLinkEnums(options?: { enabled?: boolean }) {
 }
 
 export function usePublicIp(options?: { enabled?: boolean }) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: [...linkQueryKeys.all, 'public-ip'],
         queryFn: getPublicIp,
         enabled: options?.enabled ?? true,
@@ -37,9 +38,9 @@ export function usePublicIp(options?: { enabled?: boolean }) {
 export function useLinkOptions(
     options?: Omit<UseQueryOptions<Link.Item[]>, 'queryKey' | 'queryFn'>
 ) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: [...linkQueryKeys.all, 'options'],
-        queryFn: async () => (await getList({ page: 1, pageSize: 100 })).list,
+        queryFn: () => getList({ page: 1, pageSize: 100 }).map((page) => page.list),
         ...options,
         enabled: options?.enabled ?? true,
     });

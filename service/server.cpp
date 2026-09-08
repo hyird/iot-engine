@@ -1,3 +1,4 @@
+#include "service/application/role.h"
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -49,6 +50,7 @@
 #include "service/features/telemetry/persistence.h"
 #include "service/features/telemetry/latest.h"
 #include "service/features/collector/runtime.h"
+#include "service/features/live/runtime.h"
 #include "service/domains/auth/auth.controller.h"
 #include "service/domains/dept/dept.controller.h"
 #include "service/domains/role/role.controller.h"
@@ -107,11 +109,6 @@ namespace
         return config;
     }
 
-    bool vpnHubEnabled(const ruvia::Env &env)
-    {
-        return env.get<bool>("VPN_HUB_ENABLED").value_or(true);
-    }
-
     std::filesystem::path runtimeDirectory(const char *executable)
     {
         if (!executable || *executable == '\0')
@@ -127,7 +124,7 @@ namespace
                                                         const std::filesystem::path &runtime)
     {
         service::common::packet_log::Config config;
-        config.directory = runtime / "logs";
+        config.directory = std::filesystem::path(env.get("PACKET_LOG_DIRECTORY").value_or((runtime / "logs").string()));
         config.level =
             service::common::packet_log::parseLevel(env.get("PACKET_LOG_LEVEL").value_or("DEBUG"));
         return config;
@@ -148,7 +145,6 @@ namespace
     AppConfig gb28181Config(const ruvia::Env &env)
     {
         AppConfig config;
-        config.enabled = envFlag(env, "GB28181_ENABLED");
         config.sip.domain = std::string(env.get("GB28181_SIP_DOMAIN").value_or(""));
         config.sip.id = std::string(env.get("GB28181_SIP_ID").value_or(""));
         config.sip.host =
@@ -271,6 +267,9 @@ int main(int argc, char *argv[])
 
         auto &app = ruvia::app();
         app.loadDotenv();
+        const auto role=service::application::parseRole(app.env().get("SERVICE_ROLE").value_or("api"));
+        const bool apiRole=role==service::application::Role::Api;
+        app.use<service::application::RoleBoundary>(role);
         if (!service::edge::protocol::configurePlatformId(
                 app.env().get("EDGE_PLATFORM_ID")
                     .value_or(service::edge::protocol::kDefaultPlatformId)))
@@ -281,7 +280,9 @@ int main(int argc, char *argv[])
             throw std::runtime_error("EDGE_PUBLIC_BASE_URL is invalid");
         const auto runtime = runtimeDirectory(argc > 0 ? argv[0] : nullptr);
         service::common::packet_log::initialize(packetLogConfig(app.env(), runtime));
-        const auto gb28181 = gb28181Config(app.env());
+        auto gb28181 = gb28181Config(app.env());
+        gb28181.enabled = role==service::application::Role::Media;
+
         service::gb28181::runtime().configure(gb28181);
 
         auto db = databaseConfig(app.env());
@@ -311,7 +312,7 @@ int main(int argc, char *argv[])
         if (migrateOnly)
             return 0;
 
-        configureWeb(app, runtime);
+        if (apiRole) configureWeb(app, runtime);
         const auto cpu = std::max(2U, std::thread::hardware_concurrency());
         const auto mediaWorkers =
             static_cast<unsigned>(std::max(1, gb28181.media.workerThreads));
@@ -349,14 +350,15 @@ int main(int argc, char *argv[])
         auto collectorRedis = serviceRedis;
         // One worker-local XREAD multiplexes wakeups for all Service Stream tasks.
         // The tasks retain separate consumer groups and use the ordinary pool to drain.
-        serviceRedis.blockingPoolSizePerWorker = 1;
+        serviceRedis.blockingPoolSizePerWorker = 2;
         auto collector = std::make_shared<service::collector::Runtime>();
         auto telemetry = std::make_shared<service::telemetry::PersistenceRuntime>();
+        auto liveQueries = std::make_shared<service::live::Runtime>();
         auto commandResults = std::make_shared<service::command::ResultRuntime>();
         auto openWebhooks = std::make_shared<service::access::WebhookRuntime>();
         auto configReconciler = std::make_shared<service::runtime::Reconciler>();
         auto edgeProjector = std::make_shared<service::edge::Projector>();
-        const auto enableVpnHub = vpnHubEnabled(app.env());
+        const auto enableVpnHub = role==service::application::Role::Vpn;
         auto vpnRuntime = enableVpnHub
                               ? std::make_shared<service::vpn::Runtime>(vpnHubConfig(app.env()))
                               : nullptr;
@@ -387,12 +389,14 @@ int main(int argc, char *argv[])
             *observability, collectorWorkerCount, serviceWorkerCount, outboxPolicy);
         auto applicationRuntime =
             std::make_shared<service::application::Runtime>(*observability);
+        if (apiRole)
+            app.database(ruvia::DbRegistrationConfig{.alias = "telemetry-history", .config = db});
         app.useWorkerState<service::edge::Dispatcher>()
             .database(ruvia::DbRegistrationConfig{.config = std::move(db)})
             .redis(ruvia::RedisRegistrationConfig{.config = std::move(serviceRedis)})
             .onStart([collector, telemetry, commandResults, openWebhooks, configReconciler,
-                    edgeProjector, vpnRuntime, gb28181Projector, alerts, outbox,
-                      applicationRuntime,
+                    edgeProjector, vpnRuntime, gb28181Projector, alerts, outbox, liveQueries,
+                      applicationRuntime, apiRole,
                       collectorRedis = std::move(collectorRedis),
                       collectorWorkerCount, &app]() mutable
                      {
@@ -402,33 +406,37 @@ int main(int argc, char *argv[])
                         "service: no worker available for config projection");
                 service::message::workerStreamMultiplexer().configure(workers);
                 applicationRuntime->add({
+                    .name = "live-queries",
+                    .start = [liveQueries, workers] { liveQueries->start(workers.front()); },
+                    .stop = [liveQueries] { liveQueries->stop(); }});
+                if (apiRole) applicationRuntime->add({
                     .name = "outbox",
                     .start = [outbox, workers] { outbox->start(workers); },
                     .stop = [outbox] { outbox->stop(); }});
-                applicationRuntime->add({
+                if (apiRole) applicationRuntime->add({
                     .name = "telemetry",
                     .start = [telemetry, workers, collectorWorkerCount] {
                         telemetry->start(workers, collectorWorkerCount);
                     },
                     .stop = [telemetry] { telemetry->stop(); }});
-                applicationRuntime->add({
+                if (apiRole) applicationRuntime->add({
                     .name = "command-results",
                     .start = [commandResults, workers, collectorWorkerCount] {
                         commandResults->start(workers, collectorWorkerCount);
                     },
                     .stop = [commandResults] { commandResults->stop(); }});
-                applicationRuntime->add({
+                if (apiRole) applicationRuntime->add({
                     .name = "webhooks",
                     .dependencies = {"outbox"},
                     .start = [openWebhooks, workers] { openWebhooks->start(workers); },
                     .stop = [openWebhooks] { openWebhooks->stop(); }});
-                applicationRuntime->add({
+                if (apiRole) applicationRuntime->add({
                     .name = "edge-dispatcher",
                     .start = [workers] {
                         service::edge::dispatcherRuntime().start(workers);
                     },
                     .stop = [] { service::edge::dispatcherRuntime().stop(); }});
-                applicationRuntime->add({
+                if (apiRole) applicationRuntime->add({
                     .name = "edge-projector",
                     .start = [edgeProjector, workers] {
                         edgeProjector->start(workers);
@@ -437,11 +445,10 @@ int main(int argc, char *argv[])
                 if (vpnRuntime) {
                     applicationRuntime->add({
                         .name = "vpn",
-                        .dependencies = {"edge-projector"},
                         .start = [vpnRuntime, workers] { vpnRuntime->start(workers); },
                         .stop = [vpnRuntime] { vpnRuntime->stop(); }});
                 }
-                applicationRuntime->add({
+                if (apiRole) applicationRuntime->add({
                     .name = "alerts",
                     .dependencies = {"telemetry"},
                     .start = [alerts, workers] { alerts->start(workers); },
@@ -460,7 +467,7 @@ int main(int argc, char *argv[])
                             gb28181Projector->stop();
                         }});
                 }
-                applicationRuntime->add({
+                if (apiRole) applicationRuntime->add({
                     .name = "collector",
                     .dependencies = {"telemetry", "command-results", "edge-projector",
                                      "alerts"},
@@ -482,7 +489,7 @@ int main(int argc, char *argv[])
                         ready.get();
                     },
                     .stop = [collector] { collector->stop(); }});
-                applicationRuntime->add({
+                if (apiRole) applicationRuntime->add({
                     .name = "config-reconciler",
                     .dependencies = {"collector", "outbox"},
                     .start = [configReconciler, workers, collectorWorkerCount] {
@@ -491,9 +498,7 @@ int main(int argc, char *argv[])
                     .stop = [configReconciler] { configReconciler->stop(); }});
                 applicationRuntime->add({
                     .name = "stream-multiplexer",
-                    .dependencies = {"telemetry", "command-results", "webhooks",
-                                     "edge-dispatcher", "edge-projector",
-                                     "config-reconciler"},
+                    .dependencies = {},
                     .start = [workers] {
                         service::message::workerStreamMultiplexer().start(workers);
                     },

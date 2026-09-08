@@ -40,11 +40,11 @@ SELECT DISTINCT rule.device_id::text, rule.id::text,
        CASE WHEN condition.value IS NULL THEN NULL ELSE
          COALESCE(offline_duration.duration_seconds, 300)::text
        END,
-       COALESCE((EXTRACT(EPOCH FROM state.last_observed_at) * 1000)::bigint, 0)::text,
-       COALESCE(device.protocol_params->>'device_code', '')
+       COALESCE(state.observed_at_ms, 0)::text,
+       device.id::text
 FROM alert_rule rule
 JOIN device ON device.id = rule.device_id
-LEFT JOIN device_data_ingest_state state ON state.device_id = rule.device_id
+LEFT JOIN alert_input_state state ON state.device_id = rule.device_id
 LEFT JOIN LATERAL jsonb_array_elements(rule.conditions) condition(value)
   ON condition.value->>'type' = 'offline'
 LEFT JOIN LATERAL (
@@ -142,7 +142,7 @@ for index = 1, offline_count do
   local duration = tonumber(ARGV[cursor + 3])
   local deadline = tonumber(ARGV[cursor + 4])
   local runtime_observed = redis.call(
-    'HGET', 'iot:runtime:device:' .. ARGV[cursor + 5], 'last_report_at_ms')
+    'HGET', 'iot:v2:runtime:device:' .. ARGV[cursor + 5], 'last_report_at_ms')
   local runtime_observed_ms = runtime_observed and tonumber(runtime_observed) or nil
   if runtime_observed_ms then
     deadline = math.max(deadline, runtime_observed_ms + duration)
@@ -157,7 +157,7 @@ redis.call('SET', KEYS[2], offline_count > 0 and '1' or '0')
 redis.call('SET', KEYS[3], '1')
 for partition, _ in pairs(changed) do
   redis.call('XADD', KEYS[6 + shard_count + partition],
-             'MAXLEN', '~', '100000', '*', 'task', 'freshness')
+             'MAXLEN', '~', '100000', '*', 'task', 'freshness-alerts')
 end
 return offline_count
 )lua";
@@ -212,7 +212,7 @@ for index = 1, #values, 2 do
   end
 end
 if wake then
-  redis.call('XADD', KEYS[3], 'MAXLEN', '~', '100000', '*', 'task', 'freshness')
+  redis.call('XADD', KEYS[3], 'MAXLEN', '~', '100000', '*', 'task', 'freshness-alerts')
 end
 return changed
 )lua";

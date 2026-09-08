@@ -12,12 +12,22 @@ RUVIA_REQUEST_MODEL(LinkTargetBody,
     RUVIA_OPTIONAL_FIELD(status, ruvia::String));
 
 RUVIA_REQUEST_MODEL(LinkEndpointBody,
+    RUVIA_OPTIONAL_FIELD(transport, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("interface", interfaceName, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("baud_rate", baudRate, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("data_bits", dataBits, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("stop_bits", stopBits, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(parity, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(rs485, ruvia::Bool),
+
     RUVIA_OPTIONAL_FIELD(mode, ruvia::String),
     RUVIA_OPTIONAL_FIELD(ip, ruvia::String),
     RUVIA_OPTIONAL_FIELD(port, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(targets, ruvia::Array<LinkTargetBody>));
 
 RUVIA_REQUEST_MODEL(SaveLinkBody,
+    RUVIA_OPTIONAL_FIELD(execution, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("edge_node_id", edgeNodeId, ruvia::String),
     RUVIA_OPTIONAL_FIELD(name, ruvia::String),
     RUVIA_OPTIONAL_FIELD(protocol, ruvia::String),
     RUVIA_OPTIONAL_FIELD(endpoint, LinkEndpointBody),
@@ -51,12 +61,22 @@ RUVIA_RESPONSE_MODEL(LinkTargetDto,
     RUVIA_OPTIONAL_FIELD(runtime, RuntimeDto));
 
 RUVIA_RESPONSE_MODEL(LinkEndpointDto,
+    RUVIA_OPTIONAL_FIELD(transport, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("interface", interfaceName, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("baud_rate", baudRate, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("data_bits", dataBits, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("stop_bits", stopBits, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(parity, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(rs485, ruvia::Bool),
+
     RUVIA_OPTIONAL_FIELD(mode, ruvia::String),
     RUVIA_OPTIONAL_FIELD(ip, ruvia::String),
     RUVIA_OPTIONAL_FIELD(port, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(targets, ruvia::BoxedArray<LinkTargetDto>));
 
 RUVIA_RESPONSE_MODEL(LinkItemDto,
+    RUVIA_OPTIONAL_FIELD(execution, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("edge_node_id", edgeNodeId, ruvia::String),
     RUVIA_OPTIONAL_FIELD(id, ruvia::String),
     RUVIA_OPTIONAL_FIELD(name, ruvia::String),
     RUVIA_OPTIONAL_FIELD(protocol, ruvia::String),
@@ -68,6 +88,8 @@ RUVIA_RESPONSE_MODEL(LinkItemDto,
     RUVIA_OPTIONAL_FIELD_NAME("updated_at", updatedAt, ruvia::String));
 
 RUVIA_RESPONSE_MODEL(LinkOptionDto,
+    RUVIA_OPTIONAL_FIELD(execution, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("edge_node_id", edgeNodeId, ruvia::String),
     RUVIA_OPTIONAL_FIELD(id, ruvia::String),
     RUVIA_OPTIONAL_FIELD(name, ruvia::String),
     RUVIA_OPTIONAL_FIELD(protocol, ruvia::String),

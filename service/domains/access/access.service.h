@@ -546,7 +546,7 @@ SELECT jsonb_build_object(
             c.redis(), deviceId);
         if (!device)
             service::common::fail(19001, "设备不存在", 404);
-        const auto latestKey = service::telemetry::latest::latestKey(device->code);
+        const auto latestKey = service::telemetry::latest::latestKey(device->id);
         const auto latest = co_await service::message::redis::command(
             c.redis(), std::vector<std::string>{"HGETALL", latestKey});
         std::map<std::string_view, std::string_view, std::less<>> latestFields;
@@ -944,28 +944,6 @@ FROM open_webhook WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
 WITH device_ref AS (
   SELECT d.id, d.name, d.protocol_params->>'device_code' AS code
   FROM device d WHERE d.id = $1::uuid AND d.deleted_at IS NULL
-), configured AS (
-  SELECT element, 1 AS protocol_order, position AS function_order, 0::bigint AS element_order
-  FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'Modbus'
-  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]'::jsonb))
-    WITH ORDINALITY AS entry(element, position) WHERE d.id = $1::uuid
-  UNION ALL
-  SELECT element, 2, position, 0::bigint
-  FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'S7'
-  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]'::jsonb))
-    WITH ORDINALITY AS entry(element, position) WHERE d.id = $1::uuid
-  UNION ALL
-  SELECT element, 3, function_position, element_position
-  FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'SL651'
-  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]'::jsonb))
-    WITH ORDINALITY AS functions(function, function_position)
-  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(function->'elements', '[]'::jsonb))
-    WITH ORDINALITY AS elements(element, element_position)
-  WHERE d.id = $1::uuid AND function->>'dir' = 'UP'
-), point AS (
-  SELECT element->>'id' AS id, COALESCE(element->>'name', element->>'id') AS name,
-         COALESCE(element->>'unit', '') AS unit, protocol_order, function_order, element_order
-  FROM configured WHERE COALESCE(element->>'encode', '') <> 'JPEG'
 ), counted AS (
   SELECT COUNT(*) AS total
   FROM device_data data
@@ -985,17 +963,19 @@ WITH device_ref AS (
       'device', jsonb_build_object('id', device_ref.id, 'code', device_ref.code,
         'name', device_ref.name),
       'points', COALESCE(jsonb_agg(jsonb_build_object(
-        'id', point.id, 'name', point.name,
+        'id', point.key, 'name', COALESCE(point.value->>'name', point.key),
         'value', CASE
-          WHEN jsonb_typeof(filtered.data->'values'->point.id->'value') = 'boolean'
-          THEN to_jsonb(CASE WHEN (filtered.data->'values'->point.id->>'value')::boolean
+          WHEN jsonb_typeof(point.value->'value') = 'boolean'
+          THEN to_jsonb(CASE WHEN (point.value->>'value')::boolean
                              THEN 1 ELSE 0 END)
-          ELSE filtered.data->'values'->point.id->'value' END,
-        'unit', point.unit,
+          ELSE point.value->'value' END,
+        'unit', COALESCE(point.value->>'unit', ''),
         'time', iot_utc_timestamp(filtered.report_time))
-        ORDER BY point.protocol_order, point.function_order, point.element_order), '[]'::jsonb)
+        ORDER BY point.key) FILTER (WHERE point.key IS NOT NULL), '[]'::jsonb)
     ) AS item
-  FROM filtered CROSS JOIN device_ref CROSS JOIN point
+  FROM filtered CROSS JOIN device_ref
+  LEFT JOIN LATERAL jsonb_each(filtered.data->'values') point
+    ON COALESCE(point.value->>'type','') <> 'JPEG'
   GROUP BY filtered.report_time, filtered.id,
             device_ref.id, device_ref.code, device_ref.name
 )

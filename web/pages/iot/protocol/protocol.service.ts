@@ -1,4 +1,5 @@
-import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
+import { useLiveQuery } from '@/hooks/useLiveQuery';
+import { type UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { createQueryKeys } from '@/utils/query';
 import type { PaginatedResult } from '@/utils/types';
@@ -18,7 +19,7 @@ export function useProtocolConfigList(
     params?: Protocol.Query,
     options?: Omit<UseQueryOptions<Protocol.Item[]>, 'queryKey' | 'queryFn'>
 ) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: protocolQueryKeys.list(params),
         queryFn: () => api.getAll(params),
         ...options,
@@ -29,7 +30,7 @@ export function useProtocolConfigOptions(
     protocol: Protocol.Type,
     options?: Omit<UseQueryOptions<PaginatedResult<Protocol.Option>>, 'queryKey' | 'queryFn'>
 ) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: [...protocolQueryKeys.all, 'options', protocol],
         queryFn: () => api.getOptions(protocol),
         ...options,
@@ -40,7 +41,7 @@ export function useProtocolConfigDetail(
     id: string | undefined,
     options?: Omit<UseQueryOptions<Protocol.Item>, 'queryKey' | 'queryFn'>
 ) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: protocolQueryKeys.detail(id ?? ''),
         queryFn: () => api.getDetail(id as string),
         enabled: Boolean(id),

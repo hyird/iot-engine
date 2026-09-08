@@ -1,3 +1,4 @@
+import { liveRead } from '@/utils/live-request';
 import request from '@/utils/http';
 import { appendQueryParams } from '@/utils/query';
 import type { GB28181 } from './gb28181.types';
@@ -16,10 +17,10 @@ export function stopPreviewKeepalive(sessionId: string, token?: string | null) {
     }).catch(() => undefined);
 }
 
-export const getHealth = () => request.get<GB28181.Health>(`${BASE}/health`, { _silent: true });
-export const getSipConfig = () => request.get<GB28181.SipConfig>(`${BASE}/config/sip`);
-export const getDevices = () => request.get<GB28181.Items<GB28181.Device>>(`${BASE}/devices`);
-export const getStreams = () => request.get<GB28181.Items<GB28181.StreamStatus>>(`${BASE}/streams`);
+export const getHealth = () => liveRead<GB28181.Health>(`${BASE}/health`, { _silent: true });
+export const getSipConfig = () => liveRead<GB28181.SipConfig>(`${BASE}/config/sip`);
+export const getDevices = () => liveRead<GB28181.Items<GB28181.Device>>(`${BASE}/devices`);
+export const getStreams = () => liveRead<GB28181.Items<GB28181.StreamStatus>>(`${BASE}/streams`);
 export const renameDevice = (payload: GB28181.DeviceNamePayload) =>
     request.put<void>(`${BASE}/devices/${pathPart(payload.deviceId)}/name`, {
         name: payload.name,
@@ -56,7 +57,7 @@ export const sendPtzPosition = (payload: GB28181.PtzPositionPayload) =>
         )
     );
 export const getRecording = (payload: GB28181.StreamPayload) =>
-    request.get<GB28181.CommandResult>(`${BASE}/streams/${pathPart(payload.streamId)}/recording`);
+    liveRead<GB28181.CommandResult>(`${BASE}/streams/${pathPart(payload.streamId)}/recording`);
 export const startRecording = (payload: GB28181.StreamPayload) =>
     request.post<GB28181.CommandResult>(
         `${BASE}/streams/${pathPart(payload.streamId)}/recording/start`

@@ -75,7 +75,7 @@ void testMessageEnvelope() {
         return std::string{};
     };
     require(field("event_id") == packet.messageId, "message envelope has no event id");
-    require(field("schema_version") == "1", "message envelope has no schema version");
+    require(field("schema_version") == "2", "message envelope has no schema version");
     require(field("event_type") == "packet", "message envelope has no event type");
 }
 
@@ -84,8 +84,9 @@ void testExplicitOutbox() {
     const auto dispatcher = source("service/features/event/outbox.h");
     require(schema.find("0023_transactional_outbox") != std::string::npos,
             "transactional outbox migration is missing");
-    require(schema.find("CREATE TRIGGER") == std::string::npos,
-            "outbox must not use database triggers");
+    require(schema.find("0036_live_query_changes") != std::string::npos &&
+                schema.find("publish_query_change") != std::string::npos,
+            "query changes must be captured transactionally for external SQL writers");
     require(schema.find("0024_outbox_consumer_receipt") != std::string::npos,
             "outbox consumer receipt migration is missing");
     require(dispatcher.find("FOR UPDATE SKIP LOCKED") != std::string::npos,
@@ -197,9 +198,9 @@ void testWorkerStreamMultiplexing() {
     const auto server = source("service/server.cpp");
     const auto multiplexer =
         source("service/features/event/stream-multiplexer.h");
-    require(server.find("serviceRedis.blockingPoolSizePerWorker = 1") !=
+    require(server.find("serviceRedis.blockingPoolSizePerWorker = 2") !=
                 std::string::npos,
-            "Service Workers reserve more than one Redis blocking connection");
+            "Service Workers need bounded command and live-query blocking connections");
     require(server.find("workerStreamMultiplexer().configure(workers)") !=
                 std::string::npos &&
                 server.find("workerStreamMultiplexer().start(workers)") !=

@@ -22,6 +22,7 @@ namespace service::command {
 
 struct DeviceRoute {
     std::size_t workerIndex = 0;
+    std::string instanceId;
     std::string connectionId;
     std::uint64_t sessionEpoch = 0;
 };
@@ -48,81 +49,47 @@ ruvia::Task<bool> dispatchPendingBatch(const Redis& redis, std::string_view queu
     if (queueKey.empty() || dispatches.empty() || maxLength == 0)
         throw std::invalid_argument("pending command batch is incomplete");
     std::set<std::string, std::less<>> commandIds;
-    std::vector<std::string> keys;
-    keys.reserve(dispatches.size() + 1);
-    keys.emplace_back(queueKey);
     std::vector<std::string> arguments{
         kind == PendingQueueKind::Stream ? "stream" : "list",
-        std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-                           std::chrono::hours(24))
-                           .count()),
         std::to_string(maxLength), std::to_string(dispatches.size())};
+    (void)submittedBy; // The durable operation owns actor and status, never the queue.
     for (const auto& dispatch : dispatches) {
-        const auto& task = dispatch.task;
-        if (task.messageId.empty() || task.deviceId.empty() || task.deviceCode.empty() ||
-            task.protocol.empty() || !commandIds.emplace(task.messageId).second)
-            throw std::invalid_argument("pending command state is incomplete");
-        if ((kind == PendingQueueKind::Stream && dispatch.streamFields.empty()) ||
-            (kind == PendingQueueKind::List && dispatch.listPayload.empty()))
-            throw std::invalid_argument("pending command queue payload is incomplete");
-        keys.push_back("iot:state:command:" + task.messageId);
-        arguments.push_back(task.messageId);
-        arguments.push_back(task.deviceId);
-        arguments.push_back(task.deviceCode);
-        arguments.push_back(task.protocol);
-        arguments.emplace_back(submittedBy);
-        arguments.push_back(std::to_string(task.createdAtMs));
+        if (dispatch.task.messageId.empty() ||
+            !commandIds.emplace(dispatch.task.messageId).second)
+            throw std::invalid_argument("pending command identity is invalid");
         if (kind == PendingQueueKind::Stream) {
-            arguments.push_back(std::to_string(dispatch.streamFields.size()));
+            if (dispatch.streamFields.empty()) throw std::invalid_argument("empty command payload");
+            arguments.push_back(std::to_string(dispatch.streamFields.size()*2));
             for (const auto& field : dispatch.streamFields) {
-                arguments.push_back(field.name);
-                arguments.push_back(field.value);
+                arguments.push_back(field.name); arguments.push_back(field.value);
             }
         } else {
-            arguments.emplace_back("1");
-            arguments.push_back(dispatch.listPayload);
+            if (dispatch.listPayload.empty()) throw std::invalid_argument("empty command payload");
+            arguments.emplace_back("1"); arguments.push_back(dispatch.listPayload);
         }
     }
-
     static constexpr std::string_view script = R"lua(
-local mode = ARGV[1]
-local ttl = ARGV[2]
-local maximum = ARGV[3]
-local count = tonumber(ARGV[4])
-local offset = 5
-for task = 1, count do
-  local command_id = ARGV[offset]
-  local device_id = ARGV[offset + 1]
-  local device_code = ARGV[offset + 2]
-  local protocol = ARGV[offset + 3]
-  local submitted_by = ARGV[offset + 4]
-  local created_at = ARGV[offset + 5]
-  local item_count = tonumber(ARGV[offset + 6])
-  offset = offset + 7
-  if mode == 'stream' then
-    local values = {'MAXLEN', '~', maximum, '*'}
-    for item = 1, item_count * 2 do
-      values[#values + 1] = ARGV[offset]
-      offset = offset + 1
-    end
-    redis.call('XADD', KEYS[1], unpack(values))
-  else
-    redis.call('RPUSH', KEYS[1], ARGV[offset])
-    offset = offset + item_count
-  end
-  redis.call('HSET', KEYS[task + 1],
-    'command_id', command_id, 'device_id', device_id,
-    'device_code', device_code, 'protocol', protocol,
-    'status', 'PENDING', 'submitted_by', submitted_by,
-    'created_at_ms', created_at)
-  redis.call('PEXPIRE', KEYS[task + 1], ttl)
+local mode=ARGV[1]
+local count=tonumber(ARGV[3])
+local depth=mode=='stream' and redis.call('XLEN',KEYS[1]) or redis.call('LLEN',KEYS[1])
+if depth+count>tonumber(ARGV[2]) then return 0 end
+local offset=4
+for task=1,count do
+  local size=tonumber(ARGV[offset])
+  offset=offset+1
+  local values={}
+  if mode=='stream' then values[1]='*' end
+  for index=1,size do values[#values+1]=ARGV[offset]; offset=offset+1 end
+  if mode=='stream' then redis.call('XADD',KEYS[1],unpack(values))
+  else redis.call('RPUSH',KEYS[1],unpack(values)) end
 end
-if mode == 'list' then redis.call('LTRIM', KEYS[1], -tonumber(maximum), -1) end
 return count
 )lua";
-    std::vector<std::string_view> keyViews(keys.begin(), keys.end());
-    std::vector<std::string_view> argumentViews(arguments.begin(), arguments.end());
+    const std::string_view keyViews[]{queueKey};
+    std::vector<std::string_view> argumentViews(arguments.begin(),arguments.end());
     const auto reply = co_await redis.eval(script, keyViews, argumentViews);
+    if (reply.kind() == ruvia::RedisValue::Kind::kInteger && reply.integer() == 0)
+        co_return false;
     if (reply.kind() != ruvia::RedisValue::Kind::kInteger ||
         reply.integer() != static_cast<std::int64_t>(dispatches.size()))
         message::redis::throwValue("dispatch pending command batch", reply);
@@ -138,13 +105,14 @@ inline std::string_view field(const std::vector<message::StreamField>& fields,
 }
 
 template <typename Redis>
-ruvia::Task<DeviceRoute> deviceRoute(const Redis& redis, std::string_view deviceCode) {
+ruvia::Task<DeviceRoute> deviceRoute(const Redis& redis, std::string_view deviceId) {
     const auto fields = co_await message::redis::hashEntries(
-        redis, service::telemetry::latest::runtimeKey(deviceCode));
+        redis, service::telemetry::latest::runtimeKey(deviceId));
     const auto worker = field(fields, "worker_id");
+    const auto instance = field(fields, "instance_id");
     const auto connection = field(fields, "connection_id");
     const auto epoch = field(fields, "session_epoch");
-    if (worker.empty() || connection.empty() || epoch.empty())
+    if (instance.empty() || worker.empty() || connection.empty() || epoch.empty())
         throw DeviceRouteError("device is offline or has no collector route");
 
     DeviceRoute route;
@@ -157,6 +125,12 @@ ruvia::Task<DeviceRoute> deviceRoute(const Redis& redis, std::string_view device
         route.sessionEpoch == 0)
         throw DeviceRouteError("device collector route is invalid");
     route.connectionId = connection;
+    route.instanceId = instance;
+    const auto link = field(fields,"link_id");
+    const auto owner = co_await message::redis::command(redis,
+        {"GET","iot:v2:owner:link:" + std::string(link)});
+    if (owner.kind() != ruvia::RedisValue::Kind::kString || owner.string() != instance)
+        throw DeviceRouteError("device collector ownership expired");
     co_return route;
 }
 
@@ -169,14 +143,14 @@ ruvia::Task<std::string> enqueue(Context& context, message::ProtocolTask task,
         (task.payload.empty() && task.elements.empty()))
         throw std::invalid_argument("protocol command task is incomplete");
     task.messageId = task.messageId.empty() ? message::nextMessageId() : task.messageId;
-    task.groupKey = task.groupKey.empty() ? "device:" + task.deviceCode : task.groupKey;
+    task.groupKey = task.groupKey.empty() ? "device:" + task.deviceId : task.groupKey;
     task.connectionId = route.connectionId;
     task.sessionEpoch = route.sessionEpoch;
     task.createdAtMs = task.createdAtMs == 0 ? message::utcNowMilliseconds() : task.createdAtMs;
     task.attempt = std::max<std::int64_t>(1, task.attempt);
     task.maxAttempts = std::max(task.attempt, task.maxAttempts);
     (void)co_await message::redis::publish(
-        context.redis(), message::commandStream(route.workerIndex, highPriority),
+        context.redis(), message::commandStream(route.workerIndex, highPriority, route.instanceId),
         message::protocolTaskFields(task), 10000);
     co_return task.messageId;
 }
@@ -184,7 +158,7 @@ ruvia::Task<std::string> enqueue(Context& context, message::ProtocolTask task,
 template <typename Context>
 ruvia::Task<std::string> enqueue(Context& context, message::ProtocolTask task,
                                  bool highPriority = true) {
-    const auto route = co_await deviceRoute(context.redis(), task.deviceCode);
+    const auto route = co_await deviceRoute(context.redis(), task.deviceId);
     co_return co_await enqueue(context, std::move(task), route, highPriority);
 }
 

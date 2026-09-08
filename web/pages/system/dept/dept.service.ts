@@ -1,4 +1,5 @@
-import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
+import { useLiveQuery } from '@/hooks/useLiveQuery';
+import { type UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import type { PaginatedResult } from '@/utils/types';
 import { create, getList, getOptions, remove, update } from './dept.client';
@@ -8,14 +9,14 @@ export function useDeptList(
     params?: Dept.Query,
     options?: Omit<UseQueryOptions<PaginatedResult<Dept.Item>>, 'queryKey' | 'queryFn'>
 ) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: deptQueryKeys.list(params),
         queryFn: () => getList(params),
         ...options,
     });
 }
 export function useDeptOptions(options?: { enabled?: boolean }) {
-    return useQuery({
+    return useLiveQuery({
         queryKey: deptQueryKeys.options(),
         queryFn: getOptions,
         enabled: options?.enabled ?? true,

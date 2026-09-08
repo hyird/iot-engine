@@ -305,7 +305,7 @@ class DeviceService {
             DeviceAccessService::scopedDevicesCte() + "SELECT " + itemColumns() +
                 " FROM scoped_device d LEFT JOIN link l ON l.id = d.link_id "
                 "LEFT JOIN edge_node en ON en.id = l.edge_node_id "
-                "JOIN protocol_config p ON p.id = d.protocol_config_id "
+                "JOIN device_model p ON p.device_id = d.id "
                 "WHERE d.access_rank > 0 ORDER BY d.group_id NULLS LAST, d.created_at, d.id",
             service::common::dbParams(actor.userId, actor.departmentId,
                                       actor.superadmin ? "true" : "false"));
@@ -377,7 +377,7 @@ class DeviceService {
             DeviceAccessService::scopedDevicesCte() + "SELECT " + itemColumns() +
                 " FROM scoped_device d LEFT JOIN link l ON l.id = d.link_id "
                 "LEFT JOIN edge_node en ON en.id = l.edge_node_id "
-                "JOIN protocol_config p ON p.id = d.protocol_config_id "
+                "JOIN device_model p ON p.device_id = d.id "
                 "WHERE d.id = $4 AND d.access_rank > 0 LIMIT 1",
             service::common::dbParams(actor.userId, actor.departmentId,
                                       actor.superadmin ? "true" : "false", id));
@@ -506,10 +506,10 @@ FROM normalized)sql",
         const auto id = service::common::nextUuidV7();
         const std::string name(body.get<"name">()->view());
         const std::string deviceCode(body.get<"deviceCode">()->view());
-        const std::string edgeNodeId = str(body.get<"edgeNodeId">());
-        const std::string linkId =
-            edgeNodeId.empty() ? str(body.get<"linkId">()) : service::common::nextUuidV7();
-        const std::string edgeEndpoint = edgeEndpointJson(body);
+        const std::string linkId = str(body.get<"linkId">());
+        const auto channel = co_await c.db().query("SELECT COALESCE(edge_node_id::text,'') FROM link WHERE id=$1::uuid AND deleted_at IS NULL", service::common::dbParams(linkId));
+        if (channel.empty()) service::common::fail(18003, "通道不存在", 400);
+        const std::string edgeNodeId(channel.front()[0].value().value_or(""));
         const std::string targetId = str(body.get<"targetId">());
         const std::string protocolConfigId(body.get<"protocolConfigId">()->view());
         const std::string groupId = str(body.get<"groupId">());
@@ -528,40 +528,29 @@ FROM normalized)sql",
         const std::string registration =
             edgeNodeId.empty() ? packetJson(body.get<"registration">()) : R"({"mode":"OFF"})";
         const std::string remark = str(body.get<"remark">());
-        // Keep the optional edge-node parameter typed as text through NULLIF. If PostgreSQL
-        // infers it as uuid first, the empty-string sentinel is cast to uuid before NULLIF.
         auto transaction = co_await c.db().beginTransaction();
         (void)co_await transaction.execute(
             R"sql(
-WITH inserted_edge_link AS (
-  INSERT INTO link(
-    id, name, protocol, endpoint, status, created_by, execution, edge_node_id)
-  SELECT $4::uuid, 'edge:' || $1::text, protocol, NULLIF($6::text, '')::jsonb,
-         $10, $19::uuid,
-         'edge', NULLIF($5::text, '')::uuid
-  FROM protocol_config
-  WHERE id = $8::uuid AND deleted_at IS NULL AND NULLIF($5::text, '') IS NOT NULL
-  RETURNING id
-)
 INSERT INTO device(
   id, name, link_id, protocol_config_id, group_id, status,
-  protocol_params, remark, created_by)
-VALUES ($1::uuid, $2, $4::uuid, $8::uuid, NULLIF($9, '')::uuid, $10,
+  protocol_params, remark, created_by, protocol_revision)
+VALUES ($1::uuid, $2, $4::uuid, $6::uuid, NULLIF($7, '')::uuid, $8,
   jsonb_strip_nulls(jsonb_build_object(
     'device_code', $3::text,
-    'target_id', NULLIF($7::text, ''),
-    'online_timeout', $11::integer,
-    'remote_control', $12::boolean,
-    'modbus_mode', NULLIF($13::text, ''),
-    'slave_id', NULLIF($14::text, '')::integer,
-    'timezone', $15::text,
-    'heartbeat', COALESCE(NULLIF($16::text, '')::jsonb, '{"mode":"OFF"}'::jsonb),
-    'registration', COALESCE(NULLIF($17::text, '')::jsonb, '{"mode":"OFF"}'::jsonb)
-  )), NULLIF($18::text, ''), $19::uuid))sql",
-            service::common::dbParams(id, name, deviceCode, linkId, edgeNodeId, edgeEndpoint,
+    'target_id', NULLIF($5::text, ''),
+    'online_timeout', $9::integer,
+    'remote_control', $10::boolean,
+    'modbus_mode', NULLIF($11::text, ''),
+    'slave_id', NULLIF($12::text, '')::integer,
+    'timezone', $13::text,
+    'heartbeat', COALESCE(NULLIF($14::text, '')::jsonb, '{"mode":"OFF"}'::jsonb),
+    'registration', COALESCE(NULLIF($15::text, '')::jsonb, '{"mode":"OFF"}'::jsonb)
+  )), NULLIF($16::text, ''), $17::uuid, $18::bigint))sql",
+            service::common::dbParams(id, name, deviceCode, linkId,
                                       targetId, protocolConfigId, groupId, status, onlineTimeout,
                                       remoteControl, modbusMode, slaveId, timezone, heartbeat,
-                                      registration, remark, principal.userId));
+                                      registration, remark, principal.userId,
+                                      static_cast<std::int64_t>(*body.get<"protocolRevision">())));
         co_await service::message::enqueueConfigEvent(transaction, "device", "created", id);
         co_await transaction.commit();
         try {
@@ -599,69 +588,16 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
         const std::string currentExecution(
             current[4].value().value_or(std::string_view{}));
         const std::string requestedLinkId = str(body.get<"linkId">());
-        const std::string requestedEdgeNodeId = str(body.get<"edgeNodeId">());
-        const bool targetEdge = requestedLinkId.empty()
-                                    ? (!requestedEdgeNodeId.empty() ||
-                                       currentExecution == "edge")
-                                    : false;
-        const std::string targetEdgeNodeId =
-            targetEdge ? (!requestedEdgeNodeId.empty() ? requestedEdgeNodeId
-                                                       : currentEdgeNodeId)
-                       : std::string{};
-        const std::string targetProtocolConfigId =
-            body.get<"protocolConfigId">() &&
-                    !body.get<"protocolConfigId">()->view().empty()
-                ? std::string(body.get<"protocolConfigId">()->view())
-                : currentProtocolConfigId;
-        const std::string targetLinkId =
-            targetEdge
-                ? (currentExecution == "edge" ? currentLinkId
-                                               : service::common::nextUuidV7())
-                : (!requestedLinkId.empty() ? requestedLinkId : currentLinkId);
-        const std::string targetStatus =
-            body.get<"status">() ? std::string(body.get<"status">()->view())
-                                 : std::string(current[5].value().value_or(
-                                       std::string_view("enabled")));
-        const bool createEdgeLink = targetEdge && currentExecution != "edge";
-        const bool retireEdgeLink = !targetEdge && currentExecution == "edge";
-        const bool connectionChanged =
-            targetLinkId != currentLinkId ||
-            targetEdgeNodeId != currentEdgeNodeId ||
-            targetProtocolConfigId != currentProtocolConfigId;
-
-        if (targetEdge) {
-            const auto relation = co_await c.db().query(R"sql(
-SELECT p.protocol
-FROM edge_node n CROSS JOIN protocol_config p
-WHERE n.id = $1::uuid AND n.enrollment_status = 'approved'
-  AND CASE lower(COALESCE(n.capability->>'deviceConfig', ''))
-        WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE
-        WHEN 'yes' THEN TRUE WHEN 'y' THEN TRUE WHEN 'on' THEN TRUE
-        ELSE FALSE END
-  AND p.id = $2::uuid AND p.deleted_at IS NULL
-LIMIT 1)sql",
-                                                       service::common::dbParams(
-                                                           targetEdgeNodeId,
-                                                           targetProtocolConfigId));
-            if (relation.empty())
-                service::common::fail(
-                    18003, "边缘节点未批准或设备类型不存在", 400);
-        } else {
-            const auto relation = co_await c.db().query(R"sql(
-SELECT 1
-FROM link l CROSS JOIN protocol_config p
-WHERE l.id = $1::uuid AND l.deleted_at IS NULL
-  AND l.execution = 'collector'
-  AND p.id = $2::uuid AND p.deleted_at IS NULL
-  AND l.protocol = p.protocol
-LIMIT 1)sql",
-                                                       service::common::dbParams(
-                                                           targetLinkId,
-                                                           targetProtocolConfigId));
-            if (relation.empty())
-                service::common::fail(
-                    18003, "链路或设备类型不存在，或协议不一致", 400);
-        }
+        const std::string targetLinkId = requestedLinkId.empty() ? currentLinkId : requestedLinkId;
+        const std::string targetProtocolConfigId = body.get<"protocolConfigId">() ? str(body.get<"protocolConfigId">()) : currentProtocolConfigId;
+        const auto target = co_await c.db().query(R"sql(
+SELECT COALESCE(l.edge_node_id::text,'') FROM link l JOIN protocol_config p ON p.protocol=l.protocol
+WHERE l.id=$1::uuid AND p.id=$2::uuid AND l.deleted_at IS NULL AND p.deleted_at IS NULL)sql",
+            service::common::dbParams(targetLinkId, targetProtocolConfigId));
+        if (target.empty()) service::common::fail(18003, "通道或设备类型不存在，或协议不一致", 400);
+        const std::string targetEdgeNodeId(target.front()[0].value().value_or(""));
+        const bool targetEdge = !targetEdgeNodeId.empty();
+        const bool connectionChanged = targetLinkId != currentLinkId || targetProtocolConfigId != currentProtocolConfigId;
         co_await ensureUnique(c, body, std::string(id));
         co_await validateRuntimeIdentity(c, body, std::string(id));
 
@@ -683,14 +619,10 @@ LIMIT 1)sql",
         if (body.get<"groupId">())
             raw("group_id = NULLIF($", ruvia::DbValue{body.get<"groupId">()->view()}),
                 set += ", '')::uuid";
+        if (body.get<"protocolRevision">())
+            raw("protocol_revision = $", ruvia::DbValue{static_cast<std::int64_t>(*body.get<"protocolRevision">())});
         if (body.get<"status">())
             raw("status = $", ruvia::DbValue{body.get<"status">()->view()});
-        std::string edgeEndpointUpdate;
-        if (body.get<"edgeTransport">() || body.get<"edgeInterface">() || body.get<"edgeMode">() || body.get<"edgeIp">() ||
-            body.get<"edgePort">() || body.get<"serialBaudRate">() || body.get<"serialDataBits">() ||
-            body.get<"serialStopBits">() || body.get<"serialParity">() || body.get<"serialRs485">()) {
-            edgeEndpointUpdate = edgeEndpointJson(body);
-        }
         std::string protocolParams = "protocol_params";
         const auto jsonValue = [&](std::string_view key, ruvia::DbValue value,
                                    std::string_view cast = {}) {
@@ -745,28 +677,8 @@ LIMIT 1)sql",
         if (body.get<"remark">())
             raw("remark = NULLIF($", ruvia::DbValue{body.get<"remark">()->view()}), set += ", '')";
 
-        const bool updateEdgeLink =
-            targetEdge && currentExecution == "edge" &&
-            (!edgeEndpointUpdate.empty() || body.get<"status">() ||
-             targetEdgeNodeId != currentEdgeNodeId ||
-             targetProtocolConfigId != currentProtocolConfigId);
         {
             auto transaction = co_await c.db().beginTransaction();
-            if (createEdgeLink) {
-                (void)co_await transaction.execute(R"sql(
-INSERT INTO link(
-  id, name, protocol, endpoint, status, created_by, execution, edge_node_id)
-SELECT $1::uuid, 'edge:' || $2::text, protocol, $3::jsonb,
-       $4::status_enum, $5::uuid, 'edge', $6::uuid
-FROM protocol_config
-WHERE id = $7::uuid AND deleted_at IS NULL)sql",
-                                                   service::common::dbParams(
-                                                       targetLinkId, id,
-                                                       edgeEndpointUpdate, targetStatus,
-                                                       principal.userId,
-                                                       targetEdgeNodeId,
-                                                       targetProtocolConfigId));
-            }
             if (!set.empty()) {
                 params.emplace_back(id);
                 (void)co_await transaction.execute(
@@ -774,49 +686,10 @@ WHERE id = $7::uuid AND deleted_at IS NULL)sql",
                         std::to_string(params.size()),
                     params);
             }
-            if (updateEdgeLink) {
-                (void)co_await transaction.execute(R"sql(
-UPDATE link
-SET endpoint = CASE WHEN NULLIF($1::text, '') IS NULL THEN endpoint
-                     ELSE NULLIF($1::text, '')::jsonb END,
-    status = $2::status_enum,
-    edge_node_id = $3::uuid,
-    protocol = (
-      SELECT protocol FROM protocol_config
-      WHERE id = $4::uuid AND deleted_at IS NULL),
-    updated_at = NOW()
-WHERE id = $5::uuid AND execution = 'edge'
-  AND (
-    (NULLIF($1::text, '') IS NOT NULL
-     AND endpoint IS DISTINCT FROM NULLIF($1::text, '')::jsonb)
-    OR status IS DISTINCT FROM $2::status_enum
-    OR edge_node_id IS DISTINCT FROM $3::uuid
-    OR protocol IS DISTINCT FROM (
-      SELECT protocol FROM protocol_config
-      WHERE id = $4::uuid AND deleted_at IS NULL)
-  ))sql",
-                                                   service::common::dbParams(
-                                                       edgeEndpointUpdate,
-                                                       targetStatus,
-                                                       targetEdgeNodeId,
-                                                       targetProtocolConfigId,
-                                                       currentLinkId));
-            }
-            if (retireEdgeLink) {
-                (void)co_await transaction.execute(R"sql(
-UPDATE link
-SET deleted_at = NOW(), updated_at = NOW()
-WHERE id = $1::uuid AND execution = 'edge' AND deleted_at IS NULL)sql",
-                                                   service::common::dbParams(
-                                                       currentLinkId));
-            }
             co_await service::message::enqueueConfigEvent(transaction, "device", "updated", id);
             co_await transaction.commit();
         }
         try {
-            if (body.get<"deviceCode">() && body.get<"deviceCode">()->view() != rows.front()[3].value().value_or(std::string_view{}))
-                co_await service::telemetry::latest::eraseDevice(c.redis(),
-                                                                 rows.front()[3].value().value_or(std::string_view{}));
             co_await service::telemetry::latest::projectDevice(c, id);
         } catch (...) {
             // PostgreSQL remains authoritative; startup hydration repairs Redis read models.
@@ -843,17 +716,11 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
         (void)co_await transaction.execute(
             "UPDATE device SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1",
             service::common::dbParams(id));
-        if (rows.front()[3].value().value_or(std::string_view{}) == "edge") {
-            (void)co_await transaction.execute(
-                "UPDATE link SET deleted_at = NOW(), updated_at = NOW() "
-                "WHERE id = $1::uuid AND execution = 'edge'",
-                service::common::dbParams(rows.front()[2].value().value_or(std::string_view{})));
-        }
         co_await service::message::enqueueConfigEvent(transaction, "device", "deleted", id);
         co_await transaction.commit();
         try {
             co_await service::telemetry::latest::eraseDevice(
-                c.redis(), rows.front()[0].value().value_or(std::string_view{}));
+                c.redis(), id);
         } catch (...) {
             // The next startup hydration removes stale Redis state for deleted devices.
         }
@@ -1067,7 +934,7 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
       WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE
       WHEN 'yes' THEN TRUE WHEN 'y' THEN TRUE WHEN 'on' THEN TRUE
       ELSE FALSE END
-    END)sql";
+    END, d.protocol_revision)sql";
     }
 
     template <typename Row>
@@ -1081,6 +948,7 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
         if (row[4].value().has_value())
             item.set<"targetId">(row[4].value().value_or(std::string_view{}));
         item.set<"protocolConfigId">(row[5].value().value_or(std::string_view{}));
+        item.set<"protocolRevision">(toInt(row[43].value().value_or(std::string_view{})));
         if (row[6].value().has_value())
             item.set<"groupId">(row[6].value().value_or(std::string_view{}));
         item.set<"status">(row[7].value().value_or(std::string_view{}));
@@ -1181,11 +1049,11 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
             // The runtime hash also contains worker/session bookkeeping. The list only needs
             // these two fields, so HMGET avoids transferring and parsing the rest of the hash.
             pipeline.command("HMGET", service::telemetry::latest::runtimeKey(
-                                         item->template get<"deviceCode">()->view()),
+                                         id),
                              "connection_id", "last_report_at_ms");
             bindings.push_back({ReplyKind::runtime, item});
             pipeline.hgetAll(service::telemetry::latest::latestKey(
-                item->template get<"deviceCode">()->view()));
+                id));
             bindings.push_back({ReplyKind::latest, item});
             if (item->template get<"edgeNodeId">() &&
                 item->template get<"edgeTransport">() &&
@@ -1230,7 +1098,7 @@ WITH command_element AS (
          element, 1::bigint AS operation_position, element_position,
          preset, preset_position
   FROM device d
-  JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'Modbus'
+  JOIN device_model p ON p.device_id = d.id AND p.protocol = 'Modbus'
   CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]'::jsonb))
     WITH ORDINALITY AS elements(element, element_position)
   LEFT JOIN LATERAL jsonb_array_elements(
@@ -1259,7 +1127,7 @@ WITH command_element AS (
   SELECT d.id, 'S7_WRITE', '写寄存器', element, 2, element_position,
          preset, preset_position
   FROM device d
-  JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'S7'
+  JOIN device_model p ON p.device_id = d.id AND p.protocol = 'S7'
   CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]'::jsonb))
     WITH ORDINALITY AS elements(element, element_position)
   LEFT JOIN LATERAL jsonb_array_elements(
@@ -1279,7 +1147,7 @@ WITH command_element AS (
          element, function_position + 2, element_position,
          preset, preset_position
   FROM device d
-  JOIN protocol_config p ON p.id = d.protocol_config_id AND p.protocol = 'SL651'
+  JOIN device_model p ON p.device_id = d.id AND p.protocol = 'SL651'
   CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]'::jsonb))
     WITH ORDINALITY AS functions(function, function_position)
   CROSS JOIN LATERAL jsonb_array_elements(COALESCE(function->'elements', '[]'::jsonb))
@@ -1665,64 +1533,6 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         return out;
     }
 
-    static std::string edgeEndpointJson(const SaveDeviceBody& body) {
-        if (!body.get<"edgeNodeId">() || body.get<"edgeNodeId">()->view().empty())
-            return "";
-        const auto quoted = [](std::string& out, std::string_view key,
-                               std::string_view value, bool& first) {
-            if (!first)
-                out.push_back(',');
-            first = false;
-            appendJsonString(out, key);
-            out.push_back(':');
-            appendJsonString(out, value);
-        };
-        const auto integer = [](std::string& out, std::string_view key, std::int64_t value,
-                                bool& first) {
-            if (!first)
-                out.push_back(',');
-            first = false;
-            appendJsonString(out, key);
-            out.push_back(':');
-            out += std::to_string(value);
-        };
-        std::string out{"{"};
-        bool first = true;
-        quoted(out, "transport",
-               body.get<"edgeTransport">() ? body.get<"edgeTransport">()->view() : std::string_view{}, first);
-        quoted(out, "interface",
-               body.get<"edgeInterface">() ? body.get<"edgeInterface">()->view() : std::string_view{}, first);
-        if (body.get<"edgeTransport">() && body.get<"edgeTransport">()->view() == "serial") {
-            integer(out, "baud_rate", body.get<"serialBaudRate">()
-                                          ? static_cast<std::int64_t>(*body.get<"serialBaudRate">())
-                                          : 9600,
-                    first);
-            integer(out, "data_bits", body.get<"serialDataBits">()
-                                         ? static_cast<std::int64_t>(*body.get<"serialDataBits">())
-                                         : 8,
-                    first);
-            integer(out, "stop_bits", body.get<"serialStopBits">()
-                                         ? static_cast<std::int64_t>(*body.get<"serialStopBits">())
-                                         : 1,
-                    first);
-            quoted(out, "parity",
-                   body.get<"serialParity">() ? body.get<"serialParity">()->view() : std::string_view("none"),
-                   first);
-            if (!first)
-                out.push_back(',');
-            appendJsonString(out, "rs485");
-            out += body.get<"serialRs485">() && *body.get<"serialRs485">() ? ":true" : ":false";
-        } else {
-            quoted(out, "mode", body.get<"edgeMode">() ? body.get<"edgeMode">()->view() : std::string_view{},
-                   first);
-            quoted(out, "ip", body.get<"edgeIp">() ? body.get<"edgeIp">()->view() : std::string_view{}, first);
-            integer(out, "port",
-                    body.get<"edgePort">() ? static_cast<std::int64_t>(*body.get<"edgePort">()) : 0, first);
-        }
-        out.push_back('}');
-        return out;
-    }
-
     // 心跳/注册包内容校验（对应旧 SQL shape-check 的第 8、9 条，语义一致）
     static void validatePacket(const std::optional<DevicePacketBody>& packet) {
         if (!packet)
@@ -1760,12 +1570,20 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         validatePacket(body.get<"heartbeat">());
         validatePacket(body.get<"registration">());
         const auto linkId = str(body.get<"linkId">());
-        const auto edgeNodeId = str(body.get<"edgeNodeId">());
         const auto configId = str(body.get<"protocolConfigId">());
-        if (!linkId.empty() && !edgeNodeId.empty())
-            service::common::fail(18003, "本地链路和边缘节点只能选择一个", 400);
-        if (required && linkId.empty() && edgeNodeId.empty())
-            service::common::fail(18003, "请选择本地链路或边缘节点", 400);
+        const auto& modelRevision = body.get<"protocolRevision">();
+        if ((required || !configId.empty()) && !modelRevision)
+            service::common::fail(18003, "请选择设备类型版本", 400);
+        if (modelRevision && (configId.empty() || static_cast<std::int64_t>(*modelRevision) < 1))
+            service::common::fail(18003, "设备类型及版本必须一起指定", 400);
+        if (modelRevision) {
+            const auto revision = co_await c.db().query(
+                "SELECT 1 FROM protocol_revision WHERE id=$1::uuid AND revision=$2",
+                service::common::dbParams(configId, static_cast<std::int64_t>(*modelRevision)));
+            if (revision.empty())
+                service::common::fail(18003, "设备类型版本不存在", 400);
+        }
+        if (required && linkId.empty()) service::common::fail(18003, "请选择通道", 400);
         if (required && configId.empty())
             service::common::fail(18003, "请选择设备类型", 400);
 
@@ -1784,49 +1602,21 @@ ORDER BY device_id, operation_position, operation_key, element_position,
             if (group.empty())
                 service::common::fail(18003, "设备分组不存在", 400);
         }
-        if (configId.empty() || (linkId.empty() && edgeNodeId.empty()))
+        if (configId.empty() || linkId.empty())
             co_return;
 
-        std::string configProtocol;
-        if (!edgeNodeId.empty()) {
-            const auto relation = co_await c.db().query(R"sql(
-SELECT p.protocol
-FROM edge_node n CROSS JOIN protocol_config p
-WHERE n.id = $1::uuid AND n.enrollment_status = 'approved'
-  AND CASE lower(COALESCE(n.capability->>'deviceConfig', ''))
-        WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE
-        WHEN 'yes' THEN TRUE WHEN 'y' THEN TRUE WHEN 'on' THEN TRUE
-        ELSE FALSE END
-  AND p.id = $2::uuid AND p.deleted_at IS NULL LIMIT 1)sql",
-                                                        service::common::dbParams(edgeNodeId,
-                                                                                  configId));
-            if (relation.empty())
-                service::common::fail(18003, "边缘节点未批准或设备类型不存在", 400);
-            configProtocol = std::string(relation.front()[0].value().value_or(std::string_view{}));
-            if (configProtocol != "Modbus" && configProtocol != "S7" &&
-                configProtocol != "SL651")
-                service::common::fail(18003, "边缘采集协议不受支持", 400);
-            co_await validateEdgeEndpoint(c, body, edgeNodeId, configProtocol);
-        } else {
-            const auto relation = co_await c.db().query(R"sql(
-SELECT l.protocol, l.endpoint->>'mode', p.protocol
-FROM link l CROSS JOIN protocol_config p
-WHERE l.id = $1 AND l.deleted_at IS NULL AND l.execution = 'collector'
-  AND p.id = $2 AND p.deleted_at IS NULL LIMIT 1)sql",
-                                                      service::common::dbParams(linkId, configId));
-            if (relation.empty())
-                service::common::fail(18003, "链路或设备类型不存在", 400);
-            const std::string linkProtocol(relation.front()[0].value().value_or(std::string_view{}));
-            configProtocol = std::string(relation.front()[2].value().value_or(std::string_view{}));
-            if (linkProtocol != configProtocol)
-                service::common::fail(18003, "链路协议与设备类型不一致", 409);
-        }
+        const auto relation = co_await c.db().query(R"sql(
+SELECT l.protocol FROM link l JOIN protocol_config p ON p.protocol=l.protocol
+WHERE l.id=$1::uuid AND p.id=$2::uuid AND l.deleted_at IS NULL AND p.deleted_at IS NULL)sql",
+            service::common::dbParams(linkId, configId));
+        if (relation.empty()) service::common::fail(18003, "通道或设备类型不存在，或协议不一致", 400);
+        const std::string configProtocol(relation.front()[0].value().value_or(""));
         if (configProtocol == "SL651" &&
             (packetEnabled(body.get<"heartbeat">()) || packetEnabled(body.get<"registration">())))
             service::common::fail(18002, "SL651 设备不支持配置注册包或心跳包", 400);
         if (configProtocol == "SL651" && code) {
-            if (code->view().size() > 10)
-                service::common::fail(18002, "SL651 遥测站地址最多 10 位数字", 400);
+            if (code->view().size() != 10)
+                service::common::fail(18002, "SL651 遥测站地址必须是 10 位数字，不足时左侧补零", 400);
             for (const auto character : code->view())
                 if (!std::isdigit(static_cast<unsigned char>(character)))
                     service::common::fail(18002, "SL651 设备编码必须是数字遥测站地址", 400);
@@ -1837,208 +1627,8 @@ WHERE l.id = $1 AND l.deleted_at IS NULL AND l.execution = 'collector'
         return packet && packet->get<"mode">() && packet->get<"mode">()->view() != "OFF";
     }
 
-    static bool ipv4(std::string_view input) {
-        for (int part = 0; part < 4; ++part) {
-            const auto dot = input.find('.');
-            const auto token = input.substr(0, dot);
-            unsigned value{};
-            const auto [end, error] =
-                std::from_chars(token.data(), token.data() + token.size(), value);
-            if (token.empty() || error != std::errc{} || end != token.data() + token.size() ||
-                value > 255 || (token.size() > 1 && token.front() == '0'))
-                return false;
-            if (part == 3)
-                return dot == std::string_view::npos;
-            if (dot == std::string_view::npos)
-                return false;
-            input.remove_prefix(dot + 1);
-        }
-        return false;
-    }
-
-    static ruvia::Task<void> validateEdgeEndpoint(ruvia::Context& c,
-                                                  const SaveDeviceBody& body,
-                                                  std::string_view nodeId,
-                                                  std::string_view protocol) {
-        if (packetEnabled(body.get<"registration">()))
-            service::common::fail(18002, "边缘采集设备不支持注册码", 400);
-        const auto transport = str(body.get<"edgeTransport">());
-        const auto interfaceName = str(body.get<"edgeInterface">());
-        if (transport != "serial" && transport != "tcp")
-            service::common::fail(18003, "请选择边缘节点的串口或网口", 400);
-        if (interfaceName.empty())
-            service::common::fail(18003, "请选择边缘节点已上报的接口", 400);
-        if (protocol == "SL651" && transport != "tcp")
-            service::common::fail(18003, "SL651 仅支持边缘 TCP Server 端点", 400);
-        if (transport == "serial") {
-            if (protocol == "S7")
-                service::common::fail(18003, "S7 仅支持边缘节点 TCP Client 端点", 400);
-            const auto serial = co_await c.db().query(R"sql(
-SELECT available FROM edge_node_serial
-WHERE node_id = $1::uuid AND path = $2 LIMIT 1)sql",
-                                                      service::common::dbParams(nodeId,
-                                                                                interfaceName));
-            if (serial.empty() || serial.front()[0].value().value_or(std::string_view{}) != "t")
-                service::common::fail(18003, "所选串口不存在或当前不可用", 409);
-            if (packetEnabled(body.get<"heartbeat">()))
-                service::common::fail(18002, "串口设备不支持心跳包", 400);
-            co_return;
-        }
-
-        const auto network = co_await c.db().query(R"sql(
-SELECT COALESCE(ipv4, ''), is_up FROM edge_node_interface
-WHERE node_id = $1::uuid AND name = $2 AND COALESCE(ipv4, '') <> ''
-LIMIT 1)sql",
-                                                   service::common::dbParams(nodeId,
-                                                                             interfaceName));
-        if (network.empty())
-            service::common::fail(18003, "所选网口不存在、未上报 IPv4 或属于受保护上联", 409);
-        const auto interfaceIp = network.front()[0].value().value_or(std::string_view{});
-        const auto mode = str(body.get<"edgeMode">());
-        const auto ip = str(body.get<"edgeIp">());
-        if ((mode != "TCP Client" && mode != "TCP Server") || !body.get<"edgePort">() || !ipv4(ip))
-            service::common::fail(18003, "边缘 TCP 模式、IPv4 或端口无效", 400);
-        if (protocol == "S7" && mode != "TCP Client")
-            service::common::fail(18003, "S7 仅支持边缘节点主动连接 PLC", 400);
-        if (protocol == "SL651" && mode != "TCP Server")
-            service::common::fail(18003, "SL651 仅支持边缘 TCP Server 端点", 400);
-        if (mode == "TCP Server") {
-            if (ip != "0.0.0.0" && ip != interfaceIp)
-                service::common::fail(18003, "TCP Server 监听地址必须是所选网口地址", 400);
-        } else if (packetEnabled(body.get<"heartbeat">())) {
-            service::common::fail(18002, "仅 TCP Server 设备支持心跳包", 400);
-        }
-    }
-
-    ruvia::Task<void> validateEdgeRuntimeIdentity(ruvia::Context& c,
-                                                   const SaveDeviceBody& body,
-                                                   std::optional<std::string> excludedId) {
-        if (!body.get<"edgeNodeId">() || body.get<"edgeNodeId">()->view().empty())
-            co_return;
-        const auto transport = str(body.get<"edgeTransport">());
-        const auto interfaceName = str(body.get<"edgeInterface">());
-        const auto mode = str(body.get<"edgeMode">());
-        const auto ip = str(body.get<"edgeIp">());
-        const auto port = body.get<"edgePort">() ? static_cast<std::int64_t>(*body.get<"edgePort">()) : 0;
-        const auto slaveId = body.get<"slaveId">() ? static_cast<std::int64_t>(*body.get<"slaveId">()) : 1;
-        const auto excluded = excludedId.value_or(std::string(kNilUuid));
-        std::string protocol;
-        if (body.get<"protocolConfigId">() && !body.get<"protocolConfigId">()->view().empty()) {
-            const auto protocolRows = co_await c.db().query(
-                "SELECT protocol FROM protocol_config WHERE id = $1::uuid AND deleted_at IS NULL",
-                service::common::dbParams(body.get<"protocolConfigId">()->view()));
-            if (protocolRows.empty())
-                co_return;
-            protocol = std::string(protocolRows.front()[0].value().value_or(std::string_view{}));
-        } else if (excludedId) {
-            const auto protocolRows = co_await c.db().query(R"sql(
-SELECT p.protocol
-FROM device d JOIN protocol_config p ON p.id = d.protocol_config_id AND p.deleted_at IS NULL
-WHERE d.id = $1::uuid AND d.deleted_at IS NULL LIMIT 1)sql",
-                                                            service::common::dbParams(excluded));
-            if (protocolRows.empty())
-                co_return;
-            protocol = std::string(protocolRows.front()[0].value().value_or(std::string_view{}));
-        } else {
-            co_return;
-        }
-
-        if (transport == "serial") {
-            const auto rows = co_await c.db().query(R"sql(
-SELECT d.name
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge'
-WHERE l.edge_node_id = $1::uuid AND d.id <> $2::uuid AND d.deleted_at IS NULL
-  AND l.endpoint->>'transport' = 'serial'
-  AND l.endpoint->>'interface' = $3
-ORDER BY d.id LIMIT 1)sql",
-                                                    service::common::dbParams(
-                                                        body.get<"edgeNodeId">()->view(), excluded,
-                                                        interfaceName));
-            if (!rows.empty())
-                service::common::fail(
-                    18006,
-                    "边缘串口已被设备占用，冲突设备: " + std::string(rows.front()[0].value().value_or(std::string_view{})),
-                    409);
-            co_return;
-        }
-
-        if (transport != "tcp")
-            co_return;
-
-        if (mode == "TCP Server") {
-            const auto rows = co_await c.db().query(R"sql(
-SELECT d.name
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge'
-WHERE l.edge_node_id = $1::uuid AND d.id <> $2::uuid AND d.deleted_at IS NULL
-  AND l.endpoint->>'transport' = 'tcp'
-  AND l.endpoint->>'mode' = 'TCP Server'
-  AND COALESCE(
-        CASE WHEN COALESCE(l.endpoint->>'port', '') ~ '^[0-9]{1,5}$'
-             THEN NULLIF(l.endpoint->>'port', '')::integer END, 0) = $3
-  AND (
-    l.endpoint->>'ip' = $4
-    OR l.endpoint->>'ip' = '0.0.0.0'
-    OR $4 = '0.0.0.0'
-  )
-ORDER BY d.id LIMIT 1)sql",
-                                                    service::common::dbParams(
-                                                        body.get<"edgeNodeId">()->view(), excluded, port,
-                                                        ip));
-            if (!rows.empty())
-                service::common::fail(
-                    18006,
-                    "边缘 TCP Server 监听地址端口冲突，冲突设备: " +
-                        std::string(rows.front()[0].value().value_or(std::string_view{})),
-                    409);
-            co_return;
-        }
-
-        if (mode != "TCP Client" || (protocol != "Modbus" && protocol != "S7"))
-            co_return;
-
-        const auto rows = co_await c.db().query(R"sql(
-SELECT d.name,
-       COALESCE(
-         CASE WHEN COALESCE(d.protocol_params->>'slave_id', '') ~ '^-?[0-9]{1,18}$'
-              THEN NULLIF(d.protocol_params->>'slave_id', '')::integer END, 1)
-FROM device d
-JOIN protocol_config p ON p.id = d.protocol_config_id AND p.deleted_at IS NULL
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge'
-WHERE l.edge_node_id = $1::uuid AND d.id <> $2::uuid AND d.deleted_at IS NULL
-  AND p.protocol = $3
-  AND l.endpoint->>'transport' = 'tcp'
-  AND l.endpoint->>'mode' = 'TCP Client'
-  AND l.endpoint->>'ip' = $4
-  AND COALESCE(
-        CASE WHEN COALESCE(l.endpoint->>'port', '') ~ '^[0-9]{1,5}$'
-             THEN NULLIF(l.endpoint->>'port', '')::integer END, 0) = $5
-ORDER BY d.id)sql",
-                                                service::common::dbParams(
-                                                    body.get<"edgeNodeId">()->view(), excluded, protocol,
-                                                    ip, port));
-        for (const auto& row : rows) {
-            const std::string name(row[0].value().value_or(std::string_view{}));
-            if (protocol == "S7")
-                service::common::fail(18006,
-                                      "边缘 S7 TCP Client 同一目标只能关联一个设备，冲突设备: " +
-                                          name,
-                                      409);
-            if (toInt(row[1].value().value_or(std::string_view{})) == slaveId)
-                service::common::fail(
-                    18006,
-                    "边缘 Modbus TCP Client 同一目标下 Slave ID 重复，冲突设备: " + name,
-                    409);
-        }
-    }
-
     ruvia::Task<void> validateRuntimeIdentity(ruvia::Context& c, const SaveDeviceBody& body,
                                               std::optional<std::string> excludedId) {
-        if (body.get<"edgeNodeId">() && !body.get<"edgeNodeId">()->view().empty()) {
-            co_await validateEdgeRuntimeIdentity(c, body, excludedId);
-            co_return;
-        }
         const std::string excluded = excludedId.value_or(std::string(kNilUuid));
         const std::string inLinkId = str(body.get<"linkId">());
         const std::string inTargetId = str(body.get<"targetId">());
@@ -2082,7 +1672,7 @@ SELECT candidate.link_id, link.endpoint->>'mode', protocol.protocol, candidate.t
        upper(COALESCE(candidate.heartbeat->>'mode', 'OFF'))
 FROM candidate
 JOIN link link ON link.id = candidate.link_id
-  AND link.deleted_at IS NULL AND link.execution = 'collector'
+  AND link.deleted_at IS NULL
 JOIN protocol_config protocol
   ON protocol.id = candidate.protocol_config_id AND protocol.deleted_at IS NULL
 LIMIT 1)sql",
@@ -2186,17 +1776,20 @@ ORDER BY device.id)sql",
             co_return;
         const std::string nameValue = str(name);
         const std::string codeValue = str(code);
+        const std::string linkValue = str(body.get<"linkId">());
         const std::string excluded = excludedId.value_or(std::string(kNilUuid));
         const auto rows = co_await c.db().query(
             R"sql(
 SELECT 1 FROM device
 WHERE deleted_at IS NULL AND id <> $1::uuid
   AND (($2 <> '' AND name = $2)
-       OR ($3 <> '' AND protocol_params->>'device_code' = $3)) LIMIT 1)sql",
+       OR ($3 <> '' AND protocol_params->>'device_code' = $3
+           AND link_id = COALESCE(NULLIF($4, '')::uuid,
+                                  (SELECT link_id FROM device WHERE id = $1::uuid)))) LIMIT 1)sql",
             service::common::dbParams(excluded, std::string_view(nameValue),
-                                      std::string_view(codeValue)));
+                                      std::string_view(codeValue), linkValue));
         if (!rows.empty())
-            service::common::fail(18004, "设备名称或编码已存在", 409);
+            service::common::fail(18004, "设备名称已存在或同一链路的设备编码重复", 409);
     }
 
     // ----- 设备分组私有工具 -----

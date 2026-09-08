@@ -45,10 +45,10 @@ int main() {
     try {
         const auto source = latestSource();
         requireNoUnsafeParsing(source);
-        require(source.find("iot:device:realtime:revision") != std::string_view::npos &&
-                    source.find("redis.call('INCR', KEYS[3])") != std::string_view::npos &&
-                    source.find("redis.call('INCR', KEYS[2])") != std::string_view::npos,
-                "telemetry changes do not advance the device realtime revision");
+        require(source.find("iot:live:changes") != std::string_view::npos &&
+                    source.find("redis.call('XADD', KEYS[3]") != std::string_view::npos &&
+                    source.find("redis.call('XADD', KEYS[2]") != std::string_view::npos,
+                "telemetry and freshness changes do not publish subscription events");
         std::cout << "telemetry latest tests passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
+import { LiveResource } from '@/utils/live-resource';
+import { useLiveQuery } from '@/hooks/useLiveQuery';
 import { useMutationWithMessage } from '@/hooks/useMutation';
 import { edgeQueryKeys } from './edge-node.types';
 import {
@@ -20,18 +21,12 @@ import {
 import { edgeVpnQueryKeys, type EdgeVpn } from './edge-node.vpn.types';
 
 export const useEdgeVpn = (nodeId?: string) =>
-    useQuery({
+    useLiveQuery({
         queryKey: edgeVpnQueryKeys.node(nodeId),
-        queryFn: async (): Promise<EdgeVpn.Data> => {
-            const [networks, peers, routes] = await Promise.all([
-                getVpnNetworks(),
-                getEdgeVpnPeers(nodeId as string),
-                getEdgeVpnRoutes(nodeId as string),
-            ]);
-            return { networks: networks.list, peers, routes };
-        },
+        queryFn: () => LiveResource.combine([
+            getVpnNetworks(), getEdgeVpnPeers(nodeId as string), getEdgeVpnRoutes(nodeId as string),
+        ] as const).map(([networks, peers, routes]): EdgeVpn.Data => ({ networks: networks.list, peers, routes })),
         enabled: Boolean(nodeId),
-        refetchInterval: 10_000,
     });
 
 const vpnInvalidations = [edgeVpnQueryKeys.all, edgeQueryKeys.all];
@@ -58,11 +53,10 @@ export const useWindowsVpnConfigCreate = () =>
     });
 
 export const useWindowsVpnConfigs = (enabled: boolean) =>
-    useQuery({
+    useLiveQuery({
         queryKey: edgeVpnQueryKeys.clientConfigs(),
         queryFn: getWindowsVpnConfigs,
         enabled,
-        refetchInterval: enabled ? 10_000 : false,
     });
 
 export const useWindowsVpnConfigDelete = () =>
@@ -74,7 +68,7 @@ export const useWindowsVpnConfigDelete = () =>
 
 export const useWindowsVpnConfigDownload = () =>
     useMutationWithMessage({
-        mutationFn: downloadWindowsVpnConfig,
+        mutationFn: (id: string) => downloadWindowsVpnConfig(id).first(),
         successMessage: '已按当前虚拟网段下载 WireGuard 配置',
         invalidateKeys: vpnInvalidations,
     });

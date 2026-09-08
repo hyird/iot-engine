@@ -112,6 +112,7 @@ export async function consumeServerSentEvents(
         }
     } finally {
         signal?.removeEventListener('abort', abort);
+        await reader.cancel().catch(() => undefined);
         reader.releaseLock();
     }
 }

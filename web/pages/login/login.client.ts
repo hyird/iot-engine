@@ -1,3 +1,4 @@
+import { liveRead } from '@/utils/live-request';
 /**
  * 认证 API
  */
@@ -33,7 +34,7 @@ export function refreshToken(refreshToken: string, config?: RequestConfig) {
 
 /** 获取当前用户信息 */
 export function fetchCurrentUser(config?: RequestConfig) {
-    return request.get<Auth.UserInfo>(ENDPOINTS.ME, config);
+    return liveRead<Auth.UserInfo>(ENDPOINTS.ME, config);
 }
 
 /** 登出 */

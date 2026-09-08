@@ -3,6 +3,8 @@
 #include <array>
 #include <ruvia/web/db/DbMigration.h>
 #include <utility>
+#include "service/config/model-revisions.h"
+#include "service/config/channels.h"
 
 namespace service::config {
 
@@ -26,7 +28,7 @@ class SchemaMigration final {
     std::string sql_;
 };
 
-inline const std::array<SchemaMigration, 34> kSchemaMigrations{{
+inline const std::array<SchemaMigration, 41> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
@@ -1520,6 +1522,163 @@ ALTER TABLE vpn_peer
 END
 $schema$;
 )sql"},
+    {"0034_device_address_scope", R"sql(
+DO $schema$ BEGIN
+
+DROP INDEX idx_device_protocol_params_code;
+UPDATE device d SET protocol_params=jsonb_set(d.protocol_params,'{device_code}',
+ to_jsonb(lpad(d.protocol_params->>'device_code',10,'0')))
+FROM protocol_config p WHERE p.id=d.protocol_config_id AND p.protocol='SL651'
+ AND d.protocol_params->>'device_code' ~ '^[0-9]{1,9}$';
+CREATE UNIQUE INDEX idx_device_link_code_active
+ ON device(link_id, (protocol_params->>'device_code'))
+ WHERE deleted_at IS NULL AND COALESCE(protocol_params->>'device_code', '') <> '';
+
+END $schema$;
+)sql"},
+    {"0035_durable_commands", R"sql(
+DO $schema$ BEGIN
+
+UPDATE open_webhook SET event_types=(
+ SELECT jsonb_agg(CASE value
+ WHEN 'device.command.dispatched' THEN 'device.command.accepted'
+ WHEN 'device.command.responded' THEN 'device.command.updated' ELSE value END)
+ FROM jsonb_array_elements_text(event_types))
+ WHERE event_types ?| ARRAY['device.command.dispatched','device.command.responded'];
+CREATE TABLE command_request (
+ id UUID PRIMARY KEY, actor TEXT NOT NULL, idempotency_key UUID NOT NULL,
+ device_id UUID NOT NULL REFERENCES device(id), payload JSONB NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(actor, idempotency_key)
+);
+CREATE TABLE command_operation (
+ id UUID PRIMARY KEY, request_id UUID NOT NULL REFERENCES command_request(id),
+ ordinal INTEGER NOT NULL, device_id UUID NOT NULL REFERENCES device(id),
+ device_code TEXT NOT NULL, protocol TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('ACCEPTED','DISPATCHING','AWAITING_RESULT',
+ 'SUCCEEDED','REJECTED','UNKNOWN','READBACK_MISMATCH','FAILED')),
+ reason TEXT NOT NULL DEFAULT '', elements JSONB NOT NULL DEFAULT '[]',
+ actual_values JSONB NOT NULL DEFAULT '[]',
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), completed_at TIMESTAMPTZ,
+ UNIQUE(request_id, ordinal)
+);
+CREATE TABLE command_attempt (
+ operation_id UUID PRIMARY KEY REFERENCES command_operation(id),
+ queue_key TEXT NOT NULL, queue_kind TEXT NOT NULL CHECK(queue_kind IN ('stream','list')),
+ payload JSONB NOT NULL, submitted_by TEXT NOT NULL, node_id TEXT NOT NULL DEFAULT '',
+ max_length INTEGER NOT NULL CHECK(max_length > 0),
+ claimed_at TIMESTAMPTZ, dispatched_at TIMESTAMPTZ, sent_at TIMESTAMPTZ,
+ deadline TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '60 seconds'
+);
+CREATE INDEX idx_command_attempt_pending ON command_attempt(deadline) WHERE claimed_at IS NULL;
+CREATE INDEX idx_command_operation_device ON command_operation(device_id, created_at DESC);
+
+END $schema$;
+)sql"},
+    {"0036_live_query_changes", R"sql(
+DO $schema$ BEGIN
+CREATE FUNCTION publish_query_change() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  INSERT INTO outbox_event(id,event_type,aggregate_type,aggregate_id,action,schema_version)
+  VALUES(gen_random_uuid(),'query.changed',TG_ARGV[0],TG_TABLE_NAME,TG_OP,1);
+  RETURN NULL;
+END $fn$;
+CREATE TRIGGER live_users AFTER INSERT OR UPDATE OR DELETE ON sys_user
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('auth');
+CREATE TRIGGER live_roles AFTER INSERT OR UPDATE OR DELETE ON sys_role
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('auth');
+CREATE TRIGGER live_membership AFTER INSERT OR UPDATE OR DELETE ON sys_user_role
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('auth');
+CREATE TRIGGER live_departments AFTER INSERT OR UPDATE OR DELETE ON sys_department
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('auth');
+CREATE TRIGGER live_device AFTER INSERT OR UPDATE OR DELETE ON device
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('device');
+CREATE TRIGGER live_device_group AFTER INSERT OR UPDATE OR DELETE ON device_group
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('device');
+CREATE TRIGGER live_device_access_grant AFTER INSERT OR UPDATE OR DELETE ON device_access_grant
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('auth');
+CREATE TRIGGER live_device_group_access_grant AFTER INSERT OR UPDATE OR DELETE ON device_group_access_grant
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('auth');
+CREATE TRIGGER live_open_access_key AFTER INSERT OR UPDATE OR DELETE ON open_access_key
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('auth');
+CREATE TRIGGER live_open_access_key_device AFTER INSERT OR UPDATE OR DELETE ON open_access_key_device
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('auth');
+CREATE TRIGGER live_link AFTER INSERT OR UPDATE OR DELETE ON link
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('link');
+CREATE TRIGGER live_protocol_config AFTER INSERT OR UPDATE OR DELETE ON protocol_config
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('protocol');
+CREATE TRIGGER live_edge_node AFTER INSERT OR UPDATE OR DELETE ON edge_node
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('edge');
+CREATE TRIGGER live_edge_node_interface AFTER INSERT OR UPDATE OR DELETE ON edge_node_interface
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('edge');
+CREATE TRIGGER live_edge_node_serial AFTER INSERT OR UPDATE OR DELETE ON edge_node_serial
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('edge');
+CREATE TRIGGER live_edge_firmware AFTER INSERT OR UPDATE OR DELETE ON edge_firmware
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('edge');
+CREATE TRIGGER live_edge_node_platform AFTER INSERT OR UPDATE OR DELETE ON edge_node_platform
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('edge');
+CREATE TRIGGER live_edge_task AFTER INSERT OR UPDATE OR DELETE ON edge_task
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('edge');
+CREATE TRIGGER live_edge_config_revision AFTER INSERT OR UPDATE OR DELETE ON edge_config_revision
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('edge');
+CREATE TRIGGER live_edge_node_network AFTER INSERT OR UPDATE OR DELETE ON edge_node_network
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('edge');
+CREATE TRIGGER live_edge_node_group AFTER INSERT OR UPDATE OR DELETE ON edge_node_group
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('edge');
+CREATE TRIGGER live_alert_rule AFTER INSERT OR UPDATE OR DELETE ON alert_rule
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('alert');
+CREATE TRIGGER live_alert_rule_template AFTER INSERT OR UPDATE OR DELETE ON alert_rule_template
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('alert');
+CREATE TRIGGER live_open_alert_record AFTER INSERT OR UPDATE OR DELETE ON open_alert_record
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('alert');
+CREATE TRIGGER live_open_webhook AFTER INSERT OR UPDATE OR DELETE ON open_webhook
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('access');
+CREATE TRIGGER live_open_access_log AFTER INSERT OR UPDATE OR DELETE ON open_access_log
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('access');
+CREATE TRIGGER live_vpn_network AFTER INSERT OR UPDATE OR DELETE ON vpn_network
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('vpn');
+CREATE TRIGGER live_vpn_peer AFTER INSERT OR UPDATE OR DELETE ON vpn_peer
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('vpn');
+CREATE TRIGGER live_vpn_route AFTER INSERT OR UPDATE OR DELETE ON vpn_route
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('vpn');
+CREATE TRIGGER live_vpn_access_rule AFTER INSERT OR UPDATE OR DELETE ON vpn_access_rule
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('vpn');
+CREATE TRIGGER live_vpn_enrollment AFTER INSERT OR UPDATE OR DELETE ON vpn_enrollment
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('vpn');
+CREATE TRIGGER live_gb28181_device AFTER INSERT OR UPDATE OR DELETE ON gb28181_device
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('gb28181');
+CREATE TRIGGER live_gb28181_channel AFTER INSERT OR UPDATE OR DELETE ON gb28181_channel
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('gb28181');
+CREATE TRIGGER live_gb28181_record AFTER INSERT OR UPDATE OR DELETE ON gb28181_record
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('gb28181');
+CREATE TRIGGER live_gb28181_stream AFTER INSERT OR UPDATE OR DELETE ON gb28181_stream
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('gb28181');
+CREATE TRIGGER live_command_operation AFTER INSERT OR UPDATE OR DELETE ON command_operation
+  FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change('command');
+END $schema$;
+)sql"},
+    {"0037_model_revisions", std::string(kModelRevisionMigration)},
+    {"0038_physical_channels", std::string(kChannelMigration)},
+    {"0039_alert_input_state", R"sql(DO $schema$ BEGIN
+CREATE TABLE alert_input_state (
+ device_id UUID PRIMARY KEY REFERENCES device(id), observed_at_ms BIGINT NOT NULL,
+ message_id UUID NOT NULL, data JSONB NOT NULL, previous_data JSONB NOT NULL);
+INSERT INTO alert_input_state
+SELECT device_id,(extract(epoch FROM last_observed_at)*1000)::bigint,last_observed_id,
+ COALESCE(last_data,'{}'),COALESCE(previous_data,'{}') FROM device_data_ingest_state
+WHERE last_observed_at IS NOT NULL AND last_observed_id IS NOT NULL;
+END $schema$;)sql"},
+    {"0040_channel_transport_guard", R"sql(
+CREATE OR REPLACE FUNCTION protect_channel_binding() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF (NEW.protocol,NEW.execution,NEW.edge_node_id,NEW.deleted_at,
+      NEW.endpoint->>'transport',NEW.endpoint->>'mode') IS DISTINCT FROM
+     (OLD.protocol,OLD.execution,OLD.edge_node_id,OLD.deleted_at,
+      OLD.endpoint->>'transport',OLD.endpoint->>'mode')
+     AND EXISTS(SELECT 1 FROM device WHERE link_id=OLD.id AND deleted_at IS NULL) THEN
+    RAISE EXCEPTION 'Move or remove bound devices before changing channel identity';
+  END IF;
+  RETURN NEW;
+END $fn$;)sql"},
 }};
 
 } // namespace service::config

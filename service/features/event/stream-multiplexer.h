@@ -66,12 +66,13 @@ class WorkerStreamMultiplexer final {
 
     ruvia::Task<void> wait(std::size_t workerIndex, WorkerStreamTask task,
                            ruvia::StopToken stopToken,
-                           std::optional<std::chrono::milliseconds> maximum = std::nullopt) {
+                           std::optional<std::chrono::milliseconds> maximum = std::chrono::seconds(1)) {
         const ruvia::ChannelReceiver<std::uint8_t>* receiver = nullptr;
         {
             std::lock_guard lock(mutex_);
             receiver = &*requireSlot(workerIndex).receivers[taskIndex(task)];
         }
+        if (!maximum || *maximum > std::chrono::seconds(1)) maximum = std::chrono::seconds(1);
         if (maximum.has_value()) {
             if (maximum->count() <= 0)
                 co_return;
@@ -219,7 +220,7 @@ class WorkerStreamMultiplexer final {
         try {
             const auto redis = context.redis();
             const auto wakeStream = workerWakeStream(index);
-            const auto consumer = "service-" + std::to_string(index);
+            const auto consumer = service::runtime::instanceId() + ":service-" + std::to_string(index);
             co_await service::message::redis::ensureGroup(redis, wakeStream, kGroup);
             ready->set_value();
             readySet = true;

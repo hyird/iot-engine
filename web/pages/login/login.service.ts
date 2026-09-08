@@ -1,8 +1,9 @@
+import { useLiveQuery } from '@/hooks/useLiveQuery';
 /**
  * 认证相关 Service
  */
 
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
 import { fetchCurrentUser, logout } from './login.client';
@@ -16,18 +17,16 @@ export function useCurrentUser() {
     const user = useAuthStore((s) => s.user);
     const setUser = useAuthStore((s) => s.setUser);
 
-    return useQuery({
+    return useLiveQuery({
         queryKey: loginKeys.currentUser,
-        queryFn: async () => {
-            const freshUser = await fetchCurrentUser();
+        queryFn: () => fetchCurrentUser().map((freshUser) => {
             setUser(freshUser);
             return freshUser;
-        },
+        }),
         enabled: !!token,
         initialData: user ?? undefined,
         initialDataUpdatedAt: 0,
         staleTime: 2 * 60 * 1000,
-        refetchInterval: 5 * 60 * 1000,
         refetchOnWindowFocus: true,
     });
 }

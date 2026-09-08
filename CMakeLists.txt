@@ -34,7 +34,7 @@ endif()
 
 project(iot_engine VERSION 0.1.0 LANGUAGES C CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 if(MSVC)
@@ -56,7 +56,7 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(ruvia
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    GIT_TAG 27326c2da29e573f4d26f7eb38786c3c22eee589)
+    GIT_TAG 50a8ed832f723574761433346a5a956ecf47d683)
 FetchContent_MakeAvailable(ruvia)
 
 FetchContent_Declare(nanopb
@@ -343,6 +343,10 @@ iot_engine_add_test(storage-policy LARGE
 iot_engine_add_test(edge-protocol
     SOURCES tests/edge-protocol-test.cpp
     LIBRARIES edgenode-protocol)
+
+iot_engine_add_test(telemetry-contract
+    SOURCES tests/telemetry-contract-test.cpp
+    LIBRARIES ruvia::web)
 
 iot_engine_add_test(vpn-cidr
     SOURCES tests/vpn-cidr-test.cpp

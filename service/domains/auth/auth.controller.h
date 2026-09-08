@@ -3,6 +3,7 @@
 #include <ruvia/web/Controller.h>
 
 #include "service/common/http.h"
+#include "service/features/live/query.h"
 #include "service/middleware/auth.h"
 #include "service/domains/auth/auth.schema.h"
 #include "service/domains/auth/auth.service.h"
@@ -16,7 +17,7 @@ class AuthController final : public ruvia::Controller<AuthController> {
     RUVIA_POST("/login", login, LoginValidator);
     RUVIA_POST("/refresh", refresh, RefreshValidator);
     RUVIA_POST("/logout", logout);
-    RUVIA_GET("/me", me, service::middleware::AuthMiddleware);
+    RUVIA_GET_SSE("/me", me, service::middleware::AuthMiddleware);
     RUVIA_ROUTES_END
 
   private:
@@ -34,9 +35,13 @@ class AuthController final : public ruvia::Controller<AuthController> {
         co_return c.json(service::common::operation(c, "退出成功"));
     }
 
-    ruvia::Task<ruvia::HttpResponse> me(ruvia::Context& c) {
+    ruvia::Task<void> me(ruvia::Context& c) {
+        co_await service::live::serve(c, "auth", [this, &c]() { return meSnapshot(c); });
+    }
+
+    ruvia::Task<std::string> meSnapshot(ruvia::Context& c) {
         const auto principal = service::middleware::requireAuth(c);
-        co_return c.json(service::common::ok<CurrentUserResponse>(
+        co_return service::live::json(service::common::ok<CurrentUserResponse>(
             c, co_await authService().current(c, principal.userId)));
     }
 };

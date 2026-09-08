@@ -35,7 +35,7 @@ SELECT d.id::text, d.link_id::text, d.protocol_params->>'device_code', p.protoco
        COALESCE(NULLIF(d.protocol_params->>'online_timeout', ''), '300')
 FROM device d
 JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN protocol_config p ON p.id = d.protocol_config_id AND p.deleted_at IS NULL
+JOIN device_model p ON p.device_id = d.id AND p.deleted_at IS NULL
 WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
 ORDER BY d.id)sql";
 
@@ -46,7 +46,7 @@ SELECT n.id::text, d.id::text, d.link_id::text, d.protocol_params->>'device_code
 FROM edge_node n
 LEFT JOIN link l ON l.edge_node_id = n.id AND l.execution = 'edge' AND l.deleted_at IS NULL
 LEFT JOIN device d ON d.link_id = l.id AND d.deleted_at IS NULL
-LEFT JOIN protocol_config p ON p.id = d.protocol_config_id AND p.deleted_at IS NULL
+LEFT JOIN device_model p ON p.device_id = d.id AND p.deleted_at IS NULL
 ORDER BY n.id, d.id)sql";
 
 struct Device final {
