@@ -46,52 +46,6 @@ export class ServerSentEventDecoder {
     }
 }
 
-interface ReconnectOptions {
-    initialDelayMs?: number;
-    maxDelayMs?: number;
-    wait?: (delay: number, signal: AbortSignal) => Promise<void>;
-}
-
-function waitForReconnect(delay: number, signal: AbortSignal) {
-    return new Promise<void>((resolve) => {
-        if (signal.aborted) {
-            resolve();
-            return;
-        }
-        const finish = () => {
-            clearTimeout(timer);
-            signal.removeEventListener('abort', finish);
-            resolve();
-        };
-        const timer = setTimeout(finish, delay);
-        signal.addEventListener('abort', finish, { once: true });
-    });
-}
-
-export async function reconnectServerSentEvents(
-    connect: (connected: () => void, signal: AbortSignal) => Promise<void>,
-    signal: AbortSignal,
-    options: ReconnectOptions = {}
-) {
-    const initialDelay = options.initialDelayMs ?? 1_000;
-    const maxDelay = options.maxDelayMs ?? 10_000;
-    const wait = options.wait ?? waitForReconnect;
-    let retryDelay = initialDelay;
-
-    while (!signal.aborted) {
-        try {
-            await connect(() => {
-                retryDelay = initialDelay;
-            }, signal);
-        } catch {
-            if (signal.aborted) return;
-        }
-        if (signal.aborted) return;
-        await wait(retryDelay, signal);
-        retryDelay = Math.min(retryDelay * 2, maxDelay);
-    }
-}
-
 export async function consumeServerSentEvents(
     stream: ReadableStream<Uint8Array>,
     onEvent: (event: ServerSentEvent) => void,
