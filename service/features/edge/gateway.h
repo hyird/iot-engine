@@ -199,7 +199,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         // Egress must not wait for the node to speak first. This worker's own
         // dispatcher wakes only sessions accepted by this worker.
         ruvia::TaskScope egressScope(
-            c.worker(), ruvia::TaskScopeOptions{.resource = c.resource()});
+            c.worker(), ruvia::TaskScopeOptions{.resource = c.operationResource()});
         auto live = std::make_shared<LiveSession>(LiveSession{
             .context = &c,
             .socket = &socket,
@@ -330,7 +330,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             terminalSession.opened = true;
         }
         ruvia::TaskScope outputScope(
-            c.worker(), ruvia::TaskScopeOptions{.resource = c.resource()});
+            c.worker(), ruvia::TaskScopeOptions{.resource = c.operationResource()});
         outputScope.spawn(pumpTerminal(c, socket, nodeId, nodeSession, terminalId,
                                        terminalBytes, outputScope.stopToken(), terminalSession));
         std::exception_ptr failure;

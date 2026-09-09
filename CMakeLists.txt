@@ -56,7 +56,7 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(ruvia
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    GIT_TAG 50a8ed832f723574761433346a5a956ecf47d683)
+    GIT_TAG d7fa8d6dd14be4de204172de9bca0b76f7a3643f)
 FetchContent_MakeAvailable(ruvia)
 
 FetchContent_Declare(nanopb
@@ -323,6 +323,10 @@ if(MSVC)
 endif()
 
 enable_testing()
+iot_engine_add_test(context-operation-memory LARGE
+    SOURCES tests/context-operation-memory-test.cpp
+    LIBRARIES ruvia::web)
+
 iot_engine_add_test(collector-protocol LARGE
     SOURCES
         tests/collector-protocol-test.cpp
