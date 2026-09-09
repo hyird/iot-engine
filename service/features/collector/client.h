@@ -38,7 +38,7 @@ class Client final {
     }
 
     [[nodiscard]] auto withOptions(ruvia::OperationOptions options) const {
-        return registry_.get(&resource_, operationScope_).withOptions(std::move(options));
+        return registry_.get(operationScope_).withOptions(std::move(options));
     }
 
     void close() noexcept {
