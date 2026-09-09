@@ -28,7 +28,7 @@ class SchemaMigration final {
     std::string sql_;
 };
 
-inline const std::array<SchemaMigration, 41> kSchemaMigrations{{
+inline const std::array<SchemaMigration, 43> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
@@ -1679,6 +1679,54 @@ BEGIN
   END IF;
   RETURN NEW;
 END $fn$;)sql"},
+    {"0041_outbox_notifications", R"sql(
+DO $schema$ BEGIN
+CREATE FUNCTION notify_outbox_pending() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  PERFORM pg_notify('iot_outbox_pending', '');
+  RETURN NULL;
+END $fn$;
+CREATE TRIGGER outbox_pending_notification
+AFTER INSERT OR UPDATE OF available_at, published_at, dead_lettered_at ON outbox_event
+FOR EACH ROW
+WHEN (NEW.published_at IS NULL AND NEW.dead_lettered_at IS NULL)
+EXECUTE FUNCTION notify_outbox_pending();
+END $schema$;
+)sql"},
+    {"0043_nonempty_query_notifications", R"sql(
+DO $schema$
+DECLARE source RECORD; operation TEXT; transition_kind TEXT;
+BEGIN
+CREATE OR REPLACE FUNCTION publish_query_change() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM query_changed_rows) THEN RETURN NULL; END IF;
+  INSERT INTO outbox_event(id,event_type,aggregate_type,aggregate_id,action,schema_version)
+  VALUES(gen_random_uuid(),'query.changed',TG_ARGV[0],TG_TABLE_NAME,TG_OP,1);
+  RETURN NULL;
+END $fn$;
+-- Separate transition-table triggers preserve one hint per statement without
+-- reporting zero-row UPDATE/DELETE scans as changes.
+FOR source IN
+  SELECT t.tgname, c.relname, n.nspname,
+    convert_from(substring(t.tgargs FROM 1 FOR
+      position(decode('00','hex') IN t.tgargs)-1),'UTF8') AS topic
+  FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+    JOIN pg_namespace n ON n.oid=c.relnamespace
+  WHERE t.tgfoid='publish_query_change()'::regprocedure
+    AND NOT t.tgisinternal AND (t.tgtype::integer & 28)=28
+LOOP
+  EXECUTE format('DROP TRIGGER %I ON %I.%I',source.tgname,source.nspname,source.relname);
+  FOREACH operation IN ARRAY ARRAY['INSERT','UPDATE','DELETE'] LOOP
+    transition_kind := CASE WHEN operation='DELETE' THEN 'OLD' ELSE 'NEW' END;
+    EXECUTE format('CREATE TRIGGER %I AFTER %s ON %I.%I REFERENCING %s TABLE AS query_changed_rows FOR EACH STATEMENT EXECUTE FUNCTION publish_query_change(%L)',
+      source.tgname || '_' || lower(operation),operation,source.nspname,source.relname,transition_kind,source.topic);
+  END LOOP;
+END LOOP;
+CREATE TRIGGER command_pending_notification
+AFTER INSERT OR UPDATE OF deadline ON command_attempt
+FOR EACH ROW EXECUTE FUNCTION notify_outbox_pending();
+END $schema$;
+)sql"},
 }};
 
 } // namespace service::config

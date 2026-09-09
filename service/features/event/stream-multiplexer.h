@@ -66,13 +66,17 @@ class WorkerStreamMultiplexer final {
 
     ruvia::Task<void> wait(std::size_t workerIndex, WorkerStreamTask task,
                            ruvia::StopToken stopToken,
-                           std::optional<std::chrono::milliseconds> maximum = std::chrono::seconds(1)) {
+                           std::optional<std::chrono::milliseconds> maximum = std::nullopt) {
         const ruvia::ChannelReceiver<std::uint8_t>* receiver = nullptr;
         {
             std::lock_guard lock(mutex_);
             receiver = &*requireSlot(workerIndex).receivers[taskIndex(task)];
         }
-        if (!maximum || *maximum > std::chrono::seconds(1)) maximum = std::chrono::seconds(1);
+        // The durable work streams remain authoritative when a wake is lost
+        // during failover. This is a bounded recovery scan, not a one-second
+        // normal-work poll; earlier domain deadlines must retain their meaning.
+        constexpr auto recovery = std::chrono::seconds(60);
+        if (!maximum || *maximum > recovery) maximum = recovery;
         if (maximum.has_value()) {
             if (maximum->count() <= 0)
                 co_return;
@@ -244,6 +248,9 @@ class WorkerStreamMultiplexer final {
                             batches.push_back({wakeStream, std::move(messages)});
                     }
                     if (recovering && batches.empty()) {
+                        // A reconnect may have lost/trimmed wake hints while the
+                        // corresponding business entries are still durable.
+                        signalAll();
                         recovering = false;
                         continue;
                     }

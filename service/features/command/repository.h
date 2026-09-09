@@ -5,6 +5,9 @@
 #include "service/features/access/contract.h"
 #include "service/features/edge/dispatch.h"
 
+#include <chrono>
+#include <optional>
+
 namespace service::command::repository {
 
 template <typename Database>
@@ -169,6 +172,29 @@ FROM command_attempt a WHERE o.id=a.operation_id AND a.deadline<=NOW()
     for (const auto& row : expired)
         co_await event(expiry,row[0].value().value_or(std::string_view{}),"device.command.updated");
     co_await expiry.commit();
+}
+
+template <typename Context>
+ruvia::Task<std::optional<std::chrono::milliseconds>>
+nextDispatchDelay(Context& context) {
+    const auto rows = co_await context.db().query(R"sql(
+SELECT CASE
+ WHEN COUNT(*) = 0 THEN NULL
+ WHEN BOOL_OR(o.status='ACCEPTED' AND a.claimed_at IS NULL AND a.deadline>NOW()) THEN 25
+ ELSE GREATEST(25, CEIL(EXTRACT(EPOCH FROM (MIN(a.deadline)-NOW()))*1000)::bigint)
+ END::text
+FROM command_attempt a JOIN command_operation o ON o.id=a.operation_id
+WHERE o.status IN ('ACCEPTED','DISPATCHING','AWAITING_RESULT')
+  AND a.deadline IS NOT NULL)sql");
+    if (rows.empty())
+        co_return std::nullopt;
+    const auto value = rows.front()[0].value();
+    if (!value)
+        co_return std::nullopt;
+    const auto delay = common::parseInt64(std::optional<std::string_view>{*value});
+    if (!delay)
+        throw std::runtime_error("invalid command dispatch deadline delay");
+    co_return std::chrono::milliseconds(*delay);
 }
 
 } // namespace service::command::repository

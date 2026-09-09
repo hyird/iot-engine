@@ -23,6 +23,7 @@ Use a superadmin account or an account with `system:outbox:manage` permission.
 ```text
 GET /v1/system/outbox/dead-letters
 Authorization: Bearer <access-token>
+Accept: text/event-stream
 ```
 
 Inspect `last_error`, `event_type`, `aggregate_type`, and `aggregate_id`. After fixing the
@@ -39,6 +40,20 @@ dead-letter gauge falls and the corresponding alert clears within the next colle
 interval.
 
 ## Pending backlog
+
+Dispatch wakes on committed PostgreSQL `iot_outbox_pending` notifications.
+Startup and listener reconnect perform a durable catch-up scan. Future
+`available_at` values arm a deadline; eligible locked rows retry after at least
+25 ms and dispatcher failures back off. Empty queues have no periodic dispatch
+query. Metrics collection remains periodic and is not a dispatch wake.
+
+- Check `iot_engine_outbox_listener_connected` (1 when LISTEN is established)
+  and the `iot-engine-outbox-listener` connection in `pg_stat_activity`.
+- `iot_engine_outbox_dispatch_checks_total` should remain unchanged during a
+  genuinely idle interval. New commits, scheduled work and reconnect catch-up
+  legitimately increase it.
+- If the listener remains disconnected, check database connectivity and service
+  logs for `postgres notifier disconnected; retrying` before restarting anything.
 
 - If dispatcher failures are rising, fix PostgreSQL or Redis connectivity first.
 - If failures are flat but pending count grows, check service worker saturation and Redis

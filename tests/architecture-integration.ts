@@ -1,10 +1,11 @@
+import { databaseUrl, redisUrl, apiBase, publishFixtureEvent } from './architecture-fixture';
 // Run against the disposable architecture fixture, never a deployed database.
 import { createHmac } from 'node:crypto';
 import assert from 'node:assert/strict';
 
-const db = new Bun.SQL('postgres://architecture_test@127.0.0.1:55439/iot_architecture');
-const redis = new Bun.RedisClient('redis://127.0.0.1:56439');
-const base = 'http://127.0.0.1:55102';
+const db = new Bun.SQL(databaseUrl);
+const redis = new Bun.RedisClient(redisUrl);
+const base = apiBase;
 const admin = '00000000-0000-7000-8000-000000000002';
 const id = () => crypto.randomUUID();
 const link = id(), secondLink = id(), device = id(), secondDevice = id(), protocol = id(), point = id();
@@ -93,15 +94,19 @@ try {
         'durable dispatcher did not publish');
     const queue = `iot:channel:command:worker:${instance}:0:high`;
     assert.equal(Number(await redis.send('XLEN', [queue])), 1, 'request replay must not enqueue twice');
-    await db`UPDATE command_attempt SET deadline=NOW()-INTERVAL '1 second' WHERE operation_id=${commandId}`;
+    // Arm a future deadline once, then perform only reads. Expiry must wake the
+    // result worker without another database mutation or result notification.
+    await db`UPDATE command_attempt SET deadline=clock_timestamp()+INTERVAL '2 seconds' WHERE operation_id=${commandId}`;
+    await Bun.sleep(500);
+    assert.equal((await api(`/v1/device/commands/${commandId}`)).body.data.status, 'AWAITING_RESULT');
     await until(async () => (await api(`/v1/device/commands/${commandId}`)).body.data.status === 'UNKNOWN',
-        'missing result must become UNKNOWN');
+        'natural deadline expiry without a new notification must become UNKNOWN');
     const result = ['command_id', commandId, 'device_id', device, 'device_code', '0000000001',
         'success', '1', 'result_state', 'SUCCEEDED', 'actual_value_count', '0', 'message_id', id()];
-    await redis.send('XADD', [`iot:v2:command-result:partition:${shard(device)}`, '*', ...result]);
+    await publishFixtureEvent(redis, `iot:v2:command-result:partition:${shard(device)}`, result, 'command-result');
     await until(async () => (await api(`/v1/device/commands/${commandId}`)).body.data.status === 'SUCCEEDED',
         'late confirmed result must resolve UNKNOWN');
-    await redis.send('XADD', [`iot:v2:command-result:partition:${shard(device)}`, '*', ...result]);
+    await publishFixtureEvent(redis, `iot:v2:command-result:partition:${shard(device)}`, result, 'command-result');
     await Bun.sleep(1200);
     const events = await db`SELECT count(*)::int AS count FROM outbox_event
         WHERE event_type='device.command.updated' AND payload->'data'->>'commandId'=${commandId}

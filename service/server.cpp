@@ -349,7 +349,7 @@ int main(int argc, char *argv[])
         serviceRedis.blockingPoolSizePerWorker = 2;
         auto collector = std::make_shared<service::collector::Runtime>();
         auto telemetry = std::make_shared<service::telemetry::PersistenceRuntime>();
-        auto liveQueries = std::make_shared<service::live::Runtime>();
+        auto liveQueries = std::make_shared<service::live::Runtime>(collectorWorkerCount);
         auto commandResults = std::make_shared<service::command::ResultRuntime>();
         auto openWebhooks = std::make_shared<service::access::WebhookRuntime>();
         auto configReconciler = std::make_shared<service::runtime::Reconciler>();
@@ -382,7 +382,7 @@ int main(int argc, char *argv[])
             outboxPolicy.receiptRetentionDays < 0 || outboxPolicy.receiptRetentionDays > 3650)
             throw std::runtime_error("OUTBOX policy values are invalid");
         auto outbox = std::make_shared<service::message::outbox::Runtime>(
-            *observability, collectorWorkerCount, serviceWorkerCount, outboxPolicy);
+            *observability, collectorWorkerCount, serviceWorkerCount, db, outboxPolicy);
         auto applicationRuntime =
             std::make_shared<service::application::Runtime>(*observability);
         app.database(ruvia::DbRegistrationConfig{.alias = "telemetry-history", .config = db});

@@ -275,11 +275,7 @@ export default function Gb28181Page() {
             message.warning('请选择设备');
             return;
         }
-        catalogMutation.mutate(selectedDevice.id, {
-            onSuccess: () => {
-                window.setTimeout(() => devicesQuery.refetch(), 1200);
-            },
-        });
+        catalogMutation.mutate(selectedDevice.id);
     };
 
     const handleStartPreview = () => {

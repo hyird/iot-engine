@@ -133,12 +133,20 @@ class ResultRuntime final {
             ready->set_value();
             const auto consumer = service::runtime::instanceId() + ":service-" + std::to_string(index);
             while (running_.load() && !context.stopToken().stopRequested()) {
-                try { co_await repository::dispatch(context); }
+                bool dispatchFailed = false;
+                std::optional<std::chrono::milliseconds> dispatchDelay;
+                try {
+                    co_await repository::dispatch(context);
+                    dispatchDelay = co_await repository::nextDispatchDelay(context);
+                }
                 catch (const std::exception& error) {
                     std::cerr << "command dispatch failed: " << error.what() << '\n';
+                    dispatchFailed = true;
                 }
                 if (streams.empty()) {
-                    (void)co_await ruvia::sleepFor(context.worker(), std::chrono::seconds(1));
+                    (void)co_await ruvia::sleepFor(
+                        context.worker(), dispatchFailed ? std::chrono::milliseconds(250)
+                                                         : std::chrono::seconds(1));
                     continue;
                 }
                 std::vector<message::redis::StreamBatch> batches;
@@ -167,9 +175,14 @@ class ResultRuntime final {
                     continue;
                 }
                 if (batches.empty()) {
-                    co_await service::message::workerStreamMultiplexer().wait(
-                        index, service::message::WorkerStreamTask::CommandResult,
-                        context.stopToken(), std::chrono::milliseconds(250));
+                    if (dispatchFailed) {
+                        (void)co_await ruvia::sleepFor(context.worker(),
+                                                       std::chrono::milliseconds(250));
+                    } else {
+                        co_await service::message::workerStreamMultiplexer().wait(
+                            index, service::message::WorkerStreamTask::CommandResult,
+                            context.stopToken(), dispatchDelay);
+                    }
                     continue;
                 }
                 bool failed = false;

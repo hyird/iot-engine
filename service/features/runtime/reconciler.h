@@ -24,6 +24,7 @@
 #include "service/features/event/stream-multiplexer.h"
 #include "service/features/runtime/repository.h"
 #include "service/features/collector/stream.h"
+#include "service/features/live/runtime.h"
 
 namespace service::runtime {
 
@@ -246,8 +247,6 @@ class Reconciler final {
         }
     }
 
-    static constexpr std::size_t kConfigStreamCapacity = 10000;
-
     ruvia::Task<void> projectAndNotify(ruvia::WebWorkerContext& context) {
         auto transaction = co_await context.db().beginTransaction();
         // Keep snapshot activation and Collector notifications under one global order.
@@ -257,24 +256,9 @@ class Reconciler final {
             "SELECT pg_advisory_xact_lock(5282804697543808067::bigint)");
         auto snapshot =
             co_await service::runtime::repository::loadRuntimeSnapshot(transaction);
-        const auto version =
-            co_await service::collector::config::project(context.redis(), snapshot);
-        co_await publishWorkerNotifications(context, version);
+        (void)co_await service::collector::config::project(context.redis(), snapshot);
+        co_await service::live::publish(context.redis(), "runtime-config");
         co_await transaction.commit();
-    }
-
-    ruvia::Task<void> publishWorkerNotifications(ruvia::WebWorkerContext& context,
-                                                 std::string_view version) {
-        const auto createdAt = std::to_string(service::message::utcNowMilliseconds());
-        for (std::size_t workerIndex = 0; workerIndex < collectorWorkerCount_; ++workerIndex) {
-            (void)co_await service::message::redis::publish(
-                context.redis(), service::message::configStream(workerIndex),
-                {{"message_id", service::message::nextMessageId()},
-                 {"version", std::string(version)},
-                 {"worker_id", std::to_string(workerIndex)},
-                 {"created_at_ms", createdAt}},
-                kConfigStreamCapacity);
-        }
     }
 
     std::vector<ruvia::WebWorkerHandle> workers_;

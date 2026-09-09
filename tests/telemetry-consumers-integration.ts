@@ -1,7 +1,8 @@
+import { databaseUrl, redisUrl, publishFixtureEvent } from './architecture-fixture';
 // Fault injection uses only the disposable local PostgreSQL/Redis fixture.
 import assert from 'node:assert/strict';
-const db = new Bun.SQL('postgres://architecture_test@127.0.0.1:55439/iot_architecture');
-const redis = new Bun.RedisClient('redis://127.0.0.1:56439');
+const db = new Bun.SQL(databaseUrl);
+const redis = new Bun.RedisClient(redisUrl);
 const id = () => crypto.randomUUID();
 const device=id(), link=id(), model=id(), event=id(), point=id();
 const admin='00000000-0000-7000-8000-000000000002';
@@ -41,7 +42,7 @@ try {
         locked(); await release;
     });
     await acquired;
-    await redis.send('XADD',[stream,'*',...fields]);
+    await publishFixtureEvent(redis, stream, fields, 'telemetry');
     await until(async()=>!!await redis.send('HGET',[`iot:v2:device:${device}:latest`,point]),
         'latest consumer was blocked by history persistence');
     await until(async()=>(await db`SELECT 1 FROM alert_input_state WHERE device_id=${device}`).length===1,
@@ -56,7 +57,7 @@ try {
     assert.equal(rows[0].data.values[point].value_type,'number');
     assert.equal(rows[0].data.values[point].quality,'good');
     assert.equal(rows[0].data.values[point].sample_time_ms,Number(now));
-    await redis.send('XADD',[stream,'*',...fields]);
+    await publishFixtureEvent(redis, stream, fields, 'telemetry');
     await Bun.sleep(500);
     assert.equal((await db`SELECT count(*)::int AS count FROM device_data WHERE device_id=${device}`)[0].count,1);
     console.log('PASS history recovery, typed provenance and duplicate ingestion');

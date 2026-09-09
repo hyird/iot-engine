@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <charconv>
 #include <chrono>
@@ -8,15 +9,21 @@
 #include <future>
 #include <iostream>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include <ruvia/core/Timer.h>
+#include <ruvia/core/Channel.h>
+#include <ruvia/core/StopToken.h>
 #include <ruvia/web/WebWorker.h>
 
 #include "service/common/http.h"
 #include "service/features/event/config.h"
+#include "service/features/event/postgres-notifier.h"
+#include "service/features/event/stream-multiplexer.h"
 #include "service/features/access/event.h"
 #include "service/features/live/runtime.h"
 #include "service/observability/registry.h"
@@ -34,9 +41,11 @@ class Runtime final {
   public:
     Runtime(observability::Registry& observability, std::size_t collectorWorkerCount,
             std::size_t serviceWorkerCount,
+            ruvia::DbConfig database,
             Policy policy = {})
         : observability_(observability), collectorWorkerCount_(collectorWorkerCount),
-          serviceWorkerCount_(serviceWorkerCount), policy_(policy) {}
+          serviceWorkerCount_(serviceWorkerCount), policy_(policy),
+          notifier_(std::move(database), [this] { wake(); }) {}
     Runtime(const Runtime&) = delete;
     Runtime& operator=(const Runtime&) = delete;
     ~Runtime() { stop(); }
@@ -49,38 +58,67 @@ class Runtime final {
             running_.store(false);
             throw std::runtime_error("outbox dispatcher requires Service Workers");
         }
+        stopSource_ = std::make_unique<ruvia::StopSource>();
         std::vector<std::future<void>> readiness;
         readiness.reserve(workers_.size());
         stopped_.reserve(workers_.size());
+        try {
         for (auto& worker : workers_) {
             auto ready = std::make_shared<std::promise<void>>();
             auto stopped = std::make_shared<std::promise<void>>();
             readiness.push_back(ready->get_future());
-            stopped_.push_back(stopped->get_future().share());
+            auto completion = stopped->get_future().share();
             const auto posted = worker.post(
                 [this, ready, stopped](ruvia::WebWorkerContext& context) {
                     return run(context, ready, stopped);
                 });
             if (!posted.accepted()) {
-                running_.store(false);
                 throw std::runtime_error("service worker rejected outbox dispatcher");
             }
+            stopped_.push_back(std::move(completion));
         }
-        for (auto& ready : readiness)
-            ready.get();
+            for (auto& ready : readiness)
+                ready.get();
+            // Every worker has installed its bounded wake channel first. LISTEN
+            // completion also wakes all workers to close the startup/reconnect gap.
+            notifier_.start();
+        } catch (...) {
+            stop();
+            throw;
+        }
     }
 
     void stop() noexcept {
         if (!running_.exchange(false))
             return;
+        notifier_.stop();
+        if (stopSource_) stopSource_->requestStop();
         for (const auto& stopped : stopped_)
             if (stopped.valid())
-                (void)stopped.wait_for(std::chrono::seconds(3));
+                stopped.wait();
         stopped_.clear();
         workers_.clear();
+        wakeChannels_.clear();
+        stopSource_.reset();
     }
 
   private:
+    using Clock = std::chrono::steady_clock;
+    struct WakeChannel {
+        ruvia::ChannelSender<int> sender;
+        ruvia::ChannelReceiver<int> receiver;
+    };
+
+    void wake() {
+        std::lock_guard lock(wakeMutex_);
+        for (const auto& channel : wakeChannels_)
+            (void)channel->sender.send(1);
+        // Commands use the same committed-work hint, including startup and
+        // reconnect catchup; their separate timer tracks actual attempt deadlines.
+        service::message::workerStreamMultiplexer().signal(
+            service::message::WorkerStreamTask::CommandResult);
+    }
+
     struct Event {
         std::string id;
         std::string type;
@@ -97,10 +135,19 @@ class Runtime final {
                           std::shared_ptr<std::promise<void>> ready,
                           std::shared_ptr<std::promise<void>> stopped) {
         try {
+            auto [sender, receiver] = ruvia::makeChannel<int>(context.worker(), {.capacity = 1});
+            auto wakeChannel = std::make_shared<WakeChannel>(
+                WakeChannel{std::move(sender), std::move(receiver)});
+            {
+                std::lock_guard lock(wakeMutex_);
+                wakeChannels_.push_back(wakeChannel);
+            }
+            const auto stop = ruvia::combineStopTokens(context.stopToken(), stopSource_->token());
             ready->set_value();
             auto nextMetrics = std::chrono::steady_clock::now();
             auto nextReceiptCleanup = std::chrono::steady_clock::now();
-            while (running_.load() && !context.stopToken().stopRequested()) {
+            std::optional<Clock::time_point> nextDispatch = Clock::now();
+            while (!stop.stopRequested()) {
                 if (policy_.receiptRetentionDays > 0 &&
                     std::chrono::steady_clock::now() >= nextReceiptCleanup) {
                     try {
@@ -114,6 +161,7 @@ class Runtime final {
                         std::chrono::steady_clock::now() + std::chrono::hours(1);
                 }
                 if (std::chrono::steady_clock::now() >= nextMetrics) {
+                    observability_.gauge("iot_engine_outbox_listener_connected", notifier_.connected() ? 1 : 0);
                     try {
                         co_await collectMetrics(context);
                     } catch (const std::exception& error) {
@@ -122,21 +170,28 @@ class Runtime final {
                     }
                     nextMetrics = std::chrono::steady_clock::now() + std::chrono::seconds(5);
                 }
-                bool dispatched = false;
-                bool failed = false;
-                try {
-                    dispatched = co_await dispatch(context);
-                } catch (const std::exception& error) {
-                    observability_.increment("iot_engine_outbox_dispatch_failures_total");
-                    std::cerr << "outbox dispatch failed: " << error.what() << '\n';
-                    failed = true;
+                if (nextDispatch && Clock::now() >= *nextDispatch) {
+                    try {
+                        observability_.increment("iot_engine_outbox_dispatch_checks_total");
+                        if (co_await dispatch(context)) {
+                            nextDispatch = Clock::now();
+                            continue;
+                        }
+                        nextDispatch = co_await nextAvailable(context);
+                    } catch (const std::exception& error) {
+                        observability_.increment("iot_engine_outbox_dispatch_failures_total");
+                        std::cerr << "outbox dispatch failed: " << error.what() << '\n';
+                        nextDispatch = Clock::now() + std::chrono::milliseconds(250);
+                    }
                 }
-                if (failed)
-                    (void)co_await ruvia::sleepFor(context.worker(),
-                                                   std::chrono::milliseconds(250));
-                else if (!dispatched)
-                    (void)co_await ruvia::sleepFor(context.worker(),
-                                                   std::chrono::milliseconds(100));
+                auto deadline = nextMetrics;
+                if (policy_.receiptRetentionDays > 0)
+                    deadline = std::min(deadline, nextReceiptCleanup);
+                if (nextDispatch) deadline = std::min(deadline, *nextDispatch);
+                const auto delay = std::max(std::chrono::milliseconds(1),
+                    std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now()));
+                const auto notification = co_await wakeChannel->receiver.receiveFor(delay, stop);
+                if (notification.hasValue()) nextDispatch = Clock::now();
             }
         } catch (...) {
             try {
@@ -148,6 +203,18 @@ class Runtime final {
             stopped->set_value();
         } catch (...) {
         }
+    }
+
+    ruvia::Task<std::optional<Clock::time_point>> nextAvailable(ruvia::WebWorkerContext& context) {
+        // No periodic empty-queue scan. A timer is armed only for a durable
+        // retry, or for eligible rows currently locked by another dispatcher.
+        const auto rows = co_await context.db().query(R"sql(
+SELECT ceil(extract(epoch FROM (min(available_at) - clock_timestamp())) * 1000)::bigint::text
+FROM outbox_event WHERE published_at IS NULL AND dead_lettered_at IS NULL)sql");
+        if (rows.empty() || !rows.front()[0].value()) co_return std::nullopt;
+        const auto delay = std::chrono::milliseconds(std::max<std::int64_t>(
+            25, integer(*rows.front()[0].value())));
+        co_return Clock::now() + delay;
     }
 
     ruvia::Task<bool> dispatch(ruvia::WebWorkerContext& context) {
@@ -332,6 +399,10 @@ WHERE processed_at < NOW() - make_interval(days => $1::integer))sql",
     std::size_t collectorWorkerCount_{};
     std::size_t serviceWorkerCount_{};
     Policy policy_;
+    PostgresNotifier notifier_;
+    std::unique_ptr<ruvia::StopSource> stopSource_;
+    std::mutex wakeMutex_;
+    std::vector<std::shared_ptr<WakeChannel>> wakeChannels_;
     std::vector<ruvia::WebWorkerHandle> workers_;
     std::vector<std::shared_future<void>> stopped_;
     std::atomic_bool running_{false};

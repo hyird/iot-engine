@@ -1,10 +1,11 @@
+import { databaseUrl, apiBase } from './architecture-fixture';
 // Only the disposable architecture fixture is used. No production defaults.
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { consumeServerSentEvents, type ServerSentEvent } from '../web/utils/sse';
 
-const db = new Bun.SQL('postgres://architecture_test@127.0.0.1:55439/iot_architecture');
-const base = 'http://127.0.0.1:55102';
+const db = new Bun.SQL(databaseUrl);
+const base = apiBase;
 const admin = '00000000-0000-7000-8000-000000000002';
 const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
 function token(user: string) {

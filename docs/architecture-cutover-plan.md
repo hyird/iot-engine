@@ -1,7 +1,7 @@
 # Unified architecture cutover
 
-This is one release, not independently deployable partial migrations. Existing
-uncommitted work is the starting point. Do not deploy until every gate below passes.
+The SSE cutover is already deployed. This update finishes event-driven dispatch
+and its isolated verification; deployment status is recorded separately below.
 
 ## Required outcomes
 
@@ -9,55 +9,64 @@ uncommitted work is the starting point. Do not deploy until every gate below pas
   reference channels and have protocol addresses unique within their channel.
 - Published point models are immutable. Telemetry and commands reference the
   model revision used to interpret or execute them.
-- Telemetry has explicit value types, sample/receive times, quality and media kind.
+- Telemetry has explicit value types, sample and receive times, quality and
+  media kind.
 - Persistence, latest values, alerts and external delivery have independent
   consumer progress and retry boundaries.
-- Business reads are SSE-only: initial snapshot followed by event-driven complete
-  replacement snapshots. No JSON GET alternative and no client polling fallback.
-- Subscriptions reauthorize before publishing data, close on revocation/expiry,
-  reconnect with a fresh snapshot and release resources when unobserved.
-- Binary firmware/media, WebSocket upgrades, static assets and operational probes
-  retain their transport protocols. They are not business JSON query alternatives.
-- Deployed EdgeNode compatibility is confined to the ingress/egress adapter until
-  the repository's tested migration and compatibility-window requirements are met.
+- Business reads are SSE-only: an initial snapshot is followed by complete,
+  event-driven replacement snapshots. There is no JSON GET alternative or
+  client polling fallback.
+- Subscriptions reauthorize before publishing data, close on revocation or
+  expiry, reconnect with a fresh snapshot and release resources when
+  unobserved.
+- Binary firmware and media, WebSocket upgrades, static assets and operational
+  probes retain their transport protocols.
+- Deployed EdgeNode compatibility remains at the ingress and egress adapter
+  boundary. Protocol versions, legacy task messages and legacy token downloads
+  remain supported.
 
-## Implementation gates
+## Implementation status
 
-- [ ] Durable cross-instance query change events and bounded local fanout.
+- [x] Durable cross-instance query change events with bounded local fanout.
 - [x] All business read controllers use the SSE snapshot contract.
-- [x] All web query consumers own live subscription lifetimes; old GET clients,
-      notification-only SSE and refetch timers are removed.
-- [ ] Channel/device model, UI and migration complete.
-- [ ] Immutable point-model publication and historical interpretation complete.
-- [ ] Typed telemetry and independent consumers complete.
-- [ ] Video/VPN runtime deployment boundaries complete.
-- [ ] Build, typecheck and existing tests pass.
-- [ ] Isolated integration: initial snapshot, external mutation, runtime update,
-      reconnect, permission revocation, slow reader, removal, and old-route rejection.
-- [ ] Migration validates address collisions, model bindings and preserved history.
+- [x] Web query consumers own live subscription lifetimes; notification-only
+      SSE and query refetch timers are removed.
+- [x] Configuration events use committed PostgreSQL LISTEN notifications,
+      durable pending changes and bounded deadline recovery.
+- [x] Collector configuration and lease handling cover all three collectors
+      across two service instances. Lease renewal remains timer-driven and
+      configuration events remain event-driven.
+- [x] Channel/device model, UI and migration are implemented.
+- [x] Immutable point-model publication and historical interpretation are
+      implemented.
+- [x] Typed telemetry and independent consumers are implemented.
+- [x] Video and VPN runtime boundaries are implemented.
+- [x] Windows release build, frontend checks and isolated integration pass;
+      the native test exclusion is recorded below.
+
+## Verification
+
+The current isolated verification passes cross-instance external SQL changes,
+SSE reconnects, dual API behavior, slow paused readers with 4 MiB snapshots,
+outbox idle, rollback, future-dated, locked-row and listener-reconnect cases,
+configuration delivery to all three collectors across two instances, and
+bounded recovery after a trimmed wake hint. Architecture checks cover telemetry
+and EdgeNode protocol versions 2, 5 and 6. Frontend checks, lint, build and
+eight frontend tests pass, with 328 assertions. Command expiry also passes with
+a future deadline and no subsequent mutation or result notification.
+
+The native Windows suite excludes the known GB28181 SIP IPv6 environment
+failure. This is an environment limitation, not a claim of hardware or Linux
+runtime validation. Both Windows test processes stopped after PTY Ctrl-C with
+exit code 1; graceful shutdown has not been established by that result.
 
 Historical configurations that were never retained cannot be reconstructed. A
-migrated baseline must be identified as such, not represented as a historical fact.
+migrated baseline must be identified as such, not represented as a historical
+fact.
 
-## Verification update: 2026-09-07
+## Deployment boundary
 
-Release compilation and frontend type checking pass with Ruvia pinned to
-`50a8ed832f723574761433346a5a956ecf47d683`. The C++ suite reports 25/26 passing;
-GB28181 IPv6 UDP catalog delivery fails on this Windows host, where a separate
-plain IPv6 UDP loopback check also times out. This gate remains open.
-
-Disposable PostgreSQL/Redis integration passes for immutable revisions, shared
-serial channels and address uniqueness, guarded transport changes, independent
-latest/alert progress during a history-table lock, history recovery, atomic
-fanout retry, command idempotency and ambiguous timeout handling. The unified
-process passes readiness with API, GB28181 and VPN components enabled or
-disabled by their runtime feature switches; there are no role-specific routes.
-SSE integration passes initial snapshots, external commits, reconnect, deletion,
-permission revocation, and rejection of old JSON/query-notification paths.
-Protocol 2/5/6 WebSocket application liveness and legacy protobuf compatibility
-checks pass in the isolated fixture. Selected frontend tests report 23/23.
-
-Production cutover is not performed. Remaining release gates include public
-HTTP/2 proxy/browser verification, slow-reader and multiple-API-instance tests,
-Linux media/VPN runtime verification, and resolving the IPv6 test environment.
-Do not interpret local readiness as a complete production acceptance test.
+The production service is still at `1109161`; the earlier Ruvia `83292260`
+deployment remains the production baseline. The current cutover changes in
+this checkout have not been deployed. No production, hardware, cellular
+traffic or field EdgeNode validation is claimed here.

@@ -293,6 +293,7 @@ find_package(spdlog CONFIG REQUIRED)
 
 add_executable(iot-engine
     service/server.cpp
+    service/features/event/postgres-notifier.cpp
     service/common/packet-log.cpp
     service/features/gb28181/device/DeviceRegistry.cpp
     service/features/gb28181/media/StreamRegistry.cpp
@@ -308,6 +309,7 @@ target_include_directories(iot-engine PRIVATE
     "${EDGENODE_GENERATED_DIR}")
 target_link_libraries(iot-engine PRIVATE
     ruvia::web
+    PostgreSQL::PostgreSQL
     pugixml::pugixml
     spdlog::spdlog
     edgenode-protocol

@@ -2,7 +2,9 @@
 
 #include <future>
 #include <iostream>
+#include <cstddef>
 #include <memory>
+#include <stdexcept>
 #include <ruvia/web/WebWorker.h>
 #include "service/features/collector/stream.h"
 #include "service/features/live/bus.h"
@@ -23,6 +25,12 @@ ruvia::Task<void> publish(const Redis& redis, std::string_view topic) {
 // contains invalidations only; reconnect always resets to an authorized snapshot.
 class Runtime final {
   public:
+    explicit Runtime(std::size_t collectorWorkerCount)
+        : collectorWorkerCount_(collectorWorkerCount) {
+        if (collectorWorkerCount_ == 0)
+            throw std::invalid_argument("live runtime requires collector workers");
+    }
+
     void start(ruvia::WebWorkerHandle worker) {
         stop_ = std::make_unique<ruvia::StopSource>();
         auto ready = std::make_shared<std::promise<void>>();
@@ -56,6 +64,17 @@ class Runtime final {
     ~Runtime() { stop(); }
 
   private:
+    ruvia::Task<void> relayConfigNotifications(ruvia::WebWorkerContext& context) {
+        const auto createdAt = std::to_string(service::message::utcNowMilliseconds());
+        for (std::size_t workerIndex = 0; workerIndex < collectorWorkerCount_; ++workerIndex)
+            (void)co_await service::message::redis::publish(
+                context.redis(), service::message::configStream(workerIndex),
+                {{"message_id", service::message::nextMessageId()},
+                 {"worker_id", std::to_string(workerIndex)},
+                 {"created_at_ms", createdAt}},
+                10000);
+    }
+
     ruvia::Task<void> expireSessions(ruvia::WebWorkerContext& context,
                                     std::shared_ptr<std::promise<void>> done) {
         const auto stop = ruvia::combineStopTokens(context.stopToken(), stop_->token());
@@ -84,13 +103,16 @@ class Runtime final {
             co_await service::message::redis::ensureGroup(redis, kChanges, group);
             ready->set_value();
             initialized = true;
-            bool recovering = false;
+            bool recovering = true;
             while (!stop.stopRequested()) {
                 bool failed = false;
                 try {
                     if (recovering) {
                         co_await service::message::redis::ensureGroup(redis, kChanges, group);
                         bus().publish("*");
+                        // A reconnect can miss the invalidation while the consumer is down.
+                        // Replaying the local config shards repairs every Collector worker.
+                        co_await relayConfigNotifications(context);
                         // Pending notifications contain no business payload;
                         // a full invalidation repairs their effects safely.
                         const auto pending = co_await service::message::redis::readGroup(
@@ -103,7 +125,11 @@ class Runtime final {
                     const auto changes = co_await service::message::redis::readGroupBlocking(
                         redis, kChanges, group, "fanout", stop, 256);
                     for (const auto& change : changes) {
-                        bus().publish(change.get("topic"));
+                        const auto topic = change.get("topic");
+                        if (topic == "runtime-config")
+                            co_await relayConfigNotifications(context);
+                        else
+                            bus().publish(topic);
                         // Shared stream: acknowledge but never delete entries
                         // needed by the other process consumer groups.
                         co_await service::message::redis::acknowledge(
@@ -132,6 +158,7 @@ class Runtime final {
     std::unique_ptr<ruvia::StopSource> stop_;
     std::future<void> stopped_;
     std::future<void> leasesStopped_;
+    std::size_t collectorWorkerCount_ = 0;
 };
 
 } // namespace service::live

@@ -24,7 +24,9 @@ SL651 测站地址采用 10 位十进制规范文本，原有短地址在迁移�
 
 每次进程启动产生新的实例 UUID。连接寻址为实例 UUID、Worker 序号、会话 epoch。重启不会重新占用前一进程的连接地址。遥测、指令结果和 Edge 入站采用 64 个固定逻辑分区，服务 Worker 数变化不改变分区名称。
 
-采集链路使用 Redis 15 秒租约，每 5 秒刷新，发送前验证所有权。新实例不清除其他实例的实时状态；接管后旧连接必须重连。各实例每 5 秒检查配置与租约，内部唤醒丢失有有界轮询兜底。Redis 消费者包含实例 UUID；恢复先读自己的 pending，其他消费者的消息至少空闲 60 秒才接管。
+采集链路使用 Redis 15 秒租约，每 5 秒刷新，发送前验证所有权。新实例不清除其他实例的实时状态；接管后旧连接必须重连。配置投影完成后，通过运行时事件唤醒各实例的所有采集 Worker；5 秒租约维护不再重复加载配置。启动、重连和 60 秒恢复期限会重新核对当前版本，修复被裁剪或丢失的唤醒提示。Redis 消费者包含实例 UUID；恢复先读自己的 pending，其他消费者的消息至少空闲 60 秒才接管。
+
+Outbox 使用独立 PostgreSQL LISTEN 连接接收事务提交通知，启动和重连后补查持久化待发记录。空闲队列不再按 100 毫秒派发查询；未来可用记录、锁竞争及失败重试各自安排期限。指令结果处理按最近尝试截止时间唤醒，不再执行空闲 250 毫秒扫描。零行更新不会产生查询变更事件。统计采集、租约续期、协议采集周期和丢失提示恢复仍有明确用途的计时器。
 
 这提供平台侧所有权检查，不等于在任意网络分区下对没有 fencing 能力的物理设备实现严格单写事务。公网入口、TCP Server 流量切换、VPN/GB28181 等服务的部署归属仍需在部署配置中落实。
 
@@ -41,7 +43,9 @@ SL651 测站地址采用 10 位十进制规范文本，原有短地址在迁移�
 
 `ctest --test-dir build -C Release --output-on-failure` 覆盖原有协议及新增测站地址隔离、实例地址、命令未知状态和队列边界用例。
 
-`bun tests/architecture-integration.ts` 使用固定隔离端口：HTTP 55102、PostgreSQL 55439（iot_architecture / architecture_test）、Redis 56439。运行前应在隔离目录启动迁移完成的新程序。测试通过真实 HTTP、SQL 和 Redis 验证并发幂等、状态持久化、未知结果及迟到确认、重复结果和队列背压；不会使用默认生产端口。
+`bun tests/architecture-integration.ts` 默认使用隔离端口：HTTP 55102、PostgreSQL 55439（iot_architecture / architecture_test）、Redis 56439。可通过 `TEST_BASE_URL`、`ARCHITECTURE_DATABASE_URL`、`ARCHITECTURE_REDIS_URL` 指定其他本机隔离实例。运行前应在隔离目录启动迁移完成的新程序。测试通过真实 HTTP、SQL 和 Redis 验证并发幂等、状态持久化、自然到期未知结果及迟到确认、重复结果和队列背压；不会使用默认生产端口。
+
+2026-09-09 收尾验证新增 `outbox-notification-integration.ts`、`config-notification-integration.ts` 和 `live-query-multi-instance-integration.ts`，通过空闲无派发轮询、提交与回滚、未来期限、锁释放、通知连接重建、双实例配置广播、丢失提示恢复及暂停读取的 4 MiB 完整 SSE 快照用例。前端类型检查、lint、构建及 8 项测试（328 个断言）通过。生产基线已部署到 `1109161`（Ruvia `83292260`）；本次事件唤醒收尾尚未部署，详见 `architecture-cutover-plan.md`。
 
 ## 边缘节点流量
 

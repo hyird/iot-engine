@@ -366,13 +366,16 @@ class Worker final {
             co_await message::redis::ensureGroup(redis_, commandStream(false), commandGroup());
             co_await message::redis::ensureGroup(redis_, controlStream(), collectorGroup());
             loadedConfigVersion_ = co_await config::activeVersion(redis_);
-            auto snapshot = co_await ownership::retain(redis_,
-                co_await config::load(redis_, loadedConfigVersion_));
+            desiredConfigVersion_ = loadedConfigVersion_;
+            desiredSnapshot_ = co_await config::load(redis_, desiredConfigVersion_);
+            auto snapshot = co_await ownership::retain(redis_, desiredSnapshot_);
             engine_.reload(snapshot);
             tcp_.reload(snapshot);
             loadedSnapshot_ = std::move(snapshot);
             co_await publishRuntimeState();
             ready->set_value();
+            nextOwnershipRefresh_ = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            nextConfigRecovery_ = std::chrono::steady_clock::now() + std::chrono::seconds(60);
             scheduleTick(std::chrono::milliseconds(0));
         } catch (...) {
             if (runtimeResetOwner_ && !runtimeResetSettled_) {
@@ -452,9 +455,24 @@ class Worker final {
         bool changed = false;
         const auto now = std::chrono::steady_clock::now();
         if (!messages.empty() || now >= nextOwnershipRefresh_) {
-            nextOwnershipRefresh_ = now + std::chrono::seconds(5);
-            const auto version = co_await config::activeVersion(redis_);
-            auto snapshot = co_await ownership::retain(redis_, co_await config::load(redis_, version));
+            if (now >= nextOwnershipRefresh_)
+                nextOwnershipRefresh_ = now + std::chrono::seconds(5);
+            // Normal changes arrive through the shared invalidation stream.
+            // Its retention is bounded, so a slow connected reader can miss a
+            // trimmed hint without a disconnect. Check the version once per
+            // recovery window, not on every five-second lease renewal.
+            const bool recoverConfig = now >= nextConfigRecovery_;
+            const auto version = messages.empty() && !recoverConfig
+                                     ? desiredConfigVersion_
+                                     : co_await config::activeVersion(redis_);
+            if (version != desiredConfigVersion_) {
+                auto desired = co_await config::load(redis_, version);
+                desiredSnapshot_ = std::move(desired);
+                desiredConfigVersion_ = version;
+            }
+            if (!messages.empty() || recoverConfig)
+                nextConfigRecovery_ = now + std::chrono::seconds(60);
+            auto snapshot = co_await ownership::retain(redis_, desiredSnapshot_);
             if (version != loadedConfigVersion_ || config::signature(snapshot) != config::signature(loadedSnapshot_)) {
                 const auto plan = planRuntimeReconcile(loadedSnapshot_, snapshot);
                 tcp_.reconcile(snapshot, plan);
@@ -483,7 +501,7 @@ class Worker final {
                                         ":worker:" + service::runtime::instanceId() + ":" + std::to_string(workerIndex_));
                 }
                 loadedSnapshot_ = std::move(snapshot);
-                loadedConfigVersion_ = version;
+                loadedConfigVersion_ = desiredConfigVersion_;
                 co_await publishRuntimeState();
                 changed = true;
             }
@@ -1147,8 +1165,12 @@ class Worker final {
                 configStream(),       controlStream(), commandStream(true),
                 commandStream(false), ingressStream(), egressStream(),
                 linkEventStream()};
+            const auto until = std::max(
+                std::chrono::milliseconds(1),
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    nextOwnershipRefresh_ - std::chrono::steady_clock::now()));
             auto batches = co_await message::redis::readGroupManyBlockingUntil(
-                redis_, streams, collectorGroup(), consumer_, scope_.stopToken(), std::chrono::seconds(1), 1);
+                redis_, streams, collectorGroup(), consumer_, scope_.stopToken(), until, 1);
             for (auto& batch : batches) {
                 auto& ready = readyMessages_[batch.stream];
                 ready.insert(ready.end(), std::make_move_iterator(batch.messages.begin()),
@@ -1626,7 +1648,10 @@ return 1
     Timer::Token tickToken_ = 0;
     std::string lastCoordinatorError_;
     std::string loadedConfigVersion_;
+    std::string desiredConfigVersion_;
     std::chrono::steady_clock::time_point nextOwnershipRefresh_{};
+    std::chrono::steady_clock::time_point nextConfigRecovery_{};
+    RuntimeSnapshot desiredSnapshot_;
     RuntimeSnapshot loadedSnapshot_;
     bool configRecovering_ = true;
     bool highRecovering_ = true;

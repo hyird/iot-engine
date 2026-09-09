@@ -1,7 +1,8 @@
+import { databaseUrl, redisUrl, apiBase } from './architecture-fixture';
 // Real WebSocket probes against the disposable fixture; no firmware is changed.
 import assert from 'node:assert/strict';
-const db=new Bun.SQL('postgres://architecture_test@127.0.0.1:55439/iot_architecture');
-const redis=new Bun.RedisClient('redis://127.0.0.1:56439');
+const db=new Bun.SQL(databaseUrl);
+const redis=new Bun.RedisClient(redisUrl);
 const platform='00000000-0000-7000-8000-000000000001';
 const bytes=(id:string)=>Buffer.from(id.replaceAll('-',''),'hex');
 function integer(n:bigint|number) {
@@ -34,7 +35,7 @@ try {
         const node=crypto.randomUUID(),identity=imei();
         await db`INSERT INTO edge_node(id,platform_id,imei,enrollment_status) VALUES(${node},${platform},${identity},'approved')`;
         await redis.send('SET',[`iot:edge:auth:${identity}`,`${node}|approved`]);
-        const socket=new WebSocket('ws://127.0.0.1:55102/edge/v1/connect');socket.binaryType='arraybuffer';
+        const socket=new WebSocket(apiBase.replace('http:', 'ws:') + '/edge/v1/connect');socket.binaryType='arraybuffer';
         const probe={node,imei:identity,socket,pings:0,closed:false,version,respond};probes.push(probe);
         let sequence=1n,epoch=0n;
         const envelope=(tag:number,payload:Buffer)=>Buffer.concat([
