@@ -18,6 +18,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <memory_resource>
@@ -182,6 +183,14 @@ int main() {
 #ifdef RUVIA_ENABLE_REDIS
     auto redis = context.redis();
 #endif
+    const auto adjacentProbes = [&](const void* first, const void* second) {
+        const auto begin = reinterpret_cast<std::uintptr_t>(fixture.requestBuffer.data());
+        const auto end = begin + fixture.requestBuffer.size();
+        const auto left = reinterpret_cast<std::uintptr_t>(first);
+        const auto right = reinterpret_cast<std::uintptr_t>(second);
+        return left >= begin && left < end && right >= begin && right < end &&
+               (left + 1 == right || right + 1 == left);
+    };
     for (int index = 0; index != 2000; ++index) {
         auto* before = static_cast<std::byte*>(fixture.requestMemory.resource()->allocate(1, 1));
 #ifdef RUVIA_ENABLE_DATABASE
@@ -199,8 +208,15 @@ int main() {
         }
 #endif
         auto* after = static_cast<std::byte*>(fixture.requestMemory.resource()->allocate(1, 1));
-        check(after == before + 1, "long lived operation advanced request arena");
+        // A monotonic resource may consume its buffer from either end (libc++
+        // allocates downwards). The probes must remain adjacent either way.
+        check(adjacentProbes(before, after),
+            "long lived operation advanced request arena");
     }
+    const auto* before = fixture.requestMemory.resource()->allocate(1, 1);
+    (void)fixture.requestMemory.resource()->allocate(2048, 1);
+    const auto* after = fixture.requestMemory.resource()->allocate(1, 1);
+    check(!adjacentProbes(before, after), "arena probe missed an injected request allocation");
 #endif
     resultStorageIsReclaimed();
     return 0;
