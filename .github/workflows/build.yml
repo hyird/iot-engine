@@ -64,8 +64,8 @@ jobs:
     name: Ubuntu build
     runs-on: ubuntu-24.04
     env:
-      CC: gcc-14
-      CXX: g++-14
+      CC: clang-19
+      CXX: clang++-19
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.cache/vcpkg/archives
     steps:
@@ -77,11 +77,11 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-14 g++-14 ninja-build nasm curl zip unzip tar xz-utils
-          gcc-14 --version
-          g++-14 --version
+          sudo apt-get install -y clang-19 g++-14 ninja-build nasm curl zip unzip tar xz-utils
+          clang-19 --version
+          clang++-19 --version
           printf '#include <expected>\nint main() { std::expected<int, int> value{42}; return *value == 42 ? 0 : 1; }\n' > /tmp/iot-cxx23.cpp
-          g++-14 -std=c++23 /tmp/iot-cxx23.cpp -o /tmp/iot-cxx23
+          clang++-19 -std=c++23 /tmp/iot-cxx23.cpp -o /tmp/iot-cxx23
           /tmp/iot-cxx23
 
       - name: Set up Bun
@@ -97,9 +97,9 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-gcc14-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**', 'triplets/**', 'CMakeLists.txt') }}
+          key: vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-clang19-gcc14-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**', 'triplets/**', 'CMakeLists.txt') }}
           restore-keys: |
-            vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-gcc14-${{ env.VCPKG_COMMIT }}-
+            vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-clang19-gcc14-${{ env.VCPKG_COMMIT }}-
 
       - name: Bootstrap vcpkg
         run: |
