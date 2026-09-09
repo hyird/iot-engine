@@ -49,8 +49,9 @@ plain IPv6 UDP loopback check also times out. This gate remains open.
 Disposable PostgreSQL/Redis integration passes for immutable revisions, shared
 serial channels and address uniqueness, guarded transport changes, independent
 latest/alert progress during a history-table lock, history recovery, atomic
-fanout retry, command idempotency and ambiguous timeout handling. API/media/VPN
-processes each pass readiness and reject routes belonging to other roles.
+fanout retry, command idempotency and ambiguous timeout handling. The unified
+process passes readiness with API, GB28181 and VPN components enabled or
+disabled by their runtime feature switches; there are no role-specific routes.
 SSE integration passes initial snapshots, external commits, reconnect, deletion,
 permission revocation, and rejection of old JSON/query-notification paths.
 Protocol 2/5/6 WebSocket application liveness and legacy protobuf compatibility
