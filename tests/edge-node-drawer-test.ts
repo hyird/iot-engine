@@ -144,7 +144,8 @@ test('Windows VPN configurations contain only active virtual LAN routes', () => 
 });
 
 test('Hub firewall still isolates Windows clients from unauthorized Edge tunnels', () => {
-    expect(vpnDomain).toContain('jsonb_agg(host(edge_peer.assigned_ipv4)');
+    expect(vpnDomain).toContain('jsonb_agg(access.edge_address');
+    expect(vpnDomain).toContain('FROM vpn_effective_edge_access access WHERE access.peer_id = p.id');
     expect(vpnDomain).toContain(
         '.edgeAddresses = detail::textArrayJson(detail::rowValue(row, 5))'
     );
