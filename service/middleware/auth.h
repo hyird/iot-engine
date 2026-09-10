@@ -1,8 +1,12 @@
 #pragma once
 
+#include <string>
+#include <string_view>
+
 #include <ruvia/web/Controller.h>
 
 #include "service/common/http.h"
+#include "service/common/uuid.h"
 #include "service/utils/jwt.h"
 
 namespace service::middleware {

@@ -1,6 +1,6 @@
 #include <iostream>
 #include <stdexcept>
-#include "service/features/telemetry/contract.h"
+#include "service/features/telemetry/telemetry.protocol.h"
 
 void require(bool value, const char* message) {
     if (!value) throw std::runtime_error(message);

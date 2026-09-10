@@ -6,30 +6,13 @@
 
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
+#include "service/modules/system/auth/auth.service.h"
 
 namespace service::middleware {
 
 inline ruvia::Task<void> requirePermission(ruvia::Context& c, std::string_view permission) {
     const auto principal = requireAuth(c);
-    const auto rows =
-        co_await c.db().query(R"sql(
-SELECT EXISTS (
-    SELECT 1
-    FROM sys_user_role ur
-    JOIN sys_user u ON u.id = ur.user_id
-    JOIN sys_role r ON r.id = ur.role_id
-    WHERE ur.user_id = $1
-      AND u.deleted_at IS NULL
-      AND u.status = 'enabled'
-      AND r.deleted_at IS NULL
-      AND r.status = 'enabled'
-      AND (r.code = 'superadmin' OR r.permissions ? '*' OR r.permissions ? $2)
-))sql",
-                              service::common::dbParams(principal.userId, permission));
-    const bool allowed = !rows.empty() && !rows.front().empty() &&
-                         rows.front()[0].value().value_or(std::string_view{}) == "t";
-    if (!allowed)
-        service::common::fail(service::common::kPermissionDeniedErrorCode, "无权限", 403);
+    co_await service::auth::AuthService::requirePermission(c, principal.userId, permission);
 }
 
 } // namespace service::middleware

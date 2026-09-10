@@ -11,9 +11,9 @@ void require(bool condition, const char* message) {
         throw std::runtime_error(message);
 }
 
-std::string webhookSource() {
+std::string webhookSource(std::string_view relativePath) {
     auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
-                "service/features/access/webhook.h";
+                std::filesystem::path(relativePath);
     std::ifstream input(path, std::ios::binary);
     require(input.good(), "cannot open access webhook source");
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
@@ -43,10 +43,11 @@ void requireCanonicalBooleanPointValues(std::string_view source) {
 
 int main() {
     try {
-        const auto source = webhookSource();
-        requireNoUnsafeStoll(source);
-        requireUnambiguousTlsVerificationFlag(source);
-        requireCanonicalBooleanPointValues(source);
+        const auto serviceSource = webhookSource("service/features/access/access.service.h");
+        const auto runtimeSource = webhookSource("service/features/access/access.runtime.h");
+        requireNoUnsafeStoll(serviceSource);
+        requireUnambiguousTlsVerificationFlag(serviceSource);
+        requireCanonicalBooleanPointValues(runtimeSource);
         std::cout << "access webhook tests passed\n";
         return 0;
     } catch (const std::exception& error) {

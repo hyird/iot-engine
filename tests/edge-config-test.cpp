@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "service/config/schema.h"
-#include "service/features/edge/config.h"
+#include "service/features/edge/edge.service.h"
 
 namespace {
 

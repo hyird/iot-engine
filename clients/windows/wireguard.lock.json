@@ -1,0 +1,16 @@
+{
+  "repository": "https://git.zx2c4.com/wireguard-windows",
+  "revision": "4e6726c23ae9c5cb58e0c9910f3b7515621d133d",
+  "go": {
+    "url": "https://download.wireguard.com/windows-toolchain/distfiles/go1.26.2-windows_amd64_2026-04-20.zip",
+    "sha256": "79b5d5ff6f2718dfe25e199cda314d174ecf5bb19f0f2d777aec089d09a12620"
+  },
+  "mingw": {
+    "url": "https://download.wireguard.com/windows-toolchain/distfiles/llvm-mingw-20260311-ucrt-x86_64.zip",
+    "sha256": "dd4c67d98959479c7be2fb6709ba074475991590848cb9d0eb2620be06b182e1"
+  },
+  "driver": {
+    "url": "https://download.wireguard.com/wireguard-nt/wireguard-nt-1.1.zip",
+    "sha256": "dceb30a9bc4be48cce0f74160fc88a585a2c2627366e8f846fc6658f9038dace"
+  }
+}

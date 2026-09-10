@@ -28,7 +28,7 @@ class SchemaMigration final {
     std::string sql_;
 };
 
-inline const std::array<SchemaMigration, 44> kSchemaMigrations{{
+inline const std::array<SchemaMigration, 45> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
@@ -1787,6 +1787,15 @@ END LOOP;
 CREATE TRIGGER command_pending_notification
 AFTER INSERT OR UPDATE OF deadline ON command_attempt
 FOR EACH ROW EXECUTE FUNCTION notify_outbox_pending();
+END $schema$;
+)sql"},
+    {"0044_gb28181_projection_cursor", R"sql(
+DO $schema$
+BEGIN
+ALTER TABLE gb28181_device
+    ADD COLUMN projection_cursor NUMERIC(40,0) NOT NULL DEFAULT 0;
+ALTER TABLE gb28181_stream
+    ADD COLUMN projection_cursor NUMERIC(40,0) NOT NULL DEFAULT 0;
 END $schema$;
 )sql"},
 }};

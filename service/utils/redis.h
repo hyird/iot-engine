@@ -1,0 +1,756 @@
+#pragma once
+
+#include <algorithm>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <span>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include <ruvia/core/StopToken.h>
+#include <ruvia/core/Task.h>
+#include <ruvia/web/redis/Redis.h>
+#include <ruvia/web/redis/RedisTypes.h>
+
+#include "service/common/message.h"
+
+namespace service::message::redis {
+
+template <typename Redis>
+ruvia::Task<ruvia::RedisValue> command(const Redis& redis, const std::vector<std::string>& args) {
+    std::vector<std::string_view> views;
+    views.reserve(args.size());
+    for (const auto& arg : args) {
+        views.emplace_back(arg);
+    }
+    co_return co_await redis.command(std::span<const std::string_view>(views));
+}
+
+[[noreturn]] inline void throwValue(std::string_view operation, const ruvia::RedisValue& value) {
+    std::string message(operation);
+    message += " failed";
+    if (value.kind() == ruvia::RedisValue::Kind::kError) {
+        message += ": ";
+        message.append(value.error());
+    }
+    throw std::runtime_error(message);
+}
+
+// ---- 消费组 / 读取 ----
+
+template <typename Redis>
+ruvia::Task<void> ensureGroup(const Redis& redis, std::string_view stream, std::string_view group) {
+    const auto reply = co_await command(
+        redis,
+        { "XGROUP", "CREATE", std::string(stream), std::string(group), "0", "MKSTREAM" }
+    );
+    if (reply.kind() == ruvia::RedisValue::Kind::kError &&
+        !reply.error().starts_with("BUSYGROUP")) {
+        throwValue("XGROUP CREATE", reply);
+    }
+}
+
+// A discovered stream may disappear while recovery is being prepared.  Create
+// its consumer group only when the stream still exists; this keeps recovery
+// from resurrecting a stream that was already drained and removed.
+template <typename Redis>
+ruvia::Task<bool> ensureGroupIfPresent(const Redis& redis, std::string_view stream, std::string_view group) {
+    const auto reply = co_await command(
+        redis,
+        { "XGROUP", "CREATE", std::string(stream), std::string(group), "0" }
+    );
+    if (reply.kind() == ruvia::RedisValue::Kind::kError) {
+        const auto error = reply.error();
+        if (error.starts_with("BUSYGROUP") ||
+            error.find("requires the key to exist") != std::string_view::npos ||
+            error.find("no such key") != std::string_view::npos) {
+            co_return error.starts_with("BUSYGROUP");
+        }
+        throwValue("XGROUP CREATE discovered stream", reply);
+    }
+    if (reply.kind() != ruvia::RedisValue::Kind::kString) {
+        throwValue("XGROUP CREATE discovered stream", reply);
+    }
+    co_return true;
+}
+
+struct StreamBatch final {
+    std::string stream;
+    std::vector<service::message::StreamMessage> messages;
+};
+
+template <typename Redis>
+ruvia::Task<std::vector<StreamBatch>>
+readGroupManyImpl(const Redis& redis, std::span<const std::string> streams, std::string_view group, std::string_view consumer, std::string_view id, std::optional<std::chrono::milliseconds> block, std::size_t count);
+
+template <typename Redis>
+ruvia::Task<std::vector<StreamBatch>>
+claimGroupMany(
+    const Redis& redis,
+    std::span<const std::string> streams,
+    std::string_view group,
+    std::string_view consumer,
+    std::size_t count = 100,
+    std::chrono::milliseconds minIdle = std::chrono::minutes(1)
+) {
+    auto own = co_await readGroupManyImpl(redis, streams, group, consumer, "0", std::nullopt, count);
+    if (!own.empty()) {
+        co_return own;
+    }
+    std::vector<StreamBatch> batches;
+    for (const auto& stream : streams) {
+        const auto reply = co_await command(
+            redis,
+            { "XAUTOCLAIM",
+              stream,
+              std::string(group),
+              std::string(consumer),
+              std::to_string(std::max<std::int64_t>(0, minIdle.count())),
+              "0-0",
+              "COUNT",
+              std::to_string(count) }
+        );
+        if (reply.kind() != ruvia::RedisValue::Kind::kArray || reply.array().size() < 2) {
+            throwValue("XAUTOCLAIM", reply);
+        }
+        const auto& entries = reply.array()[1];
+        if (entries.kind() != ruvia::RedisValue::Kind::kArray) {
+            throwValue("XAUTOCLAIM entries", reply);
+        }
+        StreamBatch batch;
+        batch.stream = stream;
+        batch.messages.reserve(entries.array().size());
+        for (const auto& entry : entries.array()) {
+            if (entry.kind() != ruvia::RedisValue::Kind::kArray || entry.array().size() != 2) {
+                continue;
+            }
+            const auto& entryId = entry.array()[0];
+            const auto& fieldArray = entry.array()[1];
+            if (entryId.kind() != ruvia::RedisValue::Kind::kString ||
+                fieldArray.kind() != ruvia::RedisValue::Kind::kArray) {
+                continue;
+            }
+            service::message::StreamMessage message;
+            message.id.assign(entryId.string());
+            const auto fieldValues = fieldArray.array();
+            for (std::size_t index = 0; index + 1 < fieldValues.size(); index += 2) {
+                const auto& name = fieldValues[index];
+                const auto& value = fieldValues[index + 1];
+                if (name.kind() != ruvia::RedisValue::Kind::kString ||
+                    value.kind() != ruvia::RedisValue::Kind::kString) {
+                    continue;
+                }
+                message.fields.push_back(
+                    { std::string(name.string()), std::string(value.string()) }
+                );
+            }
+            batch.messages.push_back(std::move(message));
+        }
+        if (!batch.messages.empty()) {
+            batches.push_back(std::move(batch));
+        }
+    }
+    co_return batches;
+}
+
+template <typename Redis>
+ruvia::Task<std::vector<StreamBatch>>
+readGroupManyImpl(const Redis& redis, std::span<const std::string> streams, std::string_view group, std::string_view consumer, std::string_view id, std::optional<std::chrono::milliseconds> block, std::size_t count) {
+    if (streams.empty()) {
+        co_return std::vector<StreamBatch>{};
+    }
+    std::vector<std::string> args{ "XREADGROUP", "GROUP", std::string(group), std::string(consumer), "COUNT", std::to_string(count) };
+    if (block.has_value()) {
+        args.emplace_back("BLOCK");
+        args.push_back(std::to_string(block->count()));
+    }
+    args.emplace_back("STREAMS");
+    args.insert(args.end(), streams.begin(), streams.end());
+    for (std::size_t index = 0; index < streams.size(); ++index) {
+        args.emplace_back(id);
+    }
+    const auto reply = co_await command(redis, args);
+    std::vector<StreamBatch> batches;
+    if (reply.null()) {
+        co_return batches;
+    }
+    if (reply.kind() != ruvia::RedisValue::Kind::kArray) {
+        throwValue("XREADGROUP", reply);
+    }
+    for (const auto& streamReply : reply.array()) {
+        if (streamReply.kind() != ruvia::RedisValue::Kind::kArray ||
+            streamReply.array().size() != 2) {
+            continue;
+        }
+        const auto& streamName = streamReply.array()[0];
+        const auto& entries = streamReply.array()[1];
+        if (streamName.kind() != ruvia::RedisValue::Kind::kString ||
+            entries.kind() != ruvia::RedisValue::Kind::kArray) {
+            continue;
+        }
+        StreamBatch batch;
+        batch.stream.assign(streamName.string());
+        batch.messages.reserve(entries.array().size());
+        for (const auto& entry : entries.array()) {
+            if (entry.kind() != ruvia::RedisValue::Kind::kArray || entry.array().size() != 2) {
+                continue;
+            }
+            const auto& entryId = entry.array()[0];
+            const auto& fieldArray = entry.array()[1];
+            if (entryId.kind() != ruvia::RedisValue::Kind::kString ||
+                fieldArray.kind() != ruvia::RedisValue::Kind::kArray) {
+                continue;
+            }
+            service::message::StreamMessage message;
+            message.id.assign(entryId.string());
+            const auto fieldValues = fieldArray.array();
+            for (std::size_t index = 0; index + 1 < fieldValues.size(); index += 2) {
+                const auto& name = fieldValues[index];
+                const auto& value = fieldValues[index + 1];
+                if (name.kind() != ruvia::RedisValue::Kind::kString ||
+                    value.kind() != ruvia::RedisValue::Kind::kString) {
+                    continue;
+                }
+                message.fields.push_back(
+                    { std::string(name.string()), std::string(value.string()) }
+                );
+            }
+            batch.messages.push_back(std::move(message));
+        }
+        if (!batch.messages.empty()) {
+            batches.push_back(std::move(batch));
+        }
+    }
+    co_return batches;
+}
+
+template <typename Redis>
+ruvia::Task<std::vector<StreamBatch>>
+readGroupMany(const Redis& redis, std::span<const std::string> streams, std::string_view group, std::string_view consumer, std::string_view id, std::size_t count = 100) {
+    auto batches = co_await readGroupManyImpl(redis, streams, group, consumer, id, std::nullopt, count);
+    if (batches.empty() && id == ">") {
+        co_return co_await claimGroupMany(redis, streams, group, consumer, count);
+    }
+    co_return batches;
+}
+
+template <typename Redis>
+ruvia::Task<std::vector<StreamBatch>>
+readGroupManyBlocking(const Redis& redis, std::span<const std::string> streams, std::string_view group, std::string_view consumer, std::chrono::milliseconds timeout = std::chrono::milliseconds(0), std::size_t count = 100) {
+    co_return co_await readGroupManyImpl(redis, streams, group, consumer, ">", timeout, count);
+}
+
+template <typename Redis>
+ruvia::Task<std::vector<StreamBatch>>
+readGroupManyBlockingUntil(const Redis& redis, std::span<const std::string> streams, std::string_view group, std::string_view consumer, ruvia::StopToken stopToken, std::optional<std::chrono::milliseconds> timeout, std::size_t count = 100) {
+    if (streams.empty()) {
+        co_return std::vector<StreamBatch>{};
+    }
+
+    std::vector<ruvia::RedisStreamReadView> reads;
+    reads.reserve(streams.size());
+    for (const auto& stream : streams) {
+        reads.push_back({ .stream = stream, .id = ">" });
+    }
+
+    ruvia::RedisXReadGroupOptions options;
+    options.count = count;
+    options.block = timeout.has_value()
+        ? ruvia::RedisBlockWait::forDuration(*timeout)
+        : ruvia::RedisBlockWait::indefinitely();
+    auto result = co_await redis.withOptions({ .stopToken = std::move(stopToken) })
+                      .xreadGroup(group, consumer, reads, std::move(options));
+
+    std::vector<StreamBatch> batches;
+    if (!result.has_value()) {
+        co_return batches;
+    }
+    batches.reserve(result->streams().size());
+    for (const auto& stream : result->streams()) {
+        StreamBatch batch;
+        batch.stream.assign(stream.stream());
+        batch.messages.reserve(stream.entries().size());
+        for (const auto& entry : stream.entries()) {
+            service::message::StreamMessage message;
+            message.id.assign(entry.id());
+            message.fields.reserve(entry.fields().size());
+            for (const auto& field : entry.fields()) {
+                message.fields.push_back(
+                    { std::string(field.key()), std::string(field.value()) }
+                );
+            }
+            batch.messages.push_back(std::move(message));
+        }
+        if (!batch.messages.empty()) {
+            batches.push_back(std::move(batch));
+        }
+    }
+    co_return batches;
+}
+
+template <typename Redis>
+ruvia::Task<std::vector<StreamBatch>>
+readGroupManyBlocking(const Redis& redis, std::span<const std::string> streams, std::string_view group, std::string_view consumer, ruvia::StopToken stopToken, std::size_t count = 100) {
+    co_return co_await readGroupManyBlockingUntil(redis, streams, group, consumer, std::move(stopToken), std::nullopt, count);
+}
+
+template <typename Redis>
+ruvia::Task<std::vector<service::message::StreamMessage>>
+readGroup(const Redis& redis, std::string_view stream, std::string_view group, std::string_view consumer, std::string_view id, std::chrono::milliseconds block, std::size_t count = 100) {
+    const std::vector<std::string> streams{ std::string(stream) };
+    auto batches = co_await readGroupManyImpl(
+        redis,
+        streams,
+        group,
+        consumer,
+        id,
+        block.count() > 0 ? std::optional<std::chrono::milliseconds>(block) : std::nullopt,
+        count
+    );
+    if (batches.empty()) {
+        co_return std::vector<service::message::StreamMessage>{};
+    }
+    co_return std::move(batches.front().messages);
+}
+
+template <typename Redis>
+ruvia::Task<std::vector<service::message::StreamMessage>>
+readGroupBlocking(const Redis& redis, std::string_view stream, std::string_view group, std::string_view consumer, std::chrono::milliseconds timeout = std::chrono::milliseconds(0), std::size_t count = 100) {
+    const std::vector<std::string> streams{ std::string(stream) };
+    auto batches = co_await readGroupManyBlocking(redis, streams, group, consumer, timeout, count);
+    if (batches.empty()) {
+        co_return std::vector<service::message::StreamMessage>{};
+    }
+    co_return std::move(batches.front().messages);
+}
+
+template <typename Redis>
+ruvia::Task<std::vector<service::message::StreamMessage>>
+readGroupBlockingUntil(const Redis& redis, std::string_view stream, std::string_view group, std::string_view consumer, ruvia::StopToken stopToken, std::optional<std::chrono::milliseconds> timeout, std::size_t count = 100) {
+    const std::vector<std::string> streams{ std::string(stream) };
+    auto batches = co_await readGroupManyBlockingUntil(
+        redis,
+        streams,
+        group,
+        consumer,
+        std::move(stopToken),
+        timeout,
+        count
+    );
+    if (batches.empty()) {
+        co_return std::vector<service::message::StreamMessage>{};
+    }
+    co_return std::move(batches.front().messages);
+}
+
+template <typename Redis>
+ruvia::Task<std::vector<service::message::StreamMessage>>
+readGroupBlocking(const Redis& redis, std::string_view stream, std::string_view group, std::string_view consumer, ruvia::StopToken stopToken, std::size_t count = 100) {
+    co_return co_await readGroupBlockingUntil(redis, stream, group, consumer, std::move(stopToken), std::nullopt, count);
+}
+
+template <typename Redis>
+ruvia::Task<void> acknowledge(const Redis& redis, std::string_view stream, std::string_view group, std::string_view id) {
+    const auto reply =
+        co_await command(redis, { "XACK", std::string(stream), std::string(group), std::string(id) });
+    if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
+        throwValue("XACK", reply);
+    }
+}
+
+template <typename Replies>
+void requirePipelineSuccess(std::string_view operation, const Replies& replies) {
+    for (const auto& reply : replies) {
+        if (reply.kind() == ruvia::RedisValue::Kind::kError) {
+            throwValue(operation, reply);
+        }
+    }
+}
+
+} // namespace service::message::redis
+
+namespace service::message::redis {
+using ruvia::RedisValue;
+
+template <typename Pipeline>
+void queueAdd(Pipeline& pipeline, std::string_view stream, const std::vector<StreamField>& fields, std::size_t maxLength = 100000) {
+    if (fields.empty()) {
+        throw std::invalid_argument("Redis Stream message must contain fields");
+    }
+    const auto maximum = std::to_string(maxLength);
+    std::vector<std::string_view> args{ "XADD", stream, "MAXLEN", "~", maximum, "*" };
+    args.reserve(args.size() + fields.size() * 2);
+    for (const auto& field : fields) {
+        args.push_back(field.name);
+        args.push_back(field.value);
+    }
+    // RedisPipeline copies every argument synchronously.
+    pipeline.command(args);
+}
+
+template <typename Pipeline>
+void queueEval(Pipeline& pipeline, std::string_view script, std::span<const std::string_view> keys, std::span<const std::string_view> arguments) {
+    const auto keyCount = std::to_string(keys.size());
+    std::vector<std::string_view> command{ "EVAL", script, keyCount };
+    command.reserve(command.size() + keys.size() + arguments.size());
+    command.insert(command.end(), keys.begin(), keys.end());
+    command.insert(command.end(), arguments.begin(), arguments.end());
+    // RedisPipeline copies every argument synchronously.
+    pipeline.command(command);
+}
+
+template <typename Pipeline>
+void queueEvalSha(Pipeline& pipeline, std::string_view sha, std::span<const std::string_view> keys, std::span<const std::string_view> arguments) {
+    const auto keyCount = std::to_string(keys.size());
+    std::vector<std::string_view> command{ "EVALSHA", sha, keyCount };
+    command.reserve(command.size() + keys.size() + arguments.size());
+    command.insert(command.end(), keys.begin(), keys.end());
+    command.insert(command.end(), arguments.begin(), arguments.end());
+    // RedisPipeline copies every argument synchronously.
+    pipeline.command(command);
+}
+
+template <typename Redis>
+ruvia::Task<std::string> add(const Redis& redis, std::string_view stream, const std::vector<StreamField>& fields, std::size_t maxLength = 100000) {
+    if (fields.empty()) {
+        throw std::invalid_argument("Redis Stream message must contain fields");
+    }
+    std::vector<std::string> args{ "XADD", std::string(stream), "MAXLEN", "~", std::to_string(maxLength), "*" };
+    args.reserve(args.size() + fields.size() * 2);
+    for (const auto& field : fields) {
+        args.push_back(field.name);
+        args.push_back(field.value);
+    }
+    const auto reply = co_await command(redis, args);
+    if (reply.kind() != RedisValue::Kind::kString) {
+        throwValue("XADD", reply);
+    }
+    co_return std::string(reply.string());
+}
+
+template <typename Redis>
+ruvia::Task<std::optional<std::string>>
+addGroupedBounded(const Redis& redis, std::string_view stream, const std::vector<StreamField>& fields, std::size_t streamCapacity, std::string_view depthKey, std::size_t groupCapacity) {
+    if (fields.empty() || depthKey.empty()) {
+        throw std::invalid_argument("Redis grouped Stream message is incomplete");
+    }
+    static constexpr std::string_view script = R"lua(
+if redis.call('XLEN', KEYS[1]) >= tonumber(ARGV[1]) then
+  return false
+end
+local depth = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
+if depth >= tonumber(ARGV[2]) then
+  return false
+end
+local args = {'*'}
+for index = 3, #ARGV do
+  args[#args + 1] = ARGV[index]
+end
+local id = redis.call('XADD', KEYS[1], unpack(args))
+redis.call('INCR', KEYS[2])
+return id
+)lua";
+    std::vector<std::string> keyStore{ std::string(stream), std::string(depthKey) };
+    std::vector<std::string> argStore{ std::to_string(streamCapacity),
+                                       std::to_string(groupCapacity) };
+    for (const auto& field : fields) {
+        argStore.push_back(field.name);
+        argStore.push_back(field.value);
+    }
+    std::vector<std::string_view> keys(keyStore.begin(), keyStore.end());
+    std::vector<std::string_view> argv(argStore.begin(), argStore.end());
+    const auto reply = co_await redis.eval(script, std::span<const std::string_view>(keys), std::span<const std::string_view>(argv));
+    if (reply.null()) {
+        co_return std::nullopt;
+    }
+    if (reply.kind() != RedisValue::Kind::kString) {
+        throwValue("grouped bounded XADD", reply);
+    }
+    co_return std::optional<std::string>(std::string(reply.string()));
+}
+
+template <typename Redis>
+ruvia::Task<void> acknowledgeAndDelete(const Redis& redis, std::string_view stream, std::string_view group, std::string_view id) {
+    static constexpr std::string_view script = R"lua(
+local acknowledged = redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
+redis.call('XDEL', KEYS[1], ARGV[2])
+return acknowledged
+)lua";
+    const std::string streamKey(stream);
+    const std::string groupValue(group);
+    const std::string idValue(id);
+    const std::string_view keys[]{ streamKey };
+    const std::string_view arguments[]{ groupValue, idValue };
+    const auto reply = co_await redis.eval(script, keys, arguments);
+    if (reply.kind() != RedisValue::Kind::kInteger) {
+        throwValue("XACK/XDEL", reply);
+    }
+}
+
+template <typename Redis>
+ruvia::Task<void> acknowledgeAndDeleteMany(
+    const Redis& redis,
+    std::string_view stream,
+    std::string_view group,
+    const std::vector<StreamMessage>& messages
+) {
+    if (messages.empty()) {
+        co_return;
+    }
+    static constexpr std::string_view script = R"lua(
+local ids = {}
+for index = 2, #ARGV do ids[#ids + 1] = ARGV[index] end
+local acknowledged = redis.call('XACK', KEYS[1], ARGV[1], unpack(ids))
+redis.call('XDEL', KEYS[1], unpack(ids))
+return acknowledged
+)lua";
+    const std::string streamKey(stream);
+    const std::string groupValue(group);
+    const std::string_view keys[]{ streamKey };
+    std::vector<std::string_view> arguments;
+    arguments.reserve(messages.size() + 1);
+    arguments.push_back(groupValue);
+    for (const auto& message : messages) {
+        arguments.push_back(message.id);
+    }
+    const auto reply = co_await redis.eval(script, keys, arguments);
+    if (reply.kind() != RedisValue::Kind::kInteger) {
+        throwValue("batch XACK/XDEL", reply);
+    }
+}
+
+template <typename Redis>
+ruvia::Task<void> acknowledgeGroupedAndDelete(const Redis& redis, std::string_view stream, std::string_view consumerGroup, std::string_view id, std::string_view depthKey) {
+    static constexpr std::string_view script = R"lua(
+	local acknowledged = redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
+	local removed = redis.call('XDEL', KEYS[1], ARGV[2])
+	if removed > 0 then
+	  local depth = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
+	  if depth <= 1 then
+	    redis.call('DEL', KEYS[2])
+	  else
+	    redis.call('DECR', KEYS[2])
+	  end
+	end
+	return acknowledged
+	)lua";
+    const std::string streamStr(stream);
+    const std::string depthStr(depthKey);
+    const std::string groupStr(consumerGroup);
+    const std::string idStr(id);
+    const std::string_view keys[]{ streamStr, depthStr };
+    const std::string_view argv[]{ groupStr, idStr };
+    const auto reply = co_await redis.eval(script, std::span<const std::string_view>(keys), std::span<const std::string_view>(argv));
+    if (reply.kind() != RedisValue::Kind::kInteger) {
+        throwValue("grouped XACK/XDEL", reply);
+    }
+}
+
+// ---- Hash 状态 ----
+
+template <typename Redis>
+ruvia::Task<void> setHash(const Redis& redis, std::string_view key, const std::vector<StreamField>& fields) {
+    if (fields.empty()) {
+        co_return;
+    }
+    std::vector<std::string> args{ "HSET", std::string(key) };
+    for (const auto& field : fields) {
+        args.push_back(field.name);
+        args.push_back(field.value);
+    }
+    const auto reply = co_await command(redis, args);
+    if (reply.kind() != RedisValue::Kind::kInteger) {
+        throwValue("HSET", reply);
+    }
+}
+
+template <typename Redis>
+ruvia::Task<void> eraseHash(const Redis& redis, std::string_view key) {
+    const auto reply = co_await command(redis, { "DEL", std::string(key) });
+    if (reply.kind() != RedisValue::Kind::kInteger) {
+        throwValue("DEL Hash", reply);
+    }
+}
+
+template <typename Redis>
+ruvia::Task<std::vector<StreamField>> hashEntries(const Redis& redis, std::string_view key) {
+    const auto entries = co_await command(redis, { "HGETALL", std::string(key) });
+    if (entries.kind() != RedisValue::Kind::kArray) {
+        throwValue("HGETALL", entries);
+    }
+    std::vector<StreamField> result;
+    const auto values = entries.array();
+    result.reserve(values.size() / 2);
+    for (std::size_t index = 0; index + 1 < values.size(); index += 2) {
+        if (values[index].kind() != RedisValue::Kind::kString ||
+            values[index + 1].kind() != RedisValue::Kind::kString) {
+            throwValue("HGETALL fields", entries);
+        }
+        result.push_back(
+            { std::string(values[index].string()), std::string(values[index + 1].string()) }
+        );
+    }
+    co_return result;
+}
+
+template <typename Redis>
+ruvia::Task<bool> claimHash(const Redis& redis, std::string_view key, const std::vector<StreamField>& fields, std::chrono::milliseconds ttl) {
+    if (fields.empty()) {
+        throw std::invalid_argument("Redis state Hash fields are empty");
+    }
+    static constexpr std::string_view script = R"lua(
+if redis.call('EXISTS', KEYS[1]) ~= 0 then return 0 end
+local args = {}
+for index = 2, #ARGV do args[#args + 1] = ARGV[index] end
+redis.call('HSET', KEYS[1], unpack(args))
+redis.call('PEXPIRE', KEYS[1], ARGV[1])
+return 1
+)lua";
+    const std::string keyStr(key);
+    std::vector<std::string> argStore{ std::to_string(ttl.count()) };
+    for (const auto& field : fields) {
+        argStore.push_back(field.name);
+        argStore.push_back(field.value);
+    }
+    const std::string_view keys[]{ keyStr };
+    std::vector<std::string_view> argv(argStore.begin(), argStore.end());
+    const auto reply = co_await redis.eval(script, std::span<const std::string_view>(keys), std::span<const std::string_view>(argv));
+    if (reply.kind() != RedisValue::Kind::kInteger) {
+        throwValue("claim state Hash", reply);
+    }
+    co_return reply.integer() == 1;
+}
+
+template <typename Redis>
+ruvia::Task<bool> eraseHashIfFieldValue(const Redis& redis, std::string_view key, std::string_view field, std::string_view expected) {
+    static constexpr std::string_view script = R"lua(
+if redis.call('HGET', KEYS[1], ARGV[1]) ~= ARGV[2] then return 0 end
+return redis.call('DEL', KEYS[1])
+)lua";
+    const std::string keyStr(key);
+    const std::string fieldStr(field);
+    const std::string expectedStr(expected);
+    const std::string_view keys[]{ keyStr };
+    const std::string_view argv[]{ fieldStr, expectedStr };
+    const auto reply = co_await redis.eval(script, std::span<const std::string_view>(keys), std::span<const std::string_view>(argv));
+    if (reply.kind() != RedisValue::Kind::kInteger) {
+        throwValue("conditional state DEL", reply);
+    }
+    co_return reply.integer() == 1;
+}
+
+template <typename Redis>
+ruvia::Task<bool> completeInflightTask(const Redis& redis, std::string_view stream, std::string_view consumerGroup, std::string_view id, std::string_view depthKey, std::string_view inflightKey, std::string_view expectedToken) {
+    static constexpr std::string_view script = R"lua(
+if redis.call('HGET', KEYS[3], 'token') ~= ARGV[3] then
+  return 0
+	end
+	redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
+	local removed = redis.call('XDEL', KEYS[1], ARGV[2])
+	redis.call('DEL', KEYS[3])
+	if removed > 0 then
+	  local depth = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
+	  if depth <= 1 then
+	    redis.call('DEL', KEYS[2])
+	  else
+	    redis.call('DECR', KEYS[2])
+	  end
+	end
+	return 1
+	)lua";
+    const std::string streamStr(stream);
+    const std::string depthStr(depthKey);
+    const std::string inflightStr(inflightKey);
+    const std::string groupStr(consumerGroup);
+    const std::string idStr(id);
+    const std::string tokenStr(expectedToken);
+    const std::string_view keys[]{ streamStr, depthStr, inflightStr };
+    const std::string_view argv[]{ groupStr, idStr, tokenStr };
+    const auto reply = co_await redis.eval(script, std::span<const std::string_view>(keys), std::span<const std::string_view>(argv));
+    if (reply.kind() != RedisValue::Kind::kInteger) {
+        throwValue("complete inflight task", reply);
+    }
+    co_return reply.integer() == 1;
+}
+
+// ---- SCAN ----
+
+template <typename Redis>
+ruvia::Task<std::vector<std::string>> keysMatching(const Redis& redis, std::string_view pattern) {
+    std::vector<std::string> result;
+    std::string cursor = "0";
+    do {
+        const auto page = co_await command(
+            redis,
+            { "SCAN", cursor, "MATCH", std::string(pattern), "COUNT", "100" }
+        );
+        if (page.kind() != RedisValue::Kind::kArray || page.array().size() != 2 ||
+            page.array()[0].kind() != RedisValue::Kind::kString ||
+            page.array()[1].kind() != RedisValue::Kind::kArray) {
+            throwValue("SCAN", page);
+        }
+        cursor.assign(page.array()[0].string());
+        for (const auto& value : page.array()[1].array()) {
+            if (value.kind() != RedisValue::Kind::kString) {
+                throwValue("SCAN key", page);
+            }
+            result.emplace_back(value.string());
+        }
+    } while (cursor != "0");
+    co_return result;
+}
+
+template <typename Redis>
+ruvia::Task<void> eraseMatching(const Redis& redis, std::string_view pattern) {
+    for (const auto& key : co_await keysMatching(redis, pattern)) {
+        (void)co_await command(redis, { "DEL", key });
+    }
+}
+
+template <typename Redis>
+ruvia::Task<void> eraseMatchingIfFieldValue(const Redis& redis, std::string_view pattern, std::string_view field, std::string_view expected) {
+    for (const auto& key : co_await keysMatching(redis, pattern)) {
+        (void)co_await eraseHashIfFieldValue(redis, key, field, expected);
+    }
+}
+
+// ---- 计数 / 删除 ----
+
+template <typename Redis>
+ruvia::Task<std::int64_t> incrementWithExpiry(const Redis& redis, std::string_view key, std::chrono::milliseconds expiry) {
+    const auto incrementReply = co_await command(redis, { "INCR", std::string(key) });
+    if (incrementReply.kind() != RedisValue::Kind::kInteger) {
+        throwValue("INCR", incrementReply);
+    }
+    const auto reply =
+        co_await command(redis, { "PEXPIRE", std::string(key), std::to_string(expiry.count()) });
+    if (reply.kind() != RedisValue::Kind::kInteger) {
+        throwValue("PEXPIRE", reply);
+    }
+    co_return incrementReply.integer();
+}
+
+template <typename Redis>
+ruvia::Task<void> erase(const Redis& redis, std::string_view key) {
+    const auto reply = co_await command(redis, { "DEL", std::string(key) });
+    if (reply.kind() != RedisValue::Kind::kInteger) {
+        throwValue("DEL", reply);
+    }
+}
+
+// ---- 生产者语义 ----
+
+template <typename Redis>
+ruvia::Task<std::string> publish(const Redis& redis, std::string_view stream, const std::vector<StreamField>& fields, std::size_t maxLength = 0) {
+    if (maxLength == 0) {
+        maxLength = 10000;
+    }
+    co_return co_await add(redis, stream, fields, maxLength);
+}
+
+} // namespace service::message::redis

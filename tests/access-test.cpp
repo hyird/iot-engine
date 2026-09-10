@@ -3,14 +3,17 @@
 #include <stdexcept>
 #include <string>
 
-#include "service/features/access/contract.h"
-#include "service/features/access/event.h"
-#include "service/features/access/session.h"
-#include "service/features/access/webhook.h"
-#include "service/features/event/config.h"
+#include "service/common/message.h"
+#include "service/common/timestamp.h"
+#include "service/modules/open_access/open_access.service.h"
+#include "service/modules/open_access/open_access.types.h"
+#include "service/features/access/access.service.h"
+#include "service/features/access/access.transport.h"
+#include "service/features/access/access.runtime.h"
+#include "service/features/event/event.service.h"
+#include "service/utils/crypto.h"
+#include "service/utils/json.h"
 #include "service/utils/jwt.h"
-
-namespace access_contract = service::access;
 
 void require(bool condition, const char* message) {
     if (!condition)
@@ -19,22 +22,22 @@ void require(bool condition, const char* message) {
 
 int main() {
     try {
-        require(access_contract::sha256("abc") ==
+        require(service::utils::sha256("abc") ==
                     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
                 "SHA-256 contract changed");
-        require(access_contract::hmacSha256("key", "The quick brown fox jumps over the lazy dog") ==
+        require(service::utils::hmacSha256("key", "The quick brown fox jumps over the lazy dog") ==
                     "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8",
                 "HMAC-SHA256 contract changed");
-        require(access_contract::jsonQuoted("a\n\"b") == "\"a\\n\\\"b\"", "JSON escaping contract changed");
-        require(access_contract::webhookEnvelope("device.data.reported", "1970-01-01T00:00:00Z",
+        require(service::utils::jsonQuoted("a\n\"b") == "\"a\\n\\\"b\"", "JSON escaping contract changed");
+        require(service::message::webhookEnvelope("device.data.reported", "1970-01-01T00:00:00Z",
                                       "delivery-1",
                                       R"({"device":{"id":"device-1"},"points":[]})") ==
                     R"({"event":"device.data.reported","time":"1970-01-01T00:00:00Z","deliveryId":"delivery-1","data":{"device":{"id":"device-1"},"points":[]}})",
                 "Webhook envelope contract changed");
-        require(access_contract::iso8601(0) == "1970-01-01T00:00:00Z", "UTC timestamp contract changed");
-        require(access_contract::iso8601(999) == "1970-01-01T00:00:00Z",
+        require(service::common::utcTimestampFromMilliseconds(0) == "1970-01-01T00:00:00Z", "UTC timestamp contract changed");
+        require(service::common::utcTimestampFromMilliseconds(999) == "1970-01-01T00:00:00Z",
                 "UTC timestamp must use seconds precision");
-        require(access_contract::iso8601(-1) == "1969-12-31T23:59:59Z",
+        require(service::common::utcTimestampFromMilliseconds(-1) == "1969-12-31T23:59:59Z",
                 "UTC timestamp must floor negative milliseconds");
         require(service::utils::jwt_detail::duration("15m", std::chrono::seconds(1)) ==
                     std::chrono::minutes(15),
@@ -42,17 +45,17 @@ int main() {
         require(service::utils::jwt_detail::duration("1x", std::chrono::hours(1)) ==
                     std::chrono::hours(1),
                 "JWT duration accepted trailing non-duration bytes");
-        const auto now = access_contract::nowIso8601();
+        const auto now = service::common::utcTimestampNow();
         require(now.size() == 20 && now[4] == '-' && now[7] == '-' && now[10] == 'T' &&
                     now[13] == ':' && now[16] == ':' && now[19] == 'Z',
                 "current timestamp must use the RFC 3339 wire format");
-        const auto key = access_contract::generateAccessKey();
+        const auto key = service::access::generateAccessKey();
         require(key.starts_with("ak_") && key.size() == 51, "AccessKey format contract changed");
-        require(access_contract::supportedScope("device:command") &&
-                    !access_contract::supportedScope("device:admin"),
+        require(service::access::supportedScope("device:command") &&
+                    !service::access::supportedScope("device:admin"),
                 "scope allowlist contract changed");
-        require(access_contract::supportedEvent("device.data.reported") &&
-                    !access_contract::supportedEvent("device.deleted"),
+        require(service::message::supportedEvent("device.data.reported") &&
+                    !service::message::supportedEvent("device.deleted"),
                 "event allowlist contract changed");
         const auto dataPublication = service::access::event::publicationKey(
             "019fd9f6-4be5-7272-a194-9e571bce848d", "device.data.reported");
@@ -64,24 +67,20 @@ int main() {
                                        "019fd9f6-4be5-7272-a194-9e571bce848d",
                                        "device.command.updated"),
                 "different event types incorrectly share an idempotency key");
-        const std::string_view partitionedDevice{
-            "019fd9f6-4be5-7272-a194-9e571bce848e"};
-        const auto partition = service::access::stream::partition(partitionedDevice);
-        require(partition < service::access::stream::kPartitionCount &&
-                    service::access::stream::event(partitionedDevice) ==
-                        service::access::stream::event(partition) &&
-                    service::access::stream::deliveryResult(partitionedDevice) ==
-                        service::access::stream::deliveryResult(partition) &&
-                    service::access::stream::sessionChanges(partitionedDevice) ==
-                        service::access::stream::sessionChanges(partition),
-                "open-access streams do not keep stable partition affinity");
+        require(service::access::stream::event() ==
+                        "iot:channel:open-access:event" &&
+                    service::access::stream::deliveryResult() ==
+                        "iot:channel:open-access:delivery-result" &&
+                    service::access::stream::sessionChanges() ==
+                        "iot:channel:open-access:session-change",
+                "shared access streams changed");
         require(service::message::webhookCatalogChangesStream(0) !=
                     service::message::webhookCatalogChangesStream(1),
                 "webhook workers share a catalog refresh Stream");
         require(service::message::webhookCatalogChangesStream(0) !=
-                    service::access::stream::sessionChanges(0),
-                "worker-local catalog and globally sharded session changes share a Stream");
-        require(service::message::runtimeConfigChangesStream(0) !=
+                    service::access::stream::sessionChanges(),
+                "local catalog refresh and shared session work must use distinct streams");
+        require(service::message::runtimeConfigChangesStream() !=
                     service::message::webhookCatalogChangesStream(0),
                 "independent config consumers must not XDEL from a shared Stream");
         const auto encodedSession = service::access::session::encode(

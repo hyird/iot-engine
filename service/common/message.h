@@ -1,0 +1,931 @@
+#pragma once
+
+#include <algorithm>
+#include <array>
+#include <charconv>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <vector>
+#include <set>
+#include <optional>
+#include <memory_resource>
+#include <ruvia/web/ModelObject.h>
+
+#include "service/common/uuid.h"
+#include "service/utils/json.h"
+#include "service/utils/network.h"
+
+namespace service::message::vpn {
+
+// Shared VPN address contract. It contains only immutable values and pure mapping logic.
+using service::utils::network::Ipv4Cidr;
+
+inline constexpr Ipv4Cidr kOverlayPool{0x64600000U, 11}; // 100.96.0.0/11
+inline constexpr Ipv4Cidr kVirtualLanPool{0xac100000U, 12}; // 172.16.0.0/12
+
+inline std::optional<Ipv4Cidr> mappedVirtualCidr(const Ipv4Cidr& real) noexcept {
+    if (real.prefix < kVirtualLanPool.prefix)
+        return std::nullopt;
+    const auto slotBits = static_cast<unsigned>(real.prefix - kVirtualLanPool.prefix);
+    const auto slotCount = std::uint64_t{1} << slotBits;
+    const auto slot = (static_cast<std::uint64_t>(real.network) >> (32U - real.prefix)) &
+                      (slotCount - 1U);
+    const auto network = static_cast<std::uint64_t>(kVirtualLanPool.network) +
+                         slot * static_cast<std::uint64_t>(real.size());
+    return network <= 0xffffffffU
+               ? std::optional<Ipv4Cidr>(Ipv4Cidr{static_cast<std::uint32_t>(network), real.prefix})
+               : std::nullopt;
+}
+
+} // namespace service::message::vpn
+
+namespace service::message {
+
+namespace edge {
+inline constexpr std::uint32_t kProtocolVersion = 6;
+inline constexpr std::uint32_t kOldestCompatibleProtocolVersion = 2;
+inline constexpr std::string_view kDefaultPlatformId{
+    "00000000-0000-7000-8000-000000000001"};
+inline constexpr std::string_view kDefaultPublicBaseUrl{"https://i.a-z.xin"};
+inline constexpr std::size_t kMaxMessageSize{16U * 1024U};
+
+inline std::string authKey(std::string_view imei) {
+    return "iot:edge:auth:" + std::string(imei);
+}
+} // namespace edge
+
+inline constexpr std::array<std::string_view, 6> kWebhookEvents{
+    "device.data.reported", "device.image.reported", "device.command.accepted",
+    "device.command.updated", "device.alert.triggered", "device.alert.resolved",
+};
+
+inline bool supportedEvent(std::string_view value) {
+    return std::find(kWebhookEvents.begin(), kWebhookEvents.end(), value) != kWebhookEvents.end();
+}
+
+inline std::string webhookEnvelope(std::string_view eventType, std::string_view occurredAt,
+                                    std::string_view deliveryId, std::string_view dataJson) {
+    return "{\"event\":" + service::utils::jsonQuoted(eventType) +
+           ",\"time\":" + service::utils::jsonQuoted(occurredAt) +
+           ",\"deliveryId\":" + service::utils::jsonQuoted(deliveryId) +
+           ",\"data\":" + std::string(dataJson) + "}";
+}
+
+inline constexpr std::string_view kMessageSchemaVersion{"2"};
+
+inline constexpr std::string_view kConfigStreamPrefix = "iot:channel:config:worker:";
+inline constexpr std::string_view kIngressStreamPrefix = "iot:channel:packet:raw:worker:";
+inline constexpr std::string_view kParsedStreamPrefix = "iot:channel:packet:parsed:worker:";
+inline constexpr std::string_view kEgressStreamPrefix = "iot:channel:socket:egress:worker:";
+inline constexpr std::string_view kCommandStreamPrefix = "iot:channel:command:worker:";
+inline constexpr std::string_view kCommandResultStreamPrefix = "iot:channel:command:result:worker:";
+inline constexpr std::string_view kLinkEventStreamPrefix = "iot:channel:link:event:worker:";
+inline constexpr std::string_view kControlStreamPrefix = "iot:channel:control:worker:";
+inline constexpr std::string_view kDeadLetterStreamPrefix = "iot:channel:dead-letter:worker:";
+inline constexpr std::string_view kProtocolTaskDepthPrefix = "iot:state:protocol:queue-depth:";
+inline constexpr std::string_view kProtocolInflightPrefix = "iot:state:protocol:inflight:";
+inline constexpr std::string_view kSessionStatePrefix = "iot:state:session:";
+
+inline std::string workerStream(std::string_view prefix, std::size_t workerIndex,
+                                std::string_view suffix = {},
+                                std::string_view instance = service::runtime::instanceId()) {
+    return std::string(prefix) + std::string(instance) + ":" + std::to_string(workerIndex) + std::string(suffix);
+}
+
+inline std::string configStream(std::size_t workerIndex, std::string_view instance = service::runtime::instanceId()) {
+    return workerStream(kConfigStreamPrefix, workerIndex, {}, instance);
+}
+
+inline std::string ingressStream(std::size_t workerIndex) {
+    return workerStream(kIngressStreamPrefix, workerIndex);
+}
+
+inline std::string parsedStream() { return "iot:v3:telemetry"; }
+
+inline std::string egressStream(std::size_t workerIndex) {
+    return workerStream(kEgressStreamPrefix, workerIndex);
+}
+
+inline std::string commandStream(std::size_t workerIndex, bool highPriority,
+                                  std::string_view instance = service::runtime::instanceId()) {
+    return workerStream(kCommandStreamPrefix, workerIndex, highPriority ? ":high" : ":normal", instance);
+}
+
+inline std::string commandResultStream() { return "iot:v3:command-result"; }
+
+inline std::string linkEventStream(std::size_t workerIndex) {
+    return workerStream(kLinkEventStreamPrefix, workerIndex);
+}
+
+inline std::string controlStream(std::size_t workerIndex) {
+    return workerStream(kControlStreamPrefix, workerIndex);
+}
+
+inline std::string deadLetterStream(std::size_t workerIndex) {
+    return workerStream(kDeadLetterStreamPrefix, workerIndex);
+}
+
+enum class Direction { ToCollector, ToService };
+
+struct StreamField {
+    std::string name;
+    std::string value;
+};
+
+struct StreamMessage {
+    std::string id;
+    std::vector<StreamField> fields;
+
+    [[nodiscard]] std::string_view get(std::string_view name) const noexcept {
+        for (const auto& field : fields)
+            if (field.name == name)
+                return field.value;
+        return {};
+    }
+};
+
+struct IngressPacket {
+    std::string messageId;
+    std::string workerInstanceId;
+    std::string linkId;
+    std::string connectionId;
+    std::string remoteAddress;
+    std::uint64_t sessionEpoch = 0;
+    std::int64_t occurredAtMs = 0;
+    std::vector<std::uint8_t> payload;
+};
+
+struct ConnectionEvent {
+    std::string messageId;
+    std::string workerInstanceId;
+    std::string eventType;
+    std::string linkId;
+    std::string connectionId;
+    std::string remoteAddress;
+    std::string targetId;
+    std::string reason;
+    std::uint64_t sessionEpoch = 0;
+    std::int64_t occurredAtMs = 0;
+};
+
+struct EgressPacket {
+    std::string messageId;
+    std::string workerInstanceId;
+    std::string causationId;
+    std::string connectionId;
+    std::uint64_t sessionEpoch = 0;
+    std::int64_t createdAtMs = 0;
+    std::vector<std::uint8_t> payload;
+};
+
+struct ParsedDeviceMessage {
+    std::string eventKind = "sample";
+    std::string messageId;
+    std::string causationId;
+    std::string linkId;
+    std::string deviceId;
+    std::string modelId;
+    std::int64_t modelRevision = 0;
+    std::string deviceCode;
+    std::string protocol;
+    std::string connectionId;
+    std::int64_t occurredAtMs = 0;
+    std::int64_t observedAtMs = 0;
+    std::string storagePolicy = "report";
+    std::int64_t onlineWindowMs = 300000;
+    std::string source = "push";
+    std::string valuesJson;
+    std::vector<std::vector<std::uint8_t>> rawPayloads;
+};
+
+enum class ProtocolTaskPriority { High, Normal };
+
+struct ProtocolTask {
+    std::string messageId;
+    std::string causationId;
+    std::string groupKey;
+    std::string protocol;
+    std::string transport;
+    std::string kind;
+    std::string linkId;
+    std::string deviceId;
+    std::string deviceCode;
+    std::string connectionId;
+    std::string payload;
+    std::string readbackPayload;
+    std::string expectedReadbackData;
+    std::string expectedValue;
+    std::vector<std::pair<std::string, std::string>> elements;
+    bool expectsResponse = true;
+    std::int64_t responseTimeoutMs = 3000;
+    std::int64_t createdAtMs = 0;
+    std::int64_t attempt = 1;
+    std::int64_t maxAttempts = 3;
+    std::uint64_t sessionEpoch = 0;
+};
+
+inline std::int64_t utcNowMilliseconds() noexcept {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+inline std::string nextMessageId() { return service::common::nextUuidV7(); }
+
+inline std::int64_t effectiveObservedAt(std::int64_t observedAtMs,
+                                        std::int64_t occurredAtMs) noexcept {
+    if (occurredAtMs <= 0)
+        return std::max<std::int64_t>(observedAtMs, 0);
+    if (observedAtMs <= 0 || observedAtMs > occurredAtMs)
+        return occurredAtMs;
+    return observedAtMs;
+}
+
+inline std::string protocolTaskDepthKey(std::string_view groupKey) {
+    return std::string(kProtocolTaskDepthPrefix) + std::string(groupKey);
+}
+
+inline std::string protocolInflightKey(std::string_view groupKey) {
+    return std::string(kProtocolInflightPrefix) + std::string(groupKey);
+}
+
+inline std::string sessionStateKey(std::string_view connectionId) {
+    return std::string(kSessionStatePrefix) + std::string(connectionId);
+}
+
+inline std::string toHex(const std::vector<std::uint8_t>& bytes) {
+    static constexpr std::array<char, 16> digits{'0', '1', '2', '3', '4', '5', '6', '7',
+                                                 '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
+    std::string result;
+    result.reserve(bytes.size() * 2);
+    for (const auto byte : bytes) {
+        result.push_back(digits[(byte >> 4U) & 0x0FU]);
+        result.push_back(digits[byte & 0x0FU]);
+    }
+    return result;
+}
+
+inline std::vector<std::uint8_t> fromHex(std::string_view value) {
+    auto nibble = [](char character) -> int {
+        if (character >= '0' && character <= '9')
+            return character - '0';
+        if (character >= 'a' && character <= 'f')
+            return character - 'a' + 10;
+        if (character >= 'A' && character <= 'F')
+            return character - 'A' + 10;
+        return -1;
+    };
+    if (value.size() % 2 != 0)
+        return {};
+    std::vector<std::uint8_t> result;
+    result.reserve(value.size() / 2);
+    for (std::size_t index = 0; index < value.size(); index += 2) {
+        const auto high = nibble(value[index]);
+        const auto low = nibble(value[index + 1]);
+        if (high < 0 || low < 0)
+            return {};
+        result.push_back(static_cast<std::uint8_t>((high << 4) | low));
+    }
+    return result;
+}
+
+inline std::string rawPayloadsJson(const std::vector<std::vector<std::uint8_t>>& payloads) {
+    std::string result{"["};
+    for (std::size_t index = 0; index < payloads.size(); ++index) {
+        if (index != 0)
+            result.push_back(',');
+        result.push_back('"');
+        result += toHex(payloads[index]);
+        result.push_back('"');
+    }
+    result.push_back(']');
+    return result;
+}
+
+inline std::vector<std::vector<std::uint8_t>> rawPayloadsFromJson(std::string_view value) {
+    std::vector<std::vector<std::uint8_t>> result;
+    std::size_t offset = 0;
+    const auto skipWhitespace = [&] {
+        while (offset < value.size() && (value[offset] == ' ' || value[offset] == '\n' ||
+                                         value[offset] == '\r' || value[offset] == '\t'))
+            ++offset;
+    };
+    skipWhitespace();
+    if (offset == value.size() || value[offset++] != '[')
+        return {};
+    skipWhitespace();
+    if (offset < value.size() && value[offset] == ']') {
+        ++offset;
+        skipWhitespace();
+        return offset == value.size() ? result : std::vector<std::vector<std::uint8_t>>{};
+    }
+    while (offset < value.size()) {
+        if (value[offset++] != '"')
+            return {};
+        const auto end = value.find('"', offset);
+        if (end == std::string_view::npos)
+            return {};
+        const auto hex = value.substr(offset, end - offset);
+        auto payload = fromHex(hex);
+        if (payload.empty() && !hex.empty())
+            return {};
+        result.push_back(std::move(payload));
+        offset = end + 1;
+        skipWhitespace();
+        if (offset == value.size())
+            return {};
+        if (value[offset] == ']') {
+            ++offset;
+            skipWhitespace();
+            return offset == value.size() ? result : std::vector<std::vector<std::uint8_t>>{};
+        }
+        if (value[offset++] != ',')
+            return {};
+        skipWhitespace();
+    }
+    return {};
+}
+
+inline std::vector<StreamField> ingressFields(const IngressPacket& packet) {
+    return {{"event_type", "packet"},
+            {"event_id", packet.messageId},
+            {"schema_version", std::string(kMessageSchemaVersion)},
+            {"message_id", packet.messageId},
+            {"worker_instance_id", packet.workerInstanceId},
+            {"link_id", packet.linkId},
+            {"connection_id", packet.connectionId},
+            {"remote_address", packet.remoteAddress},
+            {"session_epoch", std::to_string(packet.sessionEpoch)},
+            {"occurred_at_ms", std::to_string(packet.occurredAtMs)},
+            {"payload_hex", toHex(packet.payload)}};
+}
+
+inline IngressPacket ingressFrom(const StreamMessage& message) {
+    const auto require = [&message](std::string_view name) {
+        const auto value = message.get(name);
+        if (value.empty())
+            throw std::runtime_error("Missing ingress field: " + std::string(name));
+        return value;
+    };
+    const auto eventType = message.get("event_type");
+    if (!eventType.empty() && eventType != "packet")
+        throw std::runtime_error("Ingress message is not a packet");
+    const auto integer = [&require](std::string_view name) {
+        const auto value = require(name);
+        std::int64_t result = 0;
+        const auto [end, error] =
+            std::from_chars(value.data(), value.data() + value.size(), result);
+        if (error != std::errc{} || end != value.data() + value.size())
+            throw std::runtime_error("Invalid ingress integer field: " + std::string(name));
+        return result;
+    };
+    IngressPacket packet;
+    packet.messageId = std::string(require("message_id"));
+    packet.workerInstanceId = std::string(require("worker_instance_id"));
+    packet.linkId = std::string(require("link_id"));
+    packet.connectionId = std::string(require("connection_id"));
+    packet.remoteAddress = std::string(message.get("remote_address"));
+    packet.sessionEpoch = static_cast<std::uint64_t>(integer("session_epoch"));
+    packet.occurredAtMs = integer("occurred_at_ms");
+    const auto payload = require("payload_hex");
+    packet.payload = fromHex(payload);
+    if (packet.payload.empty() && !payload.empty())
+        throw std::runtime_error("Invalid ingress HEX payload");
+    return packet;
+}
+
+inline std::vector<StreamField> connectionEventFields(const ConnectionEvent& event) {
+    return {{"event_type", event.eventType},
+            {"event_id", event.messageId},
+            {"schema_version", std::string(kMessageSchemaVersion)},
+            {"message_id", event.messageId},
+            {"worker_instance_id", event.workerInstanceId},
+            {"link_id", event.linkId},
+            {"connection_id", event.connectionId},
+            {"remote_address", event.remoteAddress},
+            {"target_id", event.targetId},
+            {"reason", event.reason},
+            {"session_epoch", std::to_string(event.sessionEpoch)},
+            {"occurred_at_ms", std::to_string(event.occurredAtMs)}};
+}
+
+inline ConnectionEvent connectionEventFrom(const StreamMessage& message) {
+    const auto require = [&message](std::string_view name) {
+        const auto value = message.get(name);
+        if (value.empty())
+            throw std::runtime_error("Missing connection event field: " + std::string(name));
+        return value;
+    };
+    const auto integer = [&require](std::string_view name) {
+        const auto value = require(name);
+        std::int64_t result = 0;
+        const auto [end, error] =
+            std::from_chars(value.data(), value.data() + value.size(), result);
+        if (error != std::errc{} || end != value.data() + value.size() || result < 0)
+            throw std::runtime_error("Invalid connection event integer: " + std::string(name));
+        return result;
+    };
+    ConnectionEvent event;
+    event.eventType = std::string(require("event_type"));
+    if (event.eventType != "connected" && event.eventType != "disconnected")
+        throw std::runtime_error("Invalid connection event type");
+    event.messageId = std::string(require("message_id"));
+    event.workerInstanceId = std::string(require("worker_instance_id"));
+    event.linkId = std::string(require("link_id"));
+    event.connectionId = std::string(require("connection_id"));
+    event.remoteAddress = std::string(message.get("remote_address"));
+    event.targetId = std::string(message.get("target_id"));
+    event.reason = std::string(message.get("reason"));
+    event.sessionEpoch = static_cast<std::uint64_t>(integer("session_epoch"));
+    event.occurredAtMs = integer("occurred_at_ms");
+    return event;
+}
+
+inline std::vector<StreamField> egressFields(const EgressPacket& packet) {
+    return {{"event_id", packet.messageId},
+            {"event_type", "packet.egress"},
+            {"schema_version", std::string(kMessageSchemaVersion)},
+            {"message_id", packet.messageId},
+            {"worker_instance_id", packet.workerInstanceId},
+            {"causation_id", packet.causationId},
+            {"connection_id", packet.connectionId},
+            {"session_epoch", std::to_string(packet.sessionEpoch)},
+            {"created_at_ms", std::to_string(packet.createdAtMs)},
+            {"payload_hex", toHex(packet.payload)}};
+}
+
+inline EgressPacket egressFrom(const StreamMessage& message) {
+    const auto require = [&message](std::string_view name) {
+        const auto value = message.get(name);
+        if (value.empty())
+            throw std::runtime_error("Missing egress field: " + std::string(name));
+        return value;
+    };
+    const auto integer = [&require](std::string_view name) {
+        const auto value = require(name);
+        std::int64_t result = 0;
+        const auto [end, error] =
+            std::from_chars(value.data(), value.data() + value.size(), result);
+        if (error != std::errc{} || end != value.data() + value.size() || result < 0)
+            throw std::runtime_error("Invalid egress integer field: " + std::string(name));
+        return result;
+    };
+    EgressPacket packet;
+    packet.messageId = std::string(require("message_id"));
+    packet.workerInstanceId = std::string(require("worker_instance_id"));
+    packet.causationId = std::string(message.get("causation_id"));
+    packet.connectionId = std::string(require("connection_id"));
+    packet.sessionEpoch = static_cast<std::uint64_t>(integer("session_epoch"));
+    packet.createdAtMs = integer("created_at_ms");
+    const auto payload = require("payload_hex");
+    packet.payload = fromHex(payload);
+    if (packet.payload.empty())
+        throw std::runtime_error("Invalid or empty egress HEX payload");
+    return packet;
+}
+
+inline std::vector<StreamField> parsedFields(const ParsedDeviceMessage& message) {
+    return {{"event_id", message.messageId},
+            {"event_type", "device.data.parsed"},
+            {"schema_version", std::string(kMessageSchemaVersion)},
+            {"aggregate_id", message.deviceId},
+            {"model_id", message.modelId},
+             {"model_revision", std::to_string(message.modelRevision)},
+             {"event_kind", message.eventKind},
+            {"message_id", message.messageId},
+            {"causation_id", message.causationId},
+            {"link_id", message.linkId},
+            {"device_id", message.deviceId},
+            {"device_code", message.deviceCode},
+            {"protocol", message.protocol},
+            {"connection_id", message.connectionId},
+            {"occurred_at_ms", std::to_string(message.occurredAtMs)},
+            {"observed_at_ms", std::to_string(message.observedAtMs)},
+            {"storage_policy", message.storagePolicy},
+            {"online_window_ms", std::to_string(message.onlineWindowMs)},
+            {"source", message.source},
+            {"values_json", message.valuesJson},
+            {"raw_payload_hex", rawPayloadsJson(message.rawPayloads)}};
+}
+
+inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
+    const auto require = [&message](std::string_view name) {
+        const auto value = message.get(name);
+        if (value.empty())
+            throw std::runtime_error("Missing parsed packet field: " + std::string(name));
+        return value;
+    };
+    const auto integer = [&require](std::string_view name) {
+        const auto value = require(name);
+        std::int64_t result = 0;
+        const auto [end, error] =
+            std::from_chars(value.data(), value.data() + value.size(), result);
+        if (error != std::errc{} || end != value.data() + value.size())
+            throw std::runtime_error("Invalid parsed packet integer: " + std::string(name));
+        return result;
+    };
+    ParsedDeviceMessage parsed;
+    parsed.eventKind = message.get("event_kind").empty() ? "sample" : std::string(message.get("event_kind"));
+    if (parsed.eventKind != "sample" && parsed.eventKind != "image")
+        throw std::runtime_error("Invalid telemetry event kind");
+    parsed.modelId = std::string(message.get("model_id"));
+    parsed.modelRevision = message.get("model_revision").empty() ? 0 : integer("model_revision");
+    if (parsed.modelId.empty() != (parsed.modelRevision == 0) || parsed.modelRevision < 0)
+        throw std::runtime_error("Invalid telemetry model reference");
+    if (!parsed.modelId.empty() && !service::common::isUuid(parsed.modelId))
+        throw std::runtime_error("Invalid telemetry model UUID");
+    parsed.messageId = std::string(require("message_id"));
+    parsed.causationId = std::string(require("causation_id"));
+    parsed.linkId = std::string(require("link_id"));
+    parsed.deviceId = std::string(require("device_id"));
+    parsed.deviceCode = std::string(require("device_code"));
+    parsed.protocol = std::string(require("protocol"));
+    parsed.connectionId = std::string(require("connection_id"));
+    parsed.occurredAtMs = integer("occurred_at_ms");
+    parsed.observedAtMs = integer("observed_at_ms");
+    parsed.observedAtMs = effectiveObservedAt(parsed.observedAtMs, parsed.occurredAtMs);
+    parsed.storagePolicy = std::string(require("storage_policy"));
+    if (parsed.storagePolicy != "report" && parsed.storagePolicy != "change")
+        throw std::runtime_error("Invalid parsed packet storage policy");
+    const auto onlineWindow = message.get("online_window_ms");
+    if (!onlineWindow.empty()) {
+        std::int64_t result = 0;
+        const auto [end, error] =
+            std::from_chars(onlineWindow.data(), onlineWindow.data() + onlineWindow.size(), result);
+        if (error != std::errc{} || end != onlineWindow.data() + onlineWindow.size())
+            throw std::runtime_error("Invalid parsed packet online window");
+        parsed.onlineWindowMs = std::clamp<std::int64_t>(result, 1000, 2592000000LL);
+    }
+    parsed.source = std::string(require("source"));
+    parsed.valuesJson = std::string(require("values_json"));
+    const auto payload = require("raw_payload_hex");
+    parsed.rawPayloads = rawPayloadsFromJson(payload);
+    if (parsed.rawPayloads.empty() && payload != "[]")
+        throw std::runtime_error("Invalid parsed packet HEX payload array");
+    return parsed;
+}
+
+inline std::vector<StreamField> protocolTaskFields(const ProtocolTask& task) {
+    std::vector<StreamField> fields{{"event_id", task.messageId},
+                                    {"event_type", "protocol.task"},
+                                    {"schema_version", std::string(kMessageSchemaVersion)},
+                                    {"aggregate_id", task.deviceId},
+                                    {"message_id", task.messageId},
+                                    {"causation_id", task.causationId},
+                                    {"group_key", task.groupKey},
+                                    {"protocol", task.protocol},
+                                    {"transport", task.transport},
+                                    {"kind", task.kind},
+                                    {"link_id", task.linkId},
+                                    {"device_id", task.deviceId},
+                                    {"device_code", task.deviceCode},
+                                    {"connection_id", task.connectionId},
+                                    {"payload_hex", task.payload},
+                                    {"readback_payload_hex", task.readbackPayload},
+                                    {"expected_readback_hex", task.expectedReadbackData},
+                                    {"expected_value", task.expectedValue},
+                                    {"expects_response", task.expectsResponse ? "1" : "0"},
+                                    {"response_timeout_ms", std::to_string(task.responseTimeoutMs)},
+                                    {"created_at_ms", std::to_string(task.createdAtMs)},
+                                    {"attempt", std::to_string(task.attempt)},
+                                    {"max_attempts", std::to_string(task.maxAttempts)},
+                                    {"session_epoch", std::to_string(task.sessionEpoch)}};
+    fields.reserve(fields.size() + task.elements.size());
+    for (const auto& [elementId, value] : task.elements)
+        fields.push_back({"element:" + elementId, value});
+    return fields;
+}
+
+inline ProtocolTask protocolTaskFrom(const StreamMessage& message) {
+    const auto require = [&message](std::string_view name) {
+        const auto value = message.get(name);
+        if (value.empty())
+            throw std::runtime_error("Missing protocol task field: " + std::string(name));
+        return value;
+    };
+    const auto integer = [&message, &require](std::string_view name, bool required = true) {
+        const auto value = message.get(name);
+        if (value.empty()) {
+            if (required)
+                (void)require(name);
+            return std::int64_t{0};
+        }
+        std::int64_t result = 0;
+        const auto [end, error] =
+            std::from_chars(value.data(), value.data() + value.size(), result);
+        if (error != std::errc{} || end != value.data() + value.size())
+            throw std::runtime_error("Invalid protocol task integer field: " + std::string(name));
+        return result;
+    };
+    ProtocolTask task;
+    task.messageId = std::string(require("message_id"));
+    task.causationId = std::string(message.get("causation_id"));
+    task.groupKey = std::string(require("group_key"));
+    task.protocol = std::string(require("protocol"));
+    task.transport = std::string(require("transport"));
+    if (task.transport != "TCP" && task.transport != "RTU" && task.transport != "RAW")
+        throw std::runtime_error("Invalid protocol task transport");
+    task.kind = std::string(require("kind"));
+    task.linkId = std::string(require("link_id"));
+    task.deviceId = std::string(message.get("device_id"));
+    task.deviceCode = std::string(message.get("device_code"));
+    task.connectionId = std::string(message.get("connection_id"));
+    task.payload = std::string(message.get("payload_hex"));
+    task.readbackPayload = std::string(message.get("readback_payload_hex"));
+    task.expectedReadbackData = std::string(message.get("expected_readback_hex"));
+    task.expectedValue = std::string(message.get("expected_value"));
+    for (const auto& current : message.fields) {
+        if (!current.name.starts_with("element:"))
+            continue;
+        const auto elementId = std::string_view(current.name).substr(8);
+        if (elementId.empty())
+            throw std::runtime_error("Invalid protocol task element field");
+        task.elements.emplace_back(elementId, current.value);
+    }
+    if (task.payload.empty() && task.elements.empty())
+        throw std::runtime_error("Protocol task requires payload_hex or elements");
+    const auto expectsResponse = message.get("expects_response");
+    task.expectsResponse = expectsResponse.empty() || expectsResponse == "1";
+    task.responseTimeoutMs = integer("response_timeout_ms", false);
+    if (task.responseTimeoutMs == 0)
+        task.responseTimeoutMs = 3000;
+    task.createdAtMs = integer("created_at_ms");
+    task.attempt = integer("attempt", false);
+    if (task.attempt == 0)
+        task.attempt = 1;
+    task.maxAttempts = integer("max_attempts", false);
+    if (task.maxAttempts == 0)
+        task.maxAttempts = 3;
+    task.attempt = std::clamp<std::int64_t>(task.attempt, 1, 100);
+    task.maxAttempts = std::clamp<std::int64_t>(task.maxAttempts, task.attempt, 100);
+    task.sessionEpoch = static_cast<std::uint64_t>(integer("session_epoch", false));
+    return task;
+}
+
+} // namespace service::message
+
+namespace service::message::live {
+
+// The live stream carries invalidation notices. Consumers rebuild their own
+// authorized snapshot and never treat a stream entry as response data.
+inline constexpr std::string_view kChangesStream{"iot:live:changes"};
+inline constexpr std::string_view kChanges = kChangesStream;
+inline constexpr std::string_view kTopicField{"topic"};
+inline constexpr std::string_view kSchemaVersionField{"schema_version"};
+inline constexpr std::string_view kSchemaVersion{"1"};
+
+} // namespace service::message::live
+
+namespace service::rpc {
+
+struct Contract final {
+    static constexpr std::string_view version = "1";
+    static constexpr std::size_t maximumPayload = 1024 * 1024;
+    static constexpr auto timeout = std::chrono::seconds(120);
+    static constexpr std::string_view replyLifetime = "600";
+
+    static std::string requests(std::string_view instance, std::size_t workerIndex) {
+        return "iot:rpc:requests:" + std::string(instance) + ":worker:" + std::to_string(workerIndex);
+    }
+    static std::string reply(std::string_view id) {
+        return "iot:rpc:reply:" + std::string(id);
+    }
+    static std::string cancelled(std::string_view id) {
+        return "iot:rpc:cancelled:" + std::string(id);
+    }
+    static std::string claim(std::string_view id) {
+        return "iot:rpc:claim:" + std::string(id);
+    }
+    static std::int64_t now() {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+    }
+    static std::string success(std::string_view payload) {
+        return "OK\n" + std::string(payload);
+    }
+    static std::string failure(std::uint16_t status, std::string_view code,
+                               std::string_view message) {
+        return "ERR\n" + std::to_string(status) + "\n" + std::string(code) + "\n" +
+               std::string(message);
+    }
+};
+
+} // namespace service::rpc
+
+namespace service::telemetry::latest {
+
+inline std::string latestKey(std::string_view deviceId) {
+    return "iot:v2:device:" + std::string(deviceId) + ":latest";
+}
+
+inline std::string runtimeKey(std::string_view deviceId) {
+    return "iot:v2:runtime:device:" + std::string(deviceId);
+}
+
+inline std::string canonicalPointText(std::string_view value, std::string_view dataType) {
+    if (dataType != "BOOL") return std::string(value);
+    if (value == "true" || value == "1") return "1";
+    if (value == "false" || value == "0") return "0";
+    return std::string(value);
+}
+
+inline std::string canonicalPointJson(std::string_view value, std::string_view dataType) {
+    if (dataType != "BOOL") return std::string(value);
+    if (value == "true" || value == "1") return "1";
+    if (value == "false" || value == "0") return "0";
+    if (value == "\"true\"" || value == "\"1\"") return "\"1\"";
+    if (value == "\"false\"" || value == "\"0\"") return "\"0\"";
+    return std::string(value);
+}
+
+} // namespace service::telemetry::latest
+
+namespace service::access::session {
+
+inline constexpr std::string_view kActiveVersionKey{"iot:open-access:session:active"};
+inline constexpr std::string_view kVersionPrefix{"iot:open-access:session:version:"};
+
+inline std::string encode(std::string_view id, std::string_view name,
+                          std::string_view status, std::string_view expiresAtMs,
+                          std::string_view scopes, std::string_view deviceIds) {
+    std::string result;
+    result.reserve(id.size() + name.size() + status.size() + expiresAtMs.size() +
+                   scopes.size() + deviceIds.size() + 5);
+    for (const auto field : {id, name, status, expiresAtMs, scopes, deviceIds}) {
+        if (!result.empty())
+            result.push_back('\0');
+        result.append(field);
+    }
+    return result;
+}
+
+
+
+struct Entry final {
+    std::string id;
+    std::string name;
+    std::string status;
+    std::int64_t expiresAtMs{0};
+    std::set<std::string, std::less<>> scopes;
+    std::set<std::string, std::less<>> deviceIds;
+};
+
+inline std::vector<std::string> parseStringArray(std::string_view json) {
+    std::vector<std::string> result;
+    auto remaining = json;
+    const auto parsed = ruvia::detail::parseJsonValue<ruvia::Array<ruvia::String>>(
+        remaining, std::pmr::get_default_resource());
+    if (!parsed)
+        throw std::runtime_error("invalid projected access-session array");
+    result.reserve(parsed->size());
+    for (const auto& item : *parsed)
+        result.emplace_back(item.view());
+    return result;
+}
+
+inline Entry decode(std::string_view encoded) {
+    std::vector<std::string_view> fields;
+    fields.reserve(6);
+    std::size_t begin = 0;
+    while (fields.size() < 5) {
+        const auto end = encoded.find('\0', begin);
+        if (end == std::string_view::npos)
+            throw std::runtime_error("invalid projected access-session entry");
+        fields.push_back(encoded.substr(begin, end - begin));
+        begin = end + 1;
+    }
+    fields.push_back(encoded.substr(begin));
+    Entry result;
+    result.id.assign(fields[0]);
+    result.name.assign(fields[1]);
+    result.status.assign(fields[2]);
+    const auto expiration = fields[3];
+    const auto [end, error] =
+        std::from_chars(expiration.data(), expiration.data() + expiration.size(), result.expiresAtMs);
+    if (expiration.empty() || error != std::errc{} || end != expiration.data() + expiration.size())
+        throw std::runtime_error("invalid projected access-session expiration");
+    for (auto& scope : parseStringArray(fields[4]))
+        result.scopes.emplace(std::move(scope));
+    for (auto& device : parseStringArray(fields[5]))
+        result.deviceIds.emplace(std::move(device));
+    return result;
+}
+
+inline bool expired(const Entry& entry, std::int64_t nowMs) noexcept {
+    return entry.expiresAtMs > 0 && entry.expiresAtMs <= nowMs;
+}
+
+} // namespace session
+
+namespace service::message::realtime {
+
+struct Point final {
+    std::string id;
+    std::string name;
+    std::string unit;
+    bool operator==(const Point&) const = default;
+};
+
+struct Device final {
+    std::string id;
+    std::string code;
+    std::string name;
+    std::vector<Point> points;
+    bool operator==(const Device&) const = default;
+};
+
+inline std::string encodePoint(const Point& point) {
+    std::string value;
+    value.reserve(point.id.size() + point.name.size() + point.unit.size() + 2);
+    value.append(point.id);
+    value.push_back('\0');
+    value.append(point.name);
+    value.push_back('\0');
+    value.append(point.unit);
+    return value;
+}
+
+inline std::optional<Point> decodePoint(std::string_view value) {
+    const auto first = value.find('\0');
+    if (first == std::string_view::npos)
+        return std::nullopt;
+    const auto second = value.find('\0', first + 1);
+    if (second == std::string_view::npos)
+        return std::nullopt;
+    return Point{std::string(value.substr(0, first)),
+                 std::string(value.substr(first + 1, second - first - 1)),
+                 std::string(value.substr(second + 1))};
+}
+
+} // namespace realtime
+
+namespace service::message::projection {
+inline constexpr std::string_view kRuntimeActiveVersionKey = "iot:config:runtime:active-version";
+inline constexpr std::string_view kRuntimeVersionPrefix = "iot:config:runtime:";
+inline std::string realtimeDeviceKey(std::string_view version, std::string_view deviceId) {
+    return std::string(kRuntimeVersionPrefix) + std::string(version) + ":realtime-device:" + std::string(deviceId);
+}
+
+inline std::string realtimeDevicePointsKey(std::string_view version,
+                                           std::string_view deviceId) {
+    return realtimeDeviceKey(version, deviceId) + ":points";
+}
+
+} // namespace service::message::projection
+
+namespace service::message::worker_metrics {
+
+// Operational snapshots are keyed by the worker that produced them.  The
+// values are deliberately short-lived: a missing or expired snapshot means
+// that the corresponding Worker can no longer be considered ready.
+inline constexpr std::string_view kMetricsSnapshotPrefix{"iot:observability:metrics:"};
+inline constexpr std::string_view kReadinessSnapshotPrefix{"iot:observability:readiness:"};
+inline constexpr std::chrono::milliseconds kSnapshotTtl{15000};
+
+inline std::string workerSnapshotKey(std::string_view prefix, std::size_t workerIndex,
+                                     std::string_view instance = service::runtime::instanceId()) {
+    return std::string(prefix) + std::string(instance) + ":worker:" +
+           std::to_string(workerIndex);
+}
+
+inline std::string metricsSnapshotKey(
+    std::size_t workerIndex, std::string_view instance = service::runtime::instanceId()) {
+    return workerSnapshotKey(kMetricsSnapshotPrefix, workerIndex, instance);
+}
+
+inline std::string readinessSnapshotKey(
+    std::size_t workerIndex, std::string_view instance = service::runtime::instanceId()) {
+    return workerSnapshotKey(kReadinessSnapshotPrefix, workerIndex, instance);
+}
+
+struct ReadinessSnapshot final {
+    bool ready{false};
+    std::string_view healthJson{};
+};
+
+inline std::string encodeReadinessSnapshot(bool ready, std::string_view healthJson) {
+    std::string encoded;
+    encoded.reserve(2 + healthJson.size());
+    encoded.push_back(ready ? '1' : '0');
+    encoded.push_back('\n');
+    encoded.append(healthJson);
+    return encoded;
+}
+
+inline std::optional<ReadinessSnapshot> decodeReadinessSnapshot(std::string_view encoded) noexcept {
+    if (encoded.size() < 3 || encoded[1] != '\n' ||
+        (encoded[0] != '0' && encoded[0] != '1')) {
+        return std::nullopt;
+    }
+    const auto healthJson = encoded.substr(2);
+    if (healthJson.empty() || healthJson.front() != '{' || healthJson.back() != '}') {
+        return std::nullopt;
+    }
+    return ReadinessSnapshot{encoded[0] == '1', healthJson};
+}
+
+} // namespace service::message::worker_metrics

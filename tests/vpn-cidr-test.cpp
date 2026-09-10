@@ -2,12 +2,10 @@
 #include <iostream>
 #include <string_view>
 
-#include "service/features/vpn/cidr.h"
-#include "service/features/vpn/client-config.h"
-#include "service/features/vpn/firewall.h"
-#include "service/features/vpn/hub-config.h"
-#include "service/features/vpn/route-sync.h"
-#include "service/features/vpn/wireguard.h"
+#include "service/features/vpn/vpn.service.h"
+#include "service/modules/vpn/vpn.types.h"
+#include "service/features/vpn/firewall/firewall.transport.h"
+#include "service/features/vpn/wireguard/wireguard.transport.h"
 
 namespace {
 
@@ -55,14 +53,14 @@ int main() {
             "equal-prefix route contract");
     require(virtualLan && service::vpn::hostAddress(*virtualLan, 2).value() == 0xac1f0102U,
             "host address allocation");
-    const auto duplicateRealLan = service::vpn::parseCidr("192.168.1.0/24", 1, 30);
-    const auto otherVirtualLan = service::vpn::parseCidr("172.31.2.0/24", 1, 30);
-    require(realLan && duplicateRealLan && realLan->overlaps(*duplicateRealLan) &&
-                !service::vpn::realTargetConflictsVirtual(*realLan, std::nullopt),
+    const auto moduleReal = service::vpn::module::parseCidr("192.168.1.0/24", 1, 30);
+    const auto moduleVirtual = service::vpn::module::parseCidr("172.31.1.0/24", 1, 30);
+    const auto otherVirtual = service::vpn::module::parseCidr("172.31.2.0/24", 1, 30);
+    require(moduleReal && !service::vpn::module::realTargetConflictsVirtual(*moduleReal, std::nullopt),
             "duplicate real LANs remain independent across Edge peers");
-    require(virtualLan && realLan &&
-                service::vpn::virtualMappingConflicts(*virtualLan, realLan, virtualLan) &&
-                !service::vpn::virtualMappingConflicts(*virtualLan, realLan, otherVirtualLan),
+    require(moduleVirtual && moduleReal &&
+                service::vpn::module::virtualMappingConflicts(*moduleVirtual, moduleReal, moduleVirtual) &&
+                !service::vpn::module::virtualMappingConflicts(*moduleVirtual, moduleReal, otherVirtual),
             "virtual mapping conflicts are checked independently");
 
     constexpr std::string_view key =

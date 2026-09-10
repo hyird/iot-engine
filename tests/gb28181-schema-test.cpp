@@ -5,7 +5,7 @@
 #include <string>
 #include <string_view>
 
-#include "service/domains/gb28181/gb28181.schema.h"
+#include "service/modules/gb28181/gb28181.schema.h"
 
 namespace {
 

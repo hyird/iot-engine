@@ -6,8 +6,8 @@
 #include <string>
 #include <string_view>
 
-#include "service/features/edge/protocol.h"
-#include "service/features/edge/firmware.h"
+#include "service/features/edge/edge.protocol.h"
+#include "service/features/edge/firmware/firmware.service.h"
 #include <terminal.pb.h>
 
 namespace {

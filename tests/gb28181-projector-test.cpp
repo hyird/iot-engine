@@ -4,8 +4,9 @@
 #include <vector>
 #include <string_view>
 
-#include "service/features/gb28181/device/DeviceRegistry.h"
-#include "service/features/gb28181/projector.h"
+#include "service/features/gb28181/gb28181.service.h"
+#include "service/features/gb28181/device/device.runtime.h"
+#include "service/features/gb28181/media/media.runtime.h"
 
 namespace {
 
@@ -18,9 +19,9 @@ void require(bool condition, std::string_view message) {
 
 int main() {
   try {
-    require(service::gb28181::Projector::integerForTest("12", -1) == 12,
+    require(service::gb28181::GbProjectionService::integerForTest("12", -1) == 12,
             "GB28181 projector integer parser changed valid integer");
-    require(service::gb28181::Projector::integerForTest("12x", -1) == -1,
+    require(service::gb28181::GbProjectionService::integerForTest("12x", -1) == -1,
             "GB28181 projector integer parser accepted trailing garbage");
 
     Device device;

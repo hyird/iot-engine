@@ -13,7 +13,7 @@ void require(bool condition, const char* message) {
 
 std::string commandSource() {
     auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
-                "service/features/command/service.h";
+                "service/modules/command/command.service.h";
     std::ifstream input(path, std::ios::binary);
     require(input.good(), "cannot open command service source");
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
@@ -62,14 +62,16 @@ void requireDuplicateElementRejected(std::string_view source) {
 int main() {
     try {
         const auto source = commandSource();
+        const auto preparation = projectSource("service/features/command/command.service.h");
         requireNoUnsafeJsonCasts(source);
+        requireNoUnsafeJsonCasts(preparation);
         requireDuplicateElementRejected(source);
-        require(source.find("command->set_fast_read_duration_sec(10)") == std::string::npos,
+        require(preparation.find("command->set_fast_read_duration_sec(10)") == std::string::npos,
                 "edge commands still hard-code the fast-read window");
-        require(source.find("command->set_fast_read_interval_sec(1)") == std::string::npos,
+        require(preparation.find("command->set_fast_read_interval_sec(1)") == std::string::npos,
                 "edge commands still hard-code the fast-read interval");
-        require(source.find("p.config->>'commandFastReadDuration'") != std::string::npos &&
-                    source.find("p.config->>'commandFastReadInterval'") != std::string::npos,
+        require(preparation.find("p.config->>'commandFastReadDuration'") != std::string::npos &&
+                    preparation.find("p.config->>'commandFastReadInterval'") != std::string::npos,
                 "edge commands do not load the protocol fast-read policy");
         require(source.find("DeviceCommandStatusesDto") != std::string::npos &&
                     source.find("milliseconds(100)") == std::string::npos,
@@ -78,11 +80,11 @@ int main() {
                     source.find("actual_value_count") != std::string::npos &&
                     source.find("result.set<\"actualValues\">") != std::string::npos,
                 "command status API omits readback values");
-        const auto resultProjector = projectSource("service/features/command/result.h");
+        const auto resultProjector = projectSource("service/features/command/command.service.h");
         require(resultProjector.find("actualValuesJson(message)") != std::string::npos &&
                     resultProjector.find("actual_value_count") != std::string::npos,
                 "command result projection omits readback values");
-        const auto types = projectSource("service/domains/device/device.types.h");
+        const auto types = projectSource("service/modules/device/device.types.h");
         require(types.find("\"actual_values\", actualValues") != std::string::npos,
                 "command response contract omits actual_values");
         const auto client = projectSource("web/pages/iot/device/device.service.ts");

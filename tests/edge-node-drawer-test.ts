@@ -34,15 +34,23 @@ const vpnService = readFileSync(
     'utf8'
 );
 const edgeProjector = readFileSync(
-    new URL('../service/features/edge/projector.h', import.meta.url),
+    new URL('../service/features/edge/edge.service.h', import.meta.url),
     'utf8'
 );
 const vpnDomain = readFileSync(
-    new URL('../service/domains/vpn/vpn.service.h', import.meta.url),
+    new URL('../service/modules/vpn/vpn.service.h', import.meta.url),
+    'utf8'
+);
+const vpnBackend = readFileSync(
+    new URL('../service/features/vpn/vpn.service.h', import.meta.url),
+    'utf8'
+);
+const vpnRuntime = readFileSync(
+    new URL('../service/features/vpn/vpn.runtime.h', import.meta.url),
     'utf8'
 );
 const vpnFirewall = readFileSync(
-    new URL('../service/features/vpn/firewall.h', import.meta.url),
+    new URL('../service/features/vpn/firewall/firewall.transport.h', import.meta.url),
     'utf8'
 );
 const cardStart = source.indexOf('{items.map((node) => {');
@@ -132,9 +140,12 @@ test('Windows VPN configurations can be downloaded again with current routes', (
     expect(vpnService).toContain('useWindowsVpnConfigDownload');
     expect(source).toContain('配置可重复下载');
     expect(source).toContain('windowsVpnConfigDownload.mutate');
-    expect(edgeProjector.indexOf('syncEdgeBridgeRoutes')).toBeLessThan(
-        edgeProjector.indexOf('queueEdgeConfig', edgeProjector.indexOf('syncEdgeBridgeRoutes'))
-    );
+    const sync = edgeProjector.indexOf('co_await service::vpn::feature::syncEdgeBridgeRoutes');
+    const commit = edgeProjector.indexOf('co_await transaction.commit()', sync);
+    const queue = edgeProjector.indexOf('co_await service::vpn::queueEdgeConfig', sync);
+    expect(sync).toBeGreaterThanOrEqual(0);
+    expect(commit).toBeGreaterThan(sync);
+    expect(queue).toBeGreaterThan(commit);
 });
 
 test('Windows VPN configurations contain only active virtual LAN routes', () => {
@@ -144,11 +155,10 @@ test('Windows VPN configurations contain only active virtual LAN routes', () => 
 });
 
 test('Hub firewall still isolates Windows clients from unauthorized Edge tunnels', () => {
-    expect(vpnDomain).toContain('jsonb_agg(access.edge_address');
-    expect(vpnDomain).toContain('FROM vpn_effective_edge_access access WHERE access.peer_id = p.id');
-    expect(vpnDomain).toContain(
-        '.edgeAddresses = detail::textArrayJson(detail::rowValue(row, 5))'
-    );
+    expect(vpnBackend).toContain('string_agg(access.edge_address');
+    expect(vpnBackend).toContain('FROM vpn_effective_edge_access access WHERE access.peer_id = p.id');
+    expect(vpnRuntime).toContain('peerRecord.edgeAddresses');
+    expect(vpnRuntime).toContain('client.edgeAddresses.push_back');
     expect(vpnFirewall).toContain('client.edgeAddresses');
     expect(vpnFirewall).toContain('kOverlayPool.contains(*address)');
 });

@@ -13,7 +13,7 @@ void require(bool condition, const char* message) {
 
 std::string deviceSource() {
     auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
-                "service/domains/device/device.service.h";
+                "service/modules/device/device.service.h";
     std::ifstream input(path, std::ios::binary);
     require(input.good(), "cannot open device service source");
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
@@ -29,7 +29,7 @@ std::string deviceFormSource() {
 
 std::string deviceControllerSource() {
     auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
-                "service/domains/device/device.controller.h";
+                "service/modules/device/device.controller.h";
     std::ifstream input(path, std::ios::binary);
     require(input.good(), "cannot open device controller source");
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};

@@ -20,504 +20,682 @@
 #include <ruvia/web/redis/Redis.h>
 
 #include "service/common/http.h"
-#include "service/common/packet-log.h"
-#include "service/application/runtime.h"
+#include "service/common/log.h"
+#include "service/config/lifecycle.h"
 #include "service/config/schema.h"
 #include "service/config/storage.h"
-#include "service/domains/alert/alert.controller.h"
-#include "service/features/alert/runtime.h"
-#include "service/domains/gb28181/gb28181.controller.h"
-#include "service/domains/gb28181/media.controller.h"
-#include "service/features/gb28181/runtime.h"
-#include "service/domains/edge/edge.controller.h"
-#include "service/domains/vpn/vpn.controller.h"
-#include "service/features/vpn/runtime.h"
-#include "service/features/edge/dispatcher.h"
-#include "service/features/edge/gateway.h"
-#include "service/features/edge/projector.h"
-#include "service/domains/device/device.controller.h"
-#include "service/domains/link/link.controller.h"
-#include "service/domains/access/access.controller.h"
-#include "service/features/access/webhook.h"
-#include "service/features/event/outbox.h"
-#include "service/features/event/stream-multiplexer.h"
-#include "service/features/command/result.h"
-#include "service/features/command/queue.h"
-#include "service/features/runtime/projector.h"
-#include "service/features/runtime/reconciler.h"
-#include "service/domains/protocol/protocol.controller.h"
-#include "service/features/telemetry/persistence.h"
-#include "service/features/telemetry/latest.h"
-#include "service/features/collector/runtime.h"
-#include "service/features/live/runtime.h"
-#include "service/domains/auth/auth.controller.h"
-#include "service/domains/dept/dept.controller.h"
-#include "service/domains/role/role.controller.h"
-#include "service/domains/user/user.controller.h"
-#include "service/domains/system/operations.controller.h"
-#include "service/domains/system/outbox.controller.h"
+#include "service/features/access/access.runtime.h"
+#include "service/features/alert/alert.runtime.h"
+#include "service/features/collector/collector.runtime.h"
+#include "service/features/command/command.runtime.h"
+#include "service/features/command/command.service.h"
+#include "service/features/configuration/configuration.runtime.h"
+#include "service/features/configuration/configuration.service.h"
+#include "service/features/edge/edge.runtime.h"
+#include "service/features/edge/gateway/gateway.transport.h"
+#include "service/features/event/event.runtime.h"
+#include "service/features/event/stream_multiplexer/stream_multiplexer.runtime.h"
+#include "service/features/gb28181/gb28181.runtime.h"
+#include "service/features/gb28181/media/media.transport.h"
+#include "service/features/live/live.runtime.h"
+#include "service/features/telemetry/telemetry.runtime.h"
+#include "service/features/telemetry/telemetry.service.h"
+#include "service/features/vpn/vpn.runtime.h"
+#include "service/middleware/live.h"
+#include "service/modules/alert/alert.controller.h"
+#include "service/modules/device/device.controller.h"
+#include "service/modules/edge_node/edge_node.controller.h"
+#include "service/modules/gb28181/gb28181.controller.h"
+#include "service/modules/link/link.controller.h"
+#include "service/modules/open_access/open_access.controller.h"
+#include "service/modules/protocol/protocol.controller.h"
+#include "service/modules/system/auth/auth.controller.h"
+#include "service/modules/system/dept/dept.controller.h"
+#include "service/modules/system/operations/operations.controller.h"
+#include "service/modules/system/outbox/outbox.controller.h"
+#include "service/modules/system/role/role.controller.h"
+#include "service/modules/system/user/user.controller.h"
+#include "service/modules/vpn/vpn.controller.h"
 
-namespace
-{
+namespace {
 
-    template <typename String>
-    void assign(String &target, std::optional<std::string_view> value)
-    {
-        if (value)
-            target.assign(*value);
+template <typename String>
+void assign(String& target, std::optional<std::string_view> value) {
+    if (value) {
+        target.assign(*value);
     }
+}
 
-    ruvia::DbConfig databaseConfig(const ruvia::Env &env)
-    {
-        ruvia::DbConfig config;
-        config.driver = ruvia::DbDriver::kPostgreSql;
-        assign(config.host, env.get("DB_HOST"));
-        assign(config.username, env.get("DB_USERNAME"));
-        assign(config.password, env.get("DB_PASSWORD"));
-        assign(config.database, env.get("DB_DATABASE"));
-        config.port = env.get<std::uint16_t>("DB_PORT").value_or(5432);
-        config.acquireTimeout = std::chrono::seconds(2);
-        config.connectTimeout = std::chrono::seconds(5);
-        config.queryTimeout = std::chrono::seconds(30);
-        return config;
+ruvia::DbConfig databaseConfig(const ruvia::Env& env) {
+    ruvia::DbConfig config;
+    config.driver = ruvia::DbDriver::kPostgreSql;
+    assign(config.host, env.get("DB_HOST"));
+    assign(config.username, env.get("DB_USERNAME"));
+    assign(config.password, env.get("DB_PASSWORD"));
+    assign(config.database, env.get("DB_DATABASE"));
+    config.port = env.get<std::uint16_t>("DB_PORT").value_or(5432);
+    config.acquireTimeout = std::chrono::seconds(2);
+    config.connectTimeout = std::chrono::seconds(5);
+    config.queryTimeout = std::chrono::seconds(30);
+    return config;
+}
+
+ruvia::RedisConfig redisConfig(const ruvia::Env& env) {
+    ruvia::RedisConfig config;
+    assign(config.host, env.get("REDIS_HOST"));
+    assign(config.password, env.get("REDIS_PASSWORD"));
+    config.port = env.get<std::uint16_t>("REDIS_PORT").value_or(6379);
+    config.database = env.get<std::uint32_t>("REDIS_DATABASE").value_or(0);
+    const auto poolSize = env.get<unsigned>("REDIS_POOL_SIZE_PER_WORKER").value_or(2U);
+    if (poolSize == 0U || poolSize > 16U) {
+        throw std::runtime_error("REDIS_POOL_SIZE_PER_WORKER must be between 1 and 16");
     }
+    config.poolSizePerWorker = poolSize;
+    return config;
+}
 
-    ruvia::RedisConfig redisConfig(const ruvia::Env &env)
-    {
-        ruvia::RedisConfig config;
-        assign(config.host, env.get("REDIS_HOST"));
-        assign(config.password, env.get("REDIS_PASSWORD"));
-        config.port = env.get<std::uint16_t>("REDIS_PORT").value_or(6379);
-        config.database = env.get<std::uint32_t>("REDIS_DATABASE").value_or(0);
-        const auto poolSize = env.get<unsigned>("REDIS_POOL_SIZE_PER_WORKER").value_or(2U);
-        if (poolSize == 0U || poolSize > 16U)
-            throw std::runtime_error(
-                "REDIS_POOL_SIZE_PER_WORKER must be between 1 and 16");
-        config.poolSizePerWorker = poolSize;
-        return config;
+service::vpn::wireguard::HubConfig vpnHubConfig(const ruvia::Env& env) {
+    service::vpn::wireguard::HubConfig config;
+    assign(config.interfaceName, env.get("VPN_HUB_INTERFACE"));
+    assign(config.privateKey, env.get("VPN_HUB_PRIVATE_KEY"));
+    assign(config.publicKey, env.get("VPN_HUB_PUBLIC_KEY"));
+    assign(config.endpoint, env.get("VPN_HUB_ENDPOINT"));
+    config.listenPort = env.get<std::uint16_t>("VPN_HUB_LISTEN_PORT").value_or(51820);
+    return config;
+}
+
+std::filesystem::path runtimeDirectory(const char* executable) {
+    if (!executable || *executable == '\0') {
+        return std::filesystem::current_path();
     }
-
-    service::vpn::wireguard::HubConfig vpnHubConfig(const ruvia::Env &env)
-    {
-        service::vpn::wireguard::HubConfig config;
-        assign(config.interfaceName, env.get("VPN_HUB_INTERFACE"));
-        assign(config.privateKey, env.get("VPN_HUB_PRIVATE_KEY"));
-        assign(config.publicKey, env.get("VPN_HUB_PUBLIC_KEY"));
-        assign(config.endpoint, env.get("VPN_HUB_ENDPOINT"));
-        config.listenPort = env.get<std::uint16_t>("VPN_HUB_LISTEN_PORT").value_or(51820);
-        return config;
+    std::error_code error;
+    auto path = std::filesystem::weakly_canonical(std::filesystem::absolute(executable), error);
+    if (error) {
+        path = std::filesystem::absolute(executable);
     }
+    return path.parent_path();
+}
 
-    std::filesystem::path runtimeDirectory(const char *executable)
-    {
-        if (!executable || *executable == '\0')
-            return std::filesystem::current_path();
-        std::error_code error;
-        auto path = std::filesystem::weakly_canonical(std::filesystem::absolute(executable), error);
-        if (error)
-            path = std::filesystem::absolute(executable);
-        return path.parent_path();
+service::common::packet_log::Config packetLogConfig(const ruvia::Env& env, const std::filesystem::path& runtime) {
+    service::common::packet_log::Config config;
+    config.directory = std::filesystem::path(env.get("PACKET_LOG_DIRECTORY").value_or((runtime / "logs").string()));
+    config.level = service::common::packet_log::parseLevel(env.get("PACKET_LOG_LEVEL").value_or("DEBUG"));
+    return config;
+}
+
+bool envFlag(const ruvia::Env& env, std::string_view name, bool fallback = false) {
+    const auto value = env.get(name);
+    if (!value) {
+        return fallback;
     }
+    std::string normalized(*value);
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
+}
 
-    service::common::packet_log::Config packetLogConfig(const ruvia::Env &env,
-                                                        const std::filesystem::path &runtime)
-    {
-        service::common::packet_log::Config config;
-        config.directory = std::filesystem::path(env.get("PACKET_LOG_DIRECTORY").value_or((runtime / "logs").string()));
-        config.level =
-            service::common::packet_log::parseLevel(env.get("PACKET_LOG_LEVEL").value_or("DEBUG"));
-        return config;
+AppConfig gb28181Config(const ruvia::Env& env) {
+    AppConfig config;
+    config.enabled = envFlag(env, "GB28181_ENABLED");
+    config.sip.domain = std::string(env.get("GB28181_SIP_DOMAIN").value_or(""));
+    config.sip.id = std::string(env.get("GB28181_SIP_ID").value_or(""));
+    config.sip.host = std::string(env.get("GB28181_SIP_HOST").value_or("0.0.0.0"));
+    config.sip.publicIp = std::string(env.get("GB28181_SIP_PUBLIC_IP").value_or(""));
+    config.sip.port = env.get<std::uint16_t>("GB28181_SIP_PORT").value_or(5060);
+    config.sip.password = std::string(env.get("GB28181_SIP_PASSWORD").value_or(""));
+    config.sip.transport = std::string(env.get("GB28181_SIP_TRANSPORT").value_or("udp"));
+    config.sip.registrationTimeoutSeconds = env.get<int>("GB28181_REGISTRATION_TIMEOUT_SECONDS").value_or(180);
+    config.sip.commandTimeoutSeconds = env.get<int>("GB28181_COMMAND_TIMEOUT_SECONDS").value_or(10);
+    config.sip.inviteTimeoutSeconds = env.get<int>("GB28181_INVITE_TIMEOUT_SECONDS").value_or(15);
+    config.sip.viewerLeaseTimeoutSeconds = env.get<int>("GB28181_VIEWER_LEASE_TIMEOUT_SECONDS").value_or(90);
+    config.sip.nonceTtlSeconds = env.get<int>("GB28181_NONCE_TTL_SECONDS").value_or(300);
+    config.sip.deviceTimezoneOffsetMinutes = env.get<int>("GB28181_DEVICE_TIMEZONE_OFFSET_MINUTES").value_or(480);
+    config.sip.logging = envFlag(env, "GB28181_SIP_LOGGING", true);
+    config.media.zlmPublicBaseUrl = std::string(env.get("ZLM_PUBLIC_BASE_URL").value_or(""));
+    config.media.rtpPublicIp = std::string(env.get("GB28181_RTP_PUBLIC_IP").value_or(""));
+    config.media.playTokenSecret = std::string(env.get("GB28181_MEDIA_TOKEN_SECRET").value_or(""));
+    config.media.playTokenTtlSeconds = env.get<int>("GB28181_MEDIA_TOKEN_TTL_SECONDS").value_or(300);
+    config.media.corsOrigin = std::string(env.get("GB28181_MEDIA_CORS_ORIGIN").value_or(""));
+    config.media.workerThreads = env.get<int>("ZLM_WORKER_THREADS").value_or(1);
+    config.media.logLevel = env.get<int>("ZLM_LOG_LEVEL").value_or(2);
+    config.media.httpPort = env.get<std::uint16_t>("ZLM_HTTP_PORT").value_or(8080);
+    config.media.httpsPort = env.get<std::uint16_t>("ZLM_HTTPS_PORT").value_or(8443);
+    config.media.rtspPort = env.get<std::uint16_t>("ZLM_RTSP_PORT").value_or(8554);
+    config.media.rtspsPort = env.get<std::uint16_t>("ZLM_RTSPS_PORT").value_or(8322);
+    config.media.rtmpPort = env.get<std::uint16_t>("ZLM_RTMP_PORT").value_or(1935);
+    config.media.rtmpsPort = env.get<std::uint16_t>("ZLM_RTMPS_PORT").value_or(1936);
+    config.media.rtcPort = env.get<std::uint16_t>("ZLM_RTC_PORT").value_or(8000);
+    config.media.srtPort = env.get<std::uint16_t>("ZLM_SRT_PORT").value_or(9000);
+    config.media.rtpPortRangeStart = env.get<std::uint16_t>("GB28181_RTP_PORT_START").value_or(30000);
+    config.media.rtpPortRangeEnd = env.get<std::uint16_t>("GB28181_RTP_PORT_END").value_or(30500);
+    config.media.tlsEnabled = envFlag(env, "ZLM_TLS_ENABLED");
+    config.media.tlsPemPath = std::string(env.get("ZLM_TLS_PEM_PATH").value_or(""));
+    config.media.tlsPassword = std::string(env.get("ZLM_TLS_PASSWORD").value_or(""));
+    config.media.recordingEnabled = envFlag(env, "GB28181_RECORDING_ENABLED");
+    config.media.recordRoot = std::string(env.get("GB28181_RECORD_ROOT").value_or(""));
+    config.media.recordMaxSegmentSeconds = env.get<std::uint32_t>("GB28181_RECORD_MAX_SEGMENT_SECONDS").value_or(3600);
+    return config;
+}
+
+struct CommandLineOptions {
+    bool migrateOnly{};
+};
+
+CommandLineOptions parseCommandLine(int argc, char* argv[]) {
+    const bool migrateOnly = argc == 2 && std::string_view(argv[1]) == "--migrate-only";
+    if (argc > 1 && !migrateOnly) {
+        throw std::invalid_argument("usage: server [--migrate-only]");
     }
+    return CommandLineOptions{ .migrateOnly = migrateOnly };
+}
 
-    bool envFlag(const ruvia::Env &env, std::string_view name, bool fallback = false)
-    {
-        const auto value = env.get(name);
-        if (!value)
-            return fallback;
-        std::string normalized(*value);
-        std::transform(normalized.begin(), normalized.end(), normalized.begin(),
-                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-        return normalized == "1" || normalized == "true" || normalized == "yes" ||
-               normalized == "on";
+void configureEdge(const ruvia::Env& env) {
+    const auto platformId = env.get("EDGE_PLATFORM_ID").value_or(service::edge::protocol::kDefaultPlatformId);
+    if (!service::edge::protocol::configurePlatformId(platformId)) {
+        throw std::runtime_error("EDGE_PLATFORM_ID is invalid");
     }
-
-    AppConfig gb28181Config(const ruvia::Env &env)
-    {
-        AppConfig config;
-        config.enabled = envFlag(env, "GB28181_ENABLED");
-        config.sip.domain = std::string(env.get("GB28181_SIP_DOMAIN").value_or(""));
-        config.sip.id = std::string(env.get("GB28181_SIP_ID").value_or(""));
-        config.sip.host =
-            std::string(env.get("GB28181_SIP_HOST").value_or("0.0.0.0"));
-        config.sip.publicIp =
-            std::string(env.get("GB28181_SIP_PUBLIC_IP").value_or(""));
-        config.sip.port = env.get<std::uint16_t>("GB28181_SIP_PORT").value_or(5060);
-        config.sip.password =
-            std::string(env.get("GB28181_SIP_PASSWORD").value_or(""));
-        config.sip.transport =
-            std::string(env.get("GB28181_SIP_TRANSPORT").value_or("udp"));
-        config.sip.registrationTimeoutSeconds =
-            env.get<int>("GB28181_REGISTRATION_TIMEOUT_SECONDS").value_or(180);
-        config.sip.commandTimeoutSeconds =
-            env.get<int>("GB28181_COMMAND_TIMEOUT_SECONDS").value_or(10);
-        config.sip.inviteTimeoutSeconds =
-            env.get<int>("GB28181_INVITE_TIMEOUT_SECONDS").value_or(15);
-        config.sip.viewerLeaseTimeoutSeconds =
-            env.get<int>("GB28181_VIEWER_LEASE_TIMEOUT_SECONDS").value_or(90);
-        config.sip.nonceTtlSeconds =
-            env.get<int>("GB28181_NONCE_TTL_SECONDS").value_or(300);
-        config.sip.deviceTimezoneOffsetMinutes =
-            env.get<int>("GB28181_DEVICE_TIMEZONE_OFFSET_MINUTES").value_or(480);
-        config.sip.logging = envFlag(env, "GB28181_SIP_LOGGING", true);
-        config.media.zlmPublicBaseUrl =
-            std::string(env.get("ZLM_PUBLIC_BASE_URL").value_or(""));
-        config.media.rtpPublicIp =
-            std::string(env.get("GB28181_RTP_PUBLIC_IP").value_or(""));
-        config.media.playTokenSecret =
-            std::string(env.get("GB28181_MEDIA_TOKEN_SECRET").value_or(""));
-        config.media.playTokenTtlSeconds =
-            env.get<int>("GB28181_MEDIA_TOKEN_TTL_SECONDS").value_or(300);
-        config.media.corsOrigin =
-            std::string(env.get("GB28181_MEDIA_CORS_ORIGIN").value_or(""));
-        config.media.workerThreads = env.get<int>("ZLM_WORKER_THREADS").value_or(1);
-        config.media.logLevel = env.get<int>("ZLM_LOG_LEVEL").value_or(2);
-        config.media.httpPort = env.get<std::uint16_t>("ZLM_HTTP_PORT").value_or(8080);
-        config.media.httpsPort = env.get<std::uint16_t>("ZLM_HTTPS_PORT").value_or(8443);
-        config.media.rtspPort = env.get<std::uint16_t>("ZLM_RTSP_PORT").value_or(8554);
-        config.media.rtspsPort = env.get<std::uint16_t>("ZLM_RTSPS_PORT").value_or(8322);
-        config.media.rtmpPort = env.get<std::uint16_t>("ZLM_RTMP_PORT").value_or(1935);
-        config.media.rtmpsPort = env.get<std::uint16_t>("ZLM_RTMPS_PORT").value_or(1936);
-        config.media.rtcPort = env.get<std::uint16_t>("ZLM_RTC_PORT").value_or(8000);
-        config.media.srtPort = env.get<std::uint16_t>("ZLM_SRT_PORT").value_or(9000);
-        config.media.rtpPortRangeStart =
-            env.get<std::uint16_t>("GB28181_RTP_PORT_START").value_or(30000);
-        config.media.rtpPortRangeEnd =
-            env.get<std::uint16_t>("GB28181_RTP_PORT_END").value_or(30500);
-        config.media.tlsEnabled = envFlag(env, "ZLM_TLS_ENABLED");
-        config.media.tlsPemPath =
-            std::string(env.get("ZLM_TLS_PEM_PATH").value_or(""));
-        config.media.tlsPassword =
-            std::string(env.get("ZLM_TLS_PASSWORD").value_or(""));
-        config.media.recordingEnabled = envFlag(env, "GB28181_RECORDING_ENABLED");
-        config.media.recordRoot =
-            std::string(env.get("GB28181_RECORD_ROOT").value_or(""));
-        config.media.recordMaxSegmentSeconds =
-            env.get<std::uint32_t>("GB28181_RECORD_MAX_SEGMENT_SECONDS").value_or(3600);
-        return config;
+    const auto publicBaseUrl = env.get("EDGE_PUBLIC_BASE_URL").value_or(service::edge::protocol::kDefaultPublicBaseUrl);
+    if (!service::edge::protocol::configurePublicBaseUrl(publicBaseUrl)) {
+        throw std::runtime_error("EDGE_PUBLIC_BASE_URL is invalid");
     }
+}
 
-    void configureWeb(ruvia::App &app, const std::filesystem::path &runtime)
-    {
-        const auto webRoot = runtime / "web";
-        if (!std::filesystem::is_directory(webRoot))
-            return;
-        ruvia::DocumentRootConfig config;
-        config.root = webRoot;
-        config.staticOptions.indexFile = "index.html";
-        config.staticOptions.cacheControl = "no-cache";
-        app.documentRoot(std::move(config));
+ruvia::DbConfig migrateDatabase(
+    const ruvia::Env& env
+) {
+    auto db = databaseConfig(env);
+    const auto storagePolicy = service::config::deviceDataStoragePolicy(env);
+    const auto storagePolicyMigration = service::config::deviceDataStoragePolicyMigration(storagePolicy);
+    std::vector<ruvia::DbMigration> migrations;
+    migrations.reserve(service::config::kSchemaMigrations.size() + 1);
+    migrations.insert(migrations.end(), service::config::kSchemaMigrations.begin(), service::config::kSchemaMigrations.end());
+    migrations.emplace_back(ruvia::DbMigrationOptions{
+        .id = storagePolicyMigration.id,
+        .sql = storagePolicyMigration.sql,
+    });
+    ruvia::DbMigratorOptions migrationOptions;
+    migrationOptions.table = "sys_schema_migrations";
+    const auto report = ruvia::DbMigrator::migrate(db, migrations, std::move(migrationOptions));
+    std::cout << "database migrations: applied=" << report.applied().size()
+              << ", skipped=" << report.skipped().size() << '\n';
+    std::cout << "device_data storage policy: chunk="
+              << storagePolicy.chunkIntervalHours << "h, compression="
+              << (storagePolicy.compressionEnabled
+                      ? std::to_string(storagePolicy.compressionAfterHours) + "h"
+                      : "disabled")
+              << ", mutable-window=" << storagePolicy.mutableWindowHours << "h\n";
+    return db;
+}
+
+std::size_t resolveWorkerCount(
+    std::optional<unsigned> configured,
+    unsigned automatic,
+    const char* name
+) {
+    const auto count = configured.value_or(automatic);
+    if (count == 0U || count > 64U) {
+        throw std::runtime_error(std::string(name) + " must be between 1 and 64");
     }
+    return static_cast<std::size_t>(count);
+}
 
-    ruvia::Task<ruvia::HttpResponse> handleError(ruvia::Context &c, ruvia::HttpErrorInfo info)
-    {
-        c.status(info.status());
-        const auto message = info.message().empty() ? std::string_view("请求失败") : info.message();
-        co_return c.json(service::common::error(
-            c, service::common::errorCode(info.code(), info.status().value()), message));
+struct WorkerBudget {
+    unsigned cpu{};
+    unsigned gb28181{};
+    std::size_t service{};
+    std::size_t collector{};
+};
+
+WorkerBudget workerBudget(
+    const ruvia::Env& env,
+    const AppConfig& gb28181
+) {
+    const auto cpu = std::max(2U, std::thread::hardware_concurrency());
+    const auto mediaWorkers = static_cast<unsigned>(std::max(1, gb28181.media.workerThreads));
+    // SIP runs inside Collector Workers and HTTP media forwarding inside Service
+    // Workers. Only ZLM's internal pools reserve additional threads.
+    const auto gb28181WorkerCount = gb28181.enabled ? 2U * mediaWorkers : 0U;
+    // Service and Collector each need at least one worker. On a host with
+    // fewer CPUs than that hard minimum plus the enabled media runtime,
+    // controlled oversubscription is unavoidable and remains explicit.
+    const auto businessCpu = std::max(2U, cpu > gb28181WorkerCount ? cpu - gb28181WorkerCount : 0U);
+    return WorkerBudget{
+        .cpu = cpu,
+        .gb28181 = gb28181WorkerCount,
+        .service = resolveWorkerCount(
+            env.get<unsigned>("SERVICE_WORKERS"),
+            (businessCpu + 1U) / 2U,
+            "SERVICE_WORKERS"
+        ),
+        .collector = resolveWorkerCount(
+            env.get<unsigned>("COLLECTOR_WORKERS"),
+            businessCpu / 2U,
+            "COLLECTOR_WORKERS"
+        ),
+    };
+}
+
+service::message::outbox::Policy outboxPolicy(const ruvia::Env& env) {
+    service::message::outbox::Policy policy;
+    policy.pendingAlertThreshold = env.get<std::int64_t>("OUTBOX_PENDING_ALERT_THRESHOLD").value_or(1000);
+    policy.oldestAgeAlertMs = env.get<std::int64_t>("OUTBOX_OLDEST_AGE_ALERT_MS").value_or(300000);
+    policy.deadLetterAlertThreshold = env.get<std::int64_t>("OUTBOX_DEAD_LETTER_ALERT_THRESHOLD").value_or(1);
+    policy.receiptRetentionDays = env.get<std::int64_t>("OUTBOX_RECEIPT_RETENTION_DAYS").value_or(30);
+    if (policy.pendingAlertThreshold < 0 || policy.oldestAgeAlertMs < 0 ||
+        policy.deadLetterAlertThreshold < 0 || policy.receiptRetentionDays < 0 ||
+        policy.receiptRetentionDays > 3650) {
+        throw std::runtime_error("OUTBOX policy values are invalid");
     }
+    return policy;
+}
 
-    ruvia::Task<void>
-    startCollector(ruvia::WebWorkerContext &context,
-                     std::shared_ptr<service::collector::Runtime> collector,
-                     ruvia::RedisConfig redis, std::size_t workerCount,
-                     std::shared_ptr<std::promise<void>> started)
-    {
-        try
-        {
-            (void)co_await service::runtime::project(context);
-            collector->start(std::move(redis), workerCount);
-            // Collector startup clears the shared ephemeral device runtime namespace.
-            // Rehydrate telemetry only after that reset so live updates retain the
-            // device identity required by the Redis projection script.
-            co_await service::telemetry::latest::hydrate(context);
-            started->set_value();
+struct RuntimeComponents {
+    std::shared_ptr<service::message::WorkerStreamMultiplexer> multiplexer;
+    std::shared_ptr<service::edge::DispatcherRuntime> dispatcher;
+    std::shared_ptr<service::observability::Registry> observability;
+    std::shared_ptr<service::application::Runtime> lifecycle;
+    std::shared_ptr<service::telemetry::PersistenceRuntime> telemetry;
+    std::shared_ptr<service::live::Runtime> liveQueries;
+    std::shared_ptr<service::live::QueryRuntime> apiQueries;
+    std::shared_ptr<service::rpc::Runtime> control;
+    std::shared_ptr<service::command::ResultRuntime> commandResults;
+    std::shared_ptr<service::access::WebhookRuntime> openWebhooks;
+    std::shared_ptr<service::runtime::Reconciler> configReconciler;
+    std::shared_ptr<service::edge::Projector> edgeProjector;
+    std::shared_ptr<service::vpn::Runtime> vpnRuntime;
+    std::shared_ptr<service::gb28181::Projector> gb28181Projector;
+    std::shared_ptr<service::alert::Runtime> alerts;
+    std::shared_ptr<service::message::outbox::Runtime> outbox;
+};
+
+struct Components {
+    AppConfig gb28181;
+    ruvia::DbConfig database;
+    ruvia::RedisConfig serviceRedis;
+    ruvia::RedisConfig collectorRedis;
+    std::vector<std::shared_ptr<RuntimeComponents>> workers;
+    std::shared_ptr<service::collector::Runtime> collector;
+    std::shared_ptr<service::observability::Registry> observability;
+    std::shared_ptr<service::application::Runtime> applicationRuntime;
+};
+
+void registerRpcHandlers(
+    const std::shared_ptr<service::rpc::Runtime>& control,
+    const ruvia::Env& env
+) {
+    control->add("telemetry", service::telemetry::ControlRuntime::handle);
+    control->add("alert", service::alert::ControlRuntime::handle);
+    control->add("access", service::access::ControlRuntime::handle);
+    control->add("command", service::command::ControlRuntime::handle);
+    control->add("gb28181", service::gb28181::GbControlRuntime::handle);
+    control->add("edge", service::edge::EdgeControlRuntime::handle);
+    auto vpnControl = std::make_shared<service::vpn::VpnControlRuntime>(
+        vpnHubConfig(env),
+        std::string(env.get("EDGE_PLATFORM_ID").value_or(service::edge::protocol::kDefaultPlatformId))
+    );
+    control->add(
+        "vpn",
+        [vpnControl](ruvia::WebWorkerContext& context, std::string_view operation, std::string_view payload, ruvia::StopToken stop) {
+            return vpnControl->handle(context, operation, payload, stop);
         }
-        catch (...)
-        {
-            try
-            {
-                started->set_exception(std::current_exception());
-            }
-            catch (...)
-            {
-            }
-        }
+    );
+}
+
+Components createComponents(
+    const ruvia::Env& env,
+    const AppConfig& gb28181,
+    const WorkerBudget& budget,
+    ruvia::DbConfig database,
+    ruvia::RedisConfig serviceRedis
+) {
+    Components components;
+    components.gb28181 = gb28181;
+    components.database = std::move(database);
+    components.serviceRedis = std::move(serviceRedis);
+    components.collectorRedis = components.serviceRedis;
+    // One worker-local XREAD multiplexes wakeups for all Service Stream tasks.
+    // The tasks retain separate consumer groups and use the ordinary pool to drain.
+    components.serviceRedis.blockingPoolSizePerWorker = 4;
+
+    components.collector = std::make_shared<service::collector::Runtime>();
+    components.observability = std::make_shared<service::observability::Registry>();
+    for (std::size_t index = 0; index < budget.service; ++index) {
+        auto owner = std::make_shared<RuntimeComponents>();
+        auto& runtime = *owner;
+        runtime.observability = std::make_shared<service::observability::Registry>();
+        runtime.observability->identifyWorker(index, budget.service);
+        runtime.observability->gauge("iot_engine_service_workers", budget.service);
+        runtime.observability->gauge("iot_engine_collector_workers", budget.collector);
+        runtime.lifecycle = std::make_shared<service::application::Runtime>(*runtime.observability);
+        runtime.multiplexer = std::make_shared<service::message::WorkerStreamMultiplexer>();
+        runtime.dispatcher = std::make_shared<service::edge::DispatcherRuntime>();
+        runtime.telemetry = std::make_shared<service::telemetry::PersistenceRuntime>();
+        runtime.liveQueries = std::make_shared<service::live::Runtime>(budget.collector);
+        runtime.apiQueries = std::make_shared<service::live::QueryRuntime>();
+        runtime.control = std::make_shared<service::rpc::Runtime>();
+        registerRpcHandlers(runtime.control, env);
+        runtime.commandResults = std::make_shared<service::command::ResultRuntime>();
+        runtime.openWebhooks = std::make_shared<service::access::WebhookRuntime>();
+        runtime.configReconciler = std::make_shared<service::runtime::Reconciler>();
+        runtime.edgeProjector = std::make_shared<service::edge::Projector>();
+        const auto enableVpnHub = env.get<bool>("VPN_HUB_ENABLED").value_or(true);
+        runtime.vpnRuntime = enableVpnHub
+            ? std::make_shared<service::vpn::Runtime>(vpnHubConfig(env))
+            : nullptr;
+        runtime.gb28181Projector = gb28181.enabled
+            ? std::make_shared<service::gb28181::Projector>()
+            : nullptr;
+        runtime.alerts = std::make_shared<service::alert::Runtime>();
+        runtime.outbox = std::make_shared<service::message::outbox::Runtime>(
+            *runtime.observability,
+            budget.collector,
+            budget.service,
+            components.database,
+            outboxPolicy(env)
+        );
+        components.workers.push_back(std::move(owner));
     }
+    components.applicationRuntime = std::make_shared<service::application::Runtime>(*components.observability);
+    return components;
+}
+
+void configureWeb(ruvia::App& app, const std::filesystem::path& runtime) {
+    const auto webRoot = runtime / "web";
+    if (!std::filesystem::is_directory(webRoot)) {
+        return;
+    }
+    ruvia::DocumentRootConfig config;
+    config.root = webRoot;
+    config.staticOptions.indexFile = "index.html";
+    config.staticOptions.cacheControl = "no-cache";
+    app.documentRoot(std::move(config));
+}
+
+ruvia::Task<ruvia::HttpResponse> handleError(
+    ruvia::Context& c,
+    ruvia::HttpErrorInfo info
+) {
+    c.status(info.status());
+    const auto message = info.message().empty() ? std::string_view("请求失败") : info.message();
+    co_return c.json(service::common::error(c, service::common::errorCode(info.code(), info.status().value()), message));
+}
+
+// Only the supervisor visits the owner collection. Each posted operation owns one
+// worker's components; business workers never receive another worker's handle.
+template <typename Operation>
+void initializeWorker(ruvia::WebWorkerHandle worker, Operation operation) {
+    auto ready = std::make_shared<std::promise<void>>();
+    auto completion = ready->get_future();
+    if (!worker.post([operation = std::move(operation), ready](ruvia::WebWorkerContext& context) mutable -> ruvia::Task<void> {
+                   try {
+                       co_await operation(context);
+                       ready->set_value();
+                   } catch (...) {
+                       ready->set_exception(std::current_exception());
+                   }
+               })
+             .accepted()) {
+        throw std::runtime_error("service worker rejected initialization");
+    }
+    completion.get();
+}
+
+void registerWorkerLifecycle(RuntimeComponents& c, ruvia::WebWorkerHandle worker, std::size_t index, std::size_t count, std::size_t collectors) {
+    auto& lifecycle = *c.lifecycle;
+    lifecycle.add({ .name = "stream-multiplexer", .start = [m = c.multiplexer, worker, index] {
+                       m->start(worker, index);
+                   },
+                    .stop = [m = c.multiplexer] {
+                        m->stop();
+                    } });
+    lifecycle.add({ .name = "api-live-queries", .start = [r = c.apiQueries, worker, index] {
+                       r->start(worker, index);
+                   },
+                    .stop = [r = c.apiQueries] {
+                        r->stop();
+                    } });
+    lifecycle.add({ .name = "live-queries", .start = [r = c.liveQueries, worker, index, count] {
+                       r->start(worker, index, count);
+                   },
+                    .stop = [r = c.liveQueries] {
+                        r->stop();
+                    } });
+    lifecycle.add({ .name = "outbox", .start = [r = c.outbox, worker] {
+                       r->start(worker);
+                   },
+                    .stop = [r = c.outbox] {
+                        r->stop();
+                    } });
+    lifecycle.add({ .name = "telemetry", .start = [r = c.telemetry, worker, index, count, collectors] {
+                       r->start(worker, index, count, collectors);
+                   },
+                    .stop = [r = c.telemetry] {
+                        r->stop();
+                    } });
+    lifecycle.add({ .name = "command-results", .start = [r = c.commandResults, worker, index, count, collectors] {
+                       r->start(worker, index, count, collectors);
+                   },
+                    .stop = [r = c.commandResults] {
+                        r->stop();
+                    } });
+    lifecycle.add({ .name = "webhooks", .start = [r = c.openWebhooks, worker, index, count] {
+                       r->start(worker, index, count);
+                   },
+                    .stop = [r = c.openWebhooks] {
+                        r->stop();
+                    } });
+    lifecycle.add({ .name = "edge-dispatcher", .start = [r = c.dispatcher, worker, index, count] {
+                       r->start(worker, index, count);
+                   },
+                    .stop = [r = c.dispatcher] {
+                        r->stop();
+                    } });
+    lifecycle.add({ .name = "edge-projector", .start = [r = c.edgeProjector, worker, index, count] {
+                       r->start(worker, index, count);
+                   },
+                    .stop = [r = c.edgeProjector] {
+                        r->stop();
+                    } });
+    lifecycle.add({ .name = "alerts", .start = [r = c.alerts, worker, index, count] {
+                       r->start(worker, index, count);
+                   },
+                    .stop = [r = c.alerts] {
+                        r->stop();
+                    } });
+    if (c.vpnRuntime) {
+        lifecycle.add({ .name = "vpn", .start = [r = c.vpnRuntime, worker] {
+                           r->start(worker);
+                       },
+                        .stop = [r = c.vpnRuntime] {
+                            r->stop();
+                        } });
+    }
+    lifecycle.add({ .name = "config-reconciler", .start = [r = c.configReconciler, worker, index, count, collectors] {
+                       r->start(worker, index, count, collectors);
+                   },
+                    .stop = [r = c.configReconciler] {
+                        r->stop();
+                    } });
+    lifecycle.add({ .name = "control", .start = [r = c.control, worker, index] {
+                       r->start(worker, index);
+                   },
+                    .stop = [r = c.control] {
+                        r->stop();
+                    } });
+    if (c.gb28181Projector) {
+        lifecycle.add({ .name = "gb28181-projector", .start = [r = c.gb28181Projector, worker, index, count] {
+                           (void)r->start(worker, index, count);
+                       },
+                        .stop = [r = c.gb28181Projector] {
+                            r->stop();
+                        } });
+    }
+}
+
+auto makeApplicationStart(ruvia::App& app, Components& components, std::size_t collectors) {
+    return [&app, &components, collectors] {
+        const auto workers = app.workers();
+        if (workers.empty() || workers.size() != components.workers.size()) {
+            throw std::runtime_error("service worker ownership does not match configuration");
+        }
+        const auto count = workers.size();
+        auto& supervisor = *components.applicationRuntime;
+        std::vector<std::string> preparation;
+        for (std::size_t index = 0; index < count; ++index) {
+            const auto worker = workers[index];
+            const auto owner = components.workers[index];
+            const auto name = "prepare-worker-" + std::to_string(index);
+            preparation.push_back(name);
+            supervisor.add({ .name = name, .start = [owner, worker, index] {
+                                owner->multiplexer->configure(worker, index);
+                                initializeWorker(worker, [owner](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
+                                    service::observability::configureProcessRegistry(*owner->observability);
+                                    (void)co_await service::runtime::ConfigurationService::project(context);
+                                });
+                            },
+                             .stop = [] {
+                             } });
+        }
+        if (components.gb28181.enabled) {
+            supervisor.add({ .name = "gb28181-sdk", .dependencies = preparation, .start = [] {
+                                if (!sdkSupervisor().started()) {
+                                    throw std::runtime_error("ZLMediaKit SDK is not ready");
+                                }
+                            },
+                             .stop = [] {
+                                 sdkSupervisor().stop();
+                             } });
+            preparation.push_back("gb28181-sdk");
+        }
+        supervisor.add({ .name = "collector", .dependencies = preparation, .start = [collector = components.collector, redis = components.collectorRedis, gb28181 = components.gb28181, collectors, owners = components.workers]() mutable {
+                            collector->start(redis, collectors, gb28181);
+                            for (const auto& owner : owners) {
+                                owner->observability->component("collector", service::observability::ComponentState::Ready);
+                            }
+                        },
+                         .stop = [collector = components.collector, owners = components.workers] {
+                             collector->stop();
+                             for (const auto& owner : owners) {
+                                 owner->observability->component("collector", service::observability::ComponentState::Stopped);
+                             }
+                         } });
+        for (std::size_t index = 0; index < count; ++index) {
+            const auto worker = workers[index];
+            const auto owner = components.workers[index];
+            registerWorkerLifecycle(*owner, worker, index, count, collectors);
+            supervisor.add({ .name = "service-worker-" + std::to_string(index), .dependencies = { "collector" }, .start = [owner, worker, index, count] {
+                                initializeWorker(worker, [index, count](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
+                                    co_await service::telemetry::latest::hydrate(context, index, count);
+                                });
+                                owner->lifecycle->start();
+                            },
+                             .stop = [owner] {
+                                 owner->lifecycle->stop();
+                             } });
+        }
+        supervisor.start();
+    };
+}
+
+void configureServer(
+    ruvia::App& app,
+    Components& components,
+    const WorkerBudget& budget
+) {
+    auto applicationStart = makeApplicationStart(app, components, budget.collector);
+    const auto applicationRuntime = components.applicationRuntime;
+    const auto observability = components.observability;
+    app.database(ruvia::DbRegistrationConfig{
+        .alias = "telemetry-history",
+        .config = components.database,
+    });
+    app.database(ruvia::DbRegistrationConfig{
+        .alias = "control",
+        .config = components.database,
+    });
+    app.database(ruvia::DbRegistrationConfig{
+        .alias = "vpn-coordination",
+        .config = components.database,
+    });
+    app.useWorkerState<service::edge::Dispatcher>()
+        .database(ruvia::DbRegistrationConfig{
+            .config = std::move(components.database),
+        })
+        .redis(ruvia::RedisRegistrationConfig{
+            .config = std::move(components.serviceRedis),
+        })
+        .onStart(std::move(applicationStart))
+        .onStop([applicationRuntime, observability] {
+            // Keep the registry alive until every component has stopped.
+            (void)observability;
+            applicationRuntime->stop();
+        })
+        .onError(&handleError)
+        .listen(ruvia::ListenConfig{
+            .address = std::string(app.env().get("HOST").value_or("0.0.0.0")),
+            .http = app.env().get<std::uint16_t>("PORT").value_or(1102),
+        })
+        .server(ruvia::ServerConfig{
+            .workerCount = budget.service,
+            .maxStreamBodyBytes = 129U * 1024U * 1024U,
+            .maxWebSocketMessageBytes = 16U * 1024U,
+        })
+        .run();
+}
 
 } // namespace
 
-int main(int argc, char *argv[])
-{
-    try
-    {
-        const bool migrateOnly =
-            argc == 2 && std::string_view(argv[1]) == "--migrate-only";
-        if (argc > 1 && !migrateOnly)
-            throw std::invalid_argument("usage: server [--migrate-only]");
-
-        auto &app = ruvia::app();
+int main(int argc, char* argv[]) {
+    try {
+        const auto commandLine = parseCommandLine(argc, argv);
+        auto& app = ruvia::app();
         app.loadDotenv();
-        if (!service::edge::protocol::configurePlatformId(
-                app.env().get("EDGE_PLATFORM_ID")
-                    .value_or(service::edge::protocol::kDefaultPlatformId)))
-            throw std::runtime_error("EDGE_PLATFORM_ID is invalid");
-        if (!service::edge::protocol::configurePublicBaseUrl(
-                app.env().get("EDGE_PUBLIC_BASE_URL")
-                    .value_or(service::edge::protocol::kDefaultPublicBaseUrl)))
-            throw std::runtime_error("EDGE_PUBLIC_BASE_URL is invalid");
+        configureEdge(app.env());
         const auto runtime = runtimeDirectory(argc > 0 ? argv[0] : nullptr);
         service::common::packet_log::initialize(packetLogConfig(app.env(), runtime));
         auto gb28181 = gb28181Config(app.env());
 
-        service::gb28181::runtime().configure(gb28181);
-
-        auto db = databaseConfig(app.env());
-        const auto storagePolicy = service::config::deviceDataStoragePolicy(app.env());
-        const auto storagePolicyMigration =
-            service::config::deviceDataStoragePolicyMigration(storagePolicy);
-        std::vector<ruvia::DbMigration> migrations;
-        migrations.reserve(service::config::kSchemaMigrations.size() + 1);
-        migrations.insert(migrations.end(), service::config::kSchemaMigrations.begin(),
-                          service::config::kSchemaMigrations.end());
-        migrations.emplace_back(ruvia::DbMigrationOptions{
-            .id = storagePolicyMigration.id,
-            .sql = storagePolicyMigration.sql,
-        });
-        ruvia::DbMigratorOptions migrationOptions;
-        migrationOptions.table = "sys_schema_migrations";
-        const auto report =
-            ruvia::DbMigrator::migrate(db, migrations, std::move(migrationOptions));
-        std::cout << "database migrations: applied=" << report.applied().size()
-                  << ", skipped=" << report.skipped().size() << '\n';
-        std::cout << "device_data storage policy: chunk="
-                  << storagePolicy.chunkIntervalHours << "h, compression="
-                  << (storagePolicy.compressionEnabled
-                          ? std::to_string(storagePolicy.compressionAfterHours) + "h"
-                          : "disabled")
-                  << ", mutable-window=" << storagePolicy.mutableWindowHours << "h\n";
-        if (migrateOnly)
+        auto db = migrateDatabase(app.env());
+        if (commandLine.migrateOnly) {
             return 0;
+        }
 
         configureWeb(app, runtime);
-        const auto cpu = std::max(2U, std::thread::hardware_concurrency());
-        const auto mediaWorkers =
-            static_cast<unsigned>(std::max(1, gb28181.media.workerThreads));
-        // GB28181 owns one SIP actor, one media proxy loop, and two ZLM pools
-        // (EventPoller and WorkThread). Reserve those threads before splitting
-        // the remaining business budget between northbound/southbound workers.
-        const auto gb28181WorkerCount =
-            gb28181.enabled ? 2U + 2U * mediaWorkers : 0U;
-        // Service and Collector each need at least one worker. On a host with
-        // fewer CPUs than that hard minimum plus the enabled media runtime,
-        // controlled oversubscription is unavoidable and remains explicit.
-        const auto businessCpu =
-            std::max(2U, cpu > gb28181WorkerCount
-                             ? cpu - gb28181WorkerCount
-                             : 0U);
-        const auto resolveWorkerCount = [](std::optional<unsigned> configured,
-                                           unsigned automatic, const char* name) {
-            const auto count = configured.value_or(automatic);
-            if (count == 0U || count > 64U)
-                throw std::runtime_error(std::string(name) + " must be between 1 and 64");
-            return static_cast<std::size_t>(count);
-        };
-        const auto serviceWorkerCount = resolveWorkerCount(
-            app.env().get<unsigned>("SERVICE_WORKERS"), (businessCpu + 1U) / 2U,
-            "SERVICE_WORKERS");
-        const auto collectorWorkerCount = resolveWorkerCount(
-            app.env().get<unsigned>("COLLECTOR_WORKERS"), businessCpu / 2U,
-            "COLLECTOR_WORKERS");
-        service::message::configureWorkerWakeRouting(serviceWorkerCount);
-        std::cout << "worker budget: cpu=" << cpu
-                  << ", service=" << serviceWorkerCount
-                  << ", collector=" << collectorWorkerCount
-                  << ", gb28181=" << gb28181WorkerCount << '\n';
+        if (gb28181.enabled) {
+            // Start the SDK before registering the worker-local HTTP origin so
+            // port-zero configuration uses the actual bound SDK listener port.
+            sdkSupervisor().configure(gb28181.media);
+            sdkSupervisor().start();
+            app.httpClient({ .alias = "gb-media", .config = {
+                                                      .scheme = ruvia::HttpScheme::kHttp,
+                                                      .host = "127.0.0.1",
+                                                      .port = sdkSupervisor().ports().http,
+                                                      .connectionCount = 64,
+                                                      .requestTimeout = std::nullopt,
+                                                      .maxResponseBytes = 2U * 1024U * 1024U,
+                                                      .protocol = ruvia::HttpClientProtocol::kHttp1Only,
+                                                  } });
+        }
+        const auto budget = workerBudget(app.env(), gb28181);
+        std::cout << "worker budget: cpu=" << budget.cpu
+                  << ", service=" << budget.service
+                  << ", collector=" << budget.collector
+                  << ", gb28181=" << budget.gb28181 << '\n';
         auto serviceRedis = redisConfig(app.env());
-        auto collectorRedis = serviceRedis;
-        // One worker-local XREAD multiplexes wakeups for all Service Stream tasks.
-        // The tasks retain separate consumer groups and use the ordinary pool to drain.
-        serviceRedis.blockingPoolSizePerWorker = 2;
-        auto collector = std::make_shared<service::collector::Runtime>();
-        auto telemetry = std::make_shared<service::telemetry::PersistenceRuntime>();
-        auto liveQueries = std::make_shared<service::live::Runtime>(collectorWorkerCount);
-        auto commandResults = std::make_shared<service::command::ResultRuntime>();
-        auto openWebhooks = std::make_shared<service::access::WebhookRuntime>();
-        auto configReconciler = std::make_shared<service::runtime::Reconciler>();
-        auto edgeProjector = std::make_shared<service::edge::Projector>();
-        const auto enableVpnHub = app.env().get<bool>("VPN_HUB_ENABLED").value_or(true);
-        auto vpnRuntime = enableVpnHub
-                              ? std::make_shared<service::vpn::Runtime>(vpnHubConfig(app.env()))
-                              : nullptr;
-        auto gb28181Projector = gb28181.enabled
-                                    ? std::make_shared<service::gb28181::Projector>()
-                                    : nullptr;
-        auto alerts = std::make_shared<service::alert::Runtime>();
-        auto observability = std::make_shared<service::observability::Registry>();
-        service::observability::configureProcessRegistry(*observability);
-        observability->gauge("iot_engine_service_workers",
-                             static_cast<std::int64_t>(serviceWorkerCount));
-        observability->gauge("iot_engine_collector_workers",
-                             static_cast<std::int64_t>(collectorWorkerCount));
-        service::message::outbox::Policy outboxPolicy;
-        outboxPolicy.pendingAlertThreshold =
-            app.env().get<std::int64_t>("OUTBOX_PENDING_ALERT_THRESHOLD").value_or(1000);
-        outboxPolicy.oldestAgeAlertMs =
-            app.env().get<std::int64_t>("OUTBOX_OLDEST_AGE_ALERT_MS").value_or(300000);
-        outboxPolicy.deadLetterAlertThreshold =
-            app.env().get<std::int64_t>("OUTBOX_DEAD_LETTER_ALERT_THRESHOLD").value_or(1);
-        outboxPolicy.receiptRetentionDays =
-            app.env().get<std::int64_t>("OUTBOX_RECEIPT_RETENTION_DAYS").value_or(30);
-        if (outboxPolicy.pendingAlertThreshold < 0 || outboxPolicy.oldestAgeAlertMs < 0 ||
-            outboxPolicy.deadLetterAlertThreshold < 0 ||
-            outboxPolicy.receiptRetentionDays < 0 || outboxPolicy.receiptRetentionDays > 3650)
-            throw std::runtime_error("OUTBOX policy values are invalid");
-        auto outbox = std::make_shared<service::message::outbox::Runtime>(
-            *observability, collectorWorkerCount, serviceWorkerCount, db, outboxPolicy);
-        auto applicationRuntime =
-            std::make_shared<service::application::Runtime>(*observability);
-        app.database(ruvia::DbRegistrationConfig{.alias = "telemetry-history", .config = db});
-        app.useWorkerState<service::edge::Dispatcher>()
-            .database(ruvia::DbRegistrationConfig{.config = std::move(db)})
-            .redis(ruvia::RedisRegistrationConfig{.config = std::move(serviceRedis)})
-            .onStart([collector, telemetry, commandResults, openWebhooks, configReconciler,
-                    edgeProjector, vpnRuntime, gb28181Projector, alerts, outbox, liveQueries,
-                      applicationRuntime,
-                      collectorRedis = std::move(collectorRedis),
-                      collectorWorkerCount, &app]() mutable
-                     {
-                auto workers = app.workers();
-                if (workers.empty())
-                    throw std::runtime_error(
-                        "service: no worker available for config projection");
-                service::message::workerStreamMultiplexer().configure(workers);
-                applicationRuntime->add({
-                    .name = "live-queries",
-                    .start = [liveQueries, workers] { liveQueries->start(workers.front()); },
-                    .stop = [liveQueries] { liveQueries->stop(); }});
-                applicationRuntime->add({
-                    .name = "outbox",
-                    .start = [outbox, workers] { outbox->start(workers); },
-                    .stop = [outbox] { outbox->stop(); }});
-                applicationRuntime->add({
-                    .name = "telemetry",
-                    .start = [telemetry, workers, collectorWorkerCount] {
-                        telemetry->start(workers, collectorWorkerCount);
-                    },
-                    .stop = [telemetry] { telemetry->stop(); }});
-                applicationRuntime->add({
-                    .name = "command-results",
-                    .start = [commandResults, workers, collectorWorkerCount] {
-                        commandResults->start(workers, collectorWorkerCount);
-                    },
-                    .stop = [commandResults] { commandResults->stop(); }});
-                applicationRuntime->add({
-                    .name = "webhooks",
-                    .dependencies = {"outbox"},
-                    .start = [openWebhooks, workers] { openWebhooks->start(workers); },
-                    .stop = [openWebhooks] { openWebhooks->stop(); }});
-                applicationRuntime->add({
-                    .name = "edge-dispatcher",
-                    .start = [workers] {
-                        service::edge::dispatcherRuntime().start(workers);
-                    },
-                    .stop = [] { service::edge::dispatcherRuntime().stop(); }});
-                applicationRuntime->add({
-                    .name = "edge-projector",
-                    .start = [edgeProjector, workers] {
-                        edgeProjector->start(workers);
-                    },
-                    .stop = [edgeProjector] { edgeProjector->stop(); }});
-                if (vpnRuntime) {
-                    applicationRuntime->add({
-                        .name = "vpn",
-                        .start = [vpnRuntime, workers] { vpnRuntime->start(workers); },
-                        .stop = [vpnRuntime] { vpnRuntime->stop(); }});
-                }
-                applicationRuntime->add({
-                    .name = "alerts",
-                    .dependencies = {"telemetry"},
-                    .start = [alerts, workers] { alerts->start(workers); },
-                    .stop = [alerts] { alerts->stop(); }});
-                if (gb28181Projector) {
-                    applicationRuntime->add({
-                        .name = "gb28181",
-                        .start = [gb28181Projector, workers] {
-                            auto snapshot = gb28181Projector->start(workers);
-                            service::gb28181::runtime().attachProjector(
-                                gb28181Projector, std::move(snapshot));
-                            service::gb28181::runtime().start();
-                        },
-                        .stop = [gb28181Projector] {
-                            service::gb28181::runtime().stop();
-                            gb28181Projector->stop();
-                        }});
-                }
-                applicationRuntime->add({
-                    .name = "collector",
-                    .dependencies = {"telemetry", "command-results", "edge-projector",
-                                     "alerts"},
-                    .start = [collector, collectorRedis = std::move(collectorRedis),
-                              collectorWorkerCount, worker = workers.front()]() mutable {
-                        auto started = std::make_shared<std::promise<void>>();
-                        auto ready = started->get_future();
-                        const auto posted = worker.post(
-                            [collector, collectorRedis = std::move(collectorRedis),
-                             collectorWorkerCount, started](
-                                ruvia::WebWorkerContext& context) mutable -> ruvia::Task<void> {
-                                return startCollector(context, collector,
-                                                      std::move(collectorRedis),
-                                                      collectorWorkerCount, started);
-                            });
-                        if (!posted.accepted())
-                            throw std::runtime_error(
-                                "service rejected runtime projection");
-                        ready.get();
-                    },
-                    .stop = [collector] { collector->stop(); }});
-                applicationRuntime->add({
-                    .name = "config-reconciler",
-                    .dependencies = {"collector", "outbox"},
-                    .start = [configReconciler, workers, collectorWorkerCount] {
-                        configReconciler->start(workers, collectorWorkerCount);
-                    },
-                    .stop = [configReconciler] { configReconciler->stop(); }});
-                applicationRuntime->add({
-                    .name = "stream-multiplexer",
-                    .dependencies = {},
-                    .start = [workers] {
-                        service::message::workerStreamMultiplexer().start(workers);
-                    },
-                    .stop = [] {
-                        service::message::workerStreamMultiplexer().stop();
-                    }});
-                applicationRuntime->start(); })
-            .onStop([applicationRuntime] { applicationRuntime->stop(); })
-            .onError(&handleError)
-            .listen(ruvia::ListenConfig{
-                .address = std::string(app.env().get("HOST").value_or("0.0.0.0")),
-                .http = app.env().get<std::uint16_t>("PORT").value_or(1102),
-            })
-            .server(ruvia::ServerConfig{
-                .workerCount = serviceWorkerCount,
-                .maxStreamBodyBytes = 129U * 1024U * 1024U,
-                .maxWebSocketMessageBytes = 16U * 1024U,
-            })
-            .run();
+        auto components = createComponents(
+            app.env(),
+            gb28181,
+            budget,
+            std::move(db),
+            std::move(serviceRedis)
+        );
+        configureServer(app, components, budget);
+        sdkSupervisor().stop();
         service::common::packet_log::shutdown();
         return 0;
-    }
-    catch (const std::exception &error)
-    {
+    } catch (const std::exception& error) {
+        sdkSupervisor().stop();
         service::common::packet_log::shutdown();
         std::cerr << "server failed: " << error.what() << '\n';
         return 1;

@@ -56,7 +56,7 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(ruvia
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    GIT_TAG 83292260c080b3f0a89a515342b344434f1f4317)
+    GIT_TAG 91e68dfd2636570de335b80f03c9cf796854098f)
 FetchContent_MakeAvailable(ruvia)
 
 FetchContent_Declare(nanopb
@@ -245,7 +245,7 @@ endif()
 set(EDGENODE_PROTO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/service/features/edge")
 set(EDGENODE_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/edgenode")
 set(EDGENODE_PROTO_SOURCE "${EDGENODE_PROTO_DIR}/edge.proto")
-set(WEB_TERMINAL_PROTO_SOURCE "${EDGENODE_PROTO_DIR}/terminal.proto")
+set(WEB_TERMINAL_PROTO_SOURCE "${EDGENODE_PROTO_DIR}/terminal/terminal.proto")
 set(EDGENODE_NANOPB_PROTO_SOURCE
     "${nanopb_SOURCE_DIR}/generator/proto/nanopb.proto")
 set(EDGENODE_PROTO_CPP "${EDGENODE_GENERATED_DIR}/edge.pb.cc")
@@ -265,6 +265,7 @@ add_custom_command(
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${EDGENODE_GENERATED_DIR}"
     COMMAND protobuf::protoc
             "--cpp_out=${EDGENODE_GENERATED_DIR}"
+            "--proto_path=${EDGENODE_PROTO_DIR}/terminal"
             "--proto_path=${EDGENODE_PROTO_DIR}"
             "--proto_path=${nanopb_SOURCE_DIR}/generator/proto"
             "${EDGENODE_PROTO_SOURCE}"
@@ -293,16 +294,14 @@ find_package(spdlog CONFIG REQUIRED)
 
 add_executable(iot-engine
     service/server.cpp
-    service/features/event/postgres-notifier.cpp
-    service/common/packet-log.cpp
-    service/features/gb28181/device/DeviceRegistry.cpp
-    service/features/gb28181/media/StreamRegistry.cpp
-    service/features/gb28181/media/MediaProxy.cpp
-    service/features/gb28181/media/ZlmSdk.cpp
-    service/features/gb28181/runtime.cpp
-    service/features/gb28181/sip/DigestAuth.cpp
-    service/features/gb28181/sip/SipMessage.cpp
-    service/features/gb28181/sip/SipServer.cpp)
+    service/features/event/postgres_notifier/postgres_notifier.transport.cpp
+    service/common/log.cpp
+    service/features/gb28181/device/device.runtime.cpp
+    service/features/gb28181/media/media.runtime.cpp
+    service/features/gb28181/media/media.transport.cpp
+    service/features/gb28181/gb28181.runtime.cpp
+    service/features/gb28181/sip/sip.protocol.cpp
+    service/features/gb28181/sip/sip.transport.cpp)
 target_include_directories(iot-engine PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181"
@@ -332,12 +331,12 @@ iot_engine_add_test(context-operation-memory LARGE
 iot_engine_add_test(collector-protocol LARGE
     SOURCES
         tests/collector-protocol-test.cpp
-        service/common/packet-log.cpp
-    LIBRARIES ruvia::web spdlog::spdlog)
+        service/common/log.cpp
+    LIBRARIES ruvia::web spdlog::spdlog edgenode-protocol OpenSSL::Crypto)
 
 iot_engine_add_test(access LARGE
     SOURCES tests/access-test.cpp
-    LIBRARIES ruvia::web)
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
 
 iot_engine_add_test(access-webhook
     SOURCES tests/access-webhook-test.cpp)
@@ -348,7 +347,7 @@ iot_engine_add_test(storage-policy LARGE
 
 iot_engine_add_test(edge-protocol
     SOURCES tests/edge-protocol-test.cpp
-    LIBRARIES edgenode-protocol)
+    LIBRARIES edgenode-protocol ruvia::web)
 
 iot_engine_add_test(telemetry-contract
     SOURCES tests/telemetry-contract-test.cpp
@@ -356,7 +355,7 @@ iot_engine_add_test(telemetry-contract
 
 iot_engine_add_test(vpn-cidr
     SOURCES tests/vpn-cidr-test.cpp
-    LIBRARIES ruvia::web OpenSSL::Crypto
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto
     INCLUDE_DIRECTORIES "${OPENSSL_INCLUDE_DIR}")
 
 iot_engine_add_test(edge-config LARGE
@@ -365,7 +364,7 @@ iot_engine_add_test(edge-config LARGE
 
 iot_engine_add_test(edge-metadata LARGE
     SOURCES tests/edge-metadata-test.cpp
-    LIBRARIES ruvia::web)
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
 
 iot_engine_add_test(edge-service LARGE
     SOURCES tests/edge-service-test.cpp
@@ -376,7 +375,12 @@ iot_engine_add_test(edge-projector NO_PROJECT_INCLUDE
     SOURCES tests/edge-projector-test.cpp)
 
 iot_engine_add_test(architecture
-    SOURCES tests/architecture-test.cpp)
+    SOURCES tests/architecture-test.cpp
+    LIBRARIES ruvia::web)
+
+iot_engine_add_test(worker-isolation
+    SOURCES tests/worker-isolation-test.cpp
+    LIBRARIES ruvia::web)
 
 iot_engine_add_test(alert-runtime LARGE
     SOURCES tests/alert-runtime-test.cpp
@@ -391,18 +395,20 @@ foreach(test_name
         link-service
         device-service
         protocol-service
-        access-service
-        system-service)
+        access-service)
     iot_engine_add_test("${test_name}"
         SOURCES "tests/${test_name}-test.cpp")
 endforeach()
 
+iot_engine_add_test(system-service
+    SOURCES tests/system-service-test.cpp
+    LIBRARIES ruvia::web)
+
 iot_engine_add_test(gb28181-media
     SOURCES
         tests/gb28181-media-test.cpp
-        service/common/packet-log.cpp
-        service/features/gb28181/media/MediaProxy.cpp
-        service/features/gb28181/media/ZlmSdk.cpp
+        service/common/log.cpp
+        service/features/gb28181/media/media.transport.cpp
     LIBRARIES
         ruvia::web
         spdlog::spdlog
@@ -419,11 +425,19 @@ iot_engine_add_test(gb28181-schema LARGE
     SOURCES tests/gb28181-schema-test.cpp
     LIBRARIES ruvia::web)
 
+iot_engine_add_test(gb28181-media-proxy
+    SOURCES
+        tests/gb28181-media-proxy-test.cpp
+        service/common/log.cpp
+        service/features/gb28181/media/media.transport.cpp
+    LIBRARIES ruvia::web spdlog::spdlog mk_api OpenSSL::Crypto
+    MSVC_DEFINITIONS NOMINMAX WIN32_LEAN_AND_MEAN MediaKitApi_STATIC)
+
 iot_engine_add_test(gb28181-projector LARGE
     SOURCES
         tests/gb28181-projector-test.cpp
-        service/features/gb28181/device/DeviceRegistry.cpp
-        service/features/gb28181/media/StreamRegistry.cpp
+        service/features/gb28181/device/device.runtime.cpp
+        service/features/gb28181/media/media.runtime.cpp
     LIBRARIES ruvia::web
     INCLUDE_DIRECTORIES
         "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181"
@@ -432,11 +446,12 @@ iot_engine_add_test(gb28181-projector LARGE
 iot_engine_add_test(gb28181-sip
     SOURCES
         tests/gb28181-sip-test.cpp
-        service/features/gb28181/device/DeviceRegistry.cpp
-        service/features/gb28181/media/ZlmSdk.cpp
-        service/features/gb28181/sip/DigestAuth.cpp
-        service/features/gb28181/sip/SipMessage.cpp
-        service/features/gb28181/sip/SipServer.cpp
+        service/features/gb28181/device/device.runtime.cpp
+        service/features/gb28181/media/media.transport.cpp
+        service/features/gb28181/sip/sip.protocol.cpp
+        service/features/gb28181/sip/sip.transport.cpp
+        service/features/gb28181/gb28181.runtime.cpp
+        service/features/gb28181/media/media.runtime.cpp
     LIBRARIES
         ruvia::web
         pugixml::pugixml

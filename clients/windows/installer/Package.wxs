@@ -1,0 +1,36 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+ <Package Name="iot-egine" Manufacturer="iot-egine" Version="$(var.Version)" UpgradeCode="CBC5AE35-AEF4-4969-89F3-EDE9967F3115" Scope="perMachine" Language="2052" Codepage="936">
+  <MajorUpgrade DowngradeErrorMessage="已安装较新版本。" Schedule="afterInstallExecute" />
+  <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+  <Property Id="ARPPRODUCTICON" Value="ProductIcon"/><Icon Id="ProductIcon" SourceFile="$(var.SourceRoot)\native\assets\product.ico"/>
+  <Property Id="OWNER" Secure="yes"/>
+  <Property Id="MSIFASTINSTALL" Value="1"/>
+  <SetProperty Id="OWNER" Value="[UserSID]" Before="InstallInitialize" Sequence="execute" Condition="NOT OWNER"/>
+  <Launch Condition="VersionNT64 AND Privileged" Message="请在 Windows 10/11 x64 上以管理员权限安装。"/>
+  <StandardDirectory Id="ProgramFiles64Folder"><Directory Id="INSTALLFOLDER" Name="iot-egine"/></StandardDirectory>
+  <StandardDirectory Id="ProgramMenuFolder"/>
+  <StandardDirectory Id="DesktopFolder"/>
+  <DirectoryRef Id="INSTALLFOLDER">
+   <Component Id="Integration" Guid="A579DAB9-CA72-41B4-85F2-7A31E1821961" Bitness="always64">
+    <RegistryValue Root="HKLM" Key="Software\iot-egine" Name="InstalledVersion" Value="$(var.Version)" Type="string" KeyPath="yes"/>
+    <Shortcut Id="StartMenu" Directory="ProgramMenuFolder" Name="iot-egine" Target="[#AppExe]" WorkingDirectory="INSTALLFOLDER" Icon="ProductIcon"/>
+    <Shortcut Id="Desktop" Directory="DesktopFolder" Name="iot-egine" Target="[#AppExe]" WorkingDirectory="INSTALLFOLDER" Icon="ProductIcon"/>
+   </Component>
+  </DirectoryRef>
+  <Binary Id="ServiceHelper" SourceFile="$(var.PackageDir)\Service\IotVpn.ServiceControl.exe"/>
+  <CustomAction Id="PrepareServices" BinaryRef="ServiceHelper" ExeCommand="--prepare --owner &quot;[OWNER]&quot;" Execute="deferred" Impersonate="no" Return="check"/>
+  <CustomAction Id="InstallServicesNative" BinaryRef="ServiceHelper" ExeCommand="--install --owner &quot;[OWNER]&quot;" Execute="deferred" Impersonate="no" Return="check"/>
+  <CustomAction Id="RemoveServicesNative" BinaryRef="ServiceHelper" ExeCommand="--remove" Execute="deferred" Impersonate="no" Return="check"/>
+  <CustomAction Id="RestoreServices" BinaryRef="ServiceHelper" ExeCommand="--rollback" Execute="rollback" Impersonate="no" Return="ignore"/>
+  <CustomAction Id="StopForRollback" BinaryRef="ServiceHelper" ExeCommand="--stop" Execute="rollback" Impersonate="no" Return="ignore"/>
+  <CustomAction Id="CommitServices" BinaryRef="ServiceHelper" ExeCommand="--commit" Execute="commit" Impersonate="no" Return="check"/>
+  <InstallExecuteSequence>
+   <Custom Action="RestoreServices" After="InstallInitialize" Condition="NOT UPGRADINGPRODUCTCODE"/>
+   <Custom Action="PrepareServices" After="RestoreServices" Condition="NOT UPGRADINGPRODUCTCODE"/>
+   <Custom Action="RemoveServicesNative" Before="RemoveFiles" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE"/>
+   <Custom Action="StopForRollback" After="InstallFiles" Condition="NOT UPGRADINGPRODUCTCODE"/>
+   <Custom Action="InstallServicesNative" After="StopForRollback" Condition="NOT REMOVE"/>
+   <Custom Action="CommitServices" After="InstallServicesNative" Condition="NOT UPGRADINGPRODUCTCODE"/>
+  </InstallExecuteSequence>  <Feature Id="Main" Title="iot-egine" Level="1"><ComponentGroupRef Id="Payload"/><ComponentRef Id="Integration"/></Feature>
+ </Package>
+</Wix>

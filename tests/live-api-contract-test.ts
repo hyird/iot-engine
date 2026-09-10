@@ -10,7 +10,7 @@ async function files(directory: string): Promise<string[]> {
 
 test('business query routes have no JSON GET fallback', async () => {
     const plain: string[] = [];
-    for (const path of await files('service/domains')) {
+    for (const path of await files('service/modules')) {
         if (!path.endsWith('.controller.h')) continue;
         const source = await readFile(path, 'utf8');
         for (const match of source.matchAll(/RUVIA_GET\("([^"]+)"/g))
@@ -19,10 +19,10 @@ test('business query routes have no JSON GET fallback', async () => {
         expect(source).not.toContain('/commands/wait');
     }
     expect(plain.sort()).toEqual([
-        'service/domains/edge/edge.controller.h:/:id/download',
-        'service/domains/system/operations.controller.h:/health/live',
-        'service/domains/system/operations.controller.h:/health/ready',
-        'service/domains/system/operations.controller.h:/metrics',
+        'service/modules/edge_node/edge_node.controller.h:/:id/download',
+        'service/modules/system/operations/operations.controller.h:/health/live',
+        'service/modules/system/operations/operations.controller.h:/health/ready',
+        'service/modules/system/operations/operations.controller.h:/metrics',
     ]);
 });
 

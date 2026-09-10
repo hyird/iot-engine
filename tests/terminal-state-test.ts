@@ -2,8 +2,8 @@ import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 
-const gateway = readFileSync(new URL('../service/features/edge/gateway.h', import.meta.url), 'utf8');
-const state = readFileSync(new URL('../service/features/edge/terminal-state.h', import.meta.url), 'utf8');
+const gateway = readFileSync(new URL('../service/features/edge/gateway/gateway.transport.h', import.meta.url), 'utf8');
+const state = readFileSync(new URL('../service/features/edge/terminal/terminal.service.h', import.meta.url), 'utf8');
 function lua(source: string, marker: string) {
     const match = source.slice(source.indexOf(marker)).match(/R"lua\(([\s\S]*?)\)lua"/);
     if (!match) throw new Error(`Missing production Lua: ${marker}`);

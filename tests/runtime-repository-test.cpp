@@ -13,7 +13,7 @@ void require(bool condition, const char* message) {
 
 std::string repositorySource() {
     auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
-                "service/features/runtime/repository.h";
+                "service/features/configuration/configuration.service.h";
     std::ifstream input(path, std::ios::binary);
     require(input.good(), "cannot open runtime repository source");
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};

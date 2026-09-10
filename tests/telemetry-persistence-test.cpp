@@ -13,7 +13,7 @@ void require(bool condition, const char* message) {
 
 std::string persistenceSource() {
     auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
-                "service/features/telemetry/persistence.h";
+                "service/features/telemetry/telemetry.service.h";
     std::ifstream input(path, std::ios::binary);
     require(input.good(), "cannot open telemetry persistence source");
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};

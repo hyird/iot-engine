@@ -5,7 +5,7 @@
 #include <string>
 #include <string_view>
 
-#include "service/domains/edge/edge.service.h"
+#include "service/modules/edge_node/edge_node.service.h"
 
 namespace {
 
@@ -81,21 +81,24 @@ int main() {
         requireContains(taskSelect, "result->>'progressPercent' ~ '^-?[0-9]{1,18}$'",
                         "edge task select does not guard progressPercent");
 
-        const auto serviceSource = edgeSource("service/domains/edge/edge.service.h");
-        const auto controllerSource = edgeSource("service/domains/edge/edge.controller.h");
-        const auto gatewaySource = edgeSource("service/features/edge/gateway.h");
-        const auto dispatchSource = edgeSource("service/features/edge/dispatch.h");
-        const auto dispatcherSource = edgeSource("service/features/edge/dispatcher.h");
+        const auto serviceSource = edgeSource("service/modules/edge_node/edge_node.service.h");
+        const auto controllerSource = edgeSource("service/modules/edge_node/edge_node.controller.h");
+        const auto gatewaySource = edgeSource("service/features/edge/gateway/gateway.transport.h");
+        const auto dispatchSource = edgeSource("service/features/edge/edge.transport.h");
+        const auto dispatcherSource = edgeSource("service/features/edge/edge.runtime.h");
         const auto multiplexerSource =
-            edgeSource("service/features/event/stream-multiplexer.h");
-        const auto projectorSource = edgeSource("service/features/edge/projector.h");
+            edgeSource("service/features/event/stream_multiplexer/stream_multiplexer.runtime.h");
+        const auto projectorRuntimeSource =
+            edgeSource("service/features/edge/edge.runtime.h");
+        const auto projectorServiceSource =
+            edgeSource("service/features/edge/edge.service.h");
         const auto projectorStreamSource =
-            edgeSource("service/features/edge/projector-stream.h");
-        const auto metadataSource = edgeSource("service/features/edge/metadata.h");
+            edgeSource("service/features/edge/edge.transport.h");
+        const auto metadataSource = edgeSource("service/features/edge/edge.service.h");
         const auto vpnEdgeConfigSource =
-            edgeSource("service/features/vpn/edge-config.h");
+            edgeSource("service/features/vpn/vpn.service.h");
         const auto vpnServiceSource =
-            edgeSource("service/domains/vpn/vpn.service.h");
+            edgeSource("service/modules/vpn/vpn.service.h");
         requireMissing(serviceSource, "const std::string status(body.status()->view());",
                        "edge enrollment dereferences optional status without validation");
         requireMissing(serviceSource, "const std::string name(body.name()->view());",
@@ -120,8 +123,12 @@ int main() {
                         "legacy firmware download route is missing");
         requireContains(serviceSource, "download_token",
                         "legacy firmware download tokens are missing");
-        requireContains(serviceSource, "publicBaseUrl()",
+        requireContains(serviceSource, "EDGE_PUBLIC_BASE_URL",
                         "legacy firmware download URL is missing");
+        requireContains(serviceSource, "baseUrl.ends_with('/')",
+                        "legacy firmware URL does not normalize a trailing slash");
+        requireContains(serviceSource, "/download?token=",
+                        "legacy firmware download URL does not include its token");
         requireContains(serviceSource, "capability->>'firmwareStream'",
                         "firmware transport does not select by node capability");
         requireContains(gatewaySource, "case pb::Envelope::kFirmwareChunkRequest",
@@ -138,7 +145,7 @@ int main() {
                         "edge enrollment deletion route is missing");
         requireContains(serviceSource, "enrollment_status = 'pending'",
                         "edge enrollment deletion is not limited to pending registrations");
-        requireContains(serviceSource, "protocol::authKey(imei)",
+        requireContains(serviceSource, "module_wire::authKey(imei)",
                         "edge enrollment deletion leaves stale authorization state");
         requireContains(serviceSource, "\"iot:edge:session:\" + std::string(id)",
                         "edge enrollment deletion does not disconnect the pending session");
@@ -193,7 +200,7 @@ int main() {
                         "edge gateway does not drain queued work on session establishment");
         requireMissing(dispatcherSource, "readGroupBlocking(",
                        "edge dispatcher still owns a dedicated blocking Redis connection");
-        requireContains(multiplexerSource, "readGroupBlocking(",
+        requireContains(multiplexerSource, "readGroupManyBlockingUntil(",
                         "Service Worker wake bus has no blocking Stream consumer");
         requireContains(dispatcherSource, "context.workerState<Dispatcher>().run(",
                         "edge dispatcher does not start the same local state on every worker");
@@ -201,32 +208,32 @@ int main() {
                         "edge dispatch notifications do not use worker-isolated Redis keys");
         requireContains(dispatchSource, "session_state::parse(",
                         "edge dispatch notifications are not routed by session ownership");
-        requireContains(projectorStreamSource, "iot:v2:edge:projector:",
+        requireContains(projectorStreamSource, "iot:v3:edge:projector:",
                         "edge projection does not use worker-isolated Redis keys");
         requireContains(gatewaySource, "publishIngress(c, workerIndex",
                         "edge ingress is not routed by the accepting Worker");
         requireContains(gatewaySource, "projector_stream::publishMetadata(",
                         "edge reconnect does not refresh accepting-Worker metadata");
-        requireContains(metadataSource, "session_state::workerIndex(",
+        requireContains(metadataSource, "session_state::parse(",
                         "edge metadata updates are not routed by session ownership");
-        requireContains(projectorSource, "projector_stream::stream(streamIndex)",
-                        "edge projector does not own independent Stream shards");
-        requireContains(projectorSource,
+        requireContains(projectorRuntimeSource, "projector_stream::stream(index)",
+                        "edge projector does not preserve the accepting Worker");
+        requireContains(projectorServiceSource,
                         "'firmwareUpdate', $10::boolean",
                         "edge projector does not retain legacy firmware capability");
-        requireContains(projectorSource,
+        requireContains(projectorServiceSource,
                         "'firmwareStream', $29::boolean",
                         "edge projector does not record WS firmware capability separately");
-        requireContains(projectorSource,
+        requireContains(projectorServiceSource,
                         "NULLIF(EXCLUDED.mobile->>'apn', '')",
                         "edge hello projection clears the last known mobile APN");
-        requireContains(projectorSource,
+        requireContains(projectorServiceSource,
                         "NULLIF(EXCLUDED.mobile->>'operator', '')",
                         "edge hello projection clears the last known mobile operator");
-        requireContains(projectorSource,
+        requireContains(projectorServiceSource,
                         "NULLIF($12::text, ''), mobile->>'apn'",
                         "edge heartbeat projection clears the last known mobile APN");
-        requireContains(projectorSource,
+        requireContains(projectorServiceSource,
                         "NULLIF($13::text, ''), mobile->>'operator'",
                         "edge heartbeat projection clears the last known mobile operator");
         requireContains(vpnEdgeConfigSource, "'peerId', $3::text",
@@ -235,13 +242,13 @@ int main() {
                         "VPN task enabled flag has no explicit PostgreSQL type");
         requireContains(gatewaySource, "case pb::Envelope::kVpnConfigResult:",
                         "edge gateway does not project VPN configuration results");
-        requireContains(projectorSource, "request->>'enabled' AS enabled",
+        requireContains(projectorServiceSource, "request->>'enabled' AS enabled",
                         "VPN result transition does not return the requested enabled state");
-        requireContains(projectorSource, "request->>'configVersion' AS config_version",
+        requireContains(projectorServiceSource, "request->>'configVersion' AS config_version",
                         "VPN result transition does not return the requested config version");
-        requireContains(projectorSource, "COALESCE(task.enabled::boolean, true)",
+        requireContains(projectorServiceSource, "COALESCE(task.enabled::boolean, true)",
                         "VPN result projection reads a column outside the transition CTE");
-        requireContains(projectorSource, "= task.config_version)sql",
+        requireContains(projectorServiceSource, "= task.config_version)sql",
                         "VPN result projection does not compare the returned config version");
         requireContains(vpnEdgeConfigSource, "'errorCode', 'superseded'",
                         "new VPN tasks leave older tasks pending forever");

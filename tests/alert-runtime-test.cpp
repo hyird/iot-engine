@@ -4,8 +4,8 @@
 #include <stdexcept>
 #include <string>
 
-#include "service/domains/alert/alert.service.h"
-#include "service/features/alert/runtime.h"
+#include "service/modules/alert/alert.service.h"
+#include "service/features/alert/alert.runtime.h"
 
 void require(bool condition, const char* message) {
     if (!condition)
@@ -35,7 +35,7 @@ void expectInvalidConditions(std::string_view raw, const char* message) {
 
 int main() {
     try {
-        const auto sql = service::alert::Runtime::evaluationTailForTest();
+        const auto sql = service::alert::AlertEvaluationService::evaluationTailForTest();
         requireAbsent(sql, "NULLIF(condition.value->>'duration', '')::integer",
                       "alert runtime directly casts offline duration from rule JSON");
         requireAbsent(sql, "NULLIF(condition.value->>'value', '')::numeric",
@@ -47,13 +47,13 @@ int main() {
         requireAbsent(std::string(service::alert::metadata::detail::kRefreshQuery),
                       "NULLIF(condition.value->>'duration', '')::bigint",
                       "alert metadata refresh directly casts offline duration from rule JSON");
-        const auto metadataSource = readSource("service/features/alert/metadata.h");
+        const auto metadataSource = readSource("service/features/alert/alert.service.h");
         requireAbsent(metadataSource, "std::stoll(",
                       "alert metadata uses unsafe/partial stoll parsing");
-        const auto runtimeSource = readSource("service/features/alert/runtime.h");
+        const auto runtimeSource = readSource("service/features/alert/alert.runtime.h");
         requireAbsent(runtimeSource, "std::stoull(",
                       "alert runtime uses unsafe/partial stoull parsing");
-        const auto serviceSource = readSource("service/domains/alert/alert.service.h");
+        const auto serviceSource = readSource("service/modules/alert/alert.service.h");
         require(serviceSource.find("std::string(field) + \" 必须是字符串\"") !=
                     std::string::npos,
                 "alert service treats present non-string optional fields as absent");

@@ -1,0 +1,52 @@
+[
+  {
+    "id": "Microsoft.Windows.SDK.BuildTools",
+    "version": "10.0.26100.4654",
+    "sha256": "5f5783658a200f83ea2addfd406e2303a901b27ad7c49b0347c34aefcc21883d"
+  },
+  {
+    "id": "Microsoft.Windows.SDK.BuildTools.MSIX",
+    "version": "1.7.20250829.1",
+    "sha256": "7c3e3aa18c66b86037eef55eccd9a46855b2c214ec96c62c4b614f01aa487f71"
+  },
+  {
+    "id": "Microsoft.Web.WebView2",
+    "version": "1.0.3179.45",
+    "sha256": "70bd381c5d67f97a6a80294001cde125ab5b24b6d36098ad901d8e15efd752d0"
+  },
+  {
+    "id": "Microsoft.Windows.CppWinRT",
+    "version": "2.0.250303.1",
+    "sha256": "955e3051b35db1c00177ed14ab6b7b995c3b32a53fdb6c184ea53b1dba66e439"
+  },
+  {
+    "id": "Microsoft.WindowsAppSDK.Base",
+    "version": "1.8.251216001",
+    "sha256": "58f0c69ad99293e7efd36b7f8c6ead0e20940a5e91866b16901b9610b08642c9"
+  },
+  {
+    "id": "Microsoft.WindowsAppSDK.Foundation",
+    "version": "1.8.260803002",
+    "sha256": "b9232041afd605b606c6f78f442d92ead0076453f1f2a3260d2b7f8089bcab0e"
+  },
+  {
+    "id": "Microsoft.WindowsAppSDK.InteractiveExperiences",
+    "version": "1.8.260708001",
+    "sha256": "496eea92d353b5d3601b67353f06dcadd6d2d9b635575acebe6e42587dbfad76"
+  },
+  {
+    "id": "Microsoft.WindowsAppSDK.WinUI",
+    "version": "1.8.260803003",
+    "sha256": "bdf72c0cbc385ba6e6ab916b17d3aa00950811c9d6372d11ac2f32f1c83f2496"
+  },
+  {
+    "id": "Microsoft.WindowsAppSDK.DWrite",
+    "version": "1.8.25122902",
+    "sha256": "77e0c020966a76c4755485a1011e48c6b888066b49cd6cbcd2a546817d803b6c"
+  },
+  {
+    "id": "Microsoft.WindowsAppSDK.Runtime",
+    "version": "1.8.260804001",
+    "sha256": "a1e1b19767f9afbfb698923b29769d56b2261b6b1b0cbaaafcf7b297be4f0906"
+  }
+]

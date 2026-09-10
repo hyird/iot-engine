@@ -1,18 +1,136 @@
-# Repository working notes
+# iot-engine 协作规范
 
-## Firmware baseline
+## 基本要求
 
-- Use the canonical `immortalwrt-dtu` checkout for all future TAS-682 firmware
-  changes, builds, and releases.
-- The designated build checkout is
-  `/home/openwrtbuild/immortalwrt-dtu` on `10.10.0.101`; run repository and build
-  commands as the `openwrtbuild` user.
-- Before changing or building firmware, read and follow any more-specific
-  `AGENTS.md` present in the `immortalwrt-dtu` repository.
-- Every EdgeNode change must remain backward compatible with deployed firmware,
-  including protocol messages, platform APIs, configuration, tasks, and upgrade
-  transport. Do not remove an old path until a tested migration and compatibility
-  window have been provided and the user has explicitly approved the break.
-- Use bounded, resumable WebSocket chunks for firmware that advertises that
-  capability, while retaining the tokenized direct-download path for legacy
-  firmware that does not advertise it.
+- 本规范适用于整个仓库，用户最新明确要求优先。文档使用中文，路径、命令和代码标识符保留原文。
+- 修改前检查 `git status`，保留用户和其他任务的改动，只修改当前任务涉及的文件。
+- 删除代码或依赖前确认其没有实际用途；不生成空目录、占位文件或仅转发的兼容头。
+
+## 项目结构
+
+后端使用 C++23 + Ruvia，前端使用 React，数据库使用 PostgreSQL/TimescaleDB，后台组件通过 Redis 交换消息。
+
+```text
+web/pages/                          # 页面业务模块
+service/
+├── common/                          # 通用响应、错误和数据库表达式
+├── config/                          # 进程配置与数据库迁移
+├── middleware/                      # 认证、权限接入和日志
+├── modules/
+│   ├── <module>/                    # 独立菜单对应的业务模块
+│   └── system/<module>/             # 系统管理子菜单对应的业务模块
+├── features/<feature>/              # 后台任务、协议和消息调度
+├── utils/                           # 无业务归属的无状态工具
+└── server.cpp                       # 进程装配与控制器注册
+```
+
+- 后端模块按前端实际菜单归属组织，不按路由 URL 或现有页面路径机械分层：独立菜单直接放在 `modules/<module>/`，系统管理子菜单放在 `modules/system/<module>/`，不设 `iot/` 分组。
+- 同一业务的多个页面共用所属模块；无独立菜单的功能按业务归属组织，单边功能不创建空的镜像目录。
+- 目录名使用小写，多词使用 `snake_case`。跨模块复用所属模块的接口和类型，不复制实现。
+- 业务代码留在所属模块，确有跨模块复用才提取到共享目录；不新增其他后端顶层分层。
+- `common/` 只放公共基础文件，禁止子目录、业务实现和运行对象；共享消息契约仅包含格式、键名、版本和无 I/O 的编解码。
+- 同类职责集中到同一文件，文件名准确表达职责；公共消息契约统一放在 `common/message.h`，不按业务拆出零散公共文件。
+- `modules/` 与 `features/` 互不引用、互不调用，只通过 Redis 消息或数据库交互；不得通过共享层、回调或进程内对象间接调用对方。
+- 两层可依赖无业务实现的公共类型、消息契约和工具；`server.cpp` 只负责分别装配，不充当两层的业务调用桥梁。
+- 目录调整同步更新 include、构建和测试引用，不改变 API、权限码、DTO、表名和设备协议。
+
+## 模块文件
+
+下列文件按需创建，模块内禁止增加其他文件、变体文件或子目录。
+
+| 职责 | 前端模块 | 后端模块 |
+| --- | --- | --- |
+| 类型与 DTO | `<module>.types.ts` | `<module>.types.h` |
+| 请求结构校验 | `<module>.schema.ts` | `<module>.schema.h` |
+| HTTP 客户端 | `<module>.api.ts` | — |
+| 业务与数据操作 | `<module>.service.ts` | `<module>.service.h` |
+| 页面入口 | `index.tsx` | — |
+| 领域错误 | — | `<module>.error.h` |
+| 数据库实体 | — | `<module>.entity.h` |
+| 路由与响应 | — | `<module>.controller.h` |
+
+- 前端 service 管理查询、写操作和缓存；页面不直接拼接 API 地址。页面私有 UI 放在 `index.tsx`，跨页面组件放在 `web/components/`。
+- 后端 controller 只处理路由、中间件、参数和响应；业务权限、数据校验、查询、写入与事务放在所属模块的 service。
+- DTO、实体和 schema 不执行 I/O；前后端校验及数据库约束保持一致，明确空值、可选字段和清空语义。
+- 业务模块使用头文件实现，控制器由 `server.cpp` 统一注册；include 使用 `service/...` 绝对仓库路径。
+- 禁止新增 repository、queries、helper、common 或多个 service 变体文件。
+
+## 后台组件
+
+### Worker 隔离与一致性
+
+- 保留 Service Worker 与 Collector Worker 两类；同类 Worker 使用相同的组件装配、职责和执行流程，只有编号及实际接入、持有的连接不同。
+- GB28181 的 SIP 接入、注册、心跳、协议会话和设备控制归 Collector Worker；Service Worker 负责 HTTP 与业务请求，两类之间通过 Redis 指令及回执交互。SIP 连接由实际接入的 Collector Worker 持有，不保留全局 SIP 业务运行时，不为此绕过 Ruvia 的公开接口。
+- 每个 Worker 独立持有并管理自己的运行组件、数据库与 Redis 连接、网络连接、缓存、会话、定时器和任务状态，不共享可变运行对象。
+- 业务处理始终在所属 Worker 内完成；禁止跨 Worker 调用、回调、内存消息转发和已接入连接转交，不通过全局单例或共享指针绕过隔离。
+- 以连接接入的 Worker 确定归属：连接在哪个 Worker 建立，就固定在哪个 Worker 完成协议解析、会话状态管理、业务处理、SDK 调用和结果处理，直到连接结束；不得按设备 ID、哈希、固定分片或轮询重新分配。
+- 禁止使用 `workers.front()`、固定下标或指定 Worker 0 承担同类 Worker 中的特殊业务职责；启动恢复和清理同样按各 Worker 实际持有的连接及任务归属执行，不使用分片分工。
+- 跨层业务交互保持 Redis 消息或数据库边界，不得用它们把本应在当前 Worker 完成的操作转交其他同类 Worker；消息路由必须保持所属 Worker 内处理。
+- 没有连接归属的后台任务由各 Worker 使用相同机制独立认领，认领后在当前 Worker 内完整处理；不按 Worker 编号或数据哈希分片。使用幂等和事务避免重复处理，确认仍须晚于必要的持久化。
+- ZLMediaKit SDK 允许保留独立运行时及 SDK 内部线程；哪个业务 Worker 发起调用，就由该 Worker 持有业务会话和调用状态，异步回调及结果必须返回原 Worker，不得转交其他业务 Worker。此例外不允许共享 Service/Collector 的可变业务状态。
+- 其他第三方 SDK、平台监听方式或全局系统资源若不能满足隔离要求，必须明确记录约束并解决架构问题，不得静默保留共享实现或仅把固定 Worker 改为轮询。
+- Worker 架构按全新设计实现，删除旧路由、旧分片、旧队列兼容消费、迁移分支、失效接口及对应测试假设，不保留新旧并行实现。新架构自身必须完整处理重启恢复、缩容、异常退出、消息幂等和过期数据清理，不以技术债务代替完成。
+
+组件位于 `service/features/<feature>/`。确有独立协议、传输或运行职责时，允许一级 `<component>/` 子目录，禁止继续嵌套。根目录文件以 `<feature>` 为前缀，子组件文件以 `<component>` 为前缀，以下统一记为 `<name>`。
+
+| 文件 | 职责 |
+| --- | --- |
+| `<name>.runtime.h` | 启停、工作线程、运行状态、任务调度和消息消费循环 |
+| `<name>.service.h` | 后台业务处理、查询、写入、业务校验和事务 |
+| `<name>.types.h` | 内部数据类型和状态定义，不执行 I/O |
+| `<name>.entity.h` | 本组件使用的 ORM 实体，不执行 I/O |
+| `<name>.config.h` | 配置类型、解析和默认值，不读取业务数据库 |
+| `<name>.protocol.h` | 报文编解码、帧解析和协议状态转换，不执行数据库或网络 I/O |
+| `<name>.transport.h` | 网络、系统设备和第三方 SDK 适配，不执行业务数据库操作 |
+| `<name>.error.h` | 稳定错误定义 |
+| `<name>.proto` | Protobuf 消息定义 |
+
+- 文件按需创建，只允许上述类型；`runtime`、`protocol`、`transport` 可带同名 `.cpp`，其余使用头文件实现。生成文件放在 `build/`。
+- 优先使用类内方法，不显式添加多余的 `inline`；模板函数不额外标注 `inline`，仅对跨翻译单元的头文件定义保留必要的 `inline`。
+- 子组件使用同一文件白名单，必须具有独立职责；不得仅为拆分大文件创建子组件，也不得创建 `helpers/`、`misc/` 或额外分层目录。
+- 禁止裸名 `runtime.h`、大小写混用、连字符文件名，以及 repository、queries、helper 和多个 service 变体文件。
+- `runtime` 负责驱动，调用本组件的 `service`、`protocol` 和 `transport`；业务 service 不依赖 runtime，也不负责启停工作线程。
+- 组件独立维护数据访问和实体，不引用 `modules/` 的 service、DTO 或实体，不存放管理 API 的 controller 或请求 schema。
+- 组件间只使用明确的公开入口或消息契约，不访问对方内部状态，不循环依赖；跨工作线程交互保持消息边界。
+- 与管理模块共享的消息契约放在 `common/`，仅包含格式、键名、版本和无 I/O 的编解码，不包含业务实现或运行对象。
+- 配置投影、遥测落库、消息回执等数据库操作统一放在 service；数据库迁移仍放在 `service/config`。
+- 保持连接归属、事务原子性、消息确认顺序和重试行为；消费成功确认不得早于必要的持久化完成。
+
+## 数据库与固件
+
+- 使用固定版本 Ruvia ORM 支持的 API；无法保持所需行为时保留参数化 SQL，并记录具体能力缺口。
+- 实体由所属业务模块或后台组件维护；公共数据库辅助代码只包含与业务无关的表达式，不集中存放跨层实体。
+- 迁移放在 `service/config`。未经测试的兼容方案不得改变已执行迁移的 ID、校验和或历史 SQL。
+- 数据库和连接时区固定为 UTC，时间字段使用 `TIMESTAMPTZ`。设备时间按各自 `timezone` 转换入库，API 输出明确的 UTC 时间。
+- TAS-682 固件统一在 `10.10.0.101` 的 `/home/openwrtbuild/immortalwrt-dtu` 构建，以 `openwrtbuild` 用户操作，并先遵守该仓库的 `AGENTS.md`。
+- EdgeNode 协议、API、配置、任务和升级传输必须兼容已部署固件，明确保留对 `0.3.44` 的兼容；Worker 架构旧代码清理不得删除该固件所需的协议兼容路径。移除旧固件路径须具备经过测试的迁移方案、兼容窗口及用户明确批准。
+- 支持分块传输的固件使用大小受限、可断点续传的 WebSocket 分块；旧固件保留带令牌的直接下载。
+
+## 前端约束
+
+- 使用锁定版本的 Bun 和 `bun install --frozen-lockfile`。依赖升级使用最新稳定版本，删除前核对源码、构建和运行时用途。
+- 服务端状态使用 TanStack Query，客户端状态使用 Zustand，校验使用 Zod；虚拟列表使用 `@tanstack/react-virtual`，排序使用 `@dnd-kit`。
+- selector、Hook 默认值和 effect 依赖保持引用稳定，避免循环更新；路由提供用户友好的错误兜底。
+- 左侧树负责导航或筛选，右侧使用平面表格；表头和分页固定，表格内部滚动，检查窄屏与横向滚动。
+- 表单统一使用 `FormModal`：默认宽 720px，高 `min(720px, 90dvh)`，标题和操作区固定，内容独立滚动，标签纵向排列。
+- 布局复用现有组件和工具类；设备指标使用统一 CSS Grid，虚拟列表切换数据后重算测量并恢复滚动位置。
+- `web/styles/index.css` 只保留框架导入、层声明和主题变量；全局主题使用 Ant Design 或 Tailwind 主题配置，不添加组件覆盖样式。
+
+## 构建与验证
+
+- 本地构建只使用根目录 `build/`，CI 隔离构建允许 `build/ci/`。可执行文件与同级 `web/` 作为同一版本交付。
+- Windows 客户端的依赖准备、构建、测试与安装包生成统一通过 CMake 入口完成，`clients/` 下不保留 `.ps1` 构建脚本；依赖锁定、校验及打包验证不得因入口调整而省略。
+- Ruvia 固定完整提交 SHA；升级时统一迁移公开 API，不增加过渡宏、包装接口或兼容头。
+- CI 平台和工具链以 `.github/workflows/build.yml` 为准；vcpkg 固定提交，缓存区分平台、架构、编译器及依赖输入。
+- 前端修改运行类型检查、lint、生产构建及修改文件的 Biome 格式检查；后端修改运行 Release 构建和 CTest；文档修改运行 `git diff --check`。
+- CI 修改核对工作流、缓存和制品路径；布局修改验证实际页面，未覆盖的检查如实说明。
+- 发布前等待 Linux、macOS、Windows 构建和测试通过；单平台例外须经用户明确接受，制品使用同一提交并记录未覆盖平台。
+
+## 部署
+
+- 凭据不进入提交、制品、日志或文档；生产 `.env` 权限为 `600`，密钥在服务器生成。
+- 生产目标为 `103.236.69.112`，域名 `i.a-z.xin`；Nginx 终止 TLS，代理到 `127.0.0.1:3000`，后端不监听公网。
+- 服务为 `iot.service`，工作目录 `/opt/iot`，入口 `server`，静态目录 `web/`；数据库使用独立的 `iot_engine`，不改写旧库。
+- Redis 监听 `127.0.0.1:6379`，启用 AOF，数据目录 `/opt/redis/data`；官方容器镜像通过 `docker.a-z.xin` 拉取。
+- 制品先放入 `/opt/iot/releases/<短 SHA>/`，校验哈希、架构、依赖和静态入口；切换前备份二进制、静态文件和 Nginx 配置。
+- 切换后检查服务、迁移、数据库、Redis、Nginx、证书及实际返回的前端资源；关键检查失败立即回滚，验证完成前保留备份。

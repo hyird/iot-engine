@@ -13,7 +13,7 @@ void require(bool condition, const char* message) {
 
 std::string protocolSource() {
     auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
-                "service/domains/protocol/protocol.service.h";
+                "service/modules/protocol/protocol.service.h";
     std::ifstream input(path, std::ios::binary);
     require(input.good(), "cannot open protocol service source");
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};

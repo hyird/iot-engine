@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <charconv>
 #include <cstdint>
 #include <optional>
@@ -9,12 +10,25 @@
 #include <vector>
 
 #include <ruvia/web/Context.h>
+#include <ruvia/web/ConnInfo.h>
+#include "service/utils/text.h"
 #include <ruvia/web/Error.h>
 #include <ruvia/web/db/DbTypes.h>
 
-#include "service/common/types.h"
+#include <ruvia/web/Model.h>
+#include "service/common/uuid.h"
 
 namespace service::common {
+
+RUVIA_RESPONSE_MODEL(OperationResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String));
+
+inline bool isUuidField(const ruvia::String& value) noexcept { return isUuid(value.view()); }
+
+inline bool isOptionalUuidField(const ruvia::String& value) noexcept {
+    return value.empty() || isUuid(value.view());
+}
 
 inline constexpr std::int64_t kValidationErrorCode{10001};
 inline constexpr std::int64_t kBadRequestErrorCode{10002};
@@ -39,7 +53,24 @@ inline std::optional<std::int64_t> parseInt64(std::optional<std::string_view> in
     return value;
 }
 
-template <typename... Ts> inline std::vector<ruvia::DbValue> dbParams(Ts&&... values) {
+struct Page final {
+    std::int64_t page{1};
+    std::int64_t pageSize{20};
+    std::int64_t offset{0};
+};
+
+inline Page page(const ruvia::ContextRequest& request) {
+    const auto integer = [&request](std::string_view name, std::int64_t fallback) {
+        return parseInt64(request.query(name)).value_or(fallback);
+    };
+    Page result;
+    result.page = std::max<std::int64_t>(1, integer("page", 1));
+    result.pageSize = std::clamp<std::int64_t>(integer("pageSize", 20), 1, 100);
+    result.offset = (result.page - 1) * result.pageSize;
+    return result;
+}
+
+template <typename... Ts> std::vector<ruvia::DbValue> dbParams(Ts&&... values) {
     std::vector<ruvia::DbValue> params;
     params.reserve(sizeof...(Ts));
     (params.emplace_back(std::forward<Ts>(values)), ...);
@@ -73,7 +104,7 @@ inline std::int64_t errorCode(std::string_view code, std::uint16_t status) {
     return status >= 500 ? kServerErrorCode : kBadRequestErrorCode;
 }
 
-template <typename Response, typename Data> inline Response ok(ruvia::Context& c, Data&& data) {
+template <typename Response, typename Data> Response ok(ruvia::Context& c, Data&& data) {
     Response response(c);
     response.template set<"code">(0)
         .template set<"message">("ok")
@@ -91,6 +122,20 @@ inline ErrorResponse error(ruvia::Context& c, std::int64_t code, std::string_vie
     ErrorResponse response(c);
     response.set<"code">(code).set<"message">(message);
     return response;
+}
+
+inline void requireUuid(std::int64_t code, std::string_view value, std::string_view message) {
+    if (!service::common::isUuid(value))
+        service::common::fail(code, std::string(message), 400);
+}
+
+inline std::string clientIp(const ruvia::Context& context) {
+    if (const auto value = context.req().header("X-Real-IP")) {
+        const auto resolved = service::utils::trim(*value);
+        if (!resolved.empty())
+            return resolved;
+    }
+    return std::string(ruvia::getConnInfo(context).remote().address());
 }
 
 } // namespace service::common

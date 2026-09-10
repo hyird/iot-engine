@@ -1,0 +1,205 @@
+#include <array>
+#include <asio/ip/tcp.hpp>
+#include <atomic>
+#include <chrono>
+#include <future>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <thread>
+
+#include <ruvia/core/EventLoopPool.h>
+#include <ruvia/web/App.h>
+#include <ruvia/web/HttpClient.h>
+
+#include "service/features/gb28181/media/media.transport.h"
+
+using namespace std::chrono_literals;
+
+namespace {
+void require(bool value, const char* message) {
+    if (!value) {
+        throw std::runtime_error(message);
+    }
+}
+
+class Origin final {
+  public:
+    Origin() : acceptor_(io_, { asio::ip::address_v4::loopback(), 0 }) {
+        acceptor_.non_blocking(true);
+        thread_ = std::jthread([this](std::stop_token stop) {
+            run(stop);
+        });
+    }
+
+    ~Origin() { thread_.request_stop(); }
+
+    std::uint16_t port() const { return acceptor_.local_endpoint().port(); }
+
+    std::atomic_bool cancelled{ false };
+    std::atomic_bool failed{ false };
+
+  private:
+    bool send(asio::ip::tcp::socket& socket, std::string_view bytes, std::stop_token stop) {
+        const auto deadline = std::chrono::steady_clock::now() + 10s;
+        while (!bytes.empty() && !stop.stop_requested() && std::chrono::steady_clock::now() < deadline) {
+            std::error_code error;
+            const auto size = socket.write_some(asio::buffer(bytes.data(), bytes.size()), error);
+            if (error == asio::error::would_block || error == asio::error::try_again) {
+                std::this_thread::sleep_for(2ms);
+                continue;
+            }
+            if (error) {
+                return false;
+            }
+            bytes.remove_prefix(size);
+        }
+        return bytes.empty();
+    }
+
+    void run(std::stop_token stop) {
+        try {
+            while (!stop.stop_requested()) {
+                asio::ip::tcp::socket socket(io_);
+                std::error_code error;
+                acceptor_.accept(socket, error);
+                if (error == asio::error::would_block || error == asio::error::try_again) {
+                    std::this_thread::sleep_for(2ms);
+                    continue;
+                }
+                if (error) {
+                    throw std::system_error(error);
+                }
+                socket.non_blocking(true);
+                std::string request;
+                std::array<char, 4096> buffer{};
+                const auto deadline = std::chrono::steady_clock::now() + 5s;
+                while (request.find("\r\n\r\n") == std::string::npos && !stop.stop_requested()) {
+                    require(std::chrono::steady_clock::now() < deadline, "origin request timed out");
+                    const auto size = socket.read_some(asio::buffer(buffer), error);
+                    if (error == asio::error::would_block || error == asio::error::try_again) {
+                        std::this_thread::sleep_for(2ms);
+                        continue;
+                    }
+                    if (error) {
+                        throw std::system_error(error);
+                    }
+                    request.append(buffer.data(), size);
+                    require(request.size() < 65536, "origin request exceeded limit");
+                }
+                if (request.find("/rtp/playlist.m3u8?token=test") != std::string::npos) {
+                    const std::string body = "#EXTM3U\nsegment.ts\n";
+                    (void)send(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apple.mpegurl\r\nCache-Control: no-cache\r\nConnection: close\r\nContent-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body, stop);
+                } else if (request.find("/rtp/large.live.flv") != std::string::npos) {
+                    const std::string body(3U * 1024U * 1024U, 'm');
+                    require(send(socket, "HTTP/1.1 200 OK\r\nContent-Type: video/x-flv\r\nConnection: close\r\nContent-Length: " + std::to_string(body.size()) + "\r\n\r\n", stop), "large response head failed");
+                    require(send(socket, body, stop), "large response failed");
+                } else if (request.find("/rtp/cancel.live.flv") != std::string::npos) {
+                    (void)send(socket, "HTTP/1.1 200 OK\r\nContent-Type: video/x-flv\r\nConnection: close\r\n\r\n", stop);
+                    const std::string body(32U * 1024U, 'c');
+                    while (!stop.stop_requested()) {
+                        if (!send(socket, body, stop)) {
+                            cancelled.store(true);
+                            break;
+                        }
+                        std::this_thread::sleep_for(2ms);
+                    }
+                } else {
+                    throw std::runtime_error("unexpected media proxy target");
+                }
+            }
+        } catch (...) {
+            failed.store(true);
+        }
+    }
+
+    asio::io_context io_;
+    asio::ip::tcp::acceptor acceptor_;
+    std::jthread thread_;
+};
+
+ruvia::Task<void> verifyProxy(ruvia::EventLoop loop, std::uint16_t port) {
+    ruvia::HttpClient client(loop, { .scheme = ruvia::HttpScheme::kHttp, .host = "127.0.0.1", .port = port, .requestTimeout = 5s, .maxResponseBytes = 4U * 1024U * 1024U });
+    {
+        auto response = co_await client.send({ .target = "/media/rtp/playlist.m3u8?token=test" });
+        require(response.status().value() == 200, "HLS proxy status failed");
+        require(response.header("Cache-Control") == "no-cache", "media response headers were lost");
+        const auto body = co_await response.body().readAll();
+        require(body == "#EXTM3U\nsegment.ts?token=test\n", "HLS child URL did not retain authorization");
+    }
+    {
+        auto response = co_await client.send({ .target = "/media/rtp/large.live.flv" });
+        const auto body = co_await response.body().readAll(4U * 1024U * 1024U);
+        require(body.size() == 3U * 1024U * 1024U && body.front() == 'm' && body.back() == 'm', "media stream was truncated at the proxy buffering limit");
+    }
+    {
+        auto response = co_await client.send({ .target = "/media/rtp/cancel.live.flv" });
+        require((co_await response.body().read()).has_value(), "cancellable media stream did not start");
+    }
+    co_await client.shutdown();
+}
+} // namespace
+
+int main() {
+    auto& app = ruvia::app();
+    std::thread serving;
+    std::exception_ptr serverError;
+    try {
+        Origin origin;
+        MediaConfig media;
+        media.playTokenSecret = "media-proxy-test-only-secret";
+        media.rtpPublicIp = "127.0.0.1";
+        media.logLevel = 4;
+        media.httpPort = media.rtspPort = media.rtmpPort = media.rtcPort = media.srtPort = 0;
+        sdkSupervisor().configure(media);
+        sdkSupervisor().start();
+        asio::io_context reserveIo;
+        asio::ip::tcp::acceptor reservation(reserveIo, { asio::ip::address_v4::loopback(), 0 });
+        const auto port = reservation.local_endpoint().port();
+        reservation.close();
+        std::promise<void> ready;
+        auto started = ready.get_future();
+        app.blockingPool(nullptr).listen({ .address = "127.0.0.1", .http = port }).server({ .workerCount = 2 }).httpClient({ .alias = "gb-media", .config = { .scheme = ruvia::HttpScheme::kHttp, .host = "127.0.0.1", .port = origin.port(), .connectionCount = 2, .requestTimeout = std::nullopt, .maxResponseBytes = 2U * 1024U * 1024U, .protocol = ruvia::HttpClientProtocol::kHttp1Only } }).onStart([&] {
+            ready.set_value();
+        });
+        serving = std::thread([&] {
+            try {
+                app.run();
+            } catch (...) {
+                serverError = std::current_exception();
+                try {
+                    ready.set_exception(serverError);
+                } catch (...) {
+                }
+            }
+        });
+        require(started.wait_for(10s) == std::future_status::ready, "media proxy app startup timed out");
+        started.get();
+        ruvia::EventLoopPool clientPool({ .loopCount = 1 });
+        clientPool.start();
+        clientPool.loop(0).start(verifyProxy(clientPool.loop(0), port)).get();
+        clientPool.stop();
+        clientPool.join();
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        while (!origin.cancelled.load() && !origin.failed.load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(5ms);
+        }
+        require(origin.cancelled.load() && !origin.failed.load(), "client disconnect did not close the media upstream");
+        app.stop();
+        serving.join();
+        if (serverError) {
+            std::rethrow_exception(serverError);
+        }
+        sdkSupervisor().stop();
+        std::cout << "media proxy HLS, long stream, and cancellation tests passed\n";
+        return 0;
+    } catch (const std::exception& error) {
+        app.stop();
+        if (serving.joinable()) {
+            serving.join();
+        }
+        sdkSupervisor().stop();
+        std::cerr << error.what() << '\n';
+        return 1;
+    }
+}
