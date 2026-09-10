@@ -75,10 +75,6 @@ inline Result render(std::string_view interfaceName,
     script =
         "flush table inet iot_vpn\n"
         "add chain inet iot_vpn forward { type filter hook forward priority 0; policy accept; }\n";
-    script += "add rule inet iot_vpn forward iifname \"" + std::string(interfaceName) +
-              "\" oifname \"" + std::string(interfaceName) +
-              "\" ct state established,related accept\n";
-
     for (const auto& client : clients) {
         const auto assigned = parseIpv4(client.assignedIpv4);
         if (!assigned || !kOverlayPool.contains(*assigned))
@@ -117,6 +113,15 @@ inline Result render(std::string_view interfaceName,
                   std::string(interfaceName) + "\" ip saddr ";
         appendSet(script, sources);
         script += " ip daddr ";
+        appendSet(script, routes);
+        script += " accept\n";
+        // Permit replies only for routes currently selected by this client.  A
+        // global established rule would keep deselected Edge connections alive.
+        script += "add rule inet iot_vpn forward iifname \"" +
+                  std::string(interfaceName) + "\" oifname \"" +
+                  std::string(interfaceName) + "\" ct state established,related ip daddr ";
+        appendSet(script, sources);
+        script += " ip saddr ";
         appendSet(script, routes);
         script += " accept\n";
     }

@@ -117,5 +117,21 @@ int main() {
                 "ip saddr { 100.96.0.0/11, 172.16.0.0/12 } drop") !=
                 std::string::npos,
             "unapproved overlay and virtual LAN forwarding is denied");
+    require(firewallScript.find("ct state established,related ip daddr") != std::string::npos,
+            "permitted reverse established traffic is accepted");
+    require(firewallScript.find(
+                "ct state established,related ip daddr 100.96.0.3/32 ip saddr { 172.24.1.0/24, 100.96.0.2/32 } accept") !=
+                std::string::npos,
+            "reverse traffic is narrowed to the selected route");
+    require(firewallScript.find(
+                "iifname \"wg0\" oifname \"wg0\" ct state established,related accept\n") ==
+                std::string::npos,
+            "global established traffic acceptance is absent");
+    require(service::vpn::firewall::render("wg0", {service::vpn::firewall::ClientAccess{.assignedIpv4 = "100.96.0.3"}},
+                             firewallScript).configured,
+            "empty client selection renders");
+    require(firewallScript.find(" accept\n") == std::string::npos &&
+                firewallScript.find("ct state established,related") == std::string::npos,
+            "clearing a selection removes both forward and established reverse grants");
     return 0;
 }
