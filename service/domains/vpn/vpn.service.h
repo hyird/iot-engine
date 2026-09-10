@@ -1184,11 +1184,10 @@ LIMIT 1)sql", service::common::dbParams(peerId, userId));
 inline ruvia::Task<std::string> VpnService::desktopDevices(ruvia::Context& c) {
     const auto rows = co_await c.db().query(R"sql(
 SELECT jsonb_build_object('id', edge.id, 'name', COALESCE(edge.name, ''), 'imei', edge.imei,
- 'online', COALESCE(edge.last_seen_at > NOW() - INTERVAL '3 minutes', FALSE),
  'virtualCidrs', COALESCE((SELECT jsonb_agg(route.virtual_cidr ORDER BY route.virtual_cidr)
    FROM vpn_route route WHERE route.edge_peer_id = peer.id AND route.network_id = network.id
      AND route.enabled AND route.status = 'active'), '[]'::jsonb),
- 'assignedIpv4', host(peer.assigned_ipv4))
+ 'assignedIpv4', host(peer.assigned_ipv4)), edge.id::text
 FROM edge_node edge
 JOIN vpn_peer peer ON peer.edge_node_id = edge.id AND peer.peer_type = 'edge' AND peer.status = 'active'
 JOIN vpn_network network ON network.id = peer.network_id
@@ -1198,7 +1197,11 @@ ORDER BY COALESCE(edge.name, ''), edge.id)sql", service::common::dbParams(kDefau
     std::string result{"["};
     for (std::size_t index = 0; index < rows.size(); ++index) {
         if (index) result += ',';
-        result += detail::rowValue(rows[index], 0);
+        // Use the same live session source as EdgeService::fillNode. Database
+        // telemetry timestamps do not represent the lifetime of a WebSocket.
+        const auto session = co_await c.redis().get("iot:edge:session:" + detail::rowValue(rows[index], 1));
+        const auto device = detail::rowValue(rows[index], 0);
+        result += std::string("{\"online\":") + (session.has_value() ? "true," : "false,") + device.substr(1);
     }
     result += ']';
     co_return result;
@@ -1287,23 +1290,23 @@ inline ruvia::Task<std::string> VpnService::desktopPeerConfig(ruvia::Context& c,
     const auto principal = service::middleware::requireAuth(c);
     const auto rows = co_await c.db().query(R"sql(
 SELECT jsonb_build_object(
- 'peerId', peer.id, 'name', peer.name, 'publicKey', peer.public_key,
+ 'peerId', peer.id, 'name', peer.name, 'publicKey', peer.public_key, 'networkEnabled', network.status = 'enabled',
  'assignedIpv4', host(peer.assigned_ipv4), 'hubPublicKey', network.hub_public_key,
  'hubEndpoint', network.hub_endpoint, 'hubListenPort', network.hub_listen_port,
  'mtu', 1280, 'persistentKeepalive', 25, 'configRevision', peer.config_revision,
  'edgeNodeIds', COALESCE((SELECT jsonb_agg(selection.edge_node_id ORDER BY selection.edge_node_id)
    FROM vpn_peer_edge_selection selection WHERE selection.peer_id = peer.id), '[]'::jsonb),
- 'allowedRoutes', COALESCE((SELECT jsonb_agg(allowed.route ORDER BY allowed.route) FROM (
+ 'allowedRoutes', CASE WHEN network.status = 'enabled' THEN COALESCE((SELECT jsonb_agg(allowed.route ORDER BY allowed.route) FROM (
    SELECT virtual_cidr AS route FROM vpn_effective_route_access WHERE peer_id = peer.id
    UNION SELECT edge_address || '/32' FROM vpn_effective_edge_access WHERE peer_id = peer.id
- ) allowed), '[]'::jsonb),
- 'edgeAddresses', COALESCE((SELECT jsonb_agg(edge_address ORDER BY edge_address)
-   FROM vpn_effective_edge_access WHERE peer_id = peer.id), '[]'::jsonb)),
+ ) allowed), '[]'::jsonb) ELSE '[]'::jsonb END,
+ 'edgeAddresses', CASE WHEN network.status = 'enabled' THEN COALESCE((SELECT jsonb_agg(edge_address ORDER BY edge_address)
+   FROM vpn_effective_edge_access WHERE peer_id = peer.id), '[]'::jsonb) ELSE '[]'::jsonb END),
  network.hub_public_key, network.hub_endpoint
 FROM vpn_peer peer JOIN vpn_network network ON network.id = peer.network_id
 WHERE peer.id = $1::uuid AND peer.user_id = $2::uuid AND peer.peer_type = 'windows'
   AND peer.client_managed AND peer.status = 'active'
-  AND network.status = 'enabled' AND network.deleted_at IS NULL)sql",
+  AND network.deleted_at IS NULL)sql",
         service::common::dbParams(id, principal.userId));
     if (rows.empty()) service::common::fail(21004, "Windows VPN 配置不存在或不属于当前用户", 404);
     if (!detail::validManagedKey(detail::rowValue(rows.front(), 1)) || detail::rowValue(rows.front(), 2).empty())
