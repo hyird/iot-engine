@@ -28,7 +28,7 @@ class SchemaMigration final {
     std::string sql_;
 };
 
-inline const std::array<SchemaMigration, 43> kSchemaMigrations{{
+inline const std::array<SchemaMigration, 44> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
@@ -1692,6 +1692,68 @@ FOR EACH ROW
 WHEN (NEW.published_at IS NULL AND NEW.dead_lettered_at IS NULL)
 EXECUTE FUNCTION notify_outbox_pending();
 END $schema$;
+)sql"},
+    {"0042_vpn_desktop_selection", R"sql(
+DO $schema$
+BEGIN
+ALTER TABLE vpn_peer ADD COLUMN IF NOT EXISTS client_managed BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE TABLE IF NOT EXISTS vpn_peer_edge_selection (
+    peer_id UUID NOT NULL REFERENCES vpn_peer(id) ON DELETE CASCADE,
+    edge_node_id UUID NOT NULL REFERENCES edge_node(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (peer_id, edge_node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_vpn_peer_edge_selection_edge
+    ON vpn_peer_edge_selection(edge_node_id);
+CREATE OR REPLACE FUNCTION vpn_peer_edge_selection_revision() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  UPDATE vpn_peer SET config_revision = config_revision + 1, updated_at = NOW()
+  WHERE id = COALESCE(NEW.peer_id, OLD.peer_id);
+  IF TG_OP = 'DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;
+END $fn$;
+DROP TRIGGER IF EXISTS vpn_peer_edge_selection_revision ON vpn_peer_edge_selection;
+CREATE TRIGGER vpn_peer_edge_selection_revision
+AFTER INSERT OR UPDATE OR DELETE ON vpn_peer_edge_selection
+FOR EACH ROW EXECUTE FUNCTION vpn_peer_edge_selection_revision();
+CREATE FUNCTION vpn_desktop_user_authorized(subject_id UUID) RETURNS BOOLEAN
+LANGUAGE sql STABLE AS $fn$
+SELECT NOT EXISTS (
+  SELECT 1 FROM (VALUES ('iot:vpn:query'), ('iot:vpn:enroll'), ('iot:edge:query')) required(permission)
+  WHERE NOT EXISTS (
+    SELECT 1 FROM sys_user_role membership
+    JOIN sys_user account ON account.id = membership.user_id
+    JOIN sys_role role ON role.id = membership.role_id
+    WHERE membership.user_id = subject_id
+      AND account.status = 'enabled' AND account.deleted_at IS NULL
+      AND role.status = 'enabled' AND role.deleted_at IS NULL
+      AND (role.code = 'superadmin' OR role.permissions ? '*' OR role.permissions ? required.permission)
+  )
+);
+$fn$;
+-- Shared by config snapshots and both Hub reconcilers. The managed-client
+-- restriction is additive; legacy peers retain their existing network scope.
+CREATE VIEW vpn_effective_edge_access AS
+SELECT source.id AS peer_id, source.network_id, edge_peer.id AS edge_peer_id,
+       edge.id AS edge_node_id, host(edge_peer.assigned_ipv4) AS edge_address
+FROM vpn_peer source
+JOIN vpn_network network ON network.id = source.network_id
+JOIN vpn_peer edge_peer ON edge_peer.network_id = source.network_id
+  AND edge_peer.peer_type = 'edge' AND edge_peer.status = 'active'
+JOIN edge_node edge ON edge.id = edge_peer.edge_node_id AND edge.enrollment_status = 'approved'
+WHERE source.status = 'active' AND network.status = 'enabled' AND network.deleted_at IS NULL
+  AND (NOT source.client_managed OR (
+    vpn_desktop_user_authorized(source.user_id) AND EXISTS (
+      SELECT 1 FROM vpn_peer_edge_selection selection
+      WHERE selection.peer_id = source.id AND selection.edge_node_id = edge.id
+    )
+  ));
+CREATE VIEW vpn_effective_route_access AS
+SELECT access.peer_id, route.virtual_cidr
+FROM vpn_effective_edge_access access
+JOIN vpn_route route ON route.edge_peer_id = access.edge_peer_id
+  AND route.network_id = access.network_id AND route.enabled AND route.status = 'active';
+END
+$schema$;
 )sql"},
     {"0043_nonempty_query_notifications", R"sql(
 DO $schema$

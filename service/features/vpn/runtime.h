@@ -75,27 +75,12 @@ class Runtime final {
             co_return;
         const auto rows = co_await context.db().query(R"sql(
 SELECT p.public_key, host(p.assigned_ipv4), p.peer_type,
-       COALESCE(string_agg(r.virtual_cidr, ', ' ORDER BY r.virtual_cidr), ''),
-       COALESCE((SELECT string_agg(client_route.virtual_cidr, ', '
-                                   ORDER BY client_route.virtual_cidr)
-                 FROM vpn_route client_route
-                 JOIN vpn_peer edge_peer ON edge_peer.id = client_route.edge_peer_id
-                 JOIN edge_node edge ON edge.id = edge_peer.edge_node_id
-                 WHERE client_route.network_id = p.network_id
-                   AND client_route.enabled AND client_route.status = 'active'
-                   AND edge_peer.status = 'active'
-                   AND edge.enrollment_status = 'approved'), ''),
-       COALESCE((SELECT string_agg(host(edge_peer.assigned_ipv4), ', '
-                                   ORDER BY host(edge_peer.assigned_ipv4))
-                 FROM vpn_peer edge_peer
-                 JOIN edge_node edge ON edge.id = edge_peer.edge_node_id
-                 WHERE edge_peer.network_id = p.network_id
-                   AND edge_peer.peer_type = 'edge' AND edge_peer.status = 'active'
-                   AND edge.enrollment_status = 'approved'), '')
+       COALESCE((SELECT string_agg(r.virtual_cidr, ', ' ORDER BY r.virtual_cidr) FROM vpn_route r WHERE r.edge_peer_id = p.id AND r.enabled), ''),
+       COALESCE((SELECT string_agg(access.virtual_cidr, ', ' ORDER BY access.virtual_cidr) FROM vpn_effective_route_access access WHERE access.peer_id = p.id), ''),
+       COALESCE((SELECT string_agg(access.edge_address, ', ' ORDER BY access.edge_address) FROM vpn_effective_edge_access access WHERE access.peer_id = p.id), '')
 FROM vpn_peer p JOIN vpn_network n ON n.id = p.network_id
-LEFT JOIN vpn_route r ON r.edge_peer_id = p.id AND r.enabled
-WHERE p.status = 'active' AND n.status = 'enabled' AND p.public_key <> ''
-GROUP BY p.id, p.public_key, p.assigned_ipv4, p.peer_type, p.network_id
+WHERE p.status = 'active' AND n.status = 'enabled' AND n.deleted_at IS NULL AND p.public_key <> ''
+  AND (NOT p.client_managed OR vpn_desktop_user_authorized(p.user_id))
 ORDER BY p.id)sql");
         auto& controller = wireguard::controller();
         const auto configured = controller.configure(*config);
