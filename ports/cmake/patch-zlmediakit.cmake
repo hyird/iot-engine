@@ -2,6 +2,216 @@ if(NOT DEFINED SOURCE_DIR)
     message(FATAL_ERROR "SOURCE_DIR is required")
 endif()
 
+function(require_pinned_revision REPOSITORY EXPECTED_REVISION)
+    execute_process(
+        COMMAND git -C "${REPOSITORY}" rev-parse HEAD
+        RESULT_VARIABLE REVISION_RESULT
+        OUTPUT_VARIABLE ACTUAL_REVISION
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(NOT REVISION_RESULT EQUAL 0 OR NOT ACTUAL_REVISION STREQUAL EXPECTED_REVISION)
+        message(FATAL_ERROR
+            "Unexpected dependency revision in ${REPOSITORY}: expected ${EXPECTED_REVISION}, got ${ACTUAL_REVISION}")
+    endif()
+endfunction()
+
+function(patch_pinned_source SOURCE_FILE ORIGINAL_TEXT PATCHED_TEXT DESCRIPTION)
+    if(NOT EXISTS "${SOURCE_FILE}")
+        message(FATAL_ERROR "Missing pinned dependency source for ${DESCRIPTION}: ${SOURCE_FILE}")
+    endif()
+
+    file(READ "${SOURCE_FILE}" SOURCE_CONTENT)
+    # Protect fully patched occurrences only when they contain the old text.
+    # Other replacements may shorten text or share a replacement with another
+    # field; their remaining original occurrences must still be processed.
+    string(FIND "${PATCHED_TEXT}" "${ORIGINAL_TEXT}" EMBEDDED_ORIGINAL)
+    set(WORK_CONTENT "${SOURCE_CONTENT}")
+    if(NOT EMBEDDED_ORIGINAL EQUAL -1)
+        string(REPLACE "${PATCHED_TEXT}" "__IOT_PINNED_PATCH_COMPLETE__" WORK_CONTENT "${WORK_CONTENT}")
+    endif()
+    string(FIND "${SOURCE_CONTENT}" "${PATCHED_TEXT}" PATCHED_INDEX)
+    string(FIND "${WORK_CONTENT}" "${ORIGINAL_TEXT}" ORIGINAL_INDEX)
+    if(ORIGINAL_INDEX EQUAL -1)
+        if(NOT PATCHED_INDEX EQUAL -1)
+            return()
+        endif()
+        message(FATAL_ERROR "Unable to find expected source text for ${DESCRIPTION} in ${SOURCE_FILE}")
+    endif()
+
+    string(REPLACE
+        "${ORIGINAL_TEXT}"
+        "${PATCHED_TEXT}"
+        PATCHED_CONTENT
+        "${WORK_CONTENT}")
+    string(REPLACE "__IOT_PINNED_PATCH_COMPLETE__" "${PATCHED_TEXT}" PATCHED_CONTENT "${PATCHED_CONTENT}")
+    file(WRITE "${SOURCE_FILE}" "${PATCHED_CONTENT}")
+    message(STATUS "Patched pinned dependency source: ${DESCRIPTION}")
+endfunction()
+
+require_pinned_revision("${SOURCE_DIR}" "79d795a767da85bbba821b871265fd87d853d808")
+require_pinned_revision(
+    "${SOURCE_DIR}/3rdpart/ZLToolKit"
+    "00f56528d28b5f4aaa94c175fe90ea9bdab4b17f")
+require_pinned_revision(
+    "${SOURCE_DIR}/3rdpart/media-server"
+    "21c4451ff2e4c4bb1c817e606c8b4e5deac1e719")
+
+# The pinned media-server revision is compiled with the repository warning
+# policy on Linux and therefore needs source-level fixes for its audited
+# signedness and unused-value diagnostics. Keep these replacements exact: a
+# changed dependency revision must fail the patch step instead of silently
+# carrying an unreviewed compatibility patch forward.
+set(MEDIA_SERVER_ROOT "${SOURCE_DIR}/3rdpart/media-server")
+
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/aom-av1.c"
+    "obu_type = (data[i] >> 3) & 0x0F;\n"
+    "obu_type = (data[i] >> 3) & 0x0F;\n\t\t(void)obu_type;\n"
+    "libflv AV1 OBU type parse")
+
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/flv-muxer.c"
+    "assert(m + n <= flv->capacity);"
+    "assert((size_t)m + (size_t)n <= flv->capacity);"
+    "libflv muxer capacity assertion")
+
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/flv-reader.c"
+    "n -= sizeof(data)"
+    "n -= (int)sizeof(data)"
+    "libflv reader chunk decrement")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/flv-reader.c"
+    "n >= sizeof(data)"
+    "n >= (int)sizeof(data)"
+    "libflv reader chunk size")
+
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/flv-writer.c"
+    "assert(n + 2 <= sizeof(vec) / sizeof(vec[0]));"
+    "assert(n >= 0 && n + 2 <= (int)(sizeof(vec) / sizeof(vec[0])));"
+    "libflv writer vector bound")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/flv-writer.c"
+    "i + 2 < sizeof(vec)/sizeof(vec[0])"
+    "i + 2 < (int)(sizeof(vec)/sizeof(vec[0]))"
+    "libflv writer vector index")
+
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/hevc-annexbtomp4.c"
+    "sps_temporal_id_nesting_flag = ptr[2] & 0x01;\n"
+    "sps_temporal_id_nesting_flag = ptr[2] & 0x01;\n\t(void)sps_temporal_id_nesting_flag;\n"
+    "libflv HEVC SPS temporal flag parse")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/hevc-annexbtomp4.c"
+    "if (sodb < 3)\n\t\treturn 0xFF; (void)hevc;"
+    "if (sodb < 3)\n\t\t{\n\t\t\treturn 0xFF;\n\t\t}\n\t\t(void)hevc;"
+    "libflv HEVC PPS error branch")
+
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/mpeg4-aac-asc.c"
+    "element_instance_tag = mpeg4_bits_copy(pce, bits, 4);"
+    "element_instance_tag = mpeg4_bits_copy(pce, bits, 4);\n\t(void)element_instance_tag;"
+    "libflv AAC PCE element tag")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/mpeg4-aac-asc.c"
+    "\n\t\ttag = mpeg4_bits_copy(pce, bits, 4);"
+    "\n\t\ttag = mpeg4_bits_copy(pce, bits, 4);\n\t\t(void)tag;"
+    "libflv AAC PCE channel tag")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/mpeg4-aac-asc.c"
+    [=[if (0x0F == samplingFrequencyIndex)
+		samplingFrequency = mpeg4_bits_read_uint32(bits, 24);]=]
+    [=[if (0x0F == samplingFrequencyIndex)
+	{
+		samplingFrequency = mpeg4_bits_read_uint32(bits, 24);
+		(void)samplingFrequency;
+	}]=]
+    "libflv AAC explicit sampling frequency")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/mpeg4-aac-asc.c"
+    "streamCnt = 0;"
+    "streamCnt = 0;\n\t\t(void)streamCnt;"
+    "libflv AAC stream counter")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/mpeg4-aac-asc.c"
+    "numSubFrames = (uint8_t)mpeg4_bits_read_n(bits, 6);"
+    "numSubFrames = (uint8_t)mpeg4_bits_read_n(bits, 6);\n\t\t(void)numSubFrames;"
+    "libflv AAC LATM subframe count")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/mpeg4-aac-asc.c"
+    "*/ (uint8_t)mpeg4_bits_read_n"
+    "*/ (void)mpeg4_bits_read_n"
+    "libflv AAC LATM discarded fields")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/mpeg4-aac-asc.c"
+    "*/ (uint16_t)mpeg4_bits_read_n"
+    "*/ (void)mpeg4_bits_read_n"
+    "libflv AAC LATM discarded lengths")
+
+
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/mpeg4-aac.c"
+    [=[i < ARRAYOF(s_frequency)]=]
+    [=[i < (int)(ARRAYOF(s_frequency))]=]
+    "libflv AAC frequency lookup bound")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/mpeg4-aac.c"
+    [=[i >= ARRAYOF(s_frequency)]=]
+    [=[i >= (int)(ARRAYOF(s_frequency))]=]
+    "libflv AAC frequency lookup result")
+
+
+
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/mpeg4-vvc.c"
+    "i < sizeof(vvc->native_ptl.general_constraint_info)/sizeof(vvc->native_ptl.general_constraint_info[0])"
+    "i < (int)(sizeof(vvc->native_ptl.general_constraint_info)/sizeof(vvc->native_ptl.general_constraint_info[0]))"
+    "libflv VVC constraint information bound")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/mpeg4-vvc.c"
+    "i < sizeof(vvc->native_ptl.sublayer_level_idc)/sizeof(vvc->native_ptl.sublayer_level_idc[0])"
+    "i < (int)(sizeof(vvc->native_ptl.sublayer_level_idc)/sizeof(vvc->native_ptl.sublayer_level_idc[0]))"
+    "libflv VVC sublayer information bound")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/mpeg4-vvc.c"
+    "i < sizeof(vvc->native_ptl.sublayer_level_idc) / sizeof(vvc->native_ptl.sublayer_level_idc[0])"
+    "i < (int)(sizeof(vvc->native_ptl.sublayer_level_idc) / sizeof(vvc->native_ptl.sublayer_level_idc[0]))"
+    "libflv VVC saved sublayer information bound")
+
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/opus-head.c"
+    "pad += n == 255 ? 254 : n;"
+    "pad += n == 255 ? 254 : n;\n\t\t(void)pad;"
+    "libflv Opus padding parse")
+
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/vvc-annexbtomp4.c"
+    "vps_max_layers_minus1 = (ptr[3] >> 2) & 0x3F;"
+    "vps_max_layers_minus1 = (ptr[3] >> 2) & 0x3F;\n\t(void)vps_max_layers_minus1;"
+    "libflv VVC VPS layer parse")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/vvc-annexbtomp4.c"
+    "vps_max_sub_layers_minus1 = ((ptr[3] & 0x3) << 2) | ((ptr[4] >> 7) & 0x01);"
+    "vps_max_sub_layers_minus1 = ((ptr[3] & 0x3) << 2) | ((ptr[4] >> 7) & 0x01);\n\t(void)vps_max_sub_layers_minus1;"
+    "libflv VVC VPS sublayer parse")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/vvc-annexbtomp4.c"
+    "sps_max_sub_layers_minus1 = (ptr[3] >> 5) & 0x07;"
+    "sps_max_sub_layers_minus1 = (ptr[3] >> 5) & 0x07;\n\t(void)sps_max_sub_layers_minus1;"
+    "libflv VVC SPS sublayer parse")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/vvc-annexbtomp4.c"
+    "if (sodb < 12)\n\t\treturn 0xFF; (void)vvc;"
+    "if (sodb < 12)\n\t\t{\n\t\t\treturn 0xFF;\n\t\t}\n\t\t(void)vvc;"
+    "libflv VVC PPS error branch")
+
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libflv/source/xiph-flac.c"
+    "\n        n = 4;"
+    "\n        n = 4;\n        (void)n;"
+    "libflv FLAC marker parse")
+
 set(ROOT_CMAKE "${SOURCE_DIR}/CMakeLists.txt")
 file(READ "${ROOT_CMAKE}" ROOT_CONTENT)
 string(REPLACE
@@ -271,3 +481,155 @@ else()
     file(WRITE "${MK_COMMON_SOURCE}" "${PATCHED_MK_COMMON_CONTENT}")
     message(STATUS "Patched ZLMediaKit synchronous server shutdown")
 endif()
+
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmov/source/mov-avc1.c"
+    "entry->extra_data_size < box->size"
+    "(uint64_t)entry->extra_data_size < box->size"
+    "libmov AVC extra data capacity")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmov/source/mov-mehd.c"
+    [=[    (void)box;]=]
+    [=[    (void)box;
+    (void)fragment_duration;]=]
+    "libmov movie extends duration read")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmov/source/mov-opus.c"
+    "entry->extra_data_size < box->size + 8"
+    "(uint64_t)entry->extra_data_size < box->size + 8"
+    "libmov Opus extra data capacity")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmov/source/mov-tag.c"
+    "i < sizeof(s_tags) / sizeof(s_tags[0])"
+    "i < (int)(sizeof(s_tags) / sizeof(s_tags[0]))"
+    "libmov object tag lookup bound")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmov/source/mov-vpcc.c"
+    "entry->extra_data_size < box->size-4"
+    "(uint64_t)entry->extra_data_size < box->size-4"
+    "libmov VP codec extra data capacity")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmov/source/mov-writer.c"
+    "for (i = 1; object == MOV_OBJECT_CHAPTER && i < mov->mvhd.next_track_ID; i++)\n\t\tmov->tracks[i - 1].chpl_track = mov->mvhd.next_track_ID;"
+    "for (i = 1; object == MOV_OBJECT_CHAPTER && i < mov->mvhd.next_track_ID; i++)\n\t{\n\t\tmov->tracks[i - 1].chpl_track = mov->mvhd.next_track_ID;\n\t}"
+    "libmov subtitle chapter loop")
+
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmpeg/include/mpeg-muxer.h"
+    [=[#include "mpeg-ts.h"
+#include "mpeg-ts-proto.h"]=]
+    [=[#include "mpeg-ts.h" // Public TS declarations also cover the muxer interface.]=]
+    "libmpeg deprecated compatibility header")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmpeg/source/mpeg-element-descriptor.c"
+    "i < desc.num_sub_profiles && i < sizeof(desc.sub_profile_idc)/sizeof(desc.sub_profile_idc[0])"
+    "i < desc.num_sub_profiles && i < (int)(sizeof(desc.sub_profile_idc)/sizeof(desc.sub_profile_idc[0]))"
+    "libmpeg VVC descriptor profile bound")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmpeg/source/mpeg-element-descriptor.c"
+    "\ttime_t clock;\n"
+    "\t/* The parsed calendar fields are validated through mktime below. */\n"
+    "libmpeg clock descriptor state")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmpeg/source/mpeg-element-descriptor.c"
+    "\tclock = mktime(&t) * 1000;"
+    "\t(void)mktime(&t);"
+    "libmpeg clock descriptor normalization")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmpeg/source/mpeg-pack-header.c"
+    "\tuint8_t stuffing_length;\n\tsize_t header_length;"
+    "\tuint8_t stuffing_length;"
+    "libmpeg pack header local state")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmpeg/source/mpeg-pack-header.c"
+    "\t\theader_length = 14 + stuffing_length;\n\t\tmpeg_bits_skip(reader, stuffing_length);"
+    "\t\tmpeg_bits_skip(reader, stuffing_length);"
+    "libmpeg pack header stuffing skip")
+
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmpeg/source/mpeg-packet.c"
+    "pkt->size - size < n"
+    "pkt->size - size < (size_t)n"
+    "libmpeg H26x trailing NALU bound")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmpeg/source/mpeg-packet.c"
+    "assert(r >= 0 && r <= *consume)"
+    "assert(r >= 0 && (size_t)r <= *consume)"
+    "libmpeg packet consume assertion")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmpeg/source/mpeg-packet.c"
+    "r < 0 || r > *consume"
+    "r < 0 || (size_t)r > *consume"
+    "libmpeg packet consume bound")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmpeg/source/mpeg-packet.c"
+    "r >= sizeof(sc_codecid) / sizeof(sc_codecid[0])"
+    "r >= (int)(sizeof(sc_codecid) / sizeof(sc_codecid[0]))"
+    "libmpeg codec guess bound")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmpeg/source/mpeg-ps-dec.c"
+    "assert(r <= ps->buffer.len + (bytes - i));"
+    "assert((size_t)r <= ps->buffer.len + (bytes - i));"
+    "libmpeg PS buffered header assertion")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmpeg/source/mpeg-ps-dec.c"
+    "if (r >= ps->buffer.len)"
+    "if ((size_t)r >= ps->buffer.len)"
+    "libmpeg PS buffered header bound")
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmpeg/source/mpeg-ts-h264.c"
+    "count < sizeof(h26x[0])/sizeof(h26x[0][0])"
+    "count < (int)(sizeof(h26x[0])/sizeof(h26x[0][0]))"
+    "libmpeg H26x parameter set bound")
+
+patch_pinned_source(
+    "${SOURCE_DIR}/3rdpart/ZLToolKit/src/Network/sockutil.cpp"
+    "using getsockname_type = decltype(getsockname);"
+    "#if defined(_WIN32)\nusing getsockname_type = decltype(getsockname);\n#else\nusing getsockname_type = int (*)(int, struct sockaddr *, socklen_t *);\n#endif"
+    "ZLToolKit socket callback type")
+patch_pinned_source(
+    "${SOURCE_DIR}/3rdpart/ZLToolKit/src/Poller/Pipe.cpp"
+    "#include <fcntl.h>\n"
+    "#include <fcntl.h>\n#include <vector>\n"
+    "ZLToolKit pipe buffer include")
+patch_pinned_source(
+    "${SOURCE_DIR}/3rdpart/ZLToolKit/src/Poller/Pipe.cpp"
+    "char buf[nread + 1];\n        buf[nread] = '\\0';\n        nread = pipe->read(buf, sizeof(buf));\n        if (cb) {\n            cb(nread, buf);\n        }"
+    "std::vector<char> buf(static_cast<size_t>(nread) + 1);\n        buf[static_cast<size_t>(nread)] = '\\0';\n        nread = pipe->read(buf.data(), static_cast<int>(buf.size()));\n        if (cb) {\n            cb(nread, buf.data());\n        }"
+    "ZLToolKit POSIX pipe buffer")
+
+patch_pinned_source(
+    "${SOURCE_DIR}/ext-codec/MP2VRtp.cpp"
+    "payload_size <= (ssize_t)kMP2VHeaderSize"
+    "payload_size <= kMP2VHeaderSize"
+    "ZLMediaKit MPEG video RTP header bound")
+patch_pinned_source(
+    "${SOURCE_DIR}/ext-codec/MP2VRtp.cpp"
+    "payload_size <= (ssize_t)header_size"
+    "payload_size <= header_size"
+    "ZLMediaKit MPEG video RTP extension bound")
+patch_pinned_source(
+    "${SOURCE_DIR}/src/Codec/Transcode.cpp"
+    "if ((ret = avfilter_link(buffersrc_ctx, 0, drawtext_ctx1, 0) < 0 || avfilter_link(drawtext_ctx1, 0, buffersink_ctx, 0))< 0) {"
+    "if ((ret = avfilter_link(buffersrc_ctx, 0, drawtext_ctx1, 0)) < 0 ||\n        (ret = avfilter_link(drawtext_ctx1, 0, buffersink_ctx, 0)) < 0) {"
+    "ZLMediaKit drawtext filter link result")
+patch_pinned_source(
+    "${SOURCE_DIR}/src/Record/MP4.cpp"
+    "if (offset > _memory.size())"
+    "if (static_cast<uint64_t>(offset) > _memory.size())"
+    "ZLMediaKit MP4 memory seek bound")
+patch_pinned_source(
+    "${SOURCE_DIR}/src/Record/MP4.cpp"
+    "if (_offset >= _memory.size())"
+    "if (_offset < 0 || static_cast<uint64_t>(_offset) >= _memory.size())"
+    "ZLMediaKit MP4 memory read bound")
+
+patch_pinned_source(
+    "${MEDIA_SERVER_ROOT}/libmov/source/mov-writer.c"
+    [=[    if (0 != mov_add_subtitle(track, &mov->mvhd, 1000, object, extra_data, extra_data_size))
+        return -ENOMEM;]=]
+    [=[    if (0 != mov_add_subtitle(track, &mov->mvhd, 1000, object, extra_data, extra_data_size))
+    {
+        return -ENOMEM;
+    }]=]
+    "libmov subtitle failure branch")
