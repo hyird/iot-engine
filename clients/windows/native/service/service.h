@@ -56,6 +56,11 @@ private:
     void refreshLocked(std::string_view expectedToken, std::stop_token stop);
     void loginLocked(const Json& request, std::stop_token stop);
     void applyLocked(const Json& request, std::stop_token stop);
+    void rememberPendingRevocation(std::string_view peerId);
+    void clearLocalPeer(std::string_view peerId);
+    Json recoverPendingEnrollment(std::stop_token stop, bool release = false);
+    void retryPendingRevocations(std::stop_token stop);
+    Json disconnectLocked(std::stop_token stop);
     Json logoutLocked(std::stop_token stop);
     void acceptConfig(const Json& config, std::stop_token stop);
     void apiFailure(const ApiError& error);

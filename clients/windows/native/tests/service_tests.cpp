@@ -11,7 +11,9 @@ using namespace std::chrono_literals;
 namespace {
 const std::string Edge = "11111111-1111-4111-8111-111111111111";
 const std::string Other = "22222222-2222-4222-8222-222222222222";
+const std::string PeerTwo = "33333333-3333-4333-8333-333333333333";
 const std::string Key = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+const std::string KeyTwo = "AgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
 void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
 Json loginResponse(std::string token = "access", std::string refresh = "refresh") {
     return {{"token", token}, {"refresh_token", refresh}, {"user", {{"id", "account"}, {"username", "alice"}}}};
@@ -37,7 +39,7 @@ struct TunnelLog { std::atomic<bool> on{false}; std::atomic<int> applies{0}, sto
 struct FakeTunnel final : Tunnel {
     std::shared_ptr<TunnelLog> log;
     explicit FakeTunnel(std::shared_ptr<TunnelLog> value) : log(std::move(value)) {}
-    std::pair<std::string, std::string> generateKeys() override { ++log->keys; return {Key, Key}; }
+    std::pair<std::string, std::string> generateKeys() override { return ++log->keys == 1 ? std::pair{Key, Key} : std::pair{KeyTwo, KeyTwo}; }
     bool running() override { return log->on; }
     void stop() override { log->on = false; ++log->stops; }
     void apply(const Json& value, const std::string& privateKey) override {
@@ -45,11 +47,15 @@ struct FakeTunnel final : Tunnel {
     }
 };
 struct Api final : IApiTransport {
-    std::atomic<int> loginCalls{0}, refreshCalls{0}, deviceCalls{0}, removeCalls{0};
-    bool firstDeviceExpired = false, removeFails = false;
+    std::atomic<int> loginCalls{0}, refreshCalls{0}, deviceCalls{0}, removeCalls{0}, applyCalls{0}, postCalls{0};
+    bool firstDeviceExpired = false, removeFails = false, losePostResponse = false, enrollmentAlreadyRevoked = false, enrollmentNetworkUnavailable = false;
+    int removeFailures = 0;
     Json loginData = loginResponse(), refreshedData = loginResponse("new-access", "new-refresh"), current = ::config();
     Json lastApply;
     std::string lastPeer, lastAccess, lastRefresh;
+    std::string registeredPublicKey, registeredPeer;
+    std::vector<std::string> removedPeers;
+    std::function<void()> beforeRemove;
     std::function<void(const std::function<void(const Json&)>&, std::stop_token)> watch;
     Json login(std::string_view, std::string_view, std::stop_token) override { ++loginCalls; return loginData; }
     Json refresh(std::string_view token, std::stop_token) override { ++refreshCalls; lastRefresh = token; return refreshedData; }
@@ -59,14 +65,36 @@ struct Api final : IApiTransport {
         return Json::array({{{"id", Edge}}});
     }
     Json apply(std::string_view, std::string_view peer, const Json& body, std::stop_token) override {
-        lastPeer = peer; lastApply = body;
-        Json result = current; result["edgeNodeIds"] = body.at("edgeNodeIds");
+        ++applyCalls; lastPeer = peer; lastApply = body;
+        Json result = current;
+        if (peer.empty()) {
+            ++postCalls;
+            if (enrollmentNetworkUnavailable) throw ApiError("network unavailable", 404);
+            if (enrollmentAlreadyRevoked) {
+                enrollmentAlreadyRevoked = false;
+                throw ApiError("enrollment already revoked", 410, 21009);
+            }
+            const auto publicKey = body.at("publicKey").get<std::string>();
+            if (registeredPublicKey != publicKey || registeredPeer.empty()) {
+                registeredPublicKey = publicKey; registeredPeer = PeerTwo;
+            }
+            result["peerId"] = registeredPeer; result["publicKey"] = registeredPublicKey;
+        } else {
+            result["peerId"] = std::string(peer); result["publicKey"] = Json(Key);
+        }
+        result["edgeNodeIds"] = body.at("edgeNodeIds");
         if (body.at("edgeNodeIds").empty()) { result["allowedRoutes"] = Json::array(); result["edgeAddresses"] = Json::array(); }
+        if (peer.empty() && losePostResponse) {
+            losePostResponse = false;
+            throw std::runtime_error("response lost after registration");
+        }
         return result;
     }
     Json config(std::string_view, std::string_view, std::stop_token) override { return current; }
-    void remove(std::string_view, std::string_view, std::stop_token) override {
-        ++removeCalls; if (removeFails) throw ApiError("platform offline", 503);
+    void remove(std::string_view, std::string_view peer, std::stop_token) override {
+        ++removeCalls; removedPeers.emplace_back(peer); if (beforeRemove) beforeRemove();
+        if (removeFailures > 0) { --removeFailures; throw ApiError("platform offline", 503); }
+        if (removeFails) throw ApiError("platform offline", 503);
     }
     void watchConfig(std::string_view, std::string_view, const std::function<void(const Json&)>& receive, std::stop_token stop) override {
         if (watch) watch(receive, stop);
@@ -78,6 +106,7 @@ struct Fixture {
     std::shared_ptr<TunnelLog> tunnel = std::make_shared<TunnelLog>();
     std::unique_ptr<Coordinator> coordinator;
     explicit Fixture(Json state = initialState()) {
+        if (state.contains("publicKey")) tunnel->keys = 1;
         store->state = std::move(state); coordinator = std::make_unique<Coordinator>(store, api, std::make_unique<FakeTunnel>(tunnel));
     }
     Json command(const char* name) { return coordinator->handle({{"command", name}}); }
@@ -122,21 +151,129 @@ int main() {
         Fixture fixture;
         require(fixture.coordinator->handle({{"command", "apply"}, {"edgeNodeIds", {Edge}}}).value("success", false), "selection failed");
         require(fixture.api->lastPeer == Edge && !fixture.api->lastApply.contains("publicKey"), "existing selection did not use PATCH contract");
+        fixture.api->beforeRemove = [&] { require(!fixture.tunnel->on, "DELETE happened before tunnel stop"); };
         require(fixture.coordinator->handle({{"command", "apply"}, {"edgeNodeIds", Json::array()}}).value("success", false), "empty selection failed");
-        require(!fixture.tunnel->on && !fixture.store->state["connectRequested"].get<bool>(), "clearing selection retained a tunnel");
+        require(!fixture.tunnel->on && !fixture.store->state["connectRequested"].get<bool>() && fixture.api->removeCalls == 1 &&
+            !fixture.store->state.contains("peerId") && !fixture.store->state.contains("privateKey") &&
+            fixture.store->state["edgeNodeIds"].empty(), "clearing selection did not release the peer");
     });
     test("disconnect sync and reconnect", [] {
         Fixture fixture;
         require(fixture.command("connect").value("success", false) && fixture.tunnel->on, "connect failed");
-        require(fixture.command("disconnect").value("success", false) && !fixture.tunnel->on, "disconnect failed");
+        require(fixture.command("disconnect").value("success", false) && !fixture.tunnel->on && fixture.api->removeCalls == 1, "disconnect failed");
+        require(!fixture.store->state.contains("peerId") && fixture.store->state.contains("session") &&
+            fixture.store->state["edgeNodeIds"].size() == 1, "disconnect did not preserve the session and selection");
         fixture.api->current = config("172.17.0.0/16", 2);
-        require(fixture.command("sync").value("success", false) && !fixture.tunnel->on, "sync reconnected a disconnected client");
-        require(fixture.command("connect").value("success", false) && fixture.tunnel->applies == 2, "reconnect did not apply latest config");
+        require(!fixture.command("sync").value("success", true) && !fixture.tunnel->on, "sync bypassed peer registration");
+        require(fixture.command("connect").value("success", false) && fixture.tunnel->applies == 2 && fixture.api->postCalls == 1 &&
+            fixture.api->lastPeer.empty() && fixture.api->lastApply["publicKey"] == KeyTwo && fixture.store->state["peerId"] == PeerTwo,
+            "reconnect did not register a fresh key and peer");
+    });
+    test("disconnect failure retains identity and reconnect retries revoke", [] {
+        Fixture fixture; require(fixture.command("connect").value("success", false), "setup connect");
+        fixture.api->removeFailures = 1;
+        const auto failed = fixture.command("disconnect");
+        require(!failed.value("success", true) && !fixture.tunnel->on && fixture.store->state["peerId"] == Edge &&
+            fixture.store->state["pendingRevocations"].size() == 1, "failed disconnect lost the pending peer");
+        require(fixture.command("connect").value("success", false) && fixture.api->removeCalls == 2 && fixture.api->postCalls == 1 &&
+            fixture.store->state["peerId"] == PeerTwo && !fixture.store->state.contains("pendingRevocations") &&
+            fixture.api->lastApply["publicKey"] == KeyTwo, "reconnect did not retry revoke before registering");
     });
     test("logout clears local state on platform failure", [] {
         Fixture fixture; require(fixture.command("connect").value("success", false), "setup connect"); fixture.api->removeFails = true;
         const auto result = fixture.command("logout");
-        require(result.value("success", false) && result.contains("message") && fixture.store->state.empty() && !fixture.tunnel->on, "logout did not clear and warn");
+        require(result.value("success", false) && result.contains("message") && fixture.store->state.empty() == false &&
+            !fixture.store->state.contains("session") && !fixture.store->state.contains("peerId") &&
+            fixture.store->state["pendingRevocations"].size() == 1 && !fixture.tunnel->on, "logout lost the pending revoke");
+    });
+    test("account switch keeps an old account pending revoke", [] {
+        Fixture fixture; require(fixture.command("connect").value("success", false), "setup connect");
+        fixture.api->removeFailures = 1; fixture.api->loginData["user"]["id"] = "second-account";
+        const auto result = fixture.coordinator->handle({{"command", "login"}, {"username", "bob"}, {"password", "secret"}});
+        require(!result.value("success", true) && fixture.store->state["session"]["userId"] == "account" &&
+            fixture.store->state["peerId"] == Edge && fixture.store->state["pendingRevocations"].size() == 1 && !fixture.tunnel->on,
+            "account switch crossed an uncleared peer");
+        fixture.api->removeFailures = 0;
+        const auto retried = fixture.coordinator->handle({{"command", "login"}, {"username", "bob"}, {"password", "secret"}});
+        require(retried.value("success", false) && fixture.store->state["session"]["userId"] == "second-account" &&
+            !fixture.store->state.contains("peerId") && !fixture.store->state.contains("pendingRevocations"),
+            "account switch did not complete after revoke retry");
+    });
+    test("lost registration response reuses the same enrollment key", [] {
+        Fixture fixture(initialState(false)); fixture.api->losePostResponse = true;
+        const auto failed = fixture.coordinator->handle({{"command", "apply"}, {"edgeNodeIds", {Edge}}});
+        require(!failed.value("success", true) && fixture.tunnel->keys == 1 && !fixture.store->state.contains("peerId") &&
+            fixture.store->state["pendingEnrollment"]["publicKey"] == Key && fixture.store->state["pendingEnrollment"]["edgeNodeIds"] == Json::array({Edge}),
+            "lost registration response did not persist the enrollment request");
+        const auto retry = fixture.coordinator->handle({{"command", "apply"}, {"edgeNodeIds", {Edge}}});
+        require(retry.value("success", false) && fixture.api->postCalls == 2 && fixture.tunnel->keys == 1 &&
+            fixture.api->lastApply["publicKey"] == Key && fixture.store->state["peerId"] == PeerTwo &&
+            !fixture.store->state.contains("pendingEnrollment"), "lost registration response generated a new key");
+    });
+    test("already revoked enrollment is replaced after the explicit server result", [] {
+        Fixture fixture(initialState(false)); fixture.api->losePostResponse = true;
+        require(!fixture.coordinator->handle({{"command", "apply"}, {"edgeNodeIds", {Edge}}}).value("success", true), "setup lost POST did not fail");
+        fixture.api->enrollmentAlreadyRevoked = true;
+        const auto retry = fixture.coordinator->handle({{"command", "apply"}, {"edgeNodeIds", {Edge}}});
+        require(retry.value("success", false) && fixture.api->postCalls == 3 && fixture.tunnel->keys == 2 &&
+            fixture.api->lastApply["publicKey"] == KeyTwo && fixture.store->state["peerId"] == PeerTwo &&
+            !fixture.store->state.contains("pendingEnrollment"), "explicit revoked enrollment was not replaced");
+    });
+    test("network failure never clears an unconfirmed enrollment", [] {
+        Fixture fixture(initialState(false)); fixture.api->losePostResponse = true;
+        require(!fixture.coordinator->handle({{"command", "apply"}, {"edgeNodeIds", {Edge}}}).value("success", true), "setup lost POST did not fail");
+        fixture.api->enrollmentNetworkUnavailable = true;
+        const auto failed = fixture.coordinator->handle({{"command", "apply"}, {"edgeNodeIds", {Edge}}});
+        require(!failed.value("success", true) && fixture.tunnel->keys == 1 && fixture.store->state["pendingEnrollment"]["publicKey"] == Key,
+            "network failure discarded the pending enrollment");
+        fixture.api->enrollmentNetworkUnavailable = false;
+        const auto retry = fixture.coordinator->handle({{"command", "apply"}, {"edgeNodeIds", {Edge}}});
+        require(retry.value("success", false) && fixture.tunnel->keys == 1 && fixture.api->postCalls == 3 &&
+            fixture.store->state["peerId"] == PeerTwo && !fixture.store->state.contains("pendingEnrollment"),
+            "enrollment did not retry after network recovery");
+    });
+    test("release intent survives restart after enrollment recovery", [] {
+        Fixture fixture(initialState(false)); fixture.api->losePostResponse = true;
+        require(!fixture.coordinator->handle({{"command", "apply"}, {"edgeNodeIds", {Edge}}}).value("success", true), "setup lost POST did not fail");
+        fixture.api->beforeRemove = [] { throw std::runtime_error("simulated process interruption"); };
+        const auto failed = fixture.command("disconnect");
+        require(!failed.value("success", true) && fixture.store->state["pendingRevocations"].size() == 1 &&
+            !fixture.store->state.contains("pendingEnrollment") && fixture.store->state["peerId"] == PeerTwo,
+            "recovered enrollment did not persist release intent");
+        fixture.coordinator.reset(); fixture.api->beforeRemove = {};
+        fixture.coordinator = std::make_unique<Coordinator>(fixture.store, fixture.api, std::make_unique<FakeTunnel>(fixture.tunnel));
+        require(fixture.command("connect").value("success", false) && fixture.api->removeCalls == 2 && fixture.api->postCalls == 3 &&
+            fixture.tunnel->keys == 2 && fixture.store->state["peerId"] == PeerTwo &&
+            !fixture.store->state.contains("pendingRevocations"), "restart lost the release intent");
+    });
+    test("selection change and empty selection resolve an unconfirmed registration first", [] {
+        Fixture fixture(initialState(false)); fixture.api->losePostResponse = true;
+        require(!fixture.coordinator->handle({{"command", "apply"}, {"edgeNodeIds", {Edge}}}).value("success", true), "setup lost POST did not fail");
+        const auto changed = fixture.coordinator->handle({{"command", "apply"}, {"edgeNodeIds", {Other}}});
+        require(changed.value("success", false) && fixture.api->postCalls == 3 && fixture.api->removeCalls == 1 &&
+            fixture.tunnel->keys == 2 && fixture.api->lastApply["publicKey"] == KeyTwo && fixture.store->state["edgeNodeIds"] == Json::array({Other}),
+            "selection change abandoned the unconfirmed registration");
+        const auto cleared = fixture.coordinator->handle({{"command", "apply"}, {"edgeNodeIds", Json::array()}});
+        require(cleared.value("success", false) && fixture.api->removeCalls == 2 && !fixture.store->state.contains("peerId") &&
+            !fixture.store->state.contains("pendingEnrollment") && !fixture.store->state.contains("privateKey") &&
+            fixture.store->state["edgeNodeIds"].empty(), "empty selection did not release the replacement peer");
+    });
+    test("offline logout preserves pending enrollment for re-login", [] {
+        Fixture fixture(initialState(false)); fixture.api->losePostResponse = true;
+        require(!fixture.coordinator->handle({{"command", "apply"}, {"edgeNodeIds", {Edge}}}).value("success", true), "setup lost POST did not fail");
+        fixture.api->losePostResponse = true;
+        const auto loggedOut = fixture.command("logout");
+        require(loggedOut.value("success", false) && fixture.store->state["pendingEnrollment"]["userId"] == "account" &&
+            fixture.store->state.contains("publicKey") && fixture.store->state.contains("privateKey") && !fixture.store->state.contains("session"),
+            "logout discarded the unconfirmed enrollment");
+        fixture.api->losePostResponse = true;
+        const auto blocked = fixture.coordinator->handle({{"command", "login"}, {"username", "alice"}, {"password", "secret"}});
+        require(!blocked.value("success", true) && fixture.store->state["session"]["userId"] == "account" &&
+            fixture.store->state.contains("pendingEnrollment"), "offline re-login discarded pending enrollment");
+        fixture.api->losePostResponse = false;
+        const auto retried = fixture.coordinator->handle({{"command", "login"}, {"username", "alice"}, {"password", "secret"}});
+        require(retried.value("success", false) && fixture.api->postCalls == 4 && !fixture.store->state.contains("pendingEnrollment") &&
+            !fixture.store->state.contains("pendingRevocations"), "re-login did not recover and release pending enrollment");
     });
     test("cross-account login revokes previous peer", [] {
         Fixture fixture; fixture.command("connect"); fixture.api->loginData["user"]["id"] = "second-account";

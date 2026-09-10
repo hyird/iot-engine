@@ -38,7 +38,7 @@ using namespace Windows::Foundation;
 namespace fs=std::filesystem;
 using iotvpn::Json;
 struct Options { bool test=false; fs::path report,preview; };
-Options options;
+Options startupOptions;
 int testResult=0;
 
 std::string localTimestamp(const Json& status) {
@@ -129,14 +129,14 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
             Resources().MergedDictionaries().Append(XamlControlsResources());
             root=Markup::XamlReader::Load(layout).as<Grid>();
             model=std::make_unique<iotvpn::gui::Controller>([this](const Json& request,std::stop_token stop) {
-                if(options.test) return fixture(request);
+                if(startupOptions.test) return fixture(request);
                 auto result=iotvpn::pipeRequest(request,90000,stop);
                 if(request.value("command","")=="login" && result.value("success",false)) {
                     try { if(request.value("rememberCredentials",false)) iotvpn::gui::Credentials().save(request.at("username").get_ref<const std::string&>(),request.at("password").get_ref<const std::string&>()); else iotvpn::gui::Credentials().clear(); }
                     catch(...) { result["message"]="登录成功，但保存账号失败，请重试。"; }
                 }
                 return result;
-            },options.test);
+            },startupOptions.test);
             window=Window(); window.Title(L"iot-egine"); window.Content(root);
             window.SystemBackdrop(MicaBackdrop());
             auto presenter=window.AppWindow().Presenter().as<Microsoft::UI::Windowing::OverlappedPresenter>();
@@ -160,23 +160,23 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
                 control<Button>(name).Click([this,command](auto const&,auto const&) { model->request(command); render(); });
             control<Button>(L"Connect").Click([this](auto const&,auto const&) { model->request(model->connected?"disconnect":"connect"); render(); });
             control<TextBox>(L"Search").TextChanged([this](auto const&,auto const&) { rendered.clear(); render(); });
-            control<CheckBox>(L"Remember").Unchecked([this](auto const&,auto const&) { if(!options.test) { try { iotvpn::gui::Credentials().clear(); } catch(...) { model->message="无法清除已保存的账号，请重试。"; } } });
-            if(!options.test) {
+            control<CheckBox>(L"Remember").Unchecked([this](auto const&,auto const&) { if(!startupOptions.test) { try { iotvpn::gui::Credentials().clear(); } catch(...) { model->message="无法清除已保存的账号，请重试。"; } } });
+            if(!startupOptions.test) {
                 try { std::string user,password; if(iotvpn::gui::Credentials().load(user,password)) { control<TextBox>(L"Username").Text(to_hstring(user)); control<PasswordBox>(L"Password").Password(to_hstring(password)); } SecureZeroMemory(password.data(),password.size()); }
                 catch(...) { model->message="无法读取已保存的账号，请重新输入。"; }
                 model->request("status");
             }
             timer=DispatcherTimer(); timer.Interval(std::chrono::milliseconds(100));
-            timer.Tick([this](auto const&,auto const&) { if(model) { model->tick(!options.test&&!logoutConfirming); render(); } }); timer.Start();
+            timer.Tick([this](auto const&,auto const&) { if(model) { model->tick(!startupOptions.test&&!logoutConfirming); render(); } }); timer.Start();
             window.Activate(); render();
-            if(options.test) selfTest();
+            if(startupOptions.test) selfTest();
         } catch(hresult_error const& error) { fail(to_string(error.message())); }
         catch(std::exception const& error) { fail(error.what()); }
     }
     void fail(std::string const& message) {
         testResult=1;
-        if(!options.report.empty()) std::ofstream(options.report)<<"FAIL "<<message;
-        if(!options.test) MessageBoxW(nullptr,to_hstring(message).c_str(),L"iot-egine",MB_OK|MB_ICONERROR);
+        if(!startupOptions.report.empty()) std::ofstream(startupOptions.report)<<"FAIL "<<message;
+        if(!startupOptions.test) MessageBoxW(nullptr,to_hstring(message).c_str(),L"iot-egine",MB_OK|MB_ICONERROR);
         if(window) window.Close(); else Exit();
     }
     fire_and_forget confirmLogout() {
@@ -221,7 +221,8 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
         const auto state=iotvpn::gui::text(model->status,"state");
         const std::map<std::string,std::wstring> labels{{"Connected",L"已连接"},{"Disconnected",L"已断开"},{"Authenticated",L"已登录"},{"Connecting",L"连接中"},{"Retrying",L"正在重试"},{"Revoked",L"授权已撤销"},{"Error",L"连接异常"}};
         control<TextBlock>(L"NetworkState").Text(labels.contains(state)?hstring(labels.at(state)):to_hstring(state));
-        control<TextBlock>(L"Address").Text(to_hstring("本机地址  "+iotvpn::gui::text(model->status,"assignedIpv4","尚未分配")));
+        const auto assignedAddress=iotvpn::gui::text(model->status,"assignedIpv4");
+        control<TextBlock>(L"Address").Text(to_hstring("本机地址  "+(assignedAddress.empty()?std::string("尚未分配"):assignedAddress)));
         control<TextBlock>(L"SyncTime").Text(to_hstring("同步  "+localTimestamp(model->status)));
         control<TextBlock>(L"Selection").Text(to_hstring("已选择 "+std::to_string(model->selected.size())+" 台"+(model->changed()?" · 待应用":"")));
         control<TextBlock>(L"Hint").Text(model->busy?L"正在处理…":L"关闭窗口后，连接继续运行");
@@ -244,11 +245,11 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
         control<TextBlock>(L"Empty").Text(model->busy?L"正在读取设备…":model->devices.empty()?L"暂无可用设备":L"没有匹配的设备");
     }
     Windows::Foundation::IAsyncAction capture(std::wstring name) {
-        if(options.preview.empty()) co_return;
+        if(startupOptions.preview.empty()) co_return;
         Media::Imaging::RenderTargetBitmap bitmap;
         co_await bitmap.RenderAsync(root);
         const auto buffer=co_await bitmap.GetPixelsAsync();
-        auto folder=co_await Windows::Storage::StorageFolder::GetFolderFromPathAsync(options.preview.wstring());
+        auto folder=co_await Windows::Storage::StorageFolder::GetFolderFromPathAsync(startupOptions.preview.wstring());
         auto file=co_await folder.CreateFileAsync(name,Windows::Storage::CreationCollisionOption::ReplaceExisting);
         auto stream=co_await file.OpenAsync(Windows::Storage::FileAccessMode::ReadWrite);
         auto encoder=co_await Windows::Graphics::Imaging::BitmapEncoder::CreateAsync(Windows::Graphics::Imaging::BitmapEncoder::PngEncoderId(),stream);
@@ -290,7 +291,7 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
             window.AppWindow().Resize({820,640});
             co_await resume_after(std::chrono::milliseconds(300)); co_await ui;
             co_await capture(L"login-compact.png");
-            if(!options.report.empty()) std::ofstream(options.report)<<"PASS C++ WinUI 3 Fluent controls, login, devices, selection, apply, search, cancelled logout and confirmed logout\n";
+            if(!startupOptions.report.empty()) std::ofstream(startupOptions.report)<<"PASS C++ WinUI 3 Fluent controls, login, devices, selection, apply, search, cancelled logout and confirmed logout\n";
             window.Close();
         } catch(hresult_error const& error) { fail(to_string(error.message())); }
         catch(std::exception const& error) { fail(error.what()); }
@@ -298,8 +299,8 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
 };
 int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
     int argc{}; auto argv=CommandLineToArgvW(GetCommandLineW(),&argc);
-    for(int i=1;i<argc;++i) { const std::wstring arg=argv[i]; if(arg==L"--self-test") options.test=true; else if(arg==L"--report"&&i+1<argc) options.report=argv[++i]; else if(arg==L"--preview-dir"&&i+1<argc) options.preview=fs::absolute(argv[++i]); }
-    LocalFree(argv); if(!options.preview.empty()) fs::create_directories(options.preview);
+    for(int i=1;i<argc;++i) { const std::wstring arg=argv[i]; if(arg==L"--self-test") startupOptions.test=true; else if(arg==L"--report"&&i+1<argc) startupOptions.report=argv[++i]; else if(arg==L"--preview-dir"&&i+1<argc) startupOptions.preview=fs::absolute(argv[++i]); }
+    LocalFree(argv); if(!startupOptions.preview.empty()) fs::create_directories(startupOptions.preview);
     init_apartment(apartment_type::single_threaded);
     Application::Start([](auto&&){make<App>();});
     return testResult;

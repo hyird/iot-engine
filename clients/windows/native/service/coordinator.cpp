@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <ctime>
+#include <exception>
 #include <set>
 
 namespace iotvpn::service {
@@ -115,6 +116,119 @@ Json Coordinator::authorized(const std::function<Json(std::string_view)>& reques
         return request(value(state_["session"], "token"));
     }
 }
+void Coordinator::rememberPendingRevocation(std::string_view peerId) {
+    const auto id = canonicalId(peerId);
+    auto& pending = state_["pendingRevocations"];
+    if (!pending.is_array()) pending = Json::array();
+    const auto owner = value(state_.value("session", Json::object()), "userId");
+    for (const auto& entry : pending)
+        if (value(entry, "peerId") == id && value(entry, "userId") == owner) return;
+    pending.push_back({{"peerId", id}, {"userId", owner}});
+}
+void Coordinator::clearLocalPeer(std::string_view peerId) {
+    if (peerId.empty() || value(state_, "peerId") != peerId) return;
+    state_.erase("peerId"); state_.erase("publicKey"); state_.erase("privateKey"); state_.erase("lastConfig");
+}
+Json Coordinator::recoverPendingEnrollment(std::stop_token stop, bool release) {
+    if (!state_.contains("pendingEnrollment")) return Json();
+    if (!state_["pendingEnrollment"].is_object() || state_["pendingEnrollment"].empty())
+        throw std::runtime_error("待确认的客户端注册信息无效。");
+    requireSession();
+    const auto owner = value(state_["pendingEnrollment"], "userId"), currentOwner = value(state_["session"], "userId");
+    if (owner.empty() || owner != currentOwner)
+        throw std::runtime_error("上一账号的客户端注册尚未确认，请先恢复原账号完成释放。");
+    auto body = state_["pendingEnrollment"];
+    body.erase("userId");
+    const auto publicKey = value(body, "publicKey");
+    const auto ids = strings(body, "edgeNodeIds");
+    if (publicKey.empty() || ids.empty()) throw std::runtime_error("待确认的客户端注册信息无效。");
+    const auto before = state_;
+    Json config;
+    try {
+        config = authorized([&](std::string_view token) { return api_->apply(token, {}, body, stop); }, stop);
+    } catch (const ApiError& error) {
+        if (error.httpStatus != 410 || error.code != 21009) throw;
+        // The server has already discarded the idempotent enrollment. It is
+        // safe to remove the marker and generate a fresh key on the next apply.
+        state_.erase("pendingEnrollment");
+        if (value(state_, "peerId").empty()) {
+            state_.erase("publicKey"); state_.erase("privateKey"); state_.erase("lastConfig");
+        }
+        try { store_->save(state_); }
+        catch (...) {
+            const auto session = state_.value("session", Json()); state_ = before;
+            if (!session.is_null()) state_["session"] = session;
+            throw;
+        }
+        return Json();
+    }
+    const auto peer = canonicalId(value(config, "peerId"));
+    if (value(config, "publicKey") != publicKey) throw std::runtime_error("平台返回的待确认客户端密钥不一致。");
+    const auto enrollment = state_["pendingEnrollment"];
+    state_["peerId"] = peer; state_["publicKey"] = publicKey;
+    state_["edgeNodeIds"] = ids; state_.erase("pendingEnrollment");
+    if (release) rememberPendingRevocation(peer);
+    try { store_->save(state_); }
+    catch (...) {
+        const auto session = state_.value("session", Json()); state_ = before;
+        if (!session.is_null()) state_["session"] = session;
+        state_["pendingEnrollment"] = enrollment;
+        throw;
+    }
+    return config;
+}
+void Coordinator::retryPendingRevocations(std::stop_token stop) {
+    const auto owner = value(state_.value("session", Json::object()), "userId");
+    if (owner.empty()) return;
+    std::exception_ptr firstFailure;
+    if (!state_.contains("pendingRevocations") || !state_["pendingRevocations"].is_array()) {
+        return;
+    }
+    Json remaining = Json::array(); bool changed = false;
+    for (const auto& entry : state_["pendingRevocations"]) {
+        const auto peer = value(entry, "peerId"), entryOwner = value(entry, "userId");
+        if (peer.empty() || entryOwner.empty()) {
+            if (!firstFailure) firstFailure = std::make_exception_ptr(std::runtime_error("待撤销客户端身份无效。"));
+            remaining.push_back(entry); continue;
+        }
+        if (entryOwner != owner) { remaining.push_back(entry); continue; }
+        try {
+            authorized([&](std::string_view token) { api_->remove(token, peer, stop); return Json(); }, stop);
+            clearLocalPeer(peer); changed = true;
+        } catch (const ApiError& error) {
+            if (error.isPeerUnavailable()) { clearLocalPeer(peer); changed = true; }
+            else { if (!firstFailure) firstFailure = std::current_exception(); remaining.push_back(entry); }
+        } catch (...) {
+            if (!firstFailure) firstFailure = std::current_exception(); remaining.push_back(entry);
+        }
+    }
+    if (changed) {
+        if (remaining.empty()) state_.erase("pendingRevocations");
+        else state_["pendingRevocations"] = std::move(remaining);
+        store_->save(state_);
+    }
+    if (firstFailure) std::rethrow_exception(firstFailure);
+}
+Json Coordinator::disconnectLocked(std::stop_token stop) {
+    const auto selected = state_.value("edgeNodeIds", Json::array());
+    const auto peer = value(state_, "peerId");
+    state_["connectRequested"] = false;
+    tunnel_->stop();
+    if (!peer.empty() && state_.contains("session") && state_["session"].is_object()) rememberPendingRevocation(peer);
+    // Persist the stopped state and pending identity before any network request. A failed
+    // DELETE must leave enough information to retry after a restart or re-login.
+    store_->save(state_);
+    if (!peer.empty() || state_.contains("pendingEnrollment")) requireSession();
+    if (state_.contains("pendingEnrollment")) {
+        recoverPendingEnrollment(stop, true);
+    }
+    retryPendingRevocations(stop);
+    state_["edgeNodeIds"] = selected;
+    state_["connectRequested"] = false;
+    state_.erase("peerId"); state_.erase("publicKey"); state_.erase("privateKey"); state_.erase("lastConfig");
+    state_.erase("pendingEnrollment");
+    store_->save(state_); setStatus("Disconnected"); return success();
+}
 void Coordinator::apiFailure(const ApiError& error) {
     if (error.isAuth() || error.isPeerUnavailable()) {
         state_["connectRequested"] = false; state_["authenticationRequired"] = error.isAuth();
@@ -127,20 +241,74 @@ void Coordinator::loginLocked(const Json& request, std::stop_token stop) {
     const auto user = value(request, "username"), password = value(request, "password");
     if (user.empty() || password.empty()) throw std::invalid_argument("请输入用户名和密码。");
     auto next = sessionFromLogin(api_->login(user, password, stop));
+    const auto nextOwner = value(next, "userId");
     const auto previous = state_.value("session", Json::object());
-    if (previous.is_object() && !value(previous, "userId").empty() && value(previous, "userId") != value(next, "userId")) {
-        tunnel_->stop();
-        if (!value(state_, "peerId").empty()) {
-            try { authorized([&](std::string_view token) { api_->remove(token, value(state_, "peerId"), stop); return Json(); }, stop); }
-            catch (const ApiError& error) {
-                if (!error.isPeerUnavailable()) { state_["connectRequested"] = false; store_->save(state_); throw std::runtime_error("切换账号前无法撤销旧连接，请恢复原账号权限或在平台撤销后重试。"); }
+    const auto previousOwner = value(previous, "userId");
+    const auto pending = state_.value("pendingRevocations", Json::array());
+    const auto pendingEnrollment = state_.value("pendingEnrollment", Json::object());
+    auto hasForeignPending = [&](std::string_view owner) {
+        if (state_.contains("pendingEnrollment") && (!pendingEnrollment.is_object() || pendingEnrollment.empty())) return true;
+        if (pendingEnrollment.is_object() && !pendingEnrollment.empty()) {
+            const auto enrollmentOwner = value(pendingEnrollment, "userId");
+            if (enrollmentOwner.empty() || enrollmentOwner != owner) return true;
+        }
+        if (pending.is_array()) {
+            for (const auto& entry : pending) {
+                const auto entryOwner = value(entry, "userId");
+                if (entryOwner.empty() || entryOwner != owner) return true;
             }
-            catch (...) { state_["connectRequested"] = false; store_->save(state_); throw; }
+        } else if (!pending.is_null() && !pending.empty()) return true;
+        return false;
+    };
+    if (hasForeignPending(previousOwner.empty() ? nextOwner : previousOwner))
+        throw std::runtime_error("上一账号的客户端尚未完成释放，请先恢复原账号完成清理。");
+    if (!previousOwner.empty() && previousOwner != nextOwner) {
+        tunnel_->stop();
+        const auto oldPeer = value(state_, "peerId");
+        if (!oldPeer.empty()) rememberPendingRevocation(oldPeer);
+        state_["connectRequested"] = false;
+        store_->save(state_);
+        try {
+            if (state_.contains("pendingEnrollment")) {
+                recoverPendingEnrollment(stop, true);
+            }
+            retryPendingRevocations(stop);
+        } catch (...) {
+            state_["connectRequested"] = false; store_->save(state_);
+            throw std::runtime_error("切换账号前无法撤销旧连接，请恢复原账号权限或在平台撤销后重试。");
+        }
+        const auto remaining = state_.value("pendingRevocations", Json::array());
+        if (state_.contains("pendingEnrollment") || (remaining.is_array() && !remaining.empty()) ||
+            (!remaining.is_array() && !remaining.empty())) {
+            state_["connectRequested"] = false; store_->save(state_);
+            throw std::runtime_error("切换账号前无法完成旧连接清理，请恢复原账号权限或在平台撤销后重试。");
         }
         state_ = Json::object();
+        state_["session"] = std::move(next); state_["authenticationRequired"] = false;
+        store_->save(state_); setStatus("Authenticated");
+        return;
     }
     state_["session"] = std::move(next); state_["authenticationRequired"] = false;
-    store_->save(state_); setStatus(flag(state_, "connectRequested") ? "Connecting" : "Authenticated");
+    if (state_.contains("pendingEnrollment") || (pending.is_array() && !pending.empty())) state_["connectRequested"] = false;
+    store_->save(state_);
+    if (state_.contains("pendingEnrollment") || (pending.is_array() && !pending.empty())) {
+        try {
+            if (state_.contains("pendingEnrollment")) {
+                recoverPendingEnrollment(stop, true);
+            }
+            retryPendingRevocations(stop);
+        } catch (...) {
+            state_["connectRequested"] = false; store_->save(state_);
+            throw std::runtime_error("当前账号仍有待清理的客户端连接，请网络恢复后重试。");
+        }
+        const auto remaining = state_.value("pendingRevocations", Json::array());
+        if (state_.contains("pendingEnrollment") || (remaining.is_array() && !remaining.empty()) ||
+            (!remaining.is_array() && !remaining.empty())) {
+            state_["connectRequested"] = false; store_->save(state_);
+            throw std::runtime_error("当前账号仍有待清理的客户端连接，请完成清理后重试。");
+        }
+    }
+    setStatus(flag(state_, "connectRequested") ? "Connecting" : "Authenticated");
 }
 void Coordinator::applyLocked(const Json& request, std::stop_token stop) {
     requireSession();
@@ -152,36 +320,93 @@ void Coordinator::applyLocked(const Json& request, std::stop_token stop) {
         selected.insert(canonicalId(id.get<std::string>()));
     }
     const std::vector<std::string> ids(selected.begin(), selected.end());
-    const auto peer = value(state_, "peerId");
-    if (ids.empty() && peer.empty()) {
-        state_["edgeNodeIds"] = Json::array(); state_["connectRequested"] = false; state_.erase("lastConfig");
-        tunnel_->stop(); setStatus("Disconnected"); store_->save(state_); return;
+    retryPendingRevocations(stop);
+    const auto currentOwner = value(state_["session"], "userId");
+    if (state_.contains("pendingRevocations") && state_["pendingRevocations"].is_array()) {
+        for (const auto& entry : state_["pendingRevocations"])
+            if (value(entry, "userId") != currentOwner)
+                throw std::runtime_error("上一账号的客户端尚未完成释放，请先恢复原账号完成清理。");
     }
-    if (value(state_, "publicKey").empty() || value(state_, "privateKey").empty()) {
-        auto keys = tunnel_->generateKeys(); state_["publicKey"] = keys.first; state_["privateKey"] = keys.second; store_->save(state_);
+    if (state_.contains("pendingEnrollment") &&
+        (!state_["pendingEnrollment"].is_object() || state_["pendingEnrollment"].empty()))
+        throw std::runtime_error("待确认的客户端注册信息无效。");
+    if (state_.contains("pendingEnrollment") && value(state_["pendingEnrollment"], "userId") != currentOwner)
+        throw std::runtime_error("上一账号的客户端注册尚未确认，请先恢复原账号完成释放。");
+    if (state_.contains("pendingEnrollment")) {
+        const auto pendingIds = strings(state_["pendingEnrollment"], "edgeNodeIds");
+        if (ids == pendingIds) {
+            state_["edgeNodeIds"] = ids; state_["connectRequested"] = true; store_->save(state_);
+            const auto config = recoverPendingEnrollment(stop);
+            if (config.is_object()) {
+                state_["connectRequested"] = true; store_->save(state_);
+                acceptConfig(config, stop);
+                return;
+            }
+        }
+        // Confirm the previous POST with its original key before changing the
+        // selection. The confirmed peer is then revoked before a fresh key is used.
+        recoverPendingEnrollment(stop, true);
+        retryPendingRevocations(stop);
+    }
+    const auto peer = value(state_, "peerId");
+    if (ids.empty()) {
+        state_["edgeNodeIds"] = Json::array();
+        if (!peer.empty()) { (void)disconnectLocked(stop); return; }
+        state_["connectRequested"] = false; state_.erase("publicKey"); state_.erase("privateKey"); state_.erase("lastConfig");
+        tunnel_->stop(); setStatus("Disconnected"); store_->save(state_); return;
     }
     Json body{{"edgeNodeIds", ids}};
     if (peer.empty()) {
+        if (value(state_, "publicKey").empty() || value(state_, "privateKey").empty()) {
+            state_.erase("publicKey"); state_.erase("privateKey"); state_.erase("lastConfig");
+            auto keys = tunnel_->generateKeys(); state_["publicKey"] = keys.first; state_["privateKey"] = keys.second;
+        }
         wchar_t computer[MAX_COMPUTERNAME_LENGTH + 1]{}; DWORD count = MAX_COMPUTERNAME_LENGTH + 1;
         body["name"] = GetComputerNameW(computer, &count) ? utf8({computer, count}) : "Windows";
         body["publicKey"] = state_["publicKey"];
+        body["userId"] = currentOwner;
+        state_["edgeNodeIds"] = ids;
+        state_["pendingEnrollment"] = body;
+        store_->save(state_);
     }
-    auto config = authorized([&](std::string_view token) { return api_->apply(token, peer, body, stop); }, stop);
+    auto requestBody = body;
+    requestBody.erase("userId");
+    auto config = authorized([&](std::string_view token) { return api_->apply(token, peer, requestBody, stop); }, stop);
     const auto assignedPeer = canonicalId(value(config, "peerId"));
     if (!peer.empty() && canonicalId(peer) != assignedPeer) { tunnel_->stop(); throw std::runtime_error("平台返回了其他客户端身份。"); }
-    state_["peerId"] = assignedPeer; state_["edgeNodeIds"] = ids; state_["connectRequested"] = !ids.empty();
+    state_["peerId"] = assignedPeer; state_["edgeNodeIds"] = ids; state_["connectRequested"] = !ids.empty(); state_.erase("pendingEnrollment");
     if (ids.empty() || strings(config, "allowedRoutes").empty()) tunnel_->stop();
     store_->save(state_); acceptConfig(config, stop);
 }
 Json Coordinator::logoutLocked(std::stop_token stop) {
-    state_["connectRequested"] = false; tunnel_->stop(); store_->save(state_);
+    state_["connectRequested"] = false; tunnel_->stop();
+    const auto peer = value(state_, "peerId");
+    if (!peer.empty() && state_.contains("session") && state_["session"].is_object()) rememberPendingRevocation(peer);
+    store_->save(state_);
     std::string warning;
-    if (!value(state_, "peerId").empty() && state_.contains("session") && state_["session"].is_object()) {
-        try { authorized([&](std::string_view token) { api_->remove(token, value(state_, "peerId"), stop); return Json(); }, stop); }
-        catch (const ApiError& error) { if (!error.isPeerUnavailable()) warning = "本机已退出，平台客户端未能撤销，请由管理员确认撤销。"; }
-        catch (...) { warning = "本机已退出，平台客户端未能撤销，请由管理员确认撤销。"; }
+    try {
+        if (state_.contains("pendingEnrollment")) {
+            recoverPendingEnrollment(stop, true);
+        }
+        retryPendingRevocations(stop);
+    } catch (...) {
+        clearLocalPeer(peer);
+        warning = "本机已退出，平台客户端未能撤销，恢复原账号后将继续重试。";
     }
-    state_ = Json::object(); store_->save(state_); setStatus("LoggedOut", warning);
+    const auto pending = state_.value("pendingRevocations", Json::array());
+    const bool hasEnrollment = state_.contains("pendingEnrollment");
+    const auto enrollment = state_.value("pendingEnrollment", Json::object());
+    const auto publicKey = value(state_, "publicKey"), privateKey = value(state_, "privateKey");
+    state_ = Json::object();
+    if (!pending.empty()) state_["pendingRevocations"] = pending;
+    if (hasEnrollment) {
+        state_["pendingEnrollment"] = enrollment;
+        if (enrollment.is_object()) state_["edgeNodeIds"] = strings(enrollment, "edgeNodeIds");
+        if (!publicKey.empty()) state_["publicKey"] = publicKey;
+        if (!privateKey.empty()) state_["privateKey"] = privateKey;
+        if (warning.empty()) warning = "本机已退出，平台客户端注册尚未确认，恢复原账号后将继续重试。";
+    }
+    store_->save(state_); setStatus("LoggedOut", warning);
     auto result = success(); if (!warning.empty()) result["message"] = warning; return result;
 }
 Json Coordinator::handle(const Json& request, std::stop_token stop) {
@@ -198,12 +423,22 @@ Json Coordinator::handle(const Json& request, std::stop_token stop) {
             auto result = success(); result["devices"] = std::move(devices); return result;
         } else if (command == "apply") applyLocked(request, stop);
         else if (command == "connect" || command == "sync") {
-            requirePeer();
-            if (command == "connect") { state_["connectRequested"] = true; store_->save(state_); setStatus("Connecting"); }
-            auto config = authorized([&](std::string_view token) { return api_->config(token, value(state_, "peerId"), stop); }, stop);
-            acceptConfig(config, stop);
+            requireSession();
+            // A reconnect must settle every locally retained revoke before it
+            // can read the old configuration or allocate a new peer.
+            retryPendingRevocations(stop);
+            if (command == "connect" && value(state_, "peerId").empty()) {
+                const auto selected = strings(state_, "edgeNodeIds");
+                if (selected.empty()) throw std::invalid_argument("请先选择设备并应用。");
+                applyLocked({{"edgeNodeIds", selected}}, stop);
+            } else {
+                requirePeer();
+                if (command == "connect") { state_["connectRequested"] = true; store_->save(state_); setStatus("Connecting"); }
+                auto config = authorized([&](std::string_view token) { return api_->config(token, value(state_, "peerId"), stop); }, stop);
+                acceptConfig(config, stop);
+            }
         } else if (command == "disconnect") {
-            state_["connectRequested"] = false; tunnel_->stop(); setStatus("Disconnected"); store_->save(state_);
+            return disconnectLocked(stop);
         } else if (command == "logout") return logoutLocked(stop);
         else return {{"success", false}, {"message", "不支持的客户端命令。"}, {"status", status().toJson()}};
         if (mutates) changes_.notify_all();

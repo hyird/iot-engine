@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { pbkdf2Sync, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, pbkdf2Sync, randomBytes, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 
 // Run with Run-VpnDesktopIntegration.ps1. Refuse to mutate another database.
@@ -102,7 +102,10 @@ try {
     presenceStream.close();
     console.log('PASS desktop online follows live Edge session, independent of stale or fresh telemetry timestamp');
     assert.equal((await db`SELECT vpn_desktop_user_authorized(${user}::uuid) AS allowed`)[0].allowed, true);
+    await db`INSERT INTO vpn_peer(id,network_id,peer_type,user_id,name,public_key,assigned_ipv4,status,client_managed)
+        VALUES (${randomUUID()},${network},'windows',${user},'Previously revoked client',${publicKey()},'100.96.0.2'::inet,'revoked',TRUE)`;
     const key = publicKey(); const first = check(await enroll(key, [edgeA])); const peer = first.peerId;
+    assert.equal(first.assignedIpv4,'100.96.0.2','historical revoked rows must no longer reserve an address');
     assert.deepEqual(first.edgeNodeIds, [edgeA]); assert.deepEqual(first.allowedRoutes.sort(), ['100.96.0.20/32','172.31.10.0/24']);
     assert.equal('privateKey' in first, false); assert.equal(first.publicKey, key);
     const retryKey = publicKey(); const retries = await Promise.all([enroll(retryKey,[edgeA]),enroll(retryKey,[edgeA])]);
@@ -122,15 +125,49 @@ try {
     const streamA=await openStream(`/v1/vpn/desktop/peers/${computerA.peerId}/config`,token);
     assert.equal((await streamA.next()).data.assignedIpv4,computerA.assignedIpv4); streamA.close();
     check(await request(`/v1/vpn/desktop/peers/${computerA.peerId}`,'DELETE',undefined,token));
+    const replacementA=check(await enroll(publicKey(),[edgeA],token));
+    assert.equal(replacementA.assignedIpv4,computerA.assignedIpv4, 'revoked client address must be reused');
+    assert.notEqual(replacementA.peerId,computerA.peerId);
+    check(await request(`/v1/vpn/desktop/peers/${computerA.peerId}`,'DELETE',undefined,token));
+    assert.equal((await db`SELECT status FROM vpn_peer WHERE id=${replacementA.peerId}`)[0].status,'active',
+        'late disconnect for an old peer must not revoke its replacement');
+    check(await request(`/v1/vpn/desktop/peers/${replacementA.peerId}`,'DELETE',undefined,token));
     check(await request('/v1/auth/logout','POST',undefined,token));
     const streamB=await openStream(`/v1/vpn/desktop/peers/${computerB.peerId}/config`,secondToken);
     assert.equal((await streamB.next()).data.assignedIpv4,computerB.assignedIpv4); streamB.close();
     check(await request(`/v1/vpn/desktop/peers/${computerB.peerId}`,'DELETE',undefined,secondToken));
+    const recycled=await Promise.all([enroll(publicKey(),[edgeA],secondToken),enroll(publicKey(),[edgeB],secondToken)])
+        .then(results=>results.map(result=>check(result)));
+    assert.deepEqual(recycled.map(x=>x.assignedIpv4).sort(),[computerA.assignedIpv4,computerB.assignedIpv4].sort(),
+        'concurrent connections must reuse the two released addresses without a collision');
+    await assert.rejects(db`UPDATE vpn_peer SET status='active' WHERE id=${computerA.peerId}`,
+        'database must reject reactivating an old peer whose address is now occupied');
+    let cycling=recycled[0];
+    for (let iteration=0; iteration<5; ++iteration) {
+        check(await request(`/v1/vpn/desktop/peers/${cycling.peerId}`,'DELETE',undefined,secondToken));
+        const next=check(await enroll(publicKey(),[edgeA],secondToken));
+        assert.equal(next.assignedIpv4,cycling.assignedIpv4,'repeated disconnect/reconnect must not grow the address');
+        cycling=next;
+    }
+    console.log('PASS historical revoked address reuse, concurrent reuse, stale disconnect fencing and repeated reconnect');
+    const enrollmentId=randomUUID(), enrollmentToken=randomBytes(32).toString('hex'), enrollmentKey=publicKey();
+    await db`INSERT INTO vpn_enrollment(id,token_hash,network_id,allowed_routes,expires_at,created_by)
+        VALUES (${enrollmentId},${createHash('sha256').update(enrollmentToken).digest('hex')},${network},'[]'::jsonb,NOW()+INTERVAL '5 minutes',${user})`;
+    const enrollBody={token:enrollmentToken,publicKey:enrollmentKey,name:'Token enrollment retry'};
+    const tokenPeers=await Promise.all([
+        request('/v1/vpn/client/enroll','POST',enrollBody,''),
+        request('/v1/vpn/client/enroll','POST',enrollBody,'')
+    ]).then(results=>results.map(result=>check(result)));
+    assert.equal(tokenPeers[0].peerId,enrollmentId);
+    assert.equal(tokenPeers[1].peerId,enrollmentId);
+    assert.equal(tokenPeers[0].assignedIpv4,tokenPeers[1].assignedIpv4);
+    check(await request('/v1/vpn/client/enroll','POST',{...enrollBody,publicKey:publicKey()},''),401);
+    console.log('PASS token enrollment consumes and allocates atomically with same-key retry');
     console.log('PASS same account simultaneous logins, distinct client IPs, stable retry IP and independent logout');
     console.log('PASS selected routes, split-role permissions, concurrent enrollment and retry');
     for (const ids of [null,{},[1],['bad'],[edgeA,edgeA],[edgeA,edgeA.toUpperCase()],Array(65).fill(edgeA)]) check(await enroll(key,ids),400);
     for (const invalidKey of ['A'.repeat(43)+'=', 'H'.repeat(43)+'=', '='.repeat(44)]) check(await enroll(invalidKey,[edgeA]),400);
-    check(await enroll(key,[randomUUID()]),400);
+    check(await enroll(publicKey(),[randomUUID()]),400);
     check(await patch(peer,[edgeB],otherToken),404);
     await openStream(`/v1/vpn/desktop/peers/${peer}/config`,otherToken,404);
     check(await request(`/v1/vpn/desktop/peers/${peer}`,'DELETE',undefined,otherToken),404);
@@ -152,6 +189,7 @@ try {
     await live.next(x=>x.data?.allowedRoutes.length===1);
     await db`UPDATE edge_node SET enrollment_status='pending' WHERE id=${edgeA}`;
     await live.next(x=>x.data?.allowedRoutes.length===0);
+    assert.equal(check(await enroll(key,[edgeA])).peerId,peer,'lost POST can recover identity after Edge approval changes');
     check(await patch(peer,[edgeA]),400);
     await db`UPDATE edge_node SET enrollment_status='approved' WHERE id=${edgeA}`;
     await db`UPDATE vpn_route SET enabled=true WHERE id=${routeA}`;
@@ -173,15 +211,19 @@ try {
     await pauseStream.next(x=>x.data?.networkEnabled===true&&x.data.allowedRoutes.length>0); pauseStream.close();
     check(await request(`/v1/vpn/desktop/peers/${peer}`,'DELETE'));
     check(await request(`/v1/vpn/desktop/peers/${peer}`,'DELETE'));
+    const revokedRegistration=await enroll(key,[edgeA]);
+    check(revokedRegistration,410);
+    assert.equal(revokedRegistration.body.code,21009,'only confirmed revocation clears a pending registration');
     await openStream(`/v1/vpn/desktop/peers/${peer}/config`,token,404);
     console.log('PASS disabled network and idempotent revocation');
-    console.log('5/5 desktop API integration groups passed');
+    console.log('All desktop API integration groups passed');
 } finally {
     await presence.del(`iot:edge:session:${edgeA}`); presence.close();
     for (const controller of controllers) controller.abort();
     if (seeded) {
         await db`UPDATE vpn_network SET status='enabled' WHERE id=${network}`;
         await db`DELETE FROM vpn_peer WHERE user_id IN (${user},${other}) OR id IN (${edgeA},${edgeB})`;
+        await db`DELETE FROM vpn_enrollment WHERE created_by IN (${user},${other})`;
         await db`DELETE FROM edge_node WHERE id IN (${edgeA},${edgeB})`;
         await db`DELETE FROM sys_user WHERE id IN (${user},${other})`;
         await db`DELETE FROM sys_role WHERE id IN (${roleVpn},${roleEdge})`;

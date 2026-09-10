@@ -132,13 +132,21 @@ class Runtime final {
                 service::message::redis::throwValue("VPN reconciliation schedule", previous);
             }
         }
-        auto result = co_await reconcileLocal(context, fallback);
-        const auto scheduled = co_await service::message::redis::command(
-            context.redis(),
-            { "SET", key, "1", "PX", "10000" }
+        // Keep address allocation behind the complete kernel reconciliation.
+        // Otherwise an older snapshot could install a revoked key after its
+        // address has already been returned to a newly enrolled client.
+        (void)co_await ownership.query(
+            "SELECT pg_advisory_xact_lock(5282804697543808068::bigint)"
         );
-        if (scheduled.kind() == ruvia::RedisValue::Kind::kError) {
-            service::message::redis::throwValue("VPN reconciliation schedule", scheduled);
+        auto result = co_await reconcileLocal(context, fallback);
+        if (result.configured) {
+            const auto scheduled = co_await service::message::redis::command(
+                context.redis(),
+                { "SET", key, "1", "PX", "10000" }
+            );
+            if (scheduled.kind() == ruvia::RedisValue::Kind::kError) {
+                service::message::redis::throwValue("VPN reconciliation schedule", scheduled);
+            }
         }
         co_await ownership.commit();
         co_return result;
@@ -164,7 +172,33 @@ class Runtime final {
             co_return result;
         }
         const auto peers = co_await VpnRuntimeService::loadActivePeers(context);
+        // Remove obsolete keys before assigning a recycled address to a new peer.
+        // A failed inventory or removal must not grant access to a stale key.
+        const auto currentPeers = controller.peerKeys(*config);
+        if (!currentPeers) {
+            co_return wireguard::RuntimeStatus{
+                .supported = true,
+                .configured = false,
+                .code = "peer_inventory_failed",
+                .message = "Unable to read WireGuard peers before reconciliation"
+            };
+        }
+        std::unordered_set<std::string> expected;
+        for (const auto& peerRecord : peers) {
+            if (wireguard::validKey(peerRecord.publicKey) && parseIpv4(peerRecord.assignedIpv4)) {
+                expected.insert(peerRecord.publicKey);
+            }
+        }
+        for (const auto& publicKey : *currentPeers) {
+            if (!expected.contains(publicKey)) {
+                const auto removed = controller.removePeer(*config, publicKey);
+                if (!removed.configured) {
+                    co_return removed;
+                }
+            }
+        }
         std::vector<firewall::ClientAccess> clients;
+        std::vector<wireguard::Peer> configured;
         std::vector<std::string> expectedRoutes;
         std::size_t configuredPeers = 0;
         for (const auto& peerRecord : peers) {
@@ -224,33 +258,10 @@ class Runtime final {
                 }
                 clients.push_back(std::move(client));
             }
-            const auto peerResult = controller.upsertPeer(*config, peer);
-            if (!peerResult.configured) {
-                co_return peerResult;
-            }
             expectedRoutes.insert(expectedRoutes.end(), peer.allowedIps.begin(), peer.allowedIps.end());
-            ++configuredPeers;
+            configured.push_back(std::move(peer));
         }
-        if (const auto currentPeers = controller.peerKeys(*config)) {
-            std::unordered_set<std::string> expected;
-            expected.reserve(peers.size());
-            for (const auto& peerRecord : peers) {
-                const auto& publicKey = peerRecord.publicKey;
-                const auto& assigned = peerRecord.assignedIpv4;
-                if (wireguard::validKey(publicKey) && parseIpv4(assigned)) {
-                    expected.insert(publicKey);
-                }
-            }
-            for (const auto& publicKey : *currentPeers) {
-                if (!expected.contains(publicKey)) {
-                    (void)controller.removePeer(*config, publicKey);
-                }
-            }
-        }
-        const auto routeResult = controller.reconcileRoutes(*config, expectedRoutes);
-        if (!routeResult.configured) {
-            co_return routeResult;
-        }
+
         const auto firewallResult = firewall::apply(config->interfaceName, clients);
         if (!firewallResult.configured) {
             co_return wireguard::RuntimeStatus{
@@ -260,6 +271,19 @@ class Runtime final {
                 .message = firewallResult.message,
                 .peerCount = configuredPeers
             };
+        }
+        // Install the new address permissions before enabling its new key.
+        // Recycled addresses must never inherit a previous client's firewall access.
+        for (const auto& peer : configured) {
+            const auto peerResult = controller.upsertPeer(*config, peer);
+            if (!peerResult.configured) {
+                co_return peerResult;
+            }
+            ++configuredPeers;
+        }
+        const auto routeResult = controller.reconcileRoutes(*config, expectedRoutes);
+        if (!routeResult.configured) {
+            co_return routeResult;
         }
         if (const auto handshakes = controller.peerHandshakes(*config)) {
             for (const auto& [publicKey, seconds] : *handshakes) {
@@ -340,6 +364,10 @@ class VpnControlRuntime final {
         if (operation == "reconcile" || operation == "wireguard-reconcile" ||
             operation == "firewall-reconcile") {
             const auto result = co_await Runtime::reconcileNow(context, fallback_);
+            if (operation == "reconcile" && result.supported && !result.configured &&
+                result.code != "hub_config_missing") {
+                service::common::fail(21005, "VPN Hub reconciliation failed: " + result.message, 503);
+            }
             co_return runtimeStatusJson(result);
         }
 
@@ -356,7 +384,10 @@ class VpnControlRuntime final {
             (void)co_await ownership.query("SELECT pg_advisory_xact_lock(5282804697543808071::bigint)");
             const auto config = co_await hub_config::loadOrInitialize(context, fallback_);
             if (config) {
-                (void)wireguard::controller().removePeer(*config, payload);
+                const auto result = wireguard::controller().removePeer(*config, payload);
+                if (result.supported && !result.configured) {
+                    service::common::fail(21005, "VPN Hub peer removal failed: " + result.message, 503);
+                }
             }
             co_await ownership.commit();
             co_return "{}";

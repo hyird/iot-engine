@@ -28,7 +28,7 @@ class SchemaMigration final {
     std::string sql_;
 };
 
-inline const std::array<SchemaMigration, 45> kSchemaMigrations{{
+inline const std::array<SchemaMigration, 46> kSchemaMigrations{{
     {"0000_unified_link_boundary", R"sql(
 DO $schema$
 BEGIN
@@ -1796,6 +1796,14 @@ ALTER TABLE gb28181_device
     ADD COLUMN projection_cursor NUMERIC(40,0) NOT NULL DEFAULT 0;
 ALTER TABLE gb28181_stream
     ADD COLUMN projection_cursor NUMERIC(40,0) NOT NULL DEFAULT 0;
+END $schema$;
+)sql"},
+    {"0045_vpn_windows_address_reuse", R"sql(
+DO $schema$
+BEGIN
+DROP INDEX idx_vpn_peer_network_ip;
+CREATE UNIQUE INDEX idx_vpn_peer_network_ip ON vpn_peer(network_id, assigned_ipv4)
+WHERE peer_type <> 'windows' OR status <> 'revoked';
 END $schema$;
 )sql"},
 }};

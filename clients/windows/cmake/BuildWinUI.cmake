@@ -162,9 +162,6 @@ find_program(_vswhere NAMES vswhere.exe vswhere
 if(NOT _vswhere)
   message(FATAL_ERROR "Visual Studio vswhere.exe is required.")
 endif()
-if(NOT _vswhere)
-  message(FATAL_ERROR "Visual Studio vswhere.exe is required.")
-endif()
 execute_process(
   COMMAND "${_vswhere}" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
   RESULT_VARIABLE _vs_result

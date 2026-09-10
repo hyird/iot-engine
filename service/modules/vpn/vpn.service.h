@@ -505,8 +505,6 @@ class VpnService final {
                                                      std::string_view,
                                                      std::string_view =
                                                          "<client-private-key>");
-    static ruvia::Task<std::optional<std::uint32_t>> allocateAddress(
-        ruvia::Context&, std::string_view, const cidr::Ipv4Cidr&);
     template <typename Db>
     static ruvia::Task<std::optional<std::uint32_t>> allocateAddressFromDb(
         Db&, std::string_view, const cidr::Ipv4Cidr&);
@@ -1169,15 +1167,34 @@ VALUES ($1::uuid, $2, $3::uuid, $4::jsonb, NOW() + ($5::bigint * INTERVAL '1 sec
         if (!detail::validKey(publicKey))
             service::common::fail(21001, "WireGuard 公钥格式无效", 400);
         const auto tokenHash = service::utils::sha256(token);
-        const auto enrollment = co_await c.db().query(R"sql(
+        auto transaction = co_await c.db().beginTransaction();
+        (void)co_await transaction.query(
+            "SELECT pg_advisory_xact_lock(5282804697543808068::bigint)");
+        const auto enrollment = co_await transaction.query(R"sql(
 UPDATE vpn_enrollment SET used_at = NOW()
 WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW()
 RETURNING id, network_id, allowed_routes, created_by)sql",
                                                       service::common::dbParams(tokenHash));
-        if (enrollment.empty())
+        if (enrollment.empty()) {
+            // An enrollment owns its peer ID so a committed request can be
+            // retried with the same key after a lost response or Hub failure.
+            const auto retry = co_await transaction.query(R"sql(
+SELECT p.id::text, p.user_id::text
+FROM vpn_enrollment e JOIN vpn_peer p ON p.id = e.id
+WHERE e.token_hash = $1 AND e.used_at IS NOT NULL AND e.expires_at > NOW()
+  AND p.public_key = $2 AND p.peer_type = 'windows' AND p.status = 'active')sql",
+                service::common::dbParams(tokenHash, publicKey));
+            if (!retry.empty()) {
+                const auto peerId = detail::rowValue(retry.front(), 0);
+                const auto userId = detail::rowValue(retry.front(), 1);
+                co_await transaction.commit();
+                co_await reconcileHub(c);
+                co_return co_await clientConfigJson(c, peerId, userId);
+            }
             service::common::fail(21006, "Enrollment token 无效、已使用或已过期", 401);
+        }
         const auto networkId = detail::rowValue(enrollment.front(), 1);
-        const auto network = co_await c.db().query(
+        const auto network = co_await transaction.query(
             "SELECT overlay_cidr FROM vpn_network WHERE id = $1::uuid AND status = 'enabled' "
             "AND deleted_at IS NULL", service::common::dbParams(networkId));
         if (network.empty())
@@ -1185,15 +1202,15 @@ RETURNING id, network_id, allowed_routes, created_by)sql",
         const auto overlay = cidr::parseCidr(detail::rowValue(network.front(), 0), 16, 30);
         if (!overlay)
             service::common::fail(21005, "VPN 网络 Overlay 配置损坏", 500);
-        const auto assigned = co_await allocateAddress(c, networkId, *overlay);
+        const auto assigned = co_await allocateAddressFromDb(transaction, networkId, *overlay);
         const auto name = detail::optionalText(payload, "name").value_or("Windows client");
         if (name.empty() || name.size() > 100)
             service::common::fail(21001, "Peer 名称长度无效", 400);
-        const auto id = service::common::nextUuidV7();
+        const auto id = detail::rowValue(enrollment.front(), 0);
         const auto creatorId = detail::rowValue(enrollment.front(), 3);
         const auto assignedAddress = detail::hostText(*assigned);
         const auto allowedRoutesJson = detail::rowValue(enrollment.front(), 2);
-        (void)co_await c.db().execute(R"sql(
+        (void)co_await transaction.execute(R"sql(
 INSERT INTO vpn_peer(id, network_id, peer_type, user_id, name, public_key, assigned_ipv4,
                      allowed_routes, status)
 VALUES ($1::uuid, $2::uuid, 'windows', $3::uuid, $4, $5, $6::inet, $7::jsonb, 'active'))sql",
@@ -1201,6 +1218,7 @@ VALUES ($1::uuid, $2::uuid, 'windows', $3::uuid, $4, $5, $6::inet, $7::jsonb, 'a
                                                                 creatorId,
                                                                 name, publicKey,
                                                                 assignedAddress, allowedRoutesJson));
+        co_await transaction.commit();
         (void)co_await reconcileHub(c);
         co_return co_await clientConfigJson(c, id, detail::rowValue(enrollment.front(), 3));
     }
@@ -1348,17 +1366,12 @@ WHERE id = $1::uuid)sql",
     co_return networkId;
 }
 
-inline ruvia::Task<std::optional<std::uint32_t>> VpnService::allocateAddress(
-    ruvia::Context& c, std::string_view networkId, const cidr::Ipv4Cidr& overlay) {
-    auto database = c.db();
-    co_return co_await allocateAddressFromDb(database, networkId, overlay);
-}
-
 template <typename Db>
 ruvia::Task<std::optional<std::uint32_t>> VpnService::allocateAddressFromDb(
     Db& db, std::string_view networkId, const cidr::Ipv4Cidr& overlay) {
     const auto rows = co_await db.query(
-        "SELECT host(assigned_ipv4) FROM vpn_peer WHERE network_id = $1::uuid",
+        "SELECT host(assigned_ipv4) FROM vpn_peer WHERE network_id = $1::uuid "
+        "AND (peer_type <> 'windows' OR status <> 'revoked')",
         service::common::dbParams(networkId));
     std::unordered_set<std::uint32_t> used;
     for (const auto& row : rows)
@@ -1474,6 +1487,24 @@ inline ruvia::Task<std::string> VpnService::desktopCreatePeer(ruvia::Context& c,
     // Serialize allocation and the public-key retry lookup together. A lost POST
     // response can safely be retried with the locally persisted keypair.
     (void)co_await tx.query("SELECT pg_advisory_xact_lock(5282804697543808068::bigint)");
+    const auto existing = co_await tx.query(R"sql(
+SELECT id::text, user_id::text, status, client_managed
+FROM vpn_peer WHERE public_key = $1 FOR UPDATE)sql", service::common::dbParams(publicKey));
+    if (!existing.empty()) {
+        const auto& row = existing.front();
+        if (detail::rowValue(row, 1) != principal.userId || detail::rowValue(row, 3) != "t")
+            service::common::fail(21002, "该 WireGuard 公钥已经被使用", 409);
+        if (detail::rowValue(row, 2) == "revoked")
+            service::common::fail(21009, "该 Windows VPN 注册已撤销", 410);
+        if (detail::rowValue(row, 2) != "active")
+            service::common::fail(21002, "该 WireGuard 公钥已经被使用", 409);
+        const auto id = detail::rowValue(row, 0);
+        co_await tx.commit();
+        co_await reconcileHub(c);
+        // POST retries recover the original registration even if an Edge has
+        // since been removed. Selection changes use the dedicated PATCH route.
+        co_return co_await desktopPeerConfig(c, id);
+    }
     const auto network = co_await tx.query(R"sql(
 SELECT id::text, overlay_cidr FROM vpn_network
 WHERE name = $1 AND status = 'enabled' AND deleted_at IS NULL FOR SHARE)sql",
@@ -1483,29 +1514,15 @@ WHERE name = $1 AND status = 'enabled' AND deleted_at IS NULL FOR SHARE)sql",
     const auto overlay = cidr::parseCidr(detail::rowValue(network.front(), 1), 16, 30);
     if (!overlay) service::common::fail(21005, "VPN 网络 Overlay 配置损坏", 500);
     co_await detail::validateSelectedEdges(tx, networkId, ids);
-    const auto existing = co_await tx.query(R"sql(
-SELECT id::text, user_id::text, status, client_managed, network_id::text
-FROM vpn_peer WHERE public_key = $1 FOR UPDATE)sql", service::common::dbParams(publicKey));
-    std::string id;
-    if (!existing.empty()) {
-        const auto& row = existing.front();
-        if (detail::rowValue(row, 1) != principal.userId || detail::rowValue(row, 2) != "active" ||
-            detail::rowValue(row, 3) != "t" || detail::rowValue(row, 4) != networkId)
-            service::common::fail(21002, "该 WireGuard 公钥已经被使用", 409);
-        id = detail::rowValue(row, 0);
-        (void)co_await tx.execute("DELETE FROM vpn_peer_edge_selection WHERE peer_id = $1::uuid",
-                                  service::common::dbParams(id));
-    } else {
-        id = service::common::nextUuidV7();
-        const auto assigned = co_await allocateAddressFromDb(tx, networkId, *overlay);
-        if (!assigned) service::common::fail(21002, "VPN 网络地址已用尽", 409);
-        const auto assignedText = detail::hostText(*assigned);
-        (void)co_await tx.execute(R"sql(
+    const auto id = service::common::nextUuidV7();
+    const auto assigned = co_await allocateAddressFromDb(tx, networkId, *overlay);
+    if (!assigned) service::common::fail(21002, "VPN 网络地址已用尽", 409);
+    const auto assignedText = detail::hostText(*assigned);
+    (void)co_await tx.execute(R"sql(
 INSERT INTO vpn_peer(id, network_id, peer_type, user_id, name, public_key,
                      assigned_ipv4, allowed_routes, status, client_managed)
 VALUES ($1::uuid, $2::uuid, 'windows', $3::uuid, $4, $5, $6::inet, '[]'::jsonb, 'active', TRUE))sql",
-            service::common::dbParams(id, networkId, principal.userId, name, publicKey, assignedText));
-    }
+        service::common::dbParams(id, networkId, principal.userId, name, publicKey, assignedText));
     for (const auto& edge : ids)
         (void)co_await tx.execute("INSERT INTO vpn_peer_edge_selection(peer_id, edge_node_id) VALUES ($1::uuid, $2::uuid)",
                                   service::common::dbParams(id, edge));

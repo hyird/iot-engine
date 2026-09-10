@@ -20,6 +20,14 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Label="Configuration"><ConfigurationType>Application</ConfigurationType><PlatformToolset>v143</PlatformToolset><CharacterSet>Unicode</CharacterSet><UseDebugLibraries>false</UseDebugLibraries></PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <Target Name="KeepInstalledLibraryDirectories" BeforeTargets="SetBuildDefaultEnvironmentVariables">
+    <!-- Optional ATL and secondary SDK paths may be absent on Build Tools hosts. -->
+    <ItemGroup>
+      <_InstalledLibraryDirectory Include="$(LibraryPath)" />
+      <_InstalledLibraryDirectory Remove="@(_InstalledLibraryDirectory)" Condition="!Exists('%(_InstalledLibraryDirectory.Identity)')" />
+    </ItemGroup>
+    <PropertyGroup><LibraryPath>@(_InstalledLibraryDirectory)</LibraryPath></PropertyGroup>
+  </Target>
   <PropertyGroup>
     <OutDir>$(MSBuildThisFileDirectory)..\..\..\build\windows-winui\Release\</OutDir>
     <IntDir>$(MSBuildThisFileDirectory)..\..\..\build\windows-winui\obj\</IntDir>

@@ -2,14 +2,15 @@
 param(
     [string]$PostgresBin = 'C:/Program Files/PostgreSQL/18/bin',
     [string]$RedisExe = 'C:/Redis/redis-server.exe',
-    [string]$Bun = 'bun'
+    [string]$Bun = 'bun',
+    [ValidateSet('Debug', 'Release')][string]$Configuration = 'Release'
 )
 $ErrorActionPreference = 'Stop'
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $build = Join-Path $repository 'build'
 $fixture = Join-Path $build ('vpn-desktop-fixture-' + [Guid]::NewGuid().ToString('N'))
 $data = Join-Path $fixture 'postgres'
-$backend = Join-Path $build 'Debug/iot-engine.exe'
+$backend = Join-Path $build "$Configuration/iot-engine.exe"
 foreach ($file in @($backend, $RedisExe, (Join-Path $PostgresBin 'initdb.exe'), (Join-Path $PostgresBin 'pg_ctl.exe'))) {
     if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing test dependency: $file" }
 }
@@ -64,7 +65,7 @@ VPN_HUB_ENABLED=false
 EDGE_PUBLIC_BASE_URL=http://127.0.0.1:55112
 EDGE_PLATFORM_ID=00000000-0000-7000-8000-000000000001
 '@ | Set-Content -LiteralPath (Join-Path $fixture '.env') -Encoding ascii
-    $env:Path = (Join-Path $build 'Debug') + ';' + $oldPath
+    $env:Path = (Join-Path $build $Configuration) + ';' + $oldPath
     $env:VPN_DESKTOP_FIXTURE = $fixture
     $apiProcess = Start-Process -FilePath (Join-Path $fixture 'iot-engine.exe') -WorkingDirectory $fixture -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $fixture 'api.out') -RedirectStandardError (Join-Path $fixture 'api.err')
     $ready = $false
