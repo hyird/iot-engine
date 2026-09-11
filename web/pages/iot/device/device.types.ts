@@ -2,7 +2,7 @@
  * 设备管理类型定义
  */
 
-import type { PageParams } from '@/utils/types';
+import type { PageParams } from '@/utils/pagination';
 import type { Link } from '../link/link.types';
 import type { Protocol, StoragePolicy } from '../protocol/protocol.types';
 
@@ -243,7 +243,7 @@ export interface DeviceStaticData extends EdgeConnection {
 }
 
 /** 设备实时数据（用于轮询） */
-export interface DeviceRealtimeData {
+export interface DeviceRealtimeSnapshot {
     id: string;
     device_code?: string;
     reportTime?: string;
@@ -352,7 +352,7 @@ export interface ImageOperation {
 }
 
 /** 设备实时数据（包含管理字段） = 静态数据 + 实时字段 */
-export interface DeviceRealTimeData extends DeviceStaticData {
+export interface DeviceOverview extends DeviceStaticData {
     /** 设备南向链路是否已连接；不代表设备在线 */
     connected?: boolean;
     /** 设备南向链路状态；不代表设备在线 */
@@ -409,7 +409,15 @@ export interface CommandStatusResult {
     device_id: string;
     device_code: string;
     protocol: Protocol.Type;
-    status: 'ACCEPTED' | 'DISPATCHING' | 'AWAITING_RESULT' | 'SUCCEEDED' | 'REJECTED' | 'UNKNOWN' | 'READBACK_MISMATCH' | 'FAILED';
+    status:
+        | 'ACCEPTED'
+        | 'DISPATCHING'
+        | 'AWAITING_RESULT'
+        | 'SUCCEEDED'
+        | 'REJECTED'
+        | 'UNKNOWN'
+        | 'READBACK_MISMATCH'
+        | 'FAILED';
     reason?: string;
     created_at_ms?: number;
     completed_at_ms?: number;
@@ -440,7 +448,15 @@ export interface HistoryDeviceItem {
 }
 
 /** 指令状态 */
-export type CommandStatus = 'ACCEPTED' | 'DISPATCHING' | 'AWAITING_RESULT' | 'SUCCEEDED' | 'REJECTED' | 'UNKNOWN' | 'READBACK_MISMATCH' | 'FAILED';
+export type CommandStatus =
+    | 'ACCEPTED'
+    | 'DISPATCHING'
+    | 'AWAITING_RESULT'
+    | 'SUCCEEDED'
+    | 'REJECTED'
+    | 'UNKNOWN'
+    | 'READBACK_MISMATCH'
+    | 'FAILED';
 
 /** 要素历史记录 */
 export interface ElementRecord {
@@ -548,12 +564,12 @@ export namespace Device {
 
     // 静态数据（ETag 缓存）
     export type StaticData = DeviceStaticData;
-    // 实时数据（轮询）
-    export type Realtime = DeviceRealtimeData;
+    // 实时快照（轮询）
+    export type RealtimeSnapshot = DeviceRealtimeSnapshot;
 
-    // 合并后的完整数据
+    // 合并后的设备概览
     export type Element = DeviceElement;
-    export type RealTimeData = DeviceRealTimeData;
+    export type Overview = DeviceOverview;
     export type Command = CommandPayload;
     export type CommandCreateResult = DeviceCommandCreateResult;
     export type CommandStatusResult = DeviceCommandStatusResult;

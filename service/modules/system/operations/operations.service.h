@@ -108,8 +108,8 @@ class OperationsService final {
     };
 
     static std::size_t workerCount() noexcept {
-        const auto* registry = observability::processRegistry();
-        return registry ? registry->workerCount() : 0;
+        const auto* diagnostics = observability::currentWorkerDiagnostics();
+        return diagnostics ? diagnostics->workerCount() : 0;
     }
 
     static ruvia::Task<std::vector<WorkerSnapshot>>

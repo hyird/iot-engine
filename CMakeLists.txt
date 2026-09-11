@@ -294,7 +294,7 @@ find_package(spdlog CONFIG REQUIRED)
 
 add_executable(iot-engine
     service/server.cpp
-    service/features/event/postgres_notifier/postgres_notifier.transport.cpp
+    service/features/messaging/postgres_notifier/postgres_notifier.transport.cpp
     service/common/log.cpp
     service/features/gb28181/device/device.runtime.cpp
     service/features/gb28181/media/media.runtime.cpp
@@ -388,7 +388,7 @@ iot_engine_add_test(alert-runtime LARGE
     DEFINITIONS IOT_ENGINE_TESTING)
 
 foreach(test_name
-        runtime-repository
+        configuration-service
         telemetry-latest
         telemetry-persistence
         command-service

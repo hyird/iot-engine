@@ -52,9 +52,9 @@ jobs:
           ./tests/terminal-protocol-test.ts
           ./tests/command-validation-test.ts
           ./tests/protocol-schema-test.ts
-          ./tests/device-runtime-test.ts
+          ./tests/device-status-test.ts
           ./tests/sse-test.ts
-          ./tests/live-resource-test.ts
+          ./tests/snapshot-stream-test.ts
           ./tests/live-api-contract-test.ts
           ./tests/device-card-label-test.tsx
           ./tests/edge-network-view-test.ts

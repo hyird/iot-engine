@@ -20,12 +20,12 @@
 
 #include "service/common/message.h"
 #include "service/features/command/command.service.h"
-#include "service/features/event/event.transport.h"
-#include "service/features/event/stream_multiplexer/stream_multiplexer.runtime.h"
+#include "service/features/messaging/messaging.transport.h"
+#include "service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h"
 
 namespace service::command {
 
-class ControlRuntime final {
+class CommandPreparationHandler final {
   public:
     static ruvia::Task<std::string> handle(ruvia::WebWorkerContext& context, std::string_view operation, std::string_view payload, ruvia::StopToken stop) {
         if (stop.stopRequested()) {
@@ -38,13 +38,13 @@ class ControlRuntime final {
     }
 };
 
-class ResultRuntime final {
+class CommandProcessingRuntime final {
   public:
-    ResultRuntime() = default;
-    ResultRuntime(const ResultRuntime&) = delete;
-    ResultRuntime& operator=(const ResultRuntime&) = delete;
+    CommandProcessingRuntime() = default;
+    CommandProcessingRuntime(const CommandProcessingRuntime&) = delete;
+    CommandProcessingRuntime& operator=(const CommandProcessingRuntime&) = delete;
 
-    ~ResultRuntime() { stop(); }
+    ~CommandProcessingRuntime() { stop(); }
 
     void start(ruvia::WebWorkerHandle worker, std::size_t workerIndex, std::size_t serviceWorkerCount, std::size_t collectorWorkerCount) {
         if (running_.exchange(true)) {

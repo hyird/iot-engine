@@ -1,6 +1,6 @@
 import { App, Button, Checkbox, Flex, Input } from 'antd';
 import { useCallback, useState } from 'react';
-import { isDeviceOnline } from './device.runtime';
+import { isDeviceOnline } from './device-status';
 import { useDeviceCommand } from './device.service';
 import type { Device } from './device.types';
 
@@ -19,7 +19,7 @@ interface CommandElement {
 }
 
 interface CommandPopoverProps {
-    device: Device.RealTimeData;
+    device: Device.Overview;
     func: Device.CommandOperation;
     onClose: () => void;
 }

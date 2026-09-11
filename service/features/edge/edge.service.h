@@ -17,7 +17,7 @@
 
 #include "service/common/http.h"
 #include "service/common/uuid.h"
-#include "service/features/event/event.transport.h"
+#include "service/features/messaging/messaging.transport.h"
 #include "service/features/edge/edge.transport.h"
 #include "service/features/edge/session/session.service.h"
 #include "service/features/vpn/vpn.service.h"

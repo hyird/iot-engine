@@ -32,7 +32,7 @@ import { DeviceListCard } from './components/DeviceListCard';
 import { Gb28181LivePlayer } from './components/LivePlayer';
 import { PtzPanel } from './components/PtzPanel';
 import { SessionDetailsCard } from './components/SessionDetailsCard';
-import { ptzCapabilityTag } from './view';
+import { ptzCapabilityTag } from './gb28181-display';
 
 const { Text, Title } = Typography;
 
@@ -114,9 +114,12 @@ export default function Gb28181Page() {
     useEffect(() => {
         if (!activeSession) return;
         const leaseSeconds = Math.max(3, activeSession.lease_timeout_seconds || 90);
-        const heartbeat = window.setInterval(() => {
-            void renewPreview({ sessionId: activeSession.session_id }).catch(() => undefined);
-        }, Math.max(1_000, Math.floor((leaseSeconds * 1_000) / 3)));
+        const heartbeat = window.setInterval(
+            () => {
+                void renewPreview({ sessionId: activeSession.session_id }).catch(() => undefined);
+            },
+            Math.max(1_000, Math.floor((leaseSeconds * 1_000) / 3))
+        );
         return () => window.clearInterval(heartbeat);
     }, [activeSession]);
 

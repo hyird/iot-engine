@@ -24,7 +24,7 @@
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 #include <microsoft.ui.xaml.window.h>
-#include "../native/gui/controller.h"
+#include "../native/gui/connection_controller.h"
 #include "../native/gui/credentials.h"
 #include <fstream>
 #include <map>
@@ -97,7 +97,7 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
     com_array<Markup::XmlnsDefinition> GetXmlnsDefinitions() { return provider.GetXmlnsDefinitions(); }
     Window window{nullptr}; Grid root{nullptr}; DispatcherTimer timer{nullptr};
     ContentDialog logoutDialog{nullptr}; bool logoutConfirming=false;
-    std::unique_ptr<iotvpn::gui::Controller> model;
+    std::unique_ptr<iotvpn::gui::ConnectionController> model;
     std::string rendered; bool updating=false,closed=false;
     template<class T> T control(const wchar_t* name) { return root.FindName(name).as<T>(); }
     Button findDialogButton(DependencyObject const& node,hstring const& label) {
@@ -128,7 +128,7 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
         try {
             Resources().MergedDictionaries().Append(XamlControlsResources());
             root=Markup::XamlReader::Load(layout).as<Grid>();
-            model=std::make_unique<iotvpn::gui::Controller>([this](const Json& request,std::stop_token stop) {
+            model=std::make_unique<iotvpn::gui::ConnectionController>([this](const Json& request,std::stop_token stop) {
                 if(startupOptions.test) return fixture(request);
                 auto result=iotvpn::pipeRequest(request,90000,stop);
                 if(request.value("command","")=="login" && result.value("success",false)) {

@@ -259,9 +259,9 @@ struct Reply final {
     std::vector<std::vector<std::uint8_t>> messages;
 };
 
-class Client final {
+class NetlinkClient final {
   public:
-    explicit Client(int protocol) : fd_(::socket(AF_NETLINK, SOCK_RAW, protocol)) {
+    explicit NetlinkClient(int protocol) : fd_(::socket(AF_NETLINK, SOCK_RAW, protocol)) {
         if (fd_ < 0)
             return;
         sockaddr_nl address{};
@@ -272,13 +272,13 @@ class Client final {
         }
     }
 
-    ~Client() {
+    ~NetlinkClient() {
         if (fd_ >= 0)
             ::close(fd_);
     }
 
-    Client(const Client&) = delete;
-    Client& operator=(const Client&) = delete;
+    NetlinkClient(const NetlinkClient&) = delete;
+    NetlinkClient& operator=(const NetlinkClient&) = delete;
 
     [[nodiscard]] bool valid() const noexcept { return fd_ >= 0; }
 
@@ -400,7 +400,7 @@ inline std::string errorText(int errorCode) {
 }
 
 inline bool addWireGuardInterface(std::string_view interfaceName, int& errorCode) {
-    Client client(NETLINK_ROUTE);
+    NetlinkClient client(NETLINK_ROUTE);
     if (!client.valid()) {
         errorCode = errno;
         return false;
@@ -425,7 +425,7 @@ inline bool replaceAddress(std::string_view interfaceName, std::string_view addr
         errorCode = ifindex == 0 ? (errno != 0 ? errno : ENODEV) : EINVAL;
         return false;
     }
-    Client client(NETLINK_ROUTE);
+    NetlinkClient client(NETLINK_ROUTE);
     if (!client.valid()) {
         errorCode = errno;
         return false;
@@ -451,7 +451,7 @@ inline bool setInterfaceUp(std::string_view interfaceName, int& errorCode) {
         errorCode = errno != 0 ? errno : ENODEV;
         return false;
     }
-    Client client(NETLINK_ROUTE);
+    NetlinkClient client(NETLINK_ROUTE);
     if (!client.valid()) {
         errorCode = errno;
         return false;
@@ -476,7 +476,7 @@ inline bool replaceRoute(std::string_view interfaceName, std::string_view destin
         errorCode = ifindex == 0 ? (errno != 0 ? errno : ENODEV) : EINVAL;
         return false;
     }
-    Client client(NETLINK_ROUTE);
+    NetlinkClient client(NETLINK_ROUTE);
     if (!client.valid()) {
         errorCode = errno;
         return false;
@@ -508,7 +508,7 @@ inline std::optional<std::vector<Ipv4Cidr>> managedRoutes(
         errorCode = errno != 0 ? errno : ENODEV;
         return std::nullopt;
     }
-    Client client(NETLINK_ROUTE);
+    NetlinkClient client(NETLINK_ROUTE);
     if (!client.valid()) {
         errorCode = errno;
         return std::nullopt;
@@ -537,9 +537,9 @@ inline std::optional<std::vector<Ipv4Cidr>> managedRoutes(
         std::uint32_t destination = 0;
         const auto* payload = reinterpret_cast<const std::uint8_t*>(route) + sizeof(rtmsg);
         const auto payloadLength = header->nlmsg_len - NLMSG_HDRLEN - sizeof(rtmsg);
-        Client::forEachAttribute(
+        NetlinkClient::forEachAttribute(
             payload, payloadLength,
-            [&](const Client::nlattr& attribute, const std::uint8_t* value,
+            [&](const NetlinkClient::nlattr& attribute, const std::uint8_t* value,
                 std::size_t length) {
                 const auto type = attribute.nla_type & NLA_TYPE_MASK;
                 if (type == RTA_OIF && length >= sizeof(std::uint32_t)) {
@@ -565,7 +565,7 @@ inline bool deleteRoute(std::string_view interfaceName, const Ipv4Cidr& destinat
         errorCode = errno != 0 ? errno : ENODEV;
         return false;
     }
-    Client client(NETLINK_ROUTE);
+    NetlinkClient client(NETLINK_ROUTE);
     if (!client.valid()) {
         errorCode = errno;
         return false;
@@ -651,7 +651,7 @@ struct Device final {
 
 inline void parsePeer(const std::uint8_t* data, std::size_t length, Device& device);
 
-inline std::optional<Device> getDevice(const Client& client, std::uint16_t family,
+inline std::optional<Device> getDevice(const NetlinkClient& client, std::uint16_t family,
                                        std::string_view interfaceName, int& errorCode) {
     MessageBuilder request(family, NLM_F_REQUEST | NLM_F_ACK | NLM_F_DUMP, 1);
     genlmsghdr generic{kWgCmdGetDevice, kWireGuardVersion, 0};
@@ -670,11 +670,11 @@ inline std::optional<Device> getDevice(const Client& client, std::uint16_t famil
         const auto* genericHeader = reinterpret_cast<const genlmsghdr*>(NLMSG_DATA(header));
         const auto payload = reinterpret_cast<const std::uint8_t*>(genericHeader) + GENL_HDRLEN;
         const auto payloadLength = header->nlmsg_len - NLMSG_HDRLEN - GENL_HDRLEN;
-        Client::forEachAttribute(payload, payloadLength, [&](const Client::nlattr& attribute,
+        NetlinkClient::forEachAttribute(payload, payloadLength, [&](const NetlinkClient::nlattr& attribute,
                                                              const std::uint8_t* value, std::size_t length) {
             if ((attribute.nla_type & NLA_TYPE_MASK) != kWgDevicePeers)
                 return;
-            Client::forEachAttribute(value, length, [&](const Client::nlattr& peerContainer,
+            NetlinkClient::forEachAttribute(value, length, [&](const NetlinkClient::nlattr& peerContainer,
                                                         const std::uint8_t* peerValue, std::size_t peerLength) {
                 if ((peerContainer.nla_type & NLA_TYPE_MASK) == 0)
                     parsePeer(peerValue, peerLength, result);
@@ -687,7 +687,7 @@ inline std::optional<Device> getDevice(const Client& client, std::uint16_t famil
 inline void parsePeer(const std::uint8_t* data, std::size_t length, Device& device) {
     std::optional<std::string> publicKey;
     std::uint64_t handshake = 0;
-    Client::forEachAttribute(data, length, [&](const Client::nlattr& attribute, const std::uint8_t* value,
+    NetlinkClient::forEachAttribute(data, length, [&](const NetlinkClient::nlattr& attribute, const std::uint8_t* value,
                                                std::size_t valueLength) {
         const auto type = attribute.nla_type & NLA_TYPE_MASK;
         if (type == kWgPeerPublicKey && valueLength == 32U) {
@@ -723,7 +723,7 @@ class Controller final : public IWireGuardController {
     RuntimeStatus configure(const HubConfig& config) override {
         if (!validConfig(config))
             return failure("invalid_config", "WireGuard hub configuration is invalid");
-        Client generic(NETLINK_GENERIC);
+        NetlinkClient generic(NETLINK_GENERIC);
         if (!generic.valid())
             return failure("netlink_unavailable", errorText(errno));
         const auto family = generic.resolveFamily(kWireGuardFamily);
@@ -749,7 +749,7 @@ class Controller final : public IWireGuardController {
     RuntimeStatus upsertPeer(const HubConfig& config, const Peer& peer) override {
         if (!validConfig(config) || !validKey(peer.publicKey) || peer.allowedIps.empty())
             return failure("invalid_peer", "WireGuard peer configuration is invalid");
-        Client generic(NETLINK_GENERIC);
+        NetlinkClient generic(NETLINK_GENERIC);
         if (!generic.valid())
             return failure("netlink_unavailable", errorText(errno));
         const auto family = generic.resolveFamily(kWireGuardFamily);
@@ -772,7 +772,7 @@ class Controller final : public IWireGuardController {
         const auto key = decodeKey(publicKey);
         if (!key)
             return failure("invalid_peer", "WireGuard peer public key is invalid");
-        Client generic(NETLINK_GENERIC);
+        NetlinkClient generic(NETLINK_GENERIC);
         if (!generic.valid())
             return failure("netlink_unavailable", errorText(errno));
         const auto family = generic.resolveFamily(kWireGuardFamily);
@@ -826,7 +826,7 @@ class Controller final : public IWireGuardController {
     RuntimeStatus status(const HubConfig& config) override {
         if (!validConfig(config))
             return failure("invalid_config", "WireGuard hub configuration is invalid");
-        Client generic(NETLINK_GENERIC);
+        NetlinkClient generic(NETLINK_GENERIC);
         if (!generic.valid())
             return failure("netlink_unavailable", errorText(errno));
         const auto family = generic.resolveFamily(kWireGuardFamily);
@@ -857,7 +857,7 @@ class Controller final : public IWireGuardController {
     }
 
   private:
-    bool setDevice(const Client& client, std::uint16_t family, const HubConfig& config,
+    bool setDevice(const NetlinkClient& client, std::uint16_t family, const HubConfig& config,
                    const Peer* peer, std::string& errorMessage) {
         MessageBuilder request(family, NLM_F_REQUEST | NLM_F_ACK, 1);
         genlmsghdr genericHeader{kWgCmdSetDevice, kWireGuardVersion, 0};
@@ -912,7 +912,7 @@ class Controller final : public IWireGuardController {
     std::optional<Device> readDevice(const HubConfig& config) {
         if (!validConfig(config))
             return std::nullopt;
-        Client generic(NETLINK_GENERIC);
+        NetlinkClient generic(NETLINK_GENERIC);
         if (!generic.valid())
             return std::nullopt;
         const auto family = generic.resolveFamily(kWireGuardFamily);

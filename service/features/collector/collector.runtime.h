@@ -34,14 +34,14 @@
 #include "service/features/collector/s7/s7.protocol.h"
 #include "service/features/collector/sl651/sl651.protocol.h"
 #include "service/features/collector/tcp/tcp.transport.h"
-#include "service/features/event/event.transport.h"
+#include "service/features/messaging/messaging.transport.h"
 #include "service/features/gb28181/gb28181.runtime.h"
 
 namespace service::collector {
 
-class Worker final {
+class CollectorWorker final {
   public:
-    Worker(ruvia::EventLoop loop, ruvia::RedisConfig redisConfig, std::size_t workerIndex, std::size_t workerCount, AppConfig gb28181)
+    CollectorWorker(ruvia::EventLoop loop, ruvia::RedisConfig redisConfig, std::size_t workerIndex, std::size_t workerCount, AppConfig gb28181)
         : loop_(std::move(loop)), workerHandle_(loop_.handle()), resource_(),
           scope_(workerHandle_, ruvia::TaskScopeOptions{ .resource = &resource_ }),
           scheduler_(loop_.ioContext()),
@@ -81,8 +81,8 @@ class Worker final {
           workerIndex_(workerIndex), workerCount_(workerCount),
           consumer_("collector-" + std::to_string(workerIndex)) {}
 
-    Worker(const Worker&) = delete;
-    Worker& operator=(const Worker&) = delete;
+    CollectorWorker(const CollectorWorker&) = delete;
+    CollectorWorker& operator=(const CollectorWorker&) = delete;
 
     void start(std::shared_ptr<std::promise<void>> ready) {
         if (!loop_.post([this, ready = std::move(ready)] {
@@ -149,7 +149,7 @@ class Worker final {
 
   private:
     struct TargetLeaseDeadline {
-        Timer::Token token;
+        DeadlineScheduler::Token token;
         std::chrono::steady_clock::time_point expiresAt;
     };
 
@@ -1964,27 +1964,27 @@ return 1
     ruvia::WorkerHandle workerHandle_;
     std::pmr::unsynchronized_pool_resource resource_;
     ruvia::TaskScope scope_;
-    Timer scheduler_;
-    Client redis_;
+    DeadlineScheduler scheduler_;
+    CollectorRedisClient redis_;
     ProtocolEngine engine_;
-    Tcp tcp_;
+    TcpTransport tcp_;
     service::gb28181::CollectorRuntime gb28181_;
     std::size_t workerIndex_ = 0;
     std::size_t workerCount_ = 1;
     std::string workerInstanceId_ = message::nextMessageId();
     std::string consumer_;
-    std::map<std::pair<std::string, std::uint64_t>, Timer::Token> protocolDeadlines_;
+    std::map<std::pair<std::string, std::uint64_t>, DeadlineScheduler::Token> protocolDeadlines_;
     std::map<std::string, std::set<std::string>, std::less<>> routes_;
     std::map<std::string, ProtocolConnectionInfo, std::less<>> networkConnections_;
     std::map<std::string, std::uint64_t, std::less<>> connectionEpochs_;
     std::map<ClientTargetKey, std::string> targetLeases_;
     std::map<std::string, TargetLeaseDeadline, std::less<>> targetLeaseDeadlines_;
-    Timer::Token targetRenewalToken_ = 0;
+    DeadlineScheduler::Token targetRenewalToken_ = 0;
     std::map<std::string, PendingCommand, std::less<>> pendingCommands_;
     std::map<std::string, BroadcastCommand, std::less<>> broadcasts_;
     std::map<std::string, std::string, std::less<>> broadcastParents_;
     std::map<std::string, std::vector<message::StreamMessage>, std::less<>> readyMessages_;
-    Timer::Token tickToken_ = 0;
+    DeadlineScheduler::Token tickToken_ = 0;
     std::string lastCoordinatorError_;
     std::string loadedConfigVersion_;
     std::string desiredConfigVersion_;
@@ -2019,13 +2019,13 @@ return 1
 
 namespace service::collector {
 
-class Runtime final {
+class CollectorWorkerPool final {
   public:
-    Runtime() = default;
-    Runtime(const Runtime&) = delete;
-    Runtime& operator=(const Runtime&) = delete;
+    CollectorWorkerPool() = default;
+    CollectorWorkerPool(const CollectorWorkerPool&) = delete;
+    CollectorWorkerPool& operator=(const CollectorWorkerPool&) = delete;
 
-    ~Runtime() { stop(); }
+    ~CollectorWorkerPool() { stop(); }
 
     void start(ruvia::RedisConfig redisConfig, std::size_t workerCount, AppConfig gb28181) {
         if (running_.exchange(true)) {
@@ -2038,7 +2038,7 @@ class Runtime final {
             );
             workers_.reserve(workerCount);
             for (std::size_t index = 0; index < workerCount; ++index) {
-                workers_.push_back(std::make_unique<Worker>(pool_->loop(index), redisConfig, index, workerCount, gb28181));
+                workers_.push_back(std::make_unique<CollectorWorker>(pool_->loop(index), redisConfig, index, workerCount, gb28181));
             }
             pool_->start();
 
@@ -2110,7 +2110,7 @@ class Runtime final {
 
   private:
     std::unique_ptr<ruvia::EventLoopPool> pool_;
-    std::vector<std::unique_ptr<Worker>> workers_;
+    std::vector<std::unique_ptr<CollectorWorker>> workers_;
     std::atomic_bool running_{ false };
 };
 

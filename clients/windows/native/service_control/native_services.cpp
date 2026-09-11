@@ -40,7 +40,7 @@ std::vector<BYTE> query2(SC_HANDLE service, DWORD level) {
 void config2(SC_HANDLE service, DWORD level, void* data) {
     if (!ChangeServiceConfig2W(service, level, data)) win32Error("Cannot configure network service");
 }
-void configure(SC_HANDLE handle, const Snapshot& value) {
+void configure(SC_HANDLE handle, const WindowsServiceSnapshot& value) {
     if (!ChangeServiceConfigW(handle, value.type, value.startType, value.errorControl, value.binary.c_str(), nullptr, nullptr,
         value.dependencies.c_str(), L"LocalSystem", nullptr, value.display.c_str())) win32Error("Cannot update network service");
     SERVICE_DELAYED_AUTO_START_INFO delayed{value.delayed}; config2(handle, SERVICE_CONFIG_DELAYED_AUTO_START_INFO, &delayed);
@@ -51,10 +51,10 @@ void configure(SC_HANDLE handle, const Snapshot& value) {
     config2(handle, SERVICE_CONFIG_FAILURE_ACTIONS, &failure);
 }
 }
-Snapshot capture(const std::wstring& name) {
+WindowsServiceSnapshot capture(const std::wstring& name) {
     auto scm = manager(); auto service = open(scm.value, name, SERVICE_QUERY_CONFIG | SERVICE_QUERY_STATUS);
     if (!service) return {};
-    Snapshot result; result.present = true; result.running = status(service.value).dwCurrentState != SERVICE_STOPPED;
+    WindowsServiceSnapshot result; result.present = true; result.running = status(service.value).dwCurrentState != SERVICE_STOPPED;
     DWORD size{}; QueryServiceConfigW(service.value, nullptr, 0, &size);
     if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) win32Error("Cannot inspect network service");
     std::vector<BYTE> bytes(size); auto config = reinterpret_cast<QUERY_SERVICE_CONFIGW*>(bytes.data());
@@ -111,7 +111,7 @@ void remove(const std::wstring& name) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 }
-void restore(const std::wstring& name, const Snapshot& saved) {
+void restore(const std::wstring& name, const WindowsServiceSnapshot& saved) {
     if (!saved.present) { remove(name); return; }
     auto scm = manager(SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE);
     auto service = open(scm.value, name, SERVICE_ALL_ACCESS);
@@ -124,7 +124,7 @@ void restore(const std::wstring& name, const Snapshot& saved) {
 }
 void installOrUpdate(const std::wstring& name, const std::wstring& display, const std::wstring& binary, bool delayed, const std::vector<std::wstring>& dependencies) {
     validateExisting(name, binary);
-    Snapshot target; target.present = true; target.type = SERVICE_WIN32_OWN_PROCESS; target.startType = delayed ? SERVICE_AUTO_START : SERVICE_DEMAND_START;
+    WindowsServiceSnapshot target; target.present = true; target.type = SERVICE_WIN32_OWN_PROCESS; target.startType = delayed ? SERVICE_AUTO_START : SERVICE_DEMAND_START;
     target.errorControl = SERVICE_ERROR_NORMAL; target.binary = binary; target.display = display; target.delayed = delayed; target.sidType = SERVICE_SID_TYPE_UNRESTRICTED;
     target.failureNonCrash = delayed; target.resetPeriod = 86400;
     if (delayed) target.actions = {{SC_ACTION_RESTART, 5000}, {SC_ACTION_RESTART, 15000}, {SC_ACTION_RESTART, 60000}};

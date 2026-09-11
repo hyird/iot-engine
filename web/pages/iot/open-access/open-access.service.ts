@@ -1,4 +1,4 @@
-import { useLiveQuery } from '@/hooks/useLiveQuery';
+import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import { useMutationWithMessage } from '@/hooks/useMutation';
 import {
     createKey,
@@ -12,20 +12,20 @@ import {
     rotateKey,
     updateKey,
     updateWebhook,
-} from './open-access.client';
+} from './open-access.api';
 import { type Access, accessQueryKeys } from './open-access.types';
 
 export const useOpenDevices = () =>
-    useLiveQuery({ queryKey: accessQueryKeys.devices(), queryFn: getDevices });
+    useSnapshotQuery({ queryKey: accessQueryKeys.devices(), queryFn: getDevices });
 export const useOpenKeys = () =>
-    useLiveQuery({ queryKey: accessQueryKeys.keys(), queryFn: getKeys });
+    useSnapshotQuery({ queryKey: accessQueryKeys.keys(), queryFn: getKeys });
 export const useOpenWebhooks = (accessKeyId?: string) =>
-    useLiveQuery({
+    useSnapshotQuery({
         queryKey: accessQueryKeys.webhooks(accessKeyId),
         queryFn: () => getWebhooks(accessKeyId),
     });
 export const useOpenLogs = (query: Access.LogQuery) =>
-    useLiveQuery({ queryKey: accessQueryKeys.logs(query), queryFn: () => getLogs(query) });
+    useSnapshotQuery({ queryKey: accessQueryKeys.logs(query), queryFn: () => getLogs(query) });
 
 export const useKeyCreate = () =>
     useMutationWithMessage({
@@ -35,8 +35,7 @@ export const useKeyCreate = () =>
     });
 export const useKeyUpdate = () =>
     useMutationWithMessage({
-        mutationFn: ({ id, data }: { id: string; data: Access.KeySaveDto }) =>
-            updateKey(id, data),
+        mutationFn: ({ id, data }: { id: string; data: Access.KeySaveDto }) => updateKey(id, data),
         successMessage: '调用配置已更新',
         invalidateKeys: [accessQueryKeys.all],
     });

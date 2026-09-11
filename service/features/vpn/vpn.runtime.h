@@ -35,14 +35,14 @@ inline std::string runtimeStatusJson(const wireguard::RuntimeStatus& result) {
         ",\"runtimePeerCount\":" + std::to_string(result.peerCount) + "}";
 }
 
-class Runtime final {
+class VpnHubRuntime final {
   public:
-    explicit Runtime(wireguard::HubConfig config) : hubConfig_(std::move(config)) {}
+    explicit VpnHubRuntime(wireguard::HubConfig config) : hubConfig_(std::move(config)) {}
 
-    Runtime(const Runtime&) = delete;
-    Runtime& operator=(const Runtime&) = delete;
+    VpnHubRuntime(const VpnHubRuntime&) = delete;
+    VpnHubRuntime& operator=(const VpnHubRuntime&) = delete;
 
-    ~Runtime() { stop(); }
+    ~VpnHubRuntime() { stop(); }
 
     void start(ruvia::WebWorkerHandle worker) {
         if (running_.exchange(true)) {
@@ -335,9 +335,9 @@ class Runtime final {
     std::shared_future<void> stopped_;
 };
 
-class VpnControlRuntime final {
+class VpnControlHandler final {
   public:
-    explicit VpnControlRuntime(
+    explicit VpnControlHandler(
         wireguard::HubConfig fallback,
         std::string platformId =
             std::string(service::edge::protocol::kDefaultPlatformId)
@@ -363,7 +363,7 @@ class VpnControlRuntime final {
 
         if (operation == "reconcile" || operation == "wireguard-reconcile" ||
             operation == "firewall-reconcile") {
-            const auto result = co_await Runtime::reconcileNow(context, fallback_);
+            const auto result = co_await VpnHubRuntime::reconcileNow(context, fallback_);
             if (operation == "reconcile" && result.supported && !result.configured &&
                 result.code != "hub_config_missing") {
                 service::common::fail(21005, "VPN Hub reconciliation failed: " + result.message, 503);
@@ -372,7 +372,7 @@ class VpnControlRuntime final {
         }
 
         if (operation == "wireguard-status") {
-            const auto result = co_await Runtime::status(context, fallback_);
+            const auto result = co_await VpnHubRuntime::status(context, fallback_);
             co_return runtimeStatusJson(result);
         }
 

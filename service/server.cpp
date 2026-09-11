@@ -33,8 +33,8 @@
 #include "service/features/configuration/configuration.service.h"
 #include "service/features/edge/edge.runtime.h"
 #include "service/features/edge/gateway/gateway.transport.h"
-#include "service/features/event/event.runtime.h"
-#include "service/features/event/stream_multiplexer/stream_multiplexer.runtime.h"
+#include "service/features/messaging/messaging.runtime.h"
+#include "service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h"
 #include "service/features/gb28181/gb28181.runtime.h"
 #include "service/features/gb28181/media/media.transport.h"
 #include "service/features/live/live.runtime.h"
@@ -290,51 +290,51 @@ service::message::outbox::Policy outboxPolicy(const ruvia::Env& env) {
     return policy;
 }
 
-struct RuntimeComponents {
+struct ServiceWorkerComponents {
     std::shared_ptr<service::message::WorkerStreamMultiplexer> multiplexer;
-    std::shared_ptr<service::edge::DispatcherRuntime> dispatcher;
-    std::shared_ptr<service::observability::Registry> observability;
-    std::shared_ptr<service::application::Runtime> lifecycle;
+    std::shared_ptr<service::edge::DispatcherRuntime> sessionDispatcherRuntime;
+    std::shared_ptr<service::observability::RuntimeDiagnostics> observability;
+    std::shared_ptr<service::application::ComponentLifecycle> componentLifecycle;
     std::shared_ptr<service::telemetry::PersistenceRuntime> telemetry;
-    std::shared_ptr<service::live::Runtime> liveQueries;
+    std::shared_ptr<service::live::LiveChangeRuntime> liveChanges;
     std::shared_ptr<service::live::QueryRuntime> apiQueries;
-    std::shared_ptr<service::rpc::Runtime> control;
-    std::shared_ptr<service::command::ResultRuntime> commandResults;
+    std::shared_ptr<service::rpc::RpcConsumerRuntime> rpcConsumer;
+    std::shared_ptr<service::command::CommandProcessingRuntime> commandProcessing;
     std::shared_ptr<service::access::WebhookRuntime> openWebhooks;
     std::shared_ptr<service::runtime::Reconciler> configReconciler;
-    std::shared_ptr<service::edge::Projector> edgeProjector;
-    std::shared_ptr<service::vpn::Runtime> vpnRuntime;
-    std::shared_ptr<service::gb28181::Projector> gb28181Projector;
-    std::shared_ptr<service::alert::Runtime> alerts;
-    std::shared_ptr<service::message::outbox::Runtime> outbox;
+    std::shared_ptr<service::edge::EdgeProjectionRuntime> edgeProjection;
+    std::shared_ptr<service::vpn::VpnHubRuntime> vpnHubRuntime;
+    std::shared_ptr<service::gb28181::GbProjectionRuntime> gbProjection;
+    std::shared_ptr<service::alert::AlertBootstrap> alertBootstrap;
+    std::shared_ptr<service::message::outbox::OutboxRuntime> outboxRuntime;
 };
 
-struct Components {
+struct ApplicationComponents {
     AppConfig gb28181;
     ruvia::DbConfig database;
     ruvia::RedisConfig serviceRedis;
     ruvia::RedisConfig collectorRedis;
-    std::vector<std::shared_ptr<RuntimeComponents>> workers;
-    std::shared_ptr<service::collector::Runtime> collector;
-    std::shared_ptr<service::observability::Registry> observability;
-    std::shared_ptr<service::application::Runtime> applicationRuntime;
+    std::vector<std::shared_ptr<ServiceWorkerComponents>> workers;
+    std::shared_ptr<service::collector::CollectorWorkerPool> collectorWorkerPool;
+    std::shared_ptr<service::observability::RuntimeDiagnostics> observability;
+    std::shared_ptr<service::application::ComponentLifecycle> applicationLifecycle;
 };
 
 void registerRpcHandlers(
-    const std::shared_ptr<service::rpc::Runtime>& control,
+    const std::shared_ptr<service::rpc::RpcConsumerRuntime>& rpcConsumer,
     const ruvia::Env& env
 ) {
-    control->add("telemetry", service::telemetry::ControlRuntime::handle);
-    control->add("alert", service::alert::ControlRuntime::handle);
-    control->add("access", service::access::ControlRuntime::handle);
-    control->add("command", service::command::ControlRuntime::handle);
-    control->add("gb28181", service::gb28181::GbControlRuntime::handle);
-    control->add("edge", service::edge::EdgeControlRuntime::handle);
-    auto vpnControl = std::make_shared<service::vpn::VpnControlRuntime>(
+    rpcConsumer->add("telemetry", service::telemetry::TelemetryProjectionHandler::handle);
+    rpcConsumer->add("alert", service::alert::AlertRefreshHandler::handle);
+    rpcConsumer->add("access", service::access::AccessOperationHandler::handle);
+    rpcConsumer->add("command", service::command::CommandPreparationHandler::handle);
+    rpcConsumer->add("gb28181", service::gb28181::GbControlHandler::handle);
+    rpcConsumer->add("edge", service::edge::EdgeControlHandler::handle);
+    auto vpnControl = std::make_shared<service::vpn::VpnControlHandler>(
         vpnHubConfig(env),
         std::string(env.get("EDGE_PLATFORM_ID").value_or(service::edge::protocol::kDefaultPlatformId))
     );
-    control->add(
+    rpcConsumer->add(
         "vpn",
         [vpnControl](ruvia::WebWorkerContext& context, std::string_view operation, std::string_view payload, ruvia::StopToken stop) {
             return vpnControl->handle(context, operation, payload, stop);
@@ -342,14 +342,14 @@ void registerRpcHandlers(
     );
 }
 
-Components createComponents(
+ApplicationComponents createComponents(
     const ruvia::Env& env,
     const AppConfig& gb28181,
     const WorkerBudget& budget,
     ruvia::DbConfig database,
     ruvia::RedisConfig serviceRedis
 ) {
-    Components components;
+    ApplicationComponents components;
     components.gb28181 = gb28181;
     components.database = std::move(database);
     components.serviceRedis = std::move(serviceRedis);
@@ -358,37 +358,37 @@ Components createComponents(
     // The tasks retain separate consumer groups and use the ordinary pool to drain.
     components.serviceRedis.blockingPoolSizePerWorker = 4;
 
-    components.collector = std::make_shared<service::collector::Runtime>();
-    components.observability = std::make_shared<service::observability::Registry>();
+    components.collectorWorkerPool = std::make_shared<service::collector::CollectorWorkerPool>();
+    components.observability = std::make_shared<service::observability::RuntimeDiagnostics>();
     for (std::size_t index = 0; index < budget.service; ++index) {
-        auto owner = std::make_shared<RuntimeComponents>();
-        auto& runtime = *owner;
-        runtime.observability = std::make_shared<service::observability::Registry>();
-        runtime.observability->identifyWorker(index, budget.service);
-        runtime.observability->gauge("iot_engine_service_workers", budget.service);
-        runtime.observability->gauge("iot_engine_collector_workers", budget.collector);
-        runtime.lifecycle = std::make_shared<service::application::Runtime>(*runtime.observability);
-        runtime.multiplexer = std::make_shared<service::message::WorkerStreamMultiplexer>();
-        runtime.dispatcher = std::make_shared<service::edge::DispatcherRuntime>();
-        runtime.telemetry = std::make_shared<service::telemetry::PersistenceRuntime>();
-        runtime.liveQueries = std::make_shared<service::live::Runtime>(budget.collector);
-        runtime.apiQueries = std::make_shared<service::live::QueryRuntime>();
-        runtime.control = std::make_shared<service::rpc::Runtime>();
-        registerRpcHandlers(runtime.control, env);
-        runtime.commandResults = std::make_shared<service::command::ResultRuntime>();
-        runtime.openWebhooks = std::make_shared<service::access::WebhookRuntime>();
-        runtime.configReconciler = std::make_shared<service::runtime::Reconciler>();
-        runtime.edgeProjector = std::make_shared<service::edge::Projector>();
+        auto owner = std::make_shared<ServiceWorkerComponents>();
+        auto& workerComponents = *owner;
+        workerComponents.observability = std::make_shared<service::observability::RuntimeDiagnostics>();
+        workerComponents.observability->identifyWorker(index, budget.service);
+        workerComponents.observability->setGauge("iot_engine_service_workers", budget.service);
+        workerComponents.observability->setGauge("iot_engine_collector_workers", budget.collector);
+        workerComponents.componentLifecycle = std::make_shared<service::application::ComponentLifecycle>(*workerComponents.observability);
+        workerComponents.multiplexer = std::make_shared<service::message::WorkerStreamMultiplexer>();
+        workerComponents.sessionDispatcherRuntime = std::make_shared<service::edge::DispatcherRuntime>();
+        workerComponents.telemetry = std::make_shared<service::telemetry::PersistenceRuntime>();
+        workerComponents.liveChanges = std::make_shared<service::live::LiveChangeRuntime>(budget.collector);
+        workerComponents.apiQueries = std::make_shared<service::live::QueryRuntime>();
+        workerComponents.rpcConsumer = std::make_shared<service::rpc::RpcConsumerRuntime>();
+        registerRpcHandlers(workerComponents.rpcConsumer, env);
+        workerComponents.commandProcessing = std::make_shared<service::command::CommandProcessingRuntime>();
+        workerComponents.openWebhooks = std::make_shared<service::access::WebhookRuntime>();
+        workerComponents.configReconciler = std::make_shared<service::runtime::Reconciler>();
+        workerComponents.edgeProjection = std::make_shared<service::edge::EdgeProjectionRuntime>();
         const auto enableVpnHub = env.get<bool>("VPN_HUB_ENABLED").value_or(true);
-        runtime.vpnRuntime = enableVpnHub
-            ? std::make_shared<service::vpn::Runtime>(vpnHubConfig(env))
+        workerComponents.vpnHubRuntime = enableVpnHub
+            ? std::make_shared<service::vpn::VpnHubRuntime>(vpnHubConfig(env))
             : nullptr;
-        runtime.gb28181Projector = gb28181.enabled
-            ? std::make_shared<service::gb28181::Projector>()
+        workerComponents.gbProjection = gb28181.enabled
+            ? std::make_shared<service::gb28181::GbProjectionRuntime>()
             : nullptr;
-        runtime.alerts = std::make_shared<service::alert::Runtime>();
-        runtime.outbox = std::make_shared<service::message::outbox::Runtime>(
-            *runtime.observability,
+        workerComponents.alertBootstrap = std::make_shared<service::alert::AlertBootstrap>();
+        workerComponents.outboxRuntime = std::make_shared<service::message::outbox::OutboxRuntime>(
+            *workerComponents.observability,
             budget.collector,
             budget.service,
             components.database,
@@ -396,7 +396,7 @@ Components createComponents(
         );
         components.workers.push_back(std::move(owner));
     }
-    components.applicationRuntime = std::make_shared<service::application::Runtime>(*components.observability);
+    components.applicationLifecycle = std::make_shared<service::application::ComponentLifecycle>(*components.observability);
     return components;
 }
 
@@ -424,7 +424,7 @@ ruvia::Task<ruvia::HttpResponse> handleError(
 // Only the supervisor visits the owner collection. Each posted operation owns one
 // worker's components; business workers never receive another worker's handle.
 template <typename Operation>
-void initializeWorker(ruvia::WebWorkerHandle worker, Operation operation) {
+void initializeServiceWorker(ruvia::WebWorkerHandle worker, Operation operation) {
     auto ready = std::make_shared<std::promise<void>>();
     auto completion = ready->get_future();
     if (!worker.post([operation = std::move(operation), ready](ruvia::WebWorkerContext& context) mutable -> ruvia::Task<void> {
@@ -441,106 +441,106 @@ void initializeWorker(ruvia::WebWorkerHandle worker, Operation operation) {
     completion.get();
 }
 
-void registerWorkerLifecycle(RuntimeComponents& c, ruvia::WebWorkerHandle worker, std::size_t index, std::size_t count, std::size_t collectors) {
-    auto& lifecycle = *c.lifecycle;
-    lifecycle.add({ .name = "stream-multiplexer", .start = [m = c.multiplexer, worker, index] {
+void registerServiceWorkerLifecycle(ServiceWorkerComponents& workerComponents, ruvia::WebWorkerHandle worker, std::size_t index, std::size_t count, std::size_t collectors) {
+    auto& componentLifecycle = *workerComponents.componentLifecycle;
+    componentLifecycle.add({ .name = "stream-multiplexer", .start = [m = workerComponents.multiplexer, worker, index] {
                        m->start(worker, index);
                    },
-                    .stop = [m = c.multiplexer] {
+                    .stop = [m = workerComponents.multiplexer] {
                         m->stop();
                     } });
-    lifecycle.add({ .name = "api-live-queries", .start = [r = c.apiQueries, worker, index] {
+    componentLifecycle.add({ .name = "api-live-queries", .start = [r = workerComponents.apiQueries, worker, index] {
                        r->start(worker, index);
                    },
-                    .stop = [r = c.apiQueries] {
+                    .stop = [r = workerComponents.apiQueries] {
                         r->stop();
                     } });
-    lifecycle.add({ .name = "live-queries", .start = [r = c.liveQueries, worker, index, count] {
+    componentLifecycle.add({ .name = "live-queries", .start = [r = workerComponents.liveChanges, worker, index, count] {
                        r->start(worker, index, count);
                    },
-                    .stop = [r = c.liveQueries] {
+                    .stop = [r = workerComponents.liveChanges] {
                         r->stop();
                     } });
-    lifecycle.add({ .name = "outbox", .start = [r = c.outbox, worker] {
+    componentLifecycle.add({ .name = "outbox", .start = [r = workerComponents.outboxRuntime, worker] {
                        r->start(worker);
                    },
-                    .stop = [r = c.outbox] {
+                    .stop = [r = workerComponents.outboxRuntime] {
                         r->stop();
                     } });
-    lifecycle.add({ .name = "telemetry", .start = [r = c.telemetry, worker, index, count, collectors] {
+    componentLifecycle.add({ .name = "telemetry", .start = [r = workerComponents.telemetry, worker, index, count, collectors] {
                        r->start(worker, index, count, collectors);
                    },
-                    .stop = [r = c.telemetry] {
+                    .stop = [r = workerComponents.telemetry] {
                         r->stop();
                     } });
-    lifecycle.add({ .name = "command-results", .start = [r = c.commandResults, worker, index, count, collectors] {
+    componentLifecycle.add({ .name = "command-results", .start = [r = workerComponents.commandProcessing, worker, index, count, collectors] {
                        r->start(worker, index, count, collectors);
                    },
-                    .stop = [r = c.commandResults] {
+                    .stop = [r = workerComponents.commandProcessing] {
                         r->stop();
                     } });
-    lifecycle.add({ .name = "webhooks", .start = [r = c.openWebhooks, worker, index, count] {
+    componentLifecycle.add({ .name = "webhooks", .start = [r = workerComponents.openWebhooks, worker, index, count] {
                        r->start(worker, index, count);
                    },
-                    .stop = [r = c.openWebhooks] {
+                    .stop = [r = workerComponents.openWebhooks] {
                         r->stop();
                     } });
-    lifecycle.add({ .name = "edge-dispatcher", .start = [r = c.dispatcher, worker, index, count] {
+    componentLifecycle.add({ .name = "edge-dispatcher", .start = [r = workerComponents.sessionDispatcherRuntime, worker, index, count] {
                        r->start(worker, index, count);
                    },
-                    .stop = [r = c.dispatcher] {
+                    .stop = [r = workerComponents.sessionDispatcherRuntime] {
                         r->stop();
                     } });
-    lifecycle.add({ .name = "edge-projector", .start = [r = c.edgeProjector, worker, index, count] {
+    componentLifecycle.add({ .name = "edge-projector", .start = [r = workerComponents.edgeProjection, worker, index, count] {
                        r->start(worker, index, count);
                    },
-                    .stop = [r = c.edgeProjector] {
+                    .stop = [r = workerComponents.edgeProjection] {
                         r->stop();
                     } });
-    lifecycle.add({ .name = "alerts", .start = [r = c.alerts, worker, index, count] {
+    componentLifecycle.add({ .name = "alerts", .start = [r = workerComponents.alertBootstrap, worker, index, count] {
                        r->start(worker, index, count);
                    },
-                    .stop = [r = c.alerts] {
+                    .stop = [r = workerComponents.alertBootstrap] {
                         r->stop();
                     } });
-    if (c.vpnRuntime) {
-        lifecycle.add({ .name = "vpn", .start = [r = c.vpnRuntime, worker] {
+    if (workerComponents.vpnHubRuntime) {
+        componentLifecycle.add({ .name = "vpn", .start = [r = workerComponents.vpnHubRuntime, worker] {
                            r->start(worker);
                        },
-                        .stop = [r = c.vpnRuntime] {
+                        .stop = [r = workerComponents.vpnHubRuntime] {
                             r->stop();
                         } });
     }
-    lifecycle.add({ .name = "config-reconciler", .start = [r = c.configReconciler, worker, index, count, collectors] {
+    componentLifecycle.add({ .name = "config-reconciler", .start = [r = workerComponents.configReconciler, worker, index, count, collectors] {
                        r->start(worker, index, count, collectors);
                    },
-                    .stop = [r = c.configReconciler] {
+                    .stop = [r = workerComponents.configReconciler] {
                         r->stop();
                     } });
-    lifecycle.add({ .name = "control", .start = [r = c.control, worker, index] {
+    componentLifecycle.add({ .name = "control", .start = [r = workerComponents.rpcConsumer, worker, index] {
                        r->start(worker, index);
                    },
-                    .stop = [r = c.control] {
+                    .stop = [r = workerComponents.rpcConsumer] {
                         r->stop();
                     } });
-    if (c.gb28181Projector) {
-        lifecycle.add({ .name = "gb28181-projector", .start = [r = c.gb28181Projector, worker, index, count] {
+    if (workerComponents.gbProjection) {
+        componentLifecycle.add({ .name = "gb28181-projector", .start = [r = workerComponents.gbProjection, worker, index, count] {
                            (void)r->start(worker, index, count);
                        },
-                        .stop = [r = c.gb28181Projector] {
+                        .stop = [r = workerComponents.gbProjection] {
                             r->stop();
                         } });
     }
 }
 
-auto makeApplicationStart(ruvia::App& app, Components& components, std::size_t collectors) {
+auto makeApplicationStart(ruvia::App& app, ApplicationComponents& components, std::size_t collectors) {
     return [&app, &components, collectors] {
         const auto workers = app.workers();
         if (workers.empty() || workers.size() != components.workers.size()) {
             throw std::runtime_error("service worker ownership does not match configuration");
         }
         const auto count = workers.size();
-        auto& supervisor = *components.applicationRuntime;
+        auto& supervisor = *components.applicationLifecycle;
         std::vector<std::string> preparation;
         for (std::size_t index = 0; index < count; ++index) {
             const auto worker = workers[index];
@@ -549,8 +549,8 @@ auto makeApplicationStart(ruvia::App& app, Components& components, std::size_t c
             preparation.push_back(name);
             supervisor.add({ .name = name, .start = [owner, worker, index] {
                                 owner->multiplexer->configure(worker, index);
-                                initializeWorker(worker, [owner](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
-                                    service::observability::configureProcessRegistry(*owner->observability);
+                                initializeServiceWorker(worker, [owner](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
+                                    service::observability::setCurrentWorkerDiagnostics(*owner->observability);
                                     (void)co_await service::runtime::ConfigurationService::project(context);
                                 });
                             },
@@ -568,30 +568,30 @@ auto makeApplicationStart(ruvia::App& app, Components& components, std::size_t c
                              } });
             preparation.push_back("gb28181-sdk");
         }
-        supervisor.add({ .name = "collector", .dependencies = preparation, .start = [collector = components.collector, redis = components.collectorRedis, gb28181 = components.gb28181, collectors, owners = components.workers]() mutable {
-                            collector->start(redis, collectors, gb28181);
+        supervisor.add({ .name = "collector", .dependencies = preparation, .start = [collectorWorkerPool = components.collectorWorkerPool, redis = components.collectorRedis, gb28181 = components.gb28181, collectors, owners = components.workers]() mutable {
+                            collectorWorkerPool->start(redis, collectors, gb28181);
                             for (const auto& owner : owners) {
-                                owner->observability->component("collector", service::observability::ComponentState::Ready);
+                                owner->observability->setComponentStatus("collector", service::observability::ComponentState::Ready);
                             }
                         },
-                         .stop = [collector = components.collector, owners = components.workers] {
-                             collector->stop();
+                         .stop = [collectorWorkerPool = components.collectorWorkerPool, owners = components.workers] {
+                             collectorWorkerPool->stop();
                              for (const auto& owner : owners) {
-                                 owner->observability->component("collector", service::observability::ComponentState::Stopped);
+                                 owner->observability->setComponentStatus("collector", service::observability::ComponentState::Stopped);
                              }
                          } });
         for (std::size_t index = 0; index < count; ++index) {
             const auto worker = workers[index];
             const auto owner = components.workers[index];
-            registerWorkerLifecycle(*owner, worker, index, count, collectors);
+            registerServiceWorkerLifecycle(*owner, worker, index, count, collectors);
             supervisor.add({ .name = "service-worker-" + std::to_string(index), .dependencies = { "collector" }, .start = [owner, worker, index, count] {
-                                initializeWorker(worker, [index, count](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
+                                initializeServiceWorker(worker, [index, count](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
                                     co_await service::telemetry::latest::hydrate(context, index, count);
                                 });
-                                owner->lifecycle->start();
+                                owner->componentLifecycle->start();
                             },
                              .stop = [owner] {
-                                 owner->lifecycle->stop();
+                                 owner->componentLifecycle->stop();
                              } });
         }
         supervisor.start();
@@ -600,11 +600,11 @@ auto makeApplicationStart(ruvia::App& app, Components& components, std::size_t c
 
 void configureServer(
     ruvia::App& app,
-    Components& components,
+    ApplicationComponents& components,
     const WorkerBudget& budget
 ) {
     auto applicationStart = makeApplicationStart(app, components, budget.collector);
-    const auto applicationRuntime = components.applicationRuntime;
+    const auto applicationLifecycle = components.applicationLifecycle;
     const auto observability = components.observability;
     app.database(ruvia::DbRegistrationConfig{
         .alias = "telemetry-history",
@@ -618,7 +618,7 @@ void configureServer(
         .alias = "vpn-coordination",
         .config = components.database,
     });
-    app.useWorkerState<service::edge::Dispatcher>()
+    app.useWorkerState<service::edge::SessionDispatcher>()
         .database(ruvia::DbRegistrationConfig{
             .config = std::move(components.database),
         })
@@ -626,10 +626,10 @@ void configureServer(
             .config = std::move(components.serviceRedis),
         })
         .onStart(std::move(applicationStart))
-        .onStop([applicationRuntime, observability] {
-            // Keep the registry alive until every component has stopped.
+        .onStop([applicationLifecycle, observability] {
+            // Keep runtime diagnostics alive until every component has stopped.
             (void)observability;
-            applicationRuntime->stop();
+            applicationLifecycle->stop();
         })
         .onError(&handleError)
         .listen(ruvia::ListenConfig{

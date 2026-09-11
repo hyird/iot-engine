@@ -1,9 +1,9 @@
-import { useLiveQuery } from '@/hooks/useLiveQuery';
+import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { createQueryKeys } from '@/utils/query';
-import type { PaginatedResult } from '@/utils/types';
-import * as api from './protocol.client';
+import type { PaginatedResult } from '@/utils/pagination';
+import * as api from './protocol.api';
 import type { Protocol } from './protocol.types';
 
 export const protocolQueryKeys = {
@@ -19,7 +19,7 @@ export function useProtocolConfigList(
     params?: Protocol.Query,
     options?: Omit<UseQueryOptions<Protocol.Item[]>, 'queryKey' | 'queryFn'>
 ) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: protocolQueryKeys.list(params),
         queryFn: () => api.getAll(params),
         ...options,
@@ -30,7 +30,7 @@ export function useProtocolConfigOptions(
     protocol: Protocol.Type,
     options?: Omit<UseQueryOptions<PaginatedResult<Protocol.Option>>, 'queryKey' | 'queryFn'>
 ) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: [...protocolQueryKeys.all, 'options', protocol],
         queryFn: () => api.getOptions(protocol),
         ...options,
@@ -41,7 +41,7 @@ export function useProtocolConfigDetail(
     id: string | undefined,
     options?: Omit<UseQueryOptions<Protocol.Item>, 'queryKey' | 'queryFn'>
 ) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: protocolQueryKeys.detail(id ?? ''),
         queryFn: () => api.getDetail(id as string),
         enabled: Boolean(id),

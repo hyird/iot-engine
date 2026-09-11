@@ -60,12 +60,13 @@ add_custom_command(
     "${CMAKE_CURRENT_SOURCE_DIR}/winui/main.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/native/common/common.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/native/common/common.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/gui/connection_controller.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/native/assets/product.rc"
     "${CMAKE_CURRENT_SOURCE_DIR}/native/assets/product.ico"
   VERBATIM)
 add_custom_target(windows-winui DEPENDS "${_winui_output}")
 
-add_custom_target(windows-native-runtime
+add_custom_target(windows-native-runtime-files
   COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_BINARY_DIR}/$<CONFIG>"
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different
     "${IOT_EGINE_WINDOWS_NATIVE_OUTPUT}/tunnel.dll"
@@ -82,7 +83,7 @@ add_custom_target(windows-native-tests
     -C "$<CONFIG>"
     --output-on-failure
   DEPENDS
-    windows-native-runtime
+    windows-native-runtime-files
     installer_snapshot_tests
     vpn_transport_probe
     vpn_credential_tests

@@ -15,7 +15,7 @@ int main(int argc, char** argv) {
     std::string token; std::getline(std::cin,token);
     if (token.empty()) return 2;
     try {
-        iotvpn::service::WinHttpTransport api;
+        iotvpn::service::WinHttpPlatformVpnApi api;
         const auto start=std::chrono::steady_clock::now();
         const auto devices=api.devices(token,{});
         std::cout << "PASS devices=" << devices.size() << " elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-start).count() << '\n';

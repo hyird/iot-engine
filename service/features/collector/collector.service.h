@@ -18,7 +18,7 @@
 
 #include "service/common/message.h"
 #include "service/features/collector/collector.types.h"
-#include "service/features/event/event.transport.h"
+#include "service/features/messaging/messaging.transport.h"
 #include "service/utils/number.h"
 
 namespace service::collector::config {

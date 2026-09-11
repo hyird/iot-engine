@@ -20,7 +20,7 @@ import {
     normalizePacketConfig,
     type RegisterModalRef,
     RegisterTypeOptions,
-} from './helpers';
+} from './modbus-configuration';
 
 export interface RegisterModalProps {
     types: Protocol.Item[];

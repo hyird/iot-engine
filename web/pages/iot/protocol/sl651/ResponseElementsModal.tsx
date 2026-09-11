@@ -19,7 +19,7 @@ import { FormModal } from '@/components/FormModal';
 import type { Protocol, SL651 } from '../protocol.types';
 import { normalizeGroupName } from '../grouping';
 import { useFilterableGroupOptions } from '../useFilterableGroupOptions';
-import { EncodeList, generateId, type SaveMutation } from './shared';
+import { EncodeList, generateId, type SaveMutation } from './sl651-form';
 
 export interface ResponseElementsModalRef {
     open: (typeId: string, func: SL651.Func) => void;

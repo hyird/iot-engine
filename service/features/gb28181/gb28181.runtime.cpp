@@ -971,13 +971,13 @@ std::string configField(const std::pmr::vector<ruvia::RedisKeyValue>& fields, st
 
 } // namespace
 
-void Projector::start(ruvia::WebWorkerHandle worker, OwnerIndex workerIndex, OwnerIndex serviceWorkerCount) {
+void GbProjectionRuntime::start(ruvia::WebWorkerHandle worker, OwnerIndex workerIndex, OwnerIndex serviceWorkerCount) {
     {
         std::lock_guard lock(lifecycleMutex_);
         if (running_.load()) {
             if (worker_.id() != worker.id() || workerIndex_ != workerIndex) {
                 throw std::logic_error(
-                    "GB28181 projector is already bound to another worker"
+                    "GB28181 projection runtime is already bound to another worker"
                 );
             }
             return;
@@ -985,7 +985,7 @@ void Projector::start(ruvia::WebWorkerHandle worker, OwnerIndex workerIndex, Own
         if (!worker.valid() || serviceWorkerCount == 0 ||
             workerIndex >= serviceWorkerCount) {
             throw std::runtime_error(
-                "GB28181 projector requires a valid Service Worker"
+                "GB28181 projection runtime requires a valid Service Worker"
             );
         }
         worker_ = std::move(worker);
@@ -1023,7 +1023,7 @@ void Projector::start(ruvia::WebWorkerHandle worker, OwnerIndex workerIndex, Own
                     } catch (...) {
                     }
                 } else {
-                    LOG_WARN << "[GB28181][Projector] consumer stopped";
+                    LOG_WARN << "[GB28181][GbProjectionRuntime] consumer stopped";
                 }
             }
             try {
@@ -1061,7 +1061,7 @@ void Projector::start(ruvia::WebWorkerHandle worker, OwnerIndex workerIndex, Own
     }
 }
 
-void Projector::stop() noexcept {
+void GbProjectionRuntime::stop() noexcept {
     std::shared_ptr<State> state;
     std::shared_future<void> stopped;
     {
@@ -1085,7 +1085,7 @@ void Projector::stop() noexcept {
 }
 
 ruvia::Task<void>
-Projector::consume(ruvia::WebWorkerContext& context, const std::shared_ptr<State>& state) {
+GbProjectionRuntime::consume(ruvia::WebWorkerContext& context, const std::shared_ptr<State>& state) {
     const auto stop =
         ruvia::combineStopTokens(context.stopToken(), state->stop.token());
     const auto redis = context.redis().withOptions({ .stopToken = stop });
@@ -1186,7 +1186,7 @@ Projector::consume(ruvia::WebWorkerContext& context, const std::shared_ptr<State
                         parseError = error.what();
                     }
                     if (!parseError.empty()) {
-                        LOG_WARN << "[GB28181][Projector] dropping malformed projection: "
+                        LOG_WARN << "[GB28181][GbProjectionRuntime] dropping malformed projection: "
                                  << parseError;
                         co_await markProjectionDoneAndAcknowledge(
                             redis,
@@ -1260,7 +1260,7 @@ Projector::consume(ruvia::WebWorkerContext& context, const std::shared_ptr<State
         }
         if (retry && !stop.stopRequested()) {
             if (!failure.empty()) {
-                LOG_WARN << "[GB28181][Projector] projection failed: "
+                LOG_WARN << "[GB28181][GbProjectionRuntime] projection failed: "
                          << failure;
             }
             (void)co_await ruvia::sleepFor(
@@ -2586,7 +2586,7 @@ CollectorRuntime::execute(std::string operation, std::string payload, ruvia::Sto
     throw std::invalid_argument("unsupported GB28181 operation");
 }
 
-ruvia::Task<std::string> GbControlRuntime::handle(
+ruvia::Task<std::string> GbControlHandler::handle(
     ruvia::WebWorkerContext& context,
     std::string_view operation,
     std::string_view payload,

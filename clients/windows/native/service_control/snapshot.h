@@ -2,7 +2,7 @@
 #include "native_services.h"
 #include "../common/common.h"
 namespace iotvpn::service_control::services {
-inline Json encode(const Snapshot& s) {
+inline Json encodeServiceSnapshot(const WindowsServiceSnapshot& s) {
     Json j;
 #define FIELD(x) j[#x] = s.x
     FIELD(present); FIELD(running); FIELD(delayed); FIELD(failureNonCrash);
@@ -15,8 +15,8 @@ inline Json encode(const Snapshot& s) {
     for (const auto& a : s.actions) j["actions"].push_back({static_cast<int>(a.Type), a.Delay});
     return j;
 }
-inline Snapshot decode(const Json& j) {
-    Snapshot s;
+inline WindowsServiceSnapshot decodeServiceSnapshot(const Json& j) {
+    WindowsServiceSnapshot s;
 #define FIELD(x) j.at(#x).get_to(s.x)
     FIELD(present); FIELD(running); FIELD(delayed); FIELD(failureNonCrash);
     FIELD(type); FIELD(startType); FIELD(errorControl); FIELD(sidType); FIELD(resetPeriod);

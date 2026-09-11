@@ -1,15 +1,15 @@
-import { LiveResource } from '@/utils/live-resource';
-import { useLiveQuery } from '@/hooks/useLiveQuery';
+import { SnapshotStream } from '@/utils/snapshot-stream';
+import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { createQueryKeys } from '@/utils/query';
-import type { PaginatedResult } from '@/utils/types';
-import * as api from './device.client';
+import type { PaginatedResult } from '@/utils/pagination';
+import * as api from './device.api';
 import type { Device } from './device.types';
 import type { DeviceGroup } from './device-group.types';
 
 const deviceKeys = createQueryKeys('devices');
-const deviceRealtimeKey = [...deviceKeys.all, 'realtime'] as const;
+const deviceRealtimeSnapshotKey = [...deviceKeys.all, 'realtime'] as const;
 const groupKeys = createQueryKeys('device-groups');
 const shareKeys = {
     all: ['device-shares'] as const,
@@ -40,32 +40,31 @@ interface AgentEndpoint {
 }
 
 export function useDeviceList(options?: { enabled?: boolean }) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: deviceKeys.lists(),
         queryFn: api.getDeviceList,
-        enabled: options?.enabled ?? true,        refetchOnWindowFocus: false,
+        enabled: options?.enabled ?? true,
+        refetchOnWindowFocus: false,
         staleTime: 5_000,
     });
 }
 
-export function useDeviceRealtime(options?: {
-    enabled?: boolean;
-}) {
-    return useLiveQuery({
-        queryKey: deviceRealtimeKey,
-        queryFn: api.getDeviceRealtime,
-        enabled: options?.enabled ?? true,        refetchOnWindowFocus: false,
+export function useDeviceRealtimeSnapshot(options?: { enabled?: boolean }) {
+    return useSnapshotQuery({
+        queryKey: deviceRealtimeSnapshotKey,
+        queryFn: api.getDeviceRealtimeSnapshot,
+        enabled: options?.enabled ?? true,
+        refetchOnWindowFocus: false,
         staleTime: 1_000,
     });
 }
-
 
 export function useDeviceHistory(
     deviceId: string | undefined,
     query: Device.HistoryRecordQuery,
     enabled = true
 ) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: [...deviceKeys.all, 'history', deviceId ?? '', query],
         queryFn: () => api.getDeviceHistory(deviceId as string, query),
         enabled: Boolean(deviceId) && enabled,
@@ -95,13 +94,19 @@ export function useDeviceCommand() {
     return useMutationWithMessage({
         mutationFn: async ({ deviceId, data }: { deviceId: string; data: Device.Command }) => {
             const command = await api.createDeviceCommand(deviceId, data);
-            const result = await api.getDeviceCommandStatuses(command.command_ids)
-                .filter((snapshot) => snapshot.complete).first(AbortSignal.timeout(60_000));
+            const result = await api
+                .getDeviceCommandStatuses(command.command_ids)
+                .filter((snapshot) => snapshot.complete)
+                .first(AbortSignal.timeout(60_000));
             const failed = result.statuses.find((state) =>
-                ['FAILED', 'REJECTED', 'UNKNOWN', 'READBACK_MISMATCH'].includes(state.status));
-            if (failed) throw new Error(failed.status === 'UNKNOWN'
-                ? '指令结果未知，请核对设备状态，勿直接重发'
-                : failed.reason || '设备执行指令失败');
+                ['FAILED', 'REJECTED', 'UNKNOWN', 'READBACK_MISMATCH'].includes(state.status)
+            );
+            if (failed)
+                throw new Error(
+                    failed.status === 'UNKNOWN'
+                        ? '指令结果未知，请核对设备状态，勿直接重发'
+                        : failed.reason || '设备执行指令失败'
+                );
             if (!result.complete) throw new Error('等待设备应答超时');
             return result;
         },
@@ -122,7 +127,7 @@ export function useDeviceCommand() {
 }
 
 export function useDeviceShares(deviceId?: string, options?: { enabled?: boolean }) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: shareKeys.list('device', deviceId ?? ''),
         queryFn: () => api.getDeviceShares(deviceId as string),
         enabled: !!deviceId && (options?.enabled ?? true),
@@ -130,7 +135,7 @@ export function useDeviceShares(deviceId?: string, options?: { enabled?: boolean
 }
 
 export function useDeviceShareTargets(deviceId?: string, options?: { enabled?: boolean }) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: shareKeys.targets('device', deviceId ?? ''),
         queryFn: () => api.getDeviceShareTargets(deviceId as string),
         enabled: !!deviceId && (options?.enabled ?? true),
@@ -147,7 +152,7 @@ export function useReplaceDeviceShares() {
 }
 
 export function useDeviceGroupShares(groupId?: string, options?: { enabled?: boolean }) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: shareKeys.list('group', groupId ?? ''),
         queryFn: () => api.getDeviceGroupShares(groupId as string),
         enabled: !!groupId && (options?.enabled ?? true),
@@ -155,7 +160,7 @@ export function useDeviceGroupShares(groupId?: string, options?: { enabled?: boo
 }
 
 export function useDeviceGroupShareTargets(groupId?: string, options?: { enabled?: boolean }) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: shareKeys.targets('group', groupId ?? ''),
         queryFn: () => api.getDeviceGroupShareTargets(groupId as string),
         enabled: !!groupId && (options?.enabled ?? true),
@@ -174,7 +179,7 @@ export function useReplaceDeviceGroupShares() {
 export function useDeviceGroupTree(
     options?: Omit<UseQueryOptions<DeviceGroup.TreeItem[]>, 'queryKey' | 'queryFn'>
 ) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: [...groupKeys.all, 'tree'],
         queryFn: () => api.getDeviceGroupTree(false),
         ...options,
@@ -184,7 +189,7 @@ export function useDeviceGroupTree(
 export function useDeviceGroupTreeWithCount(
     options?: Omit<UseQueryOptions<DeviceGroup.TreeItem[]>, 'queryKey' | 'queryFn'>
 ) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: [...groupKeys.all, 'tree-count'],
         queryFn: () => api.getDeviceGroupTree(true),
         ...options,
@@ -215,19 +220,19 @@ export function useDeviceGroupDelete() {
 }
 
 export function useAgentOptions(options?: { enabled?: boolean }) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: ['agents', 'options'],
-        queryFn: () => LiveResource.value(EMPTY_AGENTS),
+        queryFn: () => SnapshotStream.value(EMPTY_AGENTS),
         enabled: options?.enabled ?? true,
     });
 }
 
 export function useAgentEndpoints(agentId?: string, options?: { enabled?: boolean }) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: ['agents', agentId, 'endpoints'],
-        queryFn: () => LiveResource.value(EMPTY_ENDPOINTS),
+        queryFn: () => SnapshotStream.value(EMPTY_ENDPOINTS),
         enabled: options?.enabled ?? !!agentId,
     });
 }
 
-export type DeviceListResult = PaginatedResult<Device.RealTimeData>;
+export type DeviceListResult = PaginatedResult<Device.Overview>;

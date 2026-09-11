@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { pageParamsSchema } from '@/utils/types';
+import { pageParamsSchema } from '@/utils/pagination';
 
 const statusSchema = z.enum(['enabled', 'disabled'], { error: '状态无效' });
 

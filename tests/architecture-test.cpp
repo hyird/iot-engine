@@ -495,8 +495,8 @@ void testFeatureDomainBoundaries() {
 }
 
 void testLifecycleOrder() {
-    service::observability::Registry metrics;
-    service::application::Runtime runtime(metrics);
+    service::observability::RuntimeDiagnostics metrics;
+    service::application::ComponentLifecycle runtime(metrics);
     std::vector<std::string> calls;
     runtime.add({.name = "database",
                  .start = [&] { calls.emplace_back("start-database"); },
@@ -506,7 +506,7 @@ void testLifecycleOrder() {
                  .start = [&] { calls.emplace_back("start-consumer"); },
                  .stop = [&] { calls.emplace_back("stop-consumer"); }});
     runtime.start();
-    require(metrics.ready(), "runtime did not become ready");
+    require(metrics.areComponentsReady(), "runtime did not become ready");
     runtime.stop();
     const std::vector<std::string> expected{"start-database", "start-consumer",
                                              "stop-consumer", "stop-database"};
@@ -514,8 +514,8 @@ void testLifecycleOrder() {
 }
 
 void testLifecycleRollback() {
-    service::observability::Registry metrics;
-    service::application::Runtime runtime(metrics);
+    service::observability::RuntimeDiagnostics metrics;
+    service::application::ComponentLifecycle runtime(metrics);
     bool stopped = false;
     runtime.add({.name = "first", .start = [] {}, .stop = [&] { stopped = true; }});
     runtime.add({.name = "broken",
@@ -528,7 +528,7 @@ void testLifecycleRollback() {
     } catch (const std::runtime_error&) {
     }
     require(stopped, "runtime did not roll back started components");
-    require(!metrics.ready(), "failed runtime reported ready");
+    require(!metrics.areComponentsReady(), "failed runtime reported ready");
 }
 
 void testMessageEnvelope() {
@@ -550,7 +550,7 @@ void testMessageEnvelope() {
 
 void testExplicitOutbox() {
     const auto schema = source("service/config/schema.h");
-    const auto dispatcher = source("service/features/event/event.service.h");
+    const auto dispatcher = source("service/features/messaging/messaging.service.h");
     require(schema.find("0023_transactional_outbox") != std::string::npos,
             "transactional outbox migration is missing");
     require(schema.find("0036_live_query_changes") != std::string::npos &&
@@ -592,15 +592,15 @@ void testOutboxOperations() {
             "dead-letter operations are not permission protected");
     require(service.find(".set(\"dead_lettered_at\", query.nullValue())") != std::string::npos,
             "dead-letter replay does not requeue the event");
-    const auto dispatcher = source("service/features/event/event.service.h");
+    const auto dispatcher = source("service/features/messaging/messaging.service.h");
     require(dispatcher.find("DELETE FROM outbox_consumer_receipt") != std::string::npos,
             "outbox consumer receipts have no retention cleanup");
 }
 
 void testOperationalAlerts() {
-    service::observability::Registry metrics;
-    metrics.component("outbox", service::observability::ComponentState::Ready);
-    require(metrics.alert("outbox_dead_lettered", true, "value=1, threshold=1"),
+    service::observability::RuntimeDiagnostics metrics;
+    metrics.setComponentStatus("outbox", service::observability::ComponentState::Ready);
+    require(metrics.setAlertState("outbox_dead_lettered", true, "value=1, threshold=1"),
             "activating an alert did not report a transition");
     require(metrics.healthJson().find("\"status\":\"degraded\"") != std::string::npos,
             "active operational alert does not degrade health status");
@@ -608,7 +608,7 @@ void testOperationalAlerts() {
                 "iot_engine_alert_active{alert=\"outbox_dead_lettered\"} 1") !=
                 std::string::npos,
             "active operational alert is missing from metrics");
-    require(metrics.alert("outbox_dead_lettered", false, "value=0, threshold=1"),
+    require(metrics.setAlertState("outbox_dead_lettered", false, "value=0, threshold=1"),
             "clearing an alert did not report a transition");
     require(metrics.healthJson().find("\"status\":\"ready\"") != std::string::npos,
             "cleared operational alert did not restore health status");
@@ -633,9 +633,9 @@ void testSymmetricServiceWorkers() {
     require(server.find("workers.front()") == std::string::npos &&
                 server.find("workers.back()") == std::string::npos,
             "a Service task is assigned to a privileged Worker");
-    require(server.find("registerWorkerLifecycle(*owner, worker, index, count, collectors)") != std::string::npos,
+    require(server.find("registerServiceWorkerLifecycle(*owner, worker, index, count, collectors)") != std::string::npos,
             "Service Workers do not use the same component assembly");
-    require(server.find("std::vector<std::shared_ptr<RuntimeComponents>> workers") != std::string::npos,
+    require(server.find("std::vector<std::shared_ptr<ServiceWorkerComponents>> workers") != std::string::npos,
             "Service Workers share one component owner");
 
     const auto freshness = source("service/features/telemetry/telemetry.runtime.h");
@@ -686,7 +686,7 @@ void testSymmetricServiceWorkers() {
 void testWorkerStreamMultiplexing() {
     const auto server = source("service/server.cpp");
     const auto multiplexer =
-        source("service/features/event/stream_multiplexer/stream_multiplexer.runtime.h");
+        source("service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h");
     require(server.find("serviceRedis.blockingPoolSizePerWorker = 4") !=
                 std::string::npos,
             "Service Workers need bounded multiplexer, feature live, API live and RPC readers");
@@ -703,7 +703,7 @@ void testWorkerStreamMultiplexing() {
                 multiplexer.find("workerWakeStream(index)") != std::string::npos &&
                 multiplexer.find(".capacity = 1") != std::string::npos,
             "Stream multiplexer does not use one coalescing blocker per Worker");
-    const auto stream = source("service/features/event/event.transport.h");
+    const auto stream = source("service/features/messaging/messaging.transport.h");
     require(stream.find("kAddAndWakeScript") != std::string::npos &&
                 stream.find("atomic XADD/wake") != std::string::npos,
             "business messages and Worker wakeups are not published atomically");

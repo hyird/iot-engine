@@ -13,7 +13,7 @@ void require(bool condition, std::string_view message) {
         throw std::runtime_error(std::string(message));
 }
 
-std::string readProjectorSource(std::string_view relativePath) {
+std::string readEdgeProjectionSource(std::string_view relativePath) {
     const auto sourcePath = std::filesystem::path(__FILE__).parent_path().parent_path() /
                             std::filesystem::path(relativePath);
     std::ifstream input(sourcePath, std::ios::binary);
@@ -27,9 +27,9 @@ std::string readProjectorSource(std::string_view relativePath) {
 int main() {
     try {
         const auto serviceSource =
-            readProjectorSource("service/features/edge/edge.service.h");
+            readEdgeProjectionSource("service/features/edge/edge.service.h");
         const auto runtimeSource =
-            readProjectorSource("service/features/edge/edge.runtime.h");
+            readEdgeProjectionSource("service/features/edge/edge.runtime.h");
         require(serviceSource.find("COALESCE((edge_node.capability->>'terminal')::boolean") ==
                     std::string::npos,
                 "edge projector directly casts terminal capability");

@@ -6,7 +6,7 @@ import { App, Form, Input, Select } from 'antd';
 import { forwardRef, useImperativeHandle, useState } from 'react';
 import { FormModal } from '@/components/FormModal';
 import type { Protocol, SL651 } from '../protocol.types';
-import { generateId, type SaveMutation } from './shared';
+import { generateId, type SaveMutation } from './sl651-form';
 
 export interface FuncModalRef {
     open: (mode: 'create' | 'edit', typeId: string, func?: SL651.Func) => void;

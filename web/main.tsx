@@ -4,8 +4,8 @@ import zhCN from 'antd/es/locale/zh_CN';
 import ReactDOM from 'react-dom/client';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { APP_NAME } from './config/app';
-import { Message } from './providers/Message';
-import { TanstackQuery } from './providers/TanstackQuery';
+import { MessageContextBridge } from './providers/MessageContextBridge';
+import { TanStackQueryProvider } from './providers/TanStackQueryProvider';
 import { AppRoutes } from './routes';
 import './styles/index.css';
 
@@ -24,10 +24,10 @@ ReactDOM.createRoot(rootElement).render(
         <StyleProvider hashPriority="low" layer>
             <ConfigProvider locale={zhCN}>
                 <App>
-                    <Message />
-                    <TanstackQuery>
+                    <MessageContextBridge />
+                    <TanStackQueryProvider>
                         <AppRoutes />
-                    </TanstackQuery>
+                    </TanStackQueryProvider>
                 </App>
             </ConfigProvider>
         </StyleProvider>

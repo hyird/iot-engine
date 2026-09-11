@@ -1,6 +1,6 @@
 #pragma once
-#include "service/features/event/event.transport.h"
-#include "service/features/event/event.types.h"
+#include "service/features/messaging/messaging.transport.h"
+#include "service/features/messaging/messaging.types.h"
 #include "service/features/telemetry/latest/latest.service.h"
 #include "service/features/telemetry/telemetry.protocol.h"
 

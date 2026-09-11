@@ -1,6 +1,6 @@
-import { useLiveQuery } from '@/hooks/useLiveQuery';
+import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import { useMutationWithMessage } from '@/hooks/useMutation';
-import { LiveResource } from '@/utils/live-resource';
+import { SnapshotStream } from '@/utils/snapshot-stream';
 import { edgeQueryKeys } from './edge-node.types';
 import {
     createEdgeVpnPeer,
@@ -13,19 +13,19 @@ import {
     revokeEdgeVpnPeer,
     syncEdgeVpnPeer,
     updateEdgeVpnRoute,
-} from './edge-node.vpn.client';
+} from './edge-node.vpn.api';
 import { type EdgeVpn, edgeVpnQueryKeys } from './edge-node.vpn.types';
 
 export const useEdgeVpn = (nodeId?: string) =>
-    useLiveQuery({
+    useSnapshotQuery({
         queryKey: edgeVpnQueryKeys.node(nodeId),
         queryFn: () =>
-            LiveResource.combine([
+            SnapshotStream.combine([
                 getVpnNetworks(),
                 getEdgeVpnPeers(nodeId as string),
                 getEdgeVpnRoutes(nodeId as string),
             ] as const).map(
-                ([networks, peers, routes]): EdgeVpn.Data => ({
+                ([networks, peers, routes]): EdgeVpn.Overview => ({
                     networks: networks.list,
                     peers,
                     routes,

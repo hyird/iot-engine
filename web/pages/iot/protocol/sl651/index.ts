@@ -11,5 +11,5 @@ export {
     default as ResponseElementsModal,
     type ResponseElementsModalRef,
 } from './ResponseElementsModal';
-export type { FormCondition, FormMapItem, SaveMutation } from './shared';
-export { EncodeList, generateId } from './shared';
+export type { FormCondition, FormMapItem, SaveMutation } from './sl651-form';
+export { EncodeList, generateId } from './sl651-form';

@@ -25,7 +25,7 @@
 
 namespace service::alert {
 
-class ControlRuntime final {
+class AlertRefreshHandler final {
 public:
   static ruvia::Task<std::string> handle(ruvia::WebWorkerContext &context,
                                         std::string_view operation, std::string_view,
@@ -39,12 +39,12 @@ public:
   }
 };
 
-class Runtime final {
+class AlertBootstrap final {
 public:
-  Runtime() = default;
-  Runtime(const Runtime &) = delete;
-  Runtime &operator=(const Runtime &) = delete;
-  ~Runtime() { stop(); }
+  AlertBootstrap() = default;
+  AlertBootstrap(const AlertBootstrap &) = delete;
+  AlertBootstrap &operator=(const AlertBootstrap &) = delete;
+  ~AlertBootstrap() { stop(); }
 
   void start(ruvia::WebWorkerHandle worker, std::size_t workerIndex,
              std::size_t serviceWorkerCount) {

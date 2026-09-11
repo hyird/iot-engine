@@ -1,15 +1,15 @@
-import { useLiveQuery } from '@/hooks/useLiveQuery';
+import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
-import type { PaginatedResult } from '@/utils/types';
-import { create, getList, remove, update } from './role.client';
+import type { PaginatedResult } from '@/utils/pagination';
+import { create, getList, remove, update } from './role.api';
 import { roleQueryKeys, type Role } from './role.types';
 
 export function useRoleList(
     params?: Role.Query,
     options?: Omit<UseQueryOptions<PaginatedResult<Role.Item>>, 'queryKey' | 'queryFn'>
 ) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: roleQueryKeys.list(params),
         queryFn: () => getList(params),
         ...options,

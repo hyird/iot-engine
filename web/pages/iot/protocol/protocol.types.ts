@@ -2,7 +2,7 @@
  * 协议配置类型定义
  */
 
-import type { PageParams } from '@/utils/types';
+import type { PageParams } from '@/utils/pagination';
 
 /** 协议类型 */
 export type ProtocolType = 'SL651' | 'Modbus' | 'S7';

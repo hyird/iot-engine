@@ -6,7 +6,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { App } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import * as protocolApi from './protocol.client';
+import * as protocolApi from './protocol.api';
 import { protocolCreateSchema } from './protocol.schema';
 import { protocolQueryKeys } from './protocol.service';
 import type { Protocol } from './protocol.types';

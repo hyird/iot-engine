@@ -10,7 +10,7 @@ import axios, {
     type AxiosResponse,
     type InternalAxiosRequestConfig,
 } from 'axios';
-import { getMessage } from '@/providers/Message';
+import { getMessageInstance } from '@/providers/MessageContextBridge';
 import { useAuthStore } from '@/store/authStore';
 
 function normalizePath(path: string) {
@@ -247,7 +247,7 @@ request.interceptors.response.use(
                 status: response.status,
             });
             if (!isSilent) {
-                getMessage()?.error(apiError.message);
+                getMessageInstance()?.error(apiError.message);
             }
             throw apiError;
         }
@@ -333,7 +333,7 @@ request.interceptors.response.use(
             });
         }
 
-        getMessage()?.error(apiError.message || error.message || '请求失败');
+        getMessageInstance()?.error(apiError.message || error.message || '请求失败');
         throw apiError;
     }
 );

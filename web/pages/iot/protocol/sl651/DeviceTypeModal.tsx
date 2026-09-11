@@ -6,7 +6,7 @@ import { Divider, Form, Input, Select, Switch } from 'antd';
 import { forwardRef, useEffect, useImperativeHandle, useState } from 'react';
 import { FormModal } from '@/components/FormModal';
 import { STORAGE_POLICY_OPTIONS, type Protocol, type SL651 } from '../protocol.types';
-import { getDeviceTypeFormValues, type SaveMutation } from './shared';
+import { getDeviceTypeFormValues, type SaveMutation } from './sl651-form';
 
 export interface DeviceTypeModalRef {
     open: (mode: 'create' | 'edit', data?: Protocol.Item) => void;

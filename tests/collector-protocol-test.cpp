@@ -31,7 +31,7 @@
 #include "service/features/collector/collector.service.h"
 #include "service/features/collector/engine/engine.runtime.h"
 #include "service/features/collector/modbus/modbus.protocol.h"
-#include "service/features/collector/polling/polling.runtime.h"
+#include "service/features/collector/scheduling/scheduling.runtime.h"
 #include "service/features/collector/redis/redis.transport.h"
 #include "service/features/collector/s7/s7.protocol.h"
 #include "service/features/collector/sl651/sl651.protocol.h"
@@ -40,7 +40,7 @@
 #include "service/features/command/command.types.h"
 #include "service/features/configuration/configuration.service.h"
 #include "service/features/edge/session/session.service.h"
-#include "service/features/event/event.transport.h"
+#include "service/features/messaging/messaging.transport.h"
 #include "service/features/telemetry/latest/latest.service.h"
 
 namespace collector = service::collector;
@@ -1764,9 +1764,9 @@ void testS7AllDataTypes() {
     require(collector::s7::detail::jsonEscape("中文") == "中文", "S7 valid UTF-8 text was not preserved");
 }
 
-void testWorkerTimer() {
+void testDeadlineScheduler() {
     asio::io_context io;
-    collector::Timer scheduler(io);
+    collector::DeadlineScheduler scheduler(io);
     int completed = 0;
     const auto cancelled =
         scheduler.scheduleAfter(std::chrono::milliseconds(1), [&] {
@@ -1781,7 +1781,7 @@ void testWorkerTimer() {
         scheduler.stop();
     });
     io.run();
-    require(completed == 2, "worker timer cancellation or execution failed");
+    require(completed == 2, "deadline scheduler cancellation or execution failed");
 }
 
 void testRuntimeWritableContract() {
@@ -2340,8 +2340,8 @@ void testPollStagger() {
 
 void testTcpServerListenersAreWorkerLocal() {
     asio::io_context io;
-    collector::Timer scheduler0(io);
-    collector::Timer scheduler1(io);
+    collector::DeadlineScheduler scheduler0(io);
+    collector::DeadlineScheduler scheduler1(io);
     asio::ip::tcp::acceptor probe(
         io,
         { asio::ip::make_address("127.0.0.1"), 0 }
@@ -2368,8 +2368,8 @@ void testTcpServerListenersAreWorkerLocal() {
     const auto noDisconnect = [](std::string, std::string) {
     };
 
-    collector::Tcp firstWorker(io, scheduler0, 0, 2, onConnection0, noPacket, noDisconnect, onState);
-    collector::Tcp secondWorker(io, scheduler1, 1, 2, onConnection1, noPacket, noDisconnect, onState);
+    collector::TcpTransport firstWorker(io, scheduler0, 0, 2, onConnection0, noPacket, noDisconnect, onState);
+    collector::TcpTransport secondWorker(io, scheduler1, 1, 2, onConnection1, noPacket, noDisconnect, onState);
     firstWorker.reload(snapshot);
     secondWorker.reload(snapshot);
 
@@ -2419,7 +2419,7 @@ void testTcpServerListenersAreWorkerLocal() {
 
 void testTcpClientTargetReconcile() {
     asio::io_context io;
-    collector::Timer scheduler(io);
+    collector::DeadlineScheduler scheduler(io);
     asio::ip::tcp::acceptor firstServer(
         io,
         { asio::ip::make_address("127.0.0.1"), 0 }
@@ -2446,7 +2446,7 @@ void testTcpClientTargetReconcile() {
 
     std::map<std::string, std::vector<std::string>, std::less<>> connectedByTarget;
     std::vector<std::string> disconnected;
-    collector::Tcp tcp(
+    collector::TcpTransport tcp(
         io,
         scheduler,
         0,
@@ -2493,8 +2493,8 @@ void testTcpClientTargetReconcile() {
 
 void testTcpClientTargetsUseConnectionClaim() {
     asio::io_context io;
-    collector::Timer scheduler0(io);
-    collector::Timer scheduler1(io);
+    collector::DeadlineScheduler scheduler0(io);
+    collector::DeadlineScheduler scheduler1(io);
     asio::ip::tcp::acceptor server(
         io,
         { asio::ip::make_address("127.0.0.1"), 0 }
@@ -2549,7 +2549,7 @@ void testTcpClientTargetsUseConnectionClaim() {
     };
     const auto noState = [](collector::LinkState) {
     };
-    collector::Tcp firstWorker(
+    collector::TcpTransport firstWorker(
         io,
         scheduler0,
         0,
@@ -2565,7 +2565,7 @@ void testTcpClientTargetsUseConnectionClaim() {
         claim,
         release
     );
-    collector::Tcp secondWorker(
+    collector::TcpTransport secondWorker(
         io,
         scheduler1,
         1,
@@ -2599,7 +2599,7 @@ void testTcpClientTargetsUseConnectionClaim() {
 
 void testTcpClientLateClaimCompletionAfterStop() {
     asio::io_context io;
-    collector::Timer scheduler(io);
+    collector::DeadlineScheduler scheduler(io);
     asio::ip::tcp::acceptor server(
         io,
         { asio::ip::make_address("127.0.0.1"), 0 }
@@ -2619,7 +2619,7 @@ void testTcpClientLateClaimCompletionAfterStop() {
     snapshot.links.front().targets.resize(1);
     snapshot.links.front().targets.front().port = server.local_endpoint().port();
     snapshot.devices.resize(1);
-    collector::Tcp tcp(
+    collector::TcpTransport tcp(
         io,
         scheduler,
         0,
@@ -2682,7 +2682,7 @@ void testTcpClientLateClaimCompletionAfterStop() {
 
 void testTcpClientRevokePendingConnect() {
     asio::io_context io;
-    collector::Timer scheduler(io);
+    collector::DeadlineScheduler scheduler(io);
     asio::ip::tcp::acceptor server(
         io,
         { asio::ip::make_address("127.0.0.1"), 0 }
@@ -2703,7 +2703,7 @@ void testTcpClientRevokePendingConnect() {
     snapshot.links.front().targets.resize(1);
     snapshot.links.front().targets.front().port = server.local_endpoint().port();
     snapshot.devices.resize(1);
-    collector::Tcp tcp(
+    collector::TcpTransport tcp(
         io,
         scheduler,
         0,
@@ -2749,7 +2749,7 @@ void testTcpClientRevokePendingConnect() {
 
 void testTcpCloseDuringPendingWrite() {
     asio::io_context io;
-    collector::Timer scheduler(io);
+    collector::DeadlineScheduler scheduler(io);
     asio::ip::tcp::acceptor server(io, { asio::ip::make_address("127.0.0.1"), 0 });
     auto accepted = std::make_shared<asio::ip::tcp::socket>(io);
     server.async_accept(*accepted, [](const std::error_code&) {
@@ -2757,7 +2757,7 @@ void testTcpCloseDuringPendingWrite() {
 
     std::string connectionId;
     int writeCompletions = 0;
-    collector::Tcp tcp(
+    collector::TcpTransport tcp(
         io,
         scheduler,
         0,
@@ -2902,7 +2902,7 @@ int main() {
         run("modbus discovery and registration", testModbusDiscoveryAndOffline);
         run("s7", testS7);
         run("s7 data types", testS7AllDataTypes);
-        run("worker timer", testWorkerTimer);
+        run("deadline scheduler", testDeadlineScheduler);
         run("runtime writable contract", testRuntimeWritableContract);
         run("runtime repository invalid scale", testRuntimeRepositoryRejectsInvalidScale);
         run("atomic stream finalization contract", testAtomicStreamFinalizationContract);

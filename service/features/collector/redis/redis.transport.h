@@ -22,17 +22,17 @@ namespace service::collector {
 // Ruvia's worker-local registry owns one logical alias with an ordinary pool and
 // a lazy blocking pool. Passing the owning WorkerHandle lets both pools arm exact
 // deadline and cancellation timers without a periodic scan.
-class Client final {
+class CollectorRedisClient final {
   public:
-    Client(asio::io_context& ioContext, ruvia::RedisConfig config, const ruvia::WorkerHandle& worker)
+    CollectorRedisClient(asio::io_context& ioContext, ruvia::RedisConfig config, const ruvia::WorkerHandle& worker)
         : resource_(), operationScope_(),
           definitions_{ makeDefinition(std::move(config), &resource_) },
           registry_(ioContext, &resource_, definitions_, worker) {}
 
-    Client(const Client&) = delete;
-    Client& operator=(const Client&) = delete;
+    CollectorRedisClient(const CollectorRedisClient&) = delete;
+    CollectorRedisClient& operator=(const CollectorRedisClient&) = delete;
 
-    ~Client() { close(); }
+    ~CollectorRedisClient() { close(); }
 
     [[nodiscard]] ruvia::Task<void> connect() {
         co_await registry_.connect();

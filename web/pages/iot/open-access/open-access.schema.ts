@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { pageParamsSchema } from '@/utils/types';
+import { pageParamsSchema } from '@/utils/pagination';
 
 export const openStatusSchema = z.enum(['enabled', 'disabled']);
 export const openScopeSchema = z.enum([

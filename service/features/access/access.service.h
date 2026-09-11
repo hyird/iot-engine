@@ -14,7 +14,7 @@
 #include <ruvia/web/ModelObject.h>
 
 #include "service/common/uuid.h"
-#include "service/features/event/event.transport.h"
+#include "service/features/messaging/messaging.transport.h"
 
 namespace service::access::session {
 

@@ -186,17 +186,17 @@ class CollectorRuntime final {
     void invalidateOwnerTarget(const std::string& key, const std::string& token, const std::string& deviceId, const std::string& streamId);
 };
 
-class Projector final : public GbProjectionService {
+class GbProjectionRuntime final : public GbProjectionService {
   public:
     using OwnerIndex = std::size_t;
     static constexpr OwnerIndex kUnassignedOwner =
         std::numeric_limits<OwnerIndex>::max();
 
-    Projector() = default;
-    Projector(const Projector&) = delete;
-    Projector& operator=(const Projector&) = delete;
+    GbProjectionRuntime() = default;
+    GbProjectionRuntime(const GbProjectionRuntime&) = delete;
+    GbProjectionRuntime& operator=(const GbProjectionRuntime&) = delete;
 
-    ~Projector() { stop(); }
+    ~GbProjectionRuntime() { stop(); }
 
     [[nodiscard]] OwnerIndex workerIndex() const noexcept {
         return workerIndex_;
@@ -237,7 +237,7 @@ class Projector final : public GbProjectionService {
 
 // Registered by the process-level Redis RPC consumer. The handler is the
 // only feature entry point for northbound GB28181 management operations.
-class GbControlRuntime final {
+class GbControlHandler final {
   public:
     static ruvia::Task<std::string> handle(ruvia::WebWorkerContext& context, std::string_view operation, std::string_view payload, ruvia::StopToken stop);
 };

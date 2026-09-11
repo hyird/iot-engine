@@ -24,7 +24,7 @@
 #include "service/common/message.h"
 #include "service/features/collector/collector.types.h"
 #include "service/features/collector/engine/engine.runtime.h"
-#include "service/features/collector/polling/polling.runtime.h"
+#include "service/features/collector/scheduling/scheduling.runtime.h"
 
 namespace service::collector {
 
@@ -47,7 +47,7 @@ struct LinkState {
     std::int64_t lastActivityAtMs = 0;
 };
 
-class Tcp final {
+class TcpTransport final {
   public:
     using ConnectedHandler = std::function<void(ProtocolConnectionInfo)>;
     using PacketHandler = std::function<void(message::IngressPacket)>;
@@ -58,17 +58,17 @@ class Tcp final {
         std::function<void(std::string, std::string, std::string, std::function<void(bool)>)>;
     using TargetReleaseHandler = std::function<void(std::string, std::string, std::string)>;
 
-    Tcp(asio::io_context& ioContext, Timer& scheduler, std::size_t workerIndex, std::size_t workerCount, ConnectedHandler onConnected, PacketHandler onPacket, DisconnectedHandler onDisconnected, StateHandler onState, TargetClaimHandler onTargetClaim = {}, TargetReleaseHandler onTargetRelease = {})
+    TcpTransport(asio::io_context& ioContext, DeadlineScheduler& scheduler, std::size_t workerIndex, std::size_t workerCount, ConnectedHandler onConnected, PacketHandler onPacket, DisconnectedHandler onDisconnected, StateHandler onState, TargetClaimHandler onTargetClaim = {}, TargetReleaseHandler onTargetRelease = {})
         : ioContext_(ioContext), scheduler_(scheduler), workerIndex_(workerIndex),
           workerCount_(workerCount), onConnected_(std::move(onConnected)),
           onPacket_(std::move(onPacket)), onDisconnected_(std::move(onDisconnected)),
           onState_(std::move(onState)), onTargetClaim_(std::move(onTargetClaim)),
           onTargetRelease_(std::move(onTargetRelease)) {}
 
-    Tcp(const Tcp&) = delete;
-    Tcp& operator=(const Tcp&) = delete;
+    TcpTransport(const TcpTransport&) = delete;
+    TcpTransport& operator=(const TcpTransport&) = delete;
 
-    ~Tcp() { stop(); }
+    ~TcpTransport() { stop(); }
 
     void reload(const RuntimeSnapshot& snapshot) {
         stopTransports();
@@ -433,10 +433,10 @@ class Tcp final {
             bool cancelled = false;
         };
 
-        Tcp& owner;
+        TcpTransport& owner;
         LinkDefinition link;
         LinkTargetDefinition target;
-        Timer::Token reconnectToken = 0;
+        DeadlineScheduler::Token reconnectToken = 0;
         std::string connectionId;
         std::shared_ptr<Attempt> attempt;
         bool stopped = false;
@@ -447,7 +447,7 @@ class Tcp final {
         std::int64_t lastActivityAtMs = 0;
         bool claimPending_ = false;
 
-        ClientTarget(Tcp& ownerValue, LinkDefinition linkValue, LinkTargetDefinition targetValue)
+        ClientTarget(TcpTransport& ownerValue, LinkDefinition linkValue, LinkTargetDefinition targetValue)
             : owner(ownerValue), link(std::move(linkValue)), target(std::move(targetValue)) {}
 
         [[nodiscard]] std::string key() const { return link.id + ':' + target.id; }
@@ -934,7 +934,7 @@ class Tcp final {
     }
 
     asio::io_context& ioContext_;
-    Timer& scheduler_;
+    DeadlineScheduler& scheduler_;
     std::size_t workerIndex_ = 0;
     std::size_t workerCount_ = 1;
     ConnectedHandler onConnected_;

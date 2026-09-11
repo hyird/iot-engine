@@ -3,14 +3,14 @@
 #include <string>
 #include <vector>
 namespace iotvpn::service_control::services {
-struct Snapshot {
+struct WindowsServiceSnapshot {
     bool present{}, running{}, delayed{}, failureNonCrash{};
     DWORD type{}, startType{}, errorControl{}, sidType{}, resetPeriod{};
     std::wstring binary, display, account, dependencies, rebootMessage, command;
     std::vector<SC_ACTION> actions;
 };
-Snapshot capture(const std::wstring& name);
-void restore(const std::wstring& name, const Snapshot& snapshot);
+WindowsServiceSnapshot capture(const std::wstring& name);
+void restore(const std::wstring& name, const WindowsServiceSnapshot& snapshot);
 bool exists(const std::wstring& name);
 bool isRunning(const std::wstring& name);
 void validateExisting(const std::wstring& name, const std::wstring& expectedBinaryPath);

@@ -1,6 +1,6 @@
 import { Card, Descriptions } from 'antd';
 import type { GB28181 } from '../gb28181.types';
-import { displayText, onlineTag, ptzCapabilityTag, remoteEndpoint } from '../view';
+import { displayText, onlineTag, ptzCapabilityTag, remoteEndpoint } from '../gb28181-display';
 
 type SessionDetailsCardProps = {
     selectedDevice?: GB28181.Device;

@@ -1,9 +1,9 @@
-import { useLiveQuery } from '@/hooks/useLiveQuery';
+import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { createQueryKeys } from '@/utils/query';
-import type { PaginatedResult } from '@/utils/types';
-import * as alertApi from './alert.client';
+import type { PaginatedResult } from '@/utils/pagination';
+import * as alertApi from './alert.api';
 import type { Alert } from './alert.types';
 
 export { alertApi };
@@ -17,7 +17,7 @@ export const alertKeys = {
 };
 
 export function useAlertRuleList(params?: Record<string, unknown>) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: alertKeys.rules(params),
         queryFn: () => alertApi.getRules(params),
     });
@@ -27,7 +27,7 @@ export function useAlertRecordList(
     params?: Record<string, unknown>,
     options?: Omit<UseQueryOptions<PaginatedResult<Alert.RecordItem>>, 'queryKey' | 'queryFn'>
 ) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: alertKeys.records(params),
         queryFn: () => alertApi.getRecords(params),
         ...options,
@@ -35,7 +35,7 @@ export function useAlertRecordList(
 }
 
 export function useAlertTemplateList(params?: Record<string, unknown>) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: alertKeys.templates(params),
         queryFn: () => alertApi.getTemplates(params),
     });
@@ -44,7 +44,7 @@ export function useAlertTemplateList(params?: Record<string, unknown>) {
 export function useAlertStats(
     options?: Omit<UseQueryOptions<Alert.ActiveStats>, 'queryKey' | 'queryFn'>
 ) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: alertKeys.stats(),
         queryFn: alertApi.getStats,
         ...options,
@@ -126,7 +126,7 @@ export function useAlertBatchAcknowledge() {
 }
 
 export function useDeviceOptions(options?: { enabled?: boolean }) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: ['devices', 'options'],
         queryFn: alertApi.getDeviceOptions,
         enabled: options?.enabled ?? true,

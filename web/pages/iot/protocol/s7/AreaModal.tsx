@@ -23,7 +23,7 @@ import {
     supportsBitAddress,
     supportsS7Decimals,
     writableAreaTypes,
-} from './helpers';
+} from './s7-configuration';
 
 export interface AreaModalProps {
     open: boolean;

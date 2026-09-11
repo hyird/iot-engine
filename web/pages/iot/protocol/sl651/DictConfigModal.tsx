@@ -6,7 +6,7 @@ import { Button, Flex, Form, Input, Select, Tooltip } from 'antd';
 import { forwardRef, useImperativeHandle, useState } from 'react';
 import { FormModal } from '@/components/FormModal';
 import type { Protocol, SL651 } from '../protocol.types';
-import type { FormCondition, FormMapItem, SaveMutation } from './shared';
+import type { FormCondition, FormMapItem, SaveMutation } from './sl651-form';
 
 export interface DictConfigModalRef {
     open: (typeId: string, funcId: string, element: SL651.Element) => void;

@@ -14,7 +14,7 @@
 
 namespace service::rpc {
 
-class Client final {
+class RpcRequestClient final {
   public:
     static ruvia::Task<std::string> call(ruvia::Context& context, std::string_view component, std::string_view operation, std::string payload) {
         if (payload.size() > Contract::maximumPayload) {
@@ -39,7 +39,7 @@ class Client final {
                     { "GET", replyKey }
                 );
                 if (reply.kind() == ruvia::RedisValue::Kind::kString) {
-                    co_return decode(reply.string());
+                    co_return decodeReply(reply.string());
                 }
                 if (reply.kind() == ruvia::RedisValue::Kind::kError) {
                     service::message::redis::throwValue("RPC reply", reply);
@@ -66,7 +66,7 @@ class Client final {
     }
 
   private:
-    static std::string decode(std::string_view reply) {
+    static std::string decodeReply(std::string_view reply) {
         if (reply.starts_with("OK\n")) {
             return std::string(reply.substr(3));
         }
@@ -87,7 +87,7 @@ class Client final {
 };
 
 inline ruvia::Task<std::string> call(ruvia::Context& context, std::string_view component, std::string_view operation, std::string payload) {
-    return Client::call(context, component, operation, std::move(payload));
+    return RpcRequestClient::call(context, component, operation, std::move(payload));
 }
 
 } // namespace service::rpc

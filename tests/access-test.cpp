@@ -10,7 +10,7 @@
 #include "service/features/access/access.service.h"
 #include "service/features/access/access.transport.h"
 #include "service/features/access/access.runtime.h"
-#include "service/features/event/event.service.h"
+#include "service/features/messaging/messaging.service.h"
 #include "service/utils/crypto.h"
 #include "service/utils/json.h"
 #include "service/utils/jwt.h"

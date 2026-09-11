@@ -1,4 +1,4 @@
-import type { PageParams } from '@/utils/types';
+import type { PageParams } from '@/utils/pagination';
 import { createQueryKeys } from '@/utils/query';
 
 const roleKeys = createQueryKeys('roles');

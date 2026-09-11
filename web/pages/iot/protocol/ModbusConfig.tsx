@@ -37,7 +37,7 @@ import {
     REGISTER_TYPE_ORDER,
     type RegisterModalRef,
     RegisterTypeOptions,
-} from './modbus/helpers';
+} from './modbus/modbus-configuration';
 import { RegisterModal } from './modbus/RegisterModal';
 import {
     useProtocolConfigDelete,

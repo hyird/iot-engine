@@ -87,7 +87,7 @@ int main() {
         const auto dispatchSource = edgeSource("service/features/edge/edge.transport.h");
         const auto dispatcherSource = edgeSource("service/features/edge/edge.runtime.h");
         const auto multiplexerSource =
-            edgeSource("service/features/event/stream_multiplexer/stream_multiplexer.runtime.h");
+            edgeSource("service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h");
         const auto projectorRuntimeSource =
             edgeSource("service/features/edge/edge.runtime.h");
         const auto projectorServiceSource =
@@ -192,7 +192,7 @@ int main() {
                        "edge gateway still allocates one blocking Redis connection per node");
         requireMissing(gatewaySource, "RedisBlockWait::indefinitely()",
                        "edge gateway still owns a per-session blocking Redis read");
-        requireContains(gatewaySource, "c.workerState<Dispatcher>()",
+        requireContains(gatewaySource, "c.workerState<SessionDispatcher>()",
                         "edge gateway does not resolve its worker-local dispatcher");
         requireContains(gatewaySource, "dispatcher.registerSession(",
                         "edge gateway does not register sessions with its worker dispatcher");
@@ -202,7 +202,7 @@ int main() {
                        "edge dispatcher still owns a dedicated blocking Redis connection");
         requireContains(multiplexerSource, "readGroupManyBlockingUntil(",
                         "Service Worker wake bus has no blocking Stream consumer");
-        requireContains(dispatcherSource, "context.workerState<Dispatcher>().run(",
+        requireContains(dispatcherSource, "context.workerState<SessionDispatcher>().run(",
                         "edge dispatcher does not start the same local state on every worker");
         requireContains(dispatchSource, "iot:v2:edge:dispatch:",
                         "edge dispatch notifications do not use worker-isolated Redis keys");

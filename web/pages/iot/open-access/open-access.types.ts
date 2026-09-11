@@ -1,5 +1,5 @@
 import { createQueryKeys } from '@/utils/query';
-import type { PageParams, PaginatedResult } from '@/utils/types';
+import type { PageParams, PaginatedResult } from '@/utils/pagination';
 
 const keys = createQueryKeys('open-access');
 export const accessQueryKeys = {

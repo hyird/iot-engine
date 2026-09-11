@@ -1,7 +1,7 @@
 import { create, type StateCreator } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Auth } from '@/pages/login/login.types';
-import { refreshToken } from '@/pages/login/login.client';
+import { refreshToken } from '@/pages/login/login.api';
 
 interface AuthState {
     token: string | null;

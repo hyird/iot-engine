@@ -30,13 +30,13 @@ Json initialState(bool peer = true) {
     }
     return state;
 }
-struct Store final : IStateStore {
+struct Store final : IClientStateStore {
     Json state = Json::object(); bool failLoad = false, failSave = false; int saveCount = 0;
     Json load() override { if (failLoad) throw std::runtime_error("corrupt DPAPI state"); return state; }
     void save(const Json& value) override { ++saveCount; if (failSave) throw std::runtime_error("disk full"); state = value; }
 };
 struct TunnelLog { std::atomic<bool> on{false}; std::atomic<int> applies{0}, stops{0}, keys{0}; };
-struct FakeTunnel final : Tunnel {
+struct FakeTunnel final : WireGuardTunnel {
     std::shared_ptr<TunnelLog> log;
     explicit FakeTunnel(std::shared_ptr<TunnelLog> value) : log(std::move(value)) {}
     std::pair<std::string, std::string> generateKeys() override { return ++log->keys == 1 ? std::pair{Key, Key} : std::pair{KeyTwo, KeyTwo}; }
@@ -46,7 +46,7 @@ struct FakeTunnel final : Tunnel {
         validateTunnelConfig(value, privateKey); log->on = true; ++log->applies;
     }
 };
-struct Api final : IApiTransport {
+struct Api final : IPlatformVpnApi {
     std::atomic<int> loginCalls{0}, refreshCalls{0}, deviceCalls{0}, removeCalls{0}, applyCalls{0}, postCalls{0};
     bool firstDeviceExpired = false, removeFails = false, losePostResponse = false, enrollmentAlreadyRevoked = false, enrollmentNetworkUnavailable = false;
     int removeFailures = 0;
@@ -61,7 +61,7 @@ struct Api final : IApiTransport {
     Json refresh(std::string_view token, std::stop_token) override { ++refreshCalls; lastRefresh = token; return refreshedData; }
     Json devices(std::string_view token, std::stop_token) override {
         lastAccess = token;
-        if (++deviceCalls == 1 && firstDeviceExpired) throw ApiError("expired", 401, 11006);
+        if (++deviceCalls == 1 && firstDeviceExpired) throw PlatformVpnApiError("expired", 401, 11006);
         return Json::array({{{"id", Edge}}});
     }
     Json apply(std::string_view, std::string_view peer, const Json& body, std::stop_token) override {
@@ -69,10 +69,10 @@ struct Api final : IApiTransport {
         Json result = current;
         if (peer.empty()) {
             ++postCalls;
-            if (enrollmentNetworkUnavailable) throw ApiError("network unavailable", 404);
+            if (enrollmentNetworkUnavailable) throw PlatformVpnApiError("network unavailable", 404);
             if (enrollmentAlreadyRevoked) {
                 enrollmentAlreadyRevoked = false;
-                throw ApiError("enrollment already revoked", 410, 21009);
+                throw PlatformVpnApiError("enrollment already revoked", 410, 21009);
             }
             const auto publicKey = body.at("publicKey").get<std::string>();
             if (registeredPublicKey != publicKey || registeredPeer.empty()) {
@@ -93,8 +93,8 @@ struct Api final : IApiTransport {
     Json config(std::string_view, std::string_view, std::stop_token) override { return current; }
     void remove(std::string_view, std::string_view peer, std::stop_token) override {
         ++removeCalls; removedPeers.emplace_back(peer); if (beforeRemove) beforeRemove();
-        if (removeFailures > 0) { --removeFailures; throw ApiError("platform offline", 503); }
-        if (removeFails) throw ApiError("platform offline", 503);
+        if (removeFailures > 0) { --removeFailures; throw PlatformVpnApiError("platform offline", 503); }
+        if (removeFails) throw PlatformVpnApiError("platform offline", 503);
     }
     void watchConfig(std::string_view, std::string_view, const std::function<void(const Json&)>& receive, std::stop_token stop) override {
         if (watch) watch(receive, stop);
@@ -104,10 +104,10 @@ struct Fixture {
     std::shared_ptr<Store> store = std::make_shared<Store>();
     std::shared_ptr<Api> api = std::make_shared<Api>();
     std::shared_ptr<TunnelLog> tunnel = std::make_shared<TunnelLog>();
-    std::unique_ptr<Coordinator> coordinator;
+    std::unique_ptr<VpnConnectionService> coordinator;
     explicit Fixture(Json state = initialState()) {
         if (state.contains("publicKey")) tunnel->keys = 1;
-        store->state = std::move(state); coordinator = std::make_unique<Coordinator>(store, api, std::make_unique<FakeTunnel>(tunnel));
+        store->state = std::move(state); coordinator = std::make_unique<VpnConnectionService>(store, api, std::make_unique<FakeTunnel>(tunnel));
     }
     Json command(const char* name) { return coordinator->handle({{"command", name}}); }
 };
@@ -119,10 +119,10 @@ void holdUntilCancelled(std::stop_token stop) {
     std::mutex mutex; std::condition_variable_any condition; std::unique_lock lock(mutex);
     condition.wait(lock, stop, [] { return false; });
 }
-int passed = 0, failed = 0;
+int passedTestCount = 0, failedTestCount = 0;
 template<class Test> void test(const char* name, Test body) {
-    try { body(); ++passed; std::cout << "PASS " << name << '\n'; }
-    catch (const std::exception& error) { ++failed; std::cerr << "FAIL " << name << ": " << error.what() << '\n'; }
+    try { body(); ++passedTestCount; std::cout << "PASS " << name << '\n'; }
+    catch (const std::exception& error) { ++failedTestCount; std::cerr << "FAIL " << name << ": " << error.what() << '\n'; }
 }
 }
 int main() {
@@ -241,7 +241,7 @@ int main() {
             !fixture.store->state.contains("pendingEnrollment") && fixture.store->state["peerId"] == PeerTwo,
             "recovered enrollment did not persist release intent");
         fixture.coordinator.reset(); fixture.api->beforeRemove = {};
-        fixture.coordinator = std::make_unique<Coordinator>(fixture.store, fixture.api, std::make_unique<FakeTunnel>(fixture.tunnel));
+        fixture.coordinator = std::make_unique<VpnConnectionService>(fixture.store, fixture.api, std::make_unique<FakeTunnel>(fixture.tunnel));
         require(fixture.command("connect").value("success", false) && fixture.api->removeCalls == 2 && fixture.api->postCalls == 3 &&
             fixture.tunnel->keys == 2 && fixture.store->state["peerId"] == PeerTwo &&
             !fixture.store->state.contains("pendingRevocations"), "restart lost the release intent");
@@ -282,8 +282,8 @@ int main() {
     });
     test("effective configuration ignores revision and route ordering", [] {
         auto previous = config(); auto same = config("172.16.0.0/16", 2); std::reverse(same["allowedRoutes"].begin(), same["allowedRoutes"].end());
-        require(Coordinator::equivalentConfig(previous, same), "revision caused effective change");
-        require(!Coordinator::equivalentConfig(previous, config("172.17.0.0/16")), "route change ignored");
+        require(VpnConnectionService::equivalentConfig(previous, same), "revision caused effective change");
+        require(!VpnConnectionService::equivalentConfig(previous, config("172.17.0.0/16")), "route change ignored");
     });
     test("SSE fragmentation CRLF multiline and early stop", [] {
         SseParser parser; std::vector<std::pair<std::string, std::string>> events;
@@ -317,7 +317,7 @@ int main() {
     });
     test("permission revocation stops a live stream", [] {
         auto state = initialState(); state["connectRequested"] = true; Fixture fixture(state);
-        fixture.api->watch = [](const auto& receive, std::stop_token) { receive(config()); throw ApiError("permission removed", 403, 11007); };
+        fixture.api->watch = [](const auto& receive, std::stop_token) { receive(config()); throw PlatformVpnApiError("permission removed", 403, 11007); };
         std::jthread worker([&](std::stop_token stop) { fixture.coordinator->run(stop); });
         waitFor([&] { return fixture.coordinator->status().state == "AuthorizationRequired"; }); worker.request_stop(); worker.join();
         require(!fixture.tunnel->on && fixture.tunnel->applies == 1, "revoked tunnel remained active");
@@ -340,9 +340,9 @@ int main() {
     test("state-load failure stops stale tunnel before throwing", [] {
         auto store = std::make_shared<Store>(); store->failLoad = true; auto tunnel = std::make_shared<TunnelLog>(); tunnel->on = true;
         bool threw = false;
-        try { Coordinator coordinator(store, std::make_shared<Api>(), std::make_unique<FakeTunnel>(tunnel)); } catch (...) { threw = true; }
+        try { VpnConnectionService coordinator(store, std::make_shared<Api>(), std::make_unique<FakeTunnel>(tunnel)); } catch (...) { threw = true; }
         require(threw && !tunnel->on && tunnel->stops == 1, "state load happened before tunnel stop");
     });
-    std::cout << passed << '/' << passed + failed << " groups passed\n";
-    return failed ? 1 : 0;
+    std::cout << passedTestCount << '/' << passedTestCount + failedTestCount << " groups passed\n";
+    return failedTestCount ? 1 : 0;
 }

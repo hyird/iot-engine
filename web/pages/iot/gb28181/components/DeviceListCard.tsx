@@ -2,7 +2,7 @@ import { EditOutlined, VideoCameraOutlined } from '@ant-design/icons';
 import { Button, Card, Space, Statistic, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { GB28181 } from '../gb28181.types';
-import { displayText, onlineTag, registrationSourceTag, remoteEndpoint } from '../view';
+import { displayText, onlineTag, registrationSourceTag, remoteEndpoint } from '../gb28181-display';
 
 const { Text } = Typography;
 

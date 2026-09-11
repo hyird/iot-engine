@@ -15,7 +15,7 @@
 #include <ruvia/core/Task.h>
 
 #include "service/common/message.h"
-#include "service/features/event/event.transport.h"
+#include "service/features/messaging/messaging.transport.h"
 #include "service/features/telemetry/latest/latest.service.h"
 
 namespace service::command {

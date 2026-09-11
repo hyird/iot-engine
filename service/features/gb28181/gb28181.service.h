@@ -18,7 +18,7 @@
 #include "service/common/http.h"
 #include "service/common/message.h"
 #include "service/common/timestamp.h"
-#include "service/features/event/event.transport.h"
+#include "service/features/messaging/messaging.transport.h"
 #include "service/features/gb28181/device/device.types.h"
 #include "service/features/gb28181/media/media.types.h"
 

@@ -1,4 +1,4 @@
-import { useLiveQuery } from '@/hooks/useLiveQuery';
+import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 /**
  * 用户管理 Service
  */
@@ -6,9 +6,9 @@ import { useLiveQuery } from '@/hooks/useLiveQuery';
 import type { UseQueryOptions } from '@tanstack/react-query';
 import type { User } from './user.types';
 import { roleOptionQueryKey, userQueryKeys } from './user.types';
-import type { PaginatedResult } from '@/utils/types';
+import type { PaginatedResult } from '@/utils/pagination';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
-import { create, getList, getOptions, getRoleOptions, remove, update } from './user.client';
+import { create, getList, getOptions, getRoleOptions, remove, update } from './user.api';
 
 // ============ Queries ============
 
@@ -18,7 +18,7 @@ export function useUserList(
     params?: User.Query,
     options?: Omit<UseQueryOptions<UserListResult>, 'queryKey' | 'queryFn'>
 ) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: userQueryKeys.list(params),
         queryFn: () => getList(params),
         ...options,
@@ -28,7 +28,7 @@ export function useUserList(
 export function useUserOptions(
     options?: Omit<UseQueryOptions<User.Option[]>, 'queryKey' | 'queryFn'>
 ) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: userQueryKeys.options(),
         queryFn: () => getOptions(),
         staleTime: 5 * 60 * 1000,
@@ -37,7 +37,7 @@ export function useUserOptions(
 }
 
 export function useRoleOptions(options?: { enabled?: boolean }) {
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: roleOptionQueryKey,
         queryFn: getRoleOptions,
         staleTime: 5 * 60 * 1000,

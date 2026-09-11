@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { pageParamsSchema } from '@/utils/types';
+import { pageParamsSchema } from '@/utils/pagination';
 
 const enrollmentStatusSchema = z.enum(['pending', 'approved']);
 

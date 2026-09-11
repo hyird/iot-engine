@@ -71,7 +71,7 @@ export namespace EdgeVpn {
         enabled: boolean;
     }
 
-    export interface Data {
+    export interface Overview {
         networks: Network[];
         peers: Peer[];
         routes: Route[];

@@ -80,9 +80,9 @@ int main() {
                     source.find("actual_value_count") != std::string::npos &&
                     source.find("result.set<\"actualValues\">") != std::string::npos,
                 "command status API omits readback values");
-        const auto resultProjector = projectSource("service/features/command/command.service.h");
-        require(resultProjector.find("actualValuesJson(message)") != std::string::npos &&
-                    resultProjector.find("actual_value_count") != std::string::npos,
+        const auto resultProjectionSource = projectSource("service/features/command/command.service.h");
+        require(resultProjectionSource.find("actualValuesJson(message)") != std::string::npos &&
+                    resultProjectionSource.find("actual_value_count") != std::string::npos,
                 "command result projection omits readback values");
         const auto types = projectSource("service/modules/device/device.types.h");
         require(types.find("\"actual_values\", actualValues") != std::string::npos,

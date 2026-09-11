@@ -19,9 +19,9 @@ struct Component {
     std::function<void()> stop;
 };
 
-class Runtime final {
+class ComponentLifecycle final {
   public:
-    explicit Runtime(observability::Registry& observability)
+    explicit ComponentLifecycle(observability::RuntimeDiagnostics& observability)
         : observability_(observability) {}
 
     void add(Component component) {
@@ -51,10 +51,10 @@ class Runtime final {
                     }
                     if (!dependenciesReady)
                         continue;
-                    observability_.component(component.name,
+                    observability_.setComponentStatus(component.name,
                                              observability::ComponentState::Starting);
                     component.start();
-                    observability_.component(component.name,
+                    observability_.setComponentStatus(component.name,
                                              observability::ComponentState::Ready);
                     ready.insert(component.name);
                     started_.push_back(&component);
@@ -67,7 +67,7 @@ class Runtime final {
             if (started_.size() < components_.size())
                 for (auto& component : components_)
                     if (!ready.contains(component.name))
-                        observability_.component(component.name,
+                        observability_.setComponentStatus(component.name,
                                                  observability::ComponentState::Failed,
                                                  error.what());
             stop();
@@ -81,13 +81,13 @@ class Runtime final {
             started_.pop_back();
             try {
                 component->stop();
-                observability_.component(component->name,
+                observability_.setComponentStatus(component->name,
                                          observability::ComponentState::Stopped);
             } catch (const std::exception& error) {
-                observability_.component(component->name,
+                observability_.setComponentStatus(component->name,
                                          observability::ComponentState::Failed, error.what());
             } catch (...) {
-                observability_.component(component->name,
+                observability_.setComponentStatus(component->name,
                                          observability::ComponentState::Failed,
                                          "unknown stop failure");
             }
@@ -95,7 +95,7 @@ class Runtime final {
     }
 
   private:
-    observability::Registry& observability_;
+    observability::RuntimeDiagnostics& observability_;
     std::vector<Component> components_;
     std::unordered_set<std::string> names_;
     std::vector<Component*> started_;

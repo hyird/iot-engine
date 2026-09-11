@@ -2,11 +2,11 @@
 
 #include <algorithm>
 
-#include "service/features/event/stream_multiplexer/stream_multiplexer.runtime.h"
+#include "service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h"
 #include "service/features/telemetry/telemetry.service.h"
 
 namespace service::telemetry {
-class ControlRuntime final {
+class TelemetryProjectionHandler final {
   public:
     static ruvia::Task<std::string> handle(ruvia::WebWorkerContext& context, std::string_view operation, std::string_view payload, ruvia::StopToken stop) {
         if (stop.stopRequested()) {

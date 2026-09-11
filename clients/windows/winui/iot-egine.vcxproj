@@ -39,6 +39,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp"/><ClCompile Include="..\native\common\common.cpp"/>
+    <ClInclude Include="..\native\gui\connection_controller.h"/>
     <ResourceCompile Include="..\native\assets\product.rc"/>
     <Manifest Include="app.manifest"/>
   </ItemGroup>

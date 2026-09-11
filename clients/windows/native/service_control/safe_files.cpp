@@ -46,7 +46,7 @@ void checkTree(const fs::path& path) {
     if (!fs::is_directory(path)) throw std::runtime_error("安装路径不是目录。");
     for (const auto& entry : fs::recursive_directory_iterator(path)) rejectReparse(entry.path());
 }
-void createPrivate(const fs::path& path, bool usersRead, bool currentUserOnly, bool requireNew) {
+void createProtectedDirectory(const fs::path& path, bool usersRead, bool currentUserOnly, bool requireNew) {
     checkTree(path);
     Descriptor descriptor;
     const auto sddl = aclText(usersRead, currentUserOnly);

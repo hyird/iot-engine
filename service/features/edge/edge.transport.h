@@ -9,7 +9,7 @@
 
 #include "service/common/message.h"
 #include "service/features/edge/session/session.service.h"
-#include "service/features/event/event.transport.h"
+#include "service/features/messaging/messaging.transport.h"
 
 namespace service::edge::dispatch {
 

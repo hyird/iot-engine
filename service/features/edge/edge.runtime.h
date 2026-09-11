@@ -30,24 +30,24 @@
 #include <ruvia/web/WebWorker.h>
 
 #include "service/features/edge/edge.transport.h"
-#include "service/features/event/event.transport.h"
-#include "service/features/event/stream_multiplexer/stream_multiplexer.runtime.h"
+#include "service/features/messaging/messaging.transport.h"
+#include "service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h"
 
 namespace service::edge {
 
 // One instance is created by App::useWorkerState for every Service Worker.
 // The session table and Redis notification Stream are worker-local: no wakeup,
 // callback, or socket is forwarded to another worker.
-class Dispatcher final {
+class SessionDispatcher final {
   public:
     using SessionWake = std::function<void()>;
     using SessionFailure = std::function<void(std::string_view)>;
 
-    Dispatcher() = default;
-    Dispatcher(const Dispatcher&) = delete;
-    Dispatcher& operator=(const Dispatcher&) = delete;
-    Dispatcher(Dispatcher&&) noexcept = default;
-    Dispatcher& operator=(Dispatcher&&) = delete;
+    SessionDispatcher() = default;
+    SessionDispatcher(const SessionDispatcher&) = delete;
+    SessionDispatcher& operator=(const SessionDispatcher&) = delete;
+    SessionDispatcher(SessionDispatcher&&) noexcept = default;
+    SessionDispatcher& operator=(SessionDispatcher&&) = delete;
 
     [[nodiscard]] std::size_t workerIndex() const {
         if (!workerIndex_) {
@@ -87,8 +87,8 @@ class Dispatcher final {
         );
     }
 
-    // Projector lease failure is a worker-local lifecycle event.  Every
-    // session registered on this Dispatcher is closed on the same Worker so
+    // Edge projection lease failure is a worker-local lifecycle event.  Every
+    // session registered on this SessionDispatcher is closed on the same Worker so
     // no socket, callback, or mutable session state crosses workers.
     void failSessions(std::string_view reason) noexcept {
         failed_ = true;
@@ -251,7 +251,7 @@ class Dispatcher final {
 };
 
 // One supervisor is assembled for each Service Worker. Functional state remains
-// in that worker's Dispatcher instance above.
+// in that worker's SessionDispatcher instance above.
 class DispatcherRuntime final {
   public:
     DispatcherRuntime() = default;
@@ -280,7 +280,7 @@ class DispatcherRuntime final {
         try {
             const auto posted = worker_.post(
                 [workerIndex, ready, stopped](ruvia::WebWorkerContext& context) {
-                    return context.workerState<Dispatcher>().run(
+                    return context.workerState<SessionDispatcher>().run(
                         context,
                         workerIndex,
                         ready,
@@ -306,12 +306,12 @@ class DispatcherRuntime final {
         if (worker_.valid()) {
             const auto worker = worker_;
             const auto wakeAccepted = worker.post([](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
-                                                context.workerState<Dispatcher>().requestStop();
+                                                context.workerState<SessionDispatcher>().requestStop();
                                                 co_return;
                                             })
                                           .accepted();
             if (!wakeAccepted) {
-                // A closed worker already propagates its stop token to Dispatcher.
+                // A closed worker already propagates its stop token to SessionDispatcher.
             }
         }
         if (stopped_.valid()) {
@@ -335,7 +335,7 @@ class DispatcherRuntime final {
 
 namespace service::edge {
 
-class EdgeControlRuntime final {
+class EdgeControlHandler final {
   public:
     static ruvia::Task<std::string> handle(ruvia::WebWorkerContext& context, std::string_view operation, std::string_view payload, ruvia::StopToken stop) {
         if (stop.stopRequested()) {
@@ -410,13 +410,13 @@ class EdgeControlRuntime final {
     }
 };
 
-class Projector final : private EdgeProjectionService {
+class EdgeProjectionRuntime final : private EdgeProjectionService {
   public:
-    Projector() = default;
-    Projector(const Projector&) = delete;
-    Projector& operator=(const Projector&) = delete;
+    EdgeProjectionRuntime() = default;
+    EdgeProjectionRuntime(const EdgeProjectionRuntime&) = delete;
+    EdgeProjectionRuntime& operator=(const EdgeProjectionRuntime&) = delete;
 
-    ~Projector() { stop(); }
+    ~EdgeProjectionRuntime() { stop(); }
 
     void start(ruvia::WebWorkerHandle worker, std::size_t workerIndex, std::size_t serviceWorkerCount) {
         if (running_.exchange(true)) {
@@ -501,15 +501,15 @@ class Projector final : private EdgeProjectionService {
             return;
         }
         try {
-            if (auto* registry = service::observability::processRegistry()) {
-                registry->component("edge-projector", service::observability::ComponentState::Failed, "worker lease lost");
+            if (auto* diagnostics = service::observability::currentWorkerDiagnostics()) {
+                diagnostics->setComponentStatus("edge-projector", service::observability::ComponentState::Failed, "worker lease lost");
             }
         } catch (...) {
         }
         try {
             // This is deliberately resolved from the current worker context;
             // no session or callback is routed through another Worker.
-            context.workerState<Dispatcher>().failSessions("worker lease lost");
+            context.workerState<SessionDispatcher>().failSessions("worker lease lost");
         } catch (const std::exception& error) {
             std::cerr << "edge worker-local session shutdown failed: "
                       << error.what() << '\n';

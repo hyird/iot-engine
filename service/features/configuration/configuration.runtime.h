@@ -20,9 +20,9 @@
 #include "service/common/message.h"
 #include "service/features/alert/alert.service.h"
 #include "service/features/configuration/configuration.service.h"
-#include "service/features/event/event.service.h"
-#include "service/features/event/event.transport.h"
-#include "service/features/event/stream_multiplexer/stream_multiplexer.runtime.h"
+#include "service/features/messaging/messaging.service.h"
+#include "service/features/messaging/messaging.transport.h"
+#include "service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h"
 
 namespace service::runtime {
 

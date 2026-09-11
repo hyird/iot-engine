@@ -16,7 +16,7 @@ import {
     numericInputClassName,
     numericUnitClassName,
     pairedFormItemClassName,
-} from './helpers';
+} from './modbus-configuration';
 
 export interface DeviceTypeModalProps {
     onSuccess?: () => void;

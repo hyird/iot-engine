@@ -1,6 +1,6 @@
-import { LiveResource } from '@/utils/live-resource';
+import { SnapshotStream } from '@/utils/snapshot-stream';
 import { useEffect } from 'react';
-import { useLiveQuery } from '@/hooks/useLiveQuery';
+import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import {
     configureNetwork,
@@ -19,11 +19,11 @@ import {
     syncDeviceConfig,
     upgradeFirmware,
     updateEdgeGroup,
-} from './edge-node.client';
+} from './edge-node.api';
 import { type Edge, edgeQueryKeys } from './edge-node.types';
 
 export const useEdgeList = (query?: Edge.Query, enabled = true) =>
-    useLiveQuery({
+    useSnapshotQuery({
         queryKey: edgeQueryKeys.list(query),
         queryFn: () => getEdgeList(query),
         enabled,
@@ -31,33 +31,42 @@ export const useEdgeList = (query?: Edge.Query, enabled = true) =>
 
 // Match device management: group complete inventories, never just one page.
 export const useEdgeInventory = (enabled = true) =>
-    useLiveQuery({
+    useSnapshotQuery({
         queryKey: [...edgeQueryKeys.all, 'inventory'],
-        queryFn: () => getEdgeList({ page: 1, pageSize: 100 }).switchMap((first) => {
-            const pages = Array.from({ length: Math.max(1, Math.ceil(first.total / 100)) }, (_, index) =>
-                index === 0 ? LiveResource.value(first) : getEdgeList({ page: index + 1, pageSize: 100 }));
-            return LiveResource.combine(pages).map((results) =>
-                [...new Map(results.flatMap((result) => result.list).map((node) => [node.id, node])).values()]);
-        }),
+        queryFn: () =>
+            getEdgeList({ page: 1, pageSize: 100 }).switchMap((first) => {
+                const pages = Array.from(
+                    { length: Math.max(1, Math.ceil(first.total / 100)) },
+                    (_, index) =>
+                        index === 0
+                            ? SnapshotStream.value(first)
+                            : getEdgeList({ page: index + 1, pageSize: 100 })
+                );
+                return SnapshotStream.combine(pages).map((results) => [
+                    ...new Map(
+                        results.flatMap((result) => result.list).map((node) => [node.id, node])
+                    ).values(),
+                ]);
+            }),
         enabled,
         refetchOnWindowFocus: false,
     });
 
 export const useEdgeDetail = (id?: string) =>
-    useLiveQuery({
+    useSnapshotQuery({
         queryKey: edgeQueryKeys.detail(id),
         queryFn: () => getEdgeDetail(id as string),
         enabled: Boolean(id),
     });
 
 export const useEdgeGroupTree = () =>
-    useLiveQuery({
+    useSnapshotQuery({
         queryKey: edgeQueryKeys.groups(),
         queryFn: getEdgeGroups,
     });
 
 export const useEdgeLogs = (id?: string, query?: Edge.LogsQuery, enabled = true) => {
-    const result = useLiveQuery({
+    const result = useSnapshotQuery({
         queryKey: edgeQueryKeys.logs(id, query),
         queryFn: () => getLogs(id as string, query),
         enabled: enabled && Boolean(id),
@@ -66,7 +75,7 @@ export const useEdgeLogs = (id?: string, query?: Edge.LogsQuery, enabled = true)
     useEffect(() => {
         if (enabled && id) void captureLogs(id).catch(() => undefined);
     }, [enabled, id]);
-    return { ...result, refetch: () => id ? captureLogs(id) : Promise.resolve() };
+    return { ...result, refetch: () => (id ? captureLogs(id) : Promise.resolve()) };
 };
 
 export function useEnrollmentMutation() {
@@ -86,7 +95,7 @@ export function useEdgeDeleteMutation() {
     });
 }
 
-export function useNodeNameMutation() {
+export function useRenameEdgeNode() {
     return useMutationWithMessage({
         mutationFn: (value: { id: string; data: Edge.NameDto }) => renameEdge(value.id, value.data),
         successMessage: '节点名称已更新',
@@ -94,7 +103,7 @@ export function useNodeNameMutation() {
     });
 }
 
-export function useNodeGroupMutation() {
+export function useAssignEdgeNodeGroup() {
     return useMutationWithMessage({
         mutationFn: (value: { id: string; data: Edge.GroupDto }) =>
             setEdgeGroup(value.id, value.data),
@@ -126,7 +135,7 @@ export function useEdgeGroupDelete() {
     });
 }
 
-export function useNetworkMutation() {
+export function useConfigureEdgeNetwork() {
     return useMutationWithMessage({
         mutationFn: (value: { id: string; data: Edge.NetworkDto }) =>
             configureNetwork(value.id, value.data),
@@ -155,7 +164,7 @@ export function useFirmwareUpgradeMutation() {
     });
 }
 
-export function useLogLevelMutation() {
+export function useSetEdgeLogLevel() {
     return useMutationWithMessage({
         mutationFn: (value: { id: string; data: Edge.LogLevelDto }) =>
             setLogLevel(value.id, value.data),

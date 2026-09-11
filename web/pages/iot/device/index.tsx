@@ -59,8 +59,8 @@ import type { Link } from '../link/link.types';
 import CommandPopover from './CommandPopover';
 import DeviceFormModal, { type DeviceFormValues } from './DeviceFormModal';
 import DeviceGroupPanel from './DeviceGroupPanel';
-import { getDeviceDetail } from './device.client';
-import { isDeviceOnline } from './device.runtime';
+import { getDeviceDetail } from './device.api';
+import { isDeviceOnline } from './device-status';
 import {
     useDeviceDelete,
     useDeviceGroupShares,
@@ -68,7 +68,7 @@ import {
     useDeviceGroupTreeWithCount,
     useDeviceHistory,
     useDeviceList,
-    useDeviceRealtime,
+    useDeviceRealtimeSnapshot,
     useDeviceSave,
     useDeviceShares,
     useDeviceShareTargets,
@@ -79,7 +79,7 @@ import type { Device, EdgeStatus } from './device.types';
 import type { DeviceGroup } from './device-group.types';
 
 const { Search } = Input;
-const EMPTY_DEVICE_LIST: Device.RealTimeData[] = [];
+const EMPTY_DEVICE_LIST: Device.Overview[] = [];
 const EMPTY_COMMAND_OPERATIONS: Device.CommandOperation[] = [];
 const DEVICE_CARD_GRID_CLASS =
     'grid grid-cols-1 items-stretch gap-3 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4';
@@ -115,7 +115,7 @@ const createGroupStats = (): DeviceGroupStats => ({ total: 0, online: 0, offline
 
 const accumulateStats = <T extends DeviceProtocolStats>(
     stats: T,
-    device: Device.RealTimeData,
+    device: Device.Overview,
     now = Date.now()
 ) => {
     stats.total++;
@@ -124,7 +124,7 @@ const accumulateStats = <T extends DeviceProtocolStats>(
     if (device.status === 'enabled') stats.enabled++;
 };
 
-const buildDeviceStats = (devices: Device.RealTimeData[], now = Date.now()) => {
+const buildDeviceStats = (devices: Device.Overview[], now = Date.now()) => {
     const stats = createDeviceStats();
     for (const device of devices) {
         accumulateStats(stats, device, now);
@@ -159,7 +159,7 @@ const buildGroupScopeIds = (group?: DeviceGroup.TreeItem) => {
 
 const buildGroupStats = (
     groups: DeviceGroup.TreeItem[],
-    deviceMap: Map<string, Device.RealTimeData[]>,
+    deviceMap: Map<string, Device.Overview[]>,
     now = Date.now()
 ) => {
     const result = new Map<string, DeviceGroupStats>();
@@ -196,7 +196,7 @@ const formatElementValue = (element: Device.Element) => {
     return element.unit ? `${value} ${element.unit}` : value;
 };
 
-const buildCardItems = (device: Device.RealTimeData): DeviceCardItem[] => {
+const buildCardItems = (device: Device.Overview): DeviceCardItem[] => {
     if (device.elements?.length) {
         return device.elements.map((element, index) => ({
             key: index,
@@ -209,13 +209,13 @@ const buildCardItems = (device: Device.RealTimeData): DeviceCardItem[] => {
     return count > 0 ? [{ key: 'elements', label: '采集要素', children: `${count} 个` }] : [];
 };
 
-const getDeviceDisplayElementCount = (device: Device.RealTimeData) =>
+const getDeviceDisplayElementCount = (device: Device.Overview) =>
     device.element_count ?? device.elements?.length ?? 0;
 
-const edgeNodeLabel = (device: Device.RealTimeData) =>
+const edgeNodeLabel = (device: Device.Overview) =>
     device.edge_node_name || device.edge_node_imei || device.edge_node_id || '未绑定节点';
 
-const edgeEndpointLabel = (device: Device.RealTimeData) => {
+const edgeEndpointLabel = (device: Device.Overview) => {
     if (device.edge_transport === 'serial') {
         const settings = [
             device.serial_baud_rate,
@@ -238,7 +238,7 @@ const edgeEndpointLabel = (device: Device.RealTimeData) => {
 type TcpRuntimeStatus = EdgeStatus | Link.Runtime;
 
 const tcpRuntimeStatus = (
-    device: Device.RealTimeData,
+    device: Device.Overview,
     link?: Link.Item
 ): TcpRuntimeStatus | undefined => {
     if (device.edge_node_id) return device.edgeStatus;
@@ -654,7 +654,7 @@ interface HistoryPointColumn {
 }
 
 const buildHistoryPointColumns = (
-    device: Device.RealTimeData,
+    device: Device.Overview,
     records: Device.HistoryRecord[]
 ): HistoryPointColumn[] => {
     const configuredByKey = new Map<string, HistoryPointColumn>();
@@ -721,7 +721,7 @@ const DeviceHistoryModal = ({
     device,
     onClose,
 }: {
-    device: Device.RealTimeData;
+    device: Device.Overview;
     onClose: () => void;
 }) => {
     const [pagination, setPagination] = useState({ page: 1, pageSize: 20 });
@@ -855,19 +855,19 @@ const DeviceHistoryModal = ({
 };
 
 interface DeviceGridItemProps {
-    device: Device.RealTimeData;
+    device: Device.Overview;
     online: boolean;
     linkById: ReadonlyMap<string, Link.Item>;
-    onHistory: (device: Device.RealTimeData) => void;
-    onShare: (device: Device.RealTimeData) => void;
-    onEdit: (device: Device.RealTimeData) => void;
-    onRemove: (device: Device.RealTimeData) => void;
+    onHistory: (device: Device.Overview) => void;
+    onShare: (device: Device.Overview) => void;
+    onEdit: (device: Device.Overview) => void;
+    onRemove: (device: Device.Overview) => void;
     commandPopoverOpen: boolean;
     commandDeviceId?: string;
-    commandDevice: Device.RealTimeData | null;
+    commandDevice: Device.Overview | null;
     commandFunc: Device.CommandOperation | null;
     commandLoadingId?: string;
-    onOpenCommandPopover: (device: Device.RealTimeData) => void;
+    onOpenCommandPopover: (device: Device.Overview) => void;
     onSelectCommandOperation: (operation: Device.CommandOperation) => void;
     onCloseCommandPopover: () => void;
 }
@@ -910,9 +910,7 @@ const DeviceGridItem = memo(
             !!device.registration.content?.trim();
 
         return (
-            <div
-                className={`flex h-full min-w-0 flex-col ${wide ? 'lg:col-span-2' : ''}`}
-            >
+            <div className={`flex h-full min-w-0 flex-col ${wide ? 'lg:col-span-2' : ''}`}>
                 <DeviceCard
                     title={
                         <Flex
@@ -1104,7 +1102,7 @@ const DeviceGridItem = memo(
 );
 
 interface DeviceGridProps extends Omit<DeviceGridItemProps, 'device' | 'online'> {
-    devices: Device.RealTimeData[];
+    devices: Device.Overview[];
     statusNow: number;
     scrollElementRef: RefObject<HTMLDivElement | null>;
 }
@@ -1137,9 +1135,9 @@ const useResponsiveDeviceColumnCount = () => {
     return columnCount;
 };
 
-const buildDeviceRows = (devices: Device.RealTimeData[], columnCount: number) => {
-    const rows: Device.RealTimeData[][] = [];
-    let row: Device.RealTimeData[] = [];
+const buildDeviceRows = (devices: Device.Overview[], columnCount: number) => {
+    const rows: Device.Overview[][] = [];
+    let row: Device.Overview[] = [];
     let occupiedColumns = 0;
 
     devices.forEach((device) => {
@@ -1263,15 +1261,15 @@ const DevicePage = () => {
     const [keyword, setKeyword] = useState('');
     const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
     const [formOpen, setFormOpen] = useState(false);
-    const [editing, setEditing] = useState<Device.RealTimeData | null>(null);
+    const [editing, setEditing] = useState<Device.Overview | null>(null);
     const [sharing, setSharing] = useState<{
         kind: 'device' | 'group';
         id: string;
         name: string;
     } | null>(null);
-    const [historyDevice, setHistoryDevice] = useState<Device.RealTimeData | null>(null);
+    const [historyDevice, setHistoryDevice] = useState<Device.Overview | null>(null);
     const [commandPopoverOpen, setCommandPopoverOpen] = useState(false);
-    const [commandDevice, setCommandDevice] = useState<Device.RealTimeData | null>(null);
+    const [commandDevice, setCommandDevice] = useState<Device.Overview | null>(null);
     const [commandFunc, setCommandFunc] = useState<Device.CommandOperation | null>(null);
     const [commandLoadingId, setCommandLoadingId] = useState<string>();
     const [statusNow, setStatusNow] = useState(() => Date.now());
@@ -1289,14 +1287,14 @@ const DevicePage = () => {
         refetch,
     } = useDeviceList({
         enabled: canQuery,
-        // Device metadata is stable between edits. Realtime polling below keeps the page fresh
+        // Device metadata is stable between edits. Realtime snapshots below keep the page fresh
         // without repeatedly rebuilding and transferring the complete device list.
     });
     const {
-        data: realtimeData,
-        isFetching: isRealtimeFetching,
-        refetch: refetchRealtime,
-    } = useDeviceRealtime({
+        data: realtimeSnapshotData,
+        isFetching: isRealtimeSnapshotFetching,
+        refetch: refetchRealtimeSnapshot,
+    } = useDeviceRealtimeSnapshot({
         enabled: canQuery && !!data,
     });
     const { data: groupTree = [] } = useDeviceGroupTreeWithCount({
@@ -1310,23 +1308,23 @@ const DevicePage = () => {
     const saveMutation = useDeviceSave();
     const { mutateAsync: deleteDevice } = useDeviceDelete();
     const deviceList = useMemo(() => {
-        const realtimeById = new Map(
-            (realtimeData?.list ?? []).map((device) => [device.id, device] as const)
+        const realtimeSnapshotById = new Map(
+            (realtimeSnapshotData?.list ?? []).map((device) => [device.id, device] as const)
         );
         return (data?.list ?? EMPTY_DEVICE_LIST).map((device) => {
-            const realtime = realtimeById.get(device.id);
-            if (!realtime) return device;
+            const snapshot = realtimeSnapshotById.get(device.id);
+            if (!snapshot) return device;
             return {
                 ...device,
-                connected: realtime.connected,
-                connectionState: realtime.connectionState,
-                reportTime: realtime.reportTime,
-                elements: realtime.elements ?? device.elements,
-                edgeStatus: realtime.edgeStatus ?? device.edgeStatus,
+                connected: snapshot.connected,
+                connectionState: snapshot.connectionState,
+                reportTime: snapshot.reportTime,
+                elements: snapshot.elements ?? device.elements,
+                edgeStatus: snapshot.edgeStatus ?? device.edgeStatus,
             };
         });
-    }, [data, realtimeData]);
-    const isFetching = isListFetching || isRealtimeFetching;
+    }, [data, realtimeSnapshotData]);
+    const isFetching = isListFetching || isRealtimeSnapshotFetching;
     const linkById = useMemo(
         () => new Map(linkOptions.map((link) => [link.id, link])),
         [linkOptions]
@@ -1378,7 +1376,7 @@ const DevicePage = () => {
         [stats.byProtocol]
     );
     const visibleDeviceMap = useMemo(() => {
-        const map = new Map<string, Device.RealTimeData[]>();
+        const map = new Map<string, Device.Overview[]>();
         for (const device of filteredDevices) {
             if (!device.group_id) continue;
             const devices = map.get(device.group_id) ?? [];
@@ -1410,14 +1408,14 @@ const DevicePage = () => {
         setEditing(null);
         setFormOpen(true);
     };
-    const openEdit = useCallback((device: Device.RealTimeData) => {
+    const openEdit = useCallback((device: Device.Overview) => {
         setEditing(device);
         setFormOpen(true);
     }, []);
-    const openShare = useCallback((device: Device.RealTimeData) => {
+    const openShare = useCallback((device: Device.Overview) => {
         setSharing({ kind: 'device', id: device.id, name: device.name });
     }, []);
-    const openHistory = useCallback((device: Device.RealTimeData) => {
+    const openHistory = useCallback((device: Device.Overview) => {
         setHistoryDevice(device);
     }, []);
     const openGroupShare = useCallback((group: DeviceGroup.TreeItem) => {
@@ -1432,7 +1430,7 @@ const DevicePage = () => {
         saveMutation.mutate({ ...dto, id: editing?.id }, { onSuccess: closeForm });
     };
     const remove = useCallback(
-        (device: Device.RealTimeData) => {
+        (device: Device.Overview) => {
             modal.confirm({
                 title: `确认删除设备「${device.name}」吗？`,
                 content: '删除后设备将停止数据采集，历史数据仍会保留。此操作不可撤销。',
@@ -1445,7 +1443,7 @@ const DevicePage = () => {
     );
     const unavailable = useCallback(() => message.info('拓扑视图暂未开放'), [message]);
     const openCommandPopover = useCallback(
-        async (device: Device.RealTimeData) => {
+        async (device: Device.Overview) => {
             if (!device.can_command || device.remote_control === false) return;
             setCommandLoadingId(device.id);
             try {
@@ -1475,7 +1473,7 @@ const DevicePage = () => {
         setCommandFunc(null);
     }, []);
 
-    const renderDeviceCards = (devices: Device.RealTimeData[]) => (
+    const renderDeviceCards = (devices: Device.Overview[]) => (
         <DeviceGrid
             devices={devices}
             statusNow={statusNow}
@@ -1548,7 +1546,7 @@ const DevicePage = () => {
         );
     };
 
-    const renderUngroupedSection = (devices: Device.RealTimeData[]) => {
+    const renderUngroupedSection = (devices: Device.Overview[]) => {
         if (!devices.length) return null;
         return (
             <section className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
@@ -1611,7 +1609,7 @@ const DevicePage = () => {
                             <Button
                                 icon={<ReloadOutlined />}
                                 onClick={() => {
-                                    void Promise.all([refetch(), refetchRealtime()]);
+                                    void Promise.all([refetch(), refetchRealtimeSnapshot()]);
                                 }}
                                 loading={isFetching}
                             />

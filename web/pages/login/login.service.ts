@@ -1,4 +1,4 @@
-import { useLiveQuery } from '@/hooks/useLiveQuery';
+import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 /**
  * 认证相关 Service
  */
@@ -6,7 +6,7 @@ import { useLiveQuery } from '@/hooks/useLiveQuery';
 import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
-import { fetchCurrentUser, logout } from './login.client';
+import { fetchCurrentUser, logout } from './login.api';
 
 const loginKeys = {
     currentUser: ['auth', 'currentUser'] as const,
@@ -17,12 +17,13 @@ export function useCurrentUser() {
     const user = useAuthStore((s) => s.user);
     const setUser = useAuthStore((s) => s.setUser);
 
-    return useLiveQuery({
+    return useSnapshotQuery({
         queryKey: loginKeys.currentUser,
-        queryFn: () => fetchCurrentUser().map((freshUser) => {
-            setUser(freshUser);
-            return freshUser;
-        }),
+        queryFn: () =>
+            fetchCurrentUser().map((freshUser) => {
+                setUser(freshUser);
+                return freshUser;
+            }),
         enabled: !!token,
         initialData: user ?? undefined,
         initialDataUpdatedAt: 0,

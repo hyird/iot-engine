@@ -13,7 +13,7 @@
 #include <ruvia/core/Task.h>
 #include <ruvia/web/redis/RedisTypes.h>
 
-#include "service/features/event/event.transport.h"
+#include "service/features/messaging/messaging.transport.h"
 #include "service/common/uuid.h"
 
 namespace service::edge::session_state {

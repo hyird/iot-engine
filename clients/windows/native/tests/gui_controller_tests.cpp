@@ -1,4 +1,4 @@
-#include "../gui/controller.h"
+#include "../gui/connection_controller.h"
 
 #include <atomic>
 #include <chrono>
@@ -10,7 +10,7 @@
 #include <thread>
 
 using iotvpn::Json;
-using iotvpn::gui::Controller;
+using iotvpn::gui::ConnectionController;
 using namespace std::chrono_literals;
 
 namespace {
@@ -39,7 +39,7 @@ Json success(Json response = Json::object()) {
     return response;
 }
 
-void waitIdle(Controller& controller) {
+void waitIdle(ConnectionController& controller) {
     for (int i = 0; i != 200 && controller.busy; ++i) {
         controller.tick(false);
         std::this_thread::sleep_for(1ms);
@@ -49,7 +49,7 @@ void waitIdle(Controller& controller) {
 }
 
 void testStatusRestore() {
-    Controller controller([](const Json& request, std::stop_token) {
+    ConnectionController controller([](const Json& request, std::stop_token) {
         require(request["command"] == "status", "restore command mismatch");
         return success({{"status", status("Connected", "alice", {"a"})}});
     }, true);
@@ -61,7 +61,7 @@ void testStatusRestore() {
 
 void testLoginAndDevices() {
     int calls = 0;
-    Controller controller([&](const Json& request, std::stop_token) {
+    ConnectionController controller([&](const Json& request, std::stop_token) {
         ++calls;
         if (request["command"] == "login") return success({{"status", status("Connected", "alice", {"a", "b"})}});
         require(request["command"] == "devices", "device load command mismatch");
@@ -76,7 +76,7 @@ void testLoginAndDevices() {
 
 void testSelectionAcrossFilterRefreshAndStatus() {
     int calls = 0;
-    Controller controller([&](const Json& request, std::stop_token) {
+    ConnectionController controller([&](const Json& request, std::stop_token) {
         ++calls;
         if (request["command"] == "devices") return success({{"devices", devices({"a", "b", "c"})}});
         require(request["command"] == "status", "refresh status command mismatch");
@@ -98,7 +98,7 @@ void testApplySnapshotsSelection() {
     std::condition_variable cv;
     bool entered = false, release = false;
     Json received;
-    Controller controller([&](const Json& request, std::stop_token) {
+    ConnectionController controller([&](const Json& request, std::stop_token) {
         {
             std::lock_guard lock(mutex); received = request; entered = true;
         }
@@ -122,7 +122,7 @@ void testApplyPreservesLatestEditWhenItMatchesOldApplied() {
     std::condition_variable cv;
     bool entered = false, release = false;
     Json received;
-    Controller controller([&](const Json& request, std::stop_token stop) {
+    ConnectionController controller([&](const Json& request, std::stop_token stop) {
         {
             std::lock_guard lock(mutex);
             received = request;
@@ -157,7 +157,7 @@ void testApplyPreservesLatestEditWhenItMatchesOldApplied() {
 
 void testLogoutAndAuthFailures() {
     int mode = 0;
-    Controller controller([&](const Json& request, std::stop_token) {
+    ConnectionController controller([&](const Json& request, std::stop_token) {
         if (mode == 0) { require(request["command"] == "logout", "logout command mismatch"); return success({{"message", "已退出"}}); }
         require(request["command"] == "login", "auth command mismatch");
         return Json{{"success", false}, {"message", "登录失败"}, {"status", Json{{"state", "AuthorizationRequired"}}}};
@@ -171,7 +171,7 @@ void testLogoutAndAuthFailures() {
 }
 
 void testCrossAccountClear() {
-    Controller controller([](const Json& request, std::stop_token) {
+    ConnectionController controller([](const Json& request, std::stop_token) {
         require(request["command"] == "login", "cross-account command mismatch");
         return success({{"status", status("Connected", "bob", {"b"})}});
     }, true);
@@ -184,7 +184,7 @@ void testCrossAccountClear() {
 
 void testAsyncExceptions() {
     int calls = 0;
-    Controller controller([&](const Json&, std::stop_token) -> Json {
+    ConnectionController controller([&](const Json&, std::stop_token) -> Json {
         if (++calls == 1) throw std::runtime_error("transport exploded");
         throw 7;
     });
@@ -198,7 +198,7 @@ void testDestructorCancelsBlockedTransport() {
     std::atomic<bool> entered = false, cancelled = false;
     const auto start = std::chrono::steady_clock::now();
     {
-        Controller controller([&](const Json&, std::stop_token stop) {
+        ConnectionController controller([&](const Json&, std::stop_token stop) {
             entered = true;
             while (!stop.stop_requested()) std::this_thread::sleep_for(1ms);
             cancelled = true;
@@ -216,7 +216,7 @@ void testDestructorCancelsBlockedTransport() {
 void testAutomaticDeviceRefresh() {
     auto now=std::chrono::steady_clock::time_point{};
     int deviceCalls=0; bool online=false, fail=false;
-    Controller controller([&](const Json& request,std::stop_token) {
+    ConnectionController controller([&](const Json& request,std::stop_token) {
         if(request["command"]=="devices") {
             ++deviceCalls;
             if(fail) return Json{{"success",false},{"message","Temporary network failure"}};

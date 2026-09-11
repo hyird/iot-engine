@@ -110,7 +110,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
 
     ruvia::Task<void> connect(ruvia::Context& c) {
         auto& socket = c.webSocket();
-        auto& dispatcher = c.workerState<Dispatcher>();
+        auto& dispatcher = c.workerState<SessionDispatcher>();
         const auto workerIndex = dispatcher.workerIndex();
         auto first = co_await socket.read();
         if (!first || !first->binary()) {
@@ -279,7 +279,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                         }
                         current->active = false;
                         current->scope->requestStop();
-                        // Dispatcher::failSessions is invoked by this same
+                        // SessionDispatcher::failSessions is invoked by this same
                         // Service Worker. Abort wakes the connection's read
                         // loop without moving the socket across workers.
                         current->socket->abort();
@@ -651,7 +651,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         return session_state::key(nodeId);
     }
 
-    // This worker's Dispatcher wakes the worker-local session when one of its
+    // This worker's SessionDispatcher wakes the worker-local session when one of its
     // reliable queues changes. Redis reads are non-blocking and reuse this
     // worker's ordinary pool; no callback or socket crosses worker boundaries.
     static void requestFlush(const std::shared_ptr<LiveSession>& live) {

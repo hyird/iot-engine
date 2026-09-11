@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { pageParamsSchema } from '@/utils/types';
+import { pageParamsSchema } from '@/utils/pagination';
 
 const ipv4Schema = z.ipv4({ error: '请输入有效的 IPv4 地址' });
 const modeSchema = z.enum(['TCP Server', 'TCP Client'], { error: '链路模式无效' });
@@ -21,12 +21,12 @@ export const saveLinkSchema = z
         name: z.string().min(1, '链路名称不能为空').max(100, '链路名称不能超过 100 个字符'),
         protocol: protocolSchema,
         endpoint: z.object({
-            transport: z.enum(['serial','tcp']).optional(),
+            transport: z.enum(['serial', 'tcp']).optional(),
             interface: z.string().min(1).max(96).optional(),
             baud_rate: z.number().int().min(300).max(4000000).optional(),
             data_bits: z.number().int().min(5).max(8).optional(),
             stop_bits: z.number().int().min(1).max(2).optional(),
-            parity: z.enum(['none','odd','even']).optional(),
+            parity: z.enum(['none', 'odd', 'even']).optional(),
             rs485: z.boolean().optional(),
             mode: modeSchema,
             ip: z.string(),
@@ -38,11 +38,22 @@ export const saveLinkSchema = z
     .superRefine((value, context) => {
         if (value.execution === 'edge') {
             if (!value.edge_node_id || !value.endpoint.transport || !value.endpoint.interface)
-                context.addIssue({ code:'custom', path:['edge_node_id'], message:'请选择节点、传输类型及接口' });
-            if (value.endpoint.transport === 'tcp' && (!ipv4Schema.safeParse(value.endpoint.ip).success || value.endpoint.port < 1))
-                context.addIssue({ code:'custom', path:['endpoint','ip'], message:'请输入有效 TCP 地址和端口' });
+                context.addIssue({
+                    code: 'custom',
+                    path: ['edge_node_id'],
+                    message: '请选择节点、传输类型及接口',
+                });
+            if (
+                value.endpoint.transport === 'tcp' &&
+                (!ipv4Schema.safeParse(value.endpoint.ip).success || value.endpoint.port < 1)
+            )
+                context.addIssue({
+                    code: 'custom',
+                    path: ['endpoint', 'ip'],
+                    message: '请输入有效 TCP 地址和端口',
+                });
             if (value.endpoint.transport === 'serial' && value.protocol === 'S7')
-                context.addIssue({ code:'custom', path:['protocol'], message:'S7 不支持串口' });
+                context.addIssue({ code: 'custom', path: ['protocol'], message: 'S7 不支持串口' });
             return;
         }
         if (value.protocol === 'SL651' && value.endpoint.mode !== 'TCP Server')

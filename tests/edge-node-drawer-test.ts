@@ -10,7 +10,7 @@ const deviceSource = readFileSync(
     'utf8'
 );
 const client = readFileSync(
-    new URL('../web/pages/iot/edge-node/edge-node.client.ts', import.meta.url),
+    new URL('../web/pages/iot/edge-node/edge-node.api.ts', import.meta.url),
     'utf8'
 );
 const service = readFileSync(

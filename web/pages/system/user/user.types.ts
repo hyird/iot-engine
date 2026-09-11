@@ -3,7 +3,7 @@
  */
 
 import { createQueryKeys } from '@/utils/query';
-import type { PageParams } from '@/utils/types';
+import type { PageParams } from '@/utils/pagination';
 
 // ============ QueryKeys ============
 

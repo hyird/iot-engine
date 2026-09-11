@@ -1,6 +1,6 @@
 import type { Edge } from './edge-node.types';
 
-export function edgeGroupView(
+export function buildEdgeNodeGroupView(
     groups: Edge.GroupTreeItem[],
     nodes: Edge.Node[],
     selectedId: string | null,

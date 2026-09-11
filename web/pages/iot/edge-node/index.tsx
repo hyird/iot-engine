@@ -56,8 +56,8 @@ import { formatDateTime } from '@/utils/dateTime';
 import { validateForm } from '@/utils/validation';
 import EdgeNodeGroupPanel from './EdgeNodeGroupPanel';
 import EdgeVpnPanel from './EdgeVpnPanel';
-import { getEdgeDetail, getTerminalTicket } from './edge-node.client';
-import { edgeGroupView } from './edge-node.groups';
+import { getEdgeDetail, getTerminalTicket } from './edge-node.api';
+import { buildEdgeNodeGroupView } from './edge-node.groups';
 import { normalizeReportedNetwork, physicalNetworkInterfaces } from './edge-node.network';
 import {
     firmwareUpgradeSchema,
@@ -74,10 +74,10 @@ import {
     useEdgeLogs,
     useEnrollmentMutation,
     useFirmwareUpgradeMutation,
-    useLogLevelMutation,
-    useNetworkMutation,
-    useNodeGroupMutation,
-    useNodeNameMutation,
+    useSetEdgeLogLevel,
+    useConfigureEdgeNetwork,
+    useAssignEdgeNodeGroup,
+    useRenameEdgeNode,
 } from './edge-node.service';
 import type { Edge } from './edge-node.types';
 
@@ -673,7 +673,7 @@ export default function EdgeNodePage() {
     const { data, isLoading, isFetching, refetch } = useEdgeInventory(canQuery);
     const { data: edgeGroups = [] } = useEdgeGroupTree();
     const groupView = useMemo(
-        () => edgeGroupView(edgeGroups, data ?? [], selectedGroupId, keyword, status),
+        () => buildEdgeNodeGroupView(edgeGroups, data ?? [], selectedGroupId, keyword, status),
         [edgeGroups, data, selectedGroupId, keyword, status]
     );
     const nodes = groupView.filtered;
@@ -708,12 +708,12 @@ export default function EdgeNodePage() {
     );
     const enrollment = useEnrollmentMutation();
     const edgeDelete = useEdgeDeleteMutation();
-    const nodeName = useNodeNameMutation();
-    const nodeGroup = useNodeGroupMutation();
-    const network = useNetworkMutation();
+    const nodeName = useRenameEdgeNode();
+    const nodeGroup = useAssignEdgeNodeGroup();
+    const network = useConfigureEdgeNetwork();
     const deviceConfigSync = useDeviceConfigSyncMutation();
     const firmwareUpgrade = useFirmwareUpgradeMutation();
-    const logLevelControl = useLogLevelMutation();
+    const logLevelControl = useSetEdgeLogLevel();
     useEffect(() => {
         if (!selectedId) return;
         const exists = data?.some((node) => node.id === selectedId) ?? true;

@@ -36,16 +36,16 @@
 #include "service/common/uuid.h"
 #include "service/features/access/access.service.h"
 #include "service/features/access/access.transport.h"
-#include "service/features/event/event.service.h"
-#include "service/features/event/event.transport.h"
-#include "service/features/event/stream_multiplexer/stream_multiplexer.runtime.h"
+#include "service/features/messaging/messaging.service.h"
+#include "service/features/messaging/messaging.transport.h"
+#include "service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h"
 #include "service/utils/crypto.h"
 #include "service/utils/json.h"
 #include "service/utils/text.h"
 
 namespace service::access {
 
-class ControlRuntime final {
+class AccessOperationHandler final {
   public:
     static ruvia::Task<std::string> handle(ruvia::WebWorkerContext& context, std::string_view operation, std::string_view payload, ruvia::StopToken stop) {
         if (stop.stopRequested()) {

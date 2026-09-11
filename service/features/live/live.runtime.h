@@ -23,9 +23,9 @@ namespace service::live {
 // This runtime belongs to the backend feature layer. It relays committed
 // configuration changes to every Collector Worker and expires Edge sessions;
 // API fanout is owned by service/middleware/live.h in QueryRuntime.
-class Runtime final {
+class LiveChangeRuntime final {
   public:
-    explicit Runtime(std::size_t collectorWorkerCount)
+    explicit LiveChangeRuntime(std::size_t collectorWorkerCount)
         : collectorWorkerCount_(collectorWorkerCount) {
         if (collectorWorkerCount_ == 0) {
             throw std::invalid_argument("live runtime requires collector workers");
@@ -82,7 +82,7 @@ class Runtime final {
         stop_.reset();
     }
 
-    ~Runtime() { stop(); }
+    ~LiveChangeRuntime() { stop(); }
 
   private:
     ruvia::Task<void> relayConfigNotifications(ruvia::WebWorkerContext& context) {

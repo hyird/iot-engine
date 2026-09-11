@@ -41,8 +41,8 @@ struct Observation {
 ruvia::Task<Observation> observe(ruvia::EventLoop loop, ruvia::WorkerHandle foreign, std::size_t index, std::promise<void>* ready) {
     auto& bus = service::live::bus();
     bus.setWorkerIndex(index);
-    service::observability::Registry registry;
-    service::observability::configureProcessRegistry(registry);
+    service::observability::RuntimeDiagnostics diagnostics;
+    service::observability::setCurrentWorkerDiagnostics(diagnostics);
     bool rejected = false;
     try {
         (void)bus.subscribe(foreign, "device");
@@ -55,7 +55,7 @@ ruvia::Task<Observation> observe(ruvia::EventLoop loop, ruvia::WorkerHandle fore
     auto subscription = bus.subscribe(loop.handle(), "device");
     ready->set_value();
     const auto message = co_await subscription->receiver.receiveFor(std::chrono::milliseconds(500));
-    if (bus.workerIndex() != index || service::observability::processRegistry() != &registry) {
+    if (bus.workerIndex() != index || service::observability::currentWorkerDiagnostics() != &diagnostics) {
         throw std::runtime_error("another worker replaced local state");
     }
     co_return Observation{ &bus, service::rpc::Contract::requests("test", bus.workerIndex()), message.hasValue() };

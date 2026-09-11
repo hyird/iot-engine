@@ -194,7 +194,7 @@ class ProtocolEngine final {
         for (const auto& link : snapshot_->links)
             links_.emplace(link.id, &link);
 
-        // Tcp owns transport reconciliation. Sessions are retained here until either the target
+        // TcpTransport owns transport reconciliation. Sessions are retained here until either the target
         // emits a real disconnected event or Worker selectively refreshes an eligible Modbus TCP
         // session after rotating its transport epoch.
     }
@@ -216,7 +216,7 @@ class ProtocolEngine final {
                 [&entry](const auto& candidate) {
                     return candidate.id == entry.info.targetId && candidate.status == "enabled";
                 });
-            // A removed or disabled target is being closed by Tcp. Let its real disconnected
+            // A removed or disabled target is being closed by TcpTransport. Let its real disconnected
             // event retire the protocol session and connection epoch in the normal order.
             if (target == link->second->targets.end())
                 continue;

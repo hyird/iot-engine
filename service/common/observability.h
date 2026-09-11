@@ -25,7 +25,7 @@ struct AlertStatus {
     std::int64_t changedAtMs{};
 };
 
-class Registry final {
+class RuntimeDiagnostics final {
   public:
     void identifyWorker(std::size_t index, std::size_t count) {
         workerIndex_ = std::to_string(index);
@@ -33,23 +33,23 @@ class Registry final {
     }
     [[nodiscard]] std::string_view workerIndex() const noexcept { return workerIndex_; }
     [[nodiscard]] std::size_t workerCount() const noexcept { return workerCount_; }
-    void component(std::string name, ComponentState state, std::string detail = {}) {
+    void setComponentStatus(std::string name, ComponentState state, std::string detail = {}) {
         std::lock_guard lock(mutex_);
         components_.insert_or_assign(
             std::move(name), ComponentStatus{state, std::move(detail), nowMilliseconds()});
     }
 
-    void increment(std::string_view name, std::uint64_t amount = 1) {
+    void incrementCounter(std::string_view name, std::uint64_t amount = 1) {
         std::lock_guard lock(mutex_);
         counters_[std::string(name)] += amount;
     }
 
-    void gauge(std::string_view name, std::int64_t value) {
+    void setGauge(std::string_view name, std::int64_t value) {
         std::lock_guard lock(mutex_);
         gauges_.insert_or_assign(std::string(name), value);
     }
 
-    bool alert(std::string name, bool active, std::string detail = {}) {
+    bool setAlertState(std::string name, bool active, std::string detail = {}) {
         std::lock_guard lock(mutex_);
         const auto current = alerts_.find(name);
         if (current != alerts_.end() && current->second.active == active) {
@@ -61,7 +61,7 @@ class Registry final {
         return true;
     }
 
-    [[nodiscard]] bool ready() const {
+    [[nodiscard]] bool areComponentsReady() const {
         std::lock_guard lock(mutex_);
         if (components_.empty())
             return false;
@@ -75,7 +75,7 @@ class Registry final {
         std::lock_guard lock(mutex_);
         std::ostringstream output;
         output << "{\"status\":\""
-               << (!allReadyLocked() ? "not_ready" : anyAlertLocked() ? "degraded" : "ready")
+               << (!areAllComponentsReadyLocked() ? "not_ready" : hasActiveAlertLocked() ? "degraded" : "ready")
                << "\",\"components\":{";
         bool first = true;
         for (const auto& [name, component] : components_) {
@@ -106,7 +106,7 @@ class Registry final {
         std::lock_guard lock(mutex_);
         std::ostringstream output;
         output << "# TYPE iot_engine_ready gauge\n"
-               << "iot_engine_ready " << (allReadyLocked() ? 1 : 0) << "\n";
+               << "iot_engine_ready " << (areAllComponentsReadyLocked() ? 1 : 0) << "\n";
         output << "# TYPE iot_engine_component_ready gauge\n";
         for (const auto& [name, component] : components_)
             output << "iot_engine_component_ready{component=\"" << escape(name) << "\"} "
@@ -151,7 +151,7 @@ class Registry final {
             .count();
     }
 
-    [[nodiscard]] bool allReadyLocked() const {
+    [[nodiscard]] bool areAllComponentsReadyLocked() const {
         if (components_.empty())
             return false;
         for (const auto& [_, component] : components_)
@@ -160,7 +160,7 @@ class Registry final {
         return true;
     }
 
-    [[nodiscard]] bool anyAlertLocked() const {
+    [[nodiscard]] bool hasActiveAlertLocked() const {
         for (const auto& [_, alert] : alerts_)
             if (alert.active)
                 return true;
@@ -210,14 +210,14 @@ class Registry final {
     std::map<std::string, AlertStatus, std::less<>> alerts_;
 };
 
-inline thread_local Registry* gProcessRegistry = nullptr;
+inline thread_local RuntimeDiagnostics* currentWorkerDiagnosticsInstance = nullptr;
 
-inline void configureProcessRegistry(Registry& registry) noexcept {
-    gProcessRegistry = &registry;
+inline void setCurrentWorkerDiagnostics(RuntimeDiagnostics& diagnostics) noexcept {
+    currentWorkerDiagnosticsInstance = &diagnostics;
 }
 
-inline Registry* processRegistry() noexcept {
-    return gProcessRegistry;
+inline RuntimeDiagnostics* currentWorkerDiagnostics() noexcept {
+    return currentWorkerDiagnosticsInstance;
 }
 
 } // namespace service::observability

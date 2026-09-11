@@ -28,22 +28,22 @@ void WINAPI serviceMain(DWORD, LPWSTR*) {
     report(SERVICE_START_PENDING);
     try {
         SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
-        Coordinator coordinator(std::make_shared<FileStateStore>(), std::make_shared<WinHttpTransport>(), createTunnel());
+        VpnConnectionService vpnService(std::make_shared<DpapiClientStateStore>(), std::make_shared<WinHttpPlatformVpnApi>(), createWindowsWireGuardTunnel());
         std::jthread sync([&] {
-            try { coordinator.run(stopSource.get_token()); }
+            try { vpnService.run(stopSource.get_token()); }
             catch (...) { serviceError = ERROR_SERVICE_SPECIFIC_ERROR; stopSource.request_stop(); }
         });
         report(SERVICE_RUNNING);
-        try { runPipeServer(stopSource.get_token(), [&](const Json& request) { return coordinator.handle(request, stopSource.get_token()); }); }
+        try { runPipeServer(stopSource.get_token(), [&](const Json& request) { return vpnService.handle(request, stopSource.get_token()); }); }
         catch (...) { serviceError = ERROR_SERVICE_SPECIFIC_ERROR; }
         stopSource.request_stop();
-        try { coordinator.stop(); } catch (...) { serviceError = ERROR_SERVICE_SPECIFIC_ERROR; }
+        try { vpnService.stop(); } catch (...) { serviceError = ERROR_SERVICE_SPECIFIC_ERROR; }
         sync.join();
     } catch (...) { serviceError = ERROR_SERVICE_SPECIFIC_ERROR; stopSource.request_stop(); }
     report(SERVICE_STOPPED, serviceError.load());
 }
 }
-int runService(int argc, wchar_t** argv) {
+int runWindowsVpnService(int argc, wchar_t** argv) {
     if (argc != 2 || std::wstring_view(argv[1]) != L"--service") return 2;
     SERVICE_TABLE_ENTRYW entries[]{{const_cast<LPWSTR>(AgentService), serviceMain}, {nullptr, nullptr}};
     if (!StartServiceCtrlDispatcherW(entries)) return static_cast<int>(GetLastError());
@@ -52,5 +52,5 @@ int runService(int argc, wchar_t** argv) {
 }
 
 int wmain(int argc, wchar_t** argv) {
-    return iotvpn::service::runService(argc, argv);
+    return iotvpn::service::runWindowsVpnService(argc, argv);
 }

@@ -73,7 +73,7 @@ import {
     plcModelOptions,
     supportsS7Decimals,
     validateTsapValue,
-} from './s7/helpers';
+} from './s7/s7-configuration';
 import { useProtocolImportExport } from './useProtocolImportExport';
 
 const S7ConfigPage = () => {
@@ -670,11 +670,7 @@ const S7ConfigPage = () => {
                 onOk={handleSaveDeviceType}
                 forceRender
             >
-                <Form
-                    form={createForm}
-                    layout="vertical"
-                    initialValues={getDeviceTypeFormValues()}
-                >
+                <Form form={createForm} layout="vertical" initialValues={getDeviceTypeFormValues()}>
                     <Divider titlePlacement="start" plain className="!my-4">
                         基础信息
                     </Divider>

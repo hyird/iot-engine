@@ -159,9 +159,9 @@ Options parse(int argc, wchar_t** argv) {
 }
 const std::array<std::wstring, 1> ServiceNames{Agent};
 void saveSnapshot() {
-    sc::safe_files::createPrivate(stateRoot(), false);
+    sc::safe_files::createProtectedDirectory(stateRoot(), false);
     iotvpn::Json j;
-    for (const auto& name : ServiceNames) j[iotvpn::utf8(name)] = sc::services::encode(sc::services::capture(name));
+    for (const auto& name : ServiceNames) j[iotvpn::utf8(name)] = sc::services::encodeServiceSnapshot(sc::services::capture(name));
     const auto data = j.dump();
     iotvpn::atomicWrite(stateRoot()/L"installer-rollback.json", {reinterpret_cast<const std::uint8_t*>(data.data()), data.size()});
 }
@@ -173,8 +173,8 @@ void rollback() {
     const auto bytes = iotvpn::readFile(path);
     const auto j = iotvpn::Json::parse(bytes);
     stopAll();
-    for (const auto& name : ServiceNames) sc::services::restore(name, sc::services::decode(j.at(iotvpn::utf8(name))));
-    for (const auto& name : ServiceNames) if (sc::services::decode(j.at(iotvpn::utf8(name))).running) sc::services::start(name);
+    for (const auto& name : ServiceNames) sc::services::restore(name, sc::services::decodeServiceSnapshot(j.at(iotvpn::utf8(name))));
+    for (const auto& name : ServiceNames) if (sc::services::decodeServiceSnapshot(j.at(iotvpn::utf8(name))).running) sc::services::start(name);
     fs::remove(path);
 }
 void commit() { requireAdmin(); validateRoots(); fs::remove(stateRoot()/L"installer-rollback.json"); }
@@ -193,8 +193,8 @@ void install(const std::wstring& owner) {
     validateServices();
     const auto oldAgent = sc::services::capture(Agent);
     try {
-        sc::safe_files::createPrivate(installRoot(), true);
-        sc::safe_files::createPrivate(stateRoot(), false);
+        sc::safe_files::createProtectedDirectory(installRoot(), true);
+        sc::safe_files::createProtectedDirectory(stateRoot(), false);
         if (!fs::exists(stateRoot()/L"owner.sid")) { const auto text = iotvpn::utf8(owner); iotvpn::atomicWrite(stateRoot()/L"owner.sid", {reinterpret_cast<const std::uint8_t*>(text.data()), text.size()}); }
         sc::services::installOrUpdate(Agent, L"iot-egine", agentCommand(), true, {L"Nsi", L"TcpIp"});
         sc::services::start(Agent);

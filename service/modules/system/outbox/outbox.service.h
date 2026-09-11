@@ -94,8 +94,8 @@ public:
         if (rows.empty())
             service::common::fail(service::common::kNotFoundErrorCode,
                                   "死信事件不存在或已重放", 404);
-        if (auto *registry = service::observability::processRegistry())
-            registry->increment("iot_engine_outbox_dead_letter_replays_total");
+        if (auto *diagnostics = service::observability::currentWorkerDiagnostics())
+            diagnostics->incrementCounter("iot_engine_outbox_dead_letter_replays_total");
     }
 
 private:
