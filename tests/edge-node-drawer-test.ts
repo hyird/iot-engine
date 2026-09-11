@@ -17,20 +17,8 @@ const service = readFileSync(
     new URL('../web/pages/iot/edge-node/edge-node.service.ts', import.meta.url),
     'utf8'
 );
-const vpnPanel = readFileSync(
-    new URL('../web/pages/iot/edge-node/EdgeVpnPanel.tsx', import.meta.url),
-    'utf8'
-);
 const groupPanel = readFileSync(
     new URL('../web/pages/iot/edge-node/EdgeNodeGroupPanel.tsx', import.meta.url),
-    'utf8'
-);
-const vpnClient = readFileSync(
-    new URL('../web/pages/iot/edge-node/edge-node.vpn.client.ts', import.meta.url),
-    'utf8'
-);
-const vpnService = readFileSync(
-    new URL('../web/pages/iot/edge-node/edge-node.vpn.service.ts', import.meta.url),
     'utf8'
 );
 const edgeProjector = readFileSync(
@@ -110,18 +98,6 @@ test('VPN follows mobile status and firmware history stays in its own tab', () =
     expect(drawer).toContain("(item) => item.taskType === 'firmware'");
 });
 
-test('Windows VPN downloads one complete WireGuard config per device', () => {
-    expect(source).toContain('VPN 配置管理');
-    expect(source).toContain('新增并下载');
-    expect(source).toContain('每台 Windows 设备必须单独生成一份配置');
-    expect(source).toContain('downloadClientConfig(result)');
-    expect(source).toContain('windowsVpnConfigDelete.mutate(item.id)');
-    expect(vpnPanel).not.toContain('生成 Windows 配置');
-    expect(vpnClient).toContain('`${BASE}/client-configs`');
-    expect(vpnClient).toContain('liveRead<EdgeVpn.ClientConfigSummary[]>');
-    expect(vpnClient).toContain('request.delete<void>');
-});
-
 test('edge nodes use hierarchical groups without repeating the group inside cards', () => {
     expect(source).toContain('<EdgeNodeGroupPanel');
     expect(source).toContain('设置分组');
@@ -134,12 +110,7 @@ test('edge nodes use hierarchical groups without repeating the group inside card
     expect(client).toContain('`${BASE}/${edgeIdSchema.parse(id)}/group`');
 });
 
-test('Windows VPN configurations can be downloaded again with current routes', () => {
-    expect(vpnClient).toContain('`${BASE}/client/config`');
-    expect(vpnClient).toContain('peerId: edgeIdSchema.parse(id)');
-    expect(vpnService).toContain('useWindowsVpnConfigDownload');
-    expect(source).toContain('配置可重复下载');
-    expect(source).toContain('windowsVpnConfigDownload.mutate');
+test('edge bridge routes commit before configuration is queued', () => {
     const sync = edgeProjector.indexOf('co_await service::vpn::feature::syncEdgeBridgeRoutes');
     const commit = edgeProjector.indexOf('co_await transaction.commit()', sync);
     const queue = edgeProjector.indexOf('co_await service::vpn::queueEdgeConfig', sync);
@@ -169,7 +140,7 @@ test('drawer actions render above the detail drawer', () => {
         'const EDGE_ACTION_MODAL_Z_INDEX = EDGE_DETAIL_DRAWER_Z_INDEX + 100;'
     );
     expect(drawer).toContain('zIndex={EDGE_DETAIL_DRAWER_Z_INDEX}');
-    expect(source.match(/zIndex=\{EDGE_ACTION_MODAL_Z_INDEX\}/g)).toHaveLength(6);
+    expect(source.match(/zIndex=\{EDGE_ACTION_MODAL_Z_INDEX\}/g)).toHaveLength(5);
     expect(source.match(/zIndex: EDGE_ACTION_MODAL_Z_INDEX/g)).toHaveLength(2);
 });
 

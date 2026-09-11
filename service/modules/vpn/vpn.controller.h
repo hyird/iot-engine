@@ -51,16 +51,12 @@ class VpnController final : public ruvia::Controller<VpnController> {
     RUVIA_POST("/peers/:id/revoke", revokePeer, VpnIdValidator);
     RUVIA_POST("/peers/:id/sync", syncPeer, VpnIdValidator);
     RUVIA_POST("/peers/:id/rotate-key", rotatePeerKey, VpnIdValidator);
-    RUVIA_GET_SSE("/client-configs", clientConfigs);
-    RUVIA_POST("/client-configs", createClientConfig);
-    RUVIA_DELETE("/client-configs/:id", removeClientConfig, VpnIdValidator);
     RUVIA_GET_SSE("/desktop/devices", desktopDevices);
     RUVIA_POST("/desktop/peers", desktopCreatePeer);
     RUVIA_PATCH("/desktop/peers/:id", desktopUpdatePeer, VpnIdValidator);
     RUVIA_GET_SSE("/desktop/peers/:id/config", desktopPeerConfig, VpnIdValidator);
     RUVIA_DELETE("/desktop/peers/:id", desktopDeletePeer, VpnIdValidator);
     RUVIA_POST("/enrollments", createEnrollment);
-    RUVIA_GET_SSE("/client/config", clientConfig, VpnClientConfigValidator);
     RUVIA_GET_SSE("/sessions", sessions);
     RUVIA_GET_SSE("/diagnostics", diagnostics);
     RUVIA_ROUTES_END
@@ -192,33 +188,6 @@ class VpnController final : public ruvia::Controller<VpnController> {
                                  c, co_await c.req().jsonValue()), "Enrollment 已创建");
     }
 
-    ruvia::Task<ruvia::HttpResponse> createClientConfig(ruvia::Context& c) {
-        co_await service::middleware::requirePermission(c, "iot:vpn:enroll");
-        co_await service::middleware::requirePermission(c, "iot:edge:query");
-        co_return vpnJson(c, co_await vpnService().createClientConfig(
-                                 c, co_await c.req().jsonValue()), "WireGuard 配置已生成");
-    }
-
-    ruvia::Task<void> clientConfigs(ruvia::Context& c) {
-        co_await service::live::serve(c, "vpn", [this, &c]() { return clientConfigsSnapshot(c); });
-    }
-
-    ruvia::Task<std::string> clientConfigsSnapshot(ruvia::Context& c) {
-        co_await service::middleware::requirePermission(c, "iot:vpn:query");
-        co_await service::middleware::requirePermission(c, "iot:edge:query");
-        co_return service::live::data(c, co_await vpnService().clientConfigs(c));
-    }
-
-    ruvia::Task<ruvia::HttpResponse> removeClientConfig(ruvia::Context& c) {
-        co_await service::middleware::requirePermission(c, "iot:vpn:revoke");
-        co_await vpnService().removeClientConfig(c, vpnId(c));
-        co_return c.json(service::common::operation(c, "VPN 配置已删除并撤销"));
-    }
-
-    ruvia::Task<void> clientConfig(ruvia::Context& c) {
-        co_await service::live::serve(c, "vpn", [this, &c]() { return clientConfigSnapshot(c); });
-    }
-
     ruvia::Task<void> desktopDevices(ruvia::Context& c) {
         co_await service::live::serve(c, "vpn", [this, &c]() -> ruvia::Task<std::string> {
             co_await requireDesktopPermissions(c);
@@ -250,12 +219,6 @@ class VpnController final : public ruvia::Controller<VpnController> {
         co_await service::middleware::requirePermission(c, "iot:vpn:query");
         co_await service::middleware::requirePermission(c, "iot:vpn:enroll");
         co_await service::middleware::requirePermission(c, "iot:edge:query");
-    }
-
-    ruvia::Task<std::string> clientConfigSnapshot(ruvia::Context& c) {
-        co_await service::middleware::requirePermission(c, "iot:vpn:query");
-        co_return service::live::data(c, co_await vpnService().clientConfig(
-                                 c, c.req().validated<VpnClientConfigQuery>().get<"peerId">()->view()));
     }
 
     ruvia::Task<void> sessions(ruvia::Context& c) {

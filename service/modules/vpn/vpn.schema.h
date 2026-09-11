@@ -25,13 +25,4 @@ class VpnListValidator final : public ruvia::Middleware<VpnListValidator> {
         RUVIA_RULE(status, RUVIA_ONE_OF("VPN 状态无效", "enabled", "disabled")));
 };
 
-class VpnClientConfigValidator final : public ruvia::Middleware<VpnClientConfigValidator> {
-  public:
-    RUVIA_VALIDATE_QUERY(
-        VpnClientConfigQuery,
-        RUVIA_RULE_NAME("peerId", peerId,
-                        RUVIA_REQUIRED("Peer ID 不能为空"),
-                        RUVIA_CUSTOM("Peer ID 必须是 UUID", service::common::isUuidField)));
-};
-
 } // namespace service::vpn

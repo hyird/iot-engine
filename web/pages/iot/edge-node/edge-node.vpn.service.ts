@@ -1,31 +1,36 @@
-import { LiveResource } from '@/utils/live-resource';
 import { useLiveQuery } from '@/hooks/useLiveQuery';
 import { useMutationWithMessage } from '@/hooks/useMutation';
+import { LiveResource } from '@/utils/live-resource';
 import { edgeQueryKeys } from './edge-node.types';
 import {
     createEdgeVpnPeer,
     createEdgeVpnRoute,
     createVpnNetwork,
-    createWindowsVpnConfig,
-    deleteWindowsVpnConfig,
-    downloadWindowsVpnConfig,
     deleteEdgeVpnRoute,
     getEdgeVpnPeers,
     getEdgeVpnRoutes,
     getVpnNetworks,
-    getWindowsVpnConfigs,
     revokeEdgeVpnPeer,
     syncEdgeVpnPeer,
     updateEdgeVpnRoute,
 } from './edge-node.vpn.client';
-import { edgeVpnQueryKeys, type EdgeVpn } from './edge-node.vpn.types';
+import { type EdgeVpn, edgeVpnQueryKeys } from './edge-node.vpn.types';
 
 export const useEdgeVpn = (nodeId?: string) =>
     useLiveQuery({
         queryKey: edgeVpnQueryKeys.node(nodeId),
-        queryFn: () => LiveResource.combine([
-            getVpnNetworks(), getEdgeVpnPeers(nodeId as string), getEdgeVpnRoutes(nodeId as string),
-        ] as const).map(([networks, peers, routes]): EdgeVpn.Data => ({ networks: networks.list, peers, routes })),
+        queryFn: () =>
+            LiveResource.combine([
+                getVpnNetworks(),
+                getEdgeVpnPeers(nodeId as string),
+                getEdgeVpnRoutes(nodeId as string),
+            ] as const).map(
+                ([networks, peers, routes]): EdgeVpn.Data => ({
+                    networks: networks.list,
+                    peers,
+                    routes,
+                })
+            ),
         enabled: Boolean(nodeId),
     });
 
@@ -42,34 +47,6 @@ export const useEdgeVpnPeerCreate = () =>
     useMutationWithMessage({
         mutationFn: createEdgeVpnPeer,
         successMessage: '节点 VPN 已启用，正在下发桥接网段映射',
-        invalidateKeys: vpnInvalidations,
-    });
-
-export const useWindowsVpnConfigCreate = () =>
-    useMutationWithMessage({
-        mutationFn: createWindowsVpnConfig,
-        successMessage: 'Windows WireGuard 配置已生成并下载',
-        invalidateKeys: vpnInvalidations,
-    });
-
-export const useWindowsVpnConfigs = (enabled: boolean) =>
-    useLiveQuery({
-        queryKey: edgeVpnQueryKeys.clientConfigs(),
-        queryFn: getWindowsVpnConfigs,
-        enabled,
-    });
-
-export const useWindowsVpnConfigDelete = () =>
-    useMutationWithMessage({
-        mutationFn: deleteWindowsVpnConfig,
-        successMessage: 'VPN 配置已删除，客户端连接已撤销',
-        invalidateKeys: vpnInvalidations,
-    });
-
-export const useWindowsVpnConfigDownload = () =>
-    useMutationWithMessage({
-        mutationFn: (id: string) => downloadWindowsVpnConfig(id).first(),
-        successMessage: '已按当前虚拟网段下载 WireGuard 配置',
         invalidateKeys: vpnInvalidations,
     });
 

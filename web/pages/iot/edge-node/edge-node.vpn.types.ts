@@ -71,28 +71,6 @@ export namespace EdgeVpn {
         enabled: boolean;
     }
 
-    export interface ClientConfigCreateDto {
-        name: string;
-    }
-
-    export interface ClientConfig {
-        peerId: string;
-        name: string;
-        assignedIpv4: string;
-        allowedRoutes: string[];
-        config: string;
-    }
-
-    export interface ClientConfigSummary {
-        id: string;
-        name: string;
-        assignedIpv4: string;
-        allowedRoutes: string[];
-        status: PeerStatus;
-        lastHandshakeAt?: string | null;
-        createdAt: string;
-    }
-
     export interface Data {
         networks: Network[];
         peers: Peer[];
@@ -105,5 +83,4 @@ export namespace EdgeVpn {
 export const edgeVpnQueryKeys = {
     all: ['edge-vpn'] as const,
     node: (nodeId?: string) => [...edgeVpnQueryKeys.all, nodeId ?? ''] as const,
-    clientConfigs: () => [...edgeVpnQueryKeys.all, 'client-configs'] as const,
 };

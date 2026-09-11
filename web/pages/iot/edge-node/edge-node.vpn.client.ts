@@ -1,5 +1,5 @@
-import { liveRead } from '@/utils/live-request';
 import request from '@/utils/http';
+import { liveRead } from '@/utils/live-request';
 import { appendQueryParams } from '@/utils/query';
 import type { PaginatedResult } from '@/utils/types';
 import { edgeIdSchema } from './edge-node.schema';
@@ -27,20 +27,6 @@ export const createVpnNetwork = (data: EdgeVpn.NetworkCreateDto) =>
 
 export const createEdgeVpnPeer = (data: EdgeVpn.PeerCreateDto) =>
     request.post<{ id: string }>(`${BASE}/peers`, data);
-
-export const createWindowsVpnConfig = (data: EdgeVpn.ClientConfigCreateDto) =>
-    request.post<EdgeVpn.ClientConfig>(`${BASE}/client-configs`, data);
-
-export const getWindowsVpnConfigs = () =>
-    liveRead<EdgeVpn.ClientConfigSummary[]>(`${BASE}/client-configs`);
-
-export const downloadWindowsVpnConfig = (id: string) =>
-    liveRead<EdgeVpn.ClientConfig>(
-        appendQueryParams(`${BASE}/client/config`, { peerId: edgeIdSchema.parse(id) })
-    );
-
-export const deleteWindowsVpnConfig = (id: string) =>
-    request.delete<void>(`${BASE}/client-configs/${edgeIdSchema.parse(id)}`);
 
 export const syncEdgeVpnPeer = (peerId: string) =>
     request.post<void>(`${BASE}/peers/${edgeIdSchema.parse(peerId)}/sync`);

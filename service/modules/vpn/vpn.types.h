@@ -44,7 +44,4 @@ RUVIA_REQUEST_MODEL(VpnListQuery,
     RUVIA_OPTIONAL_FIELD(keyword, ruvia::String),
     RUVIA_OPTIONAL_FIELD(status, ruvia::String));
 
-RUVIA_REQUEST_MODEL(VpnClientConfigQuery,
-    RUVIA_OPTIONAL_FIELD_NAME("peerId", peerId, ruvia::String));
-
 } // namespace service::vpn

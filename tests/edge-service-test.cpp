@@ -259,8 +259,6 @@ int main() {
                         "reactivating an Edge VPN peer does not clear its revoked state");
         requireContains(vpnServiceSource, "\"vpn.peer.reactivate\"",
                         "Edge VPN peer reactivation is not audited separately");
-        requireContains(vpnServiceSource, "lower(name) = lower($2)",
-                        "one active VPN config per named client device is not enforced");
         requireMissing(dispatcherSource, "workers_.back().post(",
                        "edge dispatcher still gives one worker a special role");
         requireMissing(dispatcherSource, "target.worker.post(",

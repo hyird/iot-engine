@@ -177,10 +177,7 @@ try {
     const selected = await db`SELECT edge_node_id FROM vpn_peer_edge_selection WHERE peer_id=${peer}`;
     assert.equal(selected.length,1); assert.ok([edgeA,edgeB].includes(selected[0].edge_node_id));
     check(await patch(peer,[edgeA]));
-    const beforeKey=(await db`SELECT public_key FROM vpn_peer WHERE id=${peer}`)[0].public_key;
-    await openStream(`/v1/vpn/client/config?peerId=${peer}`,token,404);
-    assert.equal((await db`SELECT public_key FROM vpn_peer WHERE id=${peer}`)[0].public_key,beforeKey);
-    console.log('PASS validation, ownership, empty selection, concurrent replacement and legacy rekey guard');
+    console.log('PASS validation, ownership, empty selection and concurrent replacement');
     const live=await openStream(`/v1/vpn/desktop/peers/${peer}/config`); await live.next();
     await db`UPDATE vpn_route SET virtual_cidr='172.31.11.0/24' WHERE id=${routeA}`;
     const changed=await live.next(x=>x.data?.allowedRoutes.includes('172.31.11.0/24'));

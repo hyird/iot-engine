@@ -3,7 +3,6 @@ import {
     CheckOutlined,
     CodeOutlined,
     DeleteOutlined,
-    DownloadOutlined,
     EditOutlined,
     EyeOutlined,
     GlobalOutlined,
@@ -17,7 +16,6 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
 import {
-    Alert,
     App,
     Button,
     Descriptions,
@@ -56,10 +54,10 @@ import {
 import { usePermissions } from '@/hooks/usePermission';
 import { formatDateTime } from '@/utils/dateTime';
 import { validateForm } from '@/utils/validation';
-import { getEdgeDetail, getTerminalTicket } from './edge-node.client';
 import EdgeNodeGroupPanel from './EdgeNodeGroupPanel';
-import { edgeGroupView } from './edge-node.groups';
 import EdgeVpnPanel from './EdgeVpnPanel';
+import { getEdgeDetail, getTerminalTicket } from './edge-node.client';
+import { edgeGroupView } from './edge-node.groups';
 import { normalizeReportedNetwork, physicalNetworkInterfaces } from './edge-node.network';
 import {
     firmwareUpgradeSchema,
@@ -82,13 +80,6 @@ import {
     useNodeNameMutation,
 } from './edge-node.service';
 import type { Edge } from './edge-node.types';
-import {
-    useWindowsVpnConfigCreate,
-    useWindowsVpnConfigDelete,
-    useWindowsVpnConfigDownload,
-    useWindowsVpnConfigs,
-} from './edge-node.vpn.service';
-import type { EdgeVpn } from './edge-node.vpn.types';
 
 type NetworkDraftItem = Edge.NetworkConfig & {
     sourceName?: string;
@@ -101,24 +92,7 @@ const EDGE_CARD_GRID_CLASS = 'grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-col
 const EDGE_DETAIL_DRAWER_Z_INDEX = 1000;
 const EDGE_ACTION_MODAL_Z_INDEX = EDGE_DETAIL_DRAWER_Z_INDEX + 100;
 
-function downloadClientConfig(result: EdgeVpn.ClientConfig) {
-    const safeName = result.name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
-    const fileName = `${safeName || 'wireguard'}.conf`;
-    const url = URL.createObjectURL(
-        new Blob([result.config], { type: 'text/plain;charset=utf-8' })
-    );
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-}
-
-function groupSelectOptions(
-    groups: Edge.GroupTreeItem[]
-): {
+function groupSelectOptions(groups: Edge.GroupTreeItem[]): {
     value: string;
     title: string;
     disabled: boolean;
@@ -666,10 +640,6 @@ export default function EdgeNodePage() {
     const canConfig = has('iot:edge:config');
     const canFirmware = has('iot:edge:firmware');
     const canTerminal = has('iot:edge:terminal');
-    const canQueryVpnConfigs = has('iot:vpn:query') && has('iot:edge:query');
-    const canCreateVpnConfig = has('iot:vpn:enroll') && has('iot:edge:query');
-    const canDeleteVpnConfig = has('iot:vpn:revoke');
-    const canManageVpnConfigs = canQueryVpnConfigs || canCreateVpnConfig;
     const [searchText, setSearchText] = useState('');
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const [keyword, setKeyword] = useState('');
@@ -692,12 +662,10 @@ export default function EdgeNodePage() {
     const [firmwareUploadProgress, setFirmwareUploadProgress] =
         useState<Edge.FirmwareUploadProgress>();
     const [terminalOpen, setTerminalOpen] = useState(false);
-    const [clientConfigOpen, setClientConfigOpen] = useState(false);
     const [networkForm] = Form.useForm<Edge.NetworkConfig>();
     const [firmwareForm] = Form.useForm<Edge.FirmwareUpgradeDto>();
     const [nameForm] = Form.useForm<Edge.NameDto>();
     const [groupForm] = Form.useForm<Edge.GroupDto>();
-    const [clientConfigForm] = Form.useForm<EdgeVpn.ClientConfigCreateDto>();
     const networkMode = Form.useWatch('mode', networkForm);
     const networkBridge = Form.useWatch('bridge', networkForm);
     const firmwareFile = Form.useWatch('file', firmwareForm);
@@ -746,16 +714,6 @@ export default function EdgeNodePage() {
     const deviceConfigSync = useDeviceConfigSyncMutation();
     const firmwareUpgrade = useFirmwareUpgradeMutation();
     const logLevelControl = useLogLevelMutation();
-    const windowsVpnConfig = useWindowsVpnConfigCreate();
-    const windowsVpnConfigDelete = useWindowsVpnConfigDelete();
-    const windowsVpnConfigDownload = useWindowsVpnConfigDownload();
-    const {
-        data: windowsVpnConfigs = [],
-        isLoading: windowsVpnConfigsLoading,
-        isFetching: windowsVpnConfigsFetching,
-        refetch: refreshWindowsVpnConfigs,
-    } = useWindowsVpnConfigs(clientConfigOpen && canQueryVpnConfigs);
-
     useEffect(() => {
         if (!selectedId) return;
         const exists = data?.some((node) => node.id === selectedId) ?? true;
@@ -885,21 +843,6 @@ export default function EdgeNodePage() {
     const showGroup = (node: Edge.Node) => {
         groupForm.setFieldsValue({ groupId: node.groupId || '' });
         setGroupingNode(node);
-    };
-
-    const showClientConfig = () => {
-        windowsVpnConfig.reset();
-        clientConfigForm.resetFields();
-        setClientConfigOpen(true);
-    };
-
-    const submitClientConfig = (values: EdgeVpn.ClientConfigCreateDto) => {
-        windowsVpnConfig.mutate(values, {
-            onSuccess: (result) => {
-                downloadClientConfig(result);
-                setClientConfigOpen(false);
-            },
-        });
     };
 
     const showDetail = (node: Edge.Node) => {
@@ -1295,11 +1238,6 @@ export default function EdgeNodePage() {
                             onSelect={setSelectedGroupId}
                             ungroupedCount={groupView.ungroupedCount}
                         />
-                        {canManageVpnConfigs && (
-                            <Button icon={<DownloadOutlined />} onClick={showClientConfig}>
-                                VPN 配置
-                            </Button>
-                        )}
                         <Input.Search
                             allowClear
                             className="w-[240px]"
@@ -2156,156 +2094,6 @@ export default function EdgeNodePage() {
                     </Form.Item>
                 </Form>
             </FormModal>
-
-            <Modal
-                open={clientConfigOpen}
-                zIndex={EDGE_ACTION_MODAL_Z_INDEX}
-                title="VPN 配置管理"
-                width={860}
-                footer={null}
-                onCancel={() => {
-                    if (!windowsVpnConfig.isPending) setClientConfigOpen(false);
-                }}
-                closable={!windowsVpnConfig.isPending}
-                keyboard={!windowsVpnConfig.isPending}
-                maskClosable={!windowsVpnConfig.isPending}
-                destroyOnHidden
-            >
-                <Alert
-                    type="info"
-                    showIcon
-                    className="mb-4"
-                    message="每台 Windows 设备必须单独生成一份配置"
-                    description="配置可重复下载；每次下载都会写入当前账户可访问的全部边缘节点虚拟网段。"
-                />
-                {canCreateVpnConfig && (
-                    <Form
-                        form={clientConfigForm}
-                        layout="inline"
-                        className="mb-4"
-                        onFinish={submitClientConfig}
-                    >
-                        <Form.Item
-                            label="客户端设备"
-                            name="name"
-                            className="min-w-[260px] flex-1"
-                            rules={[
-                                { required: true, message: '请输入客户端设备名称' },
-                                { max: 100, message: '客户端名称不能超过 100 个字符' },
-                            ]}
-                        >
-                            <Input placeholder="例如：张三办公电脑" maxLength={100} />
-                        </Form.Item>
-                        <Form.Item>
-                            <Button
-                                type="primary"
-                                htmlType="submit"
-                                icon={<DownloadOutlined />}
-                                loading={windowsVpnConfig.isPending}
-                            >
-                                新增并下载
-                            </Button>
-                        </Form.Item>
-                    </Form>
-                )}
-                <Flex justify="space-between" align="center" className="mb-2">
-                    <span className="text-sm font-medium text-slate-800">客户端配置</span>
-                    {canQueryVpnConfigs && (
-                        <Button
-                            type="text"
-                            size="small"
-                            icon={<ReloadOutlined />}
-                            loading={windowsVpnConfigsFetching}
-                            onClick={() => void refreshWindowsVpnConfigs()}
-                        >
-                            刷新
-                        </Button>
-                    )}
-                </Flex>
-                {canQueryVpnConfigs ? (
-                    <Table<EdgeVpn.ClientConfigSummary>
-                        rowKey="id"
-                        size="small"
-                        loading={windowsVpnConfigsLoading}
-                        pagination={false}
-                        dataSource={windowsVpnConfigs}
-                        scroll={{ x: 'max-content' }}
-                        locale={{ emptyText: '暂无客户端 VPN 配置' }}
-                        columns={[
-                            { title: '设备名称', dataIndex: 'name', width: 180 },
-                            { title: 'VPN 地址', dataIndex: 'assignedIpv4', width: 130 },
-                            {
-                                title: '可访问虚拟网段',
-                                dataIndex: 'allowedRoutes',
-                                render: (routes: string[]) =>
-                                    routes.length ? routes.join('、') : '-',
-                            },
-                            {
-                                title: '最近连接',
-                                dataIndex: 'lastHandshakeAt',
-                                width: 170,
-                                render: (value) => (value ? formatDateTime(value) : '从未连接'),
-                            },
-                            {
-                                title: '创建时间',
-                                dataIndex: 'createdAt',
-                                width: 170,
-                                render: (value) => formatDateTime(value),
-                            },
-                            {
-                                title: '操作',
-                                key: 'actions',
-                                width: 140,
-                                fixed: 'right',
-                                render: (_, item) => (
-                                    <Flex gap={4}>
-                                        <Button
-                                            type="link"
-                                            size="small"
-                                            loading={
-                                                windowsVpnConfigDownload.isPending &&
-                                                windowsVpnConfigDownload.variables === item.id
-                                            }
-                                            onClick={() =>
-                                                windowsVpnConfigDownload.mutate(item.id, {
-                                                    onSuccess: downloadClientConfig,
-                                                })
-                                            }
-                                        >
-                                            下载
-                                        </Button>
-                                        {canDeleteVpnConfig && (
-                                            <Popconfirm
-                                                title={`删除 ${item.name} 的 VPN 配置？`}
-                                                description="删除后该客户端会立即失去 VPN 访问权限，已下载文件也无法再使用。"
-                                                okText="删除"
-                                                okButtonProps={{ danger: true }}
-                                                onConfirm={() =>
-                                                    windowsVpnConfigDelete.mutate(item.id)
-                                                }
-                                            >
-                                                <Button
-                                                    type="link"
-                                                    danger
-                                                    size="small"
-                                                    loading={
-                                                        windowsVpnConfigDelete.isPending &&
-                                                        windowsVpnConfigDelete.variables === item.id
-                                                    }
-                                                >
-                                                    删除
-                                                </Button>
-                                            </Popconfirm>
-                                        )}
-                                    </Flex>
-                                ),
-                            },
-                        ]}
-                    />
-                ) : (
-                    <Alert type="warning" showIcon message="您没有 VPN 配置查询权限" />
-                )}
-            </Modal>
 
             <FormModal
                 open={firmwareOpen}
