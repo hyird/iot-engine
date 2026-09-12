@@ -558,7 +558,7 @@ void testExplicitOutbox() {
             "query changes must be captured transactionally for external SQL writers");
     require(schema.find("0024_outbox_consumer_receipt") != std::string::npos,
             "outbox consumer receipt migration is missing");
-    require(dispatcher.find("FOR UPDATE SKIP LOCKED") != std::string::npos,
+    require(dispatcher.find(".mode = ruvia::DbRowLock::kUpdate, .skipLocked = true") != std::string::npos,
             "outbox dispatcher is not safe for concurrent instances");
     for (const auto path : {"service/modules/device/device.service.h",
                             "service/modules/link/link.service.h",
@@ -593,7 +593,7 @@ void testOutboxOperations() {
     require(service.find(".set(\"dead_lettered_at\", query.nullValue())") != std::string::npos,
             "dead-letter replay does not requeue the event");
     const auto dispatcher = source("service/features/messaging/messaging.service.h");
-    require(dispatcher.find("DELETE FROM outbox_consumer_receipt") != std::string::npos,
+    require(dispatcher.find(".deleteFrom(\"outbox_consumer_receipt\")") != std::string::npos,
             "outbox consumer receipts have no retention cleanup");
 }
 

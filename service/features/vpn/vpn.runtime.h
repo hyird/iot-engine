@@ -110,17 +110,8 @@ class VpnHubRuntime final {
         // A separate worker-local connection keeps the lock while business
         // queries use their ordinary connection, without pool self-deadlock.
         auto ownership = co_await context.db("vpn-coordination").beginTransaction();
-        if (background) {
-            const auto locked = co_await ownership.query(
-                "SELECT pg_try_advisory_xact_lock(5282804697543808071::bigint)"
-            );
-            if (locked.empty() || locked[0][0].value().value_or("") != "t") {
-                co_return wireguard::RuntimeStatus{ .code = "reconciliation_in_progress" };
-            }
-        } else {
-            (void)co_await ownership.query(
-                "SELECT pg_advisory_xact_lock(5282804697543808071::bigint)"
-            );
+        if (!(co_await VpnRuntimeService::acquireReconciliation(ownership, context.resource(), background))) {
+            co_return wireguard::RuntimeStatus{ .code = "reconciliation_in_progress" };
         }
         const auto key = "iot:vpn:reconciled:" + service::runtime::instanceId();
         if (background) {
@@ -135,9 +126,7 @@ class VpnHubRuntime final {
         // Keep address allocation behind the complete kernel reconciliation.
         // Otherwise an older snapshot could install a revoked key after its
         // address has already been returned to a newly enrolled client.
-        (void)co_await ownership.query(
-            "SELECT pg_advisory_xact_lock(5282804697543808068::bigint)"
-        );
+        co_await VpnRuntimeService::lockAddressAllocation(ownership, context.resource());
         auto result = co_await reconcileLocal(context, fallback);
         if (result.configured) {
             const auto scheduled = co_await service::message::redis::command(
@@ -381,7 +370,7 @@ class VpnControlHandler final {
                 service::common::fail(10002, "WireGuard Peer 公钥无效", 400);
             }
             auto ownership = co_await context.db("vpn-coordination").beginTransaction();
-            (void)co_await ownership.query("SELECT pg_advisory_xact_lock(5282804697543808071::bigint)");
+            (void)co_await VpnRuntimeService::acquireReconciliation(ownership, context.resource(), false);
             const auto config = co_await hub_config::loadOrInitialize(context, fallback_);
             if (config) {
                 const auto result = wireguard::controller().removePeer(*config, payload);

@@ -140,15 +140,17 @@ struct FakeDbResult {
 };
 
 struct RuntimeRepositoryScaleDb {
-    ruvia::Task<FakeDbResult> query(std::string_view sql) {
+    ruvia::Task<FakeDbResult> query(const ruvia::DbQuery& query) {
+        const auto statement = query.compile(ruvia::DbDriver::kPostgreSql, std::pmr::get_default_resource(), ruvia::DbParameterMode::kLiteral);
+        const auto sql = statement.sql();
         FakeDbResult result;
-        if (sql.find("FROM link\r\nWHERE deleted_at IS NULL AND execution = 'collector'") !=
+        if (sql.find("FROM \"link\" WHERE") !=
             std::string_view::npos) {
             result.values.emplace_back(FakeDbRow{ "link-1", "collector link", "TCP Client", "Modbus", "127.0.0.1", "1502", "enabled" });
-        } else if (sql.find("ORDER BY d.link_id, d.id") != std::string_view::npos) {
+        } else if (sql.find("ORDER BY \"d\".\"link_id\"") != std::string_view::npos) {
             result.values.emplace_back(FakeDbRow{ "device-1", "MODBUS001", "modbus device", "link-1", "TCP Client", "", "Modbus", "+08:00", "300", "OFF", "", "OFF", "", "TCP", "1", "RACK_SLOT", "PG", "0", "1", "0100", "0101", "5000", "5000", "STANDARD", "5", "1", "60", "1", "100", "125", "model-1", "1" });
-        } else if (sql.find("p.protocol = 'Modbus'") != std::string_view::npos &&
-                   sql.find("ORDER BY d.id,") != std::string_view::npos) {
+        } else if (sql.find("\"p\".\"protocol\" = E'Modbus'") != std::string_view::npos &&
+                   sql.find("'registerType'") != std::string_view::npos) {
             result.values.emplace_back(FakeDbRow{ "device-1", "temperature", "Temperature", "℃", "UINT16", "BIG_ENDIAN", "HOLDING_REGISTER", "0", "1", "1x", "-1", "f" });
         }
         co_return result;
@@ -429,13 +431,13 @@ struct RecordingLatestRedis {
 };
 
 struct LatestProjectionDb {
-    template <typename Sql, typename Params>
-    ruvia::Task<FakeDbResult> query(const Sql& sql, const Params&) {
-        const std::string text(sql);
+    ruvia::Task<FakeDbResult> query(const ruvia::DbQuery& query) {
+        const auto statement = query.compile(ruvia::DbDriver::kPostgreSql, std::pmr::get_default_resource(), ruvia::DbParameterMode::kLiteral);
+        const auto text = statement.sql();
         FakeDbResult result;
-        if (text.find("d.protocol_params->>'online_timeout'") != std::string::npos) {
+        if (text.find("'online_timeout'") != std::string_view::npos) {
             result.values.emplace_back(FakeDbRow{ "device-1", "D1", "300000" });
-        } else if (text.find("WITH configured AS") != std::string::npos) {
+        } else if (text.find("WITH \"configured\"") != std::string_view::npos) {
             result.values.emplace_back(FakeDbRow{ "device-1", "D1", "Modbus", "temperature", "New Name", "℃", "12.5", "1700000000000", "2", "1", "environment", "", "0", "{\"id\":\"temperature\",\"name\":\"New Name\",\"value\":\"12.5\",\"unit\":\"℃\","
                                                                                                                                                                          "\"scale\":2,\"decimals\":1,\"group\":\"environment\",\"encode\":\"\","
                                                                                                                                                                          "\"sort\":0,\"protocol\":\"Modbus\",\"observedAt\":1700000000000,"

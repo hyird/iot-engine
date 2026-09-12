@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <memory_resource>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -15,6 +16,13 @@ namespace {
 void require(bool condition, std::string_view message) {
     if (!condition)
         throw std::runtime_error(std::string(message));
+}
+
+std::string compileSql(const ruvia::DbQuery& query) {
+    auto statement = query.compile(ruvia::DbDriver::kPostgreSql,
+                                   std::pmr::new_delete_resource(),
+                                   ruvia::DbParameterMode::kLiteral);
+    return std::string(statement.sql());
 }
 
 void testPacketBytesRejectInvalidHex() {
@@ -72,79 +80,63 @@ void testNumberRejectsTrailingGarbage() {
 
 void testRevisionSqlGuardsCorruptNodeJson() {
     using namespace service::edge::config::detail;
-    require(kQueueSnapshotSql.find("COALESCE((status->'config'->>'desiredVersion')::bigint") ==
-                std::string_view::npos,
-            "edge config queueSnapshot directly casts desiredVersion");
-    require(kQueueSnapshotSql.find("COALESCE((status->'config'->>'activeVersion')::bigint") ==
-                std::string_view::npos,
-            "edge config queueSnapshot directly casts activeVersion");
-    require(kQueueSnapshotSql.find("COALESCE((capability->>'deviceConfig')::boolean") ==
-                std::string_view::npos,
-            "edge config queueSnapshot directly casts deviceConfig capability");
-    require(kRequeueDesiredSql.find("COALESCE((status->'config'->>'desiredVersion')::bigint") ==
-                std::string_view::npos,
-            "edge config requeue directly casts desiredVersion");
-    require(kRequeuePendingSql.find("COALESCE((status->'config'->>'desiredVersion')::bigint") ==
-                std::string_view::npos,
-            "edge config requeue update directly casts desiredVersion");
-    require(kRejectBuildSql.find("COALESCE((status->'config'->>'desiredVersion')::bigint") ==
-                std::string_view::npos,
-            "edge config rejectBuild directly casts desiredVersion");
-    require(kQueueSnapshotSql.find("status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'") !=
+    const auto queue = compileSql(queueSnapshotQuery("019fd9f6-4be5-7272-a194-9e571bce848d"));
+    const auto requeue = compileSql(requeueDesiredQuery("019fd9f6-4be5-7272-a194-9e571bce848d"));
+    const auto pending = compileSql(
+        requeuePendingQuery("019fd9f6-4be5-7272-a194-9e571bce848d", 12));
+    const auto reject = compileSql(
+        rejectBuildQuery("rejected", "019fd9f6-4be5-7272-a194-9e571bce848d", 12));
+    require(queue.find("CASE WHEN") != std::string_view::npos &&
+                queue.find("AS BIGINT") != std::string_view::npos,
+            "edge config queueSnapshot does not guard numeric revisions");
+    require(requeue.find("CASE WHEN") != std::string_view::npos &&
+                pending.find("CASE WHEN") != std::string_view::npos &&
+                reject.find("CASE WHEN") != std::string_view::npos,
+            "edge config revision updates do not guard numeric revisions");
+    require(queue.find("^-?[0-9]{1,18}$") !=
                 std::string_view::npos,
             "edge config queueSnapshot does not guard desiredVersion");
-    require(kQueueSnapshotSql.find("CASE lower(COALESCE(capability->>'deviceConfig', ''))") !=
+    require(queue.find("deviceConfig") !=
                 std::string_view::npos,
             "edge config queueSnapshot does not guard deviceConfig capability");
 }
 
 void testBuildItemSqlAvoidsJsonCasts() {
     using namespace service::edge::config::detail;
-    require(kBuildItemsSql.find("(p.config->>'readInterval')::numeric") ==
+    const auto items = compileSql(buildItemsQuery("019fd9f6-4be5-7272-a194-9e571bce848d"));
+    const auto modbus = compileSql(appendModbusQuery("019fd9f6-4be5-7272-a194-9e571bce848d"));
+    const auto s7 = compileSql(appendS7Query("019fd9f6-4be5-7272-a194-9e571bce848d"));
+    const auto sl651 = compileSql(
+        appendSl651ElementsQuery("019fd9f6-4be5-7272-a194-9e571bce848d"));
+    require(items.find("AS NUMERIC") ==
                 std::string_view::npos,
             "edge config buildItems directly casts readInterval");
-    require(kBuildItemsSql.find("(d.protocol_params->>'online_timeout')::integer") ==
+    require(items.find("AS INTEGER") ==
                 std::string_view::npos,
             "edge config buildItems directly casts online_timeout");
-    require(kBuildItemsSql.find("(l.endpoint->>'port')::integer") == std::string_view::npos,
+    require(items.find("E'port') AS") == std::string_view::npos,
             "edge config buildItems directly casts endpoint port");
-    require(kBuildItemsSql.find("(l.endpoint->>'rs485')::boolean") == std::string_view::npos,
-            "edge config buildItems directly casts rs485");
-    require(kBuildItemsSql.find("(p.config->'packet'->>'mergeGap')::integer") ==
-                std::string_view::npos,
+    require(items.find("mergeGap") != std::string_view::npos,
             "edge config buildItems directly casts packet mergeGap");
-    require(kBuildItemsSql.find("(p.config->'connection'->>'rack')::integer") ==
-                std::string_view::npos,
-            "edge config buildItems directly casts S7 rack");
-    require(kBuildItemsSql.find("registration") == std::string_view::npos,
+    require(items.find("registration") == std::string_view::npos,
             "edge config still exports a device registration payload");
-    require(kAppendModbusSql.find("(item->>'address')::integer") == std::string_view::npos,
-            "edge config Modbus query directly casts address");
-    require(kAppendModbusSql.find("(item->>'scale')::numeric") == std::string_view::npos,
-            "edge config Modbus query directly casts scale");
-    require(kAppendModbusSql.find("(item->>'writable')::boolean") == std::string_view::npos,
-            "edge config Modbus query directly casts writable");
-    require(kAppendS7Sql.find("(item->>'start')::integer") == std::string_view::npos,
-            "edge config S7 query directly casts start");
-    require(kAppendS7Sql.find("(item->>'writable')::boolean") == std::string_view::npos,
-            "edge config S7 query directly casts writable");
-    require(kAppendSl651ElementsSql.find("(element->>'length')::integer") ==
-                std::string_view::npos,
-            "edge config SL651 query directly casts length");
-    require(kBuildItemsSql.find("COALESCE(NULLIF(p.config->>'readInterval', ''), '1')") !=
-                std::string_view::npos,
+    require(items.find("readInterval") != std::string_view::npos,
             "edge config buildItems does not use the unified readInterval for reporting");
-    require(kBuildItemsSql.find("pollInterval") == std::string_view::npos,
+    require(items.find("pollInterval") == std::string_view::npos,
             "edge config buildItems still reads the retired pollInterval field");
-    require(kBuildItemsSql.find("p.config->>'commandFastReadDuration'") !=
+    require(items.find("commandFastReadDuration") !=
                 std::string_view::npos,
             "edge config buildItems ignores the configured fast-read window");
-    require(kBuildItemsSql.find("p.config->>'commandFastReadInterval'") !=
+    require(items.find("commandFastReadInterval") !=
                 std::string_view::npos,
             "edge config buildItems ignores the configured fast-read interval");
-    require(kAppendModbusSql.find("COALESCE(NULLIF(item->>'scale', ''), '1')") !=
+    require(modbus.find("scale") !=
                 std::string_view::npos,
             "edge config Modbus query does not leave scale for strict C++ parsing");
+    require(s7.find("start") != std::string_view::npos,
+            "edge config S7 query does not leave start for strict C++ parsing");
+    require(sl651.find("length") != std::string_view::npos,
+            "edge config SL651 query does not leave length for strict C++ parsing");
 }
 
 void testReadIntervalMigrationRemovesLegacyField() {

@@ -27,15 +27,15 @@ void requireNoUnsafeUnsignedParsing(std::string_view source) {
 void requireStoragePolicySemantics(std::string_view source) {
     require(source.find("storage_interval") == std::string_view::npos,
             "telemetry persistence still applies interval-based history filtering");
-    require(source.find("storage_policy = 'report'") != std::string_view::npos &&
-                source.find("storage_policy = 'change'") != std::string_view::npos,
+    require(source.find("filtered.column(\"storage_policy\"), Op::kEqual, filtered.value(\"report\")") != std::string_view::npos &&
+                source.find("filtered.column(\"storage_policy\"), Op::kEqual, filtered.value(\"change\")") != std::string_view::npos,
             "telemetry persistence does not implement both storage policies");
-    require(source.find("FROM device_latest_value latest") != std::string_view::npos &&
-                source.find("point.value->'value'") != std::string_view::npos,
+    require(source.find(".from(\"device_latest_value\", \"latest\")") != std::string_view::npos &&
+                source.find("unpackValue(incomingPoints, incomingPoints.column(\"value\", \"point\"))") != std::string_view::npos,
             "change storage does not compare point values with the latest read model");
-    require(source.find("COALESCE(point_changes.changed, FALSE)") != std::string_view::npos,
+    require(source.find("filtered.coalesce({ filtered.column(\"changed\", \"point_changes\"), filtered.value(false) })") != std::string_view::npos,
             "change storage accepts unchanged or empty telemetry");
-    require(source.find("FROM valid_incoming incoming") != std::string_view::npos,
+    require(source.find(".from(\"valid_incoming\", \"incoming\")") != std::string_view::npos,
             "latest values are not refreshed for every valid report");
 }
 

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <ruvia/web/Context.h>
+#include <ruvia/web/db/DbQuery.h>
 
 #include "service/common/http.h"
 #include "service/common/message.h"
@@ -131,21 +132,17 @@ pending(ruvia::WebWorkerContext& context, std::string_view consumer, const std::
         co_return result;
     }
 
-    std::string sql = "SELECT event_id::text FROM outbox_consumer_receipt WHERE "
-                      "consumer_name = $1 AND "
-                      "event_id IN (";
-    std::vector<ruvia::DbValue> params;
-    params.reserve(eventIds.size() + 1);
-    params.emplace_back(consumer);
-    for (std::size_t index = 0; index < eventIds.size(); ++index) {
-        if (index != 0) {
-            sql.push_back(',');
-        }
-        sql += "$" + std::to_string(index + 2) + "::uuid";
-        params.emplace_back(eventIds[index]);
+    ruvia::DbQuery receipts(context.resource());
+    std::vector<ruvia::DbExpression> ids;
+    ids.reserve(eventIds.size());
+    for (const auto& id : eventIds) {
+        ids.push_back(receipts.cast(receipts.value(id), ruvia::DbDataType::kUuid));
     }
-    sql.push_back(')');
-    const auto rows = co_await context.db().query(sql, params);
+    receipts.select(receipts.cast(receipts.column("event_id"), ruvia::DbDataType::kText))
+        .from("outbox_consumer_receipt")
+        .andWhere(receipts.binary(receipts.column("consumer_name"), ruvia::DbBinaryOperator::kEqual, receipts.value(consumer)))
+        .andWhere(receipts.binary(receipts.column("event_id"), ruvia::DbBinaryOperator::kIn, receipts.list(ids)));
+    const auto rows = co_await context.db().query(receipts);
     for (const auto& row : rows) {
         result.erase(std::string(row[0].value().value_or(std::string_view{})));
     }
@@ -163,22 +160,13 @@ markProcessed(ruvia::WebWorkerContext& context, std::string_view consumer, const
     if (eventIds.empty()) {
         co_return;
     }
-    std::string sql =
-        "INSERT INTO outbox_consumer_receipt(consumer_name, event_id) VALUES ";
-    std::vector<ruvia::DbValue> params;
-    params.reserve(eventIds.size() * 2);
-    for (std::size_t index = 0; index < eventIds.size(); ++index) {
-        if (index != 0) {
-            sql.push_back(',');
-        }
-        const auto base = index * 2 + 1;
-        sql += "($" + std::to_string(base) + ",$" + std::to_string(base + 1) +
-            "::uuid)";
-        params.emplace_back(consumer);
-        params.emplace_back(eventIds[index]);
+    ruvia::DbQuery receipts(context.resource());
+    receipts.insertInto("outbox_consumer_receipt", { "consumer_name", "event_id" });
+    for (const auto& id : eventIds) {
+        receipts.values({ receipts.value(consumer), receipts.cast(receipts.value(id), ruvia::DbDataType::kUuid) });
     }
-    sql += " ON CONFLICT (consumer_name, event_id) DO NOTHING";
-    (void)co_await context.db().execute(sql, params);
+    receipts.onConflict({ .columns = { "consumer_name", "event_id" }, .doNothing = true });
+    (void)co_await context.db().execute(receipts);
 }
 
 } // namespace service::message::idempotency
@@ -234,9 +222,18 @@ class OutboxService {
     ruvia::Task<std::optional<Clock::time_point>> nextAvailable(ruvia::WebWorkerContext& context) {
         // No periodic empty-queue scan. A timer is armed only for a durable
         // retry, or for eligible rows currently locked by another dispatcher.
-        const auto rows = co_await context.db().query(R"sql(
-SELECT ceil(extract(epoch FROM (min(available_at) - clock_timestamp())) * 1000)::bigint::text
-FROM outbox_event WHERE published_at IS NULL AND dead_lettered_at IS NULL)sql");
+        ruvia::DbQuery available(context.resource());
+        const auto delayMs = available.binary(
+            available.extract(ruvia::DbDatePart::kEpoch,
+                available.binary(available.aggregate("min", { available.column("available_at") }),
+                    ruvia::DbBinaryOperator::kSubtract, available.call("clock_timestamp"))),
+            ruvia::DbBinaryOperator::kMultiply, available.value(1000));
+        available.select(available.cast(available.cast(available.call("ceil", { delayMs }),
+                ruvia::DbDataType::kBigInt), ruvia::DbDataType::kText))
+            .from("outbox_event")
+            .andWhere(available.unary(ruvia::DbUnaryOperator::kIsNull, available.column("published_at")))
+            .andWhere(available.unary(ruvia::DbUnaryOperator::kIsNull, available.column("dead_lettered_at")));
+        const auto rows = co_await context.db().query(available);
         if (rows.empty() || !rows.front()[0].value()) {
             co_return std::nullopt;
         }
@@ -246,16 +243,27 @@ FROM outbox_event WHERE published_at IS NULL AND dead_lettered_at IS NULL)sql");
 
     ruvia::Task<bool> dispatch(ruvia::WebWorkerContext& context) {
         auto transaction = co_await context.db().beginTransaction();
-        const auto rows = co_await transaction.query(R"sql(
-SELECT id::text, event_type, aggregate_type, aggregate_id, action,
-       schema_version::text,
-       floor(extract(epoch FROM occurred_at) * 1000)::bigint::text,
-       COALESCE(payload->>'device_code',''), COALESCE(payload->'data','{}'::jsonb)::text
-FROM outbox_event
-WHERE published_at IS NULL AND dead_lettered_at IS NULL AND available_at <= NOW()
-ORDER BY occurred_at, id
-FOR UPDATE SKIP LOCKED
-LIMIT 100)sql");
+        ruvia::DbQuery pending(context.resource());
+        const auto occurredAtMs = pending.call("floor", { pending.binary(
+            pending.extract(ruvia::DbDatePart::kEpoch, pending.column("occurred_at")),
+            ruvia::DbBinaryOperator::kMultiply, pending.value(1000)) });
+        pending.select(pending.cast(pending.column("id"), ruvia::DbDataType::kText))
+            .addSelect(pending.column("event_type")).addSelect(pending.column("aggregate_type"))
+            .addSelect(pending.column("aggregate_id")).addSelect(pending.column("action"))
+            .addSelect(pending.cast(pending.column("schema_version"), ruvia::DbDataType::kText))
+            .addSelect(pending.cast(pending.cast(occurredAtMs, ruvia::DbDataType::kBigInt), ruvia::DbDataType::kText))
+            .addSelect(pending.coalesce({ pending.binary(pending.column("payload"),
+                ruvia::DbBinaryOperator::kJsonGetText, pending.value("device_code")), pending.value("") }))
+            .addSelect(pending.cast(pending.coalesce({ pending.binary(pending.column("payload"),
+                ruvia::DbBinaryOperator::kJsonGet, pending.value("data")),
+                pending.cast(pending.value("{}"), ruvia::DbDataType::kJsonb) }), ruvia::DbDataType::kText))
+            .from("outbox_event")
+            .andWhere(pending.unary(ruvia::DbUnaryOperator::kIsNull, pending.column("published_at")))
+            .andWhere(pending.unary(ruvia::DbUnaryOperator::kIsNull, pending.column("dead_lettered_at")))
+            .andWhere(pending.binary(pending.column("available_at"), ruvia::DbBinaryOperator::kLessEqual, pending.call("now")))
+            .addOrderBy(pending.column("occurred_at")).addOrderBy(pending.column("id"))
+            .lock({ .mode = ruvia::DbRowLock::kUpdate, .skipLocked = true }).limit(100);
+        const auto rows = co_await transaction.query(pending);
         if (rows.empty()) {
             co_await transaction.commit();
             observability_.setGauge("iot_engine_outbox_last_batch_size", 0);
@@ -297,25 +305,33 @@ LIMIT 100)sql");
                 if (publishError.size() > 2000) {
                     publishError.resize(2000);
                 }
-                (void)co_await transaction.execute(R"sql(
-UPDATE outbox_event
-SET attempts = attempts + 1,
-    last_error = $2,
-    available_at = NOW() + make_interval(
-      secs => LEAST(300, (1::bigint << LEAST(attempts, 8))::integer)),
-    dead_lettered_at = CASE WHEN attempts + 1 >= 20 THEN NOW()
-                            ELSE dead_lettered_at END
-WHERE id = $1::uuid)sql",
-                                                   service::common::dbParams(event.id, publishError));
+                ruvia::DbQuery retry(context.resource());
+                const auto attempts = retry.binary(retry.column("attempts"), ruvia::DbBinaryOperator::kAdd, retry.value(1));
+                const auto seconds = retry.least({ retry.value(300), retry.cast(
+                    retry.call("int8shl", { retry.cast(retry.value(1), ruvia::DbDataType::kBigInt),
+                        retry.least({ retry.column("attempts"), retry.value(8) }) }), ruvia::DbDataType::kInteger) });
+                const std::vector<ruvia::DbNamedArgument> intervalArgs{ { "secs", seconds } };
+                retry.update("outbox_event")
+                    .set("attempts", attempts).set("last_error", retry.value(publishError))
+                    .set("available_at", retry.binary(retry.call("now"), ruvia::DbBinaryOperator::kAdd,
+                        retry.call("make_interval", {}, intervalArgs)))
+                    .set("dead_lettered_at", retry.caseWhen({ { retry.binary(attempts,
+                        ruvia::DbBinaryOperator::kGreaterEqual, retry.value(20)), retry.call("now") } },
+                        retry.column("dead_lettered_at")))
+                    .andWhere(retry.binary(retry.column("id"), ruvia::DbBinaryOperator::kEqual,
+                        retry.cast(retry.value(event.id), ruvia::DbDataType::kUuid)));
+                (void)co_await transaction.execute(retry);
                 co_await transaction.commit();
                 observability_.incrementCounter("iot_engine_outbox_publish_retries_total");
                 co_return true;
             }
-            (void)co_await transaction.execute(
-                "UPDATE outbox_event SET published_at = NOW(), attempts = attempts + 1, "
-                "last_error = NULL WHERE id = $1::uuid",
-                service::common::dbParams(event.id)
-            );
+            ruvia::DbQuery published(context.resource());
+            published.update("outbox_event").set("published_at", published.call("now"))
+                .set("attempts", published.binary(published.column("attempts"), ruvia::DbBinaryOperator::kAdd, published.value(1)))
+                .set("last_error", published.nullValue())
+                .andWhere(published.binary(published.column("id"), ruvia::DbBinaryOperator::kEqual,
+                    published.cast(published.value(event.id), ruvia::DbDataType::kUuid)));
+            (void)co_await transaction.execute(published);
         }
         co_await transaction.commit();
         observability_.incrementCounter("iot_engine_outbox_published_total", events.size());
@@ -324,12 +340,21 @@ WHERE id = $1::uuid)sql",
     }
 
     ruvia::Task<void> collectMetrics(ruvia::WebWorkerContext& context) {
-        const auto rows = co_await context.db().query(R"sql(
-SELECT count(*) FILTER (WHERE dead_lettered_at IS NULL)::text,
-       COALESCE(floor(extract(epoch FROM (
-         NOW() - min(occurred_at) FILTER (WHERE dead_lettered_at IS NULL))) * 1000), 0)::bigint::text,
-       count(*) FILTER (WHERE dead_lettered_at IS NOT NULL)::text
-FROM outbox_event WHERE published_at IS NULL)sql");
+        ruvia::DbQuery metrics(context.resource());
+        const auto pending = metrics.unary(ruvia::DbUnaryOperator::kIsNull, metrics.column("dead_lettered_at"));
+        const auto count = metrics.aggregate("count", { metrics.star() });
+        const auto oldest = metrics.filter(metrics.aggregate("min", { metrics.column("occurred_at") }), pending);
+        const auto ageMs = metrics.call("floor", { metrics.binary(metrics.extract(ruvia::DbDatePart::kEpoch,
+            metrics.binary(metrics.call("now"), ruvia::DbBinaryOperator::kSubtract, oldest)),
+            ruvia::DbBinaryOperator::kMultiply, metrics.value(1000)) });
+        metrics.select(metrics.cast(metrics.filter(count, pending), ruvia::DbDataType::kText))
+            .addSelect(metrics.cast(metrics.cast(metrics.coalesce({ ageMs, metrics.value(0) }),
+                ruvia::DbDataType::kBigInt), ruvia::DbDataType::kText))
+            .addSelect(metrics.cast(metrics.filter(count, metrics.unary(ruvia::DbUnaryOperator::kIsNotNull,
+                metrics.column("dead_lettered_at"))), ruvia::DbDataType::kText))
+            .from("outbox_event")
+            .andWhere(metrics.unary(ruvia::DbUnaryOperator::kIsNull, metrics.column("published_at")));
+        const auto rows = co_await context.db().query(metrics);
         if (!rows.empty()) {
             const auto pending =
                 integer(rows.front()[0].value().value_or(std::string_view{}));
@@ -418,10 +443,15 @@ FROM outbox_event WHERE published_at IS NULL)sql");
     }
 
     ruvia::Task<void> cleanupReceipts(ruvia::WebWorkerContext& context) {
-        (void)co_await context.db().execute(R"sql(
-DELETE FROM outbox_consumer_receipt
-WHERE processed_at < NOW() - make_interval(days => $1::integer))sql",
-                                            service::common::dbParams(policy_.receiptRetentionDays));
+        ruvia::DbQuery expired(context.resource());
+        const std::vector<ruvia::DbNamedArgument> intervalArgs{
+            { "days", expired.cast(expired.value(policy_.receiptRetentionDays), ruvia::DbDataType::kInteger) }
+        };
+        expired.deleteFrom("outbox_consumer_receipt")
+            .andWhere(expired.binary(expired.column("processed_at"), ruvia::DbBinaryOperator::kLess,
+                expired.binary(expired.call("now"), ruvia::DbBinaryOperator::kSubtract,
+                    expired.call("make_interval", {}, intervalArgs))));
+        (void)co_await context.db().execute(expired);
     }
 
     void updateAlert(std::string name, std::int64_t value, std::int64_t threshold) {

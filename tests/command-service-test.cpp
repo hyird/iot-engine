@@ -70,8 +70,8 @@ int main() {
                 "edge commands still hard-code the fast-read window");
         require(preparation.find("command->set_fast_read_interval_sec(1)") == std::string::npos,
                 "edge commands still hard-code the fast-read interval");
-        require(preparation.find("p.config->>'commandFastReadDuration'") != std::string::npos &&
-                    preparation.find("p.config->>'commandFastReadInterval'") != std::string::npos,
+        require(preparation.find("text(routeQuery.column(\"config\", \"p\"), \"commandFastReadDuration\")") != std::string::npos &&
+                    preparation.find("text(routeQuery.column(\"config\", \"p\"), \"commandFastReadInterval\")") != std::string::npos,
                 "edge commands do not load the protocol fast-read policy");
         require(source.find("DeviceCommandStatusesDto") != std::string::npos &&
                     source.find("milliseconds(100)") == std::string::npos,

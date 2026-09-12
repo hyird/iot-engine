@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include <ruvia/core/Task.h>
+#include <ruvia/web/db/DbQuery.h>
 
 #include "service/common/http.h"
 
@@ -23,27 +24,50 @@ class GatewayService final {
     static ruvia::Task<bool> claimCommand(Context& context,
                                           std::string_view operationId,
                                           std::string_view nodeId) {
-        const auto claimed = co_await context.db().query(R"sql(
-UPDATE command_attempt a SET sent_at=NOW() FROM command_operation o
-WHERE a.operation_id=$1::uuid AND o.id=a.operation_id AND a.node_id=$2
-  AND a.sent_at IS NULL AND a.deadline>NOW()
-  AND o.status IN ('DISPATCHING','AWAITING_RESULT') RETURNING a.operation_id)sql",
-            service::common::dbParams(operationId, nodeId));
+        ruvia::DbQuery claim(context.pool());
+        using Binary = ruvia::DbBinaryOperator;
+        claim.update("command_attempt", "a")
+            .set("sent_at", claim.call("now"))
+            .updateFrom("command_operation", "o")
+            .andWhere(claim.binary(claim.column("operation_id", "a"), Binary::kEqual,
+                claim.cast(claim.value(operationId), ruvia::DbDataType::kUuid)))
+            .andWhere(claim.binary(claim.column("id", "o"), Binary::kEqual,
+                claim.column("operation_id", "a")))
+            .andWhere(claim.binary(claim.column("node_id", "a"), Binary::kEqual,
+                claim.value(nodeId)))
+            .andWhere(claim.unary(ruvia::DbUnaryOperator::kIsNull,
+                claim.column("sent_at", "a")))
+            .andWhere(claim.binary(claim.column("deadline", "a"), Binary::kGreater,
+                claim.call("now")))
+            .andWhere(claim.binary(claim.column("status", "o"), Binary::kIn,
+                claim.list({claim.value("DISPATCHING"), claim.value("AWAITING_RESULT")})))
+            .returning({claim.column("operation_id", "a")});
+        const auto claimed = co_await context.db().query(claim);
         co_return !claimed.empty();
     }
 
     template <typename Context>
     static ruvia::Task<std::optional<FirmwareSource>> loadFirmwareSource(
         Context& context, std::string_view requestId, std::string_view nodeId) {
-        const auto rows = co_await context.db().query(R"sql(
-SELECT firmware.storage_path, firmware.size_bytes
-FROM edge_task task
-JOIN edge_firmware firmware
-  ON firmware.id::text = task.request->>'firmware_id'
-WHERE task.id = $1::uuid AND task.node_id = $2::uuid
-  AND task.task_type = 'firmware'
-LIMIT 1)sql",
-            service::common::dbParams(requestId, nodeId));
+        ruvia::DbQuery firmware(context.pool());
+        using Binary = ruvia::DbBinaryOperator;
+        firmware.select({firmware.column("storage_path", "firmware"),
+                         firmware.column("size_bytes", "firmware")})
+            .from("edge_task", "task")
+            .join(ruvia::DbJoinType::kInner, "edge_firmware",
+                firmware.binary(
+                    firmware.cast(firmware.column("id", "firmware"), ruvia::DbDataType::kText),
+                    Binary::kEqual,
+                    firmware.binary(firmware.column("request", "task"), Binary::kJsonGetText,
+                        firmware.value("firmware_id"))), "firmware")
+            .andWhere(firmware.binary(firmware.column("id", "task"), Binary::kEqual,
+                firmware.cast(firmware.value(requestId), ruvia::DbDataType::kUuid)))
+            .andWhere(firmware.binary(firmware.column("node_id", "task"), Binary::kEqual,
+                firmware.cast(firmware.value(nodeId), ruvia::DbDataType::kUuid)))
+            .andWhere(firmware.binary(firmware.column("task_type", "task"), Binary::kEqual,
+                firmware.value("firmware")))
+            .limit(1);
+        const auto rows = co_await context.db().query(firmware);
         if (rows.empty())
             co_return std::nullopt;
 

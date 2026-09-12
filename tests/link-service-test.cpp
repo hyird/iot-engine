@@ -24,6 +24,18 @@ void requireNoUnsafeParsing(std::string_view source) {
             "link service uses unsafe/partial stoll parsing");
     require(source.find("COALESCE((endpoint->>'port')::integer") == std::string_view::npos,
             "link service directly casts endpoint port");
+    require(source.find("R\"sql") == std::string_view::npos,
+            "link service still embeds runtime SQL");
+    require(source.find("c.db().query(\"") == std::string_view::npos,
+            "link service still executes a raw SQL string");
+    require(source.find("transaction.execute(\"") == std::string_view::npos,
+            "link service still executes a raw transaction SQL string");
+    require(source.find("ruvia::DbQuery") != std::string_view::npos,
+            "link service does not use the public DbQuery API");
+    require(source.find("LinkEntity") != std::string_view::npos,
+            "link service does not use its ORM entity");
+    require(source.find("c.pool()") != std::string_view::npos,
+            "link service does not allocate queries from Context.pool()");
 }
 
 void requireInputValidation(std::string_view source) {

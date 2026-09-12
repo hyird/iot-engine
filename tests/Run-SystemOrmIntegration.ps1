@@ -2,7 +2,8 @@
 param(
     [string]$PostgresBin = 'C:/Program Files/PostgreSQL/18/bin',
     [string]$RedisExe = 'C:/Redis/redis-server.exe',
-    [string]$Bun = 'bun'
+    [string]$Bun = 'bun',
+    [string[]]$TestFiles = @('system-orm-integration.ts', 'live-query-integration.ts')
 )
 $ErrorActionPreference = 'Stop'
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -23,6 +24,7 @@ $redisProcess = $null
 $oldPath = $env:Path
 $oldDatabaseUrl = $env:ARCHITECTURE_DATABASE_URL
 $oldApiBase = $env:TEST_BASE_URL
+$oldRedisUrl = $env:ARCHITECTURE_REDIS_URL
 function Stop-OwnedProcess($Process, [string]$ExpectedPath) {
     if (!$Process) { return }
     $current = Get-Process -Id $Process.Id -ErrorAction SilentlyContinue
@@ -68,6 +70,7 @@ EDGE_PLATFORM_ID=00000000-0000-7000-8000-000000000001
     $env:Path = (Join-Path $build 'Release') + ';' + $oldPath
     $env:ARCHITECTURE_DATABASE_URL = 'postgres://architecture_test@127.0.0.1:55459/iot_architecture'
     $env:TEST_BASE_URL = 'http://127.0.0.1:55122'
+    $env:ARCHITECTURE_REDIS_URL = 'redis://127.0.0.1:56459'
     $apiProcess = Start-Process -FilePath (Join-Path $fixture 'iot-engine.exe') -WorkingDirectory $fixture -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $fixture 'api.out') -RedirectStandardError (Join-Path $fixture 'api.err')
     $ready = $false
     for ($attempt = 0; $attempt -lt 60; $attempt++) {
@@ -82,10 +85,10 @@ EDGE_PLATFORM_ID=00000000-0000-7000-8000-000000000001
         Start-Sleep -Milliseconds 250
     }
     if (!$ready) { throw "Test API did not start; inspect logs in $fixture" }
-    & $Bun run (Join-Path $repository 'tests/system-orm-integration.ts')
-    if ($LASTEXITCODE -ne 0) { throw "System ORM integration tests failed; logs retained at $fixture" }
-    & $Bun run (Join-Path $repository 'tests/live-query-integration.ts')
-    if ($LASTEXITCODE -ne 0) { throw "Live query integration tests failed; logs retained at $fixture" }
+    foreach ($test in $TestFiles) {
+        & $Bun run (Join-Path $repository ('tests/' + $test))
+        if ($LASTEXITCODE -ne 0) { throw "$test failed; logs retained at $fixture" }
+    }
 } finally {
     Stop-OwnedProcess $apiProcess (Join-Path $fixture 'iot-engine.exe')
     Stop-OwnedProcess $redisProcess $RedisExe
@@ -95,5 +98,6 @@ EDGE_PLATFORM_ID=00000000-0000-7000-8000-000000000001
     $env:Path = $oldPath
     $env:ARCHITECTURE_DATABASE_URL = $oldDatabaseUrl
     $env:TEST_BASE_URL = $oldApiBase
+    $env:ARCHITECTURE_REDIS_URL = $oldRedisUrl
     Write-Output "Disposable fixture logs: $fixture"
 }

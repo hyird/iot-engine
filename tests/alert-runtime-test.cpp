@@ -36,17 +36,13 @@ void expectInvalidConditions(std::string_view raw, const char* message) {
 int main() {
     try {
         const auto sql = service::alert::AlertEvaluationService::evaluationTailForTest();
-        requireAbsent(sql, "NULLIF(condition.value->>'duration', '')::integer",
-                      "alert runtime directly casts offline duration from rule JSON");
-        requireAbsent(sql, "NULLIF(condition.value->>'value', '')::numeric",
-                      "alert runtime directly casts threshold value from rule JSON");
-        requireAbsent(sql, "NULLIF(condition.value->>'changeRate', '')::numeric",
-                      "alert runtime directly casts changeRate from rule JSON");
-        requireAbsent(sql, ">> (condition.value->>'bitIndex')::integer",
-                      "alert runtime directly casts bitIndex in the shift expression");
-        requireAbsent(std::string(service::alert::metadata::detail::kRefreshQuery),
-                      "NULLIF(condition.value->>'duration', '')::bigint",
-                      "alert metadata refresh directly casts offline duration from rule JSON");
+        require(sql.find("^[0-9]{1,10}$") != std::string::npos, "offline duration must be guarded before casting");
+        require(sql.find("^-?[0-9]+([.][0-9]+)?$") != std::string::npos, "numeric conditions must be guarded before casting");
+        require(sql.find("^([0-9]|[1-5][0-9]|6[0-2])$") != std::string::npos, "bit index must be bounded before shifting");
+        require(sql.find("int8shr") != std::string::npos, "bit conditions must use the parsed index");
+        require(sql.find("CASE WHEN") != std::string::npos, "numeric casts must retain guarded CASE expressions");
+        const auto refreshSql = service::alert::metadata::detail::refreshQuery().compile(ruvia::DbDriver::kPostgreSql, nullptr, ruvia::DbParameterMode::kLiteral);
+        require(refreshSql.sql().find("^[0-9]{1,10}$") != std::string_view::npos, "metadata refresh must guard offline duration");
         const auto metadataSource = readSource("service/features/alert/alert.service.h");
         requireAbsent(metadataSource, "std::stoll(",
                       "alert metadata uses unsafe/partial stoll parsing");

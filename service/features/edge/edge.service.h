@@ -14,6 +14,7 @@
 
 #include <ruvia/core/Task.h>
 #include <ruvia/web/WebWorker.h>
+#include <ruvia/web/db/DbQuery.h>
 
 #include "service/common/http.h"
 #include "service/common/uuid.h"
@@ -31,26 +32,6 @@ for index = 1, #ARGV, 2 do
 end
 return #ARGV / 2
 )lua";
-
-inline constexpr std::string_view kLoadNodeSql = R"sql(
-SELECT d.id::text, d.link_id::text, d.protocol_params->>'device_code', p.protocol,
-       COALESCE(NULLIF(p.config->>'storagePolicy', ''), 'report'),
-       COALESCE(NULLIF(d.protocol_params->>'online_timeout', ''), '300')
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN device_model p ON p.device_id = d.id AND p.deleted_at IS NULL
-WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
-ORDER BY d.id)sql";
-
-inline constexpr std::string_view kLoadCatalogSql = R"sql(
-SELECT n.id::text, d.id::text, d.link_id::text, d.protocol_params->>'device_code', p.protocol,
-       COALESCE(NULLIF(p.config->>'storagePolicy', ''), 'report'),
-       COALESCE(NULLIF(d.protocol_params->>'online_timeout', ''), '300')
-FROM edge_node n
-LEFT JOIN link l ON l.edge_node_id = n.id AND l.execution = 'edge' AND l.deleted_at IS NULL
-LEFT JOIN device d ON d.link_id = l.id AND d.deleted_at IS NULL
-LEFT JOIN device_model p ON p.device_id = d.id AND p.deleted_at IS NULL
-ORDER BY n.id, d.id)sql";
 
 struct Device final {
     std::string linkId;
@@ -156,8 +137,63 @@ void queueStoreNode(Pipeline& pipeline, std::string_view nodeId,
 
 template <typename Context>
 ruvia::Task<NodeSnapshot> loadNodeFromDatabase(Context& context, std::string_view nodeId) {
-    const auto rows = co_await context.db().query(kLoadNodeSql,
-                                                    service::common::dbParams(nodeId));
+    ruvia::DbQuery query;
+    const auto jsonText = [&query](std::string_view column,
+                                   std::string_view table,
+                                   std::string_view key) {
+        return query.binary(query.column(column, table),
+                            ruvia::DbBinaryOperator::kJsonGetText,
+                            query.cast(query.value(key), ruvia::DbDataType::kText));
+    };
+    query
+        .select({
+            query.cast(query.column("id", "d"), ruvia::DbDataType::kText),
+            query.cast(query.column("link_id", "d"), ruvia::DbDataType::kText),
+            jsonText("protocol_params", "d", "device_code"),
+            query.column("protocol", "p"),
+            query.coalesce({
+                query.nullIf(jsonText("config", "p", "storagePolicy"),
+                             query.value(std::string_view{})),
+                query.value(std::string_view{"report"})}),
+            query.coalesce({
+                query.nullIf(jsonText("protocol_params", "d", "online_timeout"),
+                             query.value(std::string_view{})),
+                query.value(std::string_view{"300"})}),
+        })
+        .from("device", "d")
+        .join(
+            ruvia::DbJoinType::kInner, "link",
+            query.binary(
+                query.binary(query.column("id", "l"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.column("link_id", "d")),
+                ruvia::DbBinaryOperator::kAnd,
+                query.binary(
+                    query.binary(query.column("execution", "l"),
+                                 ruvia::DbBinaryOperator::kEqual,
+                                 query.value(std::string_view{"edge"})),
+                    ruvia::DbBinaryOperator::kAnd,
+                    query.unary(ruvia::DbUnaryOperator::kIsNull,
+                                query.column("deleted_at", "l")))),
+            "l")
+        .join(
+            ruvia::DbJoinType::kInner, "device_model",
+            query.binary(
+                query.binary(query.column("device_id", "p"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.column("id", "d")),
+                ruvia::DbBinaryOperator::kAnd,
+                query.unary(ruvia::DbUnaryOperator::kIsNull,
+                            query.column("deleted_at", "p"))),
+            "p")
+        .where(query.binary(query.column("edge_node_id", "l"),
+                           ruvia::DbBinaryOperator::kEqual,
+                           query.cast(query.value(nodeId),
+                                      ruvia::DbDataType::kUuid)))
+        .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull,
+                              query.column("deleted_at", "d")))
+        .orderBy(query.column("id", "d"));
+    const auto rows = co_await context.db().query(query);
     NodeSnapshot snapshot;
     snapshot.reserve(rows.size());
     for (const auto& row : rows) {
@@ -172,7 +208,69 @@ ruvia::Task<NodeSnapshot> loadNodeFromDatabase(Context& context, std::string_vie
 
 template <typename Context>
 ruvia::Task<Catalog> loadCatalogFromDatabase(Context& context) {
-    const auto rows = co_await context.db().query(kLoadCatalogSql);
+    ruvia::DbQuery query;
+    const auto jsonText = [&query](std::string_view column,
+                                   std::string_view table,
+                                   std::string_view key) {
+        return query.binary(query.column(column, table),
+                            ruvia::DbBinaryOperator::kJsonGetText,
+                            query.cast(query.value(key), ruvia::DbDataType::kText));
+    };
+    query
+        .select({
+            query.cast(query.column("id", "n"), ruvia::DbDataType::kText),
+            query.cast(query.column("id", "d"), ruvia::DbDataType::kText),
+            query.cast(query.column("link_id", "d"), ruvia::DbDataType::kText),
+            jsonText("protocol_params", "d", "device_code"),
+            query.column("protocol", "p"),
+            query.coalesce({
+                query.nullIf(jsonText("config", "p", "storagePolicy"),
+                             query.value(std::string_view{})),
+                query.value(std::string_view{"report"})}),
+            query.coalesce({
+                query.nullIf(jsonText("protocol_params", "d", "online_timeout"),
+                             query.value(std::string_view{})),
+                query.value(std::string_view{"300"})}),
+        })
+        .from("edge_node", "n")
+        .join(
+            ruvia::DbJoinType::kLeft, "link",
+            query.binary(
+                query.binary(query.column("edge_node_id", "l"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.column("id", "n")),
+                ruvia::DbBinaryOperator::kAnd,
+                query.binary(
+                    query.binary(query.column("execution", "l"),
+                                 ruvia::DbBinaryOperator::kEqual,
+                                 query.value(std::string_view{"edge"})),
+                    ruvia::DbBinaryOperator::kAnd,
+                    query.unary(ruvia::DbUnaryOperator::kIsNull,
+                                query.column("deleted_at", "l")))),
+            "l")
+        .join(
+            ruvia::DbJoinType::kLeft, "device",
+            query.binary(
+                query.binary(query.column("link_id", "d"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.column("id", "l")),
+                ruvia::DbBinaryOperator::kAnd,
+                query.unary(ruvia::DbUnaryOperator::kIsNull,
+                            query.column("deleted_at", "d"))),
+            "d")
+        .join(
+            ruvia::DbJoinType::kLeft, "device_model",
+            query.binary(
+                query.binary(query.column("device_id", "p"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.column("id", "d")),
+                ruvia::DbBinaryOperator::kAnd,
+                query.unary(ruvia::DbUnaryOperator::kIsNull,
+                            query.column("deleted_at", "p"))),
+            "p")
+        .orderBy(query.column("id", "n"))
+        .addOrderBy(query.column("id", "d"));
+    const auto rows = co_await context.db().query(query);
     Catalog catalog;
     for (const auto& row : rows) {
         auto& snapshot = catalog[std::string(row[0].value().value_or(std::string_view{}))];
@@ -330,165 +428,633 @@ redis.call('SETEX', KEYS[2], 604800, ARGV[1])
 return #ARGV - 1
 )lua";
 
-inline constexpr std::string_view kQueueSnapshotSql = R"sql(
-WITH next AS (
-    SELECT id,
-           GREATEST(
-               (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint,
-               COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
-                             THEN (status->'config'->>'desiredVersion')::bigint END, 0) + 1,
-               COALESCE(CASE WHEN status->'config'->>'activeVersion' ~ '^-?[0-9]{1,18}$'
-                             THEN (status->'config'->>'activeVersion')::bigint END, 0) + 1) AS revision
-    FROM edge_node
-    WHERE id = $1::uuid AND enrollment_status = 'approved'
-      AND CASE lower(COALESCE(capability->>'deviceConfig', ''))
-              WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
-              ELSE false END
-)
-UPDATE edge_node node
-SET status = jsonb_set(
-        jsonb_set(
-            jsonb_set(node.status, '{config,desiredVersion}', to_jsonb(next.revision), true),
-            '{config,state}', to_jsonb('pending'::text), true),
-        '{config,message}', to_jsonb(''::text), true),
-    updated_at = NOW()
-FROM next
-WHERE node.id = next.id
-RETURNING next.revision)sql";
+inline ruvia::DbQuery::Expr jsonGet(ruvia::DbQuery& query,
+                                    ruvia::DbQuery::Expr value,
+                                    std::string_view key) {
+    return query.binary(std::move(value), ruvia::DbBinaryOperator::kJsonGet,
+                        query.cast(query.value(key), ruvia::DbDataType::kText));
+}
 
-inline constexpr std::string_view kRequeueDesiredSql = R"sql(
-SELECT COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
-                     THEN (status->'config'->>'desiredVersion')::bigint END, 0),
-       COALESCE(status->'config'->>'state', 'idle')
-FROM edge_node
-WHERE id = $1::uuid AND enrollment_status = 'approved'
-  AND CASE lower(COALESCE(capability->>'deviceConfig', ''))
-          WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
-          ELSE false END)sql";
+inline ruvia::DbQuery::Expr jsonText(ruvia::DbQuery& query,
+                                     ruvia::DbQuery::Expr value,
+                                     std::string_view key) {
+    return query.binary(std::move(value),
+                        ruvia::DbBinaryOperator::kJsonGetText,
+                        query.cast(query.value(key), ruvia::DbDataType::kText));
+}
 
-inline constexpr std::string_view kRequeuePendingSql = R"sql(
-UPDATE edge_node
-SET status = jsonb_set(
-        jsonb_set(status, '{config,state}', to_jsonb('pending'::text), true),
-        '{config,message}', to_jsonb(''::text), true),
-    updated_at = NOW()
-WHERE id = $1::uuid
-  AND COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
-                    THEN (status->'config'->>'desiredVersion')::bigint END, 0) = $2
-  AND COALESCE(status->'config'->>'state', 'idle') <> 'rejected')sql";
+inline ruvia::DbQuery::Expr jsonText(ruvia::DbQuery& query,
+                                     std::string_view column,
+                                     std::string_view table,
+                                     std::string_view key) {
+    return jsonText(query, query.column(column, table), key);
+}
 
-inline constexpr std::string_view kRejectBuildSql = R"sql(
-UPDATE edge_node
-SET status = jsonb_set(
-        jsonb_set(status, '{config,state}', to_jsonb('rejected'::text), true),
-        '{config,message}', to_jsonb($1::text), true),
-    updated_at = NOW()
-WHERE id = $2::uuid
-  AND COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
-                    THEN (status->'config'->>'desiredVersion')::bigint END, 0) = $3)sql";
+inline ruvia::DbQuery::Expr jsonPath(ruvia::DbQuery& query,
+                                     std::string_view path) {
+    return query.cast(
+        query.value(path),
+        ruvia::DbTypeDefinition{.dataType = ruvia::DbDataType::kText,
+                                .array = true});
+}
 
-inline constexpr std::string_view kBuildItemsSql = R"sql(
-SELECT d.id::text, d.name, d.protocol_params->>'device_code', p.protocol,
-       COALESCE(NULLIF(d.protocol_params->>'timezone', ''), '+08:00'),
-       COALESCE(NULLIF(p.config->>'readInterval', ''), '1'),
-       COALESCE(NULLIF(d.protocol_params->>'online_timeout', ''), '300'),
-       COALESCE(NULLIF(d.protocol_params->>'slave_id', ''), '1'),
-       COALESCE(d.protocol_params->>'modbus_mode', 'TCP'),
-       l.endpoint->>'transport', l.endpoint->>'interface',
-       COALESCE(l.endpoint->>'mode', ''), COALESCE(l.endpoint->>'ip', ''),
-       COALESCE(NULLIF(l.endpoint->>'port', ''), '0'),
-       COALESCE(NULLIF(l.endpoint->>'baud_rate', ''), '9600'),
-       COALESCE(NULLIF(l.endpoint->>'data_bits', ''), '8'),
-       COALESCE(NULLIF(l.endpoint->>'stop_bits', ''), '1'),
-       COALESCE(l.endpoint->>'parity', 'none'),
-       CASE lower(COALESCE(l.endpoint->>'rs485', ''))
-            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
-            ELSE false END,
-       COALESCE(NULLIF(p.config->'packet'->>'mergeGap', ''), '0'),
-       COALESCE(NULLIF(p.config->'packet'->>'maxQuantity', ''), '125'),
-       COALESCE(p.config->'connection'->>'mode', 'RACK_SLOT'),
-       COALESCE(p.config->'connection'->>'connectionType', 'PG'),
-       COALESCE(NULLIF(p.config->'connection'->>'rack', ''), '0'),
-       COALESCE(NULLIF(p.config->'connection'->>'slot', ''), '1'),
-       COALESCE(p.config->'connection'->>'localTSAP', ''),
-       COALESCE(p.config->'connection'->>'remoteTSAP', ''),
-       COALESCE(d.protocol_params->'heartbeat'->>'mode', 'OFF'),
-       COALESCE(d.protocol_params->'heartbeat'->>'content', ''),
-       d.status = 'enabled' AND p.enabled AND l.status = 'enabled',
-       d.link_id::text,
-       COALESCE(NULLIF(p.config->>'commandFastReadDuration', ''), '60'),
-       COALESCE(NULLIF(p.config->>'commandFastReadInterval', ''), '1'),
-       l.name, l.status = 'enabled'
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN device_model p ON p.device_id = d.id AND p.deleted_at IS NULL
-WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
-ORDER BY d.id)sql";
+inline ruvia::DbQuery::Expr toJsonb(ruvia::DbQuery& query,
+                                   ruvia::DbQuery::Expr value) {
+    return query.call("to_jsonb", {std::move(value)});
+}
 
-inline constexpr std::string_view kAppendModbusSql = R"sql(
-SELECT d.id::text, item->>'id', item->>'name', COALESCE(item->>'unit', ''),
-       item->>'registerType', item->>'dataType',
-       COALESCE(item->>'byteOrder', p.config->>'byteOrder', 'BIG_ENDIAN'),
-       COALESCE(NULLIF(item->>'address', ''), '0'),
-       COALESCE(NULLIF(item->>'quantity', ''), '1'),
-       COALESCE(NULLIF(item->>'scale', ''), '1'),
-       COALESCE(NULLIF(item->>'decimals', ''), '-1'),
-       CASE lower(COALESCE(item->>'writable', ''))
-            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
-            ELSE false END
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN device_model p ON p.device_id = d.id AND p.protocol = 'Modbus'
-CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]')) item
-WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
-ORDER BY d.id, item->>'id')sql";
+inline ruvia::DbQuery::Expr toJsonbText(ruvia::DbQuery& query,
+                                       std::string_view value) {
+    return toJsonb(query, query.cast(query.value(value), ruvia::DbDataType::kText));
+}
 
-inline constexpr std::string_view kAppendS7Sql = R"sql(
-SELECT d.id::text, item->>'id', item->>'name', COALESCE(item->>'unit', ''),
-       item->>'area', COALESCE(NULLIF(item->>'dbNumber', ''), '0'),
-       COALESCE(NULLIF(item->>'start', ''), '0'),
-       COALESCE(NULLIF(item->>'startBit', ''), '0'),
-       COALESCE(NULLIF(item->>'size', ''), '1'), COALESCE(item->>'dataType', 'BOOL'),
-       COALESCE(NULLIF(item->>'decimals', ''), '-1'),
-       CASE lower(COALESCE(item->>'writable', ''))
-            WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
-            ELSE false END
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN device_model p ON p.device_id = d.id AND p.protocol = 'S7'
-CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]')) item
-WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
-ORDER BY d.id, item->>'id')sql";
+inline ruvia::DbQuery::Expr nullableDefault(ruvia::DbQuery& query,
+                                            ruvia::DbQuery::Expr value,
+                                            std::string_view fallback) {
+    return query.coalesce({std::move(value),
+                           query.cast(query.value(fallback), ruvia::DbDataType::kText)});
+}
 
-inline constexpr std::string_view kAppendSl651FunctionsSql = R"sql(
-SELECT d.id::text, func->>'funcCode', func->>'name', func->>'dir'
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN device_model p ON p.device_id = d.id AND p.protocol = 'SL651'
-CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]')) func
-WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
-ORDER BY d.id, func->>'funcCode')sql";
+inline ruvia::DbQuery::Expr textDefault(ruvia::DbQuery& query,
+                                        ruvia::DbQuery::Expr value,
+                                        std::string_view fallback) {
+    return query.coalesce({
+        query.nullIf(std::move(value), query.value(std::string_view{})),
+        query.cast(query.value(fallback), ruvia::DbDataType::kText)});
+}
 
-inline constexpr std::string_view kAppendSl651ElementsSql = R"sql(
-SELECT d.id::text, func->>'funcCode', element->>'id', element->>'name',
-       COALESCE(element->>'unit', ''), element->>'encode',
-       COALESCE(NULLIF(element->>'length', ''), '0'),
-       COALESCE(NULLIF(element->>'digits', ''), '0'),
-       COALESCE(element->>'guideHex', ''), response_element,
-       func->>'dir' = 'DOWN'
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN device_model p ON p.device_id = d.id AND p.protocol = 'SL651'
-CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]')) func
-CROSS JOIN LATERAL (
-  SELECT value AS element, false AS response_element
-  FROM jsonb_array_elements(COALESCE(func->'elements', '[]'))
-  UNION ALL
-  SELECT value AS element, true AS response_element
-  FROM jsonb_array_elements(COALESCE(func->'responseElements', '[]'))
-) values
-WHERE l.edge_node_id = $1::uuid AND d.deleted_at IS NULL
-ORDER BY d.id, func->>'funcCode', response_element, element->>'id')sql";
+inline ruvia::DbQuery::Expr booleanText(ruvia::DbQuery& query,
+                                        ruvia::DbQuery::Expr value) {
+    const auto lower = query.call(
+        "lower",
+        {query.coalesce({std::move(value),
+                         query.cast(query.value(std::string_view{}),
+                                    ruvia::DbDataType::kText)})});
+    return query.caseWhen(
+        {{query.binary(lower, ruvia::DbBinaryOperator::kEqual,
+                       query.cast(query.value(std::string_view{"true"}),
+                                  ruvia::DbDataType::kText)),
+          query.cast(query.value(true), ruvia::DbDataType::kBoolean)},
+         {query.binary(lower, ruvia::DbBinaryOperator::kEqual,
+                       query.cast(query.value(std::string_view{"t"}),
+                                  ruvia::DbDataType::kText)),
+          query.cast(query.value(true), ruvia::DbDataType::kBoolean)},
+         {query.binary(lower, ruvia::DbBinaryOperator::kEqual,
+                       query.cast(query.value(std::string_view{"1"}),
+                                  ruvia::DbDataType::kText)),
+          query.cast(query.value(true), ruvia::DbDataType::kBoolean)}},
+        query.cast(query.value(false), ruvia::DbDataType::kBoolean));
+}
+
+inline ruvia::DbQuery::Expr jsonKey(ruvia::DbQuery& query,
+                                    std::string_view value) {
+    return query.cast(query.value(value), ruvia::DbDataType::kText);
+}
+
+inline ruvia::DbQuery::Expr configVersion(ruvia::DbQuery& query,
+                                          ruvia::DbQuery::Expr status,
+                                          std::string_view key) {
+    const auto text = jsonText(query, jsonGet(query, std::move(status), "config"), key);
+    const auto valid = query.binary(
+        text, ruvia::DbBinaryOperator::kRegex,
+        query.cast(query.value(std::string_view{"^-?[0-9]{1,18}$"}),
+                   ruvia::DbDataType::kText));
+    return query.coalesce(
+        {query.caseWhen({{valid, query.cast(text, ruvia::DbDataType::kBigInt)}}),
+         query.value(std::int64_t{0})});
+}
+
+inline ruvia::DbQuery::Expr configVersion(ruvia::DbQuery& query,
+                                          std::string_view table,
+                                          std::string_view key) {
+    return configVersion(query, query.column("status", table), key);
+}
+
+inline ruvia::DbQuery::Expr configState(ruvia::DbQuery& query,
+                                        ruvia::DbQuery::Expr status) {
+    return query.coalesce(
+        {jsonText(query, jsonGet(query, std::move(status), "config"), "state"),
+         query.cast(query.value(std::string_view{"idle"}),
+                    ruvia::DbDataType::kText)});
+}
+
+inline ruvia::DbQuery::Expr capabilityEnabled(ruvia::DbQuery& query,
+                                              std::string_view table) {
+    return booleanText(query, jsonText(query, query.column("capability", table),
+                                        "deviceConfig"));
+}
+
+inline ruvia::DbQuery queueSnapshotQuery(std::string_view nodeId) {
+    ruvia::DbQuery next;
+    const auto desired = configVersion(next, next.column("status"),
+                                       "desiredVersion");
+    const auto active = configVersion(next, next.column("status"),
+                                      "activeVersion");
+    const auto nowMilliseconds = next.cast(
+        next.binary(next.extract(ruvia::DbDatePart::kEpoch,
+                                 next.call("clock_timestamp")),
+                    ruvia::DbBinaryOperator::kMultiply,
+                    next.value(std::int64_t{1000})),
+        ruvia::DbDataType::kBigInt);
+    next.select({
+            next.column("id"),
+            next.alias(next.greatest({
+                           nowMilliseconds,
+                           next.binary(desired, ruvia::DbBinaryOperator::kAdd,
+                                       next.value(std::int64_t{1})),
+                           next.binary(active, ruvia::DbBinaryOperator::kAdd,
+                                       next.value(std::int64_t{1}))}),
+                       "revision"),
+        })
+        .from("edge_node")
+        .where(next.binary(next.column("id"), ruvia::DbBinaryOperator::kEqual,
+                           next.cast(next.value(nodeId), ruvia::DbDataType::kUuid)))
+        .andWhere(next.binary(next.column("enrollment_status"),
+                              ruvia::DbBinaryOperator::kEqual,
+                              next.value(std::string_view{"approved"})))
+        .andWhere(capabilityEnabled(next, {}));
+
+    ruvia::DbQuery update;
+    const auto status = update.column("status", "node");
+    const auto statusWithVersion = update.call(
+        "jsonb_set",
+        {status, jsonPath(update, "{config,desiredVersion}"),
+         toJsonb(update, update.column("revision", "next")),
+         update.cast(update.value(true), ruvia::DbDataType::kBoolean)});
+    const auto statusWithState = update.call(
+        "jsonb_set",
+        {statusWithVersion, jsonPath(update, "{config,state}"),
+         toJsonbText(update, "pending"),
+         update.cast(update.value(true), ruvia::DbDataType::kBoolean)});
+    const auto statusWithMessage = update.call(
+        "jsonb_set",
+        {statusWithState, jsonPath(update, "{config,message}"),
+         toJsonbText(update, ""),
+         update.cast(update.value(true), ruvia::DbDataType::kBoolean)});
+    update.with("next", next)
+        .update("edge_node", "node")
+        .set("status", statusWithMessage)
+        .set("updated_at", update.call("now"))
+        .updateFrom("next")
+        .where(update.binary(update.column("id", "node"),
+                            ruvia::DbBinaryOperator::kEqual,
+                            update.column("id", "next")))
+        .returning({update.column("revision", "next")});
+    return update;
+}
+
+inline ruvia::DbQuery requeueDesiredQuery(std::string_view nodeId) {
+    ruvia::DbQuery query;
+    query.select({configVersion(query, query.column("status"), "desiredVersion"),
+                  configState(query, query.column("status"))})
+        .from("edge_node")
+        .where(query.binary(query.column("id"), ruvia::DbBinaryOperator::kEqual,
+                           query.cast(query.value(nodeId), ruvia::DbDataType::kUuid)))
+        .andWhere(query.binary(query.column("enrollment_status"),
+                              ruvia::DbBinaryOperator::kEqual,
+                              query.value(std::string_view{"approved"})))
+        .andWhere(capabilityEnabled(query, {}));
+    return query;
+}
+
+inline ruvia::DbQuery requeuePendingQuery(std::string_view nodeId,
+                                          std::uint64_t revision) {
+    ruvia::DbQuery query;
+    const auto status = query.column("status");
+    const auto statusWithState = query.call(
+        "jsonb_set",
+        {status, jsonPath(query, "{config,state}"),
+         toJsonbText(query, "pending"),
+         query.cast(query.value(true), ruvia::DbDataType::kBoolean)});
+    query.update("edge_node")
+        .set("status", query.call(
+                           "jsonb_set",
+                           {statusWithState, jsonPath(query, "{config,message}"),
+                            toJsonbText(query, ""),
+                            query.cast(query.value(true), ruvia::DbDataType::kBoolean)}))
+        .set("updated_at", query.call("now"))
+        .where(query.binary(query.column("id"), ruvia::DbBinaryOperator::kEqual,
+                           query.cast(query.value(nodeId), ruvia::DbDataType::kUuid)))
+        .andWhere(query.binary(configVersion(query, query.column("status"),
+                                             "desiredVersion"),
+                              ruvia::DbBinaryOperator::kEqual,
+                              query.cast(query.value(static_cast<std::int64_t>(revision)),
+                                         ruvia::DbDataType::kBigInt)))
+        .andWhere(query.binary(configState(query, query.column("status")),
+                              ruvia::DbBinaryOperator::kNotEqual,
+                              query.value(std::string_view{"rejected"})));
+    return query;
+}
+
+inline ruvia::DbQuery rejectBuildQuery(std::string_view message,
+                                       std::string_view nodeId,
+                                       std::uint64_t revision) {
+    ruvia::DbQuery query;
+    const auto status = query.column("status");
+    const auto statusWithState = query.call(
+        "jsonb_set",
+        {status, jsonPath(query, "{config,state}"),
+         toJsonbText(query, "rejected"),
+         query.cast(query.value(true), ruvia::DbDataType::kBoolean)});
+    query.update("edge_node")
+        .set("status", query.call(
+                           "jsonb_set",
+                           {statusWithState, jsonPath(query, "{config,message}"),
+                            toJsonb(query, query.cast(query.value(message),
+                                                      ruvia::DbDataType::kText)),
+                            query.cast(query.value(true), ruvia::DbDataType::kBoolean)}))
+        .set("updated_at", query.call("now"))
+        .where(query.binary(query.column("id"), ruvia::DbBinaryOperator::kEqual,
+                           query.cast(query.value(nodeId), ruvia::DbDataType::kUuid)))
+        .andWhere(query.binary(configVersion(query, query.column("status"),
+                                             "desiredVersion"),
+                              ruvia::DbBinaryOperator::kEqual,
+                              query.cast(query.value(static_cast<std::int64_t>(revision)),
+                                         ruvia::DbDataType::kBigInt)));
+    return query;
+}
+
+inline ruvia::DbQuery buildItemsQuery(std::string_view nodeId) {
+    ruvia::DbQuery query;
+    const auto protocolParams = query.column("protocol_params", "d");
+    const auto modelConfig = query.column("config", "p");
+    const auto endpoint = query.column("endpoint", "l");
+    const auto packetConfig = jsonGet(query, modelConfig, "packet");
+    const auto connectionConfig = jsonGet(query, modelConfig, "connection");
+    const auto heartbeatConfig = jsonGet(query, protocolParams, "heartbeat");
+    const auto deviceEnabled = query.binary(
+        query.column("status", "d"), ruvia::DbBinaryOperator::kEqual,
+        query.value(std::string_view{"enabled"}));
+    const auto linkEnabled = query.binary(
+        query.column("status", "l"), ruvia::DbBinaryOperator::kEqual,
+        query.value(std::string_view{"enabled"}));
+
+    query
+        .select({
+            query.cast(query.column("id", "d"), ruvia::DbDataType::kText),
+            query.column("name", "d"),
+            jsonText(query, protocolParams, "device_code"),
+            query.column("protocol", "p"),
+            textDefault(query, jsonText(query, protocolParams, "timezone"), "+08:00"),
+            textDefault(query, jsonText(query, modelConfig, "readInterval"), "1"),
+            textDefault(query, jsonText(query, protocolParams, "online_timeout"), "300"),
+            textDefault(query, jsonText(query, protocolParams, "slave_id"), "1"),
+            nullableDefault(query, jsonText(query, protocolParams, "modbus_mode"), "TCP"),
+            jsonText(query, endpoint, "transport"),
+            jsonText(query, endpoint, "interface"),
+            nullableDefault(query, jsonText(query, endpoint, "mode"), ""),
+            nullableDefault(query, jsonText(query, endpoint, "ip"), ""),
+            textDefault(query, jsonText(query, endpoint, "port"), "0"),
+            textDefault(query, jsonText(query, endpoint, "baud_rate"), "9600"),
+            textDefault(query, jsonText(query, endpoint, "data_bits"), "8"),
+            textDefault(query, jsonText(query, endpoint, "stop_bits"), "1"),
+            nullableDefault(query, jsonText(query, endpoint, "parity"), "none"),
+            booleanText(query, jsonText(query, endpoint, "rs485")),
+            textDefault(query, jsonText(query, packetConfig, "mergeGap"), "0"),
+            textDefault(query, jsonText(query, packetConfig, "maxQuantity"), "125"),
+            nullableDefault(query, jsonText(query, connectionConfig, "mode"), "RACK_SLOT"),
+            nullableDefault(query, jsonText(query, connectionConfig, "connectionType"), "PG"),
+            textDefault(query, jsonText(query, connectionConfig, "rack"), "0"),
+            textDefault(query, jsonText(query, connectionConfig, "slot"), "1"),
+            nullableDefault(query, jsonText(query, connectionConfig, "localTSAP"), ""),
+            nullableDefault(query, jsonText(query, connectionConfig, "remoteTSAP"), ""),
+            nullableDefault(query, jsonText(query, heartbeatConfig, "mode"), "OFF"),
+            nullableDefault(query, jsonText(query, heartbeatConfig, "content"), ""),
+            query.binary(query.binary(deviceEnabled, ruvia::DbBinaryOperator::kAnd,
+                                      query.column("enabled", "p")),
+                         ruvia::DbBinaryOperator::kAnd, linkEnabled),
+            query.cast(query.column("link_id", "d"), ruvia::DbDataType::kText),
+            textDefault(query, jsonText(query, modelConfig, "commandFastReadDuration"), "60"),
+            textDefault(query, jsonText(query, modelConfig, "commandFastReadInterval"), "1"),
+            query.column("name", "l"),
+            linkEnabled,
+        })
+        .from("device", "d")
+        .join(
+            ruvia::DbJoinType::kInner, "link",
+            query.binary(
+                query.binary(query.column("id", "l"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.column("link_id", "d")),
+                ruvia::DbBinaryOperator::kAnd,
+                query.binary(
+                    query.binary(query.column("execution", "l"),
+                                 ruvia::DbBinaryOperator::kEqual,
+                                 query.value(std::string_view{"edge"})),
+                    ruvia::DbBinaryOperator::kAnd,
+                    query.unary(ruvia::DbUnaryOperator::kIsNull,
+                                query.column("deleted_at", "l")))),
+            "l")
+        .join(
+            ruvia::DbJoinType::kInner, "device_model",
+            query.binary(
+                query.binary(query.column("device_id", "p"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.column("id", "d")),
+                ruvia::DbBinaryOperator::kAnd,
+                query.unary(ruvia::DbUnaryOperator::kIsNull,
+                            query.column("deleted_at", "p"))),
+            "p")
+        .where(query.binary(query.column("edge_node_id", "l"),
+                           ruvia::DbBinaryOperator::kEqual,
+                           query.cast(query.value(nodeId),
+                                      ruvia::DbDataType::kUuid)))
+        .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull,
+                              query.column("deleted_at", "d")))
+        .orderBy(query.column("id", "d"));
+    return query;
+}
+
+inline ruvia::DbQuery appendModbusQuery(std::string_view nodeId) {
+    ruvia::DbQuery query;
+    const auto config = query.column("config", "p");
+    const auto itemSource = query.call(
+        "jsonb_array_elements",
+        {query.coalesce({jsonGet(query, config, "registers"),
+                         query.cast(query.value(std::string_view{"[]"}),
+                                    ruvia::DbDataType::kJsonb)})});
+    const auto item = query.column("item");
+    query
+        .select({
+            query.cast(query.column("id", "d"), ruvia::DbDataType::kText),
+            jsonText(query, item, "id"),
+            jsonText(query, item, "name"),
+            nullableDefault(query, jsonText(query, item, "unit"), ""),
+            jsonText(query, item, "registerType"),
+            jsonText(query, item, "dataType"),
+            query.coalesce({jsonText(query, item, "byteOrder"),
+                           jsonText(query, config, "byteOrder"),
+                           query.value(std::string_view{"BIG_ENDIAN"})}),
+            textDefault(query, jsonText(query, item, "address"), "0"),
+            textDefault(query, jsonText(query, item, "quantity"), "1"),
+            textDefault(query, jsonText(query, item, "scale"), "1"),
+            textDefault(query, jsonText(query, item, "decimals"), "-1"),
+            booleanText(query, jsonText(query, item, "writable")),
+        })
+        .from("device", "d")
+        .join(
+            ruvia::DbJoinType::kInner, "link",
+            query.binary(
+                query.binary(query.column("id", "l"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.column("link_id", "d")),
+                ruvia::DbBinaryOperator::kAnd,
+                query.binary(
+                    query.binary(query.column("execution", "l"),
+                                 ruvia::DbBinaryOperator::kEqual,
+                                 query.value(std::string_view{"edge"})),
+                    ruvia::DbBinaryOperator::kAnd,
+                    query.unary(ruvia::DbUnaryOperator::kIsNull,
+                                query.column("deleted_at", "l")))),
+            "l")
+        .join(
+            ruvia::DbJoinType::kInner, "device_model",
+            query.binary(
+                query.binary(query.column("device_id", "p"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.column("id", "d")),
+                ruvia::DbBinaryOperator::kAnd,
+                query.binary(query.column("protocol", "p"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.value(std::string_view{"Modbus"}))),
+            "p")
+        .joinFunction(ruvia::DbJoinType::kCross, itemSource, {}, "item",
+                      {.lateral = true})
+        .where(query.binary(query.column("edge_node_id", "l"),
+                           ruvia::DbBinaryOperator::kEqual,
+                           query.cast(query.value(nodeId),
+                                      ruvia::DbDataType::kUuid)))
+        .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull,
+                              query.column("deleted_at", "d")))
+        .orderBy(query.column("id", "d"))
+        .addOrderBy(jsonText(query, item, "id"));
+    return query;
+}
+
+inline ruvia::DbQuery appendS7Query(std::string_view nodeId) {
+    ruvia::DbQuery query;
+    const auto config = query.column("config", "p");
+    const auto itemSource = query.call(
+        "jsonb_array_elements",
+        {query.coalesce({jsonGet(query, config, "areas"),
+                         query.cast(query.value(std::string_view{"[]"}),
+                                    ruvia::DbDataType::kJsonb)})});
+    const auto item = query.column("item");
+    query
+        .select({
+            query.cast(query.column("id", "d"), ruvia::DbDataType::kText),
+            jsonText(query, item, "id"),
+            jsonText(query, item, "name"),
+            nullableDefault(query, jsonText(query, item, "unit"), ""),
+            jsonText(query, item, "area"),
+            textDefault(query, jsonText(query, item, "dbNumber"), "0"),
+            textDefault(query, jsonText(query, item, "start"), "0"),
+            textDefault(query, jsonText(query, item, "startBit"), "0"),
+            textDefault(query, jsonText(query, item, "size"), "1"),
+            nullableDefault(query, jsonText(query, item, "dataType"), "BOOL"),
+            textDefault(query, jsonText(query, item, "decimals"), "-1"),
+            booleanText(query, jsonText(query, item, "writable")),
+        })
+        .from("device", "d")
+        .join(
+            ruvia::DbJoinType::kInner, "link",
+            query.binary(
+                query.binary(query.column("id", "l"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.column("link_id", "d")),
+                ruvia::DbBinaryOperator::kAnd,
+                query.binary(
+                    query.binary(query.column("execution", "l"),
+                                 ruvia::DbBinaryOperator::kEqual,
+                                 query.value(std::string_view{"edge"})),
+                    ruvia::DbBinaryOperator::kAnd,
+                    query.unary(ruvia::DbUnaryOperator::kIsNull,
+                                query.column("deleted_at", "l")))),
+            "l")
+        .join(
+            ruvia::DbJoinType::kInner, "device_model",
+            query.binary(
+                query.binary(query.column("device_id", "p"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.column("id", "d")),
+                ruvia::DbBinaryOperator::kAnd,
+                query.binary(query.column("protocol", "p"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.value(std::string_view{"S7"}))),
+            "p")
+        .joinFunction(ruvia::DbJoinType::kCross, itemSource, {}, "item",
+                      {.lateral = true})
+        .where(query.binary(query.column("edge_node_id", "l"),
+                           ruvia::DbBinaryOperator::kEqual,
+                           query.cast(query.value(nodeId),
+                                      ruvia::DbDataType::kUuid)))
+        .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull,
+                              query.column("deleted_at", "d")))
+        .orderBy(query.column("id", "d"))
+        .addOrderBy(jsonText(query, item, "id"));
+    return query;
+}
+
+inline ruvia::DbQuery appendSl651FunctionsQuery(std::string_view nodeId) {
+    ruvia::DbQuery query;
+    const auto config = query.column("config", "p");
+    const auto functionSource = query.call(
+        "jsonb_array_elements",
+        {query.coalesce({jsonGet(query, config, "funcs"),
+                         query.cast(query.value(std::string_view{"[]"}),
+                                    ruvia::DbDataType::kJsonb)})});
+    const auto function = query.column("func");
+    query
+        .select({query.cast(query.column("id", "d"), ruvia::DbDataType::kText),
+                 jsonText(query, function, "funcCode"),
+                 jsonText(query, function, "name"),
+                 jsonText(query, function, "dir")})
+        .from("device", "d")
+        .join(
+            ruvia::DbJoinType::kInner, "link",
+            query.binary(
+                query.binary(query.column("id", "l"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.column("link_id", "d")),
+                ruvia::DbBinaryOperator::kAnd,
+                query.binary(
+                    query.binary(query.column("execution", "l"),
+                                 ruvia::DbBinaryOperator::kEqual,
+                                 query.value(std::string_view{"edge"})),
+                    ruvia::DbBinaryOperator::kAnd,
+                    query.unary(ruvia::DbUnaryOperator::kIsNull,
+                                query.column("deleted_at", "l")))),
+            "l")
+        .join(
+            ruvia::DbJoinType::kInner, "device_model",
+            query.binary(
+                query.binary(query.column("device_id", "p"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.column("id", "d")),
+                ruvia::DbBinaryOperator::kAnd,
+                query.binary(query.column("protocol", "p"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.value(std::string_view{"SL651"}))),
+            "p")
+        .joinFunction(ruvia::DbJoinType::kCross, functionSource, {}, "func",
+                      {.lateral = true})
+        .where(query.binary(query.column("edge_node_id", "l"),
+                           ruvia::DbBinaryOperator::kEqual,
+                           query.cast(query.value(nodeId),
+                                      ruvia::DbDataType::kUuid)))
+        .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull,
+                              query.column("deleted_at", "d")))
+        .orderBy(query.column("id", "d"))
+        .addOrderBy(jsonText(query, function, "funcCode"));
+    return query;
+}
+
+inline ruvia::DbQuery appendSl651ElementsQuery(std::string_view nodeId) {
+    ruvia::DbQuery query;
+    const auto config = query.column("config", "p");
+    const auto functionSource = query.call(
+        "jsonb_array_elements",
+        {query.coalesce({jsonGet(query, config, "funcs"),
+                         query.cast(query.value(std::string_view{"[]"}),
+                                    ruvia::DbDataType::kJsonb)})});
+    const auto function = query.column("func");
+    ruvia::DbQuery elementRows;
+    const auto elementSource = elementRows.call(
+        "jsonb_array_elements",
+        {elementRows.coalesce({
+            jsonGet(elementRows, elementRows.column("func"), "elements"),
+            elementRows.cast(elementRows.value(std::string_view{"[]"}),
+                              ruvia::DbDataType::kJsonb)})});
+    elementRows
+        .select({elementRows.alias(elementRows.column("value", "element_value"),
+                                   "element"),
+                 elementRows.alias(elementRows.cast(elementRows.value(false),
+                                                    ruvia::DbDataType::kBoolean),
+                                   "response_element")})
+        .fromFunction(elementSource, "element_value",
+                      {.lateral = false, .columns = {{.name = "value"}}});
+
+    ruvia::DbQuery responseRows;
+    const auto responseElementSource = responseRows.call(
+        "jsonb_array_elements",
+        {responseRows.coalesce({
+            jsonGet(responseRows, responseRows.column("func"),
+                    "responseElements"),
+            responseRows.cast(responseRows.value(std::string_view{"[]"}),
+                               ruvia::DbDataType::kJsonb)})});
+    responseRows
+        .select({responseRows.alias(
+                     responseRows.column("value", "response_value"),
+                     "element"),
+                 responseRows.alias(responseRows.cast(responseRows.value(true),
+                                                       ruvia::DbDataType::kBoolean),
+                                    "response_element")})
+        .fromFunction(responseElementSource, "response_value",
+                      {.lateral = false, .columns = {{.name = "value"}}});
+    elementRows.combine(ruvia::DbSetOperation::kUnionAll, responseRows);
+    const auto element = query.column("element", "values");
+    const auto responseElement = query.column("response_element", "values");
+    const auto functionCode = jsonText(query, function, "funcCode");
+
+    query
+        .select({
+            query.cast(query.column("id", "d"), ruvia::DbDataType::kText),
+            functionCode,
+            jsonText(query, element, "id"),
+            jsonText(query, element, "name"),
+            nullableDefault(query, jsonText(query, element, "unit"), ""),
+            jsonText(query, element, "encode"),
+            textDefault(query, jsonText(query, element, "length"), "0"),
+            textDefault(query, jsonText(query, element, "digits"), "0"),
+            nullableDefault(query, jsonText(query, element, "guideHex"), ""),
+            responseElement,
+            query.binary(jsonText(query, function, "dir"),
+                         ruvia::DbBinaryOperator::kEqual,
+                         query.value(std::string_view{"DOWN"})),
+        })
+        .from("device", "d")
+        .join(
+            ruvia::DbJoinType::kInner, "link",
+            query.binary(
+                query.binary(query.column("id", "l"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.column("link_id", "d")),
+                ruvia::DbBinaryOperator::kAnd,
+                query.binary(
+                    query.binary(query.column("execution", "l"),
+                                 ruvia::DbBinaryOperator::kEqual,
+                                 query.value(std::string_view{"edge"})),
+                    ruvia::DbBinaryOperator::kAnd,
+                    query.unary(ruvia::DbUnaryOperator::kIsNull,
+                                query.column("deleted_at", "l")))),
+            "l")
+        .join(
+            ruvia::DbJoinType::kInner, "device_model",
+            query.binary(
+                query.binary(query.column("device_id", "p"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.column("id", "d")),
+                ruvia::DbBinaryOperator::kAnd,
+                query.binary(query.column("protocol", "p"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.value(std::string_view{"SL651"}))),
+            "p")
+        .joinFunction(ruvia::DbJoinType::kCross, functionSource, {}, "func",
+                      {.lateral = true})
+        .join(ruvia::DbJoinType::kCross, elementRows, {}, "values",
+              {.lateral = true})
+        .where(query.binary(query.column("edge_node_id", "l"),
+                           ruvia::DbBinaryOperator::kEqual,
+                           query.cast(query.value(nodeId),
+                                      ruvia::DbDataType::kUuid)))
+        .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull,
+                              query.column("deleted_at", "d")))
+        .orderBy(query.column("id", "d"))
+        .addOrderBy(functionCode)
+        .addOrderBy(responseElement)
+        .addOrderBy(jsonText(query, element, "id"));
+    return query;
+}
 } // namespace config::detail
 
 class ConfigService final {
@@ -501,8 +1067,8 @@ class ConfigService final {
     ruvia::Task<std::uint64_t> queueSnapshot(ruvia::WebWorkerContext& c,
                                              std::string_view nodeId,
                                              std::string_view actorId) {
-        const auto version = co_await c.db().query(config::detail::kQueueSnapshotSql,
-                                                   service::common::dbParams(nodeId));
+        const auto version =
+            co_await c.db().query(config::detail::queueSnapshotQuery(nodeId));
         if (version.empty())
             service::common::fail(17011, "边缘节点未批准或不支持设备配置", 409);
         const auto revision = unsignedInteger(version.front()[0].value().value_or(std::string_view{}));
@@ -514,14 +1080,19 @@ class ConfigService final {
 
         if (!service::common::isUuid(actorId))
             service::common::fail(10002, "invalid edge snapshot actor", 400);
-        (void)co_await c.db().execute(R"sql(
-INSERT INTO edge_config_revision(node_id, revision, sha256, item_count, created_by)
-VALUES ($1::uuid, $2, $3, $4, $5::uuid))sql",
-                                      service::common::dbParams(
-                                          nodeId, static_cast<std::int64_t>(revision),
-                                          snapshot->digest,
-                                          static_cast<std::int64_t>(snapshot->itemCount),
-                                          actorId));
+        ruvia::DbQuery insert;
+        insert
+            .insertInto("edge_config_revision",
+                        {"node_id", "revision", "sha256", "item_count",
+                         "created_by"})
+            .values({
+                insert.cast(insert.value(nodeId), ruvia::DbDataType::kUuid),
+                insert.value(static_cast<std::int64_t>(revision)),
+                insert.value(snapshot->digest),
+                insert.value(static_cast<std::int64_t>(snapshot->itemCount)),
+                insert.cast(insert.value(actorId), ruvia::DbDataType::kUuid),
+            });
+        (void)co_await c.db().execute(insert);
         co_await replaceQueue(c, nodeId, revision, snapshot->wires);
         co_await metadata::publishNode(c, nodeId);
         co_return revision;
@@ -529,8 +1100,8 @@ VALUES ($1::uuid, $2, $3, $4, $5::uuid))sql",
 
     ruvia::Task<bool> requeueIfStale(ruvia::Context& c, std::string_view nodeId,
                                      std::uint64_t activeRevision) {
-        const auto desired = co_await c.db().query(config::detail::kRequeueDesiredSql,
-                                                   service::common::dbParams(nodeId));
+        const auto desired =
+            co_await c.db().query(config::detail::requeueDesiredQuery(nodeId));
         if (desired.empty())
             co_return false;
         const auto revision = unsignedInteger(desired.front()[0].value().value_or(std::string_view{}));
@@ -541,19 +1112,31 @@ VALUES ($1::uuid, $2, $3, $4, $5::uuid))sql",
         auto snapshot = co_await buildSnapshot(c, nodeId, revision);
         if (!snapshot)
             co_return false;
-        (void)co_await c.db().execute(R"sql(
-INSERT INTO edge_config_revision(node_id, revision, sha256, item_count, created_by)
-VALUES ($1::uuid, $2, $3, $4, NULL)
-ON CONFLICT (node_id, revision) DO UPDATE
-SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
-    status = 'pending', message = '', completed_at = NULL)sql",
-                                      service::common::dbParams(
-                                          nodeId, static_cast<std::int64_t>(revision),
-                                          snapshot->digest,
-                                          static_cast<std::int64_t>(snapshot->itemCount)));
-        (void)co_await c.db().execute(config::detail::kRequeuePendingSql,
-                                      service::common::dbParams(
-                                          nodeId, static_cast<std::int64_t>(revision)));
+        ruvia::DbQuery insert;
+        insert
+            .insertInto("edge_config_revision",
+                        {"node_id", "revision", "sha256", "item_count",
+                         "created_by"})
+            .values({
+                insert.cast(insert.value(nodeId), ruvia::DbDataType::kUuid),
+                insert.value(static_cast<std::int64_t>(revision)),
+                insert.value(snapshot->digest),
+                insert.value(static_cast<std::int64_t>(snapshot->itemCount)),
+                insert.nullValue(),
+            });
+        ruvia::DbConflictOptions conflict;
+        conflict.columns = {"node_id", "revision"};
+        conflict.update = {
+            {"sha256", insert.excluded("sha256")},
+            {"item_count", insert.excluded("item_count")},
+            {"status", insert.value(std::string_view{"pending"})},
+            {"message", insert.value(std::string_view{})},
+            {"completed_at", insert.nullValue()},
+        };
+        insert.onConflict(conflict);
+        (void)co_await c.db().execute(insert);
+        (void)co_await c.db().execute(
+            config::detail::requeuePendingQuery(nodeId, revision));
         co_await replaceQueue(c, nodeId, revision, snapshot->wires);
         co_await metadata::publishNode(c, nodeId);
         co_return true;
@@ -746,9 +1329,8 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
     template <typename Context>
     static ruvia::Task<void> rejectBuild(Context& c, std::string_view nodeId,
                                          std::uint64_t revision, std::string_view message) {
-        (void)co_await c.db().execute(config::detail::kRejectBuildSql,
-                                      service::common::dbParams(
-                                          message, nodeId, static_cast<std::int64_t>(revision)));
+        (void)co_await c.db().execute(
+            config::detail::rejectBuildQuery(message, nodeId, revision));
     }
 
     template <typename Context>
@@ -756,8 +1338,8 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
     buildItems(Context& c, std::string_view nodeId) {
         std::vector<pb::ConfigItem> items;
         std::set<std::string> endpoints;
-        const auto devices = co_await c.db().query(config::detail::kBuildItemsSql,
-                                                     service::common::dbParams(nodeId));
+        const auto devices =
+            co_await c.db().query(config::detail::buildItemsQuery(nodeId));
         for (const auto& row : devices) {
             const auto protocol = protocolValue(row[3].value().value_or(std::string_view{}));
             pb::ConfigItem endpoint;
@@ -845,9 +1427,9 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
 
     template <typename Context>
     static ruvia::Task<void> appendModbus(Context& c, std::string_view nodeId,
-                                          std::vector<pb::ConfigItem>& items) {
-        const auto rows = co_await c.db().query(config::detail::kAppendModbusSql,
-                                                 service::common::dbParams(nodeId));
+                                           std::vector<pb::ConfigItem>& items) {
+        const auto rows =
+            co_await c.db().query(config::detail::appendModbusQuery(nodeId));
         for (const auto& row : rows) {
             pb::ConfigItem item;
             item.set_kind(pb::CONFIG_ITEM_MODBUS_REGISTER);
@@ -872,9 +1454,9 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
 
     template <typename Context>
     static ruvia::Task<void> appendS7(Context& c, std::string_view nodeId,
-                                      std::vector<pb::ConfigItem>& items) {
-        const auto rows = co_await c.db().query(config::detail::kAppendS7Sql,
-                                                 service::common::dbParams(nodeId));
+                                       std::vector<pb::ConfigItem>& items) {
+        const auto rows =
+            co_await c.db().query(config::detail::appendS7Query(nodeId));
         for (const auto& row : rows) {
             pb::ConfigItem item;
             item.set_kind(pb::CONFIG_ITEM_S7_AREA);
@@ -902,9 +1484,9 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
 
     template <typename Context>
     static ruvia::Task<void> appendSl651(Context& c, std::string_view nodeId,
-                                         std::vector<pb::ConfigItem>& items) {
-        const auto functions = co_await c.db().query(config::detail::kAppendSl651FunctionsSql,
-                                                      service::common::dbParams(nodeId));
+                                          std::vector<pb::ConfigItem>& items) {
+        const auto functions = co_await c.db().query(
+            config::detail::appendSl651FunctionsQuery(nodeId));
         for (const auto& row : functions) {
             pb::ConfigItem item;
             item.set_kind(pb::CONFIG_ITEM_SL651_FUNCTION);
@@ -916,8 +1498,8 @@ SET sha256 = EXCLUDED.sha256, item_count = EXCLUDED.item_count,
             items.push_back(std::move(item));
         }
 
-        const auto elements = co_await c.db().query(config::detail::kAppendSl651ElementsSql,
-                                                     service::common::dbParams(nodeId));
+        const auto elements = co_await c.db().query(
+            config::detail::appendSl651ElementsQuery(nodeId));
         for (const auto& row : elements) {
             pb::ConfigItem item;
             item.set_kind(pb::CONFIG_ITEM_SL651_ELEMENT);
@@ -977,8 +1559,12 @@ inline bool validVpnPublicKey(std::string_view value) noexcept {
 class EdgeProjectionService {
 protected:
     static ruvia::Task<void> hydrateAuth(ruvia::WebWorkerContext& context) {
-        const auto rows = co_await context.db().query(
-            "SELECT imei, id::text, enrollment_status FROM edge_node");
+        ruvia::DbQuery query;
+        query.select({query.column("imei"),
+                      query.cast(query.column("id"), ruvia::DbDataType::kText),
+                      query.column("enrollment_status")})
+            .from("edge_node");
+        const auto rows = co_await context.db().query(query);
         if (rows.empty())
             co_return;
         auto pipeline = context.redis().pipeline();
@@ -1131,204 +1717,349 @@ protected:
         if (!protocol::validImei(hello.imei()))
             co_return;
         const auto candidate = service::common::nextUuidV7();
-        const auto rows = co_await context.db().query(R"sql(
-INSERT INTO edge_node(id, platform_id, imei, model, software_version, hostname, architecture,
-                      openwrt_release, capability, mobile, status, last_seen_at, updated_at)
-VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8,
-        jsonb_build_object(
-            'networkConfig', $9::boolean,
-            'firmwareUpdate', $10::boolean,
-            'firmwareStream', $29::boolean,
-            'platformConfig', $11::boolean,
-            'deviceConfig', $12::boolean,
-            'networkConfigVersion', $13::bigint,
-            'modemControl', $14::boolean,
-            'logs', $15::boolean,
-            'terminal', false,
-            'vpn', jsonb_build_object('supportsVpn', false, 'wireguardVersion', '',
-                                      'agentVersion', '', 'publicKey', '')),
-        jsonb_build_object(
-            'available', $16::boolean,
-            'simState', $17::text,
-            'iccid', $18::text,
-            'signal', jsonb_build_object(
-                'csq', $19::bigint,
-                'rssiDbm', $20::bigint,
-                'percent', $21::bigint),
-            'registered', $22::boolean,
-            'registrationStatus', $23::bigint,
-            'apn', $24::text,
-            'operator', $25::text,
-            'connected', $26::boolean,
-            'ipv4', $27::text),
-        jsonb_build_object(
-            'config', jsonb_build_object(
-                'activeVersion', 0,
-                'desiredVersion', 0,
-                'state', 'idle',
-                'message', ''),
-            'outbox', jsonb_build_object('records', 0, 'bytes', 0),
-            'log', jsonb_build_object('level', COALESCE(NULLIF($28::text, ''), 'info'))),
-        NOW(), NOW())
-ON CONFLICT (platform_id, imei) DO UPDATE
-SET model = EXCLUDED.model, software_version = EXCLUDED.software_version,
-    hostname = EXCLUDED.hostname, architecture = EXCLUDED.architecture,
-	    openwrt_release = EXCLUDED.openwrt_release,
-	    capability = EXCLUDED.capability || jsonb_build_object(
-	        'terminal', CASE lower(COALESCE(edge_node.capability->>'terminal', ''))
-	                        WHEN 'true' THEN true WHEN 't' THEN true WHEN '1' THEN true
-	                        ELSE false END,
-	        'vpn', COALESCE(edge_node.capability->'vpn', EXCLUDED.capability->'vpn')),
-    mobile = jsonb_set(
-        jsonb_set(
-            EXCLUDED.mobile, '{apn}',
-            to_jsonb(COALESCE(NULLIF(EXCLUDED.mobile->>'apn', ''),
-                              edge_node.mobile->>'apn', '')::text), true),
-        '{operator}',
-        to_jsonb(COALESCE(NULLIF(EXCLUDED.mobile->>'operator', ''),
-                          edge_node.mobile->>'operator', '')::text), true),
-    status = jsonb_set(
-        jsonb_set(edge_node.status, '{log}',
-                  COALESCE(edge_node.status->'log', '{}'::jsonb), true),
-        '{log,level}', to_jsonb(COALESCE(NULLIF($28::text, ''), 'info')::text), true),
-    last_seen_at = NOW(),
-    updated_at = NOW()
-RETURNING id::text, enrollment_status)sql",
-                                                     service::common::dbParams(
-                                                         candidate, protocol::platformId(),
-                                                         hello.imei(), hello.model(),
-                                                         hello.software_version(), hello.hostname(),
-                                                         hello.architecture(),
-                                                         hello.openwrt_release(),
-                                                         hello.supports_network_config(),
-                                                         hello.supports_firmware_update(),
-                                                         hello.supports_platform_config(),
-                                                         hello.supports_device_config(),
-                                                         hello.network_config_version(),
-                                                         hello.supports_modem_control(),
-                                                         hello.supports_logs(),
-                                                         hello.modem_available(),
-                                                         simState(hello.sim_state()),
-                                                         hello.iccid(), hello.signal_csq(),
-                                                         hello.signal_rssi_dbm(),
-                                                         hello.signal_percent(),
-                                                         hello.mobile_registered(),
-                                                         hello.mobile_registration_status(),
-                                                         hello.apn(), hello.mobile_operator(),
-                                                         hello.mobile_connected(),
-                                                         hello.mobile_ipv4(),
-                                                         hello.log_level(),
-                                                         hello.supports_firmware_stream()));
+        ruvia::DbQuery query;
+        const auto uuid = [&query](std::string_view value) {
+            return query.cast(query.value(value), ruvia::DbDataType::kUuid);
+        };
+        const auto text = [&query](const auto& value) {
+            return query.cast(query.value(std::string_view(value)),
+                              ruvia::DbDataType::kText);
+        };
+        const auto boolean = [&query](bool value) {
+            return query.cast(query.value(value), ruvia::DbDataType::kBoolean);
+        };
+        const auto integer = [&query](auto value) {
+            return query.cast(query.value(static_cast<std::int64_t>(value)),
+                              ruvia::DbDataType::kBigInt);
+        };
+        const auto jsonKey = [&query](std::string_view value) {
+            return config::detail::jsonKey(query, value);
+        };
+        const auto vpn = query.call(
+            "jsonb_build_object",
+            {jsonKey("supportsVpn"), boolean(false),
+             jsonKey("wireguardVersion"), text(std::string_view{}),
+             jsonKey("agentVersion"), text(std::string_view{}),
+             jsonKey("publicKey"), text(std::string_view{})});
+        const auto capability = query.call(
+            "jsonb_build_object",
+            {jsonKey("networkConfig"), boolean(hello.supports_network_config()),
+             jsonKey("firmwareUpdate"), boolean(hello.supports_firmware_update()),
+             jsonKey("firmwareStream"), boolean(hello.supports_firmware_stream()),
+             jsonKey("platformConfig"), boolean(hello.supports_platform_config()),
+             jsonKey("deviceConfig"), boolean(hello.supports_device_config()),
+             jsonKey("networkConfigVersion"), integer(hello.network_config_version()),
+             jsonKey("modemControl"), boolean(hello.supports_modem_control()),
+             jsonKey("logs"), boolean(hello.supports_logs()),
+             jsonKey("terminal"), boolean(false), jsonKey("vpn"), vpn});
+        const auto signal = query.call(
+            "jsonb_build_object", {jsonKey("csq"), integer(hello.signal_csq()),
+                                    jsonKey("rssiDbm"), integer(hello.signal_rssi_dbm()),
+                                    jsonKey("percent"), integer(hello.signal_percent())});
+        const auto mobile = query.call(
+            "jsonb_build_object",
+            {jsonKey("available"), boolean(hello.modem_available()),
+             jsonKey("simState"), text(simState(hello.sim_state())),
+             jsonKey("iccid"), text(hello.iccid()), jsonKey("signal"), signal,
+             jsonKey("registered"), boolean(hello.mobile_registered()),
+             jsonKey("registrationStatus"), integer(hello.mobile_registration_status()),
+             jsonKey("apn"), text(hello.apn()), jsonKey("operator"), text(hello.mobile_operator()),
+             jsonKey("connected"), boolean(hello.mobile_connected()),
+             jsonKey("ipv4"), text(hello.mobile_ipv4())});
+        const auto config = query.call(
+            "jsonb_build_object", {jsonKey("activeVersion"), integer(0),
+                                    jsonKey("desiredVersion"), integer(0),
+                                    jsonKey("state"), text("idle"),
+                                    jsonKey("message"), text(std::string_view{})});
+        const auto outbox = query.call(
+            "jsonb_build_object", {jsonKey("records"), integer(0),
+                                    jsonKey("bytes"), integer(0)});
+        const auto log = query.call(
+            "jsonb_build_object", {jsonKey("level"),
+                                    config::detail::textDefault(
+                                        query, text(hello.log_level()), "info")});
+        const auto status = query.call(
+            "jsonb_build_object", {jsonKey("config"), config,
+                                    jsonKey("outbox"), outbox, jsonKey("log"), log});
+        query.insertInto("edge_node",
+                         {"id", "platform_id", "imei", "model", "software_version",
+                          "hostname", "architecture", "openwrt_release", "capability",
+                          "mobile", "status", "last_seen_at", "updated_at"})
+            .values({uuid(std::string_view(candidate)), uuid(protocol::platformId()),
+                     query.value(std::string_view(hello.imei())),
+                     query.value(std::string_view(hello.model())),
+                     query.value(std::string_view(hello.software_version())),
+                     query.value(std::string_view(hello.hostname())),
+                     query.value(std::string_view(hello.architecture())),
+                     query.value(std::string_view(hello.openwrt_release())), capability, mobile,
+                     status,
+                     query.call("now"), query.call("now")});
+
+        const auto existingCapability = query.column("capability", "edge_node");
+        const auto existingMobile = query.column("mobile", "edge_node");
+        const auto existingStatus = query.column("status", "edge_node");
+        const auto excludedMobile = query.excluded("mobile");
+        const auto apn = query.coalesce({
+            query.nullIf(config::detail::jsonText(query, excludedMobile, "apn"),
+                         query.value(std::string_view{})),
+            config::detail::jsonText(query, existingMobile, "apn"),
+            query.value(std::string_view{})});
+        const auto operatorName = query.coalesce({
+            query.nullIf(config::detail::jsonText(query, excludedMobile, "operator"),
+                         query.value(std::string_view{})),
+            config::detail::jsonText(query, existingMobile, "operator"),
+            query.value(std::string_view{})});
+        const auto mobileWithApn = query.call(
+            "jsonb_set", {excludedMobile, config::detail::jsonPath(query, "{apn}"),
+                           config::detail::toJsonb(query,
+                               query.cast(apn, ruvia::DbDataType::kText)),
+                           query.cast(query.value(true), ruvia::DbDataType::kBoolean)});
+        const auto mobileUpdate = query.call(
+            "jsonb_set", {mobileWithApn, config::detail::jsonPath(query, "{operator}"),
+                           config::detail::toJsonb(query,
+                               query.cast(operatorName, ruvia::DbDataType::kText)),
+                           query.cast(query.value(true), ruvia::DbDataType::kBoolean)});
+        const auto capabilityUpdate = query.binary(
+            query.excluded("capability"), ruvia::DbBinaryOperator::kJsonConcat,
+            query.call("jsonb_build_object",
+                       {jsonKey("terminal"),
+                        config::detail::booleanText(
+                            query, config::detail::jsonText(query, existingCapability, "terminal")),
+                        jsonKey("vpn"),
+                        query.coalesce({config::detail::jsonGet(query, existingCapability, "vpn"),
+                                        config::detail::jsonGet(query, query.excluded("capability"),
+                                                                 "vpn")})}));
+        const auto statusWithLog = query.call(
+            "jsonb_set", {existingStatus, config::detail::jsonPath(query, "{log}"),
+                           query.coalesce({config::detail::jsonGet(query, existingStatus, "log"),
+                                           query.cast(query.value(std::string_view{"{}"}),
+                                                      ruvia::DbDataType::kJsonb)}),
+                           query.cast(query.value(true), ruvia::DbDataType::kBoolean)});
+        const auto statusUpdate = query.call(
+            "jsonb_set", {statusWithLog, config::detail::jsonPath(query, "{log,level}"),
+                           config::detail::toJsonb(
+                               query, config::detail::textDefault(
+                                         query, text(hello.log_level()), "info")),
+                           query.cast(query.value(true), ruvia::DbDataType::kBoolean)});
+        ruvia::DbConflictOptions conflict;
+        conflict.columns = {"platform_id", "imei"};
+        conflict.update = {
+            {"model", query.excluded("model")},
+            {"software_version", query.excluded("software_version")},
+            {"hostname", query.excluded("hostname")},
+            {"architecture", query.excluded("architecture")},
+            {"openwrt_release", query.excluded("openwrt_release")},
+            {"capability", capabilityUpdate},
+            {"mobile", mobileUpdate},
+            {"status", statusUpdate},
+            {"last_seen_at", query.call("now")},
+            {"updated_at", query.call("now")},
+        };
+        query.onConflict(conflict)
+            .returning({query.cast(query.column("id"), ruvia::DbDataType::kText),
+                        query.column("enrollment_status")});
+        const auto rows = co_await context.db().query(query);
         const auto key = protocol::authKey(hello.imei());
         const auto nodeId = std::string(rows.front()[0].value().value_or(std::string_view{}));
         const auto enrollmentStatus = std::string(rows.front()[1].value().value_or(std::string_view{}));
         const auto value = nodeId + "|" + enrollmentStatus;
         co_await context.redis().set(key, value);
         if (enrollmentStatus == "approved") {
-            (void)co_await context.db().execute(R"sql(
-WITH target AS (
-    SELECT task.id AS task_id, firmware.id AS firmware_id
-    FROM edge_task task
-    JOIN edge_firmware firmware
-      ON firmware.id::text = task.request->>'firmware_id'
-    WHERE task.node_id = $2::uuid
-      AND task.task_type = 'firmware'
-      AND task.status = 'running'
-      AND task.result->>'state' = 'flashing'
-    ORDER BY task.created_at DESC
-    LIMIT 1
-), completed AS (
-    UPDATE edge_task task
-    SET status = 'succeeded',
-        result = task.result || jsonb_build_object(
-            'state', 'rebooted',
-            'message', 'firmware reboot confirmed',
-            'softwareVersion', $1::text),
-        updated_at = NOW(),
-        completed_at = NOW()
-    FROM target
-    WHERE task.id = target.task_id
-    RETURNING target.firmware_id
-)
-UPDATE edge_firmware firmware
-SET version = $1::text
-FROM completed
-WHERE firmware.id = completed.firmware_id)sql",
-                                                service::common::dbParams(
-                                                    hello.software_version(), nodeId));
+            ruvia::DbQuery target;
+            target
+                .select({target.alias(target.column("id", "task"), "task_id"),
+                         target.alias(target.column("id", "firmware"), "firmware_id")})
+                .from("edge_task", "task")
+                .join(ruvia::DbJoinType::kInner, "edge_firmware",
+                      target.binary(
+                          target.cast(target.column("id", "firmware"),
+                                      ruvia::DbDataType::kText),
+                          ruvia::DbBinaryOperator::kEqual,
+                          config::detail::jsonText(
+                              target, target.column("request", "task"), "firmware_id")),
+                      "firmware")
+                .where(target.binary(
+                    target.column("node_id", "task"), ruvia::DbBinaryOperator::kEqual,
+                    target.cast(target.value(nodeId), ruvia::DbDataType::kUuid)))
+                .andWhere(target.binary(target.column("task_type", "task"),
+                                        ruvia::DbBinaryOperator::kEqual,
+                                        target.value(std::string_view{"firmware"})))
+                .andWhere(target.binary(target.column("status", "task"),
+                                        ruvia::DbBinaryOperator::kEqual,
+                                        target.value(std::string_view{"running"})))
+                .andWhere(target.binary(
+                    config::detail::jsonText(target, target.column("result", "task"), "state"),
+                    ruvia::DbBinaryOperator::kEqual,
+                    target.value(std::string_view{"flashing"})))
+                .orderBy(target.column("created_at", "task"), ruvia::DbOrderDirection::kDesc)
+                .limit(1);
+
+            ruvia::DbQuery completed;
+            const auto rebootedResult = completed.binary(
+                completed.column("result", "task"), ruvia::DbBinaryOperator::kJsonConcat,
+                completed.call(
+                    "jsonb_build_object",
+                    {config::detail::jsonKey(completed, "state"),
+                     completed.cast(completed.value(std::string_view{"rebooted"}),
+                                    ruvia::DbDataType::kText),
+                     config::detail::jsonKey(completed, "message"),
+                     completed.cast(completed.value(std::string_view{"firmware reboot confirmed"}),
+                                    ruvia::DbDataType::kText),
+                     config::detail::jsonKey(completed, "softwareVersion"),
+                     completed.cast(completed.value(std::string_view(hello.software_version())),
+                                    ruvia::DbDataType::kText)}));
+            completed.update("edge_task", "task")
+                .set("status", completed.value(std::string_view{"succeeded"}))
+                .set("result", rebootedResult)
+                .set("updated_at", completed.call("now"))
+                .set("completed_at", completed.call("now"))
+                .updateFrom("target")
+                .where(completed.binary(completed.column("id", "task"),
+                                        ruvia::DbBinaryOperator::kEqual,
+                                        completed.column("task_id", "target")))
+                .returning({completed.column("firmware_id", "target")});
+
+            ruvia::DbQuery recovery;
+            recovery.with("target", target)
+                .with("completed", completed)
+                .update("edge_firmware", "firmware")
+                .set("version", recovery.cast(
+                                                recovery.value(std::string_view(
+                                                    hello.software_version())),
+                                                ruvia::DbDataType::kText))
+                .updateFrom("completed")
+                .where(recovery.binary(recovery.column("id", "firmware"),
+                                       ruvia::DbBinaryOperator::kEqual,
+                                       recovery.column("firmware_id", "completed")));
+            (void)co_await context.db().execute(recovery);
         }
     }
 
     static ruvia::Task<void> saveHeartbeat(ruvia::WebWorkerContext& context,
                                            std::string_view nodeId,
                                            const pb::Heartbeat& heartbeat) {
-        (void)co_await context.db().execute(R"sql(
-UPDATE edge_node
-SET status = jsonb_build_object(
-        'config', jsonb_build_object(
-	            'activeVersion', GREATEST(
-	                COALESCE(CASE WHEN status->'config'->>'activeVersion' ~ '^-?[0-9]{1,18}$'
-	                              THEN (status->'config'->>'activeVersion')::bigint END, 0),
-	                $1::bigint),
-	            'desiredVersion',
-	                COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
-	                              THEN (status->'config'->>'desiredVersion')::bigint END, 0),
-	            'state', CASE
-	                WHEN COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
-	                                   THEN (status->'config'->>'desiredVersion')::bigint END, 0) = $1
-	                     AND $1 > 0 THEN 'applied'
-	                ELSE COALESCE(status->'config'->>'state', 'idle') END,
-	            'message', CASE
-	                WHEN COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
-	                                   THEN (status->'config'->>'desiredVersion')::bigint END, 0) = $1
-	                     AND $1 > 0 THEN ''
-	                ELSE COALESCE(status->'config'->>'message', '') END),
-        'outbox', jsonb_build_object('records', $2::bigint, 'bytes', $3::bigint),
-        'log', jsonb_build_object('level', COALESCE(NULLIF($16::text, ''), 'info'))),
-    mobile = jsonb_build_object(
-        'available', $4::boolean,
-        'simState', $5::text,
-        'iccid', $6::text,
-        'signal', jsonb_build_object('csq', $7::bigint, 'rssiDbm', $8::bigint,
-                                     'percent', $9::bigint),
-        'registered', $10::boolean,
-        'registrationStatus', $11::bigint,
-        'apn', COALESCE(NULLIF($12::text, ''), mobile->>'apn', ''),
-        'operator', COALESCE(NULLIF($13::text, ''), mobile->>'operator', ''),
-        'connected', $14::boolean,
-        'ipv4', $15::text),
-    capability = jsonb_set(capability, '{modemControl}', to_jsonb($17::boolean), true),
-    last_seen_at = NOW(),
-    updated_at = NOW()
-WHERE id = $18::uuid)sql",
-                                             service::common::dbParams(
-                                                 heartbeat.active_config_version(),
-                                                 heartbeat.outbox_records(),
-                                                 heartbeat.outbox_bytes(),
-                                                 heartbeat.modem_available(),
-                                                 simState(heartbeat.sim_state()),
-                                                 heartbeat.iccid(), heartbeat.signal_csq(),
-                                                 heartbeat.signal_rssi_dbm(),
-                                                 heartbeat.signal_percent(),
-                                                 heartbeat.mobile_registered(),
-                                                 heartbeat.mobile_registration_status(),
-                                                 heartbeat.apn(), heartbeat.mobile_operator(),
-                                                 heartbeat.mobile_connected(),
-                                                 heartbeat.mobile_ipv4(),
-                                                 heartbeat.log_level(),
-                                                 heartbeat.supports_modem_control(), nodeId));
+        ruvia::DbQuery query;
+        const auto text = [&query](std::string_view value) {
+            return query.cast(query.value(value), ruvia::DbDataType::kText);
+        };
+        const auto integer = [&query](auto value) {
+            return query.cast(query.value(static_cast<std::int64_t>(value)),
+                              ruvia::DbDataType::kBigInt);
+        };
+        const auto boolean = [&query](bool value) {
+            return query.cast(query.value(value), ruvia::DbDataType::kBoolean);
+        };
+        const auto status = query.column("status");
+        const auto desiredVersion = config::detail::configVersion(
+            query, status, "desiredVersion");
+        const auto receivedVersion = integer(heartbeat.active_config_version());
+        const auto applied = query.binary(
+            query.binary(desiredVersion, ruvia::DbBinaryOperator::kEqual,
+                         receivedVersion),
+            ruvia::DbBinaryOperator::kAnd,
+            query.binary(receivedVersion, ruvia::DbBinaryOperator::kGreater,
+                         integer(0)));
+        const auto config = query.call(
+            "jsonb_build_object",
+            {config::detail::jsonKey(query, "activeVersion"),
+             query.greatest({config::detail::configVersion(query, status, "activeVersion"),
+                             receivedVersion}),
+             config::detail::jsonKey(query, "desiredVersion"), desiredVersion,
+             config::detail::jsonKey(query, "state"),
+             query.caseWhen({{applied, text("applied")}},
+                            config::detail::configState(query, status)),
+             config::detail::jsonKey(query, "message"),
+             query.caseWhen(
+                 {{applied, text(std::string_view{})}},
+                 query.coalesce({config::detail::jsonText(
+                                     query, config::detail::jsonGet(query, status, "config"),
+                                     "message"),
+                                 query.value(std::string_view{})}))});
+        const auto signal = query.call(
+            "jsonb_build_object", {config::detail::jsonKey(query, "csq"),
+                                    integer(heartbeat.signal_csq()),
+                                    config::detail::jsonKey(query, "rssiDbm"),
+                                    integer(heartbeat.signal_rssi_dbm()),
+                                    config::detail::jsonKey(query, "percent"),
+                                    integer(heartbeat.signal_percent())});
+        const auto existingMobile = query.column("mobile");
+        const auto apn = query.coalesce({
+            query.nullIf(text(heartbeat.apn()), query.value(std::string_view{})),
+            config::detail::jsonText(query, existingMobile, "apn"),
+            query.value(std::string_view{})});
+        const auto operatorName = query.coalesce({
+            query.nullIf(text(heartbeat.mobile_operator()), query.value(std::string_view{})),
+            config::detail::jsonText(query, existingMobile, "operator"),
+            query.value(std::string_view{})});
+        const auto mobile = query.call(
+            "jsonb_build_object",
+            {config::detail::jsonKey(query, "available"), boolean(heartbeat.modem_available()),
+             config::detail::jsonKey(query, "simState"), text(simState(heartbeat.sim_state())),
+             config::detail::jsonKey(query, "iccid"), text(heartbeat.iccid()),
+             config::detail::jsonKey(query, "signal"), signal,
+             config::detail::jsonKey(query, "registered"), boolean(heartbeat.mobile_registered()),
+             config::detail::jsonKey(query, "registrationStatus"),
+             integer(heartbeat.mobile_registration_status()),
+             config::detail::jsonKey(query, "apn"), apn,
+             config::detail::jsonKey(query, "operator"), operatorName,
+             config::detail::jsonKey(query, "connected"), boolean(heartbeat.mobile_connected()),
+             config::detail::jsonKey(query, "ipv4"), text(heartbeat.mobile_ipv4())});
+        query.update("edge_node")
+            .set("status", query.call(
+                               "jsonb_build_object",
+                               {config::detail::jsonKey(query, "config"), config,
+                                config::detail::jsonKey(query, "outbox"),
+                                query.call("jsonb_build_object",
+                                           {config::detail::jsonKey(query, "records"),
+                                            integer(heartbeat.outbox_records()),
+                                            config::detail::jsonKey(query, "bytes"),
+                                            integer(heartbeat.outbox_bytes())}),
+                                config::detail::jsonKey(query, "log"),
+                                query.call("jsonb_build_object",
+                                           {config::detail::jsonKey(query, "level"),
+                                            config::detail::textDefault(
+                                                query, text(heartbeat.log_level()), "info")})}))
+            .set("mobile", mobile)
+            .set("capability", query.call(
+                                  "jsonb_set",
+                                  {query.column("capability"),
+                                   config::detail::jsonPath(query, "{modemControl}"),
+                                   config::detail::toJsonb(
+                                       query, boolean(heartbeat.supports_modem_control())),
+                                   query.cast(query.value(true), ruvia::DbDataType::kBoolean)}))
+            .set("last_seen_at", query.call("now"))
+            .set("updated_at", query.call("now"))
+            .where(query.binary(query.column("id"), ruvia::DbBinaryOperator::kEqual,
+                                query.cast(query.value(nodeId), ruvia::DbDataType::kUuid)));
+        (void)co_await context.db().execute(query);
         if (heartbeat.active_config_version() != 0) {
-            (void)co_await context.db().execute(R"sql(
-UPDATE edge_config_revision revision
-SET status = 'applied', message = '', completed_at = COALESCE(completed_at, NOW())
-FROM edge_node node
-WHERE revision.node_id = node.id AND node.id = $1::uuid
-	  AND revision.revision = $2
-	  AND COALESCE(CASE WHEN node.status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
-	                    THEN (node.status->'config'->>'desiredVersion')::bigint END, 0) = $2)sql",
-                                                service::common::dbParams(
-                                                    nodeId,
-                                                    heartbeat.active_config_version()));
+            ruvia::DbQuery revision;
+            revision.update("edge_config_revision", "revision")
+                .set("status", revision.value(std::string_view{"applied"}))
+                .set("message", revision.value(std::string_view{}))
+                .set("completed_at", revision.coalesce({
+                    revision.column("completed_at", "revision"), revision.call("now")}))
+                .updateFrom("edge_node", "node")
+                .where(revision.binary(
+                    revision.column("node_id", "revision"), ruvia::DbBinaryOperator::kEqual,
+                    revision.column("id", "node")))
+                .andWhere(revision.binary(
+                    revision.column("id", "node"), ruvia::DbBinaryOperator::kEqual,
+                    revision.cast(revision.value(nodeId), ruvia::DbDataType::kUuid)))
+                .andWhere(revision.binary(
+                    revision.column("revision", "revision"),
+                    ruvia::DbBinaryOperator::kEqual,
+                    revision.cast(revision.value(static_cast<std::int64_t>(
+                                                  heartbeat.active_config_version())),
+                                                ruvia::DbDataType::kBigInt)))
+                .andWhere(revision.binary(
+                    config::detail::configVersion(
+                        revision, revision.column("status", "node"), "desiredVersion"),
+                    ruvia::DbBinaryOperator::kEqual,
+                    revision.cast(revision.value(static_cast<std::int64_t>(
+                                                  heartbeat.active_config_version())),
+                                  ruvia::DbDataType::kBigInt)));
+            (void)co_await context.db().execute(revision);
         }
     }
 
@@ -1378,83 +2109,178 @@ WHERE revision.node_id = node.id AND node.id = $1::uuid
     static ruvia::Task<void> saveCapabilities(
         ruvia::WebWorkerContext& context, std::string_view nodeId,
         const pb::CapabilityReport& report) {
-        (void)co_await context.db().execute(
-            "DELETE FROM edge_node_interface WHERE node_id = $1::uuid",
-            service::common::dbParams(nodeId));
+        ruvia::DbQuery deleteInterfaces;
+        deleteInterfaces.deleteFrom("edge_node_interface")
+            .where(deleteInterfaces.binary(
+                deleteInterfaces.column("node_id"), ruvia::DbBinaryOperator::kEqual,
+                deleteInterfaces.cast(deleteInterfaces.value(nodeId), ruvia::DbDataType::kUuid)));
+        (void)co_await context.db().execute(deleteInterfaces);
         for (const auto& item : report.interfaces()) {
             const auto macAddress = mac(item);
             const auto ports = jsonArray(item.bridge_ports());
-            (void)co_await context.db().execute(R"sql(
-INSERT INTO edge_node_interface(node_id, name, display_name, mac, is_up, is_bridge, ipv4,
-                                prefix_length, gateway, bridge_ports)
-VALUES ($1::uuid, $2, $3, NULLIF($4, ''), $5, $6, NULLIF($7, ''), $8,
-        NULLIF($9, ''), $10::jsonb))sql",
-                                                service::common::dbParams(
-                                                    nodeId, item.name(), item.display_name(),
-                                                    macAddress, item.up(), item.bridge(),
-                                                    item.ipv4(), item.prefix_length(),
-                                                    item.gateway(), ports));
+            ruvia::DbQuery insert;
+            insert.insertInto("edge_node_interface",
+                              {"node_id", "name", "display_name", "mac", "is_up",
+                               "is_bridge", "ipv4", "prefix_length", "gateway",
+                               "bridge_ports"})
+                .values({
+                    insert.cast(insert.value(nodeId), ruvia::DbDataType::kUuid),
+                    insert.value(std::string_view(item.name())),
+                    insert.value(std::string_view(item.display_name())),
+                    insert.nullIf(insert.value(std::string_view(macAddress)),
+                                  insert.value(std::string_view{})),
+                    insert.cast(insert.value(item.up()), ruvia::DbDataType::kBoolean),
+                    insert.cast(insert.value(item.bridge()), ruvia::DbDataType::kBoolean),
+                    insert.nullIf(insert.value(std::string_view(item.ipv4())),
+                                  insert.value(std::string_view{})),
+                    insert.value(item.prefix_length()),
+                    insert.nullIf(insert.value(std::string_view(item.gateway())),
+                                  insert.value(std::string_view{})),
+                    insert.cast(insert.value(std::string_view(ports)),
+                                 ruvia::DbDataType::kJsonb),
+                });
+            (void)co_await context.db().execute(insert);
         }
-        (void)co_await context.db().execute(
-            "DELETE FROM edge_node_network WHERE node_id = $1::uuid",
-            service::common::dbParams(nodeId));
+        ruvia::DbQuery deleteNetworks;
+        deleteNetworks.deleteFrom("edge_node_network")
+            .where(deleteNetworks.binary(
+                deleteNetworks.column("node_id"), ruvia::DbBinaryOperator::kEqual,
+                deleteNetworks.cast(deleteNetworks.value(nodeId), ruvia::DbDataType::kUuid)));
+        (void)co_await context.db().execute(deleteNetworks);
         for (const auto& item : report.networks()) {
             const auto ports = jsonArray(item.bridge_ports());
             const auto mode = addressMode(item.mode());
-            (void)co_await context.db().execute(R"sql(
-INSERT INTO edge_node_network(node_id, name, address_mode, device, is_up, is_bridge, ipv4,
-                              prefix_length, gateway, bridge_ports)
-VALUES ($1::uuid, $2, $3, $4, $5, $6, NULLIF($7, ''), $8, NULLIF($9, ''),
-        $10::jsonb))sql",
-                                                service::common::dbParams(
-                                                    nodeId, item.name(), mode, item.device(),
-                                                    item.up(), item.bridge(), item.ipv4(),
-                                                    item.prefix_length(), item.gateway(), ports));
+            ruvia::DbQuery insert;
+            insert.insertInto("edge_node_network",
+                              {"node_id", "name", "address_mode", "device", "is_up",
+                               "is_bridge", "ipv4", "prefix_length", "gateway",
+                               "bridge_ports"})
+                .values({
+                    insert.cast(insert.value(nodeId), ruvia::DbDataType::kUuid),
+                    insert.value(std::string_view(item.name())),
+                    insert.value(std::string_view(mode)),
+                    insert.value(std::string_view(item.device())),
+                    insert.cast(insert.value(item.up()), ruvia::DbDataType::kBoolean),
+                    insert.cast(insert.value(item.bridge()), ruvia::DbDataType::kBoolean),
+                    insert.nullIf(insert.value(std::string_view(item.ipv4())),
+                                  insert.value(std::string_view{})),
+                    insert.value(item.prefix_length()),
+                    insert.nullIf(insert.value(std::string_view(item.gateway())),
+                                  insert.value(std::string_view{})),
+                    insert.cast(insert.value(std::string_view(ports)),
+                                 ruvia::DbDataType::kJsonb),
+                });
+            (void)co_await context.db().execute(insert);
         }
-        (void)co_await context.db().execute(
-            "DELETE FROM edge_node_serial WHERE node_id = $1::uuid",
-            service::common::dbParams(nodeId));
+        ruvia::DbQuery deleteSerial;
+        deleteSerial.deleteFrom("edge_node_serial")
+            .where(deleteSerial.binary(
+                deleteSerial.column("node_id"), ruvia::DbBinaryOperator::kEqual,
+                deleteSerial.cast(deleteSerial.value(nodeId), ruvia::DbDataType::kUuid)));
+        (void)co_await context.db().execute(deleteSerial);
         for (const auto& item : report.serial_ports()) {
-            (void)co_await context.db().execute(R"sql(
-INSERT INTO edge_node_serial(node_id, path, display_name, available, rs485)
-VALUES ($1::uuid, $2, $3, $4, $5))sql",
-                                                service::common::dbParams(
-                                                    nodeId, item.path(), item.display_name(),
-                                                    item.available(), item.rs485()));
+            ruvia::DbQuery insert;
+            insert.insertInto("edge_node_serial",
+                              {"node_id", "path", "display_name", "available", "rs485"})
+                .values({
+                    insert.cast(insert.value(nodeId), ruvia::DbDataType::kUuid),
+                    insert.value(std::string_view(item.path())),
+                    insert.value(std::string_view(item.display_name())),
+                    insert.cast(insert.value(item.available()), ruvia::DbDataType::kBoolean),
+                    insert.cast(insert.value(item.rs485()), ruvia::DbDataType::kBoolean),
+                });
+            (void)co_await context.db().execute(insert);
         }
-        (void)co_await context.db().execute(
-            "UPDATE edge_node SET capability = jsonb_set(capability, '{terminal}', "
-            "to_jsonb($1::boolean), true), updated_at = NOW() WHERE id = $2::uuid",
-            service::common::dbParams(report.ttyd_available(), nodeId));
+        ruvia::DbQuery terminal;
+        terminal.update("edge_node")
+            .set("capability", terminal.call(
+                                   "jsonb_set",
+                                   {terminal.column("capability"),
+                                    config::detail::jsonPath(terminal, "{terminal}"),
+                                    config::detail::toJsonb(
+                                        terminal, terminal.cast(terminal.value(
+                                                                           report.ttyd_available()),
+                                                                       ruvia::DbDataType::kBoolean)),
+                                    terminal.cast(terminal.value(true),
+                                                  ruvia::DbDataType::kBoolean)}))
+            .set("updated_at", terminal.call("now"))
+            .where(terminal.binary(terminal.column("id"), ruvia::DbBinaryOperator::kEqual,
+                                   terminal.cast(terminal.value(nodeId),
+                                                 ruvia::DbDataType::kUuid)));
+        (void)co_await context.db().execute(terminal);
         if (report.has_vpn()) {
             const auto vpnPublicKey = validVpnPublicKey(report.vpn().public_key())
                                           ? std::string(report.vpn().public_key())
                                           : std::string{};
-            (void)co_await context.db().execute(
-                "UPDATE edge_node SET capability = jsonb_set(capability, '{vpn}', "
-                "jsonb_build_object('supportsVpn', $1::boolean, 'wireguardVersion', $2::text, "
-                "'agentVersion', $3::text, 'publicKey', $4::text), true), "
-                "updated_at = NOW() WHERE id = $5::uuid",
-                service::common::dbParams(report.vpn().supports_vpn(),
-                                          report.vpn().wireguard_version(),
-                                          report.vpn().agent_version(), vpnPublicKey, nodeId));
+            ruvia::DbQuery vpn;
+            vpn.update("edge_node")
+                .set("capability", vpn.call(
+                                       "jsonb_set",
+                                       {vpn.column("capability"),
+                                        config::detail::jsonPath(vpn, "{vpn}"),
+                                        vpn.call(
+                                            "jsonb_build_object",
+                                            {config::detail::jsonKey(vpn, "supportsVpn"),
+                                             vpn.cast(vpn.value(report.vpn().supports_vpn()),
+                                                      ruvia::DbDataType::kBoolean),
+                                             config::detail::jsonKey(vpn, "wireguardVersion"),
+                                             vpn.cast(vpn.value(std::string_view(
+                                                                     report.vpn().wireguard_version())),
+                                                      ruvia::DbDataType::kText),
+                                             config::detail::jsonKey(vpn, "agentVersion"),
+                                             vpn.cast(vpn.value(std::string_view(
+                                                                     report.vpn().agent_version())),
+                                                      ruvia::DbDataType::kText),
+                                             config::detail::jsonKey(vpn, "publicKey"),
+                                             vpn.cast(vpn.value(std::string_view(vpnPublicKey)),
+                                                      ruvia::DbDataType::kText)}),
+                                        vpn.cast(vpn.value(true), ruvia::DbDataType::kBoolean)}))
+                .set("updated_at", vpn.call("now"))
+                .where(vpn.binary(vpn.column("id"), ruvia::DbBinaryOperator::kEqual,
+                                  vpn.cast(vpn.value(nodeId), ruvia::DbDataType::kUuid)));
+            (void)co_await context.db().execute(vpn);
         }
         if (report.has_vpn() && report.vpn().supports_vpn()) {
             const auto& publicKey = report.vpn().public_key();
             if (validVpnPublicKey(publicKey)) {
-                const auto activated = co_await context.db().query(R"sql(
-UPDATE vpn_peer p
-SET public_key = $1, status = 'active', updated_at = NOW()
-FROM vpn_network n
-WHERE p.peer_type = 'edge' AND p.edge_node_id = $2::uuid AND p.status <> 'revoked'
-  AND n.id = p.network_id
-RETURNING p.id::text, p.network_id::text, n.created_by::text)sql",
-                                                                   service::common::dbParams(
-                                                                       publicKey, nodeId));
+                ruvia::DbQuery activatedQuery;
+                activatedQuery.update("vpn_peer", "p")
+                    .set("public_key", activatedQuery.value(std::string_view(publicKey)))
+                    .set("status", activatedQuery.value(std::string_view{"active"}))
+                    .set("updated_at", activatedQuery.call("now"))
+                    .updateFrom("vpn_network", "n")
+                    .where(activatedQuery.binary(
+                        activatedQuery.column("peer_type", "p"),
+                        ruvia::DbBinaryOperator::kEqual,
+                        activatedQuery.value(std::string_view{"edge"})))
+                    .andWhere(activatedQuery.binary(
+                        activatedQuery.column("edge_node_id", "p"),
+                        ruvia::DbBinaryOperator::kEqual,
+                        activatedQuery.cast(activatedQuery.value(nodeId),
+                                            ruvia::DbDataType::kUuid)))
+                    .andWhere(activatedQuery.binary(
+                        activatedQuery.column("status", "p"),
+                        ruvia::DbBinaryOperator::kNotEqual,
+                        activatedQuery.value(std::string_view{"revoked"})))
+                    .andWhere(activatedQuery.binary(
+                        activatedQuery.column("id", "n"),
+                        ruvia::DbBinaryOperator::kEqual,
+                        activatedQuery.column("network_id", "p")))
+                    .returning({activatedQuery.cast(activatedQuery.column("id", "p"),
+                                                    ruvia::DbDataType::kText),
+                                activatedQuery.cast(activatedQuery.column("network_id", "p"),
+                                                    ruvia::DbDataType::kText),
+                                activatedQuery.cast(activatedQuery.column("created_by", "n"),
+                                                    ruvia::DbDataType::kText)});
+                const auto activated = co_await context.db().query(activatedQuery);
                 for (const auto& row : activated) {
                     auto transaction = co_await context.db().beginTransaction();
-                    (void)co_await transaction.query(
-                        "SELECT pg_advisory_xact_lock(5282804697543808068::bigint)");
+                    ruvia::DbQuery lock;
+                    lock.select(lock.call(
+                        "pg_advisory_xact_lock",
+                        {lock.cast(lock.value(std::int64_t{5282804697543808068LL}),
+                                   ruvia::DbDataType::kBigInt)}));
+                    (void)co_await transaction.query(lock);
                     co_await service::vpn::feature::syncEdgeBridgeRoutes(
                         transaction, row[0].value().value_or(std::string_view{}),
                         row[1].value().value_or(std::string_view{}), nodeId,
@@ -1477,11 +2303,24 @@ RETURNING p.id::text, p.network_id::text, n.created_by::text)sql",
         const std::string json = "{\"message\":\"" + jsonEscape(result.message()) +
                                  "\",\"rolled_back\":" +
                                  (result.rolled_back() ? "true" : "false") + "}";
-        (void)co_await context.db().execute(R"sql(
-UPDATE edge_task SET status = $1, result = $2::jsonb, updated_at = NOW(), completed_at = NOW()
-WHERE id = $3::uuid AND node_id = $4::uuid AND task_type = 'network'
-  AND status NOT IN ('succeeded', 'failed'))sql",
-                                            service::common::dbParams(status, json, id, nodeId));
+        ruvia::DbQuery query;
+        query.update("edge_task")
+            .set("status", query.value(std::string_view(status)))
+            .set("result", query.cast(query.value(std::string_view(json)),
+                                       ruvia::DbDataType::kJsonb))
+            .set("updated_at", query.call("now"))
+            .set("completed_at", query.call("now"))
+            .where(query.binary(query.column("id"), ruvia::DbBinaryOperator::kEqual,
+                                query.cast(query.value(id), ruvia::DbDataType::kUuid)))
+            .andWhere(query.binary(query.column("node_id"), ruvia::DbBinaryOperator::kEqual,
+                                   query.cast(query.value(nodeId), ruvia::DbDataType::kUuid)))
+            .andWhere(query.binary(query.column("task_type"), ruvia::DbBinaryOperator::kEqual,
+                                   query.value(std::string_view{"network"})))
+            .andWhere(query.binary(
+                query.column("status"), ruvia::DbBinaryOperator::kNotIn,
+                query.list({query.value(std::string_view{"succeeded"}),
+                            query.value(std::string_view{"failed"})})));
+        (void)co_await context.db().execute(query);
     }
 
     static ruvia::Task<void> saveVpnResult(
@@ -1496,29 +2335,87 @@ WHERE id = $3::uuid AND node_id = $4::uuid AND task_type = 'network'
                                  std::to_string(result.config_version()) +
                                  ",\"errorCode\":" + jsonQuoted(result.error_code()) +
                                  ",\"errorMessage\":" + jsonQuoted(result.error_message()) + "}";
-        (void)co_await context.db().execute(R"sql(
-WITH transitioned AS (
-    UPDATE edge_task
-    SET status = $1, result = $2::jsonb, updated_at = NOW(), completed_at = NOW()
-    WHERE id = $3::uuid AND node_id = $4::uuid AND task_type = 'vpn'
-      AND status NOT IN ('succeeded', 'failed')
-    RETURNING request->>'peerId' AS peer_id,
-              request->>'enabled' AS enabled,
-              request->>'configVersion' AS config_version
-)
-UPDATE vpn_route route
-SET status = CASE WHEN $5::boolean
-                 THEN CASE WHEN COALESCE(task.enabled::boolean, true)
-                                AND route.enabled THEN 'active' ELSE 'disabled' END
-                 ELSE 'error' END,
-    last_error = CASE WHEN $5::boolean THEN '' ELSE $6::text END,
-    updated_at = NOW()
-FROM transitioned task
-WHERE route.edge_peer_id = task.peer_id::uuid
-  AND (SELECT config_revision::text FROM vpn_peer peer
-       WHERE peer.id = task.peer_id::uuid) = task.config_version)sql",
-                                            service::common::dbParams(status, json, id, nodeId,
-                                                                      applied, result.error_message()));
+        ruvia::DbQuery transitioned;
+        transitioned.update("edge_task")
+            .set("status", transitioned.value(std::string_view(status)))
+            .set("result", transitioned.cast(
+                               transitioned.value(std::string_view(json)),
+                               ruvia::DbDataType::kJsonb))
+            .set("updated_at", transitioned.call("now"))
+            .set("completed_at", transitioned.call("now"))
+            .where(transitioned.binary(
+                transitioned.column("id"), ruvia::DbBinaryOperator::kEqual,
+                transitioned.cast(transitioned.value(id), ruvia::DbDataType::kUuid)))
+            .andWhere(transitioned.binary(
+                transitioned.column("node_id"), ruvia::DbBinaryOperator::kEqual,
+                transitioned.cast(transitioned.value(nodeId), ruvia::DbDataType::kUuid)))
+            .andWhere(transitioned.binary(
+                transitioned.column("task_type"), ruvia::DbBinaryOperator::kEqual,
+                transitioned.value(std::string_view{"vpn"})))
+            .andWhere(transitioned.binary(
+                transitioned.column("status"), ruvia::DbBinaryOperator::kNotIn,
+                transitioned.list({transitioned.value(std::string_view{"succeeded"}),
+                                   transitioned.value(std::string_view{"failed"})})))
+            .returning({transitioned.alias(
+                            config::detail::jsonText(
+                                transitioned, transitioned.column("request"), "peerId"),
+                            "peer_id"),
+                        transitioned.alias(
+                            config::detail::jsonText(
+                                transitioned, transitioned.column("request"), "enabled"),
+                            "enabled"),
+                        transitioned.alias(
+                            config::detail::jsonText(transitioned,
+                                                     transitioned.column("request"),
+                                                     "configVersion"),
+                            "config_version")});
+
+        ruvia::DbQuery update;
+        const auto appliedValue = update.cast(update.value(applied), ruvia::DbDataType::kBoolean);
+        const auto enabled = update.coalesce({
+            update.cast(update.column("enabled", "task"), ruvia::DbDataType::kBoolean),
+            update.cast(update.value(true), ruvia::DbDataType::kBoolean)});
+        const auto activeRoute = update.binary(
+            enabled, ruvia::DbBinaryOperator::kAnd,
+            update.column("enabled", "route"));
+        const auto routeStatus = update.caseWhen(
+            {{activeRoute,
+              update.cast(update.value(std::string_view{"active"}),
+                          ruvia::DbDataType::kText)}},
+            update.cast(update.value(std::string_view{"disabled"}),
+                        ruvia::DbDataType::kText));
+        const auto statusValue = update.caseWhen(
+            {{appliedValue, routeStatus}},
+            update.cast(update.value(std::string_view{"error"}),
+                        ruvia::DbDataType::kText));
+        const auto lastError = update.caseWhen(
+            {{appliedValue, update.cast(update.value(std::string_view{}),
+                                        ruvia::DbDataType::kText)}},
+            update.cast(update.value(std::string_view(result.error_message())),
+                        ruvia::DbDataType::kText));
+
+        ruvia::DbQuery peer;
+        const auto taskPeerId = peer.importExpression(
+            update.column("peer_id", "task"), "task", "task");
+        peer.select({peer.cast(peer.column("config_revision", "peer"),
+                               ruvia::DbDataType::kText)})
+            .from("vpn_peer", "peer")
+            .where(peer.binary(peer.column("id", "peer"),
+                               ruvia::DbBinaryOperator::kEqual,
+                               peer.cast(taskPeerId, ruvia::DbDataType::kUuid)));
+        update.with("transitioned", transitioned)
+            .update("vpn_route", "route")
+            .set("status", statusValue)
+            .set("last_error", lastError)
+            .set("updated_at", update.call("now"))
+            .updateFrom("transitioned", "task")
+            .where(update.binary(
+                update.column("edge_peer_id", "route"), ruvia::DbBinaryOperator::kEqual,
+                update.cast(update.column("peer_id", "task"), ruvia::DbDataType::kUuid)))
+            .andWhere(update.binary(update.subquery(peer),
+                                    ruvia::DbBinaryOperator::kEqual,
+                                    update.column("config_version", "task")));
+        (void)co_await context.db().execute(update);
     }
 
     static ruvia::Task<void> saveFirmwareResult(
@@ -1552,13 +2449,28 @@ WHERE route.edge_peer_id = task.peer_id::uuid
             "\",\"progressPercent\":" + std::to_string(result.progress_percent()) +
             ",\"downloadedBytes\":" + std::to_string(result.downloaded_bytes()) +
             ",\"totalBytes\":" + std::to_string(result.total_bytes()) + "}";
-        (void)co_await context.db().execute(R"sql(
-UPDATE edge_task SET status = $1, result = $2::jsonb, updated_at = NOW(),
-    completed_at = CASE WHEN $3 THEN NOW() ELSE NULL END
-WHERE id = $4::uuid AND node_id = $5::uuid AND task_type = 'firmware'
-  AND status NOT IN ('succeeded', 'failed'))sql",
-                                             service::common::dbParams(status, json, completed, id,
-                                                                       nodeId));
+        ruvia::DbQuery query;
+        query.update("edge_task")
+            .set("status", query.value(std::string_view(status)))
+            .set("result", query.cast(query.value(std::string_view(json)),
+                                       ruvia::DbDataType::kJsonb))
+            .set("updated_at", query.call("now"))
+            .set("completed_at", query.caseWhen(
+                                     {{query.cast(query.value(completed),
+                                                  ruvia::DbDataType::kBoolean),
+                                       query.call("now")} },
+                                     query.nullValue()))
+            .where(query.binary(query.column("id"), ruvia::DbBinaryOperator::kEqual,
+                                query.cast(query.value(id), ruvia::DbDataType::kUuid)))
+            .andWhere(query.binary(query.column("node_id"), ruvia::DbBinaryOperator::kEqual,
+                                   query.cast(query.value(nodeId), ruvia::DbDataType::kUuid)))
+            .andWhere(query.binary(query.column("task_type"), ruvia::DbBinaryOperator::kEqual,
+                                   query.value(std::string_view{"firmware"})))
+            .andWhere(query.binary(
+                query.column("status"), ruvia::DbBinaryOperator::kNotIn,
+                query.list({query.value(std::string_view{"succeeded"}),
+                            query.value(std::string_view{"failed"})})));
+        (void)co_await context.db().execute(query);
     }
 
     static ruvia::Task<void> saveModemResult(
@@ -1580,13 +2492,28 @@ WHERE id = $4::uuid AND node_id = $5::uuid AND task_type = 'firmware'
         }
         const std::string json = "{\"message\":\"" + jsonEscape(result.message()) +
                                  "\",\"apn\":\"" + jsonEscape(result.apn()) + "\"}";
-        (void)co_await context.db().execute(R"sql(
-UPDATE edge_task SET status = $1, result = $2::jsonb, updated_at = NOW(),
-    completed_at = CASE WHEN $3 THEN NOW() ELSE NULL END
-WHERE id = $4::uuid AND node_id = $5::uuid AND task_type = 'modem'
-  AND status NOT IN ('succeeded', 'failed'))sql",
-                                            service::common::dbParams(status, json, completed, id,
-                                                                      nodeId));
+        ruvia::DbQuery query;
+        query.update("edge_task")
+            .set("status", query.value(std::string_view(status)))
+            .set("result", query.cast(query.value(std::string_view(json)),
+                                       ruvia::DbDataType::kJsonb))
+            .set("updated_at", query.call("now"))
+            .set("completed_at", query.caseWhen(
+                                     {{query.cast(query.value(completed),
+                                                  ruvia::DbDataType::kBoolean),
+                                       query.call("now")} },
+                                     query.nullValue()))
+            .where(query.binary(query.column("id"), ruvia::DbBinaryOperator::kEqual,
+                                query.cast(query.value(id), ruvia::DbDataType::kUuid)))
+            .andWhere(query.binary(query.column("node_id"), ruvia::DbBinaryOperator::kEqual,
+                                   query.cast(query.value(nodeId), ruvia::DbDataType::kUuid)))
+            .andWhere(query.binary(query.column("task_type"), ruvia::DbBinaryOperator::kEqual,
+                                   query.value(std::string_view{"modem"})))
+            .andWhere(query.binary(
+                query.column("status"), ruvia::DbBinaryOperator::kNotIn,
+                query.list({query.value(std::string_view{"succeeded"}),
+                            query.value(std::string_view{"failed"})})));
+        (void)co_await context.db().execute(query);
     }
 
     static ruvia::Task<void> savePlatformResult(
@@ -1597,31 +2524,82 @@ WHERE id = $4::uuid AND node_id = $5::uuid AND task_type = 'modem'
         const auto id = protocol::uuidText(result.request_id());
         const std::string status = result.success() ? "succeeded" : "failed";
         const std::string json = "{\"message\":\"" + jsonEscape(result.message()) + "\"}";
-        (void)co_await context.db().execute(R"sql(
-WITH transitioned AS (
-    UPDATE edge_task
-    SET status = $1, result = $2::jsonb, updated_at = NOW(), completed_at = NOW()
-    WHERE id = $3::uuid AND node_id = $4::uuid
-      AND task_type IN ('platform_upsert', 'platform_delete')
-      AND status NOT IN ('succeeded', 'failed')
-    RETURNING (request->>'platform_id')::uuid AS platform_id, task_type
-), updated AS (
-    UPDATE edge_node_platform target
-    SET status = jsonb_build_object('state', $5::text, 'message', $6::text),
-        updated_at = NOW()
-    FROM transitioned task
-    WHERE target.node_id = $4::uuid AND target.platform_id = task.platform_id
-      AND NOT ($7::boolean AND task.task_type = 'platform_delete')
-    RETURNING target.platform_id
-)
-DELETE FROM edge_node_platform target
-USING transitioned task
-WHERE $7::boolean AND task.task_type = 'platform_delete'
-  AND target.node_id = $4::uuid AND target.platform_id = task.platform_id)sql",
-                                            service::common::dbParams(
-                                                status, json, id, nodeId,
-                                                result.success() ? "applied" : "failed",
-                                                result.message(), result.success()));
+        ruvia::DbQuery transitioned;
+        transitioned.update("edge_task")
+            .set("status", transitioned.value(std::string_view(status)))
+            .set("result", transitioned.cast(
+                               transitioned.value(std::string_view(json)),
+                               ruvia::DbDataType::kJsonb))
+            .set("updated_at", transitioned.call("now"))
+            .set("completed_at", transitioned.call("now"))
+            .where(transitioned.binary(
+                transitioned.column("id"), ruvia::DbBinaryOperator::kEqual,
+                transitioned.cast(transitioned.value(id), ruvia::DbDataType::kUuid)))
+            .andWhere(transitioned.binary(
+                transitioned.column("node_id"), ruvia::DbBinaryOperator::kEqual,
+                transitioned.cast(transitioned.value(nodeId), ruvia::DbDataType::kUuid)))
+            .andWhere(transitioned.binary(
+                transitioned.column("task_type"), ruvia::DbBinaryOperator::kIn,
+                transitioned.list({transitioned.value(std::string_view{"platform_upsert"}),
+                                   transitioned.value(std::string_view{"platform_delete"})})))
+            .andWhere(transitioned.binary(
+                transitioned.column("status"), ruvia::DbBinaryOperator::kNotIn,
+                transitioned.list({transitioned.value(std::string_view{"succeeded"}),
+                                   transitioned.value(std::string_view{"failed"})})))
+            .returning({transitioned.alias(
+                            transitioned.cast(
+                                config::detail::jsonText(
+                                    transitioned, transitioned.column("request"), "platform_id"),
+                                ruvia::DbDataType::kUuid),
+                            "platform_id"),
+                        transitioned.column("task_type")});
+
+        ruvia::DbQuery updated;
+        const auto success = updated.cast(updated.value(result.success()),
+                                          ruvia::DbDataType::kBoolean);
+        const auto deleteTask = updated.binary(
+            updated.column("task_type", "task"), ruvia::DbBinaryOperator::kEqual,
+            updated.value(std::string_view{"platform_delete"}));
+        updated.update("edge_node_platform", "target")
+            .set("status", updated.call(
+                               "jsonb_build_object",
+                               {config::detail::jsonKey(updated, "state"),
+                                updated.cast(updated.value(std::string_view(
+                                                               result.success() ? "applied"
+                                                                                : "failed")),
+                                             ruvia::DbDataType::kText),
+                                config::detail::jsonKey(updated, "message"),
+                                updated.cast(updated.value(std::string_view(result.message())),
+                                             ruvia::DbDataType::kText)}))
+            .set("updated_at", updated.call("now"))
+            .updateFrom("transitioned", "task")
+            .where(updated.binary(
+                updated.column("node_id", "target"), ruvia::DbBinaryOperator::kEqual,
+                updated.cast(updated.value(nodeId), ruvia::DbDataType::kUuid)))
+            .andWhere(updated.binary(updated.column("platform_id", "target"),
+                                     ruvia::DbBinaryOperator::kEqual,
+                                     updated.column("platform_id", "task")))
+            .andWhere(updated.unary(
+                ruvia::DbUnaryOperator::kNot,
+                updated.binary(success, ruvia::DbBinaryOperator::kAnd, deleteTask)))
+            .returning({updated.column("platform_id", "target")});
+
+        ruvia::DbQuery cleanup;
+        const auto cleanupSuccess = cleanup.importExpression(success);
+        const auto cleanupDeleteTask = cleanup.importExpression(deleteTask);
+        cleanup.with("transitioned", transitioned)
+            .with("updated", updated)
+            .deleteFrom("edge_node_platform", "target")
+            .deleteUsing("transitioned", "task")
+            .where(cleanup.binary(cleanupSuccess, ruvia::DbBinaryOperator::kAnd,
+                                  cleanupDeleteTask))
+            .andWhere(cleanup.binary(
+                cleanup.column("node_id", "target"), ruvia::DbBinaryOperator::kEqual,
+                cleanup.cast(cleanup.value(nodeId), ruvia::DbDataType::kUuid)))
+            .andWhere(cleanup.binary(cleanup.column("platform_id", "target"),
+                                     ruvia::DbBinaryOperator::kEqual,
+                                     cleanup.column("platform_id", "task")));
+        (void)co_await context.db().execute(cleanup);
     }
 
     static std::string hex(std::string_view value) {
@@ -1642,37 +2620,67 @@ WHERE $7::boolean AND task.task_type = 'platform_delete'
         if (result.revision() == 0 || result.sha256().size() != 32)
             co_return;
         const auto digest = hex(result.sha256());
-        (void)co_await context.db().execute(R"sql(
-UPDATE edge_config_revision
-SET status = 'applied', message = '', completed_at = NOW()
-WHERE node_id = $1::uuid AND revision = $2 AND sha256 = $3)sql",
-                                            service::common::dbParams(
-                                                nodeId,
-                                                static_cast<std::int64_t>(result.revision()),
-                                                digest));
-        (void)co_await context.db().execute(R"sql(
-UPDATE edge_node
-SET status = jsonb_set(
-        jsonb_set(
-            jsonb_set(status, '{config,activeVersion}', to_jsonb(GREATEST(
-                COALESCE(CASE WHEN status->'config'->>'activeVersion' ~ '^-?[0-9]{1,18}$'
-                              THEN (status->'config'->>'activeVersion')::bigint END, 0),
-                $1::bigint)), true),
-            '{config,state}', to_jsonb(CASE
-                WHEN COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
-                                   THEN (status->'config'->>'desiredVersion')::bigint END, 0) = $1
-                THEN 'applied'
-                ELSE COALESCE(status->'config'->>'state', 'idle') END::text), true),
-        '{config,message}', to_jsonb(CASE
-            WHEN COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
-                               THEN (status->'config'->>'desiredVersion')::bigint END, 0) = $1
-            THEN ''
-            ELSE COALESCE(status->'config'->>'message', '') END::text), true),
-    updated_at = NOW()
-WHERE id = $2::uuid)sql",
-                                            service::common::dbParams(
-                                                static_cast<std::int64_t>(result.revision()),
-                                                nodeId));
+        ruvia::DbQuery revision;
+        revision.update("edge_config_revision")
+            .set("status", revision.value(std::string_view{"applied"}))
+            .set("message", revision.value(std::string_view{}))
+            .set("completed_at", revision.call("now"))
+            .where(revision.binary(
+                revision.column("node_id"), ruvia::DbBinaryOperator::kEqual,
+                revision.cast(revision.value(nodeId), ruvia::DbDataType::kUuid)))
+            .andWhere(revision.binary(
+                revision.column("revision"), ruvia::DbBinaryOperator::kEqual,
+                revision.cast(revision.value(static_cast<std::int64_t>(result.revision())),
+                              ruvia::DbDataType::kBigInt)))
+            .andWhere(revision.binary(revision.column("sha256"),
+                                      ruvia::DbBinaryOperator::kEqual,
+                                      revision.value(std::string_view(digest))));
+        (void)co_await context.db().execute(revision);
+
+        ruvia::DbQuery node;
+        const auto status = node.column("status");
+        const auto revisionValue = node.cast(
+            node.value(static_cast<std::int64_t>(result.revision())),
+            ruvia::DbDataType::kBigInt);
+        const auto desired = config::detail::configVersion(node, status, "desiredVersion");
+        const auto matches = node.binary(desired, ruvia::DbBinaryOperator::kEqual,
+                                         revisionValue);
+        const auto configWithActive = node.call(
+            "jsonb_set",
+            {status, config::detail::jsonPath(node, "{config,activeVersion}"),
+             config::detail::toJsonb(
+                 node, node.greatest({config::detail::configVersion(
+                                           node, status, "activeVersion"),
+                                      revisionValue})),
+             node.cast(node.value(true), ruvia::DbDataType::kBoolean)});
+        const auto configWithState = node.call(
+            "jsonb_set",
+            {configWithActive, config::detail::jsonPath(node, "{config,state}"),
+             config::detail::toJsonb(
+                 node, node.caseWhen(
+                           {{matches, node.cast(node.value(std::string_view{"applied"}),
+                                                ruvia::DbDataType::kText)}},
+                           config::detail::configState(node, status))),
+             node.cast(node.value(true), ruvia::DbDataType::kBoolean)});
+        const auto configWithMessage = node.call(
+            "jsonb_set",
+            {configWithState, config::detail::jsonPath(node, "{config,message}"),
+             config::detail::toJsonb(
+                 node, node.caseWhen(
+                           {{matches, node.cast(node.value(std::string_view{}),
+                                                ruvia::DbDataType::kText)}},
+                           node.coalesce({config::detail::jsonText(
+                                              node,
+                                              config::detail::jsonGet(node, status, "config"),
+                                              "message"),
+                                          node.value(std::string_view{})}))),
+             node.cast(node.value(true), ruvia::DbDataType::kBoolean)});
+        node.update("edge_node")
+            .set("status", configWithMessage)
+            .set("updated_at", node.call("now"))
+            .where(node.binary(node.column("id"), ruvia::DbBinaryOperator::kEqual,
+                               node.cast(node.value(nodeId), ruvia::DbDataType::kUuid)));
+        (void)co_await context.db().execute(node);
     }
 
     static ruvia::Task<void> saveConfigRejected(ruvia::WebWorkerContext& context,
@@ -1681,32 +2689,55 @@ WHERE id = $2::uuid)sql",
         if (result.revision() == 0)
             co_return;
         const std::string message = result.code() + ": " + result.message();
-        (void)co_await context.db().execute(R"sql(
-UPDATE edge_config_revision
-SET status = 'rejected', message = $1, completed_at = NOW()
-WHERE node_id = $2::uuid AND revision = $3)sql",
-                                            service::common::dbParams(
-                                                message, nodeId,
-                                                static_cast<std::int64_t>(result.revision())));
-        (void)co_await context.db().execute(R"sql(
-UPDATE edge_node
-SET status = jsonb_set(
-        jsonb_set(status, '{config,state}', to_jsonb(CASE
-            WHEN COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
-                               THEN (status->'config'->>'desiredVersion')::bigint END, 0) = $1
-            THEN 'rejected'
-            ELSE COALESCE(status->'config'->>'state', 'idle') END::text), true),
-        '{config,message}', to_jsonb(CASE
-            WHEN COALESCE(CASE WHEN status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'
-                               THEN (status->'config'->>'desiredVersion')::bigint END, 0) = $1
-            THEN $2::text
-            ELSE COALESCE(status->'config'->>'message', '') END::text), true),
-    updated_at = NOW()
-WHERE id = $3::uuid)sql",
-                                            service::common::dbParams(
-                                                static_cast<std::int64_t>(result.revision()),
-                                                message,
-                                                nodeId));
+        ruvia::DbQuery revision;
+        revision.update("edge_config_revision")
+            .set("status", revision.value(std::string_view{"rejected"}))
+            .set("message", revision.value(std::string_view(message)))
+            .set("completed_at", revision.call("now"))
+            .where(revision.binary(
+                revision.column("node_id"), ruvia::DbBinaryOperator::kEqual,
+                revision.cast(revision.value(nodeId), ruvia::DbDataType::kUuid)))
+            .andWhere(revision.binary(
+                revision.column("revision"), ruvia::DbBinaryOperator::kEqual,
+                revision.cast(revision.value(static_cast<std::int64_t>(result.revision())),
+                              ruvia::DbDataType::kBigInt)));
+        (void)co_await context.db().execute(revision);
+
+        ruvia::DbQuery node;
+        const auto status = node.column("status");
+        const auto revisionValue = node.cast(
+            node.value(static_cast<std::int64_t>(result.revision())),
+            ruvia::DbDataType::kBigInt);
+        const auto matches = node.binary(
+            config::detail::configVersion(node, status, "desiredVersion"),
+            ruvia::DbBinaryOperator::kEqual, revisionValue);
+        const auto state = node.caseWhen(
+            {{matches, node.cast(node.value(std::string_view{"rejected"}),
+                                 ruvia::DbDataType::kText)}},
+            config::detail::configState(node, status));
+        const auto messageValue = node.caseWhen(
+            {{matches, node.cast(node.value(std::string_view(message)),
+                                 ruvia::DbDataType::kText)}},
+            node.coalesce({config::detail::jsonText(
+                               node, config::detail::jsonGet(node, status, "config"),
+                               "message"),
+                           node.value(std::string_view{})}));
+        const auto statusWithState = node.call(
+            "jsonb_set", {status, config::detail::jsonPath(node, "{config,state}"),
+                           config::detail::toJsonb(node, state),
+                           node.cast(node.value(true), ruvia::DbDataType::kBoolean)});
+        node.update("edge_node")
+            .set("status", node.call(
+                               "jsonb_set",
+                               {statusWithState,
+                                config::detail::jsonPath(node, "{config,message}"),
+                                config::detail::toJsonb(node, messageValue),
+                                node.cast(node.value(true),
+                                          ruvia::DbDataType::kBoolean)}))
+            .set("updated_at", node.call("now"))
+            .where(node.binary(node.column("id"), ruvia::DbBinaryOperator::kEqual,
+                               node.cast(node.value(nodeId), ruvia::DbDataType::kUuid)));
+        (void)co_await context.db().execute(node);
     }
 
     static std::string protocolName(pb::Protocol value) {

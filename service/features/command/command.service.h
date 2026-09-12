@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <ruvia/core/Task.h>
+#include <ruvia/web/db/DbQuery.h>
 
 #include "service/common/message.h"
 #include "service/features/messaging/messaging.transport.h"
@@ -151,13 +152,18 @@ template <typename Database>
 ruvia::Task<void> event(Database& db, std::string_view commandId,
                          std::string_view type) {
     const auto eventId = service::common::nextUuidV7();
-    (void)co_await db.execute(R"sql(
-INSERT INTO outbox_event(id,event_type,aggregate_type,aggregate_id,action,schema_version,payload)
-SELECT $1::uuid,$3,'command',device_id::text,'updated',2,
- jsonb_build_object('device_code',device_code,'data',jsonb_build_object(
- 'commandId',id::text,'status',status,'reason',reason,'elements',elements,'actualValues',actual_values))
-FROM command_operation WHERE id=$2::uuid)sql",
-        common::dbParams(eventId, commandId, type));
+    ruvia::DbQuery operation;
+    operation.select({ operation.cast(operation.value(eventId), ruvia::DbDataType::kUuid), operation.value(type), operation.value("command"),
+            operation.cast(operation.column("device_id"), ruvia::DbDataType::kText), operation.value("updated"), operation.value(2),
+            operation.call("jsonb_build_object", { operation.cast(operation.value("device_code"), ruvia::DbDataType::kText), operation.column("device_code"), operation.cast(operation.value("data"), ruvia::DbDataType::kText),
+                operation.call("jsonb_build_object", { operation.cast(operation.value("commandId"), ruvia::DbDataType::kText), operation.cast(operation.column("id"), ruvia::DbDataType::kText),
+                    operation.cast(operation.value("status"), ruvia::DbDataType::kText), operation.column("status"), operation.cast(operation.value("reason"), ruvia::DbDataType::kText), operation.column("reason"),
+                    operation.cast(operation.value("elements"), ruvia::DbDataType::kText), operation.column("elements"), operation.cast(operation.value("actualValues"), ruvia::DbDataType::kText), operation.column("actual_values") }) }) })
+        .from("command_operation")
+        .andWhere(operation.binary(operation.column("id"), ruvia::DbBinaryOperator::kEqual, operation.cast(operation.value(commandId), ruvia::DbDataType::kUuid)));
+    ruvia::DbQuery outbox;
+    outbox.insertInto("outbox_event", { "id", "event_type", "aggregate_type", "aggregate_id", "action", "schema_version", "payload" }).insertFrom(operation);
+    (void)co_await db.execute(outbox);
 }
 
 
@@ -166,19 +172,32 @@ FROM command_operation WHERE id=$2::uuid)sql",
 template <typename Context>
 ruvia::Task<void> dispatch(Context& context) {
     auto tx = co_await context.db().beginTransaction();
-    const auto rows = co_await tx.query(R"sql(
-SELECT a.operation_id::text,a.queue_key,a.queue_kind,a.submitted_by,a.node_id,
- a.max_length::text,o.device_id::text,o.device_code,o.protocol,
- (extract(epoch FROM o.created_at)*1000)::bigint::text
-FROM command_attempt a JOIN command_operation o ON o.id=a.operation_id
-WHERE a.claimed_at IS NULL AND a.deadline>NOW() AND o.status='ACCEPTED'
-ORDER BY o.created_at FOR UPDATE OF a,o SKIP LOCKED LIMIT 16)sql");
+    using Op = ruvia::DbBinaryOperator;
+    using Type = ruvia::DbDataType;
+    ruvia::DbQuery pending;
+    pending.select({ pending.cast(pending.column("operation_id", "a"), Type::kText), pending.column("queue_key", "a"),
+        pending.column("queue_kind", "a"), pending.column("submitted_by", "a"), pending.column("node_id", "a"),
+        pending.cast(pending.column("max_length", "a"), Type::kText), pending.cast(pending.column("device_id", "o"), Type::kText),
+        pending.column("device_code", "o"), pending.column("protocol", "o"),
+        pending.cast(pending.cast(pending.binary(pending.extract(ruvia::DbDatePart::kEpoch, pending.column("created_at", "o")),
+            Op::kMultiply, pending.value(1000)), Type::kBigInt), Type::kText) })
+        .from("command_attempt", "a")
+        .join(ruvia::DbJoinType::kInner, "command_operation", pending.binary(pending.column("id", "o"), Op::kEqual, pending.column("operation_id", "a")), "o")
+        .andWhere(pending.unary(ruvia::DbUnaryOperator::kIsNull, pending.column("claimed_at", "a")))
+        .andWhere(pending.binary(pending.column("deadline", "a"), Op::kGreater, pending.call("now")))
+        .andWhere(pending.binary(pending.column("status", "o"), Op::kEqual, pending.value("ACCEPTED")))
+        .addOrderBy(pending.column("created_at", "o")).lock({ .mode = ruvia::DbRowLock::kUpdate, .skipLocked = true, .tables = { "a", "o" } }).limit(16);
+    const auto rows = co_await tx.query(pending);
     for (const auto& row : rows) {
         const auto id = row[0].value().value_or(std::string_view{});
-        (void)co_await tx.execute("UPDATE command_attempt SET claimed_at=NOW() WHERE operation_id=$1::uuid",
-                                  common::dbParams(id));
-        (void)co_await tx.execute("UPDATE command_operation SET status='DISPATCHING' WHERE id=$1::uuid",
-                                  common::dbParams(id));
+        ruvia::DbQuery claim;
+        claim.update("command_attempt").set("claimed_at", claim.call("now"))
+            .andWhere(claim.binary(claim.column("operation_id"), Op::kEqual, claim.cast(claim.value(id), Type::kUuid)));
+        (void)co_await tx.execute(claim);
+        ruvia::DbQuery operation;
+        operation.update("command_operation").set("status", operation.value("DISPATCHING"))
+            .andWhere(operation.binary(operation.column("id"), Op::kEqual, operation.cast(operation.value(id), Type::kUuid)));
+        (void)co_await tx.execute(operation);
     }
     co_await tx.commit();
     for (const auto& row : rows) {
@@ -186,9 +205,13 @@ ORDER BY o.created_at FOR UPDATE OF a,o SKIP LOCKED LIMIT 16)sql");
         std::string failure;
         bool published = false;
         try {
-            const auto values = co_await context.db().query(
-                "SELECT value FROM command_attempt, jsonb_array_elements_text(payload) WITH ORDINALITY p(value,idx) "
-                "WHERE operation_id=$1::uuid ORDER BY idx", common::dbParams(cell(0)));
+            ruvia::DbQuery payload;
+            payload.select(payload.column("value")).from("command_attempt")
+                .joinFunction(ruvia::DbJoinType::kCross, payload.call("jsonb_array_elements_text", { payload.column("payload") }),
+                    {}, "p", { .withOrdinality = true, .columns = { { .name = "value" }, { .name = "idx" } } })
+                .andWhere(payload.binary(payload.column("operation_id"), Op::kEqual, payload.cast(payload.value(cell(0)), Type::kUuid)))
+                .addOrderBy(payload.column("idx"));
+            const auto values = co_await context.db().query(payload);
             PendingDispatch item;
             item.task.messageId = cell(0); item.task.deviceId = cell(6);
             item.task.deviceCode = cell(7); item.task.protocol = cell(8);
@@ -213,25 +236,35 @@ ORDER BY o.created_at FOR UPDATE OF a,o SKIP LOCKED LIMIT 16)sql");
         const std::string_view next = published ? "AWAITING_RESULT" :
             failure == "queue_capacity_exceeded" ? "REJECTED" : "UNKNOWN";
         auto update = co_await context.db().beginTransaction();
-        (void)co_await update.execute(R"sql(
-UPDATE command_operation SET status=$2,reason=$3,
- completed_at=CASE WHEN $2='AWAITING_RESULT' THEN NULL ELSE NOW() END
-WHERE id=$1::uuid AND status='DISPATCHING')sql", common::dbParams(cell(0),next,failure));
-        if (published)
-            (void)co_await update.execute("UPDATE command_attempt SET dispatched_at=NOW() WHERE operation_id=$1::uuid",
-                                          common::dbParams(cell(0)));
+        ruvia::DbQuery outcome;
+        outcome.update("command_operation").set("status", outcome.value(next)).set("reason", outcome.value(failure))
+            .set("completed_at", outcome.caseWhen({ { outcome.binary(outcome.value(next), Op::kEqual, outcome.value("AWAITING_RESULT")), outcome.nullValue() } }, outcome.call("now")))
+            .andWhere(outcome.binary(outcome.column("id"), Op::kEqual, outcome.cast(outcome.value(cell(0)), Type::kUuid)))
+            .andWhere(outcome.binary(outcome.column("status"), Op::kEqual, outcome.value("DISPATCHING")));
+        (void)co_await update.execute(outcome);
+        if (published) {
+            ruvia::DbQuery dispatched;
+            dispatched.update("command_attempt").set("dispatched_at", dispatched.call("now"))
+                .andWhere(dispatched.binary(dispatched.column("operation_id"), Op::kEqual, dispatched.cast(dispatched.value(cell(0)), Type::kUuid)));
+            (void)co_await update.execute(dispatched);
+        }
         else co_await event(update,cell(0),"device.command.updated");
         co_await update.commit();
         if (published && !cell(4).empty())
             co_await edge::dispatch::notifyNode(context.redis(),cell(4));
     }
     auto expiry = co_await context.db().beginTransaction();
-    const auto expired = co_await expiry.query(R"sql(
-UPDATE command_operation o SET status=CASE WHEN a.claimed_at IS NULL THEN 'REJECTED' ELSE 'UNKNOWN' END,
- reason=CASE WHEN a.claimed_at IS NULL THEN 'dispatch_deadline_expired' ELSE 'result_not_confirmed' END,
- completed_at=NOW()
-FROM command_attempt a WHERE o.id=a.operation_id AND a.deadline<=NOW()
- AND o.status IN ('ACCEPTED','DISPATCHING','AWAITING_RESULT') RETURNING o.id::text)sql");
+    ruvia::DbQuery overdue;
+    const auto unclaimed = overdue.unary(ruvia::DbUnaryOperator::kIsNull, overdue.column("claimed_at", "a"));
+    overdue.update("command_operation", "o")
+        .set("status", overdue.caseWhen({ { unclaimed, overdue.value("REJECTED") } }, overdue.value("UNKNOWN")))
+        .set("reason", overdue.caseWhen({ { unclaimed, overdue.value("dispatch_deadline_expired") } }, overdue.value("result_not_confirmed")))
+        .set("completed_at", overdue.call("now")).updateFrom("command_attempt", "a")
+        .andWhere(overdue.binary(overdue.column("id", "o"), Op::kEqual, overdue.column("operation_id", "a")))
+        .andWhere(overdue.binary(overdue.column("deadline", "a"), Op::kLessEqual, overdue.call("now")))
+        .andWhere(overdue.binary(overdue.column("status", "o"), Op::kIn, overdue.list({ overdue.value("ACCEPTED"), overdue.value("DISPATCHING"), overdue.value("AWAITING_RESULT") })))
+        .returning({ overdue.cast(overdue.column("id", "o"), Type::kText) });
+    const auto expired = co_await expiry.query(overdue);
     for (const auto& row : expired)
         co_await event(expiry,row[0].value().value_or(std::string_view{}),"device.command.updated");
     co_await expiry.commit();
@@ -240,15 +273,25 @@ FROM command_attempt a WHERE o.id=a.operation_id AND a.deadline<=NOW()
 template <typename Context>
 ruvia::Task<std::optional<std::chrono::milliseconds>>
 nextDispatchDelay(Context& context) {
-    const auto rows = co_await context.db().query(R"sql(
-SELECT CASE
- WHEN COUNT(*) = 0 THEN NULL
- WHEN BOOL_OR(o.status='ACCEPTED' AND a.claimed_at IS NULL AND a.deadline>NOW()) THEN 25
- ELSE GREATEST(25, CEIL(EXTRACT(EPOCH FROM (MIN(a.deadline)-NOW()))*1000)::bigint)
- END::text
-FROM command_attempt a JOIN command_operation o ON o.id=a.operation_id
-WHERE o.status IN ('ACCEPTED','DISPATCHING','AWAITING_RESULT')
-  AND a.deadline IS NOT NULL)sql");
+    using Op = ruvia::DbBinaryOperator;
+    ruvia::DbQuery delayQuery;
+    const auto claimable = delayQuery.binary(delayQuery.binary(
+        delayQuery.binary(delayQuery.column("status", "o"), Op::kEqual, delayQuery.value("ACCEPTED")), Op::kAnd,
+        delayQuery.unary(ruvia::DbUnaryOperator::kIsNull, delayQuery.column("claimed_at", "a"))), Op::kAnd,
+        delayQuery.binary(delayQuery.column("deadline", "a"), Op::kGreater, delayQuery.call("now")));
+    const auto deadlineMs = delayQuery.cast(delayQuery.call("ceil", { delayQuery.binary(delayQuery.extract(ruvia::DbDatePart::kEpoch,
+        delayQuery.binary(delayQuery.aggregate("min", { delayQuery.column("deadline", "a") }), Op::kSubtract, delayQuery.call("now"))),
+        Op::kMultiply, delayQuery.value(1000)) }), ruvia::DbDataType::kBigInt);
+    delayQuery.select(delayQuery.cast(delayQuery.caseWhen({
+            { delayQuery.binary(delayQuery.aggregate("count", { delayQuery.star() }), Op::kEqual, delayQuery.value(0)), delayQuery.nullValue() },
+            { delayQuery.aggregate("bool_or", { claimable }), delayQuery.value(25) } },
+            delayQuery.greatest({ delayQuery.value(25), deadlineMs })), ruvia::DbDataType::kText))
+        .from("command_attempt", "a")
+        .join(ruvia::DbJoinType::kInner, "command_operation", delayQuery.binary(delayQuery.column("id", "o"), Op::kEqual, delayQuery.column("operation_id", "a")), "o")
+        .andWhere(delayQuery.binary(delayQuery.column("status", "o"), Op::kIn,
+            delayQuery.list({ delayQuery.value("ACCEPTED"), delayQuery.value("DISPATCHING"), delayQuery.value("AWAITING_RESULT") })))
+        .andWhere(delayQuery.unary(ruvia::DbUnaryOperator::kIsNotNull, delayQuery.column("deadline", "a")));
+    const auto rows = co_await context.db().query(delayQuery);
     if (rows.empty())
         co_return std::nullopt;
     const auto value = rows.front()[0].value();
@@ -283,12 +326,18 @@ class CommandResultService final {
                                    : collectorResultState(message.get("success") == "1",
                                                           message.get("reason"));
             const auto actual = actualValuesJson(message);
-            const auto updated = co_await transaction.query(R"sql(
-UPDATE command_operation SET status=$3,reason=$4,actual_values=$5::jsonb,completed_at=NOW()
-WHERE id=$1::uuid AND device_id=$2::uuid
- AND (status IN ('DISPATCHING','AWAITING_RESULT') OR (status='UNKNOWN' AND $3<>'UNKNOWN'))
-RETURNING id::text)sql",
-                common::dbParams(id, deviceId, state, message.get("reason"), actual));
+            using Op = ruvia::DbBinaryOperator;
+            ruvia::DbQuery outcome;
+            outcome.update("command_operation").set("status", outcome.value(state)).set("reason", outcome.value(message.get("reason")))
+                .set("actual_values", outcome.cast(outcome.value(actual), ruvia::DbDataType::kJsonb)).set("completed_at", outcome.call("now"))
+                .andWhere(outcome.binary(outcome.column("id"), Op::kEqual, outcome.cast(outcome.value(id), ruvia::DbDataType::kUuid)))
+                .andWhere(outcome.binary(outcome.column("device_id"), Op::kEqual, outcome.cast(outcome.value(deviceId), ruvia::DbDataType::kUuid)))
+                .andWhere(outcome.binary(outcome.binary(outcome.column("status"), Op::kIn,
+                    outcome.list({ outcome.value("DISPATCHING"), outcome.value("AWAITING_RESULT") })), Op::kOr,
+                    outcome.binary(outcome.binary(outcome.column("status"), Op::kEqual, outcome.value("UNKNOWN")), Op::kAnd,
+                        outcome.binary(outcome.value(state), Op::kNotEqual, outcome.value("UNKNOWN")))))
+                .returning({ outcome.cast(outcome.column("id"), ruvia::DbDataType::kText) });
+            const auto updated = co_await transaction.query(outcome);
             if (!updated.empty())
                 co_await repository::event(transaction, id, "device.command.updated");
         }
@@ -419,39 +468,45 @@ private:
 
         // 调用方在命令事务中持有设备共享锁，准备事务只读取，避免跨连接重复加锁。
 
-        const auto edge = co_await transaction.query(R"sql(
-SELECT COALESCE(l.edge_node_id::text, ''), d.protocol_params->>'device_code', p.protocol,
-       CASE
-         WHEN d.protocol_params ? 'remote_control' THEN
-           CASE lower(COALESCE(d.protocol_params->>'remote_control', ''))
-             WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE
-             WHEN 'yes' THEN TRUE WHEN 'y' THEN TRUE WHEN 'on' THEN TRUE
-             ELSE FALSE END
-         ELSE TRUE END,
-       COALESCE(l.status = 'enabled'
-                AND n.enrollment_status = 'approved'
-                AND CASE lower(COALESCE(n.capability->>'deviceConfig', ''))
-                      WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE
-                      WHEN 'yes' THEN TRUE WHEN 'y' THEN TRUE WHEN 'on' THEN TRUE
-                      ELSE FALSE END
-                AND COALESCE(n.status->'config'->>'state', 'idle') = 'applied'
-                AND COALESCE(
-                      CASE WHEN COALESCE(n.status->'config'->>'activeVersion', '') ~
-                                '^-?[0-9]{1,18}$'
-                           THEN (n.status->'config'->>'activeVersion')::bigint END, 0)
-                    = COALESCE(
-                      CASE WHEN COALESCE(n.status->'config'->>'desiredVersion', '') ~
-                                '^-?[0-9]{1,18}$'
-                           THEN (n.status->'config'->>'desiredVersion')::bigint END, 0), false),
-       COALESCE(NULLIF(p.config->>'commandFastReadDuration', ''), '60'),
-       COALESCE(NULLIF(p.config->>'commandFastReadInterval', ''), '1')
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.deleted_at IS NULL
-JOIN device_model p ON p.device_id = d.id
-             AND p.deleted_at IS NULL AND p.enabled
-LEFT JOIN edge_node n ON n.id = l.edge_node_id
-WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)sql",
-                                                      service::common::dbParams(deviceId));
+        using Op = ruvia::DbBinaryOperator;
+        using Type = ruvia::DbDataType;
+        ruvia::DbQuery routeQuery;
+        const auto parameters = routeQuery.column("protocol_params", "d");
+        const auto text = [&](ruvia::DbExpression object, std::string_view key) {
+            return routeQuery.binary(object, Op::kJsonGetText, routeQuery.value(key));
+        };
+        const auto boolean = [&](ruvia::DbExpression value) {
+            return routeQuery.binary(routeQuery.call("lower", { routeQuery.coalesce({ value, routeQuery.value("") }) }), Op::kIn,
+                routeQuery.list({ routeQuery.value("true"), routeQuery.value("t"), routeQuery.value("1"), routeQuery.value("yes"), routeQuery.value("y"), routeQuery.value("on") }));
+        };
+        const auto nodeConfig = routeQuery.binary(routeQuery.column("status", "n"), Op::kJsonGet, routeQuery.value("config"));
+        const auto version = [&](std::string_view key) {
+            const auto value = text(nodeConfig, key);
+            return routeQuery.coalesce({ routeQuery.caseWhen({ { routeQuery.binary(routeQuery.coalesce({ value, routeQuery.value("") }), Op::kRegex,
+                routeQuery.value("^-?[0-9]{1,18}$")), routeQuery.cast(value, Type::kBigInt) } }), routeQuery.value(0) });
+        };
+        auto applied = routeQuery.binary(routeQuery.column("status", "l"), Op::kEqual, routeQuery.value("enabled"));
+        applied = routeQuery.binary(applied, Op::kAnd, routeQuery.binary(routeQuery.column("enrollment_status", "n"), Op::kEqual, routeQuery.value("approved")));
+        applied = routeQuery.binary(applied, Op::kAnd, boolean(text(routeQuery.column("capability", "n"), "deviceConfig")));
+        applied = routeQuery.binary(applied, Op::kAnd, routeQuery.binary(routeQuery.coalesce({ text(nodeConfig, "state"), routeQuery.value("idle") }), Op::kEqual, routeQuery.value("applied")));
+        applied = routeQuery.binary(applied, Op::kAnd, routeQuery.binary(version("activeVersion"), Op::kEqual, version("desiredVersion")));
+        routeQuery.select({ routeQuery.coalesce({ routeQuery.cast(routeQuery.column("edge_node_id", "l"), Type::kText), routeQuery.value("") }),
+                text(parameters, "device_code"), routeQuery.column("protocol", "p"),
+                routeQuery.caseWhen({ { routeQuery.binary(parameters, Op::kJsonHasKey, routeQuery.value("remote_control")), boolean(text(parameters, "remote_control")) } }, routeQuery.value(true)),
+                routeQuery.coalesce({ applied, routeQuery.value(false) }),
+                routeQuery.coalesce({ routeQuery.nullIf(text(routeQuery.column("config", "p"), "commandFastReadDuration"), routeQuery.value("")), routeQuery.value("60") }),
+                routeQuery.coalesce({ routeQuery.nullIf(text(routeQuery.column("config", "p"), "commandFastReadInterval"), routeQuery.value("")), routeQuery.value("1") }) })
+            .from("device", "d")
+            .join(ruvia::DbJoinType::kInner, "link", routeQuery.binary(routeQuery.column("id", "l"), Op::kEqual, routeQuery.column("link_id", "d")), "l")
+            .join(ruvia::DbJoinType::kInner, "device_model", routeQuery.binary(routeQuery.column("device_id", "p"), Op::kEqual, routeQuery.column("id", "d")), "p")
+            .join(ruvia::DbJoinType::kLeft, "edge_node", routeQuery.binary(routeQuery.column("id", "n"), Op::kEqual, routeQuery.column("edge_node_id", "l")), "n")
+            .andWhere(routeQuery.binary(routeQuery.column("id", "d"), Op::kEqual, routeQuery.cast(routeQuery.value(deviceId), Type::kUuid)))
+            .andWhere(routeQuery.unary(ruvia::DbUnaryOperator::kIsNull, routeQuery.column("deleted_at", "d")))
+            .andWhere(routeQuery.binary(routeQuery.column("status", "d"), Op::kEqual, routeQuery.value("enabled")))
+            .andWhere(routeQuery.unary(ruvia::DbUnaryOperator::kIsNull, routeQuery.column("deleted_at", "l")))
+            .andWhere(routeQuery.unary(ruvia::DbUnaryOperator::kIsNull, routeQuery.column("deleted_at", "p")))
+            .andWhere(routeQuery.column("enabled", "p")).limit(1);
+        const auto edge = co_await transaction.query(routeQuery);
         if (!edge.empty() && !edge.front()[0].value().value_or(std::string_view{}).empty()) {
             if (edge.front()[4].value().value_or(std::string_view{}) != "t")
                 service::common::fail(18013, "边缘节点设备配置尚未生效", 409);
@@ -613,64 +668,58 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL AND d.status = 'enabled' LIMIT 1)
 
     static ruvia::Task<void> loadEdgeElements(ruvia::DbTransaction& transaction,
                                                service::collector::DeviceDefinition& device) {
-        std::string sql;
-        if (device.protocol == "Modbus") {
-            sql = R"sql(
-SELECT item->>'id', item->>'name', COALESCE(item->>'unit', ''), item->>'dataType',
-       '', 0, 0,
-       CASE lower(COALESCE(item->>'writable', ''))
-         WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE
-         WHEN 'yes' THEN TRUE WHEN 'y' THEN TRUE WHEN 'on' THEN TRUE
-         ELSE FALSE END,
-       false, '', ''
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN device_model p ON p.device_id = d.id
-CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]')) item
-WHERE d.id = $1::uuid AND p.protocol = 'Modbus')sql";
-        } else if (device.protocol == "S7") {
-            sql = R"sql(
-SELECT item->>'id', item->>'name', COALESCE(item->>'unit', ''),
-       COALESCE(item->>'dataType', 'BOOL'), '',
-       COALESCE(CASE WHEN COALESCE(item->>'size', '') ~ '^-?[0-9]{1,18}$'
-                     THEN (item->>'size')::integer END, 1),
-       0,
-       CASE lower(COALESCE(item->>'writable', ''))
-         WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE
-         WHEN 'yes' THEN TRUE WHEN 'y' THEN TRUE WHEN 'on' THEN TRUE
-         ELSE FALSE END,
-       false, '', ''
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN device_model p ON p.device_id = d.id
-CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]')) item
-WHERE d.id = $1::uuid AND p.protocol = 'S7')sql";
-        } else if (device.protocol == "SL651") {
-            sql = R"sql(
-SELECT item->>'id', item->>'name', COALESCE(item->>'unit', ''), '',
-       func->>'dir',
-       COALESCE(CASE WHEN COALESCE(item->>'length', '') ~ '^-?[0-9]{1,18}$'
-                     THEN (item->>'length')::integer END, 1),
-       COALESCE(CASE WHEN COALESCE(item->>'digits', '') ~ '^-?[0-9]{1,18}$'
-                     THEN (item->>'digits')::integer END, 0),
-       func->>'dir' = 'DOWN', response_element,
-       func->>'funcCode', item->>'encode'
-FROM device d
-JOIN link l ON l.id = d.link_id AND l.execution = 'edge' AND l.deleted_at IS NULL
-JOIN device_model p ON p.device_id = d.id
-CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]')) func
-CROSS JOIN LATERAL (
-  SELECT value AS item, false AS response_element
-  FROM jsonb_array_elements(COALESCE(func->'elements', '[]'))
-  UNION ALL
-  SELECT value AS item, true AS response_element
-  FROM jsonb_array_elements(COALESCE(func->'responseElements', '[]'))
-) configured
-WHERE d.id = $1::uuid AND p.protocol = 'SL651')sql";
-        } else {
+        using Op = ruvia::DbBinaryOperator;
+        using Type = ruvia::DbDataType;
+        if (device.protocol != "Modbus" && device.protocol != "S7" && device.protocol != "SL651")
             service::common::fail(18010, "边缘节点不支持该设备协议", 400);
+        ruvia::DbQuery elements;
+        const auto field = [&](std::string_view key) {
+            return elements.binary(elements.column("item"), Op::kJsonGetText, elements.value(key));
+        };
+        const auto integer = [&](std::string_view key, int fallback) {
+            const auto value = field(key);
+            return elements.coalesce({ elements.caseWhen({ { elements.binary(elements.coalesce({ value, elements.value("") }),
+                Op::kRegex, elements.value("^-?[0-9]{1,18}$")), elements.cast(value, Type::kInteger) } }), elements.value(fallback) });
+        };
+        const auto functionText = [&](std::string_view key) {
+            return elements.binary(elements.column("func"), Op::kJsonGetText, elements.value(key));
+        };
+        const auto isSl651 = device.protocol == "SL651";
+        const auto isS7 = device.protocol == "S7";
+        const auto writable = elements.binary(elements.call("lower", { elements.coalesce({ field("writable"), elements.value("") }) }), Op::kIn,
+            elements.list({ elements.value("true"), elements.value("t"), elements.value("1"), elements.value("yes"), elements.value("y"), elements.value("on") }));
+        elements.select({ field("id"), field("name"), elements.coalesce({ field("unit"), elements.value("") }),
+                isSl651 ? elements.value("") : isS7 ? elements.coalesce({ field("dataType"), elements.value("BOOL") }) : field("dataType"),
+                isSl651 ? functionText("dir") : elements.value(""),
+                isSl651 ? integer("length", 1) : isS7 ? integer("size", 1) : elements.value(0),
+                isSl651 ? integer("digits", 0) : elements.value(0),
+                isSl651 ? elements.binary(functionText("dir"), Op::kEqual, elements.value("DOWN")) : writable,
+                isSl651 ? elements.column("response_element") : elements.cast(elements.value(false), Type::kBoolean),
+                isSl651 ? functionText("funcCode") : elements.value(""), isSl651 ? field("encode") : elements.value("") })
+            .from("device", "d")
+            .join(ruvia::DbJoinType::kInner, "link", elements.binary(elements.column("id", "l"), Op::kEqual, elements.column("link_id", "d")), "l")
+            .join(ruvia::DbJoinType::kInner, "device_model", elements.binary(elements.column("device_id", "p"), Op::kEqual, elements.column("id", "d")), "p")
+            .joinFunction(ruvia::DbJoinType::kCross, elements.call("jsonb_array_elements", { elements.coalesce({
+                elements.binary(elements.column("config", "p"), Op::kJsonGet, elements.value(isSl651 ? "funcs" : isS7 ? "areas" : "registers")),
+                elements.cast(elements.value("[]"), Type::kJsonb) }) }), {}, isSl651 ? "func" : "item", { .lateral = true })
+            .andWhere(elements.binary(elements.column("id", "d"), Op::kEqual, elements.cast(elements.value(device.id), Type::kUuid)))
+            .andWhere(elements.binary(elements.column("protocol", "p"), Op::kEqual, elements.value(device.protocol)))
+            .andWhere(elements.binary(elements.column("execution", "l"), Op::kEqual, elements.value("edge")))
+            .andWhere(elements.unary(ruvia::DbUnaryOperator::kIsNull, elements.column("deleted_at", "l")));
+        if (isSl651) {
+            const auto functionFields = [](std::string_view key, bool response) {
+                ruvia::DbQuery query;
+                query.select({ query.alias(query.column("value"), "item"), query.alias(query.cast(query.value(response), Type::kBoolean), "response_element") })
+                    .fromFunction(query.call("jsonb_array_elements", { query.coalesce({
+                        query.binary(query.column("func"), Op::kJsonGet, query.value(key)), query.cast(query.value("[]"), Type::kJsonb) }) }), "field");
+                return query;
+            };
+            auto fields = functionFields("elements", false);
+            const auto response = functionFields("responseElements", true);
+            fields.combine(ruvia::DbSetOperation::kUnionAll, response);
+            elements.join(ruvia::DbJoinType::kCross, fields, {}, "configured", { .lateral = true });
         }
-        const auto rows = co_await transaction.query(sql, service::common::dbParams(device.id));
+        const auto rows = co_await transaction.query(elements);
         for (const auto& row : rows) {
             service::collector::ElementDefinition element;
             element.id = std::string(row[0].value().value_or(std::string_view{}));

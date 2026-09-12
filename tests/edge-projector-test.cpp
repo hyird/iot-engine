@@ -42,15 +42,15 @@ int main() {
         require(serviceSource.find("COALESCE((node.status->'config'->>'desiredVersion')::bigint") ==
                     std::string::npos,
                 "edge projector directly casts node desiredVersion");
-        require(serviceSource.find("CASE lower(COALESCE(edge_node.capability->>'terminal', ''))") !=
+        require(serviceSource.find("config::detail::jsonText(query, existingCapability, \"terminal\")") !=
                     std::string::npos,
                 "edge projector does not guard terminal capability");
-        require(serviceSource.find("status->'config'->>'desiredVersion' ~ '^-?[0-9]{1,18}$'") !=
+        require(serviceSource.find("query.caseWhen({{valid, query.cast(text, ruvia::DbDataType::kBigInt)}})") !=
                     std::string::npos,
                 "edge projector does not guard desiredVersion");
-        require(serviceSource.find("status, last_seen_at, updated_at") != std::string::npos,
+        require(serviceSource.find("\"status\", \"last_seen_at\", \"updated_at\"") != std::string::npos,
                 "edge hello insert does not record presence");
-        require(serviceSource.find("last_seen_at = NOW()") != std::string::npos,
+        require(serviceSource.find("\"last_seen_at\", query.call(\"now\")") != std::string::npos,
                 "edge hello update does not refresh node presence");
         require(serviceSource.find("edge_node.enrollment_status IN ('pending', 'approved')") ==
                     std::string::npos,

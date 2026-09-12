@@ -14,6 +14,7 @@
 
 #include <ruvia/core/Task.h>
 #include <ruvia/web/WebWorker.h>
+#include <ruvia/web/db/DbQuery.h>
 #include <ruvia/web/redis/Redis.h>
 
 #include "service/common/http.h"
@@ -423,23 +424,34 @@ deadlineWait(std::int64_t now, std::optional<std::int64_t> deadline) {
     return std::chrono::milliseconds(*deadline - now);
 }
 
+enum class ProjectionScope { Device, Protocol };
+
 template <typename Context>
-ruvia::Task<void> project(Context& context, std::string filter, std::vector<ruvia::DbValue> params, bool resetRuntime, bool preserveExisting = false) {
+ruvia::Task<void> project(Context& context, ProjectionScope scope, const std::vector<std::string>& ids, bool resetRuntime, bool preserveExisting = false) {
+    if (ids.empty()) co_return;
+    using Op = ruvia::DbBinaryOperator;
+    using Type = ruvia::DbDataType;
+    const auto selected = [&](ruvia::DbQuery& query) {
+        std::vector<ruvia::DbExpression> values;
+        values.reserve(ids.size());
+        for (const auto& id : ids) values.push_back(query.cast(query.value(id), Type::kUuid));
+        return query.binary(query.column(scope == ProjectionScope::Device ? "id" : "protocol_config_id", "d"), Op::kIn, query.list(values));
+    };
     const auto redis = context.redis();
     const auto nowMs = service::message::utcNowMilliseconds();
     const auto now = std::to_string(nowMs);
-    const auto devices = co_await context.db().query(
-        R"sql(
-SELECT d.id::text, d.protocol_params->>'device_code',
-       COALESCE(
-         CASE WHEN COALESCE(d.protocol_params->>'online_timeout', '') ~ '^-?[0-9]{1,18}$'
-              THEN (d.protocol_params->>'online_timeout')::bigint END,
-         300) * 1000
-FROM device d
-WHERE d.deleted_at IS NULL)sql" +
-            filter + " ORDER BY d.id",
-        params
-    );
+    ruvia::DbQuery deviceQuery;
+    const auto timeout = deviceQuery.binary(deviceQuery.column("protocol_params", "d"), Op::kJsonGetText, deviceQuery.value("online_timeout"));
+    const auto parsedTimeout = deviceQuery.caseWhen({ { deviceQuery.binary(
+        deviceQuery.coalesce({ timeout, deviceQuery.value("") }), Op::kRegex, deviceQuery.value("^-?[0-9]{1,18}$")),
+        deviceQuery.cast(timeout, Type::kBigInt) } });
+    deviceQuery.select({ deviceQuery.cast(deviceQuery.column("id", "d"), Type::kText),
+        deviceQuery.binary(deviceQuery.column("protocol_params", "d"), Op::kJsonGetText, deviceQuery.value("device_code")),
+        deviceQuery.binary(deviceQuery.coalesce({ parsedTimeout, deviceQuery.value(300) }), Op::kMultiply, deviceQuery.value(1000)) })
+        .from("device", "d")
+        .andWhere(deviceQuery.unary(ruvia::DbUnaryOperator::kIsNull, deviceQuery.column("deleted_at", "d")))
+        .andWhere(selected(deviceQuery)).addOrderBy(deviceQuery.column("id", "d"));
+    const auto devices = co_await context.db().query(deviceQuery);
     if (devices.empty()) {
         co_return;
     }
@@ -556,94 +568,93 @@ WHERE d.deleted_at IS NULL)sql" +
     }
     co_await executeProjectionPipeline(std::move(metaPipeline), "project latest metadata");
 
-    const auto elements = co_await context.db().query(R"sql(
-WITH configured AS (
-  SELECT d.id AS device_id, d.protocol_params->>'device_code' AS device_code,
-         p.protocol, element,
-         1 AS protocol_order, position AS function_order, 0::bigint AS element_order
-  FROM device d
-  JOIN device_model p ON p.device_id = d.id AND p.protocol = 'Modbus'
-  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'registers', '[]'::jsonb))
-    WITH ORDINALITY AS entry(element, position)
-  WHERE d.deleted_at IS NULL)sql" + filter + R"sql(
-  UNION ALL
-  SELECT d.id, d.protocol_params->>'device_code', p.protocol,
-         element, 2, position, 0::bigint
-  FROM device d
-  JOIN device_model p ON p.device_id = d.id AND p.protocol = 'S7'
-  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'areas', '[]'::jsonb))
-    WITH ORDINALITY AS entry(element, position)
-  WHERE d.deleted_at IS NULL)sql" + filter + R"sql(
-  UNION ALL
-  SELECT d.id, d.protocol_params->>'device_code', p.protocol, element, 3,
-         function_position, element_position
-  FROM device d
-  JOIN device_model p ON p.device_id = d.id AND p.protocol = 'SL651'
-  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.config->'funcs', '[]'::jsonb))
-    WITH ORDINALITY AS functions(function, function_position)
-  CROSS JOIN LATERAL jsonb_array_elements(
-    COALESCE(function->'elements', '[]'::jsonb) ||
-    COALESCE(function->'responseElements', '[]'::jsonb))
-    WITH ORDINALITY AS elements(element, element_position)
-  WHERE d.deleted_at IS NULL)sql" + filter + R"sql(
-), numbered AS (
-  SELECT configured.*,
-         row_number() OVER (
-           PARTITION BY configured.device_id
-           ORDER BY configured.protocol_order, configured.function_order,
-                    configured.element_order) - 1 AS sort_order
-  FROM configured
-)
-SELECT numbered.device_id::text, numbered.device_code, numbered.protocol,
-       numbered.element->>'id', numbered.element->>'name',
-       COALESCE(numbered.element->>'unit', ''),
-       CASE WHEN jsonb_typeof(point.value->'value') = 'boolean'
-            THEN CASE WHEN (point.value->>'value')::boolean THEN '1' ELSE '0' END
-            ELSE COALESCE(point.value->>'value', '-') END,
-       COALESCE((EXTRACT(EPOCH FROM point.observed_at) * 1000)::bigint::text, ''),
-       COALESCE(NULLIF(numbered.element->>'scale', ''), '1'),
-       COALESCE(NULLIF(COALESCE(numbered.element->>'decimals', numbered.element->>'digits'), ''), '-1'),
-       COALESCE(numbered.element->>'group', ''),
-       COALESCE(numbered.element->>'encode', ''),
-       numbered.sort_order::text,
-       jsonb_build_object(
-         'id', numbered.element->>'id',
-         'name', numbered.element->>'name',
-         'value', CASE WHEN jsonb_typeof(point.value->'value') = 'boolean'
-                       THEN CASE WHEN (point.value->>'value')::boolean THEN '1' ELSE '0' END
-                       ELSE COALESCE(point.value->>'value', '-') END,
-         'dataType', COALESCE(numbered.element->>'dataType', ''),
-         'unit', COALESCE(numbered.element->>'unit', ''),
-         'scale',
-           COALESCE(
-             CASE WHEN COALESCE(numbered.element->>'scale', '') ~
-                       '^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$'
-                  THEN (numbered.element->>'scale')::numeric END,
-             1),
-         'decimals',
-           COALESCE(
-             CASE WHEN COALESCE(numbered.element->>'decimals',
-                                numbered.element->>'digits', '') ~ '^-?[0-9]{1,18}$'
-                  THEN COALESCE(numbered.element->>'decimals',
-                                numbered.element->>'digits')::bigint END,
-             -1),
-         'group', COALESCE(numbered.element->>'group', ''),
-         'encode', COALESCE(numbered.element->>'encode', ''),
-         'sort', numbered.sort_order,
-         'protocol', numbered.protocol,
-         'observedAt',
-           CASE WHEN point.observed_at IS NULL THEN NULL
-                ELSE (EXTRACT(EPOCH FROM point.observed_at) * 1000)::bigint END,
-         'updatedAt', (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint,
-         'source', CASE WHEN point.observed_at IS NULL THEN 'empty' ELSE 'database' END
-        )::text
-FROM numbered
-LEFT JOIN device_latest_value point
-  ON point.device_id = numbered.device_id
- AND point.element_id = numbered.element->>'id'
-ORDER BY numbered.device_id, numbered.protocol_order,
-         numbered.function_order, numbered.element_order)sql",
-                                                      params);
+    const auto configuredProtocol = [&](std::string_view protocol, std::string_view arrayKey, int order) {
+        ruvia::DbQuery query;
+        query.from("device", "d")
+            .join(ruvia::DbJoinType::kInner, "device_model", query.binary(query.column("device_id", "p"), Op::kEqual, query.column("id", "d")), "p")
+            .andWhere(query.binary(query.column("protocol", "p"), Op::kEqual, query.value(protocol)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at", "d")))
+            .andWhere(selected(query));
+        const auto entries = query.call("jsonb_array_elements", { query.coalesce({
+            query.binary(query.column("config", "p"), Op::kJsonGet, query.value(arrayKey)), query.cast(query.value("[]"), Type::kJsonb) }) });
+        std::vector<ruvia::DbExpression> columns{ query.column("id", "d"),
+            query.binary(query.column("protocol_params", "d"), Op::kJsonGetText, query.value("device_code")),
+            query.column("protocol", "p"), query.column("element"), query.cast(query.value(order), Type::kInteger) };
+        if (protocol == "SL651") {
+            query.joinFunction(ruvia::DbJoinType::kCross, entries, {}, "functions",
+                { .lateral = true, .withOrdinality = true, .columns = { { .name = "function" }, { .name = "function_position" } } });
+            const auto fieldArray = [&](std::string_view key) {
+                return query.coalesce({ query.binary(query.column("function"), Op::kJsonGet, query.value(key)), query.cast(query.value("[]"), Type::kJsonb) });
+            };
+            query.joinFunction(ruvia::DbJoinType::kCross,
+                query.call("jsonb_array_elements", { query.binary(fieldArray("elements"), Op::kJsonConcat, fieldArray("responseElements")) }),
+                {}, "elements", { .lateral = true, .withOrdinality = true, .columns = { { .name = "element" }, { .name = "element_position" } } });
+            columns.push_back(query.column("function_position"));
+            columns.push_back(query.column("element_position"));
+        } else {
+            query.joinFunction(ruvia::DbJoinType::kCross, entries, {}, "entry",
+                { .lateral = true, .withOrdinality = true, .columns = { { .name = "element" }, { .name = "position" } } });
+            columns.push_back(query.column("position"));
+            columns.push_back(query.cast(query.value(0), Type::kBigInt));
+        }
+        query.select(columns);
+        return query;
+    };
+    auto configured = configuredProtocol("Modbus", "registers", 1);
+    const auto s7 = configuredProtocol("S7", "areas", 2);
+    const auto sl651 = configuredProtocol("SL651", "funcs", 3);
+    configured.combine(ruvia::DbSetOperation::kUnionAll, s7).combine(ruvia::DbSetOperation::kUnionAll, sl651);
+    ruvia::DbQuery numbered;
+    const ruvia::DbWindowOptions order{
+        .partitionBy = { numbered.column("device_id", "configured") },
+        .orderBy = { { numbered.column("protocol_order", "configured") }, { numbered.column("function_order", "configured") }, { numbered.column("element_order", "configured") } }
+    };
+    numbered.select({ numbered.star("configured"), numbered.alias(numbered.binary(
+        numbered.over(numbered.call("row_number"), order), Op::kSubtract, numbered.value(1)), "sort_order") }).from("configured");
+    ruvia::DbQuery points;
+    const auto elementText = [&](std::string_view key) {
+        return points.binary(points.column("element", "numbered"), Op::kJsonGetText, points.value(key));
+    };
+    const auto defaultText = [&](std::string_view key, std::string_view fallback) {
+        return points.coalesce({ elementText(key), points.value(fallback) });
+    };
+    const auto pointValue = points.binary(points.column("value", "point"), Op::kJsonGetText, points.value("value"));
+    const auto displayValue = points.caseWhen({ { points.binary(points.call("jsonb_typeof", {
+        points.binary(points.column("value", "point"), Op::kJsonGet, points.value("value")) }), Op::kEqual, points.value("boolean")),
+        points.caseWhen({ { points.cast(pointValue, Type::kBoolean), points.value("1") } }, points.value("0")) } },
+        points.coalesce({ pointValue, points.value("-") }));
+    const auto observedAt = points.cast(points.binary(points.extract(ruvia::DbDatePart::kEpoch,
+        points.column("observed_at", "point")), Op::kMultiply, points.value(1000)), Type::kBigInt);
+    const auto decimals = points.coalesce({ elementText("decimals"), elementText("digits") });
+    const auto numericScale = points.coalesce({ points.caseWhen({ { points.binary(defaultText("scale", ""), Op::kRegex,
+        points.value(R"(^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$)")), points.cast(elementText("scale"), Type::kNumeric) } }), points.value(1) });
+    const auto numericDecimals = points.coalesce({ points.caseWhen({ { points.binary(
+        points.coalesce({ decimals, points.value("") }), Op::kRegex, points.value("^-?[0-9]{1,18}$")), points.cast(decimals, Type::kBigInt) } }), points.value(-1) });
+    const auto missing = points.unary(ruvia::DbUnaryOperator::kIsNull, points.column("observed_at", "point"));
+    const auto json = points.call("jsonb_build_object", {
+        points.cast(points.value("id"), ruvia::DbDataType::kText), elementText("id"), points.cast(points.value("name"), ruvia::DbDataType::kText), elementText("name"), points.cast(points.value("value"), ruvia::DbDataType::kText), displayValue,
+        points.cast(points.value("dataType"), ruvia::DbDataType::kText), defaultText("dataType", ""), points.cast(points.value("unit"), ruvia::DbDataType::kText), defaultText("unit", ""),
+        points.cast(points.value("scale"), ruvia::DbDataType::kText), numericScale, points.cast(points.value("decimals"), ruvia::DbDataType::kText), numericDecimals,
+        points.cast(points.value("group"), ruvia::DbDataType::kText), defaultText("group", ""), points.cast(points.value("encode"), ruvia::DbDataType::kText), defaultText("encode", ""),
+        points.cast(points.value("sort"), ruvia::DbDataType::kText), points.column("sort_order", "numbered"), points.cast(points.value("protocol"), ruvia::DbDataType::kText), points.column("protocol", "numbered"),
+        points.cast(points.value("observedAt"), ruvia::DbDataType::kText), points.caseWhen({ { missing, points.nullValue() } }, observedAt),
+        points.cast(points.value("updatedAt"), ruvia::DbDataType::kText), points.cast(points.binary(points.extract(ruvia::DbDatePart::kEpoch, points.call("clock_timestamp")), Op::kMultiply, points.value(1000)), Type::kBigInt),
+        points.cast(points.value("source"), ruvia::DbDataType::kText), points.caseWhen({ { missing, points.cast(points.value("empty"), ruvia::DbDataType::kText) } }, points.cast(points.value("database"), ruvia::DbDataType::kText)) });
+    points.with("configured", configured, { .columns = { "device_id", "device_code", "protocol", "element", "protocol_order", "function_order", "element_order" } })
+        .with("numbered", numbered)
+        .select({ points.cast(points.column("device_id", "numbered"), Type::kText), points.column("device_code", "numbered"), points.column("protocol", "numbered"),
+            elementText("id"), elementText("name"), defaultText("unit", ""), displayValue,
+            points.coalesce({ points.cast(observedAt, Type::kText), points.value("") }),
+            points.coalesce({ points.nullIf(elementText("scale"), points.value("")), points.value("1") }),
+            points.coalesce({ points.nullIf(decimals, points.value("")), points.value("-1") }),
+            defaultText("group", ""), defaultText("encode", ""), points.cast(points.column("sort_order", "numbered"), Type::kText), points.cast(json, Type::kText) })
+        .from("numbered")
+        .join(ruvia::DbJoinType::kLeft, "device_latest_value", points.binary(
+            points.binary(points.column("device_id", "point"), Op::kEqual, points.column("device_id", "numbered")), Op::kAnd,
+            points.binary(points.column("element_id", "point"), Op::kEqual, elementText("id"))), "point")
+        .addOrderBy(points.column("device_id", "numbered")).addOrderBy(points.column("protocol_order", "numbered"))
+        .addOrderBy(points.column("function_order", "numbered")).addOrderBy(points.column("element_order", "numbered"));
+    const auto elements = co_await context.db().query(points);
     static constexpr std::string_view kRefreshElementMetadataScript = R"lua(
 local element_id = ARGV[1]
 local ok, incoming = pcall(cjson.decode, ARGV[2])
@@ -743,12 +754,14 @@ return 1
 
 template <typename Context>
 ruvia::Task<void> projectDevice(Context& context, std::string_view id) {
-    co_await project(context, " AND d.id = $1::uuid", service::common::dbParams(id), false, true);
+    const std::vector<std::string> ids{ std::string(id) };
+    co_await project(context, ProjectionScope::Device, ids, false, true);
 }
 
 template <typename Context>
 ruvia::Task<void> projectProtocol(Context& context, std::string_view id) {
-    co_await project(context, " AND d.protocol_config_id = $1::uuid", service::common::dbParams(id), false, true);
+    const std::vector<std::string> ids{ std::string(id) };
+    co_await project(context, ProjectionScope::Protocol, ids, false, true);
 }
 
 inline ruvia::Task<void> hydrate(ruvia::WebWorkerContext& context, std::size_t workerIndex = 0, std::size_t workerCount = 1) {
@@ -764,30 +777,25 @@ inline ruvia::Task<void> hydrate(ruvia::WebWorkerContext& context, std::size_t w
     static constexpr std::size_t kHydrationBatchSize = 32;
     std::string cursor = "00000000-0000-0000-0000-000000000000";
     for (;;) {
-        const auto devices = co_await context.db().query(
-            R"sql(
-SELECT id::text
-FROM device
-WHERE deleted_at IS NULL AND id > $1::uuid
-ORDER BY id
-LIMIT 32)sql",
-            service::common::dbParams(std::string_view(cursor))
-        );
+        ruvia::DbQuery page;
+        page.select(page.cast(page.column("id"), ruvia::DbDataType::kText)).from("device")
+            .andWhere(page.unary(ruvia::DbUnaryOperator::kIsNull, page.column("deleted_at")))
+            .andWhere(page.binary(page.column("id"), ruvia::DbBinaryOperator::kGreater,
+                page.cast(page.value(cursor), ruvia::DbDataType::kUuid)))
+            .addOrderBy(page.column("id")).limit(kHydrationBatchSize);
+        const auto devices = co_await context.db().query(page);
         if (devices.empty()) {
             break;
         }
 
-        std::string ids = "{";
+        std::vector<std::string> ids;
+        ids.reserve(devices.size());
         for (const auto& row : devices) {
-            if (ids.size() != 1) {
-                ids.push_back(',');
-            }
-            ids.append(row[0].value().value_or(std::string_view{}));
+            ids.emplace_back(row[0].value().value_or(std::string_view{}));
         }
-        ids.push_back('}');
         cursor.assign(devices[devices.size() - 1][0].value().value_or(std::string_view{}));
-        if (ids != "{}") {
-            co_await project(context, " AND d.id = ANY($1::uuid[])", service::common::dbParams(std::string_view(ids)), false, true);
+        if (!ids.empty()) {
+            co_await project(context, ProjectionScope::Device, ids, false, true);
         }
         if (devices.size() < kHydrationBatchSize) {
             break;

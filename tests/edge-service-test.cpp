@@ -44,44 +44,30 @@ std::string edgeSource(const char* relativePath) {
 
 int main() {
     try {
-        const auto nodeSelect = service::edge::EdgeService::nodeSelectForTest();
-        const auto taskSelect = service::edge::EdgeService::tasksQueryForTest();
-
-        requireMissing(nodeSelect, "COALESCE((status->'config'->>'activeVersion')::bigint",
-                       "edge node select directly casts config activeVersion");
-        requireMissing(nodeSelect, "COALESCE((status->'config'->>'desiredVersion')::bigint",
-                       "edge node select directly casts config desiredVersion");
-        requireMissing(nodeSelect, "COALESCE((status->'outbox'->>'records')::bigint",
-                       "edge node select directly casts outbox records");
-        requireMissing(nodeSelect, "COALESCE((status->'outbox'->>'bytes')::bigint",
-                       "edge node select directly casts outbox bytes");
-        requireMissing(nodeSelect, "COALESCE((capability->>'networkConfig')::boolean",
-                       "edge node select directly casts networkConfig capability");
-        requireMissing(nodeSelect, "COALESCE((capability->>'networkConfigVersion')::bigint",
-                       "edge node select directly casts networkConfigVersion capability");
-        requireMissing(nodeSelect, "COALESCE((mobile->'signal'->>'csq')::bigint",
-                       "edge node select directly casts mobile csq");
-        requireMissing(nodeSelect, "COALESCE((mobile->>'registered')::boolean",
-                       "edge node select directly casts mobile registered");
-        requireMissing(nodeSelect, "COALESCE((SELECT (task.result->>'progressPercent')::bigint",
-                       "edge node select directly casts firmware task progress");
-
-        requireMissing(taskSelect, "COALESCE((result->>'progressPercent')::bigint",
-                       "edge task select directly casts progressPercent");
-        requireMissing(taskSelect, "COALESCE((result->>'downloadedBytes')::bigint",
-                       "edge task select directly casts downloadedBytes");
-        requireMissing(taskSelect, "COALESCE((result->>'totalBytes')::bigint",
-                       "edge task select directly casts totalBytes");
-        requireContains(nodeSelect, "status->'config'->>'activeVersion' ~ '^-?[0-9]{1,18}$'",
-                        "edge node select does not guard config activeVersion");
-        requireContains(nodeSelect, "capability->>'networkConfigVersion' ~ '^-?[0-9]{1,18}$'",
-                        "edge node select does not guard networkConfigVersion");
-        requireContains(nodeSelect, "CASE lower(COALESCE(capability->>'networkConfig', ''))",
-                        "edge node select does not guard networkConfig capability");
-        requireContains(taskSelect, "result->>'progressPercent' ~ '^-?[0-9]{1,18}$'",
-                        "edge task select does not guard progressPercent");
-
         const auto serviceSource = edgeSource("service/modules/edge_node/edge_node.service.h");
+        requireMissing(serviceSource, "R\"sql", "edge service still embeds raw SQL");
+        requireMissing(serviceSource, "c.db().query(\"", "edge service still calls raw query overload");
+        requireMissing(serviceSource, "c.db().execute(\"", "edge service still calls raw execute overload");
+        requireContains(serviceSource, "ruvia::DbQuery", "edge service does not use DbQuery");
+        requireContains(serviceSource, "EdgeNodeEntity::tableName()",
+                        "edge service does not use the edge node entity");
+        requireContains(serviceSource, "EdgeNodeGroupEntity::tableName()",
+                        "edge service does not use the edge group entity");
+        requireContains(serviceSource, "c.pool()", "edge service does not build queries from Context.pool()");
+        requireContains(serviceSource, "safeBigInt", "edge service does not guard numeric JSON fields");
+        requireContains(serviceSource, "booleanText", "edge service does not normalize JSON booleans");
+        requireContains(serviceSource, "jsonb_array_elements_text",
+                        "edge service does not preserve bridge port JSON arrays");
+        requireContains(serviceSource, "joinFunction", "edge service does not use public lateral joins");
+        requireContains(serviceSource, "with(\"selected_group\"",
+                        "edge service does not express recursive group traversal through DbQuery");
+        requireContains(serviceSource, "roots.cast(roots.value(groupId), Type::kUuid)",
+                        "group cycle validation does not start at the group being moved");
+        requireContains(serviceSource, "cycle.cast(cycle.value(parentId), Type::kUuid)",
+                        "group cycle validation does not reject moving into a descendant");
+        requireContains(serviceSource, "nullableUuid", "edge service does not preserve nullable UUID writes");
+        requireContains(serviceSource, "query.call(\n            \"jsonb_build_object\"",
+                        "edge task request does not use typed JSON construction");
         const auto controllerSource = edgeSource("service/modules/edge_node/edge_node.controller.h");
         const auto gatewaySource = edgeSource("service/features/edge/gateway/gateway.transport.h");
         const auto dispatchSource = edgeSource("service/features/edge/edge.transport.h");
@@ -129,7 +115,7 @@ int main() {
                         "legacy firmware URL does not normalize a trailing slash");
         requireContains(serviceSource, "/download?token=",
                         "legacy firmware download URL does not include its token");
-        requireContains(serviceSource, "capability->>'firmwareStream'",
+        requireContains(serviceSource, "firmwareStream",
                         "firmware transport does not select by node capability");
         requireContains(gatewaySource, "case pb::Envelope::kFirmwareChunkRequest",
                         "edge gateway does not serve firmware over the node WebSocket");
@@ -143,7 +129,7 @@ int main() {
                         "edge enrollment accepts invalid registration status");
         requireContains(controllerSource, "RUVIA_DELETE(\"/:id\", removeEnrollment",
                         "edge enrollment deletion route is missing");
-        requireContains(serviceSource, "enrollment_status = 'pending'",
+        requireContains(serviceSource, "removal.value(\"pending\")",
                         "edge enrollment deletion is not limited to pending registrations");
         requireContains(serviceSource, "module_wire::authKey(imei)",
                         "edge enrollment deletion leaves stale authorization state");
@@ -219,43 +205,43 @@ int main() {
         requireContains(projectorRuntimeSource, "projector_stream::stream(index)",
                         "edge projector does not preserve the accepting Worker");
         requireContains(projectorServiceSource,
-                        "'firmwareUpdate', $10::boolean",
+                        "jsonKey(\"firmwareUpdate\"), boolean(hello.supports_firmware_update())",
                         "edge projector does not retain legacy firmware capability");
         requireContains(projectorServiceSource,
-                        "'firmwareStream', $29::boolean",
+                        "jsonKey(\"firmwareStream\"), boolean(hello.supports_firmware_stream())",
                         "edge projector does not record WS firmware capability separately");
         requireContains(projectorServiceSource,
-                        "NULLIF(EXCLUDED.mobile->>'apn', '')",
+                        "query.nullIf(config::detail::jsonText(query, excludedMobile, \"apn\")",
                         "edge hello projection clears the last known mobile APN");
         requireContains(projectorServiceSource,
-                        "NULLIF(EXCLUDED.mobile->>'operator', '')",
+                        "query.nullIf(config::detail::jsonText(query, excludedMobile, \"operator\")",
                         "edge hello projection clears the last known mobile operator");
         requireContains(projectorServiceSource,
-                        "NULLIF($12::text, ''), mobile->>'apn'",
+                        "query.nullIf(text(heartbeat.apn()), query.value(std::string_view{}))",
                         "edge heartbeat projection clears the last known mobile APN");
         requireContains(projectorServiceSource,
-                        "NULLIF($13::text, ''), mobile->>'operator'",
+                        "query.nullIf(text(heartbeat.mobile_operator()), query.value(std::string_view{}))",
                         "edge heartbeat projection clears the last known mobile operator");
-        requireContains(vpnEdgeConfigSource, "'peerId', $3::text",
+        requireContains(vpnEdgeConfigSource, "task.cast(task.value(peerId), ruvia::DbDataType::kText)",
                         "VPN task peer id has no explicit PostgreSQL type");
-        requireContains(vpnEdgeConfigSource, "'enabled', $6::boolean",
+        requireContains(vpnEdgeConfigSource, "task.cast(task.value(request->enabled()), ruvia::DbDataType::kBoolean)",
                         "VPN task enabled flag has no explicit PostgreSQL type");
         requireContains(gatewaySource, "case pb::Envelope::kVpnConfigResult:",
                         "edge gateway does not project VPN configuration results");
-        requireContains(projectorServiceSource, "request->>'enabled' AS enabled",
+        requireContains(projectorServiceSource, "transitioned, transitioned.column(\"request\"), \"enabled\")",
                         "VPN result transition does not return the requested enabled state");
-        requireContains(projectorServiceSource, "request->>'configVersion' AS config_version",
+        requireContains(projectorServiceSource, "\"config_version\")",
                         "VPN result transition does not return the requested config version");
-        requireContains(projectorServiceSource, "COALESCE(task.enabled::boolean, true)",
+        requireContains(projectorServiceSource, "update.cast(update.column(\"enabled\", \"task\"), ruvia::DbDataType::kBoolean)",
                         "VPN result projection reads a column outside the transition CTE");
-        requireContains(projectorServiceSource, "= task.config_version)sql",
+        requireContains(projectorServiceSource, "update.column(\"config_version\", \"task\")",
                         "VPN result projection does not compare the returned config version");
-        requireContains(vpnEdgeConfigSource, "'errorCode', 'superseded'",
+        requireContains(vpnEdgeConfigSource, "superseded.cast(superseded.value(\"superseded\"), ruvia::DbDataType::kText)",
                         "new VPN tasks leave older tasks pending forever");
         requireContains(vpnServiceSource,
                         "reusableEdgePeerId.empty() ? service::common::nextUuidV7()",
                         "revoked Edge VPN peers are not reused when VPN is enabled again");
-        requireContains(vpnServiceSource, "revoked_at = NULL, updated_at = NOW()",
+        requireContains(vpnServiceSource, ".set(\"revoked_at\", reactivation.nullValue())",
                         "reactivating an Edge VPN peer does not clear its revoked state");
         requireContains(vpnServiceSource, "\"vpn.peer.reactivate\"",
                         "Edge VPN peer reactivation is not audited separately");

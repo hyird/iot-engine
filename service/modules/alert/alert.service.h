@@ -9,11 +9,13 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <utility>
 
 #include <ruvia/web/Context.h>
 #include <ruvia/web/ModelObject.h>
 #include <ruvia/web/detail/json/JsonSkip.h>
 #include <ruvia/web/db/Db.h>
+#include <ruvia/web/db/DbQuery.h>
 
 #include "service/common/http.h"
 #include "service/common/uuid.h"
@@ -25,6 +27,9 @@
 namespace service::alert {
 
 class AlertService final {
+    using Query = ruvia::DbQuery;
+    using Op = ruvia::DbBinaryOperator;
+    using Type = ruvia::DbDataType;
   public:
     static AlertService& instance() {
         static AlertService service;
@@ -32,62 +37,32 @@ class AlertService final {
     }
 
     ruvia::Task<std::string> listRules(ruvia::Context& c) {
-        const auto pagination = service::common::page(c.req());
-        std::string where = " WHERE rule.deleted_at IS NULL";
-        std::vector<ruvia::DbValue> params;
-        appendTextFilter(c, "keyword", "rule.name ILIKE", where, params, true);
-        appendUuidFilter(c, "deviceId", "rule.device_id", where, params);
-        appendTextFilter(c, "severity", "rule.severity =", where, params, false);
-        appendTextFilter(c, "status", "rule.status::text =", where, params, false);
-        const auto limit = addPageParams(params, pagination);
-        co_return firstJson(co_await c.db().query(
-            R"sql(
-WITH filtered AS (
-  SELECT rule.*, device.name AS device_name
-  FROM alert_rule rule
-  JOIN device ON device.id = rule.device_id
-)sql" + where + R"sql(
-), counted AS (SELECT COUNT(*) AS total FROM filtered), listed AS (
-  SELECT * FROM filtered ORDER BY created_at DESC, id DESC
-  LIMIT $)sql" + std::to_string(limit.first) + "::bigint OFFSET $" +
-                std::to_string(limit.second) + R"sql(::bigint
-)
-SELECT jsonb_build_object(
-  'list', COALESCE((SELECT jsonb_agg(jsonb_build_object(
-    'id', id, 'name', name, 'device_id', device_id, 'device_name', device_name,
-    'severity', severity, 'conditions', conditions, 'logic', logic,
-    'silence_duration', silence_duration, 'recovery_condition', recovery_condition,
-    'recovery_wait_seconds', recovery_wait_seconds, 'status', status,
-    'remark', remark, 'created_at', iot_utc_timestamp(created_at),
-    'updated_at', iot_utc_timestamp(updated_at))
-    ORDER BY created_at DESC, id DESC) FROM listed), '[]'::jsonb),
-  'total', COALESCE((SELECT total FROM counted), 0),
-  'page', $)sql" + std::to_string(limit.third) + R"sql(::bigint,
-  'pageSize', $)sql" + std::to_string(limit.first) + R"sql(::bigint,
-  'totalPages', CASE WHEN $)sql" + std::to_string(limit.first) +
-                R"sql(::bigint = 0 THEN 0 ELSE CEIL(
-    COALESCE((SELECT total FROM counted), 0)::numeric / $)sql" +
-                std::to_string(limit.first) + "::bigint)::bigint END)::text",
-            params));
+        Query filtered(c.pool());
+        filtered.select({ filtered.star("rule"), filtered.alias(filtered.column("name", "device"), "device_name") })
+            .from("alert_rule", "rule")
+            .join(ruvia::DbJoinType::kInner, "device", filtered.binary(filtered.column("id", "device"), Op::kEqual, filtered.column("device_id", "rule")))
+            .andWhere(filtered.unary(ruvia::DbUnaryOperator::kIsNull, filtered.column("deleted_at", "rule")));
+        appendTextFilter(c, "keyword", filtered, filtered.column("name", "rule"), true);
+        appendUuidFilter(c, "deviceId", filtered, filtered.column("device_id", "rule"));
+        appendTextFilter(c, "severity", filtered, filtered.column("severity", "rule"));
+        appendTextFilter(c, "status", filtered, filtered.cast(filtered.column("status", "rule"), Type::kText));
+        Query listed(c.pool());
+        listed.select(listed.star()).from("page_rows");
+        co_return co_await pageResult(c, filtered, listed, { "id", "name", "device_id", "device_name", "severity", "conditions", "logic",
+            "silence_duration", "recovery_condition", "recovery_wait_seconds", "status", "remark", "created_at", "updated_at" }, "created_at");
     }
 
     ruvia::Task<std::string> ruleDetail(ruvia::Context& c, std::string_view id) {
         service::common::requireUuid(19002, id, "告警规则 ID 无效");
-        co_return firstObject(co_await c.db().query(R"sql(
-SELECT jsonb_build_object(
-  'id', rule.id, 'name', rule.name, 'device_id', rule.device_id,
-  'device_name', device.name, 'severity', rule.severity,
-  'conditions', rule.conditions, 'logic', rule.logic,
-  'silence_duration', rule.silence_duration,
-  'recovery_condition', rule.recovery_condition,
-  'recovery_wait_seconds', rule.recovery_wait_seconds,
-  'status', rule.status, 'remark', rule.remark,
-  'created_at', iot_utc_timestamp(rule.created_at),
-  'updated_at', iot_utc_timestamp(rule.updated_at))::text
-FROM alert_rule rule JOIN device ON device.id = rule.device_id
-WHERE rule.id = $1::uuid AND rule.deleted_at IS NULL)sql",
-                                                      service::common::dbParams(id)),
-                           "告警规则不存在");
+        Query rule(c.pool());
+        rule.select({ rule.star("rule"), rule.alias(rule.column("name", "device"), "device_name") }).from("alert_rule", "rule")
+            .join(ruvia::DbJoinType::kInner, "device", rule.binary(rule.column("id", "device"), Op::kEqual, rule.column("device_id", "rule")))
+            .andWhere(rule.binary(rule.column("id", "rule"), Op::kEqual, rule.cast(rule.value(id), Type::kUuid)))
+            .andWhere(rule.unary(ruvia::DbUnaryOperator::kIsNull, rule.column("deleted_at", "rule")));
+        Query result(c.pool());
+        result.select(result.cast(fieldJson(result, { "id", "name", "device_id", "device_name", "severity", "conditions", "logic",
+            "silence_duration", "recovery_condition", "recovery_wait_seconds", "status", "remark", "created_at", "updated_at" }), Type::kText)).from(rule, "rule");
+        co_return firstObject(co_await c.db().query(result), "告警规则不存在");
     }
 
     ruvia::Task<void> createRule(ruvia::Context& c, const ruvia::JsonValue& payload) {
@@ -96,18 +71,21 @@ WHERE rule.id = $1::uuid AND rule.deleted_at IS NULL)sql",
         co_await ensureRuleName(c, input.name, input.deviceId, std::nullopt);
         const auto principal = service::middleware::requireAuth(c);
         const auto id = service::common::nextUuidV7();
-        (void)co_await c.db().execute(R"sql(
-INSERT INTO alert_rule(
-  id, name, device_id, severity, conditions, logic, silence_duration,
-  recovery_condition, recovery_wait_seconds, status, remark, created_by)
-VALUES ($1::uuid, $2, $3::uuid, $4, $5::jsonb, $6, $7::integer,
-        $8, $9::integer, $10::status_enum, NULLIF($11, ''), $12::uuid))sql",
-                                      service::common::dbParams(
-                                          id, input.name, input.deviceId, input.severity,
-                                          input.conditions, input.logic,
-                                          input.silenceDuration, input.recoveryCondition,
-                                          input.recoveryWaitSeconds, input.status, input.remark,
-                                          principal.userId));
+        Query query(c.pool());
+        query.insertInto("alert_rule", { "id", "name", "device_id", "severity", "conditions", "logic", "silence_duration", "recovery_condition", "recovery_wait_seconds", "status", "remark", "created_by" })
+            .values({ query.cast(query.value(id), Type::kUuid),
+                query.value(input.name),
+                query.cast(query.value(input.deviceId), Type::kUuid),
+                query.value(input.severity),
+                query.cast(query.value(input.conditions), Type::kJsonb),
+                query.value(input.logic),
+                query.cast(query.value(input.silenceDuration), Type::kInteger),
+                query.value(input.recoveryCondition),
+                query.cast(query.value(input.recoveryWaitSeconds), Type::kInteger),
+                query.cast(query.value(input.status), { .customName = "status_enum" }),
+                query.nullIf(query.value(input.remark), query.value("")),
+                query.cast(query.value(principal.userId), Type::kUuid) });
+        (void)co_await c.db().execute(query);
         (void)co_await service::rpc::call(c, "alert", "refresh", "{}");
     }
 
@@ -118,18 +96,22 @@ VALUES ($1::uuid, $2, $3::uuid, $4, $5::jsonb, $6, $7::integer,
         co_await requireRule(c, id);
         co_await ensureDevice(c, input.deviceId);
         co_await ensureRuleName(c, input.name, input.deviceId, std::string(id));
-        (void)co_await c.db().execute(R"sql(
-UPDATE alert_rule SET
-  name = $2, device_id = $3::uuid, severity = $4, conditions = $5::jsonb,
-  logic = $6, silence_duration = $7::integer, recovery_condition = $8,
-  recovery_wait_seconds = $9::integer, status = $10::status_enum,
-  remark = NULLIF($11, ''), updated_at = NOW()
-WHERE id = $1::uuid AND deleted_at IS NULL)sql",
-                                      service::common::dbParams(
-                                          id, input.name, input.deviceId, input.severity,
-                                          input.conditions, input.logic, input.silenceDuration,
-                                          input.recoveryCondition, input.recoveryWaitSeconds,
-                                          input.status, input.remark));
+        Query query(c.pool());
+        query.update("alert_rule")
+            .set("name", query.value(input.name))
+            .set("device_id", query.cast(query.value(input.deviceId), Type::kUuid))
+            .set("severity", query.value(input.severity))
+            .set("conditions", query.cast(query.value(input.conditions), Type::kJsonb))
+            .set("logic", query.value(input.logic))
+            .set("silence_duration", query.cast(query.value(input.silenceDuration), Type::kInteger))
+            .set("recovery_condition", query.value(input.recoveryCondition))
+            .set("recovery_wait_seconds", query.cast(query.value(input.recoveryWaitSeconds), Type::kInteger))
+            .set("status", query.cast(query.value(input.status), { .customName = "status_enum" }))
+            .set("remark", query.nullIf(query.value(input.remark), query.value("")))
+            .set("updated_at", query.call("now"))
+            .andWhere(query.binary(query.column("id"), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+        (void)co_await c.db().execute(query);
         (void)co_await service::rpc::call(c, "alert", "refresh", "{}");
     }
 
@@ -137,14 +119,17 @@ WHERE id = $1::uuid AND deleted_at IS NULL)sql",
         service::common::requireUuid(19002, id, "告警规则 ID 无效");
         co_await requireRule(c, id);
         auto transaction = co_await c.db().beginTransaction();
-        (void)co_await transaction.execute(
-            "UPDATE open_alert_record SET status = 'resolved', resolved_at = NOW(), "
-            "updated_at = NOW() WHERE rule_id = $1::uuid AND status IN ('active','acknowledged')",
-            service::common::dbParams(id));
-        (void)co_await transaction.execute(
-            "UPDATE alert_rule SET deleted_at = NOW(), updated_at = NOW() "
-            "WHERE id = $1::uuid AND deleted_at IS NULL",
-            service::common::dbParams(id));
+        Query records(c.pool());
+        records.update("open_alert_record").set("status", records.value("resolved"))
+            .set("resolved_at", records.call("now")).set("updated_at", records.call("now"))
+            .andWhere(records.binary(records.column("rule_id"), Op::kEqual, records.cast(records.value(id), Type::kUuid)))
+            .andWhere(records.binary(records.column("status"), Op::kIn, records.list({ records.value("active"), records.value("acknowledged") })));
+        (void)co_await transaction.execute(records);
+        Query rules(c.pool());
+        rules.update("alert_rule").set("deleted_at", rules.call("now")).set("updated_at", rules.call("now"))
+            .andWhere(rules.binary(rules.column("id"), Op::kEqual, rules.cast(rules.value(id), Type::kUuid)))
+            .andWhere(rules.unary(ruvia::DbUnaryOperator::kIsNull, rules.column("deleted_at")));
+        (void)co_await transaction.execute(rules);
         co_await transaction.commit();
         (void)co_await service::rpc::call(c, "alert", "refresh", "{}");
     }
@@ -152,70 +137,45 @@ WHERE id = $1::uuid AND deleted_at IS NULL)sql",
     ruvia::Task<void> batchRemoveRules(ruvia::Context& c, const ruvia::JsonValue& payload) {
         const auto ids = requiredUuids(payload, "ids", "请选择要删除的规则");
         auto transaction = co_await c.db().beginTransaction();
-        const auto array = uuidArrayLiteral(ids);
-        (void)co_await transaction.execute(
-            "UPDATE open_alert_record SET status = 'resolved', resolved_at = NOW(), "
-            "updated_at = NOW() WHERE rule_id = ANY($1::uuid[]) "
-            "AND status IN ('active','acknowledged')",
-            service::common::dbParams(array));
-        (void)co_await transaction.execute(
-            "UPDATE alert_rule SET deleted_at = NOW(), updated_at = NOW() "
-            "WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL",
-            service::common::dbParams(array));
+        Query records(c.pool());
+        records.update("open_alert_record").set("status", records.value("resolved"))
+            .set("resolved_at", records.call("now")).set("updated_at", records.call("now"))
+            .andWhere(records.binary(records.column("rule_id"), Op::kIn, uuidList(records, ids)))
+            .andWhere(records.binary(records.column("status"), Op::kIn, records.list({ records.value("active"), records.value("acknowledged") })));
+        (void)co_await transaction.execute(records);
+        Query rules(c.pool());
+        rules.update("alert_rule").set("deleted_at", rules.call("now")).set("updated_at", rules.call("now"))
+            .andWhere(rules.binary(rules.column("id"), Op::kIn, uuidList(rules, ids)))
+            .andWhere(rules.unary(ruvia::DbUnaryOperator::kIsNull, rules.column("deleted_at")));
+        (void)co_await transaction.execute(rules);
         co_await transaction.commit();
         (void)co_await service::rpc::call(c, "alert", "refresh", "{}");
     }
 
     ruvia::Task<std::string> listTemplates(ruvia::Context& c) {
-        const auto pagination = service::common::page(c.req());
-        std::string where = " WHERE template.deleted_at IS NULL";
-        std::vector<ruvia::DbValue> params;
-        appendTextFilter(c, "category", "template.category =", where, params, false);
-        const auto limit = addPageParams(params, pagination);
-        co_return firstJson(co_await c.db().query(
-            R"sql(
-WITH filtered AS (
-  SELECT template.*, config.name AS config_name, config.protocol AS protocol_type
-  FROM alert_rule_template template
-  LEFT JOIN protocol_config config ON config.id = template.protocol_config_id
-)sql" + where + R"sql(
-), counted AS (SELECT COUNT(*) AS total FROM filtered), listed AS (
-  SELECT * FROM filtered ORDER BY created_at DESC, id DESC
-  LIMIT $)sql" + std::to_string(limit.first) + "::bigint OFFSET $" +
-                std::to_string(limit.second) + R"sql(::bigint
-)
-SELECT jsonb_build_object(
-  'list', COALESCE((SELECT jsonb_agg(jsonb_build_object(
-    'id', id, 'name', name, 'category', category, 'description', description,
-    'severity', severity, 'logic', logic, 'silence_duration', silence_duration,
-    'protocol_config_id', protocol_config_id, 'config_name', config_name,
-    'protocol_type', protocol_type, 'created_at', iot_utc_timestamp(created_at))
-    ORDER BY created_at DESC, id DESC) FROM listed), '[]'::jsonb),
-  'total', COALESCE((SELECT total FROM counted), 0),
-  'page', $)sql" + std::to_string(limit.third) + R"sql(::bigint,
-  'pageSize', $)sql" + std::to_string(limit.first) + R"sql(::bigint,
-  'totalPages', CASE WHEN $)sql" + std::to_string(limit.first) +
-                R"sql(::bigint = 0 THEN 0 ELSE CEIL(
-    COALESCE((SELECT total FROM counted), 0)::numeric / $)sql" +
-                std::to_string(limit.first) + "::bigint)::bigint END)::text",
-            params));
+        Query filtered(c.pool());
+        filtered.select({ filtered.star("template"), filtered.alias(filtered.column("name", "config"), "config_name"),
+                filtered.alias(filtered.column("protocol", "config"), "protocol_type") })
+            .from("alert_rule_template", "template")
+            .join(ruvia::DbJoinType::kLeft, "protocol_config", filtered.binary(filtered.column("id", "config"), Op::kEqual,
+                filtered.column("protocol_config_id", "template")), "config")
+            .andWhere(filtered.unary(ruvia::DbUnaryOperator::kIsNull, filtered.column("deleted_at", "template")));
+        appendTextFilter(c, "category", filtered, filtered.column("category", "template"));
+        Query listed(c.pool());
+        listed.select(listed.star()).from("page_rows");
+        co_return co_await pageResult(c, filtered, listed, { "id", "name", "category", "description", "severity", "logic", "silence_duration",
+            "protocol_config_id", "config_name", "protocol_type", "created_at" }, "created_at");
     }
 
     ruvia::Task<std::string> templateDetail(ruvia::Context& c, std::string_view id) {
         service::common::requireUuid(19002, id, "告警模板 ID 无效");
-        co_return firstObject(co_await c.db().query(R"sql(
-SELECT jsonb_build_object(
-  'id', id, 'name', name, 'category', category, 'description', description,
-  'severity', severity, 'conditions', conditions, 'logic', logic,
-  'silence_duration', silence_duration, 'recovery_condition', recovery_condition,
-  'recovery_wait_seconds', recovery_wait_seconds,
-  'applicable_protocols', applicable_protocols,
-  'protocol_config_id', protocol_config_id, 'created_by', created_by,
-  'created_at', iot_utc_timestamp(created_at),
-  'updated_at', iot_utc_timestamp(updated_at))::text
-FROM alert_rule_template WHERE id = $1::uuid AND deleted_at IS NULL)sql",
-                                                      service::common::dbParams(id)),
-                           "告警模板不存在");
+        Query query(c.pool());
+        query.select(query.cast(fieldJson(query, { "id", "name", "category", "description", "severity", "conditions", "logic", "silence_duration",
+            "recovery_condition", "recovery_wait_seconds", "applicable_protocols", "protocol_config_id", "created_by", "created_at", "updated_at" }), Type::kText))
+            .from("alert_rule_template")
+            .andWhere(query.binary(query.column("id"), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+        co_return firstObject(co_await c.db().query(query), "告警模板不存在");
     }
 
     ruvia::Task<void> createTemplate(ruvia::Context& c, const ruvia::JsonValue& payload) {
@@ -225,20 +185,22 @@ FROM alert_rule_template WHERE id = $1::uuid AND deleted_at IS NULL)sql",
             co_await ensureProtocolConfig(c, input.protocolConfigId);
         const auto principal = service::middleware::requireAuth(c);
         const auto id = service::common::nextUuidV7();
-        (void)co_await c.db().execute(R"sql(
-INSERT INTO alert_rule_template(
-  id, name, category, description, severity, conditions, logic, silence_duration,
-  recovery_condition, recovery_wait_seconds, applicable_protocols,
-  protocol_config_id, created_by)
-VALUES ($1::uuid, $2, NULLIF($3, ''), NULLIF($4, ''), $5, $6::jsonb, $7,
-        $8::integer, $9, $10::integer, $11::jsonb, NULLIF($12, '')::uuid, $13::uuid))sql",
-                                      service::common::dbParams(
-                                          id, input.name, input.category, input.description,
-                                          input.severity, input.conditions, input.logic,
-                                          input.silenceDuration,
-                                          input.recoveryCondition, input.recoveryWaitSeconds,
-                                          input.applicableProtocols, input.protocolConfigId,
-                                          principal.userId));
+        Query query(c.pool());
+        query.insertInto("alert_rule_template", { "id", "name", "category", "description", "severity", "conditions", "logic", "silence_duration", "recovery_condition", "recovery_wait_seconds", "applicable_protocols", "protocol_config_id", "created_by" })
+            .values({ query.cast(query.value(id), Type::kUuid),
+                query.value(input.name),
+                query.nullIf(query.value(input.category), query.value("")),
+                query.nullIf(query.value(input.description), query.value("")),
+                query.value(input.severity),
+                query.cast(query.value(input.conditions), Type::kJsonb),
+                query.value(input.logic),
+                query.cast(query.value(input.silenceDuration), Type::kInteger),
+                query.value(input.recoveryCondition),
+                query.cast(query.value(input.recoveryWaitSeconds), Type::kInteger),
+                query.cast(query.value(input.applicableProtocols), Type::kJsonb),
+                query.cast(query.nullIf(query.value(input.protocolConfigId), query.value("")), Type::kUuid),
+                query.cast(query.value(principal.userId), Type::kUuid) });
+        (void)co_await c.db().execute(query);
     }
 
     ruvia::Task<void> updateTemplate(ruvia::Context& c, std::string_view id,
@@ -249,29 +211,33 @@ VALUES ($1::uuid, $2, NULLIF($3, ''), NULLIF($4, ''), $5, $6::jsonb, $7,
         co_await ensureTemplateName(c, input.name, std::string(id));
         if (!input.protocolConfigId.empty())
             co_await ensureProtocolConfig(c, input.protocolConfigId);
-        (void)co_await c.db().execute(R"sql(
-UPDATE alert_rule_template SET
-  name = $2, category = NULLIF($3, ''), description = NULLIF($4, ''),
-  severity = $5, conditions = $6::jsonb, logic = $7,
-  silence_duration = $8::integer, recovery_condition = $9,
-  recovery_wait_seconds = $10::integer, applicable_protocols = $11::jsonb,
-  protocol_config_id = NULLIF($12, '')::uuid, updated_at = NOW()
-WHERE id = $1::uuid AND deleted_at IS NULL)sql",
-                                      service::common::dbParams(
-                                          id, input.name, input.category, input.description,
-                                          input.severity, input.conditions, input.logic,
-                                          input.silenceDuration, input.recoveryCondition,
-                                          input.recoveryWaitSeconds, input.applicableProtocols,
-                                          input.protocolConfigId));
+        Query query(c.pool());
+        query.update("alert_rule_template")
+            .set("name", query.value(input.name))
+            .set("category", query.nullIf(query.value(input.category), query.value("")))
+            .set("description", query.nullIf(query.value(input.description), query.value("")))
+            .set("severity", query.value(input.severity))
+            .set("conditions", query.cast(query.value(input.conditions), Type::kJsonb))
+            .set("logic", query.value(input.logic))
+            .set("silence_duration", query.cast(query.value(input.silenceDuration), Type::kInteger))
+            .set("recovery_condition", query.value(input.recoveryCondition))
+            .set("recovery_wait_seconds", query.cast(query.value(input.recoveryWaitSeconds), Type::kInteger))
+            .set("applicable_protocols", query.cast(query.value(input.applicableProtocols), Type::kJsonb))
+            .set("protocol_config_id", query.cast(query.nullIf(query.value(input.protocolConfigId), query.value("")), Type::kUuid))
+            .set("updated_at", query.call("now"))
+            .andWhere(query.binary(query.column("id"), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+        (void)co_await c.db().execute(query);
     }
 
     ruvia::Task<void> removeTemplate(ruvia::Context& c, std::string_view id) {
         service::common::requireUuid(19002, id, "告警模板 ID 无效");
         co_await requireTemplate(c, id);
-        (void)co_await c.db().execute(
-            "UPDATE alert_rule_template SET deleted_at = NOW(), updated_at = NOW() "
-            "WHERE id = $1::uuid AND deleted_at IS NULL",
-            service::common::dbParams(id));
+        Query removal(c.pool());
+        removal.update("alert_rule_template").set("deleted_at", removal.call("now")).set("updated_at", removal.call("now"))
+            .andWhere(removal.binary(removal.column("id"), Op::kEqual, removal.cast(removal.value(id), Type::kUuid)))
+            .andWhere(removal.unary(ruvia::DbUnaryOperator::kIsNull, removal.column("deleted_at")));
+        (void)co_await c.db().execute(removal);
     }
 
     ruvia::Task<std::string> applyTemplate(ruvia::Context& c,
@@ -280,95 +246,74 @@ WHERE id = $1::uuid AND deleted_at IS NULL)sql",
         const auto deviceIds = requiredUuids(payload, "device_ids", "请选择目标设备");
         const auto principal = service::middleware::requireAuth(c);
         co_await requireTemplate(c, templateId);
-        const auto deviceIdArray = uuidArrayLiteral(deviceIds);
-        const auto result = co_await c.db().query(R"sql(
-WITH selected AS (
-  SELECT * FROM alert_rule_template
-  WHERE id = $1::uuid AND deleted_at IS NULL
-), requested AS (
-  SELECT unnest($2::uuid[]) AS device_id
-), created AS (
-  INSERT INTO alert_rule(
-    id, name, device_id, severity, conditions, logic, silence_duration,
-    recovery_condition, recovery_wait_seconds, status, remark, created_by)
-  SELECT gen_random_uuid(), selected.name || ' - ' || device.name, device.id,
-         selected.severity, selected.conditions, selected.logic,
-         selected.silence_duration, selected.recovery_condition,
-         selected.recovery_wait_seconds, 'enabled', selected.description, $3::uuid
-  FROM selected JOIN requested ON TRUE
-  JOIN device ON device.id = requested.device_id AND device.deleted_at IS NULL
-  WHERE NOT EXISTS (
-    SELECT 1 FROM alert_rule existing
-    WHERE existing.device_id = device.id AND existing.name = selected.name || ' - ' || device.name
-      AND existing.deleted_at IS NULL)
-  RETURNING id
-)
-SELECT jsonb_build_object(
-  'success', (SELECT COUNT(*) FROM created),
-  'total', cardinality($2::uuid[]),
-  'createdIds', COALESCE((SELECT jsonb_agg(id) FROM created), '[]'::jsonb))::text)sql",
-                                                  service::common::dbParams(
-                                                      templateId, deviceIdArray, principal.userId));
+        Query selected(c.pool());
+        selected.select(selected.star()).from("alert_rule_template")
+            .andWhere(selected.binary(selected.column("id"), Op::kEqual, selected.cast(selected.value(templateId), Type::kUuid)))
+            .andWhere(selected.unary(ruvia::DbUnaryOperator::kIsNull, selected.column("deleted_at")));
+        Query requested(c.pool());
+        for (const auto& id : deviceIds) requested.values({ requested.cast(requested.value(id), Type::kUuid) });
+        Query existing(c.pool());
+        const auto existingName = existing.binary(existing.binary(existing.column("name", "selected"), Op::kConcat, existing.value(" - ")), Op::kConcat, existing.column("name", "device"));
+        existing.select(existing.cast(existing.value(1), Type::kInteger)).from("alert_rule", "existing")
+            .andWhere(existing.binary(existing.column("device_id", "existing"), Op::kEqual, existing.column("id", "device")))
+            .andWhere(existing.binary(existing.column("name", "existing"), Op::kEqual, existingName))
+            .andWhere(existing.unary(ruvia::DbUnaryOperator::kIsNull, existing.column("deleted_at", "existing")));
+        Query source(c.pool());
+        const auto name = source.binary(source.binary(source.column("name", "selected"), Op::kConcat, source.value(" - ")), Op::kConcat, source.column("name", "device"));
+        source.select({ source.call("gen_random_uuid"), name, source.column("id", "device"), source.column("severity", "selected"),
+                source.column("conditions", "selected"), source.column("logic", "selected"), source.column("silence_duration", "selected"),
+                source.column("recovery_condition", "selected"), source.column("recovery_wait_seconds", "selected"),
+                source.cast(source.value("enabled"), { .customName = "status_enum" }), source.column("description", "selected"), source.cast(source.value(principal.userId), Type::kUuid) })
+            .from("selected").join(ruvia::DbJoinType::kCross, "requested")
+            .join(ruvia::DbJoinType::kInner, "device", source.binary(source.column("id", "device"), Op::kEqual, source.column("device_id", "requested")))
+            .andWhere(source.unary(ruvia::DbUnaryOperator::kIsNull, source.column("deleted_at", "device")))
+            .andWhere(source.unary(ruvia::DbUnaryOperator::kNot, source.exists(existing)));
+        Query created(c.pool());
+        created.insertInto("alert_rule", { "id", "name", "device_id", "severity", "conditions", "logic", "silence_duration",
+                "recovery_condition", "recovery_wait_seconds", "status", "remark", "created_by" })
+            .insertFrom(source).returning({ created.column("id") });
+        Query count(c.pool());
+        count.select(count.aggregate("count", { count.star() })).from("created");
+        Query ids(c.pool());
+        ids.select(ids.aggregate("jsonb_agg", { ids.column("id") })).from("created");
+        Query response(c.pool());
+        response.with("selected", selected).with("requested", requested, { .columns = { "device_id" } }).with("created", created)
+            .select(response.cast(response.call("jsonb_build_object", {
+                response.cast(response.value("success"), Type::kText), response.subquery(count),
+                response.cast(response.value("total"), Type::kText), response.cast(response.value(static_cast<std::int64_t>(deviceIds.size())), Type::kInteger),
+                response.cast(response.value("createdIds"), Type::kText), response.coalesce({ response.subquery(ids), response.cast(response.value("[]"), Type::kJsonb) }) }), Type::kText));
+        const auto result = co_await c.db().query(response);
         (void)co_await service::rpc::call(c, "alert", "refresh", "{}");
         co_return firstJson(result);
     }
 
     ruvia::Task<std::string> listRecords(ruvia::Context& c) {
-        const auto pagination = service::common::page(c.req());
-        std::string where = " WHERE TRUE";
-        std::vector<ruvia::DbValue> params;
-        appendUuidFilter(c, "deviceId", "record.device_id", where, params);
-        appendUuidFilter(c, "ruleId", "record.rule_id", where, params);
-        appendTextFilter(c, "status", "record.status =", where, params, false);
-        appendTextFilter(c, "severity", "record.severity =", where, params, false);
-        const auto limit = addPageParams(params, pagination);
-        co_return firstJson(co_await c.db().query(
-            R"sql(
-WITH counted AS (
-  SELECT COUNT(*) AS total
-  FROM open_alert_record record
-)sql" + where + R"sql(
-), page_rows AS (
-  SELECT record.* FROM open_alert_record record
-)sql" + where + R"sql(
-  ORDER BY record.triggered_at DESC, record.id DESC
-  LIMIT $)sql" + std::to_string(limit.first) + "::bigint OFFSET $" +
-                 std::to_string(limit.second) + R"sql(::bigint
-), listed AS (
-  SELECT page_rows.*, rule.name AS rule_name, device.name AS device_name
-  FROM page_rows
-  LEFT JOIN alert_rule rule ON rule.id = page_rows.rule_id
-  JOIN device ON device.id = page_rows.device_id
-)
-SELECT jsonb_build_object(
-  'list', COALESCE((SELECT jsonb_agg(jsonb_build_object(
-    'id', id, 'rule_id', rule_id, 'rule_name', rule_name,
-    'device_id', device_id, 'device_name', device_name,
-    'severity', severity, 'status', status, 'message', message, 'detail', detail,
-    'triggered_at', iot_utc_timestamp(triggered_at),
-    'acknowledged_at', iot_utc_timestamp(acknowledged_at),
-    'acknowledged_by', acknowledged_by,
-    'resolved_at', iot_utc_timestamp(resolved_at))
-    ORDER BY triggered_at DESC, id DESC) FROM listed), '[]'::jsonb),
-  'total', COALESCE((SELECT total FROM counted), 0),
-  'page', $)sql" + std::to_string(limit.third) + R"sql(::bigint,
-  'pageSize', $)sql" + std::to_string(limit.first) + R"sql(::bigint,
-  'totalPages', CASE WHEN $)sql" + std::to_string(limit.first) +
-                R"sql(::bigint = 0 THEN 0 ELSE CEIL(
-    COALESCE((SELECT total FROM counted), 0)::numeric / $)sql" +
-                std::to_string(limit.first) + "::bigint)::bigint END)::text",
-            params));
+        Query filtered(c.pool());
+        filtered.select(filtered.star("record")).from("open_alert_record", "record");
+        appendUuidFilter(c, "deviceId", filtered, filtered.column("device_id", "record"));
+        appendUuidFilter(c, "ruleId", filtered, filtered.column("rule_id", "record"));
+        appendTextFilter(c, "status", filtered, filtered.column("status", "record"));
+        appendTextFilter(c, "severity", filtered, filtered.column("severity", "record"));
+        Query listed(c.pool());
+        listed.select({ listed.star("page_rows"), listed.alias(listed.column("name", "rule"), "rule_name"), listed.alias(listed.column("name", "device"), "device_name") })
+            .from("page_rows")
+            .join(ruvia::DbJoinType::kLeft, "alert_rule", listed.binary(listed.column("id", "rule"), Op::kEqual, listed.column("rule_id", "page_rows")), "rule")
+            .join(ruvia::DbJoinType::kInner, "device", listed.binary(listed.column("id", "device"), Op::kEqual, listed.column("device_id", "page_rows")));
+        co_return co_await pageResult(c, filtered, listed, { "id", "rule_id", "rule_name", "device_id", "device_name", "severity", "status", "message", "detail",
+            "triggered_at", "acknowledged_at", "acknowledged_by", "resolved_at" }, "triggered_at");
     }
 
     ruvia::Task<void> acknowledge(ruvia::Context& c, std::string_view id) {
         service::common::requireUuid(19002, id, "告警记录 ID 无效");
         const auto principal = service::middleware::requireAuth(c);
-        const auto result = co_await c.db().execute(R"sql(
-UPDATE open_alert_record
-SET status = 'acknowledged', acknowledged_at = NOW(), acknowledged_by = $2::uuid,
-    updated_at = NOW()
-WHERE id = $1::uuid AND status = 'active')sql",
-                                                   service::common::dbParams(id, principal.userId));
+        Query acknowledgement(c.pool());
+        acknowledgement.update("open_alert_record").set("status", acknowledgement.value("acknowledged"))
+            .set("acknowledged_at", acknowledgement.call("now"))
+            .set("acknowledged_by", acknowledgement.cast(acknowledgement.value(principal.userId), Type::kUuid))
+            .set("updated_at", acknowledgement.call("now"))
+            .andWhere(acknowledgement.binary(acknowledgement.column("id"), Op::kEqual, acknowledgement.cast(acknowledgement.value(id), Type::kUuid)))
+            .andWhere(acknowledgement.binary(acknowledgement.column("status"), Op::kEqual, acknowledgement.value("active")));
+        const auto result = co_await c.db().execute(acknowledgement);
         if (result.affectedRows() == 0)
             service::common::fail(17003, "告警记录不存在或已处理", 404);
     }
@@ -376,77 +321,76 @@ WHERE id = $1::uuid AND status = 'active')sql",
     ruvia::Task<void> batchAcknowledge(ruvia::Context& c, const ruvia::JsonValue& payload) {
         const auto ids = requiredUuids(payload, "ids", "请选择要确认的告警");
         const auto principal = service::middleware::requireAuth(c);
-        const auto idArray = uuidArrayLiteral(ids);
-        (void)co_await c.db().execute(R"sql(
-UPDATE open_alert_record
-SET status = 'acknowledged', acknowledged_at = NOW(), acknowledged_by = $2::uuid,
-    updated_at = NOW()
-WHERE id = ANY($1::uuid[]) AND status = 'active')sql",
-                                      service::common::dbParams(idArray, principal.userId));
+        Query acknowledgement(c.pool());
+        acknowledgement.update("open_alert_record").set("status", acknowledgement.value("acknowledged"))
+            .set("acknowledged_at", acknowledgement.call("now"))
+            .set("acknowledged_by", acknowledgement.cast(acknowledgement.value(principal.userId), Type::kUuid))
+            .set("updated_at", acknowledgement.call("now"))
+            .andWhere(acknowledgement.binary(acknowledgement.column("id"), Op::kIn, uuidList(acknowledgement, ids)))
+            .andWhere(acknowledgement.binary(acknowledgement.column("status"), Op::kEqual, acknowledgement.value("active")));
+        (void)co_await c.db().execute(acknowledgement);
     }
 
     ruvia::Task<std::string> stats(ruvia::Context& c) {
-        co_return firstJson(co_await c.db().query(R"sql(
-WITH unresolved AS (
-  SELECT COUNT(*) AS total,
-         COUNT(*) FILTER (WHERE severity = 'critical') AS critical,
-         COUNT(*) FILTER (WHERE severity = 'warning') AS warning,
-         COUNT(*) FILTER (WHERE severity = 'info') AS info,
-         COUNT(DISTINCT device_id) AS affected_devices
-  FROM open_alert_record
-  WHERE status IN ('active', 'acknowledged')
-), today_new AS (
-  SELECT COUNT(*) AS total
-  FROM open_alert_record
-  WHERE triggered_at >= CURRENT_DATE
-), acknowledged_summary AS (
-  SELECT COUNT(*) AS total
-  FROM open_alert_record
-  WHERE status = 'acknowledged'
-), today_resolved AS (
-  SELECT COUNT(*) AS total
-  FROM open_alert_record
-  WHERE status = 'resolved' AND resolved_at >= CURRENT_DATE
-)
-SELECT jsonb_build_object(
-  'total', unresolved.total,
-  'critical', unresolved.critical,
-  'warning', unresolved.warning,
-  'info', unresolved.info,
-  'today_new', today_new.total,
-  'acknowledged', acknowledged_summary.total,
-  'today_resolved', today_resolved.total,
-  'affected_devices', unresolved.affected_devices)::text
-FROM unresolved, today_new, acknowledged_summary, today_resolved)sql"));
+        Query unresolved(c.pool());
+        const auto count = unresolved.aggregate("count", { unresolved.star() });
+        unresolved.select(unresolved.alias(count, "total"));
+        for (const auto severity : { "critical", "warning", "info" }) {
+            unresolved.addSelect(unresolved.alias(unresolved.filter(count, unresolved.binary(unresolved.column("severity"), Op::kEqual, unresolved.value(severity))), severity));
+        }
+        unresolved.addSelect(unresolved.alias(unresolved.aggregate("count", { unresolved.column("device_id") }, true), "affected_devices"))
+            .from("open_alert_record").andWhere(unresolved.binary(unresolved.column("status"), Op::kIn,
+                unresolved.list({ unresolved.value("active"), unresolved.value("acknowledged") })));
+        Query todayNew(c.pool());
+        todayNew.select(todayNew.alias(todayNew.aggregate("count", { todayNew.star() }), "total")).from("open_alert_record")
+            .andWhere(todayNew.binary(todayNew.column("triggered_at"), Op::kGreaterEqual, todayNew.cast(todayNew.call("now"), Type::kDate)));
+        Query acknowledged(c.pool());
+        acknowledged.select(acknowledged.alias(acknowledged.aggregate("count", { acknowledged.star() }), "total")).from("open_alert_record")
+            .andWhere(acknowledged.binary(acknowledged.column("status"), Op::kEqual, acknowledged.value("acknowledged")));
+        Query todayResolved(c.pool());
+        todayResolved.select(todayResolved.alias(todayResolved.aggregate("count", { todayResolved.star() }), "total")).from("open_alert_record")
+            .andWhere(todayResolved.binary(todayResolved.column("status"), Op::kEqual, todayResolved.value("resolved")))
+            .andWhere(todayResolved.binary(todayResolved.column("resolved_at"), Op::kGreaterEqual, todayResolved.cast(todayResolved.call("now"), Type::kDate)));
+        Query result(c.pool());
+        std::vector<ruvia::DbExpression> values;
+        for (const auto field : { "total", "critical", "warning", "info", "affected_devices" }) {
+            values.push_back(result.cast(result.value(field), Type::kText));
+            values.push_back(result.column(field, "unresolved"));
+        }
+        for (const auto& [key, table] : { std::pair{ "today_new", "today_new" }, std::pair{ "acknowledged", "acknowledged_summary" }, std::pair{ "today_resolved", "today_resolved" } }) {
+            values.push_back(result.cast(result.value(key), Type::kText));
+            values.push_back(result.column("total", table));
+        }
+        result.with("unresolved", unresolved).with("today_new", todayNew).with("acknowledged_summary", acknowledged).with("today_resolved", todayResolved)
+            .select(result.cast(result.call("jsonb_build_object", values), Type::kText)).from("unresolved")
+            .join(ruvia::DbJoinType::kCross, "today_new").join(ruvia::DbJoinType::kCross, "acknowledged_summary").join(ruvia::DbJoinType::kCross, "today_resolved");
+        co_return firstJson(co_await c.db().query(result));
     }
 
     ruvia::Task<std::string> grouped(ruvia::Context& c) {
         const auto days = std::clamp<std::int64_t>(
             service::common::parseInt64(c.req().query("days")).value_or(7), 1, 365);
-        co_return firstJson(co_await c.db().query(R"sql(
-SELECT COALESCE(jsonb_agg(jsonb_build_object(
-  'rule_id', grouped.rule_id, 'rule_name', grouped.rule_name,
-  'device_id', grouped.device_id, 'device_name', grouped.device_name,
-  'severity', grouped.severity, 'total_count', grouped.total_count,
-  'active_count', grouped.active_count, 'acked_count', grouped.acked_count,
-  'resolved_count', grouped.resolved_count,
-  'latest_trigger_time', iot_utc_timestamp(grouped.latest_trigger_time))
-  ORDER BY grouped.latest_trigger_time DESC), '[]'::jsonb)::text
-FROM (
-  SELECT record.rule_id, COALESCE(rule.name, '已删除规则') AS rule_name,
-         record.device_id, device.name AS device_name, record.severity,
-         COUNT(*) AS total_count,
-         COUNT(*) FILTER (WHERE record.status = 'active') AS active_count,
-         COUNT(*) FILTER (WHERE record.status = 'acknowledged') AS acked_count,
-         COUNT(*) FILTER (WHERE record.status = 'resolved') AS resolved_count,
-         MAX(record.triggered_at) AS latest_trigger_time
-  FROM open_alert_record record
-  LEFT JOIN alert_rule rule ON rule.id = record.rule_id
-  JOIN device ON device.id = record.device_id
-  WHERE record.triggered_at >= NOW() - ($1::bigint * interval '1 day')
-  GROUP BY record.rule_id, rule.name, record.device_id, device.name, record.severity
-) grouped)sql",
-                                                  service::common::dbParams(days)));
+        Query groups(c.pool());
+        const auto count = groups.aggregate("count", { groups.star() });
+        groups.select({ groups.column("rule_id", "record"), groups.alias(groups.coalesce({ groups.column("name", "rule"), groups.value("已删除规则") }), "rule_name"),
+                groups.column("device_id", "record"), groups.alias(groups.column("name", "device"), "device_name"), groups.column("severity", "record"),
+                groups.alias(count, "total_count") });
+        for (const auto& [status, alias] : { std::pair{ "active", "active_count" }, std::pair{ "acknowledged", "acked_count" }, std::pair{ "resolved", "resolved_count" } }) {
+            groups.addSelect(groups.alias(groups.filter(count, groups.binary(groups.column("status", "record"), Op::kEqual, groups.value(status))), alias));
+        }
+        groups.addSelect(groups.alias(groups.aggregate("max", { groups.column("triggered_at", "record") }), "latest_trigger_time"))
+            .from("open_alert_record", "record")
+            .join(ruvia::DbJoinType::kLeft, "alert_rule", groups.binary(groups.column("id", "rule"), Op::kEqual, groups.column("rule_id", "record")), "rule")
+            .join(ruvia::DbJoinType::kInner, "device", groups.binary(groups.column("id", "device"), Op::kEqual, groups.column("device_id", "record")))
+            .andWhere(groups.binary(groups.column("triggered_at", "record"), Op::kGreaterEqual,
+                groups.binary(groups.call("now"), Op::kSubtract, groups.binary(groups.cast(groups.value(days), Type::kBigInt), Op::kMultiply,
+                    groups.cast(groups.value("1 day"), Type::kInterval)))))
+            .groupBy({ groups.column("rule_id", "record"), groups.column("name", "rule"), groups.column("device_id", "record"), groups.column("name", "device"), groups.column("severity", "record") });
+        Query result(c.pool());
+        const std::vector<ruvia::DbOrderTerm> order{ { result.column("latest_trigger_time"), ruvia::DbOrderDirection::kDesc } };
+        result.select(result.cast(result.coalesce({ result.aggregate("jsonb_agg", { fieldJson(result, { "rule_id", "rule_name", "device_id", "device_name", "severity",
+            "total_count", "active_count", "acked_count", "resolved_count", "latest_trigger_time" }) }, false, order), result.cast(result.value("[]"), Type::kJsonb) }), Type::kText)).from(groups, "grouped");
+        co_return firstJson(co_await c.db().query(result));
     }
 
 #ifdef IOT_ENGINE_TESTING
@@ -479,12 +423,6 @@ FROM (
         std::int64_t recoveryWaitSeconds{};
         std::string applicableProtocols;
         std::string protocolConfigId;
-    };
-
-    struct PageParams final {
-        std::size_t first{};
-        std::size_t second{};
-        std::size_t third{};
     };
 
     static RuleInput ruleInput(const ruvia::JsonValue& payload) {
@@ -806,15 +744,11 @@ FROM (
             service::common::fail(17002, "位索引超出允许范围", 400);
     }
 
-    static std::string uuidArrayLiteral(const std::vector<std::string>& values) {
-        std::string result{"{"};
-        for (std::size_t index = 0; index < values.size(); ++index) {
-            if (index != 0)
-                result.push_back(',');
-            result += values[index];
-        }
-        result.push_back('}');
-        return result;
+    static ruvia::DbExpression uuidList(Query& query, const std::vector<std::string>& ids) {
+        std::vector<ruvia::DbExpression> values;
+        values.reserve(ids.size());
+        for (const auto& id : ids) values.push_back(query.cast(query.value(id), Type::kUuid));
+        return query.list(values);
     }
 
     template <typename Rows> static std::string firstJson(const Rows& rows) {
@@ -830,71 +764,100 @@ FROM (
         return std::string(rows.front()[0].value().value_or(std::string_view{}));
     }
 
-    static PageParams addPageParams(std::vector<ruvia::DbValue>& params,
-                                    const service::common::Page& pagination) {
-        params.emplace_back(pagination.pageSize);
-        const auto limit = params.size();
-        params.emplace_back(pagination.offset);
-        const auto offset = params.size();
-        params.emplace_back(pagination.page);
-        return {.first = limit, .second = offset, .third = params.size()};
+    static ruvia::DbExpression fieldJson(Query& query, const std::vector<std::string_view>& fields) {
+        std::vector<ruvia::DbExpression> values;
+        values.reserve(fields.size() * 2);
+        for (const auto field : fields) {
+            values.push_back(query.cast(query.value(field), Type::kText));
+            auto value = query.column(field);
+            if (field.ends_with("_at") || field == "latest_trigger_time") value = query.call("iot_utc_timestamp", { value });
+            values.push_back(value);
+        }
+        return query.call("jsonb_build_object", values);
     }
 
-    static void appendTextFilter(ruvia::Context& c, std::string_view query,
-                                 std::string_view expression, std::string& where,
-                                 std::vector<ruvia::DbValue>& params, bool contains) {
-        const auto value = c.req().query(query);
-        if (!value || value->empty())
-            return;
-        params.emplace_back(*value);
-        where += " AND " + std::string(expression) + " ";
-        if (contains)
-            where += "'%' || ";
-        where += "$" + std::to_string(params.size());
-        if (contains)
-            where += " || '%'";
+    static ruvia::Task<std::string> pageResult(ruvia::Context& c, const Query& filtered,
+        const Query& listed, std::vector<std::string_view> fields, std::string_view timeColumn) {
+        const auto pagination = service::common::page(c.req());
+        Query counted(c.pool());
+        counted.select(counted.alias(counted.aggregate("count", { counted.star() }), "total")).from("filtered");
+        Query page(c.pool());
+        page.select(page.star()).from("filtered")
+            .addOrderBy(page.column(timeColumn), ruvia::DbOrderDirection::kDesc)
+            .addOrderBy(page.column("id"), ruvia::DbOrderDirection::kDesc)
+            .limit(static_cast<std::uint64_t>(pagination.pageSize)).offset(static_cast<std::uint64_t>(pagination.offset));
+        Query rows(c.pool());
+        const std::vector<ruvia::DbOrderTerm> order{ { rows.column(timeColumn), ruvia::DbOrderDirection::kDesc }, { rows.column("id"), ruvia::DbOrderDirection::kDesc } };
+        rows.select(rows.aggregate("jsonb_agg", { fieldJson(rows, fields) }, false, order)).from("listed");
+        Query count(c.pool());
+        count.select(count.column("total")).from("counted");
+        Query result(c.pool());
+        const auto total = result.coalesce({ result.subquery(count), result.value(0) });
+        const auto pageSize = result.cast(result.value(pagination.pageSize), Type::kBigInt);
+        const auto pages = result.caseWhen({ { result.binary(pageSize, Op::kEqual, result.value(0)), result.value(0) } },
+            result.cast(result.call("ceil", { result.binary(result.cast(total, Type::kNumeric), Op::kDivide, pageSize) }), Type::kBigInt));
+        result.with("filtered", filtered).with("counted", counted).with("page_rows", page).with("listed", listed)
+            .select(result.cast(result.call("jsonb_build_object", {
+                result.cast(result.value("list"), Type::kText), result.coalesce({ result.subquery(rows), result.cast(result.value("[]"), Type::kJsonb) }),
+                result.cast(result.value("total"), Type::kText), total,
+                result.cast(result.value("page"), Type::kText), result.cast(result.value(pagination.page), Type::kBigInt),
+                result.cast(result.value("pageSize"), Type::kText), pageSize,
+                result.cast(result.value("totalPages"), Type::kText), pages }), Type::kText));
+        co_return firstJson(co_await c.db().query(result));
     }
 
-    static void appendUuidFilter(ruvia::Context& c, std::string_view query,
-                                 std::string_view expression, std::string& where,
-                                 std::vector<ruvia::DbValue>& params) {
-        const auto value = c.req().query(query);
-        if (!value || value->empty())
-            return;
-        service::common::requireUuid(19002, *value, std::string(query) + " 无效");
-        params.emplace_back(*value);
-        where += " AND " + std::string(expression) + " = $" + std::to_string(params.size()) +
-                 "::uuid";
+    static void appendTextFilter(ruvia::Context& c, std::string_view parameter,
+        Query& query, ruvia::DbExpression column, bool contains = false) {
+        const auto value = c.req().query(parameter);
+        if (!value || value->empty()) return;
+        query.andWhere(query.binary(column, contains ? Op::kILike : Op::kEqual,
+            query.value(contains ? "%" + std::string(*value) + "%" : std::string(*value))));
+    }
+
+    static void appendUuidFilter(ruvia::Context& c, std::string_view parameter,
+        Query& query, ruvia::DbExpression column) {
+        const auto value = c.req().query(parameter);
+        if (!value || value->empty()) return;
+        service::common::requireUuid(19002, *value, std::string(parameter) + " 无效");
+        query.andWhere(query.binary(column, Op::kEqual, query.cast(query.value(*value), Type::kUuid)));
     }
 
     static ruvia::Task<void> ensureDevice(ruvia::Context& c, std::string_view id) {
-        const auto rows = co_await c.db().query(
-            "SELECT 1 FROM device WHERE id = $1::uuid AND deleted_at IS NULL",
-            service::common::dbParams(id));
+        Query query(c.pool());
+        query.select(query.cast(query.value(1), Type::kInteger)).from("device")
+            .andWhere(query.binary(query.column("id"), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+        const auto rows = co_await c.db().query(query);
         if (rows.empty())
             service::common::fail(17003, "关联设备不存在", 404);
     }
 
     static ruvia::Task<void> ensureProtocolConfig(ruvia::Context& c, std::string_view id) {
-        const auto rows = co_await c.db().query(
-            "SELECT 1 FROM protocol_config WHERE id = $1::uuid AND deleted_at IS NULL",
-            service::common::dbParams(id));
+        Query query(c.pool());
+        query.select(query.cast(query.value(1), Type::kInteger)).from("protocol_config")
+            .andWhere(query.binary(query.column("id"), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+        const auto rows = co_await c.db().query(query);
         if (rows.empty())
             service::common::fail(17003, "协议配置不存在", 404);
     }
 
     static ruvia::Task<void> requireRule(ruvia::Context& c, std::string_view id) {
-        const auto rows = co_await c.db().query(
-            "SELECT 1 FROM alert_rule WHERE id = $1::uuid AND deleted_at IS NULL",
-            service::common::dbParams(id));
+        Query query(c.pool());
+        query.select(query.cast(query.value(1), Type::kInteger)).from("alert_rule")
+            .andWhere(query.binary(query.column("id"), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+        const auto rows = co_await c.db().query(query);
         if (rows.empty())
             service::common::fail(17003, "告警规则不存在", 404);
     }
 
     static ruvia::Task<void> requireTemplate(ruvia::Context& c, std::string_view id) {
-        const auto rows = co_await c.db().query(
-            "SELECT 1 FROM alert_rule_template WHERE id = $1::uuid AND deleted_at IS NULL",
-            service::common::dbParams(id));
+        Query query(c.pool());
+        query.select(query.cast(query.value(1), Type::kInteger)).from("alert_rule_template")
+            .andWhere(query.binary(query.column("id"), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+        const auto rows = co_await c.db().query(query);
         if (rows.empty())
             service::common::fail(17003, "告警模板不存在", 404);
     }
@@ -902,22 +865,27 @@ FROM (
     static ruvia::Task<void> ensureRuleName(ruvia::Context& c, std::string_view name,
                                             std::string_view deviceId,
                                             const std::optional<std::string>& excluded) {
-        const auto excludedId = excluded.value_or("");
-        const auto rows = co_await c.db().query(
-            "SELECT 1 FROM alert_rule WHERE device_id = $1::uuid AND name = $2 "
-            "AND deleted_at IS NULL AND ($3 = '' OR id <> NULLIF($3, '')::uuid)",
-            service::common::dbParams(deviceId, name, excludedId));
+        Query query(c.pool());
+        query.select(query.cast(query.value(1), Type::kInteger)).from("alert_rule")
+            .andWhere(query.binary(query.column("name"), Op::kEqual, query.value(name)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+        query.andWhere(query.binary(query.column("device_id"), Op::kEqual, query.cast(query.value(deviceId), Type::kUuid)));
+        if (excluded && !excluded->empty())
+            query.andWhere(query.binary(query.column("id"), Op::kNotEqual, query.cast(query.value(*excluded), Type::kUuid)));
+        const auto rows = co_await c.db().query(query);
         if (!rows.empty())
             service::common::fail(17009, "该设备已存在同名告警规则", 409);
     }
 
     static ruvia::Task<void> ensureTemplateName(ruvia::Context& c, std::string_view name,
                                                 const std::optional<std::string>& excluded) {
-        const auto excludedId = excluded.value_or("");
-        const auto rows = co_await c.db().query(
-            "SELECT 1 FROM alert_rule_template WHERE name = $1 AND deleted_at IS NULL "
-            "AND ($2 = '' OR id <> NULLIF($2, '')::uuid)",
-            service::common::dbParams(name, excludedId));
+        Query query(c.pool());
+        query.select(query.cast(query.value(1), Type::kInteger)).from("alert_rule_template")
+            .andWhere(query.binary(query.column("name"), Op::kEqual, query.value(name)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+        if (excluded && !excluded->empty())
+            query.andWhere(query.binary(query.column("id"), Op::kNotEqual, query.cast(query.value(*excluded), Type::kUuid)));
+        const auto rows = co_await c.db().query(query);
         if (!rows.empty())
             service::common::fail(17009, "告警模板名称已存在", 409);
     }

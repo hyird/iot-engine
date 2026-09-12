@@ -7,6 +7,7 @@
 
 #include <ruvia/web/Context.h>
 #include <ruvia/web/ModelJson.h>
+#include <ruvia/web/db/DbQuery.h>
 
 #include "service/common/http.h"
 #include "service/common/uuid.h"
@@ -415,9 +416,18 @@ public:
     if (!mappedDeviceId.empty()) {
       if (!service::common::isUuid(mappedDeviceId))
         service::common::fail(10001, "mapped_device_id 必须是 UUID", 400);
-      const auto target = co_await c.db().query(
-          "SELECT 1 FROM device WHERE id = $1::uuid AND deleted_at IS NULL",
-          service::common::dbParams(mappedDeviceId));
+      ruvia::DbQuery targetQuery(c.pool());
+      targetQuery
+          .select(targetQuery.value(1))
+          .from("device")
+          .where(targetQuery.binary(
+              targetQuery.column("id"), ruvia::DbBinaryOperator::kEqual,
+              targetQuery.cast(targetQuery.value(mappedDeviceId),
+                               ruvia::DbDataType::kUuid)))
+          .andWhere(targetQuery.unary(
+              ruvia::DbUnaryOperator::kIsNull,
+              targetQuery.column("deleted_at")));
+      const auto target = co_await c.db().query(targetQuery);
       if (target.empty())
         service::common::fail(10003, "映射目标设备不存在", 404);
     }

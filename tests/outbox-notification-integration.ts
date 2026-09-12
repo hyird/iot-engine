@@ -1,9 +1,21 @@
-import { databaseUrl, apiBase } from './architecture-fixture';
+import { databaseUrl, redisUrl, apiBase } from './architecture-fixture';
 // Only the disposable architecture fixture, never a deployed database.
 import assert from 'node:assert/strict';
 
 const db = new Bun.SQL(databaseUrl);
+const redis = new Bun.RedisClient(redisUrl);
 const ids: string[] = [];
+const liveStream = 'iot:live:changes';
+const savedLiveStream = `iot:test:outbox:live:${crypto.randomUUID()}`;
+let liveStreamPaused = false;
+async function restoreLiveStream() {
+    if (!liveStreamPaused) return;
+    await redis.send('EVAL', [
+        "redis.call('DEL', KEYS[1]); if redis.call('EXISTS', KEYS[2]) == 1 then redis.call('RENAME', KEYS[2], KEYS[1]) end; return 1",
+        '2', liveStream, savedLiveStream,
+    ]);
+    liveStreamPaused = false;
+}
 async function until(check: () => Promise<boolean>, message: string, timeout = 10000) {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
@@ -27,9 +39,9 @@ async function checks() {
     const response = await fetch(apiBase + '/internal/metrics', { signal: AbortSignal.timeout(5000) });
     assert.equal(response.status, 200);
     const text = await response.text();
-    const match = text.match(/^iot_engine_outbox_dispatch_checks_total\s+(\d+)/m);
-    assert(match, 'outbox dispatch counter is missing');
-    return Number(match[1]);
+    const matches = [...text.matchAll(/^iot_engine_outbox_dispatch_checks_total(?:\{[^}]*\})?\s+(\d+)/gm)];
+    assert(matches.length > 0, 'outbox dispatch counter is missing');
+    return matches.reduce((sum, match) => sum + Number(match[1]), 0);
 }
 
 try {
@@ -41,12 +53,13 @@ try {
     await until(async () => (await db`SELECT count(*)::int AS n FROM outbox_event
         WHERE published_at IS NULL AND dead_lettered_at IS NULL`)[0].n === 0, 'fixture outbox did not drain');
     // Statistics timers still run, but an empty queue must not cause dispatch SQL.
-    await Bun.sleep(500);
+    // Worker metrics are exported in five-second snapshots.
+    await Bun.sleep(5500);
     const idle = await checks();
-    await Bun.sleep(1500);
+    await Bun.sleep(5500);
     assert.equal(await checks(), idle, 'empty outbox is still periodically dispatched');
     await db`UPDATE sys_department SET name=name WHERE id=${crypto.randomUUID()}`;
-    await Bun.sleep(300);
+    await Bun.sleep(5500);
     assert.equal(await checks(), idle, 'zero-row UPDATE emitted a false query change');
     console.log('PASS empty queue does not poll for dispatch work');
 
@@ -95,7 +108,50 @@ try {
             !old.some((previous: { pid: number }) => previous.pid === row.pid));
     }, 'LISTEN sessions did not reconnect', 15000);
     console.log('PASS listener disconnect/reconnect catches up committed events');
+
+    // This fixture owns Redis. Temporarily make the destination reject XADD to
+    // exercise the actual failure update, backoff and terminal attempt boundary.
+    await redis.send('EVAL', [
+        "if redis.call('EXISTS', KEYS[1]) == 1 then redis.call('RENAME', KEYS[1], KEYS[2]) end; redis.call('SET', KEYS[1], 'outbox-test'); return 1",
+        '2', liveStream, savedLiveStream,
+    ]);
+    liveStreamPaused = true;
+    const retryId = await insert();
+    await until(async () => {
+        const rows = await db`SELECT attempts, last_error, published_at,
+            extract(epoch FROM (available_at - occurred_at))::float8 AS delay
+            FROM outbox_event WHERE id=${retryId}`;
+        if (rows[0].attempts === 0) return false;
+        assert.equal(rows[0].attempts, 1);
+        assert.equal(rows[0].published_at, null);
+        assert.match(rows[0].last_error, /WRONGTYPE/);
+        assert(rows[0].delay >= 1 && rows[0].delay < 3, 'first retry must wait one second');
+        return true;
+    }, 'failed publish did not persist its retry');
+    const exhaustedId = crypto.randomUUID();
+    ids.push(exhaustedId);
+    await db`INSERT INTO outbox_event(id,event_type,aggregate_type,aggregate_id,action,schema_version,attempts)
+        VALUES(${exhaustedId},'query.changed','auth',${exhaustedId},'test',1,19)`;
+    await until(async () => {
+        const rows = await db`SELECT attempts, published_at, dead_lettered_at,
+            extract(epoch FROM (available_at - dead_lettered_at))::float8 AS delay
+            FROM outbox_event WHERE id=${exhaustedId}`;
+        if (rows[0].dead_lettered_at === null) return false;
+        assert.equal(rows[0].attempts, 20);
+        assert.equal(rows[0].published_at, null);
+        assert.equal(rows[0].delay, 256);
+        return true;
+    }, 'twentieth failed attempt was not dead-lettered');
+    await restoreLiveStream();
+    await until(() => published(retryId), 'recovered destination did not publish the retried event');
+    const retried = await db`SELECT attempts, last_error FROM outbox_event WHERE id=${retryId}`;
+    assert(retried[0].attempts >= 2);
+    assert.equal(retried[0].last_error, null);
+    assert.equal(await published(exhaustedId), false);
+    console.log('PASS publish retry, exponential backoff, recovery and dead-letter boundary');
 } finally {
+    await restoreLiveStream();
     if (ids.length) await db`DELETE FROM outbox_event WHERE id IN ${db(ids)}`;
     await db.close();
+    redis.close();
 }

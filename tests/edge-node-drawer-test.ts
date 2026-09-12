@@ -120,14 +120,17 @@ test('edge bridge routes commit before configuration is queued', () => {
 });
 
 test('Windows VPN configurations contain only active virtual LAN routes', () => {
-    expect(vpnDomain).toContain("r.enabled AND r.status = 'active'");
+    expect(vpnDomain).toContain('routes.column("enabled", "r")');
+    expect(vpnDomain).toContain('routes.column("status", "r")');
+    expect(vpnDomain).toContain('routes.value("active")');
     expect(vpnDomain).toContain('VPN 当前没有可用虚拟网段');
     expect(vpnDomain).not.toContain('address += "/32"');
 });
 
 test('Hub firewall still isolates Windows clients from unauthorized Edge tunnels', () => {
-    expect(vpnBackend).toContain('string_agg(access.edge_address');
-    expect(vpnBackend).toContain('FROM vpn_effective_edge_access access WHERE access.peer_id = p.id');
+    expect(vpnBackend).toContain('addresses.aggregate("string_agg", { addresses.column("edge_address", "access")');
+    expect(vpnBackend).toContain('.from("vpn_effective_edge_access", "access")');
+    expect(vpnBackend).toContain('addresses.column("peer_id", "access"), Op::kEqual, addresses.column("id", "p")');
     expect(vpnRuntime).toContain('peerRecord.edgeAddresses');
     expect(vpnRuntime).toContain('client.edgeAddresses.push_back');
     expect(vpnFirewall).toContain('client.edgeAddresses');

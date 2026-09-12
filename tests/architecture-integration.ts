@@ -104,6 +104,10 @@ try {
     assert(duplicateBlocked, 'same-link station/address duplicate must be rejected');
     console.log('PASS same address across links; duplicate on same link rejected');
 
+    // Preserve the synthetic route across recovery projection, just as a fully
+    // initialized collector connection does.
+    await redis.send('HSET', [`iot:v2:device:${device}:latest`, '_device_id', device,
+        '_element_ids', JSON.stringify({ [point]: true })]);
     await redis.send('SET', [`iot:v2:owner:link:${link}`, instance, 'PX', '120000']);
     await redis.send('HSET', [
         `iot:v2:runtime:device:${device}`,
@@ -216,7 +220,9 @@ try {
     await redis.send('DEL', [capacityQueue]);
     console.log('PASS actual Redis Lua capacity backpressure preserves accepted work');
     const ownership = await Bun.file('service/features/collector/collector.service.h').text();
-    const claim = ownership.match(/R"lua\(([\s\S]*?)\)lua"/)![1];
+    const retainTarget = ownership.indexOf('retainTarget(const Redis&');
+    assert(retainTarget >= 0, 'collector target lease operation is missing');
+    const claim = ownership.slice(retainTarget).match(/R"lua\(([\s\S]*?)\)lua"/)![1];
     const lease = `architecture-lease:${id()}`;
     assert.equal(await redis.send('EVAL', [claim, '1', lease, 'instance-a']), 1);
     assert.equal(await redis.send('EVAL', [claim, '1', lease, 'instance-b']), 0);
@@ -226,7 +232,7 @@ try {
     assert.equal(await redis.send('EVAL', [claim, '1', lease, 'instance-b']), 1);
     assert.equal(await redis.send('EVAL', [claim, '1', lease, 'instance-a']), 0);
     await redis.send('DEL', [lease]);
-    console.log('PASS actual Redis link lease exclusion, renewal and expired takeover');
+    console.log('PASS actual Redis target lease exclusion, renewal and expired takeover');
 } finally {
     await db.close();
     redis.close();

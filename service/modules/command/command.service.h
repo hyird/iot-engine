@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <exception>
 #include <iostream>
+#include <memory_resource>
 #include <set>
 #include <string>
 #include <string_view>
@@ -13,6 +14,7 @@
 #include <vector>
 
 #include <ruvia/web/db/Db.h>
+#include <ruvia/web/db/DbQuery.h>
 #include <ruvia/core/Timer.h>
 
 #include "service/common/http.h"
@@ -37,15 +39,7 @@ class CommandService final {
         const auto access = co_await accessService_.require(
             context, deviceId, service::device::DeviceAccessLevel::operate);
         const auto deviceRows = co_await context.db().query(
-            R"sql(SELECT CASE
-              WHEN protocol_params ? 'remote_control' THEN
-                CASE lower(COALESCE(protocol_params->>'remote_control', ''))
-                  WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE
-                  WHEN 'yes' THEN TRUE WHEN 'y' THEN TRUE WHEN 'on' THEN TRUE
-                  ELSE FALSE END
-              ELSE TRUE END
-            FROM device WHERE id = $1 AND deleted_at IS NULL LIMIT 1)sql",
-            service::common::dbParams(deviceId));
+            deviceRemoteControlQuery(context.pool(), deviceId));
         if (deviceRows.empty())
             service::common::fail(18001, "设备不存在", 404);
         const auto capabilities = service::device::DeviceAccessService::capabilities(
@@ -60,15 +54,7 @@ class CommandService final {
     createExternal(ruvia::Context& context, std::string_view deviceId,
                    const service::device::DeviceCommandBody& body, std::string_view accessKeyId) {
         const auto deviceRows = co_await context.db().query(
-            R"sql(SELECT CASE
-              WHEN protocol_params ? 'remote_control' THEN
-                CASE lower(COALESCE(protocol_params->>'remote_control', ''))
-                  WHEN 'true' THEN TRUE WHEN 't' THEN TRUE WHEN '1' THEN TRUE
-                  WHEN 'yes' THEN TRUE WHEN 'y' THEN TRUE WHEN 'on' THEN TRUE
-                  ELSE FALSE END
-              ELSE TRUE END
-            FROM device WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1)sql",
-            service::common::dbParams(deviceId));
+            deviceRemoteControlQuery(context.pool(), deviceId));
         if (deviceRows.empty())
             service::common::fail(18001, "设备不存在", 404);
         if (deviceRows.front()[0].value().value_or(std::string_view{}) != "t")
@@ -120,6 +106,51 @@ class CommandService final {
     }
 
   private:
+    static ruvia::DbQuery deviceRemoteControlQuery(std::pmr::memory_resource* resource,
+                                                   std::string_view deviceId) {
+        ruvia::DbQuery query(resource);
+        const auto protocolParams = query.column("protocol_params");
+        const auto remoteControlKey = query.cast(
+            query.value("remote_control"), ruvia::DbDataType::kText);
+        const auto hasRemoteControl = query.binary(
+            protocolParams, ruvia::DbBinaryOperator::kJsonHasKey,
+            remoteControlKey);
+        const auto remoteControl = query.binary(
+            protocolParams, ruvia::DbBinaryOperator::kJsonGetText,
+            remoteControlKey);
+        const auto normalizedRemoteControl = query.call(
+            "lower", {query.coalesce({remoteControl, query.value("")})});
+        const auto enabled = query.caseWhen(
+            {{query.binary(normalizedRemoteControl, ruvia::DbBinaryOperator::kEqual,
+                          query.value("true")),
+              query.cast(query.value(true), ruvia::DbDataType::kBoolean)},
+             {query.binary(normalizedRemoteControl, ruvia::DbBinaryOperator::kEqual,
+                          query.value("t")),
+              query.cast(query.value(true), ruvia::DbDataType::kBoolean)},
+             {query.binary(normalizedRemoteControl, ruvia::DbBinaryOperator::kEqual,
+                          query.value("1")),
+              query.cast(query.value(true), ruvia::DbDataType::kBoolean)},
+             {query.binary(normalizedRemoteControl, ruvia::DbBinaryOperator::kEqual,
+                          query.value("yes")),
+              query.cast(query.value(true), ruvia::DbDataType::kBoolean)},
+             {query.binary(normalizedRemoteControl, ruvia::DbBinaryOperator::kEqual,
+                          query.value("y")),
+              query.cast(query.value(true), ruvia::DbDataType::kBoolean)},
+             {query.binary(normalizedRemoteControl, ruvia::DbBinaryOperator::kEqual,
+                          query.value("on")),
+              query.cast(query.value(true), ruvia::DbDataType::kBoolean)}},
+            query.cast(query.value(false), ruvia::DbDataType::kBoolean));
+        query
+            .select(query.caseWhen({{hasRemoteControl, enabled}}, query.cast(query.value(true), ruvia::DbDataType::kBoolean)))
+            .from("device")
+            .where(query.binary(query.column("id"), ruvia::DbBinaryOperator::kEqual,
+                                query.cast(query.value(deviceId), ruvia::DbDataType::kUuid)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull,
+                                  query.column("deleted_at")))
+            .limit(1);
+        return query;
+    }
+
     static std::string actualValueField(std::size_t index, std::string_view name) {
         return "actual_value_" + std::to_string(index) + "_" + std::string(name);
     }
@@ -176,18 +207,45 @@ class CommandService final {
         payload += ']';
         auto transaction = co_await context.db().beginTransaction();
         const std::string lockKey = submittedBy + ":" + key;
-        (void)co_await transaction.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
-                                         common::dbParams(lockKey));
-        const auto prior = co_await transaction.query(
-            "SELECT id::text,device_id=$3::uuid AND payload=$4::jsonb FROM command_request "
-            "WHERE actor=$1 AND idempotency_key=$2::uuid",
-            common::dbParams(submittedBy,key,deviceId,payload));
+        ruvia::DbQuery advisory(context.pool());
+        advisory.select(advisory.call(
+            "pg_advisory_xact_lock",
+            {advisory.call("hashtextextended", {advisory.value(lockKey), advisory.value(std::int64_t{0})})}));
+        (void)co_await transaction.query(advisory);
+
+        ruvia::DbQuery priorQuery(context.pool());
+        const auto priorDevice = priorQuery.binary(
+            priorQuery.column("device_id"), ruvia::DbBinaryOperator::kEqual,
+            priorQuery.cast(priorQuery.value(deviceId), ruvia::DbDataType::kUuid));
+        const auto priorPayload = priorQuery.binary(
+            priorQuery.column("payload"), ruvia::DbBinaryOperator::kEqual,
+            priorQuery.cast(priorQuery.value(payload), ruvia::DbDataType::kJsonb));
+        priorQuery
+            .select({priorQuery.cast(priorQuery.column("id"), ruvia::DbDataType::kText),
+                     priorQuery.binary(priorDevice, ruvia::DbBinaryOperator::kAnd, priorPayload)})
+            .from("command_request")
+            .where(priorQuery.binary(
+                priorQuery.binary(priorQuery.column("actor"), ruvia::DbBinaryOperator::kEqual,
+                                  priorQuery.value(submittedBy)),
+                ruvia::DbBinaryOperator::kAnd,
+                priorQuery.binary(priorQuery.column("idempotency_key"),
+                                  ruvia::DbBinaryOperator::kEqual,
+                                  priorQuery.cast(priorQuery.value(key), ruvia::DbDataType::kUuid))));
+        const auto prior = co_await transaction.query(priorQuery);
         if (!prior.empty()) {
             if (prior.front()[1].value().value_or(std::string_view{}) != "t")
                 common::fail(18014, "幂等键已用于不同的指令请求", 409);
-            const auto commands = co_await transaction.query(
-                "SELECT id::text FROM command_operation WHERE request_id=$1::uuid ORDER BY ordinal",
-                common::dbParams(prior.front()[0].value().value_or(std::string_view{})));
+            ruvia::DbQuery commandQuery(context.pool());
+            commandQuery
+                .select(commandQuery.cast(commandQuery.column("id"), ruvia::DbDataType::kText))
+                .from("command_operation")
+                .where(commandQuery.binary(
+                    commandQuery.column("request_id"), ruvia::DbBinaryOperator::kEqual,
+                    commandQuery.cast(
+                        commandQuery.value(prior.front()[0].value().value_or(std::string_view{})),
+                        ruvia::DbDataType::kUuid)))
+                .orderBy(commandQuery.column("ordinal"));
+            const auto commands = co_await transaction.query(commandQuery);
             ruvia::BoxedArray<ruvia::String> ids(ruvia::ModelOptions{.resource=context.arena()});
             for (const auto& row : commands)
                 ids.emplace(row[0].value().value_or(std::string_view{}),
@@ -198,12 +256,25 @@ class CommandService final {
             co_return result;
         }
         const auto requestId = common::nextUuidV7();
-        (void)co_await transaction.execute(
-            "INSERT INTO command_request(id,actor,idempotency_key,device_id,payload) "
-            "VALUES($1::uuid,$2,$3::uuid,$4::uuid,$5::jsonb)",
-            common::dbParams(requestId,submittedBy,key,deviceId,payload));
-        (void)co_await transaction.query("SELECT id FROM device WHERE id=$1::uuid FOR SHARE",
-                                         common::dbParams(deviceId));
+        ruvia::DbQuery requestQuery(context.pool());
+        requestQuery
+            .insertInto("command_request", {"id", "actor", "idempotency_key", "device_id", "payload"})
+            .values({requestQuery.cast(requestQuery.value(requestId), ruvia::DbDataType::kUuid),
+                     requestQuery.value(submittedBy),
+                     requestQuery.cast(requestQuery.value(key), ruvia::DbDataType::kUuid),
+                     requestQuery.cast(requestQuery.value(deviceId), ruvia::DbDataType::kUuid),
+                     requestQuery.cast(requestQuery.value(payload), ruvia::DbDataType::kJsonb)});
+        (void)co_await transaction.execute(requestQuery);
+
+        ruvia::DbQuery deviceLock(context.pool());
+        deviceLock
+            .select(deviceLock.column("id"))
+            .from("device")
+            .where(deviceLock.binary(deviceLock.column("id"), ruvia::DbBinaryOperator::kEqual,
+                                     deviceLock.cast(deviceLock.value(deviceId),
+                                                     ruvia::DbDataType::kUuid)))
+            .lock({.mode = ruvia::DbRowLock::kShare});
+        (void)co_await transaction.query(deviceLock);
         const auto prepared = co_await service::rpc::call(context, "command", "prepare",
             "{\"deviceId\":" + service::utils::jsonQuoted(deviceId) + ",\"elements\":" + payload + "}");
         auto result = co_await appendPrepared(context, transaction, requestId, deviceId, submittedBy, prepared);
@@ -249,25 +320,85 @@ class CommandService final {
             }
             payload += ']';
             const auto id = command.get<"id">()->view();
-            (void)co_await transaction.execute(R"sql(
-INSERT INTO command_operation(id,request_id,ordinal,device_id,device_code,protocol,status,elements,model_id,model_revision)
-SELECT $1::uuid,$2::uuid,$3,$4::uuid,$5,$6,'ACCEPTED',$7::jsonb,protocol_config_id,protocol_revision
-FROM device WHERE id=$4::uuid)sql",
-                common::dbParams(id, requestId, ordinal++, deviceId,
-                    command.get<"deviceCode">()->view(), command.get<"protocol">()->view(), elements));
-            (void)co_await transaction.execute(R"sql(
-INSERT INTO command_attempt(operation_id,queue_key,queue_kind,payload,submitted_by,node_id,max_length)
-VALUES($1::uuid,$2,$3,$4::jsonb,$5,$6,$7))sql",
-                common::dbParams(id, batch->get<"queue">()->view(), kind, payload, submittedBy,
-                    batch->get<"nodeId">()->view(), maximum));
+            const auto operationOrdinal = ordinal++;
+            ruvia::DbQuery operationSource(context.pool());
+            operationSource
+                .select({operationSource.cast(operationSource.value(id), ruvia::DbDataType::kUuid),
+                         operationSource.cast(operationSource.value(requestId),
+                                              ruvia::DbDataType::kUuid),
+                         operationSource.value(static_cast<std::int32_t>(operationOrdinal)),
+                         operationSource.cast(operationSource.value(deviceId),
+                                              ruvia::DbDataType::kUuid),
+                         operationSource.value(command.get<"deviceCode">()->view()),
+                         operationSource.value(command.get<"protocol">()->view()),
+                         operationSource.value("ACCEPTED"),
+                         operationSource.cast(operationSource.value(elements),
+                                              ruvia::DbDataType::kJsonb),
+                         operationSource.column("protocol_config_id"),
+                         operationSource.column("protocol_revision")})
+                .from("device")
+                .where(operationSource.binary(
+                    operationSource.column("id"), ruvia::DbBinaryOperator::kEqual,
+                    operationSource.cast(operationSource.value(deviceId),
+                                         ruvia::DbDataType::kUuid)));
+            ruvia::DbQuery operationQuery(context.pool());
+            operationQuery
+                .insertInto("command_operation",
+                            {"id", "request_id", "ordinal", "device_id", "device_code",
+                             "protocol", "status", "elements", "model_id", "model_revision"})
+                .insertFrom(operationSource);
+            (void)co_await transaction.execute(operationQuery);
+
+            ruvia::DbQuery attemptQuery(context.pool());
+            attemptQuery
+                .insertInto("command_attempt",
+                            {"operation_id", "queue_key", "queue_kind", "payload", "submitted_by",
+                             "node_id", "max_length"})
+                .values({attemptQuery.cast(attemptQuery.value(id), ruvia::DbDataType::kUuid),
+                         attemptQuery.value(batch->get<"queue">()->view()),
+                         attemptQuery.value(kind),
+                         attemptQuery.cast(attemptQuery.value(payload), ruvia::DbDataType::kJsonb),
+                         attemptQuery.value(submittedBy),
+                         attemptQuery.value(batch->get<"nodeId">()->view()),
+                         attemptQuery.value(static_cast<std::int32_t>(maximum))});
+            (void)co_await transaction.execute(attemptQuery);
             const auto eventId = common::nextUuidV7();
-            (void)co_await transaction.execute(R"sql(
-INSERT INTO outbox_event(id,event_type,aggregate_type,aggregate_id,action,schema_version,payload)
-SELECT $1::uuid,$3,'command',device_id::text,'updated',2,
- jsonb_build_object('device_code',device_code,'data',jsonb_build_object(
- 'commandId',id::text,'status',status,'reason',reason,'elements',elements,'actualValues',actual_values))
-FROM command_operation WHERE id=$2::uuid)sql",
-                common::dbParams(eventId, id, "device.command.accepted"));
+            ruvia::DbQuery eventSource(context.pool());
+            const auto jsonKey = [&](std::string_view key) {
+                return eventSource.cast(eventSource.value(key), ruvia::DbDataType::kText);
+            };
+            eventSource
+                .select({eventSource.cast(eventSource.value(eventId), ruvia::DbDataType::kUuid),
+                         eventSource.value("device.command.accepted"),
+                         eventSource.value("command"),
+                         eventSource.cast(eventSource.column("device_id"),
+                                          ruvia::DbDataType::kText),
+                         eventSource.value("updated"), eventSource.value(std::int32_t{2}),
+                         eventSource.call(
+                             "jsonb_build_object",
+                             {jsonKey("device_code"), eventSource.column("device_code"),
+                              jsonKey("data"),
+                              eventSource.call(
+                                  "jsonb_build_object",
+                                  {jsonKey("commandId"),
+                                   eventSource.cast(eventSource.column("id"),
+                                                    ruvia::DbDataType::kText),
+                                   jsonKey("status"), eventSource.column("status"),
+                                   jsonKey("reason"), eventSource.column("reason"),
+                                   jsonKey("elements"), eventSource.column("elements"),
+                                   jsonKey("actualValues"),
+                                   eventSource.column("actual_values")})})})
+                .from("command_operation")
+                .where(eventSource.binary(
+                    eventSource.column("id"), ruvia::DbBinaryOperator::kEqual,
+                    eventSource.cast(eventSource.value(id), ruvia::DbDataType::kUuid)));
+            ruvia::DbQuery eventQuery(context.pool());
+            eventQuery
+                .insertInto("outbox_event",
+                            {"id", "event_type", "aggregate_type", "aggregate_id", "action",
+                             "schema_version", "payload"})
+                .insertFrom(eventSource);
+            (void)co_await transaction.execute(eventQuery);
             commandIds.emplace(id, ruvia::ModelOptions{.resource = context.arena()});
         }
         service::device::DeviceCommandCreateDto result(ruvia::ModelOptions{.resource = context.arena()});
@@ -288,11 +419,28 @@ FROM command_operation WHERE id=$2::uuid)sql",
 
 static ruvia::Task<std::vector<message::StreamField>> loadStatus(ruvia::Context& context,
                                                      std::string_view id) {
-    const auto rows = co_await context.db().query(R"sql(
-SELECT device_id::text,device_code,protocol,status,reason,
- (extract(epoch FROM created_at)*1000)::bigint::text,
- COALESCE((extract(epoch FROM completed_at)*1000)::bigint::text,'0')
-FROM command_operation WHERE id=$1::uuid)sql", common::dbParams(id));
+    ruvia::DbQuery statusQuery(context.pool());
+    const auto createdAtMs = statusQuery.cast(
+        statusQuery.binary(statusQuery.extract(ruvia::DbDatePart::kEpoch,
+                                                statusQuery.column("created_at")),
+                           ruvia::DbBinaryOperator::kMultiply, statusQuery.value(std::int64_t{1000})),
+        ruvia::DbDataType::kBigInt);
+    const auto completedAtMs = statusQuery.cast(
+        statusQuery.binary(statusQuery.extract(ruvia::DbDatePart::kEpoch,
+                                                statusQuery.column("completed_at")),
+                           ruvia::DbBinaryOperator::kMultiply, statusQuery.value(std::int64_t{1000})),
+        ruvia::DbDataType::kBigInt);
+    statusQuery
+        .select({statusQuery.cast(statusQuery.column("device_id"), ruvia::DbDataType::kText),
+                 statusQuery.column("device_code"), statusQuery.column("protocol"),
+                 statusQuery.column("status"), statusQuery.column("reason"),
+                 statusQuery.cast(createdAtMs, ruvia::DbDataType::kText),
+                 statusQuery.coalesce({statusQuery.cast(completedAtMs, ruvia::DbDataType::kText),
+                                       statusQuery.value("0")})})
+        .from("command_operation")
+        .where(statusQuery.binary(statusQuery.column("id"), ruvia::DbBinaryOperator::kEqual,
+                                  statusQuery.cast(statusQuery.value(id), ruvia::DbDataType::kUuid)));
+    const auto rows = co_await context.db().query(statusQuery);
     std::vector<message::StreamField> fields;
     if (rows.empty()) co_return fields;
     const std::string_view names[]{"device_id","device_code","protocol","status",
@@ -300,10 +448,39 @@ FROM command_operation WHERE id=$1::uuid)sql", common::dbParams(id));
     for (std::size_t index = 0; index < 7; ++index)
         fields.push_back({std::string(names[index]),
                           std::string(rows.front()[index].value().value_or(std::string_view{}))});
-    const auto actual = co_await context.db().query(R"sql(
-SELECT value->>'elementId',value->>'name',value->>'kind',value->>'value',value->>'unit'
-FROM command_operation, jsonb_array_elements(actual_values) WITH ORDINALITY a(value,idx)
-WHERE id=$1::uuid ORDER BY idx)sql", common::dbParams(id));
+    ruvia::DbQuery actualQuery(context.pool());
+    const auto jsonKey = [&](std::string_view key) {
+        return actualQuery.cast(actualQuery.value(key), ruvia::DbDataType::kText);
+    };
+    actualQuery
+        .select({actualQuery.binary(actualQuery.column("value", "a"),
+                                    ruvia::DbBinaryOperator::kJsonGetText,
+                                    jsonKey("elementId")),
+                 actualQuery.binary(actualQuery.column("value", "a"),
+                                    ruvia::DbBinaryOperator::kJsonGetText,
+                                    jsonKey("name")),
+                 actualQuery.binary(actualQuery.column("value", "a"),
+                                    ruvia::DbBinaryOperator::kJsonGetText,
+                                    jsonKey("kind")),
+                 actualQuery.binary(actualQuery.column("value", "a"),
+                                    ruvia::DbBinaryOperator::kJsonGetText,
+                                    jsonKey("value")),
+                 actualQuery.binary(actualQuery.column("value", "a"),
+                                    ruvia::DbBinaryOperator::kJsonGetText,
+                                    jsonKey("unit"))})
+        .from("command_operation", "operation")
+        .joinFunction(
+            ruvia::DbJoinType::kCross,
+            actualQuery.call("jsonb_array_elements",
+                             {actualQuery.column("actual_values", "operation")}),
+            {}, "a", {.lateral = true, .withOrdinality = true,
+                        .columns = {{.name = "value"}, {.name = "idx"}}})
+        .where(actualQuery.binary(actualQuery.column("id", "operation"),
+                                  ruvia::DbBinaryOperator::kEqual,
+                                  actualQuery.cast(actualQuery.value(id),
+                                                   ruvia::DbDataType::kUuid)))
+        .orderBy(actualQuery.column("idx", "a"));
+    const auto actual = co_await context.db().query(actualQuery);
     fields.push_back({"actual_value_count",std::to_string(actual.size())});
     const std::string_view actualNames[]{"element_id","name","kind","value","unit"};
     for (std::size_t index = 0; index < actual.size(); ++index)

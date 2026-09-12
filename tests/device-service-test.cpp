@@ -57,7 +57,8 @@ void requireNoUnsafeParsing(std::string_view source) {
             "device service still reads the retired pollInterval field");
     require(source.find("storageInterval") == std::string_view::npos,
             "device service still reads the retired storage interval");
-    require(source.find("p.config->>'storagePolicy'") != std::string_view::npos,
+    require(source.find("\"storagePolicy\"") != std::string_view::npos &&
+                source.find("protocolConfig") != std::string_view::npos,
             "device service does not expose the canonical storage policy");
     require(source.find("(l.endpoint->>'port')::integer") == std::string_view::npos,
             "device service directly casts edge endpoint port");
@@ -86,9 +87,9 @@ int main() {
                 "device writes must not create or retire shared physical channels");
         require(service.find("service::telemetry::latest::canonicalPointText(") !=
                         std::string::npos &&
-                    service.find("normalized_values") != std::string::npos &&
-                    service.find("jsonb_typeof(point.value->'value') = 'boolean'") !=
-                        std::string::npos,
+                    service.find("normalizedValues.call(") != std::string::npos &&
+                    service.find("\"jsonb_typeof\"") != std::string::npos &&
+                    service.find("\"jsonb_set\"") != std::string::npos,
                 "device data does not canonicalize BOOL points to 0/1");
         const auto form = deviceFormSource();
         require(form.find("disabled={!!editing}") == std::string::npos,

@@ -37,7 +37,7 @@ void requireNoUnsafeJsonCasts(std::string_view source) {
             "configuration service directly casts s7 start in ORDER BY");
     require(source.find("storageInterval") == std::string_view::npos,
             "configuration service still reads the retired storage interval");
-    require(source.find("COALESCE(p.config->>'storagePolicy', 'report')") !=
+    require(source.find("defaultText(config, \"storagePolicy\", \"report\")") !=
                 std::string_view::npos,
             "configuration service does not load the canonical storage policy");
 }

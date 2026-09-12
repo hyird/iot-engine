@@ -25,10 +25,13 @@ void requireNoUnsafeStoll(std::string_view source) {
 }
 
 void requireUnambiguousTlsVerificationFlag(std::string_view source) {
-    require(source.find("CASE WHEN webhook.skip_tls_verify THEN '1' ELSE '0' END") !=
+    require(source.find("catalog.caseWhen(") != std::string_view::npos &&
+                source.find("catalog.column(\"skip_tls_verify\", \"webhook\")") !=
                     std::string_view::npos &&
-                source.find("webhook.skip_tls_verify::text") == std::string_view::npos,
-            "webhook runtime parses PostgreSQL boolean text ambiguously");
+                source.find("catalog.value(\"1\")") != std::string_view::npos &&
+                source.find("catalog.value(\"0\")") != std::string_view::npos &&
+                source.find("skip_tls_verify::text") == std::string_view::npos,
+            "webhook runtime does not project the PostgreSQL boolean explicitly");
 }
 
 void requireCanonicalBooleanPointValues(std::string_view source) {

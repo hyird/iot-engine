@@ -26,23 +26,38 @@ void requireNoUnsafeParsing(std::string_view source) {
             "protocol service directly casts create enabled");
     require(source.find("THEN (body.value->>'enabled')::boolean") == std::string_view::npos,
             "protocol service directly casts update enabled");
+    require(source.find("R\"sql") == std::string_view::npos,
+            "protocol service still embeds runtime SQL");
+    require(source.find("c.db().query(\"") == std::string_view::npos,
+            "protocol service still executes a raw SQL string");
+    require(source.find("transaction.execute(\"") == std::string_view::npos,
+            "protocol service still executes a raw transaction SQL string");
+    require(source.find("ruvia::DbQuery") != std::string_view::npos,
+            "protocol service does not use the public DbQuery API");
+    require(source.find("ProtocolConfigEntity") != std::string_view::npos,
+            "protocol service does not use its ORM entity");
+    require(source.find("c.pool()") != std::string_view::npos,
+            "protocol service does not allocate queries from Context.pool()");
+    require(source.find("canonicalNumericText(value.view())") != std::string_view::npos,
+            "protocol integer validation does not preserve PostgreSQL exponent normalization");
+    require(source.find("compareNumeric(*text, \"1000000000\")") != std::string_view::npos,
+            "protocol decimal validation does not compare numeric values exactly");
+    require(source.find("std::strtod") == std::string_view::npos,
+            "protocol numeric validation rounds JSON numbers through double precision");
+    require(source.find("1e3 becomes 1000") != std::string_view::npos,
+            "protocol regression coverage does not document exponent normalization");
+    require(source.find("1000000000.000000000001") != std::string_view::npos,
+            "protocol regression coverage does not document exact decimal bounds");
 }
 
 void requirePartialModbusUpdateValidation(std::string_view source) {
-    require(source.find("COALESCE(value->>'byteOrder', '') IN") == std::string_view::npos,
-            "protocol service rejects Modbus partial updates without byteOrder");
-    require(source.find("COALESCE(jsonb_typeof(value->'registers') = 'array', FALSE)") ==
+    require(source.find("(required && !hasField(*config, \"byteOrder\"))") !=
                 std::string_view::npos,
-            "protocol service rejects Modbus partial updates without registers");
-    require(source.find("NOT (value ? 'byteOrder') OR value->>'byteOrder' IN") !=
-                std::string_view::npos,
-            "protocol service does not allow missing byteOrder on partial Modbus update");
-    require(source.find("('BIG_ENDIAN', 'LITTLE_ENDIAN', 'BIG_ENDIAN_BYTE_SWAP', "
-                        "'LITTLE_ENDIAN_BYTE_SWAP')),") != std::string_view::npos,
-            "protocol service Modbus byteOrder validation SQL is missing its closing parenthesis");
-    require(source.find("NOT (value ? 'registers') OR jsonb_typeof(value->'registers') = 'array'") !=
-                std::string_view::npos,
-            "protocol service does not allow missing registers on partial Modbus update");
+            "protocol service requires Modbus byteOrder only on create");
+    require(source.find("(required && !registers)") != std::string_view::npos,
+            "protocol service requires Modbus registers only on create");
+    require(source.find("if (packet && !packet->isObject())") != std::string_view::npos,
+            "protocol service does not validate Modbus packet objects");
 }
 
 void requireStrictUpdateFieldTypes(std::string_view source) {
@@ -90,7 +105,7 @@ void requireUnifiedStoragePolicyValidation(std::string_view source) {
     require(source.find("配置不允许 storageInterval，请使用 storagePolicy") !=
                 std::string_view::npos,
             "protocol service still accepts the retired storage interval");
-    require(source.find("value->>'storagePolicy' IN ('report', 'change')") !=
+    require(source.find("\"report\", \"change\"") !=
                 std::string_view::npos,
             "protocol service does not validate canonical storage policies");
     require(source.find("配置的 storagePolicy 不能为空") != std::string_view::npos,
@@ -98,24 +113,19 @@ void requireUnifiedStoragePolicyValidation(std::string_view source) {
 }
 
 void requireQualifiedJsonArrayValidation(std::string_view source) {
-    require(source.find("jsonb_array_elements(value->'areas')") ==
+    require(source.find("jsonb_array_elements") ==
                 std::string_view::npos,
-            "S7 validation leaves value ambiguous beside jsonb_array_elements");
-    require(source.find("jsonb_array_elements(value->'registers')") ==
+            "protocol validation still runs JSON array SQL");
+    require(source.find("visitArray(*areas") !=
                 std::string_view::npos,
-            "Modbus validation leaves value ambiguous beside jsonb_array_elements");
-    require(source.find(
-                "jsonb_array_elements(cfg.value->'areas') AS area(item)") !=
+            "S7 validation does not walk arrays through the JSON API");
+    require(source.find("visitArray(*registers") !=
                 std::string_view::npos,
-            "S7 validation does not qualify the config and array element columns");
-    require(source.find(
-                "jsonb_array_elements(cfg.value->'registers') AS entry(item)") !=
-                std::string_view::npos,
-            "Modbus validation does not qualify the config and array element columns");
+            "Modbus validation does not walk arrays through the JSON API");
 }
 
 void requireEdgeSyncDoesNotLeakAsUpdateFailure(std::string_view source) {
-    require(source.find("l.edge_node_id IS NOT NULL") != std::string_view::npos,
+    require(source.find("DbUnaryOperator::kIsNotNull") != std::string_view::npos,
             "protocol update can queue empty edge node IDs");
     require(source.find("protocol edge config sync failed") != std::string_view::npos,
             "protocol update does not isolate edge config sync failures");
@@ -134,6 +144,8 @@ void requireEdgeSyncDoesNotLeakAsUpdateFailure(std::string_view source) {
             "protocol update does not catch non-std post-update exceptions");
     require(source.find("error=unknown exception") != std::string_view::npos,
             "protocol update does not log non-std edge sync exceptions");
+    require(source.find(".distinct()") != std::string_view::npos,
+            "protocol edge sync does not deduplicate edge nodes");
 }
 
 } // namespace
