@@ -22,7 +22,7 @@ class OperationsController final : public ruvia::Controller<OperationsController
 
   private:
     ruvia::Task<ruvia::HttpResponse> live(ruvia::Context& context) {
-        std::pmr::string body("{\"status\":\"alive\"}", context.resource());
+        std::pmr::string body("{\"status\":\"alive\"}", context.arena());
         auto response = context.body(std::move(body));
         response.header("Content-Type", "application/json; charset=UTF-8");
         co_return response;
@@ -32,7 +32,7 @@ class OperationsController final : public ruvia::Controller<OperationsController
         const auto result = co_await OperationsService::readiness(context);
         if (!result.ready)
             context.status(ruvia::http_status::kServiceUnavailable);
-        std::pmr::string body(result.json, context.resource());
+        std::pmr::string body(result.json, context.arena());
         auto response = context.body(std::move(body));
         response.header("Content-Type", "application/json; charset=UTF-8");
         co_return response;
@@ -40,7 +40,7 @@ class OperationsController final : public ruvia::Controller<OperationsController
 
     ruvia::Task<ruvia::HttpResponse> metrics(ruvia::Context& context) {
         const auto text = co_await OperationsService::metrics(context);
-        std::pmr::string body(text, context.resource());
+        std::pmr::string body(text, context.arena());
         auto response = context.body(std::move(body));
         response.header("Content-Type", "text/plain; version=0.0.4; charset=UTF-8");
         co_return response;

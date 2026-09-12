@@ -310,15 +310,15 @@ class DeviceService {
                 "WHERE d.access_rank > 0 ORDER BY d.group_id NULLS LAST, d.created_at, d.id",
             service::common::dbParams(actor.userId, actor.departmentId,
                                       actor.superadmin ? "true" : "false"));
-        ruvia::BoxedArray<DeviceItemDto> items(ruvia::ModelOptions{.resource = c.resource()});
+        ruvia::BoxedArray<DeviceItemDto> items(ruvia::ModelOptions{.resource = c.arena()});
         std::map<std::string, DeviceItemDto*, std::less<>> itemsById;
         for (const auto& row : rows) {
-            auto& item = items.emplace(c);
+            auto& item = items.emplace(ruvia::ModelOptions{.resource = c.arena()});
             fillItem(c, item, row, actor);
             itemsById.emplace(std::string(row[0].value().value_or(std::string_view{})), &item);
         }
         co_await fillLatest(c, itemsById);
-        DevicePageDataDto result(c);
+        DevicePageDataDto result(ruvia::ModelOptions{.resource = c.arena()});
         result.set<"list">(std::move(items)).set<"total">(static_cast<std::int64_t>(rows.size()));
         co_return result;
     }
@@ -343,18 +343,18 @@ class DeviceService {
             service::common::dbParams(actor.userId, actor.departmentId,
                                       actor.superadmin ? "true" : "false"));
         ruvia::BoxedArray<DeviceRealtimeDto> items(
-            ruvia::ModelOptions{.resource = c.resource()});
+            ruvia::ModelOptions{.resource = c.arena()});
         std::map<std::string, DeviceRealtimeDto*, std::less<>> itemsById;
         for (const auto& row : rows) {
             const auto capabilities = DeviceAccessService::capabilities(
                 actor, DeviceAccessService::rank(row[3].value().value_or(std::string_view{})), row[2].value().value_or(std::string_view{}) == "t");
-            auto& item = items.emplace(c);
+            auto& item = items.emplace(ruvia::ModelOptions{.resource = c.arena()});
             item.set<"id">(row[0].value().value_or(std::string_view{}))
                 .set<"deviceCode">(row[1].value().value_or(std::string_view{}))
                 .set<"connected">(false)
                 .set<"connectionState">("disconnected")
                 .set<"elements">(ruvia::BoxedArray<DeviceElementDto>(
-                    ruvia::ModelOptions{.resource = c.resource()}))
+                    ruvia::ModelOptions{.resource = c.arena()}))
                 .set<"canEdit">(capabilities.canEdit)
                 .set<"canDelete">(capabilities.canDelete)
                 .set<"canShare">(capabilities.canShare)
@@ -367,7 +367,7 @@ class DeviceService {
             itemsById.emplace(std::string(row[0].value().value_or(std::string_view{})), &item);
         }
         co_await fillLatest(c, itemsById);
-        DeviceRealtimePageDto result(c);
+        DeviceRealtimePageDto result(ruvia::ModelOptions{.resource = c.arena()});
         result.set<"list">(std::move(items)).set<"total">(static_cast<std::int64_t>(rows.size()));
         co_return result;
     }
@@ -384,7 +384,7 @@ class DeviceService {
                                       actor.superadmin ? "true" : "false", id));
         if (rows.empty())
             service::common::fail(18001, "设备不存在", 404);
-        DeviceItemDto item(c);
+        DeviceItemDto item(ruvia::ModelOptions{.resource = c.arena()});
         fillItem(c, item, rows.front(), actor);
         std::map<std::string, DeviceItemDto*, std::less<>> itemById{{std::string(id), &item}};
         co_await fillLatest(c, itemById);
@@ -482,11 +482,11 @@ FROM normalized)sql",
             service::common::dbParams(actor.userId, actor.departmentId,
                                       actor.superadmin ? "true" : "false"));
         ruvia::BoxedArray<DeviceOptionDto> result(
-            ruvia::ModelOptions{.resource = c.resource()});
+            ruvia::ModelOptions{.resource = c.arena()});
         for (const auto& row : rows) {
             const auto capabilities = DeviceAccessService::capabilities(
                 actor, DeviceAccessService::rank(row[4].value().value_or(std::string_view{})), row[3].value().value_or(std::string_view{}) == "t");
-            auto& item = result.emplace(c);
+            auto& item = result.emplace(ruvia::ModelOptions{.resource = c.arena()});
             item.set<"id">(row[0].value().value_or(std::string_view{}))
                 .set<"name">(row[1].value().value_or(std::string_view{}))
                 .set<"deviceCode">(row[2].value().value_or(std::string_view{}))
@@ -749,9 +749,9 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
             sql, service::common::dbParams(actor.userId, actor.departmentId,
                                            actor.superadmin ? "true" : "false"));
         ruvia::BoxedArray<DeviceGroupItemDto> result(
-            ruvia::ModelOptions{.resource = c.resource()});
+            ruvia::ModelOptions{.resource = c.arena()});
         for (const auto& row : rows)
-            fillGroup(result.emplace(c), row, actor);
+            fillGroup(result.emplace(ruvia::ModelOptions{.resource = c.arena()}), row, actor);
         co_return result;
     }
 
@@ -774,7 +774,7 @@ WHERE d.id = $1::uuid AND d.deleted_at IS NULL)sql",
                                       actor.superadmin ? "true" : "false", id));
         if (rows.empty())
             service::common::fail(17001, "设备分组不存在", 404);
-        DeviceGroupItemDto item(c);
+        DeviceGroupItemDto item(ruvia::ModelOptions{.resource = c.arena()});
         fillGroup(item, rows.front(), actor);
         co_return item;
     }
@@ -959,7 +959,7 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
             item.set<"slaveId">(toInt(row[11].value().value_or(std::string_view{})));
         item.set<"timezone">(row[12].value().value_or(std::string_view{}));
         {
-            DevicePacketDto heartbeat(c);
+            DevicePacketDto heartbeat(ruvia::ModelOptions{.resource = c.arena()});
             if (row[13].value().has_value())
                 heartbeat.set<"mode">(row[13].value().value_or(std::string_view{}));
             if (row[14].value().has_value())
@@ -967,7 +967,7 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
             item.set<"heartbeat">(std::move(heartbeat));
         }
         if (!row[30].value().has_value()) {
-            DevicePacketDto registration(c);
+            DevicePacketDto registration(ruvia::ModelOptions{.resource = c.arena()});
             if (row[15].value().has_value())
                 registration.set<"mode">(row[15].value().value_or(std::string_view{}));
             if (row[16].value().has_value())
@@ -995,7 +995,7 @@ SELECT EXISTS (SELECT 1 FROM device_group WHERE parent_id = $1 AND deleted_at IS
         item.set<"connected">(false);
         item.set<"connectionState">("disconnected");
         item.set<"elements">(ruvia::BoxedArray<DeviceElementDto>(
-            ruvia::ModelOptions{.resource = c.resource()}));
+            ruvia::ModelOptions{.resource = c.arena()}));
         item.set<"canEdit">(capabilities.canEdit);
         item.set<"canDelete">(capabilities.canDelete);
         item.set<"canShare">(capabilities.canShare);
@@ -1234,14 +1234,14 @@ ORDER BY device_id, operation_position, operation_key, element_position,
             if (item == items.end())
                 continue;
             ruvia::BoxedArray<DeviceCommandOperationDto> operationDtos(
-                ruvia::ModelOptions{.resource = c.resource()});
+                ruvia::ModelOptions{.resource = c.arena()});
             for (const auto& operation : operations) {
-                auto& operationDto = operationDtos.emplace(c);
+                auto& operationDto = operationDtos.emplace(ruvia::ModelOptions{.resource = c.arena()});
                 operationDto.set<"name">(operation.name);
                 ruvia::BoxedArray<DeviceCommandOperationElementDto> elementDtos(
-                    ruvia::ModelOptions{.resource = c.resource()});
+                    ruvia::ModelOptions{.resource = c.arena()});
                 for (const auto& element : operation.elements) {
-                    auto& elementDto = elementDtos.emplace(c);
+                    auto& elementDto = elementDtos.emplace(ruvia::ModelOptions{.resource = c.arena()});
                     elementDto.set<"elementId">(element.id).set<"name">(element.name).set<"value">("");
                     if (!element.unit.empty())
                         elementDto.set<"unit">(element.unit);
@@ -1259,9 +1259,9 @@ ORDER BY device_id, operation_position, operation_key, element_position,
                         elementDto.set<"digits">(*element.digits);
                     if (!element.options.empty()) {
                         ruvia::BoxedArray<DeviceCommandOptionDto> optionDtos(
-                            ruvia::ModelOptions{.resource = c.resource()});
+                            ruvia::ModelOptions{.resource = c.arena()});
                         for (const auto& option : element.options)
-                            optionDtos.emplace(c).set<"label">(option.label).set<"value">(option.value);
+                            optionDtos.emplace(ruvia::ModelOptions{.resource = c.arena()}).set<"label">(option.label).set<"value">(option.value);
                         elementDto.set<"options">(std::move(optionDtos));
                     }
                 }
@@ -1362,7 +1362,7 @@ ORDER BY device_id, operation_position, operation_key, element_position,
         item.template set<"connected">(connected);
         item.template set<"connectionState">(
             connected ? "connected" : "disconnected");
-        EdgeStatusDto status(c);
+        EdgeStatusDto status(ruvia::ModelOptions{.resource = c.arena()});
         status.set<"state">(state);
         const auto reason = redisArrayField(reply, 1);
         if (!reason.empty())
@@ -1459,10 +1459,10 @@ ORDER BY device_id, operation_position, operation_key, element_position,
             return left.id < right.id;
         });
         ruvia::BoxedArray<DeviceElementDto> dtos(
-            ruvia::ModelOptions{.resource = c.resource()});
+            ruvia::ModelOptions{.resource = c.arena()});
         std::int64_t reportTime = 0;
         for (const auto& element : elements) {
-            auto& dto = dtos.emplace(c);
+            auto& dto = dtos.emplace(ruvia::ModelOptions{.resource = c.arena()});
             dto.set<"id">(element.id)
                 .set<"name">(element.name)
                 .set<"value">(element.value)
@@ -1898,9 +1898,9 @@ LEFT JOIN sys_department inherited_department
 ORDER BY 2, 4, 9, 1)sql",
                                                 service::common::dbParams(deviceId));
         ruvia::BoxedArray<DeviceShareItemDto> result(
-            ruvia::ModelOptions{.resource = c.resource()});
+            ruvia::ModelOptions{.resource = c.arena()});
         for (const auto& row : rows) {
-            auto& item = result.emplace(c);
+            auto& item = result.emplace(ruvia::ModelOptions{.resource = c.arena()});
             item.set<"id">(row[0].value().value_or(std::string_view{}))
                 .set<"subjectType">(row[1].value().value_or(std::string_view{}))
                 .set<"subjectId">(row[2].value().value_or(std::string_view{}))
@@ -1932,9 +1932,9 @@ WHERE department.status = 'enabled' AND department.deleted_at IS NULL
 ORDER BY 1, 3, 2)sql",
                                                 service::common::dbParams(deviceId));
         ruvia::BoxedArray<DeviceShareTargetDto> result(
-            ruvia::ModelOptions{.resource = c.resource()});
+            ruvia::ModelOptions{.resource = c.arena()});
         for (const auto& row : rows) {
-            auto& item = result.emplace(c);
+            auto& item = result.emplace(ruvia::ModelOptions{.resource = c.arena()});
             item.set<"subjectType">(row[0].value().value_or(std::string_view{})).set<"subjectId">(row[1].value().value_or(std::string_view{})).set<"subjectName">(row[2].value().value_or(std::string_view{}));
         }
         co_return result;
@@ -2006,9 +2006,9 @@ WHERE access_grant.group_id = $1
 ORDER BY 2, 4, access_grant.id)sql",
                                                 service::common::dbParams(groupId));
         ruvia::BoxedArray<DeviceShareItemDto> result(
-            ruvia::ModelOptions{.resource = c.resource()});
+            ruvia::ModelOptions{.resource = c.arena()});
         for (const auto& row : rows) {
-            auto& item = result.emplace(c);
+            auto& item = result.emplace(ruvia::ModelOptions{.resource = c.arena()});
             item.set<"id">(row[0].value().value_or(std::string_view{}))
                 .set<"subjectType">(row[1].value().value_or(std::string_view{}))
                 .set<"subjectId">(row[2].value().value_or(std::string_view{}))
@@ -2040,9 +2040,9 @@ WHERE department.status = 'enabled' AND department.deleted_at IS NULL
 ORDER BY 1, 3, 2)sql",
                                                 service::common::dbParams(groupId));
         ruvia::BoxedArray<DeviceShareTargetDto> result(
-            ruvia::ModelOptions{.resource = c.resource()});
+            ruvia::ModelOptions{.resource = c.arena()});
         for (const auto& row : rows) {
-            auto& item = result.emplace(c);
+            auto& item = result.emplace(ruvia::ModelOptions{.resource = c.arena()});
             item.set<"subjectType">(row[0].value().value_or(std::string_view{})).set<"subjectId">(row[1].value().value_or(std::string_view{})).set<"subjectName">(row[2].value().value_or(std::string_view{}));
         }
         co_return result;

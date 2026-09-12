@@ -31,7 +31,7 @@ class OperationsService final {
         bool databaseReady = false;
         bool redisReady = false;
         try {
-            ruvia::DbQuery query(context.operationResource());
+            ruvia::DbQuery query(context.pool());
             query.select(query.value(1));
             databaseReady = !(co_await context.db().query(query)).empty();
             const std::vector<std::string_view> command{ "PING" };

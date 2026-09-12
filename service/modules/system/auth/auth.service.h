@@ -59,7 +59,7 @@ class AuthService {
     static ruvia::Task<void> requirePermission(ruvia::Context& c,
                                               std::string_view userId,
                                               std::string_view permission) {
-        auto query = enabledRoles(userId, c.operationResource());
+        auto query = enabledRoles(userId, c.pool());
         query.select(query.value(1))
             .join(ruvia::DbJoinType::kInner, service::user::UserEntity::tableName(),
                   query.binary(query.column("id", "u"), ruvia::DbBinaryOperator::kEqual,
@@ -89,7 +89,7 @@ class AuthService {
             service::common::fail(11003, "登录失败次数过多，请 15 分钟后再试", 429);
         }
 
-        ruvia::DbQuery query(c.operationResource());
+        ruvia::DbQuery query(c.pool());
         query
             .select({query.column("id"), query.column("username"), query.column("password_hash"),
                      service::common::database::emptyText(query, "nickname"),
@@ -119,7 +119,7 @@ class AuthService {
         const std::string nickname(row[3].value().value_or(std::string_view{}));
         const std::string status(row[4].value().value_or(std::string_view{}));
         service::core::JwtPayload payload{userId, username};
-        LoginResultDto result(c);
+        LoginResultDto result(ruvia::ModelOptions{.resource = c.arena()});
         result.set<"token">(service::utils::signAccessToken(c, payload))
             .set<"refreshToken">(service::utils::signRefreshToken(c, payload))
             .set<"user">(co_await buildUser(c, userId, username, nickname, status));
@@ -133,7 +133,7 @@ class AuthService {
         } catch (...) {
             service::common::fail(service::common::kTokenInvalidErrorCode, "刷新令牌无效", 401);
         }
-        ruvia::DbQuery query(c.operationResource());
+        ruvia::DbQuery query(c.pool());
         query
             .select({query.column("id"), query.column("username"),
                      service::common::database::emptyText(query, "nickname"),
@@ -154,7 +154,7 @@ class AuthService {
         const std::string nickname(row[2].value().value_or(std::string_view{}));
         const std::string status(row[3].value().value_or(std::string_view{}));
         service::core::JwtPayload next{userId, username};
-        LoginResultDto result(c);
+        LoginResultDto result(ruvia::ModelOptions{.resource = c.arena()});
         result.set<"token">(service::utils::signAccessToken(c, next))
             .set<"refreshToken">(service::utils::signRefreshToken(c, next))
             .set<"user">(co_await buildUser(c, userId, username, nickname, status));
@@ -162,7 +162,7 @@ class AuthService {
     }
 
     ruvia::Task<AuthUserInfoDto> current(ruvia::Context& c, std::string_view userId) {
-        ruvia::DbQuery query(c.operationResource());
+        ruvia::DbQuery query(c.pool());
         query
             .select({query.column("username"),
                      service::common::database::emptyText(query, "nickname"),
@@ -204,11 +204,11 @@ class AuthService {
     ruvia::Task<AuthUserInfoDto> buildUser(ruvia::Context& c, std::string_view userId,
                                            const std::string& username, const std::string& nickname,
                                            const std::string& status) {
-        AuthUserInfoDto user(c);
+        AuthUserInfoDto user(ruvia::ModelOptions{.resource = c.arena()});
         user.set<"id">(userId).set<"username">(username).set<"nickname">(nickname).set<"status">(
             status);
 
-        auto roleQuery = enabledRoles(userId, c.operationResource());
+        auto roleQuery = enabledRoles(userId, c.pool());
         roleQuery
             .select({roleQuery.column("id", "r"), roleQuery.column("name", "r"),
                      roleQuery.column("code", "r")})
@@ -216,13 +216,13 @@ class AuthService {
         const auto roles = co_await c.db().query(roleQuery);
         auto& roleItems = user.ensure<"roles">();
         for (const auto& row : roles) {
-            auto& role = roleItems.emplace_back(c);
+            auto& role = roleItems.emplace_back(ruvia::ModelOptions{.resource = c.arena()});
             role.set<"id">(row[0].value().value_or(std::string_view{}))
                 .set<"name">(row[1].value().value_or(std::string_view{}))
                 .set<"code">(row[2].value().value_or(std::string_view{}));
         }
 
-        auto permissionQuery = enabledRoles(userId, c.operationResource());
+        auto permissionQuery = enabledRoles(userId, c.pool());
         permissionQuery.select(permissionQuery.column("permission", "p"))
             .distinct()
             .joinFunction(ruvia::DbJoinType::kCross,
@@ -234,7 +234,7 @@ class AuthService {
         auto& permissionItems = user.ensure<"permissions">();
         for (const auto& row : permissions)
             permissionItems.emplace_back(row[0].value().value_or(std::string_view{}),
-                                         ruvia::ModelOptions{.resource = c.resource()});
+                                         ruvia::ModelOptions{.resource = c.arena()});
         co_return user;
     }
 

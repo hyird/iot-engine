@@ -43,20 +43,20 @@ class RoleService {
         countOptions.where = std::move(where);
         const auto total = static_cast<std::int64_t>(
             co_await c.db().getRepository<RoleEntity>().count(countOptions.where));
-        auto query = roleSelect(c.operationResource());
+        auto query = roleSelect(c.pool());
         query.where(countOptions.where.expression(query))
             .orderBy(query.column("id"), ruvia::DbOrderDirection::kDesc)
             .limit(pageSize)
             .offset((page - 1) * pageSize);
         const auto rows = co_await c.db().query(query);
 
-        ruvia::BoxedArray<RoleItemDto> roles(ruvia::ModelOptions{.resource = c.resource()});
+        ruvia::BoxedArray<RoleItemDto> roles(ruvia::ModelOptions{.resource = c.arena()});
         for (const auto &row : rows) {
-            auto &role = roles.emplace(c);
+            auto &role = roles.emplace(ruvia::ModelOptions{.resource = c.arena()});
             fillBase(role, row);
             role.set<"permissions">(co_await loadPermissions(c, role.get<"id">()->view()));
         }
-        RolePageDataDto result(c);
+        RolePageDataDto result(ruvia::ModelOptions{.resource = c.arena()});
         result.set<"list">(std::move(roles))
             .set<"total">(total)
             .set<"page">(page)
@@ -66,12 +66,12 @@ class RoleService {
     }
 
     ruvia::Task<RoleItemDto> detail(ruvia::Context &c, std::string_view id) {
-        auto query = roleSelect(c.operationResource());
+        auto query = roleSelect(c.pool());
         query.where(db::activeId<RoleEntity>(id).expression(query)).limit(1);
         const auto rows = co_await c.db().query(query);
         if (rows.empty())
             service::common::fail(13001, "角色不存在", 404);
-        RoleItemDto role(c);
+        RoleItemDto role(ruvia::ModelOptions{.resource = c.arena()});
         fillBase(role, rows.front());
         role.set<"permissions">(co_await loadPermissions(c, id));
         co_return role;
@@ -84,9 +84,9 @@ class RoleService {
                         RoleEntity::column<"deleted_at">().isNull();
         options.order = {{"id"}};
         const auto rows = co_await c.db().getRepository<RoleEntity>().find(options);
-        ruvia::BoxedArray<RoleOptionDto> result(ruvia::ModelOptions{.resource = c.resource()});
+        ruvia::BoxedArray<RoleOptionDto> result(ruvia::ModelOptions{.resource = c.arena()});
         for (const auto &row : rows) {
-            auto &item = result.emplace(c);
+            auto &item = result.emplace(ruvia::ModelOptions{.resource = c.arena()});
             item.set<"id">(row.get<"id">())
                 .set<"name">(row.get<"name">())
                 .set<"code">(row.get<"code">());
@@ -104,7 +104,7 @@ class RoleService {
             body.get<"status">() ? std::string(body.get<"status">()->view()) : "enabled";
         const std::string permissions = permissionsText(body.get<"permissions">());
         const auto id = service::common::nextUuidV7();
-        ruvia::DbQuery query(c.operationResource());
+        ruvia::DbQuery query(c.pool());
         query
             .insertInto(RoleEntity::tableName(),
                         {"id", "name", "code", "description", "status", "permissions"})
@@ -127,7 +127,7 @@ class RoleService {
             co_await ensureCodeAvailable(c, std::string(body.get<"code">()->view()),
                                          std::string(id));
 
-        ruvia::DbQuery query(c.operationResource());
+        ruvia::DbQuery query(c.pool());
         query.update(RoleEntity::tableName());
         bool changed = false;
         auto append = [&](std::string_view column, std::string_view value) {
@@ -163,7 +163,7 @@ class RoleService {
             service::common::fail(13001, "角色不存在", 404);
         if (role->get<"code">() == service::role::kSuperAdminRoleCode)
             service::common::fail(13003, "内置超级管理员角色不能删除", 400);
-        ruvia::DbQuery assigned(c.operationResource());
+        ruvia::DbQuery assigned(c.pool());
         assigned.select(assigned.value(1))
             .from(service::user::UserRoleEntity::tableName(), "ur")
             .join(ruvia::DbJoinType::kInner, service::user::UserEntity::tableName(),
@@ -177,7 +177,7 @@ class RoleService {
             .limit(1);
         if (!(co_await c.db().query(assigned)).empty())
             service::common::fail(13004, "角色仍有用户使用，不能删除", 409);
-        ruvia::DbQuery removal(c.operationResource());
+        ruvia::DbQuery removal(c.pool());
         removal.update(RoleEntity::tableName())
             .set("deleted_at", removal.call("now"))
             .set("updated_at", removal.call("now"))
@@ -244,7 +244,7 @@ class RoleService {
 
     ruvia::Task<ruvia::Array<ruvia::String>> loadPermissions(ruvia::Context &c,
                                                              std::string_view id) {
-        ruvia::DbQuery query(c.operationResource());
+        ruvia::DbQuery query(c.pool());
         query.select(query.column("permission"))
             .from(RoleEntity::tableName())
             .joinFunction(ruvia::DbJoinType::kCross,
@@ -253,10 +253,10 @@ class RoleService {
             .where((RoleEntity::column<"id">() == id).expression(query))
             .orderBy(query.column("permission"));
         const auto rows = co_await c.db().query(query);
-        ruvia::Array<ruvia::String> result(c.resource());
+        ruvia::Array<ruvia::String> result(c.arena());
         for (const auto &row : rows)
             result.emplace_back(row[0].value().value_or(std::string_view{}),
-                                ruvia::ModelOptions{.resource = c.resource()});
+                                ruvia::ModelOptions{.resource = c.arena()});
         co_return result;
     }
 

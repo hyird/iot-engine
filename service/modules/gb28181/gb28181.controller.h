@@ -112,7 +112,7 @@ private:
     co_await service::middleware::requirePermission(c, "iot:gb28181:control");
     const auto deviceId = requiredRoute(c, "deviceId", "设备编号不能为空");
     co_await gb28181Service().queryCatalog(c, deviceId);
-    GbActionDto data(c);
+    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
     data.set<"sent">(true).set<"deviceId">(deviceId);
     co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
   }
@@ -140,7 +140,7 @@ private:
     const auto mappedDeviceId =
         requiredQuery(c, "mapped_device_id", "映射设备编号不能为空");
     co_await gb28181Service().mapDevice(c, deviceId, mappedDeviceId);
-    GbActionDto data(c);
+    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
     data.set<"deviceId">(deviceId).set<"mappedDeviceId">(mappedDeviceId);
     co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
   }
@@ -149,7 +149,7 @@ private:
     co_await service::middleware::requirePermission(c, "iot:gb28181:control");
     const auto deviceId = requiredRoute(c, "deviceId", "设备编号不能为空");
     co_await gb28181Service().mapDevice(c, deviceId, {});
-    GbActionDto data(c);
+    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
     data.set<"deviceId">(deviceId).set<"mappedDeviceId">("");
     co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
   }
@@ -173,7 +173,7 @@ private:
     co_await service::middleware::requirePermission(c, "iot:gb28181:control");
     const auto sessionId = requiredRoute(c, "sessionId", "会话编号不能为空");
     co_await gb28181Service().renewPreview(c, sessionId);
-    GbActionDto data(c);
+    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
     data.set<"sent">(true).set<"action">("heartbeat");
     co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
   }
@@ -186,7 +186,7 @@ private:
     requirePtzAction(action);
     const auto speed = ptzSpeed(c);
     co_await gb28181Service().ptz(c, deviceId, channelId, action, speed);
-    GbActionDto data(c);
+    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
     data.set<"sent">(true)
         .set<"deviceId">(deviceId)
         .set<"channelId">(channelId)
@@ -204,7 +204,7 @@ private:
     const auto zoom = finiteQuery(c, "zoom", 1.0, 1000.0);
     co_await gb28181Service().ptzPosition(c, deviceId, channelId, pan, tilt,
                                           zoom);
-    GbActionDto data(c);
+    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
     data.set<"sent">(true).set<"pan">(pan).set<"tilt">(tilt).set<"zoom">(zoom);
     co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
   }
@@ -218,7 +218,7 @@ private:
     const auto endTime = requiredUtcQuery(c, "end_time", "结束时间不能为空");
     co_await gb28181Service().queryRecords(c, deviceId, channelId, startTime,
                                            endTime);
-    GbActionDto data(c);
+    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
     data.set<"sent">(true).set<"deviceId">(deviceId).set<"channelId">(
         channelId);
     co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
@@ -243,7 +243,7 @@ private:
   ruvia::Task<std::string> recordingSnapshot(ruvia::Context& c) {
     co_await service::middleware::requirePermission(c, "iot:gb28181:record");
     const auto streamId = requiredRoute(c, "streamId", "流编号不能为空");
-    GbActionDto data(c);
+    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
     data.set<"recording">(co_await gb28181Service().recording(c, streamId));
     co_return service::live::json(service::common::ok<GbActionResponse>(c, std::move(data)));
   }
@@ -252,7 +252,7 @@ private:
     co_await service::middleware::requirePermission(c, "iot:gb28181:record");
     const auto streamId = requiredRoute(c, "streamId", "流编号不能为空");
     co_await gb28181Service().startRecording(c, streamId);
-    GbActionDto data(c);
+    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
     data.set<"recording">(true);
     co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
   }
@@ -261,7 +261,7 @@ private:
     co_await service::middleware::requirePermission(c, "iot:gb28181:record");
     const auto streamId = requiredRoute(c, "streamId", "流编号不能为空");
     co_await gb28181Service().stopRecording(c, streamId);
-    GbActionDto data(c);
+    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
     data.set<"recording">(false);
     co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
   }

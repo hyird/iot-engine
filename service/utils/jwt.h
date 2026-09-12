@@ -79,7 +79,7 @@ inline std::string sign(ruvia::Context& c, const core::JwtPayload& payload,
     options.claims.emplace_back(
         ruvia::JwtClaimOptions{.name = "username", .value = payload.username});
     options.claims.emplace_back(ruvia::JwtClaimOptions{.name = "token_type", .value = type});
-    options.resource = c.operationResource();
+    options.resource = c.pool();
     const auto token = ruvia::jwtSign(options);
     return std::string(token.data(), token.size());
 }
@@ -94,7 +94,7 @@ inline core::JwtPayload verify(ruvia::Context& c, std::string_view token,
         options.issuer.assign("iot-engine");
         options.audience.assign("iot-engine-web");
         options.leeway = std::chrono::seconds(15);
-        options.resource = c.operationResource();
+        options.resource = c.pool();
         const auto decoded = ruvia::jwtVerify(options);
         const auto id = decoded.claim("user_id");
         const auto username = decoded.claim("username");

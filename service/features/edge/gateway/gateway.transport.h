@@ -253,7 +253,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         // dispatcher wakes only sessions accepted by this worker.
         ruvia::TaskScope egressScope(
             c.worker(),
-            ruvia::TaskScopeOptions{ .resource = c.operationResource() }
+            ruvia::TaskScopeOptions{ .resource = c.pool() }
         );
         auto live = std::make_shared<LiveSession>(LiveSession{
             .context = &c,
@@ -410,7 +410,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         }
         ruvia::TaskScope outputScope(
             c.worker(),
-            ruvia::TaskScopeOptions{ .resource = c.operationResource() }
+            ruvia::TaskScopeOptions{ .resource = c.pool() }
         );
         outputScope.spawn(pumpTerminal(c, socket, nodeId, nodeSession, terminalId, terminalBytes, outputScope.stopToken(), terminalSession));
         std::exception_ptr failure;

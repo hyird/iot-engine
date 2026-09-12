@@ -50,11 +50,11 @@ public:
     ruvia::Task<ruvia::BoxedArray<OutboxDeadLetterDto>> deadLetters(
         ruvia::Context &context) {
         co_await service::middleware::requirePermission(context, "system:outbox:manage");
-        const auto rows = co_await context.db().query(deadLetterSelect(context.operationResource()));
+        const auto rows = co_await context.db().query(deadLetterSelect(context.pool()));
         ruvia::BoxedArray<OutboxDeadLetterDto> items(
-            ruvia::ModelOptions{.resource = context.resource()});
+            ruvia::ModelOptions{.resource = context.arena()});
         for (const auto &row : rows) {
-            auto &item = items.emplace(context);
+            auto &item = items.emplace(ruvia::ModelOptions{.resource = context.arena()});
             item.set<"id">(row[0].value().value_or(std::string_view{}))
                 .set<"eventType">(row[1].value().value_or(std::string_view{}))
                 .set<"aggregateType">(row[2].value().value_or(std::string_view{}))
@@ -73,7 +73,7 @@ public:
     ruvia::Task<void> replay(ruvia::Context &context, std::string_view eventId) {
         co_await service::middleware::requirePermission(context, "system:outbox:manage");
 
-        ruvia::DbQuery query(context.operationResource());
+        ruvia::DbQuery query(context.pool());
         const auto id = query.binary(
             query.column("id"), ruvia::DbBinaryOperator::kEqual,
             query.cast(query.value(eventId), ruvia::DbDataType::kUuid));

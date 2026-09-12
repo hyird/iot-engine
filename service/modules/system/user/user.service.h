@@ -48,20 +48,20 @@ class UserService {
             options.where = std::move(options.where) && UserEntity::column<"status">() == *status;
         const auto total = static_cast<std::int64_t>(
             co_await c.db().getRepository<UserEntity>().count(options.where));
-        auto query = userSelect(c.operationResource());
+        auto query = userSelect(c.pool());
         query.where(options.where.expression(query, UserEntity::tableName(), "u"))
             .orderBy(query.column("id", "u"), ruvia::DbOrderDirection::kDesc)
             .limit(pageSize)
             .offset((page - 1) * pageSize);
         const auto rows = co_await c.db().query(query);
 
-        ruvia::BoxedArray<UserItemDto> users(ruvia::ModelOptions{.resource = c.resource()});
+        ruvia::BoxedArray<UserItemDto> users(ruvia::ModelOptions{.resource = c.arena()});
         for (const auto &row : rows) {
-            auto &item = users.emplace(c);
+            auto &item = users.emplace(ruvia::ModelOptions{.resource = c.arena()});
             fillBase(item, row);
             item.set<"roles">(co_await loadRoles(c, item.get<"id">()->view()));
         }
-        UserPageDataDto result(c);
+        UserPageDataDto result(ruvia::ModelOptions{.resource = c.arena()});
         result.set<"list">(std::move(users))
             .set<"total">(total)
             .set<"page">(page)
@@ -71,13 +71,13 @@ class UserService {
     }
 
     ruvia::Task<UserItemDto> detail(ruvia::Context &c, std::string_view id) {
-        auto query = userSelect(c.operationResource());
+        auto query = userSelect(c.pool());
         query.where(db::activeId<UserEntity>(id).expression(query, UserEntity::tableName(), "u"))
             .limit(1);
         const auto rows = co_await c.db().query(query);
         if (rows.empty())
             service::common::fail(12001, "用户不存在", 404);
-        UserItemDto item(c);
+        UserItemDto item(ruvia::ModelOptions{.resource = c.arena()});
         fillBase(item, rows.front());
         item.set<"roles">(co_await loadRoles(c, id));
         co_return item;
@@ -85,7 +85,7 @@ class UserService {
 
     ruvia::Task<ruvia::BoxedArray<UserOptionDto>> options(ruvia::Context &c,
                                                           std::optional<std::string> keyword) {
-        ruvia::DbQuery query(c.operationResource());
+        ruvia::DbQuery query(c.pool());
         auto where = UserEntity::column<"deleted_at">().isNull() &&
                      UserEntity::column<"status">() == "enabled";
         if (keyword && !keyword->empty()) {
@@ -101,9 +101,9 @@ class UserService {
             .orderBy(query.column("username"))
             .limit(100);
         const auto rows = co_await c.db().query(query);
-        ruvia::BoxedArray<UserOptionDto> result(ruvia::ModelOptions{.resource = c.resource()});
+        ruvia::BoxedArray<UserOptionDto> result(ruvia::ModelOptions{.resource = c.arena()});
         for (const auto &row : rows) {
-            auto &item = result.emplace(c);
+            auto &item = result.emplace(ruvia::ModelOptions{.resource = c.arena()});
             item.set<"id">(row[0].value().value_or(std::string_view{}))
                 .set<"username">(row[1].value().value_or(std::string_view{}))
                 .set<"nickname">(row[2].value().value_or(std::string_view{}));
@@ -135,7 +135,7 @@ class UserService {
             body.get<"departmentId">() ? std::string(body.get<"departmentId">()->view()) : "";
         const auto id = service::common::nextUuidV7();
         auto tx = co_await c.db().beginTransaction();
-        ruvia::DbQuery query(c.operationResource());
+        ruvia::DbQuery query(c.pool());
         query
             .insertInto(UserEntity::tableName(), {"id", "username", "password_hash", "nickname",
                                                   "phone", "email", "status", "department_id"})
@@ -147,12 +147,12 @@ class UserService {
             .returning({query.column("id")});
         const auto inserted = co_await tx.query(query);
         const std::string insertedId(inserted.front()[0].value().value_or(std::string_view{}));
-        co_await replaceRoles(tx, insertedId, *body.get<"roleIds">(), c.operationResource());
+        co_await replaceRoles(tx, insertedId, *body.get<"roleIds">(), c.pool());
         co_await tx.commit();
     }
 
     ruvia::Task<void> update(ruvia::Context &c, std::string_view id, const UpdateUserBody &body) {
-        ruvia::DbQuery lookup(c.operationResource());
+        ruvia::DbQuery lookup(c.pool());
         lookup.select(lookup.column("username"))
             .from(UserEntity::tableName())
             .where(db::activeId<UserEntity>(id).expression(lookup))
@@ -174,7 +174,7 @@ class UserService {
         if (body.get<"departmentId">())
             co_await validateDepartment(c, body.get<"departmentId">());
 
-        ruvia::DbQuery query(c.operationResource());
+        ruvia::DbQuery query(c.pool());
         query.update(UserEntity::tableName());
         bool changed = false;
         auto append = [&](std::string_view column, std::string_view value) {
@@ -202,14 +202,14 @@ class UserService {
             (void)co_await tx.execute(query);
         }
         if (body.get<"roleIds">())
-            co_await replaceRoles(tx, id, *body.get<"roleIds">(), c.operationResource());
+            co_await replaceRoles(tx, id, *body.get<"roleIds">(), c.pool());
         co_await tx.commit();
     }
 
     ruvia::Task<void> remove(ruvia::Context &c, std::string_view id, std::string_view operatorId) {
         if (id == operatorId)
             service::common::fail(12004, "不能删除当前登录用户", 400);
-        ruvia::DbQuery query(c.operationResource());
+        ruvia::DbQuery query(c.pool());
         query.select(query.column("username"))
             .from(UserEntity::tableName())
             .where(db::activeId<UserEntity>(id).expression(query))
@@ -219,7 +219,7 @@ class UserService {
             service::common::fail(12001, "用户不存在", 404);
         if (rows.front()[0].value().value_or(std::string_view{}) == "admin")
             service::common::fail(12004, "内置管理员不能删除", 400);
-        ruvia::DbQuery removal(c.operationResource());
+        ruvia::DbQuery removal(c.pool());
         removal.update(UserEntity::tableName())
             .set("deleted_at", removal.call("now"))
             .set("updated_at", removal.call("now"))
@@ -261,7 +261,7 @@ class UserService {
 
     ruvia::Task<ruvia::BoxedArray<service::role::RoleOptionDto>>
     loadRoles(ruvia::Context &c, std::string_view userId) {
-        ruvia::DbQuery query(c.operationResource());
+        ruvia::DbQuery query(c.pool());
         query
             .select({query.column("id", "r"), query.column("name", "r"), query.column("code", "r")})
             .from(service::role::RoleEntity::tableName(), "r")
@@ -275,9 +275,9 @@ class UserService {
             .orderBy(query.column("id", "r"));
         const auto rows = co_await c.db().query(query);
         ruvia::BoxedArray<service::role::RoleOptionDto> roles(
-            ruvia::ModelOptions{.resource = c.resource()});
+            ruvia::ModelOptions{.resource = c.arena()});
         for (const auto &row : rows) {
-            auto &role = roles.emplace(c);
+            auto &role = roles.emplace(ruvia::ModelOptions{.resource = c.arena()});
             role.set<"id">(row[0].value().value_or(std::string_view{}))
                 .set<"name">(row[1].value().value_or(std::string_view{}))
                 .set<"code">(row[2].value().value_or(std::string_view{}));

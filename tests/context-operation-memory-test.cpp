@@ -175,7 +175,7 @@ int main() {
     Fixture fixture;
     auto context = ruvia::detail::ContextAccess::make(fixture.requestMemory, fixture.request,
         fixture.capabilities.contextServices(fixture.stopToken));
-    check(context.operationResource() == fixture.workerMemory.resource(),
+    check(context.pool() == fixture.workerMemory.resource(),
         "Context operation resource is not worker owned");
 #ifdef RUVIA_ENABLE_DATABASE
     auto database = context.db();

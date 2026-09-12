@@ -124,12 +124,12 @@ class LinkService {
 	                std::to_string(offsetIndex),
             listParams);
 
-        ruvia::BoxedArray<LinkItemDto> links(ruvia::ModelOptions{.resource = c.resource()});
+        ruvia::BoxedArray<LinkItemDto> links(ruvia::ModelOptions{.resource = c.arena()});
         for (const auto& row : rows) {
-            auto& item = links.emplace(c);
+            auto& item = links.emplace(ruvia::ModelOptions{.resource = c.arena()});
             co_await fill(c, item, row);
         }
-        LinkPageDataDto result(c);
+        LinkPageDataDto result(ruvia::ModelOptions{.resource = c.arena()});
         result.set<"list">(std::move(links))
             .set<"total">(total)
             .set<"page">(page)
@@ -149,7 +149,7 @@ LIMIT 1)sql",
                                                 service::common::dbParams(id));
         if (rows.empty())
             service::common::fail(15001, "链路不存在", 404);
-        LinkItemDto item(c);
+        LinkItemDto item(ruvia::ModelOptions{.resource = c.arena()});
         co_await fill(c, item, rows.front());
         co_return item;
     }
@@ -161,10 +161,10 @@ LIMIT 1)sql",
 	            "FROM link WHERE deleted_at IS NULL AND "
 	            "status = 'enabled' ORDER BY name");
         ruvia::BoxedArray<LinkOptionDto> result(
-            ruvia::ModelOptions{.resource = c.resource()});
+            ruvia::ModelOptions{.resource = c.arena()});
         for (const auto& row : rows) {
-            auto& item = result.emplace(c);
-            LinkEndpointDto endpoint(c);
+            auto& item = result.emplace(ruvia::ModelOptions{.resource = c.arena()});
+            LinkEndpointDto endpoint(ruvia::ModelOptions{.resource = c.arena()});
             endpoint.set<"mode">(row[3].value().value_or(std::string_view{}))
                 .set<"ip">(row[4].value().value_or(std::string_view{}))
                 .set<"port">(toInt(row[5].value().value_or(std::string_view{})))
@@ -181,8 +181,8 @@ LIMIT 1)sql",
     }
 
     LinkEnumsDto enums(ruvia::Context& c) {
-        LinkEnumsDto result(c);
-        const auto modelOptions = ruvia::ModelOptions{.resource = c.resource()};
+        LinkEnumsDto result(ruvia::ModelOptions{.resource = c.arena()});
+        const auto modelOptions = ruvia::ModelOptions{.resource = c.arena()};
         ruvia::BoxedArray<ruvia::String> modes(modelOptions);
         modes.emplace("TCP Server", modelOptions);
         modes.emplace("TCP Client", modelOptions);
@@ -507,19 +507,19 @@ edge_node_id=$6::uuid,updated_at=NOW() WHERE id=$1::uuid)sql",
         const auto id = std::string(row[0].value().value_or(std::string_view{}));
         const auto runtime = co_await loadRuntimeStatus(c, id);
         ruvia::BoxedArray<ruvia::String> clients(
-            ruvia::ModelOptions{.resource = c.resource()});
+            ruvia::ModelOptions{.resource = c.arena()});
         const auto clientText = runtime.text("clients");
         std::size_t start = 0;
         while (start < clientText.size()) {
             const auto end = clientText.find('\n', start);
             clients.emplace(clientText.substr(start, end == std::string::npos ? std::string::npos
                                                                               : end - start),
-                            ruvia::ModelOptions{.resource = c.resource()});
+                            ruvia::ModelOptions{.resource = c.arena()});
             if (end == std::string::npos)
                 break;
             start = end + 1;
         }
-        RuntimeDto runtimeDto(c);
+        RuntimeDto runtimeDto(ruvia::ModelOptions{.resource = c.arena()});
         runtimeDto.set<"state">(runtime.text("state", "stopped"));
         runtimeDto.set<"reason">(runtime.text("state_reason"));
         runtimeDto.set<"error">(runtime.text("error"));
@@ -539,7 +539,7 @@ edge_node_id=$6::uuid,updated_at=NOW() WHERE id=$1::uuid)sql",
         item.set<"updatedAt">(row[9].value().value_or(std::string_view{}));
         item.set<"execution">(row[10].value().value_or("collector"));
         item.set<"edgeNodeId">(row[11].value().value_or(""));
-        LinkEndpointDto endpoint(c);
+        LinkEndpointDto endpoint(ruvia::ModelOptions{.resource = c.arena()});
         endpoint.set<"mode">(row[3].value().value_or(std::string_view{}));
         endpoint.set<"ip">(row[4].value().value_or(std::string_view{}));
         endpoint.set<"port">(toInt(row[5].value().value_or(std::string_view{})));
@@ -557,12 +557,12 @@ FROM link, jsonb_array_elements(COALESCE(endpoint->'targets', '[]'::jsonb))
 WHERE link.id = $1 ORDER BY position)sql",
                                                 service::common::dbParams(id));
         ruvia::BoxedArray<LinkTargetDto> result(
-            ruvia::ModelOptions{.resource = c.resource()});
+            ruvia::ModelOptions{.resource = c.arena()});
         for (const auto& row : rows) {
-            auto& target = result.emplace(c);
+            auto& target = result.emplace(ruvia::ModelOptions{.resource = c.arena()});
             const auto targetId = std::string(row[0].value().value_or(std::string_view{}));
             const auto prefix = "target:" + targetId + ':';
-            RuntimeDto targetRuntime(c);
+            RuntimeDto targetRuntime(ruvia::ModelOptions{.resource = c.arena()});
             targetRuntime.set<"state">(runtime.text(prefix + "state", "stopped"))
                 .set<"reason">(runtime.text(prefix + "reason"))
                 .set<"error">(runtime.text(prefix + "error"));

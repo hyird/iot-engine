@@ -58,7 +58,7 @@ private:
 template <typename Response>
 Response parseResponse(ruvia::Context &c, std::string_view body) {
   auto parsed =
-      ruvia::fromJson<Response>(body, {.resource = c.resource()});
+      ruvia::fromJson<Response>(body, {.resource = c.arena()});
   if (!parsed || !parsed->template get<"data">())
     service::common::fail(10004, "GB28181 RPC 响应无效", 502);
   return std::move(*parsed);
@@ -66,7 +66,7 @@ Response parseResponse(ruvia::Context &c, std::string_view body) {
 
 GbMediaPortsDto mediaPorts(ruvia::Context &c,
                            const rpc_wire::MediaPorts &value) {
-  GbMediaPortsDto result(c);
+  GbMediaPortsDto result(ruvia::ModelOptions{.resource = c.arena()});
   if (const auto &field = value.get<"http">()) result.set<"http">(*field);
   if (const auto &field = value.get<"https">()) result.set<"https">(*field);
   if (const auto &field = value.get<"rtsp">()) result.set<"rtsp">(*field);
@@ -80,7 +80,7 @@ GbMediaPortsDto mediaPorts(ruvia::Context &c,
 
 GbMediaCapabilitiesDto mediaCapabilities(
     ruvia::Context &c, const rpc_wire::MediaCapabilities &value) {
-  GbMediaCapabilitiesDto result(c);
+  GbMediaCapabilitiesDto result(ruvia::ModelOptions{.resource = c.arena()});
   if (const auto &field = value.get<"faac">()) result.set<"faac">(*field);
   if (const auto &field = value.get<"ffmpeg">())
     result.set<"ffmpeg">(*field);
@@ -102,7 +102,7 @@ GbMediaCapabilitiesDto mediaCapabilities(
 }
 
 GbHealthDto health(ruvia::Context &c, const rpc_wire::Health &value) {
-  GbHealthDto result(c);
+  GbHealthDto result(ruvia::ModelOptions{.resource = c.arena()});
   if (const auto &field = value.get<"status">())
     result.set<"status">(field->view());
   if (const auto &field = value.get<"service">())
@@ -121,7 +121,7 @@ GbHealthDto health(ruvia::Context &c, const rpc_wire::Health &value) {
 }
 
 GbSipConfigDto sipConfig(ruvia::Context &c, const rpc_wire::SipConfig &value) {
-  GbSipConfigDto result(c);
+  GbSipConfigDto result(ruvia::ModelOptions{.resource = c.arena()});
   if (const auto &field = value.get<"domain">())
     result.set<"domain">(field->view());
   if (const auto &field = value.get<"id">()) result.set<"id">(field->view());
@@ -136,7 +136,7 @@ GbSipConfigDto sipConfig(ruvia::Context &c, const rpc_wire::SipConfig &value) {
 }
 
 GbChannelDto channel(ruvia::Context &c, const rpc_wire::Channel &value) {
-  GbChannelDto result(c);
+  GbChannelDto result(ruvia::ModelOptions{.resource = c.arena()});
   if (const auto &field = value.get<"id">()) result.set<"id">(field->view());
   if (const auto &field = value.get<"name">())
     result.set<"name">(field->view());
@@ -156,7 +156,7 @@ GbChannelDto channel(ruvia::Context &c, const rpc_wire::Channel &value) {
 }
 
 GbRecordDto record(ruvia::Context &c, const rpc_wire::Record &value) {
-  GbRecordDto result(c);
+  GbRecordDto result(ruvia::ModelOptions{.resource = c.arena()});
   if (const auto &field = value.get<"deviceId">())
     result.set<"deviceId">(field->view());
   if (const auto &field = value.get<"name">())
@@ -177,7 +177,7 @@ GbRecordDto record(ruvia::Context &c, const rpc_wire::Record &value) {
 }
 
 GbDeviceDto device(ruvia::Context &c, const rpc_wire::Device &value) {
-  GbDeviceDto result(c);
+  GbDeviceDto result(ruvia::ModelOptions{.resource = c.arena()});
   if (const auto &field = value.get<"id">()) result.set<"id">(field->view());
   if (const auto &field = value.get<"name">())
     result.set<"name">(field->view());
@@ -204,14 +204,14 @@ GbDeviceDto device(ruvia::Context &c, const rpc_wire::Device &value) {
 
   if (const auto &source = value.get<"channels">()) {
     ruvia::BoxedArray<GbChannelDto> channels(
-        ruvia::ModelOptions{.resource = c.resource()});
+        ruvia::ModelOptions{.resource = c.arena()});
     for (const auto &item : *source)
       channels.emplace(channel(c, item));
     result.set<"channels">(std::move(channels));
   }
   if (const auto &source = value.get<"records">()) {
     ruvia::BoxedArray<GbRecordDto> records(
-        ruvia::ModelOptions{.resource = c.resource()});
+        ruvia::ModelOptions{.resource = c.arena()});
     for (const auto &item : *source)
       records.emplace(record(c, item));
     result.set<"records">(std::move(records));
@@ -220,7 +220,7 @@ GbDeviceDto device(ruvia::Context &c, const rpc_wire::Device &value) {
 }
 
 GbStreamDto stream(ruvia::Context &c, const rpc_wire::Stream &value) {
-  GbStreamDto result(c);
+  GbStreamDto result(ruvia::ModelOptions{.resource = c.arena()});
   if (const auto &field = value.get<"id">()) result.set<"id">(field->view());
   if (const auto &field = value.get<"app">())
     result.set<"app">(field->view());
@@ -236,7 +236,7 @@ GbStreamDto stream(ruvia::Context &c, const rpc_wire::Stream &value) {
 }
 
 GbPlayUrlsDto playUrls(ruvia::Context &c, const rpc_wire::PlayUrls &value) {
-  GbPlayUrlsDto result(c);
+  GbPlayUrlsDto result(ruvia::ModelOptions{.resource = c.arena()});
   if (const auto &field = value.get<"httpFlv">())
     result.set<"httpFlv">(field->view());
   if (const auto &field = value.get<"wsFlv">())
@@ -256,7 +256,7 @@ GbPlayUrlsDto playUrls(ruvia::Context &c, const rpc_wire::PlayUrls &value) {
 
 GbPreviewStartDto previewStart(ruvia::Context &c,
                                const rpc_wire::PreviewStart &value) {
-  GbPreviewStartDto result(c);
+  GbPreviewStartDto result(ruvia::ModelOptions{.resource = c.arena()});
   if (const auto &field = value.get<"sent">()) result.set<"sent">(*field);
   if (const auto &field = value.get<"sessionId">())
     result.set<"sessionId">(field->view());
@@ -279,7 +279,7 @@ GbPreviewStartDto previewStart(ruvia::Context &c,
 
 GbPreviewStopDto previewStop(ruvia::Context &c,
                              const rpc_wire::PreviewStop &value) {
-  GbPreviewStopDto result(c);
+  GbPreviewStopDto result(ruvia::ModelOptions{.resource = c.arena()});
   if (const auto &field = value.get<"stopped">())
     result.set<"stopped">(*field);
   if (const auto &field = value.get<"sessionId">())
@@ -294,7 +294,7 @@ GbPreviewStopDto previewStop(ruvia::Context &c,
 }
 
 GbActionDto action(ruvia::Context &c, const rpc_wire::Action &value) {
-  GbActionDto result(c);
+  GbActionDto result(ruvia::ModelOptions{.resource = c.arena()});
   if (const auto &field = value.get<"registered">())
     result.set<"registered">(*field);
   if (const auto &field = value.get<"sent">()) result.set<"sent">(*field);
@@ -338,12 +338,12 @@ public:
     auto response = detail::parseResponse<rpc_wire::DeviceListResponse>(c, raw);
     const auto &source = *response.get<"data">();
     ruvia::BoxedArray<GbDeviceDto> items(
-        ruvia::ModelOptions{.resource = c.resource()});
+        ruvia::ModelOptions{.resource = c.arena()});
     if (const auto &values = source.get<"items">()) {
       for (const auto &item : *values)
         items.emplace(detail::device(c, item));
     }
-    GbDeviceListDto result(c);
+    GbDeviceListDto result(ruvia::ModelOptions{.resource = c.arena()});
     result.set<"items">(std::move(items));
     co_return result;
   }
@@ -363,12 +363,12 @@ public:
     auto response = detail::parseResponse<rpc_wire::StreamListResponse>(c, raw);
     const auto &source = *response.get<"data">();
     ruvia::BoxedArray<GbStreamDto> items(
-        ruvia::ModelOptions{.resource = c.resource()});
+        ruvia::ModelOptions{.resource = c.arena()});
     if (const auto &values = source.get<"items">()) {
       for (const auto &item : *values)
         items.emplace(detail::stream(c, item));
     }
-    GbStreamListDto result(c);
+    GbStreamListDto result(ruvia::ModelOptions{.resource = c.arena()});
     result.set<"items">(std::move(items));
     co_return result;
   }

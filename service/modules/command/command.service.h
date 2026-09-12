@@ -89,7 +89,7 @@ class CommandService final {
         (void)co_await accessService_.require(
             context, deviceId, service::device::DeviceAccessLevel::operate);
 
-        service::device::DeviceCommandStatusDto result(context);
+        service::device::DeviceCommandStatusDto result(ruvia::ModelOptions{.resource = context.arena()});
         fillStatus(result, commandId, fields);
         co_return result;
     }
@@ -100,7 +100,7 @@ class CommandService final {
         if (ids.empty() || ids.size() > 256 * 37)
             service::common::fail(18012, "Provide between 1 and 256 command IDs", 400);
         ruvia::BoxedArray<service::device::DeviceCommandStatusDto> statuses(
-            ruvia::ModelOptions{.resource = context.resource()});
+            ruvia::ModelOptions{.resource = context.arena()});
         bool complete = true;
         std::size_t offset = 0, count = 0;
         for (;;) {
@@ -114,7 +114,7 @@ class CommandService final {
             if (end == std::string_view::npos) break;
             offset = end + 1;
         }
-        service::device::DeviceCommandStatusesDto result(context);
+        service::device::DeviceCommandStatusesDto result(ruvia::ModelOptions{.resource = context.arena()});
         result.set<"complete">(complete).set<"statuses">(std::move(statuses));
         co_return result;
     }
@@ -188,12 +188,12 @@ class CommandService final {
             const auto commands = co_await transaction.query(
                 "SELECT id::text FROM command_operation WHERE request_id=$1::uuid ORDER BY ordinal",
                 common::dbParams(prior.front()[0].value().value_or(std::string_view{})));
-            ruvia::BoxedArray<ruvia::String> ids(ruvia::ModelOptions{.resource=context.resource()});
+            ruvia::BoxedArray<ruvia::String> ids(ruvia::ModelOptions{.resource=context.arena()});
             for (const auto& row : commands)
                 ids.emplace(row[0].value().value_or(std::string_view{}),
-                            ruvia::ModelOptions{.resource=context.resource()});
+                            ruvia::ModelOptions{.resource=context.arena()});
             co_await transaction.commit();
-            service::device::DeviceCommandCreateDto result(context);
+            service::device::DeviceCommandCreateDto result(ruvia::ModelOptions{.resource = context.arena()});
             result.set<"commandIds">(std::move(ids)).set<"status">("ACCEPTED");
             co_return result;
         }
@@ -216,7 +216,7 @@ class CommandService final {
         ruvia::Context& context, ruvia::DbTransaction& transaction,
         std::string_view requestId, std::string_view deviceId,
         std::string_view submittedBy, std::string_view preparedJson) {
-        const auto batch = ruvia::fromJson<PreparedBatch>(preparedJson, {.resource = context.resource()});
+        const auto batch = ruvia::fromJson<PreparedBatch>(preparedJson, {.resource = context.arena()});
         if (!batch || !batch->get<"queue">() || !batch->get<"kind">() ||
             !batch->get<"maximum">() || !batch->get<"nodeId">() || !batch->get<"commands">() ||
             batch->get<"commands">()->empty() || batch->get<"commands">()->size() > 256)
@@ -225,7 +225,7 @@ class CommandService final {
         const auto maximum = static_cast<std::int64_t>(*batch->get<"maximum">());
         if ((kind != "list" && kind != "stream") || maximum <= 0 || maximum > 10000)
             common::fail(10004, "Invalid prepared command queue", 502);
-        ruvia::BoxedArray<ruvia::String> commandIds(ruvia::ModelOptions{.resource = context.resource()});
+        ruvia::BoxedArray<ruvia::String> commandIds(ruvia::ModelOptions{.resource = context.arena()});
         std::int64_t ordinal = 0;
         for (const auto& command : *batch->get<"commands">()) {
             if (!command.get<"id">() || !common::isUuid(command.get<"id">()->view()) ||
@@ -268,9 +268,9 @@ SELECT $1::uuid,$3,'command',device_id::text,'updated',2,
  'commandId',id::text,'status',status,'reason',reason,'elements',elements,'actualValues',actual_values))
 FROM command_operation WHERE id=$2::uuid)sql",
                 common::dbParams(eventId, id, "device.command.accepted"));
-            commandIds.emplace(id, ruvia::ModelOptions{.resource = context.resource()});
+            commandIds.emplace(id, ruvia::ModelOptions{.resource = context.arena()});
         }
-        service::device::DeviceCommandCreateDto result(context);
+        service::device::DeviceCommandCreateDto result(ruvia::ModelOptions{.resource = context.arena()});
         result.set<"commandIds">(std::move(commandIds)).set<"status">("ACCEPTED");
         co_return result;
     }

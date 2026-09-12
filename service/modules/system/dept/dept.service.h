@@ -49,19 +49,19 @@ class DeptService {
         }
         const auto total = static_cast<std::int64_t>(
             co_await c.db().getRepository<DeptEntity>().count(options.where));
-        auto query = departmentSelect(c.operationResource());
+        auto query = departmentSelect(c.pool());
         query.where(options.where.expression(query, DeptEntity::tableName(), "d"))
             .orderBy(query.column("sort_order", "d"))
             .addOrderBy(query.column("id", "d"))
             .limit(pageSize)
             .offset((page - 1) * pageSize);
         const auto rows = co_await c.db().query(query);
-        ruvia::BoxedArray<DeptItemDto> departments(ruvia::ModelOptions{.resource = c.resource()});
+        ruvia::BoxedArray<DeptItemDto> departments(ruvia::ModelOptions{.resource = c.arena()});
         for (const auto &row : rows) {
-            auto &item = departments.emplace(c);
+            auto &item = departments.emplace(ruvia::ModelOptions{.resource = c.arena()});
             fill(item, row);
         }
-        DeptPageDataDto result(c);
+        DeptPageDataDto result(ruvia::ModelOptions{.resource = c.arena()});
         result.set<"list">(std::move(departments))
             .set<"total">(total)
             .set<"page">(page)
@@ -71,13 +71,13 @@ class DeptService {
     }
 
     ruvia::Task<DeptItemDto> detail(ruvia::Context &c, std::string_view id) {
-        auto query = departmentSelect(c.operationResource());
+        auto query = departmentSelect(c.pool());
         query.where(db::activeId<DeptEntity>(id).expression(query, DeptEntity::tableName(), "d"))
             .limit(1);
         const auto rows = co_await c.db().query(query);
         if (rows.empty())
             service::common::fail(14001, "部门不存在", 404);
-        DeptItemDto item(c);
+        DeptItemDto item(ruvia::ModelOptions{.resource = c.arena()});
         fill(item, rows.front());
         co_return item;
     }
@@ -87,9 +87,9 @@ class DeptService {
         options.where = DeptEntity::column<"deleted_at">().isNull();
         options.order = {{"sort_order"}, {"id"}};
         const auto rows = co_await c.db().getRepository<DeptEntity>().find(options);
-        ruvia::BoxedArray<DeptOptionDto> result(ruvia::ModelOptions{.resource = c.resource()});
+        ruvia::BoxedArray<DeptOptionDto> result(ruvia::ModelOptions{.resource = c.arena()});
         for (const auto &row : rows) {
-            auto &item = result.emplace(c);
+            auto &item = result.emplace(ruvia::ModelOptions{.resource = c.arena()});
             item.set<"id">(row.get<"id">())
                 .set<"name">(row.get<"name">())
                 .set<"parentId">(row.isNull<"parent_id">()
@@ -113,7 +113,7 @@ class DeptService {
         const auto id = service::common::nextUuidV7();
         co_await validateRelations(c, parentId, leaderId, std::nullopt);
         co_await ensureCodeAvailable(c, code, std::nullopt);
-        DeptEntity department(c.operationResource());
+        DeptEntity department(c.pool());
         department.set<"id">(id);
         department.set<"name">(name);
         if (code.empty())
@@ -149,7 +149,7 @@ class DeptService {
             co_await ensureCodeAvailable(c, std::string(body.get<"code">()->view()),
                                          std::string(id));
 
-        ruvia::DbQuery query(c.operationResource());
+        ruvia::DbQuery query(c.pool());
         query.update(DeptEntity::tableName());
         bool changed = false;
         auto append = [&](std::string_view column, ruvia::DbExpression value) {
@@ -185,7 +185,7 @@ class DeptService {
             DeptEntity::column<"parent_id">() == id && DeptEntity::column<"deleted_at">().isNull();
         if (co_await c.db().getRepository<DeptEntity>().exists(children))
             service::common::fail(14005, "部门存在子部门，不能删除", 409);
-        ruvia::DbQuery removal(c.operationResource());
+        ruvia::DbQuery removal(c.pool());
         removal.update(DeptEntity::tableName())
             .set("deleted_at", removal.call("now"))
             .set("updated_at", removal.call("now"))
@@ -280,7 +280,7 @@ class DeptService {
                 service::common::fail(14003, "上级部门不存在", 400);
             if (currentId) {
                 const auto cycle = co_await c.db().query(
-                    departmentDescendant(*currentId, parentId, c.operationResource()));
+                    departmentDescendant(*currentId, parentId, c.pool()));
                 if (!cycle.empty())
                     service::common::fail(14003, "不能将部门移动到其子部门下", 400);
             }

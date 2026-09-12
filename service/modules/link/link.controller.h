@@ -76,7 +76,7 @@ class LinkController final : public ruvia::Controller<LinkController> {
 
     ruvia::Task<std::string> publicIpSnapshot(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "iot:link:query");
-        PublicIpDto result(c);
+        PublicIpDto result(ruvia::ModelOptions{.resource = c.arena()});
         result.set<"ip">(co_await linkService().publicIp(c));
         co_return service::live::json(service::common::ok<PublicIpResponse>(c, std::move(result)));
     }

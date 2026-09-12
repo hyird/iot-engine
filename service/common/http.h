@@ -105,7 +105,7 @@ inline std::int64_t errorCode(std::string_view code, std::uint16_t status) {
 }
 
 template <typename Response, typename Data> Response ok(ruvia::Context& c, Data&& data) {
-    Response response(c);
+    Response response(ruvia::ModelOptions{.resource = c.arena()});
     response.template set<"code">(0)
         .template set<"message">("ok")
         .template set<"data">(std::forward<Data>(data));
@@ -113,13 +113,13 @@ template <typename Response, typename Data> Response ok(ruvia::Context& c, Data&
 }
 
 inline OperationResponse operation(ruvia::Context& c, std::string_view message) {
-    OperationResponse response(c);
+    OperationResponse response(ruvia::ModelOptions{.resource = c.arena()});
     response.set<"code">(0).set<"message">(message);
     return response;
 }
 
 inline ErrorResponse error(ruvia::Context& c, std::int64_t code, std::string_view message) {
-    ErrorResponse response(c);
+    ErrorResponse response(ruvia::ModelOptions{.resource = c.arena()});
     response.set<"code">(code).set<"message">(message);
     return response;
 }
