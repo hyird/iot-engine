@@ -206,14 +206,10 @@ ruvia::DbConfig migrateDatabase(
 ) {
     auto db = databaseConfig(env);
     const auto storagePolicy = service::config::deviceDataStoragePolicy(env);
-    const auto storagePolicyMigration = service::config::deviceDataStoragePolicyMigration(storagePolicy);
     std::vector<ruvia::DbMigration> migrations;
     migrations.reserve(service::config::kSchemaMigrations.size() + 1);
     migrations.insert(migrations.end(), service::config::kSchemaMigrations.begin(), service::config::kSchemaMigrations.end());
-    migrations.emplace_back(ruvia::DbMigrationOptions{
-        .id = storagePolicyMigration.id,
-        .sql = storagePolicyMigration.sql,
-    });
+    migrations.emplace_back(service::config::deviceDataStoragePolicyMigration(storagePolicy));
     ruvia::DbMigratorOptions migrationOptions;
     migrationOptions.table = "sys_schema_migrations";
     const auto report = ruvia::DbMigrator::migrate(db, migrations, std::move(migrationOptions));

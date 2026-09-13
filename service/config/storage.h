@@ -1,14 +1,18 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cctype>
 #include <cstdint>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include <ruvia/web/Dotenv.h>
+#include <ruvia/web/db/DbSchema.h>
 
 namespace service::config {
 
@@ -92,54 +96,47 @@ inline DeviceDataStoragePolicy deviceDataStoragePolicy(const ruvia::Env& env) {
     return policy;
 }
 
-struct DeviceDataStoragePolicyMigration final {
-    std::string id;
-    std::string sql;
-};
-
-inline DeviceDataStoragePolicyMigration
+inline ruvia::DbMigration
 deviceDataStoragePolicyMigration(const DeviceDataStoragePolicy& policy) {
     validateDeviceDataStoragePolicy(policy);
 
-    DeviceDataStoragePolicyMigration migration;
-    migration.id = "runtime_device_data_storage_policy_v1_";
-    migration.id += policy.compressionEnabled ? "on" : "off";
-    migration.id += "_chunk_" + std::to_string(policy.chunkIntervalHours);
-    migration.id += "_after_" + std::to_string(policy.compressionAfterHours);
-    migration.id += "_mutable_" + std::to_string(policy.mutableWindowHours);
+    std::string migrationId = "runtime_device_data_storage_policy_v2_";
+    migrationId += policy.compressionEnabled ? "on" : "off";
+    migrationId += "_chunk_" + std::to_string(policy.chunkIntervalHours);
+    migrationId += "_after_" + std::to_string(policy.compressionAfterHours);
+    migrationId += "_mutable_" + std::to_string(policy.mutableWindowHours);
 
-    migration.sql = R"sql(
-DO $storage_policy$
-BEGIN
-DELETE FROM sys_schema_migrations
-WHERE starts_with(migration_id, 'runtime_device_data_storage_policy_v1_');
+    ruvia::DbSchema schema({.driver = ruvia::DbDriver::kPostgreSql});
+    ruvia::DbQuery cleanup;
+    const auto migrationPrefix = cleanup.value(
+        "runtime_device_data_storage_policy_");
+    cleanup.deleteFrom("sys_schema_migrations")
+        .where(cleanup.call("starts_with",
+            {cleanup.column("migration_id"), migrationPrefix}));
+    schema.execute(cleanup);
 
-PERFORM remove_compression_policy('device_data', if_exists => TRUE);
-
-PERFORM set_chunk_time_interval(
-    'device_data',
-    make_interval(hours => )sql";
-    migration.sql += std::to_string(policy.chunkIntervalHours);
-    migration.sql += R"sql()
-);
-)sql";
+    ruvia::DbQuery expressions;
+    const std::array chunkIntervalArguments{ruvia::DbNamedArgument{
+        "hours", expressions.value(policy.chunkIntervalHours)}};
+    const auto chunkInterval = expressions.call("make_interval",
+        std::span<const ruvia::DbQuery::Expr>{}, chunkIntervalArguments);
+    schema.removeCompressionPolicy("device_data", true);
+    schema.setChunkTimeInterval("device_data", chunkInterval);
 
     if (policy.compressionEnabled) {
-        migration.sql += R"sql(
-PERFORM add_compression_policy(
-    'device_data',
-    compress_after => make_interval(hours => )sql";
-        migration.sql += std::to_string(policy.compressionAfterHours);
-        migration.sql += R"sql(),
-    if_not_exists => TRUE
-);
-)sql";
+        const std::array compressionAfterArguments{ruvia::DbNamedArgument{
+            "hours", expressions.value(policy.compressionAfterHours)}};
+        const auto compressionAfter = expressions.call("make_interval",
+            std::span<const ruvia::DbQuery::Expr>{}, compressionAfterArguments);
+        schema.addCompressionPolicy("device_data", compressionAfter, true);
     }
-    migration.sql += R"sql(
-END
-$storage_policy$;
-)sql";
-    return migration;
+
+    auto migrations = schema.compile(migrationId);
+    if (migrations.size() != 1) {
+        throw std::logic_error(
+            "device_data storage policy must compile to one migration");
+    }
+    return std::move(migrations.front());
 }
 
 } // namespace service::config

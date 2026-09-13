@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <utility>
 
 #include <ruvia/web/detail/db/DbMigrationValidation.h>
 
@@ -57,39 +58,82 @@ int main() {
         unsafe.compressionEnabled = false;
         storage::validateDeviceDataStoragePolicy(unsafe);
 
-        const auto enabled = storage::deviceDataStoragePolicyMigration(defaults);
-        require(enabled.id.find("_on_chunk_168_after_168_mutable_48") !=
+        auto enabled = storage::deviceDataStoragePolicyMigration(defaults);
+        require(enabled.id().starts_with("runtime_device_data_storage_policy_v2_"),
+                "storage policy identity must use the v2 namespace");
+        require(enabled.id().find("runtime_device_data_storage_policy_v1_") ==
+                    std::string_view::npos,
+                "storage policy identity must not reuse the v1 namespace");
+        require(enabled.id().find("_on_chunk_168_after_168_mutable_48") !=
                     std::string::npos,
                 "enabled policy identity is incomplete");
-        require(enabled.sql.find("remove_compression_policy") != std::string::npos,
+        require(enabled.atomicity() == ruvia::DbMigrationAtomicity::kTransactional,
+                "storage policy migration must be transactional");
+        require(enabled.sql().starts_with("DO "),
+                "storage policy operations must compile into one transaction");
+        require(enabled.sql().find("remove_compression_policy") != std::string::npos,
                 "policy replacement must remove the previous job");
-        require(enabled.sql.find("make_interval(hours => 168)") != std::string::npos,
-                "configured intervals were not rendered");
-        require(enabled.sql.find("add_compression_policy") != std::string::npos,
+        require(enabled.sql().find("set_chunk_time_interval") != std::string::npos,
+                "configured chunk interval was not rendered");
+        require(enabled.sql().find("make_interval") != std::string::npos &&
+                    enabled.sql().find("168") != std::string::npos,
+                "configured policy intervals were not rendered");
+        require(enabled.sql().find("add_compression_policy") != std::string::npos,
                 "enabled policy must add the compression job");
-        require(enabled.sql.find("DELETE FROM sys_schema_migrations") !=
+        require(enabled.sql().find("DELETE FROM") != std::string::npos &&
+                    enabled.sql().find("starts_with") != std::string::npos,
+                "policy changes must clean prior policy migrations by prefix");
+        require(enabled.sql().find("runtime_device_data_storage_policy_") !=
                     std::string::npos,
-                "policy changes must remain reversible to a previous setting");
+                "policy cleanup must cover the shared migration namespace");
+        require(enabled.sql().find("runtime_device_data_storage_policy_v1_") ==
+                    std::string::npos,
+                "policy cleanup must not be limited to the v1 namespace");
 
         auto disabled = defaults;
         disabled.compressionEnabled = false;
-        const auto disabledMigration =
+        auto disabledMigration =
             storage::deviceDataStoragePolicyMigration(disabled);
-        require(disabledMigration.sql.find("remove_compression_policy") !=
+        require(disabledMigration.id().starts_with(
+                    "runtime_device_data_storage_policy_v2_off_"),
+                "disabled policy identity must use the v2 off namespace");
+        require(disabledMigration.atomicity() ==
+                    ruvia::DbMigrationAtomicity::kTransactional,
+                "disabled storage policy migration must be transactional");
+        require(disabledMigration.sql().find("remove_compression_policy") !=
                     std::string::npos,
                 "disabled policy must remove the compression job");
-        require(disabledMigration.sql.find("add_compression_policy") ==
+        require(disabledMigration.sql().find("set_chunk_time_interval") !=
+                    std::string::npos,
+                "disabled policy must still configure the chunk interval");
+        require(disabledMigration.sql().find("add_compression_policy") ==
                     std::string::npos,
                 "disabled policy must not add a compression job");
+
+        auto alternate = defaults;
+        alternate.chunkIntervalHours = 24;
+        alternate.compressionAfterHours = 72;
+        alternate.mutableWindowHours = 12;
+        const auto alternateMigration =
+            storage::deviceDataStoragePolicyMigration(alternate);
+        require(alternateMigration.id().find("_chunk_24_after_72_mutable_12") !=
+                    std::string::npos,
+                "storage policy identity must include configured times");
+        require(alternateMigration.sql().find("make_interval") !=
+                    std::string::npos &&
+                    alternateMigration.sql().find("24") != std::string::npos &&
+                    alternateMigration.sql().find("72") != std::string::npos,
+                "storage policy SQL must use configured interval values");
+        require(alternateMigration.sql().find(
+                    "runtime_device_data_storage_policy_") !=
+                    std::string::npos,
+                "alternate policy must clean the shared migration namespace");
 
         std::vector<ruvia::DbMigration> migrations;
         migrations.reserve(storage::kSchemaMigrations.size() + 1);
         migrations.insert(migrations.end(), storage::kSchemaMigrations.begin(),
                           storage::kSchemaMigrations.end());
-        migrations.emplace_back(ruvia::DbMigrationOptions{
-            .id = enabled.id,
-            .sql = enabled.sql,
-        });
+        migrations.emplace_back(std::move(enabled));
         for (const auto& migration : migrations) {
             try {
                 ruvia::detail::validateMigrationList(
