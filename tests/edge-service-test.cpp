@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -37,7 +38,9 @@ std::string edgeSource(const char* relativePath) {
     std::ifstream input(path, std::ios::binary);
     if (!input.good())
         throw std::runtime_error("cannot open edge source");
-    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+    std::string source{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+    std::erase(source, '\r');
+    return source;
 }
 
 } // namespace
