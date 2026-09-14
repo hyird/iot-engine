@@ -1377,7 +1377,7 @@ ruvia::Task<void> CollectorRuntime::initialize() {
         throw std::logic_error("GB28181 CollectorRuntime cannot restart");
     }
     if (!config_.enabled) {
-        co_await publishConfig();
+        co_await GbProjectionService::publishConfig(redis_, config_);
         co_return;
     }
 
@@ -1447,7 +1447,7 @@ ruvia::Task<void> CollectorRuntime::initialize() {
         });
         sip_->start();
         started_.store(true);
-        co_await publishConfig();
+        co_await GbProjectionService::publishConfig(redis_, config_);
         scope_.spawn(controlLoop());
         scope_.spawn(refreshOwnerLeases());
     } catch (...) {
@@ -1728,32 +1728,6 @@ ruvia::Task<void> CollectorRuntime::publishStream(const StreamStatus& stream, st
     if (!stream.online) {
         co_await releaseOwner(key, std::string(ownerToken));
     }
-}
-
-ruvia::Task<void> CollectorRuntime::publishConfig() {
-    // Configuration is immutable for the process lifetime.  Keeping one
-    // Redis projection lets Service Workers answer config queries without a
-    // process-global GB runtime or a cross-worker callback.
-    co_await service::message::redis::setHash(
-        redis_,
-        control_protocol::stream::kConfigKey,
-        { { "enabled", config_.enabled ? "1" : "0" },
-          { "domain", config_.sip.domain },
-          { "id", config_.sip.id },
-          { "host", config_.sip.host },
-          { "public_ip", config_.sip.publicIp },
-          { "port", std::to_string(config_.sip.port) },
-          { "transport", config_.sip.transport },
-          { "registration_timeout_seconds",
-            std::to_string(config_.sip.registrationTimeoutSeconds) },
-          { "command_timeout_seconds",
-            std::to_string(config_.sip.commandTimeoutSeconds) },
-          { "invite_timeout_seconds",
-            std::to_string(config_.sip.inviteTimeoutSeconds) },
-          { "viewer_lease_timeout_seconds",
-            std::to_string(config_.sip.viewerLeaseTimeoutSeconds) } }
-    );
-    co_return;
 }
 
 ruvia::Task<void> CollectorRuntime::refreshOwnerLeases() {

@@ -49,7 +49,7 @@ const keepAliveAgent = new Agent({ keepAlive: true, maxSockets: 1, maxFreeSocket
 const socketNumbers = new WeakMap<Socket, number>();
 const localPortNumbers = new Map<number, number>();
 let nextSocketNumber = 1;
-let readinessBackups: Array<{ key: string; value: string; pttl: number }> = [];
+let readinessBackups: Array<{ key: string; value: string[]; pttl: number }> = [];
 
 async function until(
     check: () => Promise<boolean>,
@@ -203,7 +203,10 @@ async function internalResponse(path: string) {
 async function restoreReadinessBackups() {
     for (const backup of readinessBackups) {
         const ttl = Math.max(1000, Math.min(15000, backup.pttl));
-        await redis.send('SET', [backup.key, backup.value, 'PX', String(ttl)]);
+        await redis.send('EVAL', [
+            "redis.call('HSET',KEYS[1],unpack(ARGV,2)); return redis.call('PEXPIRE',KEYS[1],ARGV[1])",
+            '1', backup.key, String(ttl), ...backup.value,
+        ]);
     }
 }
 
@@ -706,37 +709,40 @@ try {
     console.log(`PASS one keep-alive HTTP socket stayed on ${observedRoutes[0]}`);
 
     const rpcInstance = rpcInstanceId(rpcStreams[0]);
+    const entityPrefix = `ruvia:orm:${Buffer.from('iot_worker_snapshot').toString('hex')}:`;
     const metricKeys = Array.from(
         { length: serviceWorkerCount },
-        (_, index) => `iot:observability:metrics:${rpcInstance}:worker:${index}`
-    );
-    const readinessKeys = Array.from(
-        { length: serviceWorkerCount },
-        (_, index) => `iot:observability:readiness:${rpcInstance}:worker:${index}`
+        (_, index) => `${entityPrefix}${rpcInstance}:worker:${index}`
     );
     await until(async () => {
         const values = await Promise.all(
-            [...metricKeys, ...readinessKeys].map((key) => redis.send('GET', [key]))
+            metricKeys.map((key) => redis.send('HGET', [key, 'metrics']))
         );
         return values.every((value) => typeof value === 'string' && value.length > 0);
     }, 'multi-worker observability snapshots were not published');
     const metricSnapshots = await Promise.all(
         metricKeys.map(async (key) => {
-            const value = await redis.send('GET', [key]);
+            const value = await redis.send('HGET', [key, 'metrics']);
             assert.equal(typeof value, 'string', `missing metrics snapshot ${key}`);
             return value as string;
         })
     );
     const readinessValues = await Promise.all(
-        readinessKeys.map(async (key) => {
+        metricKeys.map(async (key) => {
             const [value, pttl] = await Promise.all([
-                redis.send('GET', [key]),
+                redis.send('HGETALL', [key]),
                 redis.send('PTTL', [key]),
             ]);
-            assert.equal(typeof value, 'string', `missing readiness snapshot ${key}`);
+            assert(value !== null && typeof value === 'object' && !Array.isArray(value),
+                `missing readiness entity ${key}`);
+            const record = value as Record<string, string>;
+            const fields = Object.entries(record).flat();
+            assert.equal(record.id, key.slice(entityPrefix.length));
+            assert(record.metrics && record.health && record.ready !== undefined,
+                `worker snapshot ${key} is missing atomic entity fields`);
             const remaining = Number(pttl);
-            assert(remaining > 0, `readiness snapshot ${key} has no expiry`);
-            return { key, value: value as string, pttl: remaining };
+            assert(remaining > 0 && remaining <= 15000, `readiness snapshot ${key} has no bounded expiry`);
+            return { key, value: fields, pttl: remaining };
         })
     );
     readinessBackups = readinessValues;
@@ -782,7 +788,7 @@ try {
     const readyBefore = await internalResponse('/internal/health/ready');
     assert.equal(readyBefore.status, 200, readyBefore.text);
     const expiredKey = readinessBackups[0].key;
-    await redis.send('SET', [expiredKey, 'invalid-readiness-snapshot', 'PX', '5000']);
+    await redis.send('PEXPIRE', [expiredKey, '0']);
     try {
         await until(
             async () => (await internalResponse('/internal/health/ready')).status === 503,

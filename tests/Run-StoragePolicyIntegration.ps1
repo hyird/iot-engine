@@ -1,5 +1,8 @@
 [CmdletBinding()]
-param([string]$PostgresBin = 'C:/Program Files/PostgreSQL/18/bin')
+param(
+    [string]$PostgresBin = 'C:/Program Files/PostgreSQL/18/bin',
+    [string]$LegacyBackend
+)
 $ErrorActionPreference = 'Stop'
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $fixture = Join-Path $repository ('build/storage-policy-fixture-' + [Guid]::NewGuid().ToString('N'))
@@ -87,12 +90,33 @@ try {
     Copy-Item -LiteralPath $backend -Destination (Join-Path $fixture 'iot-engine.exe')
     $env:Path = (Join-Path $repository 'build/Release') + ';' + $oldPath
     Set-Policy $true
+    if ($LegacyBackend) {
+        Copy-Item -LiteralPath $LegacyBackend -Destination (Join-Path $fixture 'iot-engine.exe') -Force
+        Invoke-Migration 'legacy-schema'
+        $legacyApplied = Invoke-Sql "SELECT string_agg(migration_id || ':' || applied_at::text, ',' ORDER BY migration_id) FROM sys_schema_migrations WHERE migration_id ~ '^[0-9]{4}_';"
+        Copy-Item -LiteralPath $backend -Destination (Join-Path $fixture 'iot-engine.exe') -Force
+    }
     Invoke-Migration 'initial'
+    if ($LegacyBackend) {
+        if ($legacyApplied -ne (Invoke-Sql "SELECT string_agg(migration_id || ':' || applied_at::text, ',' ORDER BY migration_id) FROM sys_schema_migrations WHERE migration_id ~ '^[0-9]{4}_';")) { throw 'Upgrade re-executed historical schema migrations' }
+        Write-Output 'PASS actual legacy schema upgrade preserves all historical application timestamps'
+    }
     Assert-Policy $true
     $before = Invoke-Sql "SELECT checksum || ':' || applied_at::text FROM sys_schema_migrations WHERE starts_with(migration_id,'runtime_device_data_storage_policy_');"
     Invoke-Migration 'repeat'
     if ($before -ne (Invoke-Sql "SELECT checksum || ':' || applied_at::text FROM sys_schema_migrations WHERE starts_with(migration_id,'runtime_device_data_storage_policy_');")) { throw 'Repeated migration was not skipped' }
     Write-Output 'PASS fresh schema and repeated migration'
+
+    $schemaChecksums = Invoke-Sql "SELECT string_agg(migration_id || ':' || checksum, ',' ORDER BY migration_id) FROM sys_schema_migrations WHERE migration_id ~ '^[0-9]{4}_';"
+    $cursorChecksum = Invoke-Sql "SELECT checksum FROM sys_schema_migrations WHERE migration_id='0044_gb28181_projection_cursor';"
+    Invoke-Sql "DELETE FROM sys_schema_migrations WHERE migration_id='orm_schema_checksum_transition_20260914'; UPDATE sys_schema_migrations SET checksum=repeat('f',64) WHERE migration_id='0044_gb28181_projection_cursor';" | Out-Null
+    Invoke-Migration 'checksum-drift' $false
+    if (!(Select-String -LiteralPath (Join-Path $fixture 'checksum-drift.err') -SimpleMatch 'schema checksum differs from the audited migration' -Quiet)) { throw 'Unknown schema checksum was not rejected' }
+    Assert-Sql "SELECT count(*)=0 FROM sys_schema_migrations WHERE migration_id='orm_schema_checksum_transition_20260914';" 'Failed checksum transition was recorded'
+    Invoke-Sql "UPDATE sys_schema_migrations SET checksum='$cursorChecksum' WHERE migration_id='0044_gb28181_projection_cursor';" | Out-Null
+    if ($schemaChecksums -ne (Invoke-Sql "SELECT string_agg(migration_id || ':' || checksum, ',' ORDER BY migration_id) FROM sys_schema_migrations WHERE migration_id ~ '^[0-9]{4}_';")) { throw 'Failed checksum transition partially changed historical checksums' }
+    Invoke-Migration 'checksum-retry'
+    Write-Output 'PASS unknown checksum drift is rejected atomically and retry succeeds'
 
     Invoke-Sql "UPDATE sys_schema_migrations SET migration_id=replace(migration_id,'_v2_','_v1_'), checksum=repeat('0',64) WHERE starts_with(migration_id,'runtime_device_data_storage_policy_');" | Out-Null
     Invoke-Migration 'upgrade-v1'

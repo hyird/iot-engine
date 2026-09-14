@@ -1,5 +1,7 @@
 #pragma once
 
+#include "service/modules/system/auth/auth.entity.h"
+
 #include <cstdint>
 #include <string>
 
@@ -21,12 +23,12 @@ class LoginRateLimiter {
 
     virtual ruvia::Task<bool> locked(ruvia::Context& context, std::string_view username) {
         const auto reply =
-            co_await service::message::redis::command(context.redis(), {"GET", key(username)});
+            co_await service::message::redis::command(context.redis(), {"GET", LoginFailureCounter::key(username)});
         if (reply.null())
             co_return false;
         if (reply.kind() != ruvia::RedisValue::Kind::kString)
             throw std::runtime_error("invalid login rate limit state");
-        co_return service::common::parseInt64(reply.string()).value_or(0) >= 5;
+        co_return service::common::parseInt64(reply.string()).value_or(0) >= LoginFailureCounter::limit;
     }
 
     virtual ruvia::Task<int> failure(ruvia::Context& context, std::string_view username) {
@@ -36,20 +38,17 @@ if failures == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
 return failures
 )lua";
         const auto reply = co_await service::message::redis::command(
-            context.redis(), {"EVAL", std::string(script), "1", key(username), "900000"});
+            context.redis(), {"EVAL", std::string(script), "1", LoginFailureCounter::key(username), std::string(LoginFailureCounter::windowMilliseconds)});
         if (reply.kind() != ruvia::RedisValue::Kind::kInteger)
             throw std::runtime_error("invalid login rate limit increment");
         co_return static_cast<int>(reply.integer());
     }
 
     virtual ruvia::Task<void> clear(ruvia::Context& context, std::string_view username) {
-        (void)co_await service::message::redis::command(context.redis(), {"DEL", key(username)});
+        (void)co_await service::message::redis::command(context.redis(), {"DEL", LoginFailureCounter::key(username)});
     }
 
-  private:
-    static std::string key(std::string_view username) {
-        return "iot:auth:login-failures:" + std::string(username);
-    }
+
 };
 
 class AuthService {
@@ -103,7 +102,7 @@ class AuthService {
 
         if (rows.empty() || !service::utils::comparePassword(
                                 password, rows.front()[2].value().value_or(std::string_view{}))) {
-            const int remaining = 5 - co_await limiter_.failure(c, username);
+            const int remaining = LoginFailureCounter::limit - co_await limiter_.failure(c, username);
             const auto message = remaining > 0 ? "用户名或密码错误，还剩 " +
                                                      std::to_string(remaining) + " 次尝试机会"
                                                : "登录失败次数过多，请 15 分钟后再试";

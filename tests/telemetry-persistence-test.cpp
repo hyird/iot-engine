@@ -30,7 +30,7 @@ void requireStoragePolicySemantics(std::string_view source) {
     require(source.find("filtered.column(\"storage_policy\"), Op::kEqual, filtered.value(\"report\")") != std::string_view::npos &&
                 source.find("filtered.column(\"storage_policy\"), Op::kEqual, filtered.value(\"change\")") != std::string_view::npos,
             "telemetry persistence does not implement both storage policies");
-    require(source.find(".from(\"device_latest_value\", \"latest\")") != std::string_view::npos &&
+    require(source.find(".from(service::telemetry::persistence::DeviceLatestValueEntity::tableName(), \"latest\")") != std::string_view::npos &&
                 source.find("unpackValue(incomingPoints, incomingPoints.column(\"value\", \"point\"))") != std::string_view::npos,
             "change storage does not compare point values with the latest read model");
     require(source.find("filtered.coalesce({ filtered.column(\"changed\", \"point_changes\"), filtered.value(false) })") != std::string_view::npos,

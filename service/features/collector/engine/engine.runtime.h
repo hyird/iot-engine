@@ -1,5 +1,7 @@
 #pragma once
 
+#include "service/features/collector/engine/engine.types.h"
+
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -146,20 +148,6 @@ planRuntimeReconcile(const RuntimeSnapshot& previous, const RuntimeSnapshot& nex
     return plan;
 }
 
-
-struct ProtocolConnectionInfo {
-    std::string connectionId;
-    std::string linkId;
-    std::string remoteAddress;
-    std::string targetId;
-    std::uint64_t sessionEpoch = 0;
-};
-
-struct ProtocolSessionRefresh {
-    std::string connectionId;
-    std::vector<ProtocolAction> retiredActions;
-    std::vector<ProtocolAction> startedActions;
-};
 
 // Worker-affine protocol engine. It owns every socket's protocol session and is the only layer
 // shared by Modbus, S7 and SL651. Scheduling semantics remain inside each concrete session.

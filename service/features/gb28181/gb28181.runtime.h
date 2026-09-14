@@ -149,7 +149,6 @@ class CollectorRuntime final {
     [[nodiscard]] ruvia::Task<bool> waitForProjection(ruvia::StopToken stop, std::uint64_t after);
     [[nodiscard]] ruvia::Task<void> retainPreview(const SipServer::PreviewStartResult& preview);
     [[nodiscard]] ruvia::Task<void> releasePreview(std::string sessionId);
-    [[nodiscard]] ruvia::Task<void> publishConfig();
     [[nodiscard]] ruvia::Task<void> drainProjection();
     [[nodiscard]] ruvia::Task<void> controlLoop();
     [[nodiscard]] ruvia::Task<void>

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "service/features/collector/scheduling/scheduling.protocol.h"
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -20,7 +22,6 @@
 #include <vector>
 
 #include "service/features/collector/collector.protocol.h"
-#include "service/features/collector/scheduling/scheduling.runtime.h"
 
 namespace service::collector::s7 {
 

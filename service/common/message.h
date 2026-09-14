@@ -879,53 +879,12 @@ inline std::string realtimeDevicePointsKey(std::string_view version,
 
 namespace service::message::worker_metrics {
 
-// Operational snapshots are keyed by the worker that produced them.  The
-// values are deliberately short-lived: a missing or expired snapshot means
-// that the corresponding Worker can no longer be considered ready.
-inline constexpr std::string_view kMetricsSnapshotPrefix{"iot:observability:metrics:"};
-inline constexpr std::string_view kReadinessSnapshotPrefix{"iot:observability:readiness:"};
+// One atomic, expiring entity per Worker; readers use the same wire columns.
+inline constexpr char kSnapshotTable[] = "iot_worker_snapshot";
 inline constexpr std::chrono::milliseconds kSnapshotTtl{15000};
-
-inline std::string workerSnapshotKey(std::string_view prefix, std::size_t workerIndex,
-                                     std::string_view instance = service::runtime::instanceId()) {
-    return std::string(prefix) + std::string(instance) + ":worker:" +
-           std::to_string(workerIndex);
-}
-
-inline std::string metricsSnapshotKey(
-    std::size_t workerIndex, std::string_view instance = service::runtime::instanceId()) {
-    return workerSnapshotKey(kMetricsSnapshotPrefix, workerIndex, instance);
-}
-
-inline std::string readinessSnapshotKey(
-    std::size_t workerIndex, std::string_view instance = service::runtime::instanceId()) {
-    return workerSnapshotKey(kReadinessSnapshotPrefix, workerIndex, instance);
-}
-
-struct ReadinessSnapshot final {
-    bool ready{false};
-    std::string_view healthJson{};
-};
-
-inline std::string encodeReadinessSnapshot(bool ready, std::string_view healthJson) {
-    std::string encoded;
-    encoded.reserve(2 + healthJson.size());
-    encoded.push_back(ready ? '1' : '0');
-    encoded.push_back('\n');
-    encoded.append(healthJson);
-    return encoded;
-}
-
-inline std::optional<ReadinessSnapshot> decodeReadinessSnapshot(std::string_view encoded) noexcept {
-    if (encoded.size() < 3 || encoded[1] != '\n' ||
-        (encoded[0] != '0' && encoded[0] != '1')) {
-        return std::nullopt;
-    }
-    const auto healthJson = encoded.substr(2);
-    if (healthJson.empty() || healthJson.front() != '{' || healthJson.back() != '}') {
-        return std::nullopt;
-    }
-    return ReadinessSnapshot{encoded[0] == '1', healthJson};
+inline std::string snapshotId(std::size_t workerIndex,
+    std::string_view instance = service::runtime::instanceId()) {
+    return std::string(instance) + ":worker:" + std::to_string(workerIndex);
 }
 
 } // namespace service::message::worker_metrics

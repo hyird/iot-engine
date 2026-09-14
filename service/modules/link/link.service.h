@@ -330,11 +330,11 @@ class LinkService {
         co_await requireOwner(c, rows.front()[0].value().value_or(std::string_view{}));
         ruvia::DbQuery used(c.pool());
         used.select(used.cast(used.value(1), ruvia::DbDataType::kInteger))
-            .from("device")
-            .where(used.binary(used.column("link_id"), ruvia::DbBinaryOperator::kEqual,
+            .from(service::link::entities::DeviceEntity::tableName())
+            .where(used.binary(used.column(service::link::entities::DeviceEntity::columnName<"link_id">()), ruvia::DbBinaryOperator::kEqual,
                                used.cast(used.value(id), ruvia::DbDataType::kUuid)))
             .andWhere(used.unary(ruvia::DbUnaryOperator::kIsNull,
-                                 used.column("deleted_at")))
+                                 used.column(service::link::entities::DeviceEntity::columnName<"deleted_at">())))
             .limit(1);
         if (!(co_await c.db().query(used)).empty())
             service::common::fail(15008, "链路已被设备使用，请先删除关联设备", 409);
@@ -475,11 +475,11 @@ class LinkService {
         } else service::common::fail(15002, "传输类型无效", 400);
         ruvia::DbQuery nodeQuery(c.pool());
         nodeQuery.select(nodeQuery.cast(nodeQuery.value(1), ruvia::DbDataType::kInteger))
-            .from("edge_node")
-            .where(nodeQuery.binary(nodeQuery.column("id"), ruvia::DbBinaryOperator::kEqual,
+            .from(service::link::entities::EdgeNodeEntity::tableName())
+            .where(nodeQuery.binary(nodeQuery.column(service::link::entities::EdgeNodeEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual,
                                    nodeQuery.cast(nodeQuery.value(nodeId),
                                                  ruvia::DbDataType::kUuid)))
-            .andWhere(nodeQuery.binary(nodeQuery.column("enrollment_status"),
+            .andWhere(nodeQuery.binary(nodeQuery.column(service::link::entities::EdgeNodeEntity::columnName<"enrollment_status">()),
                                       ruvia::DbBinaryOperator::kEqual,
                                       nodeQuery.value("approved")))
             .andWhere(nodeQuery.binary(jsonText(nodeQuery, "capability", "deviceConfig"),
@@ -490,31 +490,31 @@ class LinkService {
         if (transport == "serial") {
             ruvia::DbQuery serialQuery(c.pool());
             serialQuery.select(serialQuery.cast(serialQuery.value(1), ruvia::DbDataType::kInteger))
-                .from("edge_node_serial")
-                .where(serialQuery.binary(serialQuery.column("node_id"),
+                .from(service::link::entities::EdgeNodeSerialEntity::tableName())
+                .where(serialQuery.binary(serialQuery.column(service::link::entities::EdgeNodeSerialEntity::columnName<"node_id">()),
                                          ruvia::DbBinaryOperator::kEqual,
                                          serialQuery.cast(serialQuery.value(nodeId),
                                                          ruvia::DbDataType::kUuid)))
-                .andWhere(serialQuery.binary(serialQuery.column("path"),
+                .andWhere(serialQuery.binary(serialQuery.column(service::link::entities::EdgeNodeSerialEntity::columnName<"path">()),
                                              ruvia::DbBinaryOperator::kEqual,
                                              serialQuery.value(interfaceName)))
                 .andWhere(serialQuery.unary(ruvia::DbUnaryOperator::kIsTrue,
-                                             serialQuery.column("available")));
+                                             serialQuery.column(service::link::entities::EdgeNodeSerialEntity::columnName<"available">())));
             const auto serial = co_await c.db().query(serialQuery);
             if (serial.empty()) service::common::fail(15002, "所选串口不存在或当前不可用", 409);
         } else {
             ruvia::DbQuery networkQuery(c.pool());
-            networkQuery.select(networkQuery.column("ipv4"))
-                .from("edge_node_interface")
-                .where(networkQuery.binary(networkQuery.column("node_id"),
+            networkQuery.select(networkQuery.column(service::link::entities::EdgeNodeInterfaceEntity::columnName<"ipv4">()))
+                .from(service::link::entities::EdgeNodeInterfaceEntity::tableName())
+                .where(networkQuery.binary(networkQuery.column(service::link::entities::EdgeNodeInterfaceEntity::columnName<"node_id">()),
                                            ruvia::DbBinaryOperator::kEqual,
                                            networkQuery.cast(networkQuery.value(nodeId),
                                                              ruvia::DbDataType::kUuid)))
-                .andWhere(networkQuery.binary(networkQuery.column("name"),
+                .andWhere(networkQuery.binary(networkQuery.column(service::link::entities::EdgeNodeInterfaceEntity::columnName<"name">()),
                                               ruvia::DbBinaryOperator::kEqual,
                                               networkQuery.value(interfaceName)))
                 .andWhere(networkQuery.binary(
-                    networkQuery.coalesce({networkQuery.column("ipv4"), networkQuery.value("")}),
+                    networkQuery.coalesce({networkQuery.column(service::link::entities::EdgeNodeInterfaceEntity::columnName<"ipv4">()), networkQuery.value("")}),
                     ruvia::DbBinaryOperator::kNotEqual, networkQuery.value("")))
                 .limit(1);
             const auto network = co_await c.db().query(networkQuery);

@@ -32,6 +32,7 @@
 #include "service/features/collector/engine/engine.runtime.h"
 #include "service/features/collector/modbus/modbus.protocol.h"
 #include "service/features/collector/scheduling/scheduling.runtime.h"
+#include "service/features/collector/scheduling/scheduling.protocol.h"
 #include "service/features/collector/redis/redis.transport.h"
 #include "service/features/collector/s7/s7.protocol.h"
 #include "service/features/collector/sl651/sl651.protocol.h"

@@ -122,7 +122,7 @@ class CollectorWorker final {
         for (const auto& [connectionId, deviceCodes] : routes_) {
             for (const auto& deviceCode : deviceCodes) {
                 try {
-                    co_await markDeviceOffline(deviceCode, connectionId, "local_closed");
+                    co_await CollectorStateService::markDeviceOffline(redis_, deviceCode, connectionId, "local_closed");
                 } catch (...) {
                 }
             }
@@ -137,8 +137,7 @@ class CollectorWorker final {
             }
         }
         try {
-            co_await message::redis::eraseMatching(redis_, "iot:runtime:link:*:worker:" + service::runtime::instanceId() + ":" + std::to_string(workerIndex_));
-            co_await message::redis::eraseHash(redis_, "iot:runtime:collector:" + service::runtime::instanceId() + ":" + std::to_string(workerIndex_));
+            co_await CollectorStateService::eraseWorker(redis_, workerIndex_);
         } catch (...) {
         }
         redis_.close();
@@ -517,7 +516,7 @@ class CollectorWorker final {
             engine_.reload(snapshot);
             tcp_.reload(snapshot);
             loadedSnapshot_ = std::move(snapshot);
-            co_await publishRuntimeState();
+            co_await CollectorStateService::publishWorker(redis_, workerIndex_, loadedConfigVersion_);
             ready->set_value();
             scheduleTargetRenewal();
             nextOwnershipRefresh_ = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -646,16 +645,12 @@ class CollectorWorker final {
                                 return current.id == link.id;
                             }
                         )) {
-                        co_await message::redis::eraseHash(
-                            redis_,
-                            "iot:runtime:link:" + link.id +
-                                ":worker:" + service::runtime::instanceId() + ":" + std::to_string(workerIndex_)
-                        );
+                        co_await CollectorStateService::eraseLink(redis_, link.id, workerIndex_);
                     }
                 }
                 loadedSnapshot_ = std::move(snapshot);
                 loadedConfigVersion_ = desiredConfigVersion_;
-                co_await publishRuntimeState();
+                co_await CollectorStateService::publishWorker(redis_, workerIndex_, loadedConfigVersion_);
                 changed = true;
             }
         }
@@ -1492,7 +1487,7 @@ class CollectorWorker final {
         if (bound != routes_.end()) {
             for (const auto& deviceCode : bound->second) {
                 if (!nextDeviceCodes.contains(deviceCode)) {
-                    co_await markDeviceOffline(deviceCode, refresh.connectionId, "configuration_reloaded");
+                    co_await CollectorStateService::markDeviceOffline(redis_, deviceCode, refresh.connectionId, "configuration_reloaded");
                 }
             }
             routes_.erase(bound);
@@ -1508,11 +1503,11 @@ class CollectorWorker final {
         const auto bound = routes_.find(connectionId);
         if (bound != routes_.end()) {
             for (const auto& deviceCode : bound->second) {
-                co_await markDeviceOffline(deviceCode, connectionId, reason);
+                co_await CollectorStateService::markDeviceOffline(redis_, deviceCode, connectionId, reason);
             }
             routes_.erase(bound);
         }
-        co_await message::redis::eraseHash(redis_, "iot:runtime:connection:" + std::string(connectionId));
+        co_await CollectorStateService::eraseConnection(redis_, connectionId);
         connectionEpochs_.erase(std::string(connectionId));
         (void)reason;
     }
@@ -1541,58 +1536,26 @@ class CollectorWorker final {
         // HSET was in flight; compensate before making it locally routable.
         const auto current = connectionEpochs_.find(action.connectionId);
         if (current == connectionEpochs_.end() || current->second != epoch) {
-            co_await markDeviceOffline(action.deviceId, action.connectionId, "connection_closed_during_registration");
+            co_await CollectorStateService::markDeviceOffline(redis_, action.deviceId, action.connectionId, "connection_closed_during_registration");
             co_return;
         }
         routes_[action.connectionId].insert(action.deviceId);
     }
 
     ruvia::Task<void> bindRoute(const ProtocolAction& action, std::uint64_t sessionEpoch) {
-        static constexpr std::string_view script = R"lua(
-local previous_worker = redis.call('HGET', KEYS[1], 'worker_id') or ''
-local previous_instance = redis.call('HGET', KEYS[1], 'instance_id') or ''
-local previous_connection = redis.call('HGET', KEYS[1], 'connection_id') or ''
-redis.call('HSET', KEYS[1],
-  'device_id', ARGV[1], 'device_code', ARGV[2], 'worker_id', ARGV[3],
-  'connection_id', ARGV[4], 'session_epoch', ARGV[5], 'updated_at_ms', ARGV[6],
-  'instance_id', ARGV[7], 'link_id', ARGV[8])
-if previous_connection ~= ARGV[4] then redis.call('XADD', KEYS[2], 'MAXLEN', '~', '100000', '*', 'topic', 'device') end
-return {previous_worker, previous_connection, previous_instance}
-)lua";
         const auto connection = networkConnections_.find(action.connectionId);
         if (connection == networkConnections_.end()) {
             co_return;
         }
-        const auto key = service::telemetry::latest::runtimeKey(action.deviceId);
-        const auto revisionKey = std::string(service::message::live::kChanges);
+        const auto owner = co_await CollectorStateService::bindRoute(
+            redis_, action, sessionEpoch, workerIndex_, connection->second.linkId);
+        const auto& oldWorker = owner.workerId;
+        const auto& oldConnection = owner.connectionId;
         const auto worker = std::to_string(workerIndex_);
-        const auto epoch = std::to_string(sessionEpoch);
-        const auto now = std::to_string(message::utcNowMilliseconds());
-        const std::string_view keys[]{ key, revisionKey };
-        const std::string_view args[]{
-            action.deviceId,
-            action.deviceCode,
-            worker,
-            action.connectionId,
-            epoch,
-            now,
-            service::runtime::instanceId(),
-            connection->second.linkId
-        };
-        const auto reply = co_await redis_.eval(script, keys, args);
-        if (reply.kind() != ruvia::RedisValue::Kind::kArray || reply.array().size() != 3) {
-            message::redis::throwValue("bind device route", reply);
-        }
-        const auto oldWorker = reply.array()[0].kind() == ruvia::RedisValue::Kind::kString
-            ? std::string(reply.array()[0].string())
-            : std::string{};
-        const auto oldConnection = reply.array()[1].kind() == ruvia::RedisValue::Kind::kString
-            ? std::string(reply.array()[1].string())
-            : std::string{};
         if (oldConnection.empty() || oldConnection == action.connectionId || oldWorker.empty()) {
             co_return;
         }
-        const auto oldInstance = reply.array()[2].string();
+        const auto& oldInstance = owner.instanceId;
         if (oldWorker == worker && oldInstance == service::runtime::instanceId()) {
             tcp_.close(oldConnection, "device_re_registered");
             co_return;
@@ -1607,33 +1570,6 @@ return {previous_worker, previous_connection, previous_instance}
               { "created_at_ms", std::to_string(message::utcNowMilliseconds()) } },
             1000
         );
-    }
-
-    ruvia::Task<void> markDeviceOffline(std::string_view deviceId, std::string_view connectionId, std::string_view reason) {
-        static constexpr std::string_view script = R"lua(
-if redis.call('HGET', KEYS[1], 'connection_id') ~= ARGV[1] then return 0 end
-redis.call('HDEL', KEYS[1], 'instance_id', 'worker_id', 'connection_id', 'session_epoch')
-if not redis.call('HGET', KEYS[1], 'last_report_at_ms') then
-  redis.call('HSET', KEYS[1], 'state', 'offline', 'state_reason', ARGV[2])
-end
-redis.call('HSET', KEYS[1], 'updated_at_ms', ARGV[3])
-redis.call('HSET', KEYS[2], '_state', cjson.encode({
-  state = 'offline',
-  reason = ARGV[2],
-  lastReportAt = tonumber(redis.call('HGET', KEYS[1], 'last_report_at_ms') or '0') or 0,
-  onlineUntil = tonumber(redis.call('HGET', KEYS[1], 'online_until_ms') or '0') or 0,
-  updatedAt = tonumber(ARGV[3]) or 0
-}), '_updated_at_ms', ARGV[3])
-redis.call('XADD', KEYS[3], 'MAXLEN', '~', '100000', '*', 'topic', 'device')
-return 1
-)lua";
-        const auto key = service::telemetry::latest::runtimeKey(deviceId);
-        const auto latestKey = service::telemetry::latest::latestKey(deviceId);
-        const auto revisionKey = std::string(service::message::live::kChanges);
-        const auto now = std::to_string(message::utcNowMilliseconds());
-        const std::string_view keys[]{ key, latestKey, revisionKey };
-        const std::string_view args[]{ connectionId, reason, now };
-        (void)co_await redis_.eval(script, keys, args);
     }
 
     ruvia::Task<void> finishCommand(std::string_view commandId, bool success, std::string_view reason) {
@@ -1823,20 +1759,7 @@ return 1
                 co_await deadLetterAndAcknowledge(message, "link_event_invalid", {}, stream, group);
                 continue;
             }
-            std::vector<message::StreamField> fields;
-            fields.reserve(message.fields.size());
-            for (const auto& field : message.fields) {
-                if (field.name == "message_id" || field.name == "created_at_ms") {
-                    continue;
-                }
-                fields.push_back(field);
-            }
-            fields.push_back({ "updated_at_ms", std::to_string(message::utcNowMilliseconds()) });
-            const auto key =
-                "iot:runtime:link:" + std::string(linkId) +
-                ":worker:" + service::runtime::instanceId() + ":" + std::to_string(workerIndex_);
-            co_await message::redis::eraseHash(redis_, key);
-            co_await message::redis::setHash(redis_, key, fields);
+            co_await CollectorStateService::storeLinkEvent(redis_, message, workerIndex_);
             co_await message::redis::acknowledgeAndDelete(redis_, stream, group, message.id);
         }
         co_return !messages.empty();
@@ -1934,18 +1857,6 @@ return 1
             commandGroup(),
             consumer_,
             inputEntryId
-        );
-    }
-
-    ruvia::Task<void> publishRuntimeState() {
-        const auto now = std::to_string(message::utcNowMilliseconds());
-        co_await message::redis::setHash(
-            redis_,
-            "iot:runtime:collector:" + service::runtime::instanceId() + ":" + std::to_string(workerIndex_),
-            { { "worker_id", std::to_string(workerIndex_) },
-              { "version", loadedConfigVersion_ },
-              { "state", "applied" },
-              { "applied_at_ms", now } }
         );
     }
 

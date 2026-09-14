@@ -23,7 +23,7 @@
 #endif
 #include "service/common/message.h"
 #include "service/features/collector/collector.types.h"
-#include "service/features/collector/engine/engine.runtime.h"
+#include "service/features/collector/engine/engine.types.h"
 #include "service/features/collector/scheduling/scheduling.runtime.h"
 
 namespace service::collector {

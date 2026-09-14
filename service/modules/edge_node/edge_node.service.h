@@ -1090,21 +1090,21 @@ class EdgeService {
         ruvia::DbQuery vpn(resource);
         const auto vpnNodeId = vpn.importExpression(nodeId, "node", "node");
         const std::array<ruvia::DbOrderTerm, 1> vpnOrder{{
-            {vpn.column("virtual_cidr", "route"), ruvia::DbOrderDirection::kAsc,
+            {vpn.column(service::edge_node::entities::VpnRouteEntity::columnName<"virtual_cidr">(), "route"), ruvia::DbOrderDirection::kAsc,
              ruvia::DbNullsOrder::kDefault}}};
         vpn.select(vpn.aggregate("string_agg",
-                                 {vpn.column("virtual_cidr", "route"),
+                                 {vpn.column(service::edge_node::entities::VpnRouteEntity::columnName<"virtual_cidr">(), "route"),
                                   vpn.cast(vpn.value(","), Type::kText)}, false, vpnOrder))
-            .from("vpn_route", "route")
-            .join(ruvia::DbJoinType::kInner, "vpn_peer",
-                  vpn.binary(vpn.column("id", "peer"), Op::kEqual,
-                             vpn.column("edge_peer_id", "route")),
+            .from(service::edge_node::entities::VpnRouteEntity::tableName(), "route")
+            .join(ruvia::DbJoinType::kInner, service::edge_node::entities::VpnPeerEntity::tableName(),
+                  vpn.binary(vpn.column(service::edge_node::entities::VpnPeerEntity::columnName<"id">(), "peer"), Op::kEqual,
+                             vpn.column(service::edge_node::entities::VpnRouteEntity::columnName<"edge_peer_id">(), "route")),
                   "peer")
-            .where(vpn.binary(vpn.column("edge_node_id", "peer"), Op::kEqual, vpnNodeId))
-            .andWhere(vpn.binary(vpn.column("status", "peer"), Op::kEqual,
+            .where(vpn.binary(vpn.column(service::edge_node::entities::VpnPeerEntity::columnName<"edge_node_id">(), "peer"), Op::kEqual, vpnNodeId))
+            .andWhere(vpn.binary(vpn.column(service::edge_node::entities::VpnPeerEntity::columnName<"status">(), "peer"), Op::kEqual,
                                  vpn.value("active")))
-            .andWhere(vpn.unary(Unary::kIsTrue, vpn.column("enabled", "route")))
-            .andWhere(vpn.binary(vpn.column("status", "route"), Op::kEqual,
+            .andWhere(vpn.unary(Unary::kIsTrue, vpn.column(service::edge_node::entities::VpnRouteEntity::columnName<"enabled">(), "route")))
+            .andWhere(vpn.binary(vpn.column(service::edge_node::entities::VpnRouteEntity::columnName<"status">(), "route"), Op::kEqual,
                                  vpn.value("active")));
 
         query.select({query.cast(nodeId, Type::kText), query.column("imei", "node"),

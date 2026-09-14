@@ -19,7 +19,6 @@
 #include <ruvia/core/Task.h>
 #include <ruvia/web/WebWorker.h>
 
-#include "service/features/vpn/firewall/firewall.transport.h"
 #include "service/features/vpn/vpn.service.h"
 #include "service/features/vpn/wireguard/wireguard.transport.h"
 #include "service/utils/json.h"
@@ -75,228 +74,13 @@ class VpnHubRuntime final {
         worker_ = {};
     }
 
-    static ruvia::Task<wireguard::RuntimeStatus> reconcileNow(
-        ruvia::WebWorkerContext& context,
-        const wireguard::HubConfig& fallback
-    ) {
-        co_return co_await reconcile(context, fallback);
-    }
-
-    static ruvia::Task<wireguard::RuntimeStatus> status(
-        ruvia::WebWorkerContext& context,
-        const wireguard::HubConfig& fallback
-    ) {
-        const auto config = co_await hub_config::loadOrInitialize(context, fallback);
-        if (!config) {
-            co_return wireguard::RuntimeStatus{
-                .supported = true,
-                .configured = false,
-                .code = "hub_config_missing",
-                .message = "WireGuard Hub 配置尚未初始化",
-                .peerCount = 0
-            };
-        }
-        co_return wireguard::controller().status(*config);
-    }
-
   private:
-    static ruvia::Task<wireguard::RuntimeStatus> reconcile(
-        ruvia::WebWorkerContext& context,
-        const wireguard::HubConfig& fallback,
-        bool background = false
-    ) {
-        // The interface is an external singleton. All workers run the same job,
-        // but only the transaction owner applies a particular reconciliation.
-        // A separate worker-local connection keeps the lock while business
-        // queries use their ordinary connection, without pool self-deadlock.
-        auto ownership = co_await context.db("vpn-coordination").beginTransaction();
-        if (!(co_await VpnRuntimeService::acquireReconciliation(ownership, context.resource(), background))) {
-            co_return wireguard::RuntimeStatus{ .code = "reconciliation_in_progress" };
-        }
-        const auto key = "iot:vpn:reconciled:" + service::runtime::instanceId();
-        if (background) {
-            const auto previous = co_await service::message::redis::command(context.redis(), { "GET", key });
-            if (previous.kind() == ruvia::RedisValue::Kind::kString) {
-                co_return wireguard::RuntimeStatus{ .code = "reconciliation_current" };
-            }
-            if (previous.kind() == ruvia::RedisValue::Kind::kError) {
-                service::message::redis::throwValue("VPN reconciliation schedule", previous);
-            }
-        }
-        // Keep address allocation behind the complete kernel reconciliation.
-        // Otherwise an older snapshot could install a revoked key after its
-        // address has already been returned to a newly enrolled client.
-        co_await VpnRuntimeService::lockAddressAllocation(ownership, context.resource());
-        auto result = co_await reconcileLocal(context, fallback);
-        if (result.configured) {
-            const auto scheduled = co_await service::message::redis::command(
-                context.redis(),
-                { "SET", key, "1", "PX", "10000" }
-            );
-            if (scheduled.kind() == ruvia::RedisValue::Kind::kError) {
-                service::message::redis::throwValue("VPN reconciliation schedule", scheduled);
-            }
-        }
-        co_await ownership.commit();
-        co_return result;
-    }
-
-    static ruvia::Task<wireguard::RuntimeStatus> reconcileLocal(
-        ruvia::WebWorkerContext& context,
-        const wireguard::HubConfig& fallback
-    ) {
-        const auto config = co_await hub_config::loadOrInitialize(context, fallback);
-        if (!config) {
-            co_return wireguard::RuntimeStatus{
-                .supported = true,
-                .configured = false,
-                .code = "hub_config_missing",
-                .message = "WireGuard Hub 配置尚未初始化",
-                .peerCount = 0
-            };
-        }
-        auto& controller = wireguard::controller();
-        auto result = controller.configure(*config);
-        if (!result.configured) {
-            co_return result;
-        }
-        const auto peers = co_await VpnRuntimeService::loadActivePeers(context);
-        // Remove obsolete keys before assigning a recycled address to a new peer.
-        // A failed inventory or removal must not grant access to a stale key.
-        const auto currentPeers = controller.peerKeys(*config);
-        if (!currentPeers) {
-            co_return wireguard::RuntimeStatus{
-                .supported = true,
-                .configured = false,
-                .code = "peer_inventory_failed",
-                .message = "Unable to read WireGuard peers before reconciliation"
-            };
-        }
-        std::unordered_set<std::string> expected;
-        for (const auto& peerRecord : peers) {
-            if (wireguard::validKey(peerRecord.publicKey) && parseIpv4(peerRecord.assignedIpv4)) {
-                expected.insert(peerRecord.publicKey);
-            }
-        }
-        for (const auto& publicKey : *currentPeers) {
-            if (!expected.contains(publicKey)) {
-                const auto removed = controller.removePeer(*config, publicKey);
-                if (!removed.configured) {
-                    co_return removed;
-                }
-            }
-        }
-        std::vector<firewall::ClientAccess> clients;
-        std::vector<wireguard::Peer> configured;
-        std::vector<std::string> expectedRoutes;
-        std::size_t configuredPeers = 0;
-        for (const auto& peerRecord : peers) {
-            const auto& publicKey = peerRecord.publicKey;
-            const auto& assigned = peerRecord.assignedIpv4;
-            const auto& peerType = peerRecord.peerType;
-            if (!wireguard::validKey(publicKey) || !parseIpv4(assigned)) {
-                continue;
-            }
-            wireguard::Peer peer;
-            peer.publicKey = publicKey;
-            peer.allowedIps.emplace_back(assigned + "/32");
-            if (peerType == "edge") {
-                firewall::ClientAccess client{ .assignedIpv4 = assigned };
-                std::stringstream routes(peerRecord.sourceRoutes);
-                std::string route;
-                while (std::getline(routes, route, ',')) {
-                    if (!route.empty() && route.front() == ' ') {
-                        route.erase(route.begin());
-                    }
-                    if (!route.empty()) {
-                        peer.allowedIps.push_back(route);
-                        client.sourceRoutes.push_back(std::move(route));
-                    }
-                }
-                std::stringstream allowedRoutes(peerRecord.allowedRoutes);
-                while (std::getline(allowedRoutes, route, ',')) {
-                    if (!route.empty() && route.front() == ' ') {
-                        route.erase(route.begin());
-                    }
-                    if (!route.empty()) {
-                        client.allowedRoutes.push_back(std::move(route));
-                    }
-                }
-                clients.push_back(std::move(client));
-            } else if (peerType == "windows") {
-                firewall::ClientAccess client{ .assignedIpv4 = assigned };
-                std::stringstream routes(peerRecord.allowedRoutes);
-                std::string route;
-                while (std::getline(routes, route, ',')) {
-                    if (!route.empty() && route.front() == ' ') {
-                        route.erase(route.begin());
-                    }
-                    if (!route.empty()) {
-                        client.allowedRoutes.push_back(std::move(route));
-                    }
-                }
-                std::stringstream edgeAddresses(peerRecord.edgeAddresses);
-                std::string edgeAddress;
-                while (std::getline(edgeAddresses, edgeAddress, ',')) {
-                    if (!edgeAddress.empty() && edgeAddress.front() == ' ') {
-                        edgeAddress.erase(edgeAddress.begin());
-                    }
-                    if (!edgeAddress.empty()) {
-                        client.edgeAddresses.push_back(std::move(edgeAddress));
-                    }
-                }
-                clients.push_back(std::move(client));
-            }
-            expectedRoutes.insert(expectedRoutes.end(), peer.allowedIps.begin(), peer.allowedIps.end());
-            configured.push_back(std::move(peer));
-        }
-
-        const auto firewallResult = firewall::apply(config->interfaceName, clients);
-        if (!firewallResult.configured) {
-            co_return wireguard::RuntimeStatus{
-                .supported = true,
-                .configured = false,
-                .code = "firewall_configure_failed",
-                .message = firewallResult.message,
-                .peerCount = configuredPeers
-            };
-        }
-        // Install the new address permissions before enabling its new key.
-        // Recycled addresses must never inherit a previous client's firewall access.
-        for (const auto& peer : configured) {
-            const auto peerResult = controller.upsertPeer(*config, peer);
-            if (!peerResult.configured) {
-                co_return peerResult;
-            }
-            ++configuredPeers;
-        }
-        const auto routeResult = controller.reconcileRoutes(*config, expectedRoutes);
-        if (!routeResult.configured) {
-            co_return routeResult;
-        }
-        if (const auto handshakes = controller.peerHandshakes(*config)) {
-            for (const auto& [publicKey, seconds] : *handshakes) {
-                if (seconds == 0 || seconds > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
-                    continue;
-                }
-                co_await VpnRuntimeService::updatePeerHandshake(
-                    context,
-                    publicKey,
-                    static_cast<std::int64_t>(seconds)
-                );
-            }
-        }
-        result.peerCount = configuredPeers;
-        result.message = "WireGuard hub is configured";
-        co_return result;
-    }
-
     ruvia::Task<void> run(ruvia::WebWorkerContext& context, const std::shared_ptr<std::promise<void>>& ready, const std::shared_ptr<std::promise<void>>& stopped) {
         try {
             ready->set_value();
             while (running_.load() && !context.stopToken().stopRequested()) {
                 try {
-                    co_await reconcile(context, hubConfig_, true);
+                    co_await VpnHubService::reconcile(context, hubConfig_, true);
                 } catch (const std::exception& error) {
                     std::cerr << "VPN runtime reconciliation failed: " << error.what() << '\n';
                 }
@@ -352,7 +136,7 @@ class VpnControlHandler final {
 
         if (operation == "reconcile" || operation == "wireguard-reconcile" ||
             operation == "firewall-reconcile") {
-            const auto result = co_await VpnHubRuntime::reconcileNow(context, fallback_);
+            const auto result = co_await VpnHubService::reconcile(context, fallback_);
             if (operation == "reconcile" && result.supported && !result.configured &&
                 result.code != "hub_config_missing") {
                 service::common::fail(21005, "VPN Hub reconciliation failed: " + result.message, 503);
@@ -361,24 +145,12 @@ class VpnControlHandler final {
         }
 
         if (operation == "wireguard-status") {
-            const auto result = co_await VpnHubRuntime::status(context, fallback_);
+            const auto result = co_await VpnHubService::status(context, fallback_);
             co_return runtimeStatusJson(result);
         }
 
         if (operation == "wireguard-remove-peer") {
-            if (!wireguard::validKey(payload)) {
-                service::common::fail(10002, "WireGuard Peer 公钥无效", 400);
-            }
-            auto ownership = co_await context.db("vpn-coordination").beginTransaction();
-            (void)co_await VpnRuntimeService::acquireReconciliation(ownership, context.resource(), false);
-            const auto config = co_await hub_config::loadOrInitialize(context, fallback_);
-            if (config) {
-                const auto result = wireguard::controller().removePeer(*config, payload);
-                if (result.supported && !result.configured) {
-                    service::common::fail(21005, "VPN Hub peer removal failed: " + result.message, 503);
-                }
-            }
-            co_await ownership.commit();
+            co_await VpnHubService::removePeer(context, fallback_, payload);
             co_return "{}";
         }
 

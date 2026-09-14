@@ -12,7 +12,8 @@
 
 #include <ruvia/web/Context.h>
 #include <ruvia/web/db/Db.h>
-#include <ruvia/web/redis/Redis.h>
+#include <ruvia/web/redis/RedisRepository.h>
+#include "service/modules/system/operations/operations.entity.h"
 
 #include "service/common/message.h"
 #include "service/common/observability.h"
@@ -114,52 +115,20 @@ class OperationsService final {
 
     static ruvia::Task<std::vector<WorkerSnapshot>>
     loadSnapshots(ruvia::Context& context, std::size_t count) {
-        std::vector<std::string> metricKeys;
-        std::vector<std::string> readinessKeys;
-        metricKeys.reserve(count);
-        readinessKeys.reserve(count);
-        for (std::size_t index = 0; index < count; ++index) {
-            metricKeys.push_back(service::message::worker_metrics::metricsSnapshotKey(index));
-            readinessKeys.push_back(
-                service::message::worker_metrics::readinessSnapshotKey(index)
-            );
-        }
-
-        std::vector<std::string_view> metricViews;
-        std::vector<std::string_view> readinessViews;
-        metricViews.reserve(count);
-        readinessViews.reserve(count);
-        for (std::size_t index = 0; index < count; ++index) {
-            metricViews.emplace_back(metricKeys[index]);
-            readinessViews.emplace_back(readinessKeys[index]);
-        }
-        const auto metricValues = co_await context.redis().mget(
-            std::span<const std::string_view>(metricViews)
-        );
-        const auto readinessValues = co_await context.redis().mget(
-            std::span<const std::string_view>(readinessViews)
-        );
-
+        auto snapshots = context.redis().getRepository<WorkerSnapshotEntity>();
         std::vector<WorkerSnapshot> result(count);
         for (std::size_t index = 0; index < count; ++index) {
-            if (index < metricValues.size() && metricValues[index].has_value()) {
-                const auto& value = *metricValues[index];
-                result[index].metrics.assign(value.data(), value.size());
-                result[index].metricsPresent = true;
-            }
-            if (index >= readinessValues.size() || !readinessValues[index].has_value()) {
-                continue;
-            }
-            const auto& value = *readinessValues[index];
-            const auto snapshot = service::message::worker_metrics::decodeReadinessSnapshot(
-                std::string_view(value.data(), value.size())
-            );
-            if (!snapshot.has_value()) {
-                continue;
-            }
-            result[index].readinessPresent = true;
-            result[index].ready = snapshot->ready;
-            result[index].healthJson.assign(snapshot->healthJson);
+            const ruvia::DbFindOptions options{
+                .where = WorkerSnapshotEntity::column<"id">() ==
+                    service::message::worker_metrics::snapshotId(index)};
+            const auto snapshot = co_await snapshots.findOne(options);
+            if (!snapshot) continue;
+            auto& value = result[index];
+            value.metrics.assign(snapshot->get<"metrics">().view());
+            value.healthJson.assign(snapshot->get<"health">().view());
+            value.metricsPresent = true;
+            value.readinessPresent = true;
+            value.ready = snapshot->get<"ready">();
         }
         co_return result;
     }

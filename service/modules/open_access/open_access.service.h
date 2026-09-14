@@ -1,5 +1,7 @@
 #pragma once
 
+#include "service/modules/open_access/open_access.entity.h"
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -50,46 +52,46 @@ class AccessService final {
 
     ruvia::Task<std::string> listKeys(ruvia::Context& c) {
         ruvia::DbQuery listed(c.pool());
-        const auto keyId = listed.column("id", "key");
-        const auto bindingId = listed.column("device_id", "binding");
+        const auto keyId = listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"id">(), "key");
+        const auto bindingId = listed.column(service::open_access::entities::OpenAccessKeyDeviceEntity::columnName<"device_id">(), "binding");
         const auto item = listed.call(
             "jsonb_build_object",
             {textKey(listed, "id"), text(listed, keyId), textKey(listed, "name"),
-             listed.column("name", "key"), textKey(listed, "accessKeyPrefix"),
-             listed.column("access_key_prefix", "key"), textKey(listed, "status"),
-             listed.column("status", "key"), textKey(listed, "scopes"),
-             listed.column("scopes", "key"), textKey(listed, "expiresAt"),
-             listed.call("iot_utc_timestamp", {listed.column("expires_at", "key")}),
+             listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"name">(), "key"), textKey(listed, "accessKeyPrefix"),
+             listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"access_key_prefix">(), "key"), textKey(listed, "status"),
+             listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"status">(), "key"), textKey(listed, "scopes"),
+             listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"scopes">(), "key"), textKey(listed, "expiresAt"),
+             listed.call("iot_utc_timestamp", {listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"expires_at">(), "key")}),
              textKey(listed, "lastUsedAt"),
-             listed.call("iot_utc_timestamp", {listed.column("last_used_at", "key")}),
-             textKey(listed, "lastUsedIp"), listed.column("last_used_ip", "key"),
-             textKey(listed, "remark"), listed.column("remark", "key"),
+             listed.call("iot_utc_timestamp", {listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"last_used_at">(), "key")}),
+             textKey(listed, "lastUsedIp"), listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"last_used_ip">(), "key"),
+             textKey(listed, "remark"), listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"remark">(), "key"),
              textKey(listed, "createdAt"),
-             listed.call("iot_utc_timestamp", {listed.column("created_at", "key")}),
+             listed.call("iot_utc_timestamp", {listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"created_at">(), "key")}),
              textKey(listed, "updatedAt"),
-             listed.call("iot_utc_timestamp", {listed.column("updated_at", "key")}),
+             listed.call("iot_utc_timestamp", {listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"updated_at">(), "key")}),
              textKey(listed, "webhookCount"),
-             listed.aggregate("count", {listed.column("id", "webhook")}, true),
+             listed.aggregate("count", {listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"id">(), "webhook")}, true),
              textKey(listed, "deviceIds"),
              listed.coalesce({listed.filter(
                                   listed.aggregate("jsonb_agg", {bindingId}, true),
                                   listed.unary(ruvia::DbUnaryOperator::kIsNotNull, bindingId)),
                               emptyJson(listed)})});
-         listed.select({listed.alias(item, "item"), listed.column("created_at", "key")})
-            .from("open_access_key", "key")
-            .join(ruvia::DbJoinType::kLeft, "open_access_key_device",
-                  listed.binary(listed.column("access_key_id", "binding"),
+         listed.select({listed.alias(item, "item"), listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"created_at">(), "key")})
+            .from(service::open_access::entities::OpenAccessKeyEntity::tableName(), "key")
+            .join(ruvia::DbJoinType::kLeft, service::open_access::entities::OpenAccessKeyDeviceEntity::tableName(),
+                  listed.binary(listed.column(service::open_access::entities::OpenAccessKeyDeviceEntity::columnName<"access_key_id">(), "binding"),
                                 ruvia::DbBinaryOperator::kEqual, keyId),
                   "binding")
-            .join(ruvia::DbJoinType::kLeft, "open_webhook",
+            .join(ruvia::DbJoinType::kLeft, service::open_access::entities::OpenWebhookEntity::tableName(),
                   andAll(listed,
-                         listed.binary(listed.column("access_key_id", "webhook"),
+                         listed.binary(listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"access_key_id">(), "webhook"),
                                        ruvia::DbBinaryOperator::kEqual, keyId),
                          listed.unary(ruvia::DbUnaryOperator::kIsNull,
-                                      listed.column("deleted_at", "webhook"))),
+                                      listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"deleted_at">(), "webhook"))),
                   "webhook")
             .where(listed.unary(ruvia::DbUnaryOperator::kIsNull,
-                                listed.column("deleted_at", "key")))
+                                listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"deleted_at">(), "key")))
             .groupBy({keyId});
         ruvia::DbQuery query(c.pool());
         const std::array<ruvia::DbOrderTerm, 1> keyOrder{{
@@ -175,7 +177,7 @@ class AccessService final {
         const auto remarkValue = remark.value_or("");
         auto transaction = co_await c.db().beginTransaction();
         ruvia::DbQuery insert(c.pool());
-        insert.insertInto("open_access_key",
+        insert.insertInto(service::open_access::entities::OpenAccessKeyEntity::tableName(),
                           {"id", "name", "access_key_prefix", "access_key_hash", "status",
                            "scopes", "expires_at", "remark", "created_by"})
             .values({uuid(insert, id), insert.value(name), insert.value(prefix),
@@ -226,20 +228,20 @@ class AccessService final {
         const auto remarkValue = remark.value_or("");
         auto transaction = co_await c.db().beginTransaction();
         ruvia::DbQuery update(c.pool());
-        update.update("open_access_key")
-            .set("name", update.value(name))
-            .set("status", update.value(status))
-            .set("scopes", update.cast(update.value(scopeJson), ruvia::DbDataType::kJsonb))
-            .set("expires_at",
+        update.update(service::open_access::entities::OpenAccessKeyEntity::tableName())
+            .set(service::open_access::entities::OpenAccessKeyEntity::columnName<"name">(), update.value(name))
+            .set(service::open_access::entities::OpenAccessKeyEntity::columnName<"status">(), update.value(status))
+            .set(service::open_access::entities::OpenAccessKeyEntity::columnName<"scopes">(), update.cast(update.value(scopeJson), ruvia::DbDataType::kJsonb))
+            .set(service::open_access::entities::OpenAccessKeyEntity::columnName<"expires_at">(),
                  update.cast(update.nullIf(update.value(expiresAtValue), update.value("")),
                              ruvia::DbDataType::kTimestampTz))
-            .set("remark", update.nullIf(update.value(remarkValue), update.value("")))
-            .set("updated_at", update.call("now"))
+            .set(service::open_access::entities::OpenAccessKeyEntity::columnName<"remark">(), update.nullIf(update.value(remarkValue), update.value("")))
+            .set(service::open_access::entities::OpenAccessKeyEntity::columnName<"updated_at">(), update.call("now"))
             .where(andAll(update,
-                          update.binary(update.column("id"), ruvia::DbBinaryOperator::kEqual,
+                          update.binary(update.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual,
                                         uuid(update, id)),
                           update.unary(ruvia::DbUnaryOperator::kIsNull,
-                                       update.column("deleted_at"))));
+                                       update.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"deleted_at">()))));
         (void)co_await transaction.execute(update);
         if (deviceField)
             co_await replaceDevices(transaction, id, devices);
@@ -256,15 +258,15 @@ class AccessService final {
         const auto keyHash = service::utils::sha256(rawKey);
         auto transaction = co_await c.db().beginTransaction();
         ruvia::DbQuery update(c.pool());
-        update.update("open_access_key")
-            .set("access_key_hash", update.value(keyHash))
-            .set("access_key_prefix", update.value(prefix))
-            .set("updated_at", update.call("now"))
+        update.update(service::open_access::entities::OpenAccessKeyEntity::tableName())
+            .set(service::open_access::entities::OpenAccessKeyEntity::columnName<"access_key_hash">(), update.value(keyHash))
+            .set(service::open_access::entities::OpenAccessKeyEntity::columnName<"access_key_prefix">(), update.value(prefix))
+            .set(service::open_access::entities::OpenAccessKeyEntity::columnName<"updated_at">(), update.call("now"))
             .where(andAll(update,
-                          update.binary(update.column("id"), ruvia::DbBinaryOperator::kEqual,
+                          update.binary(update.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual,
                                         uuid(update, id)),
                           update.unary(ruvia::DbUnaryOperator::kIsNull,
-                                       update.column("deleted_at"))));
+                                       update.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"deleted_at">()))));
         (void)co_await transaction.execute(update);
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "access_key", "rotated", id);
         co_await transaction.commit();
@@ -279,26 +281,26 @@ class AccessService final {
         (void)co_await requireKey(c, id);
         auto transaction = co_await c.db().beginTransaction();
         ruvia::DbQuery webhookUpdate(c.pool());
-        webhookUpdate.update("open_webhook")
-            .set("deleted_at", webhookUpdate.call("now"))
-            .set("updated_at", webhookUpdate.call("now"))
+        webhookUpdate.update(service::open_access::entities::OpenWebhookEntity::tableName())
+            .set(service::open_access::entities::OpenWebhookEntity::columnName<"deleted_at">(), webhookUpdate.call("now"))
+            .set(service::open_access::entities::OpenWebhookEntity::columnName<"updated_at">(), webhookUpdate.call("now"))
             .where(andAll(webhookUpdate,
-                          webhookUpdate.binary(webhookUpdate.column("access_key_id"),
+                          webhookUpdate.binary(webhookUpdate.column(service::open_access::entities::OpenWebhookEntity::columnName<"access_key_id">()),
                                                ruvia::DbBinaryOperator::kEqual,
                                                uuid(webhookUpdate, id)),
                           webhookUpdate.unary(ruvia::DbUnaryOperator::kIsNull,
-                                              webhookUpdate.column("deleted_at"))));
+                                              webhookUpdate.column(service::open_access::entities::OpenWebhookEntity::columnName<"deleted_at">()))));
         (void)co_await transaction.execute(webhookUpdate);
         ruvia::DbQuery keyUpdate(c.pool());
-        keyUpdate.update("open_access_key")
-            .set("deleted_at", keyUpdate.call("now"))
-            .set("updated_at", keyUpdate.call("now"))
+        keyUpdate.update(service::open_access::entities::OpenAccessKeyEntity::tableName())
+            .set(service::open_access::entities::OpenAccessKeyEntity::columnName<"deleted_at">(), keyUpdate.call("now"))
+            .set(service::open_access::entities::OpenAccessKeyEntity::columnName<"updated_at">(), keyUpdate.call("now"))
             .where(andAll(keyUpdate,
-                          keyUpdate.binary(keyUpdate.column("id"),
+                          keyUpdate.binary(keyUpdate.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"id">()),
                                            ruvia::DbBinaryOperator::kEqual,
                                            uuid(keyUpdate, id)),
                           keyUpdate.unary(ruvia::DbUnaryOperator::kIsNull,
-                                          keyUpdate.column("deleted_at"))));
+                                          keyUpdate.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"deleted_at">()))));
         (void)co_await transaction.execute(keyUpdate);
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "access_key", "deleted", id);
         co_await transaction.commit();
@@ -307,20 +309,20 @@ class AccessService final {
 
     ruvia::Task<std::string> listWebhooks(ruvia::Context& c) {
         ruvia::DbQuery listed(c.pool());
-        const auto webhookId = listed.column("id", "webhook");
-        const auto bindingDevice = listed.column("device_id", "binding");
+        const auto webhookId = listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"id">(), "webhook");
+        const auto bindingDevice = listed.column(service::open_access::entities::OpenAccessKeyDeviceEntity::columnName<"device_id">(), "binding");
         const auto item = listed.call(
             "jsonb_build_object",
             {textKey(listed, "id"), text(listed, webhookId), textKey(listed, "accessKeyId"),
-             text(listed, listed.column("access_key_id", "webhook")),
-             textKey(listed, "accessKeyName"), listed.column("name", "key"),
-             textKey(listed, "name"), listed.column("name", "webhook"),
-             textKey(listed, "url"), listed.column("url", "webhook"),
-             textKey(listed, "status"), listed.column("status", "webhook"),
-             textKey(listed, "timeoutSeconds"), listed.column("timeout_seconds", "webhook"),
-             textKey(listed, "skipTlsVerify"), listed.column("skip_tls_verify", "webhook"),
-             textKey(listed, "headers"), listed.column("headers", "webhook"),
-             textKey(listed, "eventTypes"), listed.column("event_types", "webhook"),
+             text(listed, listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"access_key_id">(), "webhook")),
+             textKey(listed, "accessKeyName"), listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"name">(), "key"),
+             textKey(listed, "name"), listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"name">(), "webhook"),
+             textKey(listed, "url"), listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"url">(), "webhook"),
+             textKey(listed, "status"), listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"status">(), "webhook"),
+             textKey(listed, "timeoutSeconds"), listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"timeout_seconds">(), "webhook"),
+             textKey(listed, "skipTlsVerify"), listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"skip_tls_verify">(), "webhook"),
+             textKey(listed, "headers"), listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"headers">(), "webhook"),
+             textKey(listed, "eventTypes"), listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"event_types">(), "webhook"),
              textKey(listed, "deviceIds"),
              listed.coalesce({listed.filter(
                                   listed.aggregate("jsonb_agg", {bindingDevice}),
@@ -329,40 +331,40 @@ class AccessService final {
                               emptyJson(listed)}),
              textKey(listed, "hasSecret"),
              listed.unary(ruvia::DbUnaryOperator::kIsNotNull,
-                         listed.column("secret", "webhook")),
+                         listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"secret">(), "webhook")),
              textKey(listed, "lastTriggeredAt"),
-             listed.call("iot_utc_timestamp", {listed.column("last_triggered_at", "webhook")}),
+             listed.call("iot_utc_timestamp", {listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"last_triggered_at">(), "webhook")}),
              textKey(listed, "lastSuccessAt"),
-             listed.call("iot_utc_timestamp", {listed.column("last_success_at", "webhook")}),
+             listed.call("iot_utc_timestamp", {listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"last_success_at">(), "webhook")}),
              textKey(listed, "lastFailureAt"),
-             listed.call("iot_utc_timestamp", {listed.column("last_failure_at", "webhook")}),
+             listed.call("iot_utc_timestamp", {listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"last_failure_at">(), "webhook")}),
              textKey(listed, "lastHttpStatus"),
-             listed.column("last_http_status", "webhook"), textKey(listed, "lastError"),
-             listed.column("last_error", "webhook"), textKey(listed, "createdAt"),
-             listed.call("iot_utc_timestamp", {listed.column("created_at", "webhook")}),
+             listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"last_http_status">(), "webhook"), textKey(listed, "lastError"),
+             listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"last_error">(), "webhook"), textKey(listed, "createdAt"),
+             listed.call("iot_utc_timestamp", {listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"created_at">(), "webhook")}),
              textKey(listed, "updatedAt"),
-             listed.call("iot_utc_timestamp", {listed.column("updated_at", "webhook")})});
-         listed.select({listed.alias(item, "item"), listed.column("created_at", "webhook")})
-            .from("open_webhook", "webhook")
-            .join(ruvia::DbJoinType::kInner, "open_access_key",
+             listed.call("iot_utc_timestamp", {listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"updated_at">(), "webhook")})});
+         listed.select({listed.alias(item, "item"), listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"created_at">(), "webhook")})
+            .from(service::open_access::entities::OpenWebhookEntity::tableName(), "webhook")
+            .join(ruvia::DbJoinType::kInner, service::open_access::entities::OpenAccessKeyEntity::tableName(),
                   andAll(listed,
-                         listed.binary(listed.column("id", "key"),
+                         listed.binary(listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"id">(), "key"),
                                        ruvia::DbBinaryOperator::kEqual,
-                                       listed.column("access_key_id", "webhook")),
+                                       listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"access_key_id">(), "webhook")),
                          listed.unary(ruvia::DbUnaryOperator::kIsNull,
-                                      listed.column("deleted_at", "key"))),
+                                      listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"deleted_at">(), "key"))),
                   "key")
-            .join(ruvia::DbJoinType::kLeft, "open_access_key_device",
-                  listed.binary(listed.column("access_key_id", "binding"),
+            .join(ruvia::DbJoinType::kLeft, service::open_access::entities::OpenAccessKeyDeviceEntity::tableName(),
+                  listed.binary(listed.column(service::open_access::entities::OpenAccessKeyDeviceEntity::columnName<"access_key_id">(), "binding"),
                                 ruvia::DbBinaryOperator::kEqual,
-                                listed.column("id", "key")),
+                                listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"id">(), "key")),
                   "binding")
             .where(listed.unary(ruvia::DbUnaryOperator::kIsNull,
-                                listed.column("deleted_at", "webhook")))
-            .groupBy({webhookId, listed.column("id", "key")});
+                                listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"deleted_at">(), "webhook")))
+            .groupBy({webhookId, listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"id">(), "key")});
         if (const auto key = c.req().query("accessKeyId"); key && !key->empty()) {
             service::common::requireUuid(19002, *key, "调用配置 ID 无效");
-            listed.andWhere(listed.binary(listed.column("access_key_id", "webhook"),
+            listed.andWhere(listed.binary(listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"access_key_id">(), "webhook"),
                                           ruvia::DbBinaryOperator::kEqual,
                                           uuid(listed, *key)));
         }
@@ -397,7 +399,7 @@ class AccessService final {
         const auto secretValue = secret.value_or("");
         auto transaction = co_await c.db().beginTransaction();
         ruvia::DbQuery insert(c.pool());
-        insert.insertInto("open_webhook",
+        insert.insertInto(service::open_access::entities::OpenWebhookEntity::tableName(),
                           {"id", "access_key_id", "name", "url", "status", "timeout_seconds",
                            "skip_tls_verify", "headers", "event_types", "secret"})
             .values({uuid(insert, id), uuid(insert, accessKeyId), insert.value(name),
@@ -452,22 +454,22 @@ class AccessService final {
         const auto secretValue = secret.value_or("");
         auto transaction = co_await c.db().beginTransaction();
         ruvia::DbQuery update(c.pool());
-        update.update("open_webhook")
-            .set("access_key_id", uuid(update, accessKeyId))
-            .set("name", update.value(name))
-            .set("url", update.value(url))
-            .set("status", update.value(status))
-            .set("timeout_seconds", update.value(timeout))
-            .set("skip_tls_verify", update.value(skipTlsVerify))
-            .set("headers", update.cast(update.value(headers), ruvia::DbDataType::kJsonb))
-            .set("event_types", update.cast(update.value(eventJson), ruvia::DbDataType::kJsonb))
-            .set("secret", update.nullIf(update.value(secretValue), update.value("")))
-            .set("updated_at", update.call("now"))
+        update.update(service::open_access::entities::OpenWebhookEntity::tableName())
+            .set(service::open_access::entities::OpenWebhookEntity::columnName<"access_key_id">(), uuid(update, accessKeyId))
+            .set(service::open_access::entities::OpenWebhookEntity::columnName<"name">(), update.value(name))
+            .set(service::open_access::entities::OpenWebhookEntity::columnName<"url">(), update.value(url))
+            .set(service::open_access::entities::OpenWebhookEntity::columnName<"status">(), update.value(status))
+            .set(service::open_access::entities::OpenWebhookEntity::columnName<"timeout_seconds">(), update.value(timeout))
+            .set(service::open_access::entities::OpenWebhookEntity::columnName<"skip_tls_verify">(), update.value(skipTlsVerify))
+            .set(service::open_access::entities::OpenWebhookEntity::columnName<"headers">(), update.cast(update.value(headers), ruvia::DbDataType::kJsonb))
+            .set(service::open_access::entities::OpenWebhookEntity::columnName<"event_types">(), update.cast(update.value(eventJson), ruvia::DbDataType::kJsonb))
+            .set(service::open_access::entities::OpenWebhookEntity::columnName<"secret">(), update.nullIf(update.value(secretValue), update.value("")))
+            .set(service::open_access::entities::OpenWebhookEntity::columnName<"updated_at">(), update.call("now"))
             .where(andAll(update,
-                          update.binary(update.column("id"), ruvia::DbBinaryOperator::kEqual,
+                          update.binary(update.column(service::open_access::entities::OpenWebhookEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual,
                                         uuid(update, id)),
                           update.unary(ruvia::DbUnaryOperator::kIsNull,
-                                       update.column("deleted_at"))));
+                                       update.column(service::open_access::entities::OpenWebhookEntity::columnName<"deleted_at">()))));
         (void)co_await transaction.execute(update);
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "webhook", "updated", id);
         co_await transaction.commit();
@@ -478,14 +480,14 @@ class AccessService final {
         (void)co_await requireWebhook(c, id);
         auto transaction = co_await c.db().beginTransaction();
         ruvia::DbQuery update(c.pool());
-        update.update("open_webhook")
-            .set("deleted_at", update.call("now"))
-            .set("updated_at", update.call("now"))
+        update.update(service::open_access::entities::OpenWebhookEntity::tableName())
+            .set(service::open_access::entities::OpenWebhookEntity::columnName<"deleted_at">(), update.call("now"))
+            .set(service::open_access::entities::OpenWebhookEntity::columnName<"updated_at">(), update.call("now"))
             .where(andAll(update,
-                          update.binary(update.column("id"), ruvia::DbBinaryOperator::kEqual,
+                          update.binary(update.column(service::open_access::entities::OpenWebhookEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual,
                                         uuid(update, id)),
                           update.unary(ruvia::DbUnaryOperator::kIsNull,
-                                       update.column("deleted_at"))));
+                                       update.column(service::open_access::entities::OpenWebhookEntity::columnName<"deleted_at">()))));
         (void)co_await transaction.execute(update);
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "webhook", "deleted", id);
         co_await transaction.commit();
@@ -536,26 +538,26 @@ class AccessService final {
         };
         ruvia::DbQuery counted(c.pool());
         counted.select(counted.aggregate("count", {counted.star()}))
-            .from("open_access_log", "log");
+            .from(service::open_access::entities::OpenAccessLogEntity::tableName(), "log");
         applyFilters(counted, "log");
         ruvia::DbQuery pageRows(c.pool());
-        pageRows.select(pageRows.star("log")).from("open_access_log", "log");
+        pageRows.select(pageRows.star("log")).from(service::open_access::entities::OpenAccessLogEntity::tableName(), "log");
         applyFilters(pageRows, "log");
-        pageRows.orderBy(pageRows.column("created_at", "log"), ruvia::DbOrderDirection::kDesc)
-            .addOrderBy(pageRows.column("id", "log"), ruvia::DbOrderDirection::kDesc)
+        pageRows.orderBy(pageRows.column(service::open_access::entities::OpenAccessLogEntity::columnName<"created_at">(), "log"), ruvia::DbOrderDirection::kDesc)
+            .addOrderBy(pageRows.column(service::open_access::entities::OpenAccessLogEntity::columnName<"id">(), "log"), ruvia::DbOrderDirection::kDesc)
             .limit(static_cast<std::uint64_t>(pagination.pageSize))
             .offset(static_cast<std::uint64_t>(pagination.offset));
         ruvia::DbQuery page(c.pool());
-        page.select({page.star("page_rows"), page.alias(page.column("name", "key"),
+        page.select({page.star("page_rows"), page.alias(page.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"name">(), "key"),
                                                          "access_key_name"),
-                     page.alias(page.column("name", "webhook"), "webhook_name")})
+                     page.alias(page.column(service::open_access::entities::OpenWebhookEntity::columnName<"name">(), "webhook"), "webhook_name")})
             .from(pageRows, "page_rows")
-            .join(ruvia::DbJoinType::kLeft, "open_access_key",
-                  page.binary(page.column("id", "key"), ruvia::DbBinaryOperator::kEqual,
+            .join(ruvia::DbJoinType::kLeft, service::open_access::entities::OpenAccessKeyEntity::tableName(),
+                  page.binary(page.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"id">(), "key"), ruvia::DbBinaryOperator::kEqual,
                               page.column("access_key_id", "page_rows")),
                   "key")
-            .join(ruvia::DbJoinType::kLeft, "open_webhook",
-                  page.binary(page.column("id", "webhook"), ruvia::DbBinaryOperator::kEqual,
+            .join(ruvia::DbJoinType::kLeft, service::open_access::entities::OpenWebhookEntity::tableName(),
+                  page.binary(page.column(service::open_access::entities::OpenWebhookEntity::columnName<"id">(), "webhook"), ruvia::DbBinaryOperator::kEqual,
                               page.column("webhook_id", "page_rows")),
                   "webhook");
         ruvia::DbQuery query(c.pool());
@@ -660,9 +662,9 @@ class AccessService final {
         const auto pagination = service::common::page(c.req());
         const auto keyword = service::utils::trim(c.req().query("keyword").value_or(""));
         ruvia::DbQuery visible(c.pool());
-        const auto deviceId = visible.column("id", "device");
+        const auto deviceId = visible.column(service::open_access::entities::DeviceEntity::columnName<"id">(), "device");
         const auto code = service::device::DeviceAccessService::jsonText(
-            visible, visible.column("protocol_params", "device"), "device_code");
+            visible, visible.column(service::open_access::entities::DeviceEntity::columnName<"protocol_params">(), "device"), "device_code");
         const auto pattern = visible.binary(
             visible.binary(service::device::DeviceAccessService::text(visible, "%"),
                            ruvia::DbBinaryOperator::kConcat,
@@ -680,24 +682,24 @@ class AccessService final {
                                        visible, deviceId),
                                    ruvia::DbBinaryOperator::kILike, pattern),
                     ruvia::DbBinaryOperator::kOr,
-                    visible.binary(visible.column("name", "device"),
+                    visible.binary(visible.column(service::open_access::entities::DeviceEntity::columnName<"name">(), "device"),
                                    ruvia::DbBinaryOperator::kILike, pattern)),
                 ruvia::DbBinaryOperator::kOr,
                 visible.binary(visible.coalesce({code, visible.value("")}),
                                ruvia::DbBinaryOperator::kILike, pattern)));
-        visible.select({deviceId, visible.column("name", "device"),
+        visible.select({deviceId, visible.column(service::open_access::entities::DeviceEntity::columnName<"name">(), "device"),
                        visible.alias(code, "code")})
-            .from("device", "device")
-            .join(ruvia::DbJoinType::kInner, "open_access_key_device",
-                  visible.binary(visible.column("device_id", "binding"),
+            .from(service::open_access::entities::DeviceEntity::tableName(), "device")
+            .join(ruvia::DbJoinType::kInner, service::open_access::entities::OpenAccessKeyDeviceEntity::tableName(),
+                  visible.binary(visible.column(service::open_access::entities::OpenAccessKeyDeviceEntity::columnName<"device_id">(), "binding"),
                                 ruvia::DbBinaryOperator::kEqual, deviceId),
                   "binding")
             .where(andAll(visible,
-                          visible.binary(visible.column("access_key_id", "binding"),
+                          visible.binary(visible.column(service::open_access::entities::OpenAccessKeyDeviceEntity::columnName<"access_key_id">(), "binding"),
                                         ruvia::DbBinaryOperator::kEqual,
                                         uuid(visible, session.id)),
                           visible.unary(ruvia::DbUnaryOperator::kIsNull,
-                                        visible.column("deleted_at", "device")),
+                                        visible.column(service::open_access::entities::DeviceEntity::columnName<"deleted_at">(), "device")),
                           keywordFilter));
         ruvia::DbQuery counted(c.pool());
         counted.select(counted.aggregate("count", {counted.star()})).from(visible, "visible");
@@ -808,37 +810,37 @@ class AccessService final {
         };
         ruvia::DbQuery counted(c.pool());
         counted.select(counted.aggregate("count", {counted.star()}))
-            .from("open_alert_record", "record")
-            .join(ruvia::DbJoinType::kInner, "open_access_key_device",
-                  counted.binary(counted.column("device_id", "binding"),
+            .from(service::open_access::entities::OpenAlertRecordEntity::tableName(), "record")
+            .join(ruvia::DbJoinType::kInner, service::open_access::entities::OpenAccessKeyDeviceEntity::tableName(),
+                  counted.binary(counted.column(service::open_access::entities::OpenAccessKeyDeviceEntity::columnName<"device_id">(), "binding"),
                                  ruvia::DbBinaryOperator::kEqual,
-                                 counted.column("device_id", "record")),
+                                 counted.column(service::open_access::entities::OpenAlertRecordEntity::columnName<"device_id">(), "record")),
                   "binding");
         applyFilters(counted, "record", "binding");
         ruvia::DbQuery pageRows(c.pool());
         pageRows.select(pageRows.star("record"))
-            .from("open_alert_record", "record")
-            .join(ruvia::DbJoinType::kInner, "open_access_key_device",
-                  pageRows.binary(pageRows.column("device_id", "binding"),
+            .from(service::open_access::entities::OpenAlertRecordEntity::tableName(), "record")
+            .join(ruvia::DbJoinType::kInner, service::open_access::entities::OpenAccessKeyDeviceEntity::tableName(),
+                  pageRows.binary(pageRows.column(service::open_access::entities::OpenAccessKeyDeviceEntity::columnName<"device_id">(), "binding"),
                                   ruvia::DbBinaryOperator::kEqual,
-                                  pageRows.column("device_id", "record")),
+                                  pageRows.column(service::open_access::entities::OpenAlertRecordEntity::columnName<"device_id">(), "record")),
                   "binding");
         applyFilters(pageRows, "record", "binding");
-        pageRows.orderBy(pageRows.column("triggered_at", "record"),
+        pageRows.orderBy(pageRows.column(service::open_access::entities::OpenAlertRecordEntity::columnName<"triggered_at">(), "record"),
                          ruvia::DbOrderDirection::kDesc)
-            .addOrderBy(pageRows.column("id", "record"), ruvia::DbOrderDirection::kDesc)
+            .addOrderBy(pageRows.column(service::open_access::entities::OpenAlertRecordEntity::columnName<"id">(), "record"), ruvia::DbOrderDirection::kDesc)
             .limit(static_cast<std::uint64_t>(pagination.pageSize))
             .offset(static_cast<std::uint64_t>(pagination.offset));
         ruvia::DbQuery page(c.pool());
-        page.select({page.star("page_rows"), page.alias(page.column("name", "device"),
+        page.select({page.star("page_rows"), page.alias(page.column(service::open_access::entities::DeviceEntity::columnName<"name">(), "device"),
                                                           "device_name"),
                      page.alias(service::device::DeviceAccessService::jsonText(
-                                    page, page.column("protocol_params", "device"),
+                                    page, page.column(service::open_access::entities::DeviceEntity::columnName<"protocol_params">(), "device"),
                                     "device_code"),
                                  "device_code")})
             .from(pageRows, "page_rows")
-            .join(ruvia::DbJoinType::kInner, "device",
-                  page.binary(page.column("id", "device"), ruvia::DbBinaryOperator::kEqual,
+            .join(ruvia::DbJoinType::kInner, service::open_access::entities::DeviceEntity::tableName(),
+                  page.binary(page.column(service::open_access::entities::DeviceEntity::columnName<"id">(), "device"), ruvia::DbBinaryOperator::kEqual,
                               page.column("device_id", "page_rows")),
                   "device");
         ruvia::DbQuery query(c.pool());
@@ -1349,13 +1351,13 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
                                             std::string_view keyId,
                                             const std::vector<std::string>& devices) {
         ruvia::DbQuery remove;
-        remove.deleteFrom("open_access_key_device")
-            .where(remove.binary(remove.column("access_key_id"),
+        remove.deleteFrom(service::open_access::entities::OpenAccessKeyDeviceEntity::tableName())
+            .where(remove.binary(remove.column(service::open_access::entities::OpenAccessKeyDeviceEntity::columnName<"access_key_id">()),
                                  ruvia::DbBinaryOperator::kEqual, uuid(remove, keyId)));
         (void)co_await transaction.execute(remove);
         for (const auto& device : devices) {
             ruvia::DbQuery insert;
-            insert.insertInto("open_access_key_device", {"access_key_id", "device_id"})
+            insert.insertInto(service::open_access::entities::OpenAccessKeyDeviceEntity::tableName(), {"access_key_id", "device_id"})
                 .values({uuid(insert, keyId), uuid(insert, device)});
             (void)co_await transaction.execute(insert);
         }
@@ -1365,16 +1367,16 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
                                              std::optional<std::string> except) {
         ruvia::DbQuery query(c.pool());
         auto predicate = andAll(
-            query, query.binary(query.column("name"), ruvia::DbBinaryOperator::kEqual,
+            query, query.binary(query.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"name">()), ruvia::DbBinaryOperator::kEqual,
                                 query.value(name)),
-            query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+            query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"deleted_at">())));
         if (except)
             predicate = query.binary(
                 predicate, ruvia::DbBinaryOperator::kAnd,
-                query.binary(query.column("id"), ruvia::DbBinaryOperator::kNotEqual,
+                query.binary(query.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"id">()), ruvia::DbBinaryOperator::kNotEqual,
                              uuid(query, *except)));
         query.select(service::device::DeviceAccessService::integer(query, 1))
-            .from("open_access_key")
+            .from(service::open_access::entities::OpenAccessKeyEntity::tableName())
             .where(predicate)
             .limit(1);
         const auto rows = co_await c.db().query(query);
@@ -1388,18 +1390,18 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
         ruvia::DbQuery query(c.pool());
         auto predicate = andAll(
             query,
-            query.binary(query.column("access_key_id"), ruvia::DbBinaryOperator::kEqual,
+            query.binary(query.column(service::open_access::entities::OpenWebhookEntity::columnName<"access_key_id">()), ruvia::DbBinaryOperator::kEqual,
                          uuid(query, accessKeyId)),
-            query.binary(query.column("name"), ruvia::DbBinaryOperator::kEqual,
+            query.binary(query.column(service::open_access::entities::OpenWebhookEntity::columnName<"name">()), ruvia::DbBinaryOperator::kEqual,
                          query.value(name)),
-            query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+            query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::open_access::entities::OpenWebhookEntity::columnName<"deleted_at">())));
         if (except)
             predicate = query.binary(
                 predicate, ruvia::DbBinaryOperator::kAnd,
-                query.binary(query.column("id"), ruvia::DbBinaryOperator::kNotEqual,
+                query.binary(query.column(service::open_access::entities::OpenWebhookEntity::columnName<"id">()), ruvia::DbBinaryOperator::kNotEqual,
                              uuid(query, *except)));
         query.select(service::device::DeviceAccessService::integer(query, 1))
-            .from("open_webhook")
+            .from(service::open_access::entities::OpenWebhookEntity::tableName())
             .where(predicate)
             .limit(1);
         const auto rows = co_await c.db().query(query);
@@ -1409,16 +1411,16 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
 
     ruvia::Task<KeyState> requireKey(ruvia::Context& c, std::string_view id) {
         ruvia::DbQuery query(c.pool());
-        query.select({query.column("name"), text(query, query.column("status")),
-                      text(query, query.column("scopes")),
-                      query.call("iot_utc_timestamp", {query.column("expires_at")} ),
-                      query.column("remark")})
-            .from("open_access_key")
+        query.select({query.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"name">()), text(query, query.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"status">())),
+                      text(query, query.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"scopes">())),
+                      query.call("iot_utc_timestamp", {query.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"expires_at">())} ),
+                      query.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"remark">())})
+            .from(service::open_access::entities::OpenAccessKeyEntity::tableName())
             .where(andAll(query,
-                          query.binary(query.column("id"), ruvia::DbBinaryOperator::kEqual,
+                          query.binary(query.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual,
                                        uuid(query, id)),
                           query.unary(ruvia::DbUnaryOperator::kIsNull,
-                                      query.column("deleted_at"))))
+                                      query.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"deleted_at">()))))
             .limit(1);
         const auto rows = co_await c.db().query(query);
         if (rows.empty())
@@ -1434,12 +1436,12 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
             state.remark = std::string(row[4].value().value_or(std::string_view{}));
         ruvia::DbQuery devicesQuery(c.pool());
         devicesQuery
-            .select(text(devicesQuery, devicesQuery.column("device_id")))
-            .from("open_access_key_device")
-            .where(devicesQuery.binary(devicesQuery.column("access_key_id"),
+            .select(text(devicesQuery, devicesQuery.column(service::open_access::entities::OpenAccessKeyDeviceEntity::columnName<"device_id">())))
+            .from(service::open_access::entities::OpenAccessKeyDeviceEntity::tableName())
+            .where(devicesQuery.binary(devicesQuery.column(service::open_access::entities::OpenAccessKeyDeviceEntity::columnName<"access_key_id">()),
                                        ruvia::DbBinaryOperator::kEqual,
                                        uuid(devicesQuery, id)))
-            .orderBy(devicesQuery.column("device_id"));
+            .orderBy(devicesQuery.column(service::open_access::entities::OpenAccessKeyDeviceEntity::columnName<"device_id">()));
         const auto devices = co_await c.db().query(devicesQuery);
         for (const auto& device : devices)
             state.deviceIds.emplace_back(device[0].value().value_or(std::string_view{}));
@@ -1448,23 +1450,23 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
 
     ruvia::Task<WebhookState> requireWebhook(ruvia::Context& c, std::string_view id) {
         ruvia::DbQuery query(c.pool());
-        query.select({text(query, query.column("access_key_id")), query.column("name"),
-                      query.column("url"), text(query, query.column("status")),
-                      query.column("timeout_seconds"),
+        query.select({text(query, query.column(service::open_access::entities::OpenWebhookEntity::columnName<"access_key_id">())), query.column(service::open_access::entities::OpenWebhookEntity::columnName<"name">()),
+                      query.column(service::open_access::entities::OpenWebhookEntity::columnName<"url">()), text(query, query.column(service::open_access::entities::OpenWebhookEntity::columnName<"status">())),
+                      query.column(service::open_access::entities::OpenWebhookEntity::columnName<"timeout_seconds">()),
                        query.caseWhen(
-                           {{query.binary(query.column("skip_tls_verify"),
+                           {{query.binary(query.column(service::open_access::entities::OpenWebhookEntity::columnName<"skip_tls_verify">()),
                                           ruvia::DbBinaryOperator::kEqual,
                                           service::device::DeviceAccessService::boolean(query, true)),
                             text(query, "1")}},
                           text(query, "0")),
-                      text(query, query.column("headers")),
-                      text(query, query.column("event_types")), query.column("secret")})
-            .from("open_webhook")
+                      text(query, query.column(service::open_access::entities::OpenWebhookEntity::columnName<"headers">())),
+                      text(query, query.column(service::open_access::entities::OpenWebhookEntity::columnName<"event_types">())), query.column(service::open_access::entities::OpenWebhookEntity::columnName<"secret">())})
+            .from(service::open_access::entities::OpenWebhookEntity::tableName())
             .where(andAll(query,
-                          query.binary(query.column("id"), ruvia::DbBinaryOperator::kEqual,
+                          query.binary(query.column(service::open_access::entities::OpenWebhookEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual,
                                        uuid(query, id)),
                           query.unary(ruvia::DbUnaryOperator::kIsNull,
-                                      query.column("deleted_at"))))
+                                      query.column(service::open_access::entities::OpenWebhookEntity::columnName<"deleted_at">()))))
             .limit(1);
         const auto rows = co_await c.db().query(query);
         if (rows.empty())
@@ -1493,12 +1495,12 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
             service::common::fail(19011, "AccessKey 无权访问该设备", 403);
         ruvia::DbQuery query(c.pool());
         query.select(service::device::DeviceAccessService::integer(query, 1))
-            .from("device")
+            .from(service::open_access::entities::DeviceEntity::tableName())
             .where(andAll(query,
-                          query.binary(query.column("id"), ruvia::DbBinaryOperator::kEqual,
+                          query.binary(query.column(service::open_access::entities::DeviceEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual,
                                        uuid(query, deviceId)),
                           query.unary(ruvia::DbUnaryOperator::kIsNull,
-                                      query.column("deleted_at"))))
+                                      query.column(service::open_access::entities::DeviceEntity::columnName<"deleted_at">()))))
             .limit(1);
         const auto rows = co_await c.db().query(query);
         if (rows.empty())
@@ -1520,34 +1522,34 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
         };
 
         ruvia::DbQuery deviceRef(resource);
-        const auto deviceParams = deviceRef.column("protocol_params", "device");
+        const auto deviceParams = deviceRef.column(service::open_access::entities::DeviceEntity::columnName<"protocol_params">(), "device");
         deviceRef
-            .select({deviceRef.column("id", "device"),
+            .select({deviceRef.column(service::open_access::entities::DeviceEntity::columnName<"id">(), "device"),
                      deviceRef.alias(service::device::DeviceAccessService::jsonText(
                                          deviceRef, deviceParams, "device_code"),
                                      "code"),
-                     deviceRef.column("name", "device")})
-            .from("device", "device")
+                     deviceRef.column(service::open_access::entities::DeviceEntity::columnName<"name">(), "device")})
+            .from(service::open_access::entities::DeviceEntity::tableName(), "device")
             .where(andAll(deviceRef,
-                          deviceRef.binary(deviceRef.column("id", "device"),
+                          deviceRef.binary(deviceRef.column(service::open_access::entities::DeviceEntity::columnName<"id">(), "device"),
                                           ruvia::DbBinaryOperator::kEqual,
                                           uuid(deviceRef, deviceId)),
                           deviceRef.unary(ruvia::DbUnaryOperator::kIsNull,
-                                          deviceRef.column("deleted_at", "device"))));
+                                          deviceRef.column(service::open_access::entities::DeviceEntity::columnName<"deleted_at">(), "device"))));
 
         ruvia::DbQuery counted(resource);
-        const auto countedData = counted.column("data", "record");
+        const auto countedData = counted.column(service::open_access::entities::DeviceDataEntity::columnName<"data">(), "record");
         counted
             .select(counted.aggregate("count", {counted.star()}))
-            .from("device_data", "record")
+            .from(service::open_access::entities::DeviceDataEntity::tableName(), "record")
             .where(andAll(counted,
-                          counted.binary(counted.column("device_id", "record"),
+                          counted.binary(counted.column(service::open_access::entities::DeviceDataEntity::columnName<"device_id">(), "record"),
                                          ruvia::DbBinaryOperator::kEqual,
                                          uuid(counted, deviceId)),
-                          counted.binary(counted.column("report_time", "record"),
+                          counted.binary(counted.column(service::open_access::entities::DeviceDataEntity::columnName<"report_time">(), "record"),
                                          ruvia::DbBinaryOperator::kGreaterEqual,
                                          timestamp(counted, start)),
-                          counted.binary(counted.column("report_time", "record"),
+                          counted.binary(counted.column(service::open_access::entities::DeviceDataEntity::columnName<"report_time">(), "record"),
                                          ruvia::DbBinaryOperator::kLessEqual,
                                          timestamp(counted, end)),
                           counted.binary(
@@ -1558,19 +1560,19 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
                               text(counted, "object"))));
 
         ruvia::DbQuery filtered(resource);
-        const auto filteredData = filtered.column("data", "record");
+        const auto filteredData = filtered.column(service::open_access::entities::DeviceDataEntity::columnName<"data">(), "record");
         filtered
-            .select({filtered.column("id", "record"),
-                     filtered.column("report_time", "record"), filteredData})
-            .from("device_data", "record")
+            .select({filtered.column(service::open_access::entities::DeviceDataEntity::columnName<"id">(), "record"),
+                     filtered.column(service::open_access::entities::DeviceDataEntity::columnName<"report_time">(), "record"), filteredData})
+            .from(service::open_access::entities::DeviceDataEntity::tableName(), "record")
             .where(andAll(filtered,
-                          filtered.binary(filtered.column("device_id", "record"),
+                          filtered.binary(filtered.column(service::open_access::entities::DeviceDataEntity::columnName<"device_id">(), "record"),
                                           ruvia::DbBinaryOperator::kEqual,
                                           uuid(filtered, deviceId)),
-                          filtered.binary(filtered.column("report_time", "record"),
+                          filtered.binary(filtered.column(service::open_access::entities::DeviceDataEntity::columnName<"report_time">(), "record"),
                                           ruvia::DbBinaryOperator::kGreaterEqual,
                                           timestamp(filtered, start)),
-                          filtered.binary(filtered.column("report_time", "record"),
+                          filtered.binary(filtered.column(service::open_access::entities::DeviceDataEntity::columnName<"report_time">(), "record"),
                                           ruvia::DbBinaryOperator::kLessEqual,
                                           timestamp(filtered, end)),
                           filtered.binary(
@@ -1579,9 +1581,9 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
                                                 filtered, filteredData, "values")}),
                               ruvia::DbBinaryOperator::kEqual,
                               text(filtered, "object"))))
-            .orderBy(filtered.column("report_time", "record"),
+            .orderBy(filtered.column(service::open_access::entities::DeviceDataEntity::columnName<"report_time">(), "record"),
                      ruvia::DbOrderDirection::kDesc)
-            .addOrderBy(filtered.column("id", "record"), ruvia::DbOrderDirection::kDesc)
+            .addOrderBy(filtered.column(service::open_access::entities::DeviceDataEntity::columnName<"id">(), "record"), ruvia::DbOrderDirection::kDesc)
             .limit(static_cast<std::uint64_t>(pageSize))
             .offset(static_cast<std::uint64_t>(offset));
 

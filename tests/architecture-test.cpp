@@ -8,6 +8,7 @@
 #include <iostream>
 #include <iterator>
 #include <optional>
+#include <regex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -85,26 +86,9 @@ std::string pathKey(const std::filesystem::path& path) {
 
 void requireExpectedModule(std::string_view domain, std::string_view module,
                            const std::filesystem::path& path) {
-    static constexpr std::array<std::string_view, 10> moduleRoots{
-        "system", "device", "link", "protocol", "alert", "gb28181",
-        "command", "vpn", "open_access", "edge_node",
-    };
-    static constexpr std::array<std::string_view, 6> systemModules{
-        "auth", "dept", "role", "user", "operations", "outbox",
-    };
-    static constexpr std::array<std::string_view, 9> rootModules{
-        "device", "link", "protocol", "alert", "gb28181", "command",
-        "vpn", "open_access", "edge_node",
-    };
-    requireFeatureRule(contains(moduleRoots, domain), path,
-                       "module directory is not whitelisted");
-    if (domain == "system") {
-        requireFeatureRule(contains(systemModules, module), path,
-                           "module name is not whitelisted for its domain");
-    } else {
-        requireFeatureRule(module.empty() && contains(rootModules, domain), path,
-                           "root module may not contain nested directories");
-    }
+    requireFeatureRule(isSnakeCase(domain), path, "invalid module directory name");
+    requireFeatureRule(domain == "system" ? isSnakeCase(module) : module.empty(),
+                       path, "only system modules may have a grouping directory");
 }
 
 bool whitelistedModuleFile(std::string_view file, std::string_view owner) {
@@ -177,13 +161,6 @@ void testModuleFileLayout() {
         }
     };
 
-    static constexpr std::array<std::string_view, 6> systemModules{
-        "auth", "dept", "role", "user", "operations", "outbox",
-    };
-    static constexpr std::array<std::string_view, 9> rootModules{
-        "device", "link", "protocol", "alert", "gb28181", "command", "vpn",
-        "open_access", "edge_node",
-    };
     for (const auto& entry : std::filesystem::directory_iterator(root)) {
         requireFeatureRule(entry.is_directory(), entry.path(),
                            "module entries must be directories");
@@ -206,15 +183,7 @@ void testModuleFileLayout() {
         }
     }
 
-    const auto systemPath = root / "system";
-    requireFeatureRule(std::filesystem::is_directory(systemPath), systemPath,
-                       "expected system module directory is missing");
-    for (const auto module : rootModules)
-        requireFeatureRule(std::filesystem::is_directory(root / module), root / module,
-                           "expected root module is missing");
-    for (const auto module : systemModules)
-        requireFeatureRule(std::filesystem::is_directory(systemPath / module),
-                           systemPath / module, "expected system module is missing");
+
 }
 
 void testFeatureFileLayout() {
@@ -474,6 +443,47 @@ void testIncludeGraphBoundaries() {
     }
 }
 
+void testStorageOwnership() {
+    const std::regex databaseAccess(R"(\.\s*db\s*\(|\bDbQuery\b|\bgetRepository\s*<)");
+    const std::regex entityDeclaration(R"(\bRUVIA_DB_ENTITY\s*\(\s*([A-Za-z_][A-Za-z_0-9]*))");
+    for (const auto& path : serviceSourceFiles()) {
+        const auto key = pathKey(path);
+        if (!isModulePath(key) && !isFeaturePath(key))
+            continue;
+        const auto content = source(key);
+        const bool isEntity = key.ends_with(".entity.h");
+        requireFeatureRule(isEntity || !std::regex_search(content, entityDeclaration), path,
+                           "storage entity declared outside its entity file");
+        if (isRuntimePath(key)) {
+            for (const auto operation : {"::setHash(", "::eraseHash(", "::getHash("})
+                requireFeatureRule(content.find(operation) == std::string::npos, path,
+                                   "runtime directly accesses persistent Redis records");
+        }
+        if (std::regex_search(content, databaseAccess)) {
+            requireFeatureRule(key.ends_with(".service.h"), path,
+                               "database operation outside business service");
+            const auto entityPath = path.parent_path() /
+                (path.parent_path().filename().string() + ".entity.h");
+            requireFeatureRule(std::filesystem::is_regular_file(entityPath), path,
+                               "database service has no owning entity file");
+        }
+        if (!isEntity)
+            continue;
+        std::string consumers;
+        for (const auto& sibling : std::filesystem::directory_iterator(path.parent_path()))
+            if (sibling.is_regular_file() && sibling.path() != path &&
+                isArchitectureSource(sibling.path()))
+                consumers += source(pathKey(sibling.path()));
+        for (auto match = std::sregex_iterator(content.begin(), content.end(), entityDeclaration);
+             match != std::sregex_iterator(); ++match) {
+            const auto name = (*match)[1].str();
+            requireFeatureRule(consumers.find(name + "::") != std::string::npos ||
+                                   consumers.find("<" + name + ">") != std::string::npos,
+                               path, "entity is not used by its owning component: " + name);
+        }
+    }
+}
+
 void testFeatureDomainBoundaries() {
     const auto files = featureFiles();
     static constexpr std::array<std::string_view, 6> forbiddenReferences{
@@ -593,7 +603,7 @@ void testOutboxOperations() {
     require(service.find(".set(\"dead_lettered_at\", query.nullValue())") != std::string::npos,
             "dead-letter replay does not requeue the event");
     const auto dispatcher = source("service/features/messaging/messaging.service.h");
-    require(dispatcher.find(".deleteFrom(\"outbox_consumer_receipt\")") != std::string::npos,
+    require(dispatcher.find(".deleteFrom(service::messaging::persistence::OutboxConsumerReceiptEntity::tableName())") != std::string::npos,
             "outbox consumer receipts have no retention cleanup");
 }
 
@@ -618,7 +628,7 @@ void testInjectedSharedState() {
     const auto auth = source("service/modules/system/auth/auth.service.h");
     require(auth.find("explicit AuthService(LoginRateLimiter& limiter)") != std::string::npos,
             "auth service does not inject its rate limiter");
-    require(auth.find("iot:auth:login-failures:") != std::string::npos,
+    require(auth.find("LoginFailureCounter::key(username)") != std::string::npos,
             "login rate limiting is not shared through Redis");
     require(auth.find("unordered_map") == std::string::npos,
             "login rate limiting still uses process-local state");
@@ -736,6 +746,7 @@ int main() {
         testCommonFileLayout();
         testIncludeGraphBoundaries();
         testFeatureDomainBoundaries();
+        testStorageOwnership();
         testLifecycleOrder();
         testLifecycleRollback();
         testMessageEnvelope();

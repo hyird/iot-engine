@@ -32,7 +32,7 @@
 #include "service/features/configuration/configuration.runtime.h"
 #include "service/features/configuration/configuration.service.h"
 #include "service/features/edge/edge.runtime.h"
-#include "service/features/edge/gateway/gateway.transport.h"
+#include "service/features/edge/gateway/gateway.runtime.h"
 #include "service/features/messaging/messaging.runtime.h"
 #include "service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h"
 #include "service/features/gb28181/gb28181.runtime.h"

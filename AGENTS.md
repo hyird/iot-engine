@@ -15,58 +15,165 @@
 - 保留准确的行业术语、标准接口和框架约定；公开 API、协议字段、权限码、数据库历史迁移、产品及安装身份不因内部命名整理而改变，第三方源码不做风格性改名。
 - 改名同步更新全部调用、导入、构建、测试和文档引用；移动文件不留下转发文件、旧名称别名或仅为兼容旧内部名称的实现。
 
-## 项目结构
+## 项目结构与归属
 
-后端使用 C++23 + Ruvia，前端使用 React，数据库使用 PostgreSQL/TimescaleDB，后台组件通过 Redis 交换消息。
+后端使用 C++23 + Ruvia，前端使用 React，数据库使用 PostgreSQL/TimescaleDB，后台组件通过 Redis 交换消息。目录先确定业务归属，再按文件职责拆分；以下占位名表示规则，不要求创建没有实际用途的目录或文件。
 
 ```text
-web/pages/                          # 页面业务模块
 service/
-├── common/                          # 通用响应、错误和数据库表达式
+├── modules/                         # 管理 API 与业务操作
+│   ├── <module>/                    # 独立业务模块
+│   │   ├── <module>.entity.h               # 存储实体与映射；有数据访问时必须
+│   │   ├── <module>.service.h              # 业务规则、查询、写入与事务
+│   │   ├── <module>.types.h                # DTO 与领域类型
+│   │   ├── <module>.schema.h               # 请求结构校验
+│   │   ├── <module>.error.h                # 领域错误
+│   │   └── <module>.controller.h           # 路由、参数与响应
+│   └── system/<module>/             # 系统管理业务模块
+│       ├── <module>.entity.h               # 存储实体与映射；有数据访问时必须
+│       ├── <module>.service.h              # 业务规则、查询、写入与事务
+│       ├── <module>.types.h                # DTO 与领域类型
+│       ├── <module>.schema.h               # 请求结构校验
+│       ├── <module>.error.h                # 领域错误
+│       └── <module>.controller.h           # 路由、参数与响应
+├── features/                        # 后台任务、设备协议与消息消费
+│   └── <feature>/
+│       ├── <feature>.entity.h              # 存储实体与映射；有数据访问时必须
+│       ├── <feature>.service.h             # 后台业务与数据操作
+│       ├── <feature>.types.h               # 内部类型与状态定义
+│       ├── <feature>.config.h              # 配置类型、解析与默认值
+│       ├── <feature>.error.h               # 稳定错误定义
+│       ├── <feature>.runtime.h             # 启停、调度与消息消费
+│       ├── <feature>.runtime.cpp           # 可选的 runtime 实现
+│       ├── <feature>.protocol.h            # 报文编解码与协议状态转换
+│       ├── <feature>.protocol.cpp          # 可选的 protocol 实现
+│       ├── <feature>.transport.h           # 网络、系统设备与 SDK 适配
+│       ├── <feature>.transport.cpp         # 可选的 transport 实现
+│       ├── <feature>.proto                 # Protobuf 消息定义
+│       └── <component>/             # 独立子组件，最多一级
+│           ├── <component>.entity.h        # 存储实体与映射；有数据访问时必须
+│           ├── <component>.service.h       # 后台业务与数据操作
+│           ├── <component>.types.h         # 内部类型与状态定义
+│           ├── <component>.config.h        # 配置类型、解析与默认值
+│           ├── <component>.error.h         # 稳定错误定义
+│           ├── <component>.runtime.h       # 启停、调度与消息消费
+│           ├── <component>.runtime.cpp     # 可选的 runtime 实现
+│           ├── <component>.protocol.h      # 报文编解码与协议状态转换
+│           ├── <component>.protocol.cpp    # 可选的 protocol 实现
+│           ├── <component>.transport.h     # 网络、系统设备与 SDK 适配
+│           ├── <component>.transport.cpp   # 可选的 transport 实现
+│           └── <component>.proto           # Protobuf 消息定义
+├── common/                          # 公共契约与无业务实现的基础定义
 ├── config/                          # 进程配置与数据库迁移
-├── middleware/                      # 认证、权限接入和日志
-├── modules/
-│   ├── <module>/                    # 独立菜单对应的业务模块
-│   └── system/<module>/             # 系统管理子菜单对应的业务模块
-├── features/<feature>/              # 后台任务、协议和消息调度
+├── middleware/                      # 请求认证、权限接入与日志
 ├── utils/                           # 无业务归属的无状态工具
-└── server.cpp                       # 进程装配与控制器注册
+└── server.cpp                       # 进程装配、控制器注册与生命周期接入
+web/
+├── pages/<module>/                  # 页面所属业务模块
+│   ├── index.tsx                    # 页面入口与私有 UI
+│   ├── <module>.types.ts            # 类型与 DTO
+│   ├── <module>.schema.ts           # 请求及表单结构校验
+│   ├── <module>.api.ts              # HTTP 客户端与请求地址
+│   └── <module>.service.ts          # 查询、写操作与服务端缓存接入
+├── components/                      # 跨页面 UI 组件
+├── layouts/                         # 页面外壳与布局
+├── routes/                          # 路由声明与路由接入
+├── providers/                       # 应用上下文与依赖接入
+├── store/                           # 客户端共享状态
+├── hooks/                           # 无页面业务归属的复用 Hook
+├── config/                          # 前端配置
+├── types/                           # 无模块归属的公共类型
+├── lib/                             # 通用第三方库接入
+├── utils/                           # 无状态工具
+├── styles/                          # 框架、主题与全局样式入口
+└── public/                          # 静态资源
+clients/<platform>/                  # 平台客户端与其 CMake 构建入口
+ports/                              # 依赖构建适配
+tests/                              # 单元、契约与集成测试
+.github/workflows/                   # CI 工作流
+build/                              # 本地构建、后端生成代码与临时验证产物
 ```
 
-- 后端模块按前端实际菜单归属组织，不按路由 URL 或现有页面路径机械分层：独立菜单直接放在 `modules/<module>/`，系统管理子菜单放在 `modules/system/<module>/`，不设 `iot/` 分组。
-- 同一业务的多个页面共用所属模块；无独立菜单的功能按业务归属组织，单边功能不创建空的镜像目录。
-- 目录名使用小写，多词使用 `snake_case`。跨模块复用所属模块的接口和类型，不复制实现。
-- 业务代码留在所属模块，确有跨模块复用才提取到共享目录；不新增其他后端顶层分层。
-- `common/` 只放公共基础文件，禁止子目录、业务实现和运行对象；共享消息契约仅包含格式、键名、版本和无 I/O 的编解码。
-- 同类职责集中到同一文件，文件名准确表达职责；公共消息契约统一放在 `common/message.h`，不按业务拆出零散公共文件。
-- `modules/` 与 `features/` 互不引用、互不调用，只通过 Redis 消息或数据库交互；不得通过共享层、回调或进程内对象间接调用对方。
-- 两层可依赖无业务实现的公共类型、消息契约和工具；`server.cpp` 只负责分别装配，不充当两层的业务调用桥梁。
-- 目录调整同步更新 include、构建和测试引用，不改变 API、权限码、DTO、表名和设备协议。
+### 目录划分
 
-## 模块文件
+- 独立菜单对应的后端模块放在 `modules/<module>/`，系统管理菜单对应的模块放在 `modules/system/<module>/`；按实际业务归属划分，不按 URL 或现有页面路径机械分层，不增加 `iot/` 等无独立职责的分组。
+- 同一业务的多个页面与 API 归入同一模块。无独立菜单的功能归入实际所属业务，不创建空的前后端镜像目录。
+- `features/` 按独立后台职责划分；子组件必须具有独立协议、传输或运行职责，不能仅为缩短文件而创建。子组件不得继续嵌套。
+- 业务私有实现留在所属模块；确认有跨模块用途后才提取公共代码。共享目录不是未确定归属代码的收纳处，不增加平行的后端业务分层。
+- 目录使用小写 `snake_case`。模块、组件和文件前缀对应实际职责；不使用裸名 `service.h`、`runtime.h`，不混用大小写或连字符。
+- `common/` 只允许公共基础文件，不建子目录，不持有运行对象或业务实现。共享消息契约统一放在 `common/message.h`，内容限于消息格式、键名、版本和无 I/O 编解码。
+- 前端模块私有 UI 放在页面入口；通用目录仅容纳与具体页面无关的复用内容，不能把页面业务拆散到全局 `hooks/`、`store/`、`lib/` 或 `utils/`。
+- 自有源码、第三方依赖与生成产物分开管理。后端生成代码放在 `build/`；前端生成文件遵循现有生成器输出配置，不手工维护生成结果，不把临时脚本、日志和测试数据放入业务目录。
 
-下列文件按需创建，模块内禁止增加其他文件、变体文件或子目录。
+### 文件职责
 
-| 职责 | 前端模块 | 后端模块 |
+`<name>` 统一表示当前模块、后台组件或独立子组件的名称。下表是后端业务目录的文件白名单；只创建实际承担职责的文件，同一职责集中在一个文件内。
+
+| 文件 | modules | features | 职责与创建条件 |
+| --- | --- | --- | --- |
+| `<name>.entity.h` | 允许 | 允许 | 有数据访问时必须；集中定义实际使用的存储实体与映射 |
+| `<name>.service.h` | 允许 | 允许 | 业务规则、业务权限、查询、写入与事务 |
+| `<name>.types.h` | 允许 | 允许 | DTO、领域值、内部状态类型；不执行 I/O |
+| `<name>.error.h` | 允许 | 允许 | 所属业务或组件的稳定错误定义 |
+| `<name>.schema.h` | 允许 | — | 请求结构校验；不执行 I/O |
+| `<name>.controller.h` | 允许 | — | 路由、中间件接入、参数与响应 |
+| `<name>.runtime.h` | — | 允许 | 启停、任务调度、消息消费与运行生命周期 |
+| `<name>.config.h` | — | 允许 | 配置类型、解析与默认值；不读取业务数据库 |
+| `<name>.protocol.h` | — | 允许 | 报文编解码、帧解析与协议状态转换；不执行数据库或网络 I/O |
+| `<name>.transport.h` | — | 允许 | 网络、系统设备与第三方 SDK 适配；不执行业务数据库操作 |
+| `<name>.proto` | — | 允许 | Protobuf 消息定义 |
+
+- `modules/` 模块目录不增加其他文件、变体文件或子目录；`features/` 子组件同样使用此白名单。禁止新增 `repository`、`queries`、`helper`、模块私有 `common` 或多个 `service` 变体文件。
+- 业务模块使用头文件实现。后台组件的 `runtime`、`protocol`、`transport` 可带同名 `.cpp`，其余使用头文件实现；include 使用 `service/...` 仓库根相对路径。
+- 优先类内方法；模板函数不额外标注 `inline`，仅对跨翻译单元的头文件定义保留必要的 `inline`。
+- `controller` 只负责请求接入；`runtime` 只负责运行驱动。业务处理和数据库操作统一进入所属 `service`，不能把业务查询放入 DTO、实体、配置解析或传输适配中。
+
+前端业务模块使用以下文件，不增加其他模块私有文件或子目录：
+
+| 文件 | 职责 |
+| --- | --- |
+| `index.tsx` | 页面入口与页面私有 UI |
+| `<name>.types.ts` | 类型与 DTO |
+| `<name>.schema.ts` | 请求及表单结构校验 |
+| `<name>.api.ts` | HTTP 客户端与请求地址 |
+| `<name>.service.ts` | 业务查询、写操作与服务端缓存接入 |
+
+页面通过所属 service 获取业务数据，不直接拼接 API 地址。跨页面 UI 放在 `web/components/`，状态管理与工具的归属遵循目录划分规则。
+
+### 实体与数据归属
+
+- 每个直接访问数据库的模块或后台组件必须且只能有一个 `<name>.entity.h`。独立子组件按同一规则执行；没有数据访问的模块不创建实体文件，不以空文件凑齐目录结构。
+- 数据访问包括关系数据库读写、只读查询、联表、事务、后台投影，以及 Redis 业务记录和缓存。使用 `DbQuery`、参数化 SQL 或原生 Redis 命令不改变实体归属要求。
+- 一个实体文件容纳本模块使用的多个实体；PostgreSQL/TimescaleDB、Redis ORM 实体和持久化映射集中定义，不按表拆文件、不另建 `entities/` 目录，不散落在 `service`、`runtime`、`types`、`transport` 或共享层。
+- 实体必须参与实际查询、字段映射或写入，不能只声明不用。实体迁移需覆盖实际存储对象、字段类型、主键、空值和默认值；只把 SQL 改为字符串表名、列名的 `DbQuery` 不算完成实体迁移。
+- 同层模块可复用拥有者明确公开的实体与接口，但不能把本模块负责的数据映射寄放到其他模块，也不能借复用省略本模块必需的实体文件。
+- `modules/` 与 `features/` 各自维护本层实际使用的数据映射，禁止跨层引用实体。共享消息字段属于公共契约，不通过共享 ORM 实体绕过分层。
+- 存储实体、业务 DTO、协议报文和消息契约按用途区分；消息队列、锁和通知不伪装成表实体。无法使用 ORM 映射的业务存储，在所属实体文件中定义实际使用的映射类型，并记录具体框架能力缺口。
+
+### 依赖与调用边界
+
+| 调用方 | 允许的依赖方向 | 边界 |
 | --- | --- | --- |
-| 类型与 DTO | `<module>.types.ts` | `<module>.types.h` |
-| 请求结构校验 | `<module>.schema.ts` | `<module>.schema.h` |
-| HTTP 客户端 | `<module>.api.ts` | — |
-| 业务与数据操作 | `<module>.service.ts` | `<module>.service.h` |
-| 页面入口 | `index.tsx` | — |
-| 领域错误 | — | `<module>.error.h` |
-| 数据库实体 | — | `<module>.entity.h` |
-| 路由与响应 | — | `<module>.controller.h` |
+| 页面 | 所属 service、types、schema、公共 UI 与状态接口 | API 地址集中在 api 文件 |
+| controller | 所属 service、schema、types、middleware | 不承载业务查询与事务 |
+| runtime | 所属 service、protocol、transport、config | 不把运行生命周期下放给 service |
+| service | 所属实体与类型、公开同层接口、公共契约与工具 | 不依赖 runtime 或 controller，不访问其他组件内部状态 |
+| protocol、types、entity、schema | 所需的无 I/O 类型和工具 | 不引入运行对象或执行 I/O |
+| transport | 协议类型、网络与 SDK 接口 | 不读写业务数据库 |
+| server.cpp | 各组件公开装配入口 | 不承担跨层业务调用或消息转发 |
 
-- 前端 service 管理查询、写操作和缓存；页面不直接拼接 API 地址。页面私有 UI 放在 `index.tsx`，跨页面组件放在 `web/components/`。
-- 后端 controller 只处理路由、中间件、参数和响应；业务权限、数据校验、查询、写入与事务放在所属模块的 service。
-- DTO、实体和 schema 不执行 I/O；前后端校验及数据库约束保持一致，明确空值、可选字段和清空语义。
-- 业务模块使用头文件实现，控制器由 `server.cpp` 统一注册；include 使用 `service/...` 绝对仓库路径。
-- 禁止新增 repository、queries、helper、common 或多个 service 变体文件。
+- 所有依赖必须无环；复用明确的公开接口，不读取或修改其他模块内部状态。
+- `modules/` 与 `features/` 互不引用、互不调用，业务交互只通过 Redis 消息或数据库；禁止借助共享层、回调、全局对象或装配入口间接调用。
+- 公共代码不能反向依赖业务模块。跨线程执行遵循 Worker 归属，不通过进程内共享对象绕过消息边界。
 
-## 后台组件
+### 结构变更验收
 
-### Worker 隔离与一致性
+- 修改前确认每个文件的业务归属、允许目录和文件职责；新增数据访问必须同时检查所属实体定义及使用位置。
+- 修改后检查实体遗漏、声明未使用、职责混放、跨层引用、循环依赖、生成文件混入，以及无实际用途的文件或目录。
+- 移动、重命名或删除同步更新 include、导入、装配、构建、测试和文档。重构不改变 API、权限码、DTO、表名和设备协议，确需改变时单独定义并验证迁移方案。
+- 验收依据实际调用和运行行为，不能仅凭目录存在、文件命名正确、代码通过编译或字符串检查就认定结构符合要求。
+
+## Worker 与运行生命周期
 
 - 保留 Service Worker 与 Collector Worker 两类；同类 Worker 使用相同的组件装配、职责和执行流程，只有编号及实际接入、持有的连接不同。
 - GB28181 的 SIP 接入、注册、心跳、协议会话和设备控制归 Collector Worker；Service Worker 负责 HTTP 与业务请求，两类之间通过 Redis 指令及回执交互。SIP 连接由实际接入的 Collector Worker 持有，不保留全局 SIP 业务运行时，不为此绕过 Ruvia 的公开接口。
@@ -80,37 +187,19 @@ service/
 - 其他第三方 SDK、平台监听方式或全局系统资源若不能满足隔离要求，必须明确记录约束并解决架构问题，不得静默保留共享实现或仅把固定 Worker 改为轮询。
 - Worker 架构按全新设计实现，删除旧路由、旧分片、旧队列兼容消费、迁移分支、失效接口及对应测试假设，不保留新旧并行实现。新架构自身必须完整处理重启恢复、缩容、异常退出、消息幂等和过期数据清理，不以技术债务代替完成。
 
-组件位于 `service/features/<feature>/`。确有独立协议、传输或运行职责时，允许一级 `<component>/` 子目录，禁止继续嵌套。根目录文件以 `<feature>` 为前缀，子组件文件以 `<component>` 为前缀，以下统一记为 `<name>`。
+## 数据库访问与迁移
 
-| 文件 | 职责 |
-| --- | --- |
-| `<name>.runtime.h` | 启停、工作线程、运行状态、任务调度和消息消费循环 |
-| `<name>.service.h` | 后台业务处理、查询、写入、业务校验和事务 |
-| `<name>.types.h` | 内部数据类型和状态定义，不执行 I/O |
-| `<name>.entity.h` | 本组件使用的 ORM 实体，不执行 I/O |
-| `<name>.config.h` | 配置类型、解析和默认值，不读取业务数据库 |
-| `<name>.protocol.h` | 报文编解码、帧解析和协议状态转换，不执行数据库或网络 I/O |
-| `<name>.transport.h` | 网络、系统设备和第三方 SDK 适配，不执行业务数据库操作 |
-| `<name>.error.h` | 稳定错误定义 |
-| `<name>.proto` | Protobuf 消息定义 |
+- 使用固定版本 Ruvia 的公开 ORM、Query 和 Schema API，实体归属遵循项目结构规则；不添加仅转发的包装或兼容接口。
+- ORM 无法保持必要行为时，记录具体 API 缺口、受影响调用和保留原因。业务 SQL 的输入值必须参数化，Redis 操作必须保持原子性、过期、重试及确认语义，不用未经验证的替代方式规避限制。
+- 数据库迁移统一放在 `service/config`。未经测试的兼容方案不得改变已执行迁移的 ID、校验和或历史 SQL；重构迁移必须验证新库初始化、旧库升级、重复执行、漂移拒绝及失败回滚。
+- 当前 Ruvia `DbColumnOptions` 不表达自定义 PostgreSQL 枚举名或列默认值；枚举按文本值读写，物理枚举类型与默认表达式由 `service/config` 中的 Schema 定义维护，不能据此把真实列改成普通文本或删除默认值。
+- DTO、实体、请求校验与数据库约束保持一致，明确空值、可选字段、默认值和清空语义。数据库及连接时区固定为 UTC，时间字段使用 `TIMESTAMPTZ`；设备时间按各自 `timezone` 转换入库，API 输出明确的 UTC 时间。
+- 事务边界、锁顺序、幂等、消息确认和重试属于数据访问行为的一部分；成功确认不得早于必要的持久化完成，缓存更新不能掩盖数据库失败。
 
-- 文件按需创建，只允许上述类型；`runtime`、`protocol`、`transport` 可带同名 `.cpp`，其余使用头文件实现。生成文件放在 `build/`。
-- 优先使用类内方法，不显式添加多余的 `inline`；模板函数不额外标注 `inline`，仅对跨翻译单元的头文件定义保留必要的 `inline`。
-- 子组件使用同一文件白名单，必须具有独立职责；不得仅为拆分大文件创建子组件，也不得创建 `helpers/`、`misc/` 或额外分层目录。
-- 禁止裸名 `runtime.h`、大小写混用、连字符文件名，以及 repository、queries、helper 和多个 service 变体文件。
-- `runtime` 负责驱动，调用本组件的 `service`、`protocol` 和 `transport`；业务 service 不依赖 runtime，也不负责启停工作线程。
-- 组件独立维护数据访问和实体，不引用 `modules/` 的 service、DTO 或实体，不存放管理 API 的 controller 或请求 schema。
-- 组件间只使用明确的公开入口或消息契约，不访问对方内部状态，不循环依赖；跨工作线程交互保持消息边界。
-- 与管理模块共享的消息契约放在 `common/`，仅包含格式、键名、版本和无 I/O 的编解码，不包含业务实现或运行对象。
-- 配置投影、遥测落库、消息回执等数据库操作统一放在 service；数据库迁移仍放在 `service/config`。
-- 保持连接归属、事务原子性、消息确认顺序和重试行为；消费成功确认不得早于必要的持久化完成。
+## 已部署协议与环境要求
 
-## 数据库与固件
+以下要求约束现有交付环境和协议兼容性，不改变目录、文件职责、实体归属及依赖规则。
 
-- 使用固定版本 Ruvia ORM 支持的 API；无法保持所需行为时保留参数化 SQL，并记录具体能力缺口。
-- 实体由所属业务模块或后台组件维护；公共数据库辅助代码只包含与业务无关的表达式，不集中存放跨层实体。
-- 迁移放在 `service/config`。未经测试的兼容方案不得改变已执行迁移的 ID、校验和或历史 SQL。
-- 数据库和连接时区固定为 UTC，时间字段使用 `TIMESTAMPTZ`。设备时间按各自 `timezone` 转换入库，API 输出明确的 UTC 时间。
 - TAS-682 固件统一在 `10.10.0.101` 的 `/home/openwrtbuild/immortalwrt-dtu` 构建，以 `openwrtbuild` 用户操作，并先遵守该仓库的 `AGENTS.md`。
 - EdgeNode 协议、API、配置、任务和升级传输必须兼容已部署固件，明确保留对 `0.3.44` 的兼容；Worker 架构旧代码清理不得删除该固件所需的协议兼容路径。移除旧固件路径须具备经过测试的迁移方案、兼容窗口及用户明确批准。
 - 支持分块传输的固件使用大小受限、可断点续传的 WebSocket 分块；旧固件保留带令牌的直接下载。

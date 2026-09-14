@@ -1,5 +1,7 @@
 #pragma once
 
+#include "service/modules/vpn/vpn.entity.h"
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -208,31 +210,31 @@ ruvia::Task<void> validateSelectedEdges(Db& db, std::string_view networkId,
     selectedIds.reserve(ids.size());
     for (const auto& id : ids)
         selectedIds.push_back(query.cast(query.value(id), ruvia::DbDataType::kUuid));
-    query.select(query.column("id", "edge"))
+    query.select(query.column(service::vpn::entities::EdgeNodeEntity::columnName<"id">(), "edge"))
         .distinct()
-        .from("edge_node", "edge")
-        .join(ruvia::DbJoinType::kInner, "vpn_peer",
-              query.binary(query.column("edge_node_id", "peer"), Op::kEqual,
-                           query.column("id", "edge")),
+        .from(service::vpn::entities::EdgeNodeEntity::tableName(), "edge")
+        .join(ruvia::DbJoinType::kInner, service::vpn::entities::VpnPeerEntity::tableName(),
+              query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"edge_node_id">(), "peer"), Op::kEqual,
+                           query.column(service::vpn::entities::EdgeNodeEntity::columnName<"id">(), "edge")),
               "peer")
-        .join(ruvia::DbJoinType::kInner, "vpn_network",
-              query.binary(query.column("id", "network"), Op::kEqual,
-                           query.column("network_id", "peer")),
+        .join(ruvia::DbJoinType::kInner, service::vpn::entities::VpnNetworkEntity::tableName(),
+              query.binary(query.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">(), "network"), Op::kEqual,
+                           query.column(service::vpn::entities::VpnPeerEntity::columnName<"network_id">(), "peer")),
               "network")
-        .where(query.binary(query.column("id", "edge"), Op::kIn,
+        .where(query.binary(query.column(service::vpn::entities::EdgeNodeEntity::columnName<"id">(), "edge"), Op::kIn,
                             query.list(selectedIds)))
-        .andWhere(query.binary(query.column("enrollment_status", "edge"), Op::kEqual,
+        .andWhere(query.binary(query.column(service::vpn::entities::EdgeNodeEntity::columnName<"enrollment_status">(), "edge"), Op::kEqual,
                                query.value("approved")))
-        .andWhere(query.binary(query.column("peer_type", "peer"), Op::kEqual,
+        .andWhere(query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"peer_type">(), "peer"), Op::kEqual,
                                query.value("edge")))
-        .andWhere(query.binary(query.column("status", "peer"), Op::kEqual,
+        .andWhere(query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"status">(), "peer"), Op::kEqual,
                                query.value("active")))
-        .andWhere(query.binary(query.column("network_id", "peer"), Op::kEqual,
+        .andWhere(query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"network_id">(), "peer"), Op::kEqual,
                                query.cast(query.value(networkId), ruvia::DbDataType::kUuid)))
-        .andWhere(query.binary(query.column("status", "network"), Op::kEqual,
+        .andWhere(query.binary(query.column(service::vpn::entities::VpnNetworkEntity::columnName<"status">(), "network"), Op::kEqual,
                                query.value("enabled")))
         .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull,
-                              query.column("deleted_at", "network")));
+                              query.column(service::vpn::entities::VpnNetworkEntity::columnName<"deleted_at">(), "network")));
     const auto rows = co_await db.query(query);
     if (rows.size() != ids.size())
         service::common::fail(21001, "所选 Edge 节点尚未批准或没有可用的 VPN 网络", 400);
@@ -339,20 +341,20 @@ ruvia::Task<void> syncEdgeBridgeRoutes(Db& db, std::string_view peerId,
     using Op = ruvia::DbBinaryOperator;
     ruvia::DbQuery bridgeQuery;
     bridgeQuery
-        .select({bridgeQuery.column("name"), bridgeQuery.column("device"),
-                 bridgeQuery.column("ipv4"), bridgeQuery.column("prefix_length")})
-        .from("edge_node_network")
+        .select({bridgeQuery.column(service::vpn::entities::EdgeNodeNetworkEntity::columnName<"name">()), bridgeQuery.column(service::vpn::entities::EdgeNodeNetworkEntity::columnName<"device">()),
+                 bridgeQuery.column(service::vpn::entities::EdgeNodeNetworkEntity::columnName<"ipv4">()), bridgeQuery.column(service::vpn::entities::EdgeNodeNetworkEntity::columnName<"prefix_length">())})
+        .from(service::vpn::entities::EdgeNodeNetworkEntity::tableName())
         .where(bridgeQuery.binary(
-            bridgeQuery.column("node_id"), Op::kEqual,
+            bridgeQuery.column(service::vpn::entities::EdgeNodeNetworkEntity::columnName<"node_id">()), Op::kEqual,
             bridgeQuery.cast(bridgeQuery.value(edgeNodeId), ruvia::DbDataType::kUuid)))
-        .andWhere(bridgeQuery.binary(bridgeQuery.column("is_bridge"), Op::kEqual,
+        .andWhere(bridgeQuery.binary(bridgeQuery.column(service::vpn::entities::EdgeNodeNetworkEntity::columnName<"is_bridge">()), Op::kEqual,
                                      bridgeQuery.value(true)))
         .andWhere(bridgeQuery.binary(
-            bridgeQuery.coalesce({bridgeQuery.column("ipv4"), bridgeQuery.value("")}),
+            bridgeQuery.coalesce({bridgeQuery.column(service::vpn::entities::EdgeNodeNetworkEntity::columnName<"ipv4">()), bridgeQuery.value("")}),
             Op::kNotEqual, bridgeQuery.value("")))
-        .andWhere(bridgeQuery.between(bridgeQuery.column("prefix_length"),
+        .andWhere(bridgeQuery.between(bridgeQuery.column(service::vpn::entities::EdgeNodeNetworkEntity::columnName<"prefix_length">()),
                                       bridgeQuery.value(1), bridgeQuery.value(30)))
-        .orderBy(bridgeQuery.column("name"));
+        .orderBy(bridgeQuery.column(service::vpn::entities::EdgeNodeNetworkEntity::columnName<"name">()));
     const auto bridgeRows = co_await db.query(bridgeQuery);
     std::vector<BridgeRecord> bridges;
     for (const auto& row : bridgeRows) {
@@ -372,14 +374,14 @@ ruvia::Task<void> syncEdgeBridgeRoutes(Db& db, std::string_view peerId,
 
     ruvia::DbQuery currentQuery;
     currentQuery
-        .select({currentQuery.cast(currentQuery.column("id"), ruvia::DbDataType::kText),
-                 currentQuery.column("lan_interface"), currentQuery.column("target_cidr"),
-                 currentQuery.column("virtual_cidr")})
-        .from("vpn_route")
+        .select({currentQuery.cast(currentQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"id">()), ruvia::DbDataType::kText),
+                 currentQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"lan_interface">()), currentQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"target_cidr">()),
+                 currentQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"virtual_cidr">())})
+        .from(service::vpn::entities::VpnRouteEntity::tableName())
         .where(currentQuery.binary(
-            currentQuery.column("edge_peer_id"), Op::kEqual,
+            currentQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"edge_peer_id">()), Op::kEqual,
             currentQuery.cast(currentQuery.value(peerId), ruvia::DbDataType::kUuid)))
-        .orderBy(currentQuery.column("id"));
+        .orderBy(currentQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"id">()));
     const auto currentRows = co_await db.query(currentQuery);
     std::vector<RouteRecord> current;
     current.reserve(currentRows.size());
@@ -391,10 +393,10 @@ ruvia::Task<void> syncEdgeBridgeRoutes(Db& db, std::string_view peerId,
 
     ruvia::DbQuery allRoutesQuery;
     allRoutesQuery
-        .select({allRoutesQuery.cast(allRoutesQuery.column("id"), ruvia::DbDataType::kText),
-                 allRoutesQuery.column("lan_interface"), allRoutesQuery.column("target_cidr"),
-                 allRoutesQuery.column("virtual_cidr")})
-        .from("vpn_route");
+        .select({allRoutesQuery.cast(allRoutesQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"id">()), ruvia::DbDataType::kText),
+                 allRoutesQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"lan_interface">()), allRoutesQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"target_cidr">()),
+                 allRoutesQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"virtual_cidr">())})
+        .from(service::vpn::entities::VpnRouteEntity::tableName());
     const auto allRows = co_await db.query(allRoutesQuery);
     std::vector<RouteRecord> allRoutes;
     allRoutes.reserve(allRows.size());
@@ -469,18 +471,18 @@ ruvia::Task<void> syncEdgeBridgeRoutes(Db& db, std::string_view peerId,
         const auto virtualCidr = virtualNetwork->text();
         if (existing != current.end()) {
             ruvia::DbQuery route;
-            route.update("vpn_route")
-                .set("network_id", route.cast(route.value(networkId), ruvia::DbDataType::kUuid))
-                .set("lan_interface", route.value(bridge.lanInterface))
-                .set("target_cidr", route.value(targetCidr))
-                .set("virtual_cidr", route.value(virtualCidr))
-                .set("mode", route.value("nat"))
-                .set("nat_mode", route.value("masquerade"))
-                .set("enabled", route.value(true))
-                .set("status", route.value("active"))
-                .set("last_error", route.value(""))
-                .set("updated_at", route.call("now"))
-                .where(route.binary(route.column("id"), Op::kEqual,
+            route.update(service::vpn::entities::VpnRouteEntity::tableName())
+                .set(service::vpn::entities::VpnRouteEntity::columnName<"network_id">(), route.cast(route.value(networkId), ruvia::DbDataType::kUuid))
+                .set(service::vpn::entities::VpnRouteEntity::columnName<"lan_interface">(), route.value(bridge.lanInterface))
+                .set(service::vpn::entities::VpnRouteEntity::columnName<"target_cidr">(), route.value(targetCidr))
+                .set(service::vpn::entities::VpnRouteEntity::columnName<"virtual_cidr">(), route.value(virtualCidr))
+                .set(service::vpn::entities::VpnRouteEntity::columnName<"mode">(), route.value("nat"))
+                .set(service::vpn::entities::VpnRouteEntity::columnName<"nat_mode">(), route.value("masquerade"))
+                .set(service::vpn::entities::VpnRouteEntity::columnName<"enabled">(), route.value(true))
+                .set(service::vpn::entities::VpnRouteEntity::columnName<"status">(), route.value("active"))
+                .set(service::vpn::entities::VpnRouteEntity::columnName<"last_error">(), route.value(""))
+                .set(service::vpn::entities::VpnRouteEntity::columnName<"updated_at">(), route.call("now"))
+                .where(route.binary(route.column(service::vpn::entities::VpnRouteEntity::columnName<"id">()), Op::kEqual,
                                     route.cast(route.value(routeId), ruvia::DbDataType::kUuid)));
             (void)co_await db.execute(route);
             for (auto& route : allRoutes)
@@ -492,7 +494,7 @@ ruvia::Task<void> syncEdgeBridgeRoutes(Db& db, std::string_view peerId,
         } else {
             const auto id = service::common::nextUuidV7();
             ruvia::DbQuery route;
-            route.insertInto("vpn_route", {"id", "network_id", "edge_peer_id", "lan_interface",
+            route.insertInto(service::vpn::entities::VpnRouteEntity::tableName(), {"id", "network_id", "edge_peer_id", "lan_interface",
                                             "target_cidr", "virtual_cidr", "mode", "nat_mode",
                                             "enabled", "status", "created_by"})
                 .values({route.cast(route.value(id), ruvia::DbDataType::kUuid),
@@ -544,70 +546,70 @@ class VpnService final {
         const auto defaultNetworkId = co_await ensureDefaultNetwork(c);
         ruvia::DbQuery count(c.pool());
         count.select(count.aggregate("count", {count.star()}))
-            .from("vpn_network", "n")
-            .where(count.binary(count.column("id", "n"), Op::kEqual,
+            .from(service::vpn::entities::VpnNetworkEntity::tableName(), "n")
+            .where(count.binary(count.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">(), "n"), Op::kEqual,
                                 count.cast(count.value(defaultNetworkId), ruvia::DbDataType::kUuid)))
             .andWhere(count.unary(ruvia::DbUnaryOperator::kIsNull,
-                                  count.column("deleted_at", "n")));
+                                  count.column(service::vpn::entities::VpnNetworkEntity::columnName<"deleted_at">(), "n")));
         if (keyword && !keyword->empty()) {
             const auto pattern = "%" + *keyword + "%";
-            count.andWhere(count.binary(count.column("name", "n"), Op::kILike,
+            count.andWhere(count.binary(count.column(service::vpn::entities::VpnNetworkEntity::columnName<"name">(), "n"), Op::kILike,
                                         count.value(pattern)));
         }
         if (status && !status->empty()) {
-            count.andWhere(count.binary(count.column("status", "n"), Op::kEqual,
+            count.andWhere(count.binary(count.column(service::vpn::entities::VpnNetworkEntity::columnName<"status">(), "n"), Op::kEqual,
                                         count.value(*status)));
         }
         const auto countRows = co_await c.db().query(count);
         const auto total = integer(detail::rowValue(countRows.front(), 0));
         ruvia::DbQuery peerCount(c.pool());
         peerCount.select(peerCount.aggregate("count", {peerCount.star()}))
-            .from("vpn_peer", "p")
-            .where(peerCount.binary(peerCount.column("network_id", "p"), Op::kEqual,
-                                    peerCount.column("id", "n")))
-            .andWhere(peerCount.binary(peerCount.column("status", "p"), Op::kNotEqual,
+            .from(service::vpn::entities::VpnPeerEntity::tableName(), "p")
+            .where(peerCount.binary(peerCount.column(service::vpn::entities::VpnPeerEntity::columnName<"network_id">(), "p"), Op::kEqual,
+                                    peerCount.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">(), "n")))
+            .andWhere(peerCount.binary(peerCount.column(service::vpn::entities::VpnPeerEntity::columnName<"status">(), "p"), Op::kNotEqual,
                                        peerCount.value("revoked")));
         ruvia::DbQuery routeCount(c.pool());
         routeCount.select(routeCount.aggregate("count", {routeCount.star()}))
-            .from("vpn_route", "r")
-            .where(routeCount.binary(routeCount.column("network_id", "r"), Op::kEqual,
-                                      routeCount.column("id", "n")))
-            .andWhere(routeCount.binary(routeCount.column("enabled", "r"), Op::kEqual,
+            .from(service::vpn::entities::VpnRouteEntity::tableName(), "r")
+            .where(routeCount.binary(routeCount.column(service::vpn::entities::VpnRouteEntity::columnName<"network_id">(), "r"), Op::kEqual,
+                                      routeCount.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">(), "n")))
+            .andWhere(routeCount.binary(routeCount.column(service::vpn::entities::VpnRouteEntity::columnName<"enabled">(), "r"), Op::kEqual,
                                         routeCount.value(true)));
         ruvia::DbQuery listQuery(c.pool());
         listQuery
             .select(listQuery.call(
                 "jsonb_build_object",
-                {detail::jsonKey(listQuery, "id"), listQuery.column("id", "n"),
-                 detail::jsonKey(listQuery, "name"), listQuery.column("name", "n"),
-                 detail::jsonKey(listQuery, "overlayCidr"), listQuery.column("overlay_cidr", "n"),
-                 detail::jsonKey(listQuery, "hubPublicKey"), listQuery.column("hub_public_key", "n"),
-                 detail::jsonKey(listQuery, "hubEndpoint"), listQuery.column("hub_endpoint", "n"),
-                 detail::jsonKey(listQuery, "hubListenPort"), listQuery.column("hub_listen_port", "n"),
-                 detail::jsonKey(listQuery, "status"), listQuery.column("status", "n"),
+                {detail::jsonKey(listQuery, "id"), listQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">(), "n"),
+                 detail::jsonKey(listQuery, "name"), listQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"name">(), "n"),
+                 detail::jsonKey(listQuery, "overlayCidr"), listQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"overlay_cidr">(), "n"),
+                 detail::jsonKey(listQuery, "hubPublicKey"), listQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"hub_public_key">(), "n"),
+                 detail::jsonKey(listQuery, "hubEndpoint"), listQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"hub_endpoint">(), "n"),
+                 detail::jsonKey(listQuery, "hubListenPort"), listQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"hub_listen_port">(), "n"),
+                 detail::jsonKey(listQuery, "status"), listQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"status">(), "n"),
                  detail::jsonKey(listQuery, "peerCount"), listQuery.subquery(peerCount),
                  detail::jsonKey(listQuery, "routeCount"), listQuery.subquery(routeCount),
                  detail::jsonKey(listQuery, "createdAt"),
-                 listQuery.call("iot_utc_timestamp", {listQuery.column("created_at", "n")}),
+                 listQuery.call("iot_utc_timestamp", {listQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"created_at">(), "n")}),
                  detail::jsonKey(listQuery, "updatedAt"),
-                 listQuery.call("iot_utc_timestamp", {listQuery.column("updated_at", "n")})}))
-            .from("vpn_network", "n")
-            .where(listQuery.binary(listQuery.column("id", "n"), Op::kEqual,
+                 listQuery.call("iot_utc_timestamp", {listQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"updated_at">(), "n")})}))
+            .from(service::vpn::entities::VpnNetworkEntity::tableName(), "n")
+            .where(listQuery.binary(listQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">(), "n"), Op::kEqual,
                                     listQuery.cast(listQuery.value(defaultNetworkId),
                                                    ruvia::DbDataType::kUuid)))
             .andWhere(listQuery.unary(ruvia::DbUnaryOperator::kIsNull,
-                                      listQuery.column("deleted_at", "n")));
+                                      listQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"deleted_at">(), "n")));
         if (keyword && !keyword->empty()) {
             const auto pattern = "%" + *keyword + "%";
-            listQuery.andWhere(listQuery.binary(listQuery.column("name", "n"), Op::kILike,
+            listQuery.andWhere(listQuery.binary(listQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"name">(), "n"), Op::kILike,
                                                 listQuery.value(pattern)));
         }
         if (status && !status->empty()) {
-            listQuery.andWhere(listQuery.binary(listQuery.column("status", "n"), Op::kEqual,
+            listQuery.andWhere(listQuery.binary(listQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"status">(), "n"), Op::kEqual,
                                                 listQuery.value(*status)));
         }
-        listQuery.orderBy(listQuery.column("created_at", "n"), ruvia::DbOrderDirection::kDesc)
-            .addOrderBy(listQuery.column("id", "n"), ruvia::DbOrderDirection::kDesc)
+        listQuery.orderBy(listQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"created_at">(), "n"), ruvia::DbOrderDirection::kDesc)
+            .addOrderBy(listQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">(), "n"), ruvia::DbOrderDirection::kDesc)
             .limit(static_cast<std::uint64_t>(pageSize))
             .offset(static_cast<std::uint64_t>((page - 1) * pageSize));
         const auto rows = co_await c.db().query(listQuery);
@@ -630,47 +632,47 @@ class VpnService final {
         ruvia::DbQuery peerRows(c.pool());
         const auto peerObject = peerRows.call(
             "jsonb_build_object",
-            {detail::jsonKey(peerRows, "id"), peerRows.column("id", "p"),
-             detail::jsonKey(peerRows, "peerType"), peerRows.column("peer_type", "p"),
-             detail::jsonKey(peerRows, "edgeNodeId"), peerRows.column("edge_node_id", "p"),
-             detail::jsonKey(peerRows, "userId"), peerRows.column("user_id", "p"),
-             detail::jsonKey(peerRows, "name"), peerRows.column("name", "p"),
-             detail::jsonKey(peerRows, "publicKey"), peerRows.column("public_key", "p"),
+            {detail::jsonKey(peerRows, "id"), peerRows.column(service::vpn::entities::VpnPeerEntity::columnName<"id">(), "p"),
+             detail::jsonKey(peerRows, "peerType"), peerRows.column(service::vpn::entities::VpnPeerEntity::columnName<"peer_type">(), "p"),
+             detail::jsonKey(peerRows, "edgeNodeId"), peerRows.column(service::vpn::entities::VpnPeerEntity::columnName<"edge_node_id">(), "p"),
+             detail::jsonKey(peerRows, "userId"), peerRows.column(service::vpn::entities::VpnPeerEntity::columnName<"user_id">(), "p"),
+             detail::jsonKey(peerRows, "name"), peerRows.column(service::vpn::entities::VpnPeerEntity::columnName<"name">(), "p"),
+             detail::jsonKey(peerRows, "publicKey"), peerRows.column(service::vpn::entities::VpnPeerEntity::columnName<"public_key">(), "p"),
              detail::jsonKey(peerRows, "assignedIpv4"),
-             peerRows.call("host", {peerRows.column("assigned_ipv4", "p")}),
-             detail::jsonKey(peerRows, "allowedRoutes"), peerRows.column("allowed_routes", "p"),
-             detail::jsonKey(peerRows, "status"), peerRows.column("status", "p"),
-             detail::jsonKey(peerRows, "configRevision"), peerRows.column("config_revision", "p"),
+             peerRows.call("host", {peerRows.column(service::vpn::entities::VpnPeerEntity::columnName<"assigned_ipv4">(), "p")}),
+             detail::jsonKey(peerRows, "allowedRoutes"), peerRows.column(service::vpn::entities::VpnPeerEntity::columnName<"allowed_routes">(), "p"),
+             detail::jsonKey(peerRows, "status"), peerRows.column(service::vpn::entities::VpnPeerEntity::columnName<"status">(), "p"),
+             detail::jsonKey(peerRows, "configRevision"), peerRows.column(service::vpn::entities::VpnPeerEntity::columnName<"config_revision">(), "p"),
              detail::jsonKey(peerRows, "lastHandshakeAt"),
-             peerRows.call("iot_utc_timestamp", {peerRows.column("last_handshake_at", "p")})});
+             peerRows.call("iot_utc_timestamp", {peerRows.column(service::vpn::entities::VpnPeerEntity::columnName<"last_handshake_at">(), "p")})});
         const std::array peerOrder{
-            ruvia::DbOrderTerm{peerRows.column("created_at", "p")}};
+            ruvia::DbOrderTerm{peerRows.column(service::vpn::entities::VpnPeerEntity::columnName<"created_at">(), "p")}};
         peerRows
             .select(peerRows.aggregate("jsonb_agg", {peerObject}, false, peerOrder))
-            .from("vpn_peer", "p")
-            .where(peerRows.binary(peerRows.column("network_id", "p"), Op::kEqual,
-                                   peerRows.column("id", "n")));
+            .from(service::vpn::entities::VpnPeerEntity::tableName(), "p")
+            .where(peerRows.binary(peerRows.column(service::vpn::entities::VpnPeerEntity::columnName<"network_id">(), "p"), Op::kEqual,
+                                   peerRows.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">(), "n")));
 
         ruvia::DbQuery routeRows(c.pool());
         const auto routeObject = routeRows.call(
             "jsonb_build_object",
-            {detail::jsonKey(routeRows, "id"), routeRows.column("id", "r"),
-             detail::jsonKey(routeRows, "edgePeerId"), routeRows.column("edge_peer_id", "r"),
-             detail::jsonKey(routeRows, "lanInterface"), routeRows.column("lan_interface", "r"),
-             detail::jsonKey(routeRows, "targetCidr"), routeRows.column("target_cidr", "r"),
-             detail::jsonKey(routeRows, "virtualCidr"), routeRows.column("virtual_cidr", "r"),
-             detail::jsonKey(routeRows, "mode"), routeRows.column("mode", "r"),
-             detail::jsonKey(routeRows, "natMode"), routeRows.column("nat_mode", "r"),
-             detail::jsonKey(routeRows, "status"), routeRows.column("status", "r"),
-             detail::jsonKey(routeRows, "enabled"), routeRows.column("enabled", "r"),
-             detail::jsonKey(routeRows, "lastError"), routeRows.column("last_error", "r")});
+            {detail::jsonKey(routeRows, "id"), routeRows.column(service::vpn::entities::VpnRouteEntity::columnName<"id">(), "r"),
+             detail::jsonKey(routeRows, "edgePeerId"), routeRows.column(service::vpn::entities::VpnRouteEntity::columnName<"edge_peer_id">(), "r"),
+             detail::jsonKey(routeRows, "lanInterface"), routeRows.column(service::vpn::entities::VpnRouteEntity::columnName<"lan_interface">(), "r"),
+             detail::jsonKey(routeRows, "targetCidr"), routeRows.column(service::vpn::entities::VpnRouteEntity::columnName<"target_cidr">(), "r"),
+             detail::jsonKey(routeRows, "virtualCidr"), routeRows.column(service::vpn::entities::VpnRouteEntity::columnName<"virtual_cidr">(), "r"),
+             detail::jsonKey(routeRows, "mode"), routeRows.column(service::vpn::entities::VpnRouteEntity::columnName<"mode">(), "r"),
+             detail::jsonKey(routeRows, "natMode"), routeRows.column(service::vpn::entities::VpnRouteEntity::columnName<"nat_mode">(), "r"),
+             detail::jsonKey(routeRows, "status"), routeRows.column(service::vpn::entities::VpnRouteEntity::columnName<"status">(), "r"),
+             detail::jsonKey(routeRows, "enabled"), routeRows.column(service::vpn::entities::VpnRouteEntity::columnName<"enabled">(), "r"),
+             detail::jsonKey(routeRows, "lastError"), routeRows.column(service::vpn::entities::VpnRouteEntity::columnName<"last_error">(), "r")});
         const std::array routeOrder{
-            ruvia::DbOrderTerm{routeRows.column("created_at", "r")}};
+            ruvia::DbOrderTerm{routeRows.column(service::vpn::entities::VpnRouteEntity::columnName<"created_at">(), "r")}};
         routeRows
             .select(routeRows.aggregate("jsonb_agg", {routeObject}, false, routeOrder))
-            .from("vpn_route", "r")
-            .where(routeRows.binary(routeRows.column("network_id", "r"), Op::kEqual,
-                                    routeRows.column("id", "n")));
+            .from(service::vpn::entities::VpnRouteEntity::tableName(), "r")
+            .where(routeRows.binary(routeRows.column(service::vpn::entities::VpnRouteEntity::columnName<"network_id">(), "r"), Op::kEqual,
+                                    routeRows.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">(), "n")));
 
         ruvia::DbQuery query(c.pool());
         const auto emptyJson = query.cast(query.value("[]"), ruvia::DbDataType::kJsonb);
@@ -678,27 +680,27 @@ class VpnService final {
             .select(query.cast(
                 query.call(
                     "jsonb_build_object",
-                    {detail::jsonKey(query, "id"), query.column("id", "n"),
-                     detail::jsonKey(query, "name"), query.column("name", "n"),
-                     detail::jsonKey(query, "overlayCidr"), query.column("overlay_cidr", "n"),
-                     detail::jsonKey(query, "hubPublicKey"), query.column("hub_public_key", "n"),
-                     detail::jsonKey(query, "hubEndpoint"), query.column("hub_endpoint", "n"),
-                     detail::jsonKey(query, "hubListenPort"), query.column("hub_listen_port", "n"),
-                     detail::jsonKey(query, "status"), query.column("status", "n"),
+                    {detail::jsonKey(query, "id"), query.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">(), "n"),
+                     detail::jsonKey(query, "name"), query.column(service::vpn::entities::VpnNetworkEntity::columnName<"name">(), "n"),
+                     detail::jsonKey(query, "overlayCidr"), query.column(service::vpn::entities::VpnNetworkEntity::columnName<"overlay_cidr">(), "n"),
+                     detail::jsonKey(query, "hubPublicKey"), query.column(service::vpn::entities::VpnNetworkEntity::columnName<"hub_public_key">(), "n"),
+                     detail::jsonKey(query, "hubEndpoint"), query.column(service::vpn::entities::VpnNetworkEntity::columnName<"hub_endpoint">(), "n"),
+                     detail::jsonKey(query, "hubListenPort"), query.column(service::vpn::entities::VpnNetworkEntity::columnName<"hub_listen_port">(), "n"),
+                     detail::jsonKey(query, "status"), query.column(service::vpn::entities::VpnNetworkEntity::columnName<"status">(), "n"),
                      detail::jsonKey(query, "createdAt"),
-                     query.call("iot_utc_timestamp", {query.column("created_at", "n")}),
+                     query.call("iot_utc_timestamp", {query.column(service::vpn::entities::VpnNetworkEntity::columnName<"created_at">(), "n")}),
                      detail::jsonKey(query, "updatedAt"),
-                     query.call("iot_utc_timestamp", {query.column("updated_at", "n")}),
+                     query.call("iot_utc_timestamp", {query.column(service::vpn::entities::VpnNetworkEntity::columnName<"updated_at">(), "n")}),
                      detail::jsonKey(query, "peers"),
                      query.coalesce({query.subquery(peerRows), emptyJson}),
                      detail::jsonKey(query, "routes"),
                      query.coalesce({query.subquery(routeRows), emptyJson})}),
                 ruvia::DbDataType::kText))
-            .from("vpn_network", "n")
-            .where(query.binary(query.column("id", "n"), Op::kEqual,
+            .from(service::vpn::entities::VpnNetworkEntity::tableName(), "n")
+            .where(query.binary(query.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">(), "n"), Op::kEqual,
                                query.cast(query.value(id), ruvia::DbDataType::kUuid)))
             .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull,
-                                  query.column("deleted_at", "n")));
+                                  query.column(service::vpn::entities::VpnNetworkEntity::columnName<"deleted_at">(), "n")));
         const auto rows = co_await c.db().query(query);
         if (rows.empty())
             service::common::fail(21004, "VPN 网络不存在", 404);
@@ -733,40 +735,40 @@ class VpnService final {
         query
             .select(query.call(
                 "jsonb_build_object",
-                {detail::jsonKey(query, "id"), query.column("id", "r"),
-                 detail::jsonKey(query, "networkId"), query.column("network_id", "r"),
-                 detail::jsonKey(query, "edgePeerId"), query.column("edge_peer_id", "r"),
-                 detail::jsonKey(query, "edgeNodeId"), query.column("edge_node_id", "p"),
-                 detail::jsonKey(query, "lanInterface"), query.column("lan_interface", "r"),
-                 detail::jsonKey(query, "targetCidr"), query.column("target_cidr", "r"),
-                 detail::jsonKey(query, "virtualCidr"), query.column("virtual_cidr", "r"),
-                 detail::jsonKey(query, "mode"), query.column("mode", "r"),
-                 detail::jsonKey(query, "natMode"), query.column("nat_mode", "r"),
-                 detail::jsonKey(query, "status"), query.column("status", "r"),
-                 detail::jsonKey(query, "enabled"), query.column("enabled", "r"),
-                 detail::jsonKey(query, "lastError"), query.column("last_error", "r"),
+                {detail::jsonKey(query, "id"), query.column(service::vpn::entities::VpnRouteEntity::columnName<"id">(), "r"),
+                 detail::jsonKey(query, "networkId"), query.column(service::vpn::entities::VpnRouteEntity::columnName<"network_id">(), "r"),
+                 detail::jsonKey(query, "edgePeerId"), query.column(service::vpn::entities::VpnRouteEntity::columnName<"edge_peer_id">(), "r"),
+                 detail::jsonKey(query, "edgeNodeId"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"edge_node_id">(), "p"),
+                 detail::jsonKey(query, "lanInterface"), query.column(service::vpn::entities::VpnRouteEntity::columnName<"lan_interface">(), "r"),
+                 detail::jsonKey(query, "targetCidr"), query.column(service::vpn::entities::VpnRouteEntity::columnName<"target_cidr">(), "r"),
+                 detail::jsonKey(query, "virtualCidr"), query.column(service::vpn::entities::VpnRouteEntity::columnName<"virtual_cidr">(), "r"),
+                 detail::jsonKey(query, "mode"), query.column(service::vpn::entities::VpnRouteEntity::columnName<"mode">(), "r"),
+                 detail::jsonKey(query, "natMode"), query.column(service::vpn::entities::VpnRouteEntity::columnName<"nat_mode">(), "r"),
+                 detail::jsonKey(query, "status"), query.column(service::vpn::entities::VpnRouteEntity::columnName<"status">(), "r"),
+                 detail::jsonKey(query, "enabled"), query.column(service::vpn::entities::VpnRouteEntity::columnName<"enabled">(), "r"),
+                 detail::jsonKey(query, "lastError"), query.column(service::vpn::entities::VpnRouteEntity::columnName<"last_error">(), "r"),
                  detail::jsonKey(query, "createdAt"),
-                 query.call("iot_utc_timestamp", {query.column("created_at", "r")}),
+                 query.call("iot_utc_timestamp", {query.column(service::vpn::entities::VpnRouteEntity::columnName<"created_at">(), "r")}),
                  detail::jsonKey(query, "updatedAt"),
-                 query.call("iot_utc_timestamp", {query.column("updated_at", "r")})}))
-            .from("vpn_route", "r")
-            .join(ruvia::DbJoinType::kInner, "vpn_peer",
-                  query.binary(query.column("id", "p"), Op::kEqual,
-                               query.column("edge_peer_id", "r")),
+                 query.call("iot_utc_timestamp", {query.column(service::vpn::entities::VpnRouteEntity::columnName<"updated_at">(), "r")})}))
+            .from(service::vpn::entities::VpnRouteEntity::tableName(), "r")
+            .join(ruvia::DbJoinType::kInner, service::vpn::entities::VpnPeerEntity::tableName(),
+                  query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"id">(), "p"), Op::kEqual,
+                               query.column(service::vpn::entities::VpnRouteEntity::columnName<"edge_peer_id">(), "r")),
                   "p");
         if (networkId && !networkId->empty()) {
             requireUuid(*networkId, "VPN 网络 ID 无效");
-            query.where(query.binary(query.column("network_id", "r"), Op::kEqual,
+            query.where(query.binary(query.column(service::vpn::entities::VpnRouteEntity::columnName<"network_id">(), "r"), Op::kEqual,
                                      query.cast(query.value(*networkId),
                                                 ruvia::DbDataType::kUuid)));
         }
         if (edgeNodeId && !edgeNodeId->empty()) {
             requireUuid(*edgeNodeId, "Edge 节点 ID 无效");
-            query.andWhere(query.binary(query.column("edge_node_id", "p"), Op::kEqual,
+            query.andWhere(query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"edge_node_id">(), "p"), Op::kEqual,
                                         query.cast(query.value(*edgeNodeId),
                                                    ruvia::DbDataType::kUuid)));
         }
-        query.orderBy(query.column("created_at", "r"), ruvia::DbOrderDirection::kDesc)
+        query.orderBy(query.column(service::vpn::entities::VpnRouteEntity::columnName<"created_at">(), "r"), ruvia::DbOrderDirection::kDesc)
             .limit(1000);
         const auto rows = co_await c.db().query(query);
         std::string result{"["};
@@ -793,18 +795,18 @@ class VpnService final {
             service::common::fail(21001, "真实 LAN 必须是有效的私有 IPv4 网段", 400);
         using Op = ruvia::DbBinaryOperator;
         ruvia::DbQuery edge(c.pool());
-        edge.select({edge.column("network_id", "p"), edge.column("peer_type", "p"),
-                     edge.column("edge_node_id", "p")})
-            .from("vpn_peer", "p")
-            .join(ruvia::DbJoinType::kInner, "vpn_network",
-                  edge.binary(edge.column("id", "n"), Op::kEqual,
-                              edge.column("network_id", "p")),
+        edge.select({edge.column(service::vpn::entities::VpnPeerEntity::columnName<"network_id">(), "p"), edge.column(service::vpn::entities::VpnPeerEntity::columnName<"peer_type">(), "p"),
+                     edge.column(service::vpn::entities::VpnPeerEntity::columnName<"edge_node_id">(), "p")})
+            .from(service::vpn::entities::VpnPeerEntity::tableName(), "p")
+            .join(ruvia::DbJoinType::kInner, service::vpn::entities::VpnNetworkEntity::tableName(),
+                  edge.binary(edge.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">(), "n"), Op::kEqual,
+                              edge.column(service::vpn::entities::VpnPeerEntity::columnName<"network_id">(), "p")),
                   "n")
-            .where(edge.binary(edge.column("id", "p"), Op::kEqual,
+            .where(edge.binary(edge.column(service::vpn::entities::VpnPeerEntity::columnName<"id">(), "p"), Op::kEqual,
                                edge.cast(edge.value(edgePeerId), ruvia::DbDataType::kUuid)))
-            .andWhere(edge.binary(edge.column("status", "p"), Op::kNotEqual,
+            .andWhere(edge.binary(edge.column(service::vpn::entities::VpnPeerEntity::columnName<"status">(), "p"), Op::kNotEqual,
                                   edge.value("revoked")))
-            .andWhere(edge.binary(edge.column("status", "n"), Op::kEqual,
+            .andWhere(edge.binary(edge.column(service::vpn::entities::VpnNetworkEntity::columnName<"status">(), "n"), Op::kEqual,
                                   edge.value("enabled")))
             .limit(1);
         const auto edgeRows = co_await c.db().query(edge);
@@ -820,13 +822,13 @@ class VpnService final {
         co_await transaction.commit();
         ruvia::DbQuery mappedQuery(c.pool());
         mappedQuery
-            .select({mappedQuery.cast(mappedQuery.column("id"), ruvia::DbDataType::kText),
-                     mappedQuery.column("virtual_cidr")})
-            .from("vpn_route")
-            .where(mappedQuery.binary(mappedQuery.column("edge_peer_id"), Op::kEqual,
+            .select({mappedQuery.cast(mappedQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"id">()), ruvia::DbDataType::kText),
+                     mappedQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"virtual_cidr">())})
+            .from(service::vpn::entities::VpnRouteEntity::tableName())
+            .where(mappedQuery.binary(mappedQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"edge_peer_id">()), Op::kEqual,
                                       mappedQuery.cast(mappedQuery.value(edgePeerId),
                                                        ruvia::DbDataType::kUuid)))
-            .andWhere(mappedQuery.binary(mappedQuery.column("target_cidr"), Op::kEqual,
+            .andWhere(mappedQuery.binary(mappedQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"target_cidr">()), Op::kEqual,
                                          mappedQuery.value(targetCidr)))
             .limit(1);
         const auto mapped = co_await c.db().query(mappedQuery);
@@ -848,12 +850,12 @@ class VpnService final {
         using Op = ruvia::DbBinaryOperator;
         requireUuid(id, "VPN 路由 ID 无效");
         ruvia::DbQuery current(c.pool());
-        current.select({current.column("edge_peer_id"), current.column("network_id"),
-                        current.column("lan_interface"), current.column("target_cidr"),
-                        current.column("virtual_cidr"), current.column("mode"),
-                        current.column("enabled")})
-            .from("vpn_route")
-            .where(current.binary(current.column("id"), Op::kEqual,
+        current.select({current.column(service::vpn::entities::VpnRouteEntity::columnName<"edge_peer_id">()), current.column(service::vpn::entities::VpnRouteEntity::columnName<"network_id">()),
+                        current.column(service::vpn::entities::VpnRouteEntity::columnName<"lan_interface">()), current.column(service::vpn::entities::VpnRouteEntity::columnName<"target_cidr">()),
+                        current.column(service::vpn::entities::VpnRouteEntity::columnName<"virtual_cidr">()), current.column(service::vpn::entities::VpnRouteEntity::columnName<"mode">()),
+                        current.column(service::vpn::entities::VpnRouteEntity::columnName<"enabled">())})
+            .from(service::vpn::entities::VpnRouteEntity::tableName())
+            .where(current.binary(current.column(service::vpn::entities::VpnRouteEntity::columnName<"id">()), Op::kEqual,
                                   current.cast(current.value(id), ruvia::DbDataType::kUuid)));
         const auto rows = co_await c.db().query(current);
         if (rows.empty())
@@ -888,11 +890,11 @@ class VpnService final {
         co_await detail::advisoryLock(transaction, c.pool(), 5282804697543808068LL);
         ruvia::DbQuery conflictsQuery(c.pool());
         conflictsQuery
-            .select({conflictsQuery.column("target_cidr"),
-                     conflictsQuery.column("virtual_cidr")})
-            .from("vpn_route")
+            .select({conflictsQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"target_cidr">()),
+                     conflictsQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"virtual_cidr">())})
+            .from(service::vpn::entities::VpnRouteEntity::tableName())
             .where(conflictsQuery.binary(
-                conflictsQuery.column("id"), Op::kNotEqual,
+                conflictsQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"id">()), Op::kNotEqual,
                 conflictsQuery.cast(conflictsQuery.value(id), ruvia::DbDataType::kUuid)));
         const auto conflicts = co_await transaction.query(conflictsQuery);
         for (const auto& row : conflicts) {
@@ -904,11 +906,11 @@ class VpnService final {
         }
         const auto virtualCidr = virtualNetwork->text();
         ruvia::DbQuery update(c.pool());
-        update.update("vpn_route")
-            .set("virtual_cidr", update.value(virtualCidr))
-            .set("last_error", update.value(""))
-            .set("updated_at", update.call("now"))
-            .where(update.binary(update.column("id"), Op::kEqual,
+        update.update(service::vpn::entities::VpnRouteEntity::tableName())
+            .set(service::vpn::entities::VpnRouteEntity::columnName<"virtual_cidr">(), update.value(virtualCidr))
+            .set(service::vpn::entities::VpnRouteEntity::columnName<"last_error">(), update.value(""))
+            .set(service::vpn::entities::VpnRouteEntity::columnName<"updated_at">(), update.call("now"))
+            .where(update.binary(update.column(service::vpn::entities::VpnRouteEntity::columnName<"id">()), Op::kEqual,
                                  update.cast(update.value(id), ruvia::DbDataType::kUuid)));
         (void)co_await transaction.execute(update);
         co_await transaction.commit();
@@ -932,36 +934,36 @@ class VpnService final {
         query
             .select(query.call(
                 "jsonb_build_object",
-                {detail::jsonKey(query, "id"), query.column("id", "p"),
-                 detail::jsonKey(query, "networkId"), query.column("network_id", "p"),
-                 detail::jsonKey(query, "peerType"), query.column("peer_type", "p"),
-                 detail::jsonKey(query, "edgeNodeId"), query.column("edge_node_id", "p"),
-                 detail::jsonKey(query, "userId"), query.column("user_id", "p"),
-                 detail::jsonKey(query, "name"), query.column("name", "p"),
-                 detail::jsonKey(query, "publicKey"), query.column("public_key", "p"),
+                {detail::jsonKey(query, "id"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"id">(), "p"),
+                 detail::jsonKey(query, "networkId"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"network_id">(), "p"),
+                 detail::jsonKey(query, "peerType"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"peer_type">(), "p"),
+                 detail::jsonKey(query, "edgeNodeId"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"edge_node_id">(), "p"),
+                 detail::jsonKey(query, "userId"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"user_id">(), "p"),
+                 detail::jsonKey(query, "name"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"name">(), "p"),
+                 detail::jsonKey(query, "publicKey"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"public_key">(), "p"),
                  detail::jsonKey(query, "assignedIpv4"),
-                 query.call("host", {query.column("assigned_ipv4", "p")}),
-                 detail::jsonKey(query, "allowedRoutes"), query.column("allowed_routes", "p"),
-                 detail::jsonKey(query, "status"), query.column("status", "p"),
-                 detail::jsonKey(query, "configRevision"), query.column("config_revision", "p"),
+                 query.call("host", {query.column(service::vpn::entities::VpnPeerEntity::columnName<"assigned_ipv4">(), "p")}),
+                 detail::jsonKey(query, "allowedRoutes"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"allowed_routes">(), "p"),
+                 detail::jsonKey(query, "status"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"status">(), "p"),
+                 detail::jsonKey(query, "configRevision"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"config_revision">(), "p"),
                  detail::jsonKey(query, "lastHandshakeAt"),
-                 query.call("iot_utc_timestamp", {query.column("last_handshake_at", "p")}),
+                 query.call("iot_utc_timestamp", {query.column(service::vpn::entities::VpnPeerEntity::columnName<"last_handshake_at">(), "p")}),
                  detail::jsonKey(query, "createdAt"),
-                 query.call("iot_utc_timestamp", {query.column("created_at", "p")})}))
-            .from("vpn_peer", "p");
+                 query.call("iot_utc_timestamp", {query.column(service::vpn::entities::VpnPeerEntity::columnName<"created_at">(), "p")})}))
+            .from(service::vpn::entities::VpnPeerEntity::tableName(), "p");
         if (networkId && !networkId->empty()) {
             requireUuid(*networkId, "VPN 网络 ID 无效");
-            query.where(query.binary(query.column("network_id", "p"), Op::kEqual,
+            query.where(query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"network_id">(), "p"), Op::kEqual,
                                      query.cast(query.value(*networkId),
                                                 ruvia::DbDataType::kUuid)));
         }
         if (edgeNodeId && !edgeNodeId->empty()) {
             requireUuid(*edgeNodeId, "Edge 节点 ID 无效");
-            query.andWhere(query.binary(query.column("edge_node_id", "p"), Op::kEqual,
+            query.andWhere(query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"edge_node_id">(), "p"), Op::kEqual,
                                         query.cast(query.value(*edgeNodeId),
                                                    ruvia::DbDataType::kUuid)));
         }
-        query.orderBy(query.column("created_at", "p"), ruvia::DbOrderDirection::kDesc)
+        query.orderBy(query.column(service::vpn::entities::VpnPeerEntity::columnName<"created_at">(), "p"), ruvia::DbOrderDirection::kDesc)
             .limit(1000);
         const auto rows = co_await c.db().query(query);
         std::string result{"["};
@@ -1001,13 +1003,13 @@ class VpnService final {
         using Op = ruvia::DbBinaryOperator;
         ruvia::DbQuery networkQuery(c.pool());
         networkQuery
-            .select({networkQuery.column("overlay_cidr"), networkQuery.column("status")})
-            .from("vpn_network")
-            .where(networkQuery.binary(networkQuery.column("id"), Op::kEqual,
+            .select({networkQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"overlay_cidr">()), networkQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"status">())})
+            .from(service::vpn::entities::VpnNetworkEntity::tableName())
+            .where(networkQuery.binary(networkQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">()), Op::kEqual,
                                        networkQuery.cast(networkQuery.value(networkId),
                                                          ruvia::DbDataType::kUuid)))
             .andWhere(networkQuery.unary(ruvia::DbUnaryOperator::kIsNull,
-                                         networkQuery.column("deleted_at")));
+                                         networkQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"deleted_at">())));
         const auto networkRows = co_await c.db().query(networkQuery);
         if (networkRows.empty())
             service::common::fail(21004, "VPN 网络不存在", 404);
@@ -1016,18 +1018,18 @@ class VpnService final {
         if (peerType == "edge") {
             ruvia::DbQuery edgeQuery(c.pool());
             const auto vpnCapability = edgeQuery.binary(
-                edgeQuery.binary(edgeQuery.column("capability"), Op::kJsonGet,
+                edgeQuery.binary(edgeQuery.column(service::vpn::entities::EdgeNodeEntity::columnName<"capability">()), Op::kJsonGet,
                                  edgeQuery.cast(edgeQuery.value("vpn"),
                                                 ruvia::DbDataType::kText)),
                 Op::kJsonGetText,
                 edgeQuery.cast(edgeQuery.value("publicKey"), ruvia::DbDataType::kText));
             edgeQuery
                 .select(edgeQuery.coalesce({vpnCapability, edgeQuery.value("")}))
-                .from("edge_node")
-                .where(edgeQuery.binary(edgeQuery.column("id"), Op::kEqual,
+                .from(service::vpn::entities::EdgeNodeEntity::tableName())
+                .where(edgeQuery.binary(edgeQuery.column(service::vpn::entities::EdgeNodeEntity::columnName<"id">()), Op::kEqual,
                                         edgeQuery.cast(edgeQuery.value(edgeNodeId),
                                                        ruvia::DbDataType::kUuid)))
-                .andWhere(edgeQuery.binary(edgeQuery.column("enrollment_status"), Op::kEqual,
+                .andWhere(edgeQuery.binary(edgeQuery.column(service::vpn::entities::EdgeNodeEntity::columnName<"enrollment_status">()), Op::kEqual,
                                            edgeQuery.value("approved")));
             const auto edgeRows = co_await c.db().query(edgeQuery);
             if (edgeRows.empty())
@@ -1036,23 +1038,23 @@ class VpnService final {
             publicKey = detail::validKey(reportedKey) ? reportedKey : std::string{};
             ruvia::DbQuery existingQuery(c.pool());
             const auto revokedFirst = existingQuery.caseWhen(
-                {{existingQuery.binary(existingQuery.column("status"), Op::kEqual,
+                {{existingQuery.binary(existingQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"status">()), Op::kEqual,
                                        existingQuery.value("revoked")),
                   existingQuery.cast(existingQuery.value(1), ruvia::DbDataType::kInteger)}},
                 existingQuery.cast(existingQuery.value(0), ruvia::DbDataType::kInteger));
             existingQuery
-                .select({existingQuery.cast(existingQuery.column("id"),
+                .select({existingQuery.cast(existingQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"id">()),
                                             ruvia::DbDataType::kText),
-                         existingQuery.column("status")})
-                .from("vpn_peer")
-                .where(existingQuery.binary(existingQuery.column("network_id"), Op::kEqual,
+                         existingQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"status">())})
+                .from(service::vpn::entities::VpnPeerEntity::tableName())
+                .where(existingQuery.binary(existingQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"network_id">()), Op::kEqual,
                                             existingQuery.cast(existingQuery.value(networkId),
                                                                ruvia::DbDataType::kUuid)))
-                .andWhere(existingQuery.binary(existingQuery.column("edge_node_id"), Op::kEqual,
+                .andWhere(existingQuery.binary(existingQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"edge_node_id">()), Op::kEqual,
                                                existingQuery.cast(existingQuery.value(edgeNodeId),
                                                                   ruvia::DbDataType::kUuid)))
                 .orderBy(revokedFirst)
-                .addOrderBy(existingQuery.column("created_at"), ruvia::DbOrderDirection::kDesc)
+                .addOrderBy(existingQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"created_at">()), ruvia::DbOrderDirection::kDesc)
                 .limit(1);
             const auto existing = co_await c.db().query(existingQuery);
             if (!existing.empty()) {
@@ -1079,7 +1081,7 @@ class VpnService final {
             const auto assigned = co_await allocateAddressFromDb(transaction, networkId, *overlay);
             const auto assignedText = detail::hostText(*assigned);
             ruvia::DbQuery insert(c.pool());
-            insert.insertInto("vpn_peer", {"id", "network_id", "peer_type", "edge_node_id",
+            insert.insertInto(service::vpn::entities::VpnPeerEntity::tableName(), {"id", "network_id", "peer_type", "edge_node_id",
                                             "user_id", "name", "public_key", "assigned_ipv4",
                                             "allowed_routes", "status"})
                 .values({insert.cast(insert.value(id), ruvia::DbDataType::kUuid),
@@ -1105,22 +1107,22 @@ class VpnService final {
         } else {
             ruvia::DbQuery reactivation(c.pool());
             reactivation
-                .update("vpn_peer")
-                .set("name", reactivation.value(name))
-                .set("public_key", reactivation.value(publicKey))
-                .set("allowed_routes", reactivation.cast(reactivation.value(allowedRoutesJson),
+                .update(service::vpn::entities::VpnPeerEntity::tableName())
+                .set(service::vpn::entities::VpnPeerEntity::columnName<"name">(), reactivation.value(name))
+                .set(service::vpn::entities::VpnPeerEntity::columnName<"public_key">(), reactivation.value(publicKey))
+                .set(service::vpn::entities::VpnPeerEntity::columnName<"allowed_routes">(), reactivation.cast(reactivation.value(allowedRoutesJson),
                                                           ruvia::DbDataType::kJsonb))
-                .set("status", reactivation.value(status))
-                .set("revoked_at", reactivation.nullValue())
-                .set("updated_at", reactivation.call("now"))
-                .where(reactivation.binary(reactivation.column("id"), Op::kEqual,
+                .set(service::vpn::entities::VpnPeerEntity::columnName<"status">(), reactivation.value(status))
+                .set(service::vpn::entities::VpnPeerEntity::columnName<"revoked_at">(), reactivation.nullValue())
+                .set(service::vpn::entities::VpnPeerEntity::columnName<"updated_at">(), reactivation.call("now"))
+                .where(reactivation.binary(reactivation.column(service::vpn::entities::VpnPeerEntity::columnName<"id">()), Op::kEqual,
                                            reactivation.cast(reactivation.value(id),
                                                              ruvia::DbDataType::kUuid)))
-                .andWhere(reactivation.binary(reactivation.column("peer_type"), Op::kEqual,
+                .andWhere(reactivation.binary(reactivation.column(service::vpn::entities::VpnPeerEntity::columnName<"peer_type">()), Op::kEqual,
                                               reactivation.value("edge")))
-                .andWhere(reactivation.binary(reactivation.column("status"), Op::kEqual,
+                .andWhere(reactivation.binary(reactivation.column(service::vpn::entities::VpnPeerEntity::columnName<"status">()), Op::kEqual,
                                               reactivation.value("revoked")))
-                .returning({reactivation.column("id")});
+                .returning({reactivation.column(service::vpn::entities::VpnPeerEntity::columnName<"id">())});
             const auto reactivated = co_await transaction.query(reactivation);
             if (reactivated.empty())
                 service::common::fail(21002, "该 Edge 节点已经加入 VPN 网络", 409);
@@ -1144,15 +1146,15 @@ class VpnService final {
         requireUuid(id, "VPN Peer ID 无效");
         using Op = ruvia::DbBinaryOperator;
         ruvia::DbQuery update(c.pool());
-        update.update("vpn_peer")
-            .set("status", update.value("revoked"))
-            .set("revoked_at", update.call("now"))
-            .set("updated_at", update.call("now"))
-            .where(update.binary(update.column("id"), Op::kEqual,
+        update.update(service::vpn::entities::VpnPeerEntity::tableName())
+            .set(service::vpn::entities::VpnPeerEntity::columnName<"status">(), update.value("revoked"))
+            .set(service::vpn::entities::VpnPeerEntity::columnName<"revoked_at">(), update.call("now"))
+            .set(service::vpn::entities::VpnPeerEntity::columnName<"updated_at">(), update.call("now"))
+            .where(update.binary(update.column(service::vpn::entities::VpnPeerEntity::columnName<"id">()), Op::kEqual,
                                  update.cast(update.value(id), ruvia::DbDataType::kUuid)))
-            .andWhere(update.binary(update.column("status"), Op::kNotEqual,
+            .andWhere(update.binary(update.column(service::vpn::entities::VpnPeerEntity::columnName<"status">()), Op::kNotEqual,
                                     update.value("revoked")))
-            .returning({update.column("public_key"), update.column("edge_node_id")});
+            .returning({update.column(service::vpn::entities::VpnPeerEntity::columnName<"public_key">()), update.column(service::vpn::entities::VpnPeerEntity::columnName<"edge_node_id">())});
         const auto rows = co_await c.db().query(update);
         if (rows.empty())
             service::common::fail(21004, "VPN Peer 不存在或已撤销", 404);
@@ -1173,11 +1175,11 @@ class VpnService final {
         using Op = ruvia::DbBinaryOperator;
         ruvia::DbQuery current(c.pool());
         current
-            .select({current.column("edge_node_id"), current.column("peer_type"),
-                     current.column("status"),
-                     current.cast(current.column("network_id"), ruvia::DbDataType::kText)})
-            .from("vpn_peer")
-            .where(current.binary(current.column("id"), Op::kEqual,
+            .select({current.column(service::vpn::entities::VpnPeerEntity::columnName<"edge_node_id">()), current.column(service::vpn::entities::VpnPeerEntity::columnName<"peer_type">()),
+                     current.column(service::vpn::entities::VpnPeerEntity::columnName<"status">()),
+                     current.cast(current.column(service::vpn::entities::VpnPeerEntity::columnName<"network_id">()), ruvia::DbDataType::kText)})
+            .from(service::vpn::entities::VpnPeerEntity::tableName())
+            .where(current.binary(current.column(service::vpn::entities::VpnPeerEntity::columnName<"id">()), Op::kEqual,
                                   current.cast(current.value(id), ruvia::DbDataType::kUuid)));
         const auto rows = co_await c.db().query(current);
         if (rows.empty())
@@ -1207,13 +1209,13 @@ class VpnService final {
             service::common::fail(21001, "WireGuard 公钥格式无效", 400);
         ruvia::DbQuery currentQuery(c.pool());
         currentQuery
-            .select({currentQuery.column("public_key"), currentQuery.column("edge_node_id"),
-                     currentQuery.column("client_managed")})
-            .from("vpn_peer")
-            .where(currentQuery.binary(currentQuery.column("id"), Op::kEqual,
+            .select({currentQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"public_key">()), currentQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"edge_node_id">()),
+                     currentQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"client_managed">())})
+            .from(service::vpn::entities::VpnPeerEntity::tableName())
+            .where(currentQuery.binary(currentQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"id">()), Op::kEqual,
                                        currentQuery.cast(currentQuery.value(id),
                                                          ruvia::DbDataType::kUuid)))
-            .andWhere(currentQuery.binary(currentQuery.column("status"), Op::kNotEqual,
+            .andWhere(currentQuery.binary(currentQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"status">()), Op::kNotEqual,
                                           currentQuery.value("revoked")));
         const auto current = co_await c.db().query(currentQuery);
         if (current.empty())
@@ -1223,19 +1225,19 @@ class VpnService final {
         const auto oldKey = detail::rowValue(current.front(), 0);
         const auto edgeNodeId = detail::rowValue(current.front(), 1);
         ruvia::DbQuery update(c.pool());
-        update.update("vpn_peer")
-            .set("public_key", update.value(publicKey))
-            .set("status", update.value("active"))
-            .set("revoked_at", update.nullValue())
-            .set("config_revision",
-                 update.binary(update.column("config_revision"), Op::kAdd,
+        update.update(service::vpn::entities::VpnPeerEntity::tableName())
+            .set(service::vpn::entities::VpnPeerEntity::columnName<"public_key">(), update.value(publicKey))
+            .set(service::vpn::entities::VpnPeerEntity::columnName<"status">(), update.value("active"))
+            .set(service::vpn::entities::VpnPeerEntity::columnName<"revoked_at">(), update.nullValue())
+            .set(service::vpn::entities::VpnPeerEntity::columnName<"config_revision">(),
+                 update.binary(update.column(service::vpn::entities::VpnPeerEntity::columnName<"config_revision">()), Op::kAdd,
                                update.cast(update.value(1), ruvia::DbDataType::kBigInt)))
-            .set("updated_at", update.call("now"))
-            .where(update.binary(update.column("id"), Op::kEqual,
+            .set(service::vpn::entities::VpnPeerEntity::columnName<"updated_at">(), update.call("now"))
+            .where(update.binary(update.column(service::vpn::entities::VpnPeerEntity::columnName<"id">()), Op::kEqual,
                                  update.cast(update.value(id), ruvia::DbDataType::kUuid)))
-            .andWhere(update.binary(update.column("status"), Op::kNotEqual,
+            .andWhere(update.binary(update.column(service::vpn::entities::VpnPeerEntity::columnName<"status">()), Op::kNotEqual,
                                     update.value("revoked")))
-            .returning({update.column("public_key"), update.column("edge_node_id")});
+            .returning({update.column(service::vpn::entities::VpnPeerEntity::columnName<"public_key">()), update.column(service::vpn::entities::VpnPeerEntity::columnName<"edge_node_id">())});
         const auto updated = co_await c.db().query(update);
         if (updated.empty())
             service::common::fail(21004, "VPN Peer 不存在或已撤销", 404);
@@ -1261,44 +1263,44 @@ class VpnService final {
         using Op = ruvia::DbBinaryOperator;
         ruvia::DbQuery networkQuery(c.pool());
         networkQuery
-            .select(networkQuery.column("id"))
-            .from("vpn_network")
-            .where(networkQuery.binary(networkQuery.column("id"), Op::kEqual,
+            .select(networkQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">()))
+            .from(service::vpn::entities::VpnNetworkEntity::tableName())
+            .where(networkQuery.binary(networkQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">()), Op::kEqual,
                                        networkQuery.cast(networkQuery.value(networkId),
                                                          ruvia::DbDataType::kUuid)))
-            .andWhere(networkQuery.binary(networkQuery.column("status"), Op::kEqual,
+            .andWhere(networkQuery.binary(networkQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"status">()), Op::kEqual,
                                           networkQuery.value("enabled")))
             .andWhere(networkQuery.unary(ruvia::DbUnaryOperator::kIsNull,
-                                         networkQuery.column("deleted_at")));
+                                         networkQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"deleted_at">())));
         const auto network = co_await c.db().query(networkQuery);
         if (network.empty())
             service::common::fail(21004, "VPN 网络不存在或已停用", 404);
         ruvia::DbQuery routeQuery(c.pool());
         routeQuery
-            .select(routeQuery.column("virtual_cidr", "r"))
-            .from("vpn_route", "r")
-            .join(ruvia::DbJoinType::kInner, "vpn_peer",
-                  routeQuery.binary(routeQuery.column("id", "p"), Op::kEqual,
-                                    routeQuery.column("edge_peer_id", "r")),
+            .select(routeQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"virtual_cidr">(), "r"))
+            .from(service::vpn::entities::VpnRouteEntity::tableName(), "r")
+            .join(ruvia::DbJoinType::kInner, service::vpn::entities::VpnPeerEntity::tableName(),
+                  routeQuery.binary(routeQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"id">(), "p"), Op::kEqual,
+                                    routeQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"edge_peer_id">(), "r")),
                   "p")
-            .join(ruvia::DbJoinType::kInner, "edge_node",
-                  routeQuery.binary(routeQuery.column("id", "e"), Op::kEqual,
-                                    routeQuery.column("edge_node_id", "p")),
+            .join(ruvia::DbJoinType::kInner, service::vpn::entities::EdgeNodeEntity::tableName(),
+                  routeQuery.binary(routeQuery.column(service::vpn::entities::EdgeNodeEntity::columnName<"id">(), "e"), Op::kEqual,
+                                    routeQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"edge_node_id">(), "p")),
                   "e")
-            .where(routeQuery.binary(routeQuery.column("network_id", "r"), Op::kEqual,
+            .where(routeQuery.binary(routeQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"network_id">(), "r"), Op::kEqual,
                                      routeQuery.cast(routeQuery.value(networkId),
                                                      ruvia::DbDataType::kUuid)))
-            .andWhere(routeQuery.binary(routeQuery.column("enabled", "r"), Op::kEqual,
+            .andWhere(routeQuery.binary(routeQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"enabled">(), "r"), Op::kEqual,
                                         routeQuery.value(true)))
-            .andWhere(routeQuery.binary(routeQuery.column("status", "r"), Op::kEqual,
+            .andWhere(routeQuery.binary(routeQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"status">(), "r"), Op::kEqual,
                                         routeQuery.value("active")))
-            .andWhere(routeQuery.binary(routeQuery.column("status", "p"), Op::kEqual,
+            .andWhere(routeQuery.binary(routeQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"status">(), "p"), Op::kEqual,
                                         routeQuery.value("active")))
-            .andWhere(routeQuery.binary(routeQuery.column("peer_type", "p"), Op::kEqual,
+            .andWhere(routeQuery.binary(routeQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"peer_type">(), "p"), Op::kEqual,
                                         routeQuery.value("edge")))
-            .andWhere(routeQuery.binary(routeQuery.column("enrollment_status", "e"),
+            .andWhere(routeQuery.binary(routeQuery.column(service::vpn::entities::EdgeNodeEntity::columnName<"enrollment_status">(), "e"),
                                         Op::kEqual, routeQuery.value("approved")))
-            .orderBy(routeQuery.column("virtual_cidr", "r"));
+            .orderBy(routeQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"virtual_cidr">(), "r"));
         const auto routeRows = co_await c.db().query(routeQuery);
         std::vector<std::string> routes;
         routes.reserve(routeRows.size());
@@ -1321,7 +1323,7 @@ class VpnService final {
         const auto expiryInterval = insert.cast(
             insert.value(std::to_string(seconds) + " seconds"), ruvia::DbDataType::kInterval);
         insert
-            .insertInto("vpn_enrollment", {"id", "token_hash", "network_id", "allowed_routes",
+            .insertInto(service::vpn::entities::VpnEnrollmentEntity::tableName(), {"id", "token_hash", "network_id", "allowed_routes",
                                             "expires_at", "created_by"})
             .values({insert.cast(insert.value(id), ruvia::DbDataType::kUuid),
                      insert.value(hash),
@@ -1349,42 +1351,42 @@ class VpnService final {
         co_await detail::advisoryLock(transaction, c.pool(), 5282804697543808068LL);
         ruvia::DbQuery consume(c.pool());
         consume
-            .update("vpn_enrollment")
-            .set("used_at", consume.call("now"))
-            .where(consume.binary(consume.column("token_hash"), Op::kEqual,
+            .update(service::vpn::entities::VpnEnrollmentEntity::tableName())
+            .set(service::vpn::entities::VpnEnrollmentEntity::columnName<"used_at">(), consume.call("now"))
+            .where(consume.binary(consume.column(service::vpn::entities::VpnEnrollmentEntity::columnName<"token_hash">()), Op::kEqual,
                                  consume.value(tokenHash)))
             .andWhere(consume.unary(ruvia::DbUnaryOperator::kIsNull,
-                                    consume.column("used_at")))
-            .andWhere(consume.binary(consume.column("expires_at"), Op::kGreater,
+                                    consume.column(service::vpn::entities::VpnEnrollmentEntity::columnName<"used_at">())))
+            .andWhere(consume.binary(consume.column(service::vpn::entities::VpnEnrollmentEntity::columnName<"expires_at">()), Op::kGreater,
                                      consume.call("now")))
-            .returning({consume.column("id"), consume.column("network_id"),
-                        consume.column("allowed_routes"), consume.column("created_by")});
+            .returning({consume.column(service::vpn::entities::VpnEnrollmentEntity::columnName<"id">()), consume.column(service::vpn::entities::VpnEnrollmentEntity::columnName<"network_id">()),
+                        consume.column(service::vpn::entities::VpnEnrollmentEntity::columnName<"allowed_routes">()), consume.column(service::vpn::entities::VpnEnrollmentEntity::columnName<"created_by">())});
         const auto enrollment = co_await transaction.query(consume);
         if (enrollment.empty()) {
             // An enrollment owns its peer ID so a committed request can be
             // retried with the same key after a lost response or Hub failure.
             ruvia::DbQuery retryQuery(c.pool());
             retryQuery
-                .select({retryQuery.cast(retryQuery.column("id", "p"),
+                .select({retryQuery.cast(retryQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"id">(), "p"),
                                          ruvia::DbDataType::kText),
-                         retryQuery.cast(retryQuery.column("user_id", "p"),
+                         retryQuery.cast(retryQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"user_id">(), "p"),
                                          ruvia::DbDataType::kText)})
-                .from("vpn_enrollment", "e")
-                .join(ruvia::DbJoinType::kInner, "vpn_peer",
-                      retryQuery.binary(retryQuery.column("id", "p"), Op::kEqual,
-                                        retryQuery.column("id", "e")),
+                .from(service::vpn::entities::VpnEnrollmentEntity::tableName(), "e")
+                .join(ruvia::DbJoinType::kInner, service::vpn::entities::VpnPeerEntity::tableName(),
+                      retryQuery.binary(retryQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"id">(), "p"), Op::kEqual,
+                                        retryQuery.column(service::vpn::entities::VpnEnrollmentEntity::columnName<"id">(), "e")),
                       "p")
-                .where(retryQuery.binary(retryQuery.column("token_hash", "e"), Op::kEqual,
+                .where(retryQuery.binary(retryQuery.column(service::vpn::entities::VpnEnrollmentEntity::columnName<"token_hash">(), "e"), Op::kEqual,
                                          retryQuery.value(tokenHash)))
                 .andWhere(retryQuery.unary(ruvia::DbUnaryOperator::kIsNotNull,
-                                           retryQuery.column("used_at", "e")))
-                .andWhere(retryQuery.binary(retryQuery.column("expires_at", "e"), Op::kGreater,
+                                           retryQuery.column(service::vpn::entities::VpnEnrollmentEntity::columnName<"used_at">(), "e")))
+                .andWhere(retryQuery.binary(retryQuery.column(service::vpn::entities::VpnEnrollmentEntity::columnName<"expires_at">(), "e"), Op::kGreater,
                                             retryQuery.call("now")))
-                .andWhere(retryQuery.binary(retryQuery.column("public_key", "p"), Op::kEqual,
+                .andWhere(retryQuery.binary(retryQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"public_key">(), "p"), Op::kEqual,
                                             retryQuery.value(publicKey)))
-                .andWhere(retryQuery.binary(retryQuery.column("peer_type", "p"), Op::kEqual,
+                .andWhere(retryQuery.binary(retryQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"peer_type">(), "p"), Op::kEqual,
                                             retryQuery.value("windows")))
-                .andWhere(retryQuery.binary(retryQuery.column("status", "p"), Op::kEqual,
+                .andWhere(retryQuery.binary(retryQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"status">(), "p"), Op::kEqual,
                                             retryQuery.value("active")));
             const auto retry = co_await transaction.query(retryQuery);
             if (!retry.empty()) {
@@ -1399,15 +1401,15 @@ class VpnService final {
         const auto networkId = detail::rowValue(enrollment.front(), 1);
         ruvia::DbQuery networkQuery(c.pool());
         networkQuery
-            .select(networkQuery.column("overlay_cidr"))
-            .from("vpn_network")
-            .where(networkQuery.binary(networkQuery.column("id"), Op::kEqual,
+            .select(networkQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"overlay_cidr">()))
+            .from(service::vpn::entities::VpnNetworkEntity::tableName())
+            .where(networkQuery.binary(networkQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">()), Op::kEqual,
                                        networkQuery.cast(networkQuery.value(networkId),
                                                          ruvia::DbDataType::kUuid)))
-            .andWhere(networkQuery.binary(networkQuery.column("status"), Op::kEqual,
+            .andWhere(networkQuery.binary(networkQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"status">()), Op::kEqual,
                                           networkQuery.value("enabled")))
             .andWhere(networkQuery.unary(ruvia::DbUnaryOperator::kIsNull,
-                                         networkQuery.column("deleted_at")));
+                                         networkQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"deleted_at">())));
         const auto network = co_await transaction.query(networkQuery);
         if (network.empty())
             service::common::fail(21004, "VPN 网络不存在或已停用", 409);
@@ -1424,7 +1426,7 @@ class VpnService final {
         const auto allowedRoutesJson = detail::rowValue(enrollment.front(), 2);
         ruvia::DbQuery insert(c.pool());
         insert
-            .insertInto("vpn_peer", {"id", "network_id", "peer_type", "user_id", "name",
+            .insertInto(service::vpn::entities::VpnPeerEntity::tableName(), {"id", "network_id", "peer_type", "user_id", "name",
                                       "public_key", "assigned_ipv4", "allowed_routes", "status"})
             .values({insert.cast(insert.value(id), ruvia::DbDataType::kUuid),
                      insert.cast(insert.value(networkId), ruvia::DbDataType::kUuid),
@@ -1446,28 +1448,28 @@ class VpnService final {
         const auto staleWindow = query.cast(query.value("3 minutes"),
                                              ruvia::DbDataType::kInterval);
         const auto online = query.binary(
-            query.column("last_handshake_at", "p"), Op::kGreater,
+            query.column(service::vpn::entities::VpnPeerEntity::columnName<"last_handshake_at">(), "p"), Op::kGreater,
             query.binary(query.call("now"), Op::kSubtract, staleWindow));
         query
             .select(query.call(
                 "jsonb_build_object",
-                {detail::jsonKey(query, "peerId"), query.column("id", "p"),
-                 detail::jsonKey(query, "networkId"), query.column("network_id", "p"),
-                 detail::jsonKey(query, "name"), query.column("name", "p"),
-                 detail::jsonKey(query, "peerType"), query.column("peer_type", "p"),
+                {detail::jsonKey(query, "peerId"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"id">(), "p"),
+                 detail::jsonKey(query, "networkId"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"network_id">(), "p"),
+                 detail::jsonKey(query, "name"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"name">(), "p"),
+                 detail::jsonKey(query, "peerType"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"peer_type">(), "p"),
                  detail::jsonKey(query, "assignedIpv4"),
-                 query.call("host", {query.column("assigned_ipv4", "p")}),
-                 detail::jsonKey(query, "status"), query.column("status", "p"),
+                 query.call("host", {query.column(service::vpn::entities::VpnPeerEntity::columnName<"assigned_ipv4">(), "p")}),
+                 detail::jsonKey(query, "status"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"status">(), "p"),
                  detail::jsonKey(query, "lastHandshakeAt"),
-                 query.call("iot_utc_timestamp", {query.column("last_handshake_at", "p")}),
+                 query.call("iot_utc_timestamp", {query.column(service::vpn::entities::VpnPeerEntity::columnName<"last_handshake_at">(), "p")}),
                  detail::jsonKey(query, "online"),
                  query.caseWhen(
                      {{online, query.cast(query.value(true), ruvia::DbDataType::kBoolean)}},
                      query.cast(query.value(false), ruvia::DbDataType::kBoolean))}))
-            .from("vpn_peer", "p")
-            .where(query.binary(query.column("status", "p"), Op::kEqual,
+            .from(service::vpn::entities::VpnPeerEntity::tableName(), "p")
+            .where(query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"status">(), "p"), Op::kEqual,
                                 query.value("active")))
-            .orderBy(query.column("updated_at", "p"), ruvia::DbOrderDirection::kDesc)
+            .orderBy(query.column(service::vpn::entities::VpnPeerEntity::columnName<"updated_at">(), "p"), ruvia::DbOrderDirection::kDesc)
             .limit(1000);
         const auto rows = co_await c.db().query(query);
         std::string result{"["};
@@ -1489,23 +1491,23 @@ class VpnService final {
         ruvia::DbQuery peerCounts(c.pool());
         const auto activePeers = peerCounts.filter(
             peerCounts.aggregate("count", {peerCounts.star()}),
-            peerCounts.binary(peerCounts.column("status"), Op::kEqual,
+            peerCounts.binary(peerCounts.column(service::vpn::entities::VpnPeerEntity::columnName<"status">()), Op::kEqual,
                               peerCounts.value("active")));
         const auto revokedPeers = peerCounts.filter(
             peerCounts.aggregate("count", {peerCounts.star()}),
-            peerCounts.binary(peerCounts.column("status"), Op::kEqual,
+            peerCounts.binary(peerCounts.column(service::vpn::entities::VpnPeerEntity::columnName<"status">()), Op::kEqual,
                               peerCounts.value("revoked")));
-        peerCounts.select({activePeers, revokedPeers}).from("vpn_peer");
+        peerCounts.select({activePeers, revokedPeers}).from(service::vpn::entities::VpnPeerEntity::tableName());
         ruvia::DbQuery routeCounts(c.pool());
         const auto enabledRoutes = routeCounts.filter(
             routeCounts.aggregate("count", {routeCounts.star()}),
-            routeCounts.binary(routeCounts.column("enabled"), Op::kEqual,
+            routeCounts.binary(routeCounts.column(service::vpn::entities::VpnRouteEntity::columnName<"enabled">()), Op::kEqual,
                                routeCounts.value(true)));
         const auto errorRoutes = routeCounts.filter(
             routeCounts.aggregate("count", {routeCounts.star()}),
-            routeCounts.binary(routeCounts.column("status"), Op::kEqual,
+            routeCounts.binary(routeCounts.column(service::vpn::entities::VpnRouteEntity::columnName<"status">()), Op::kEqual,
                                routeCounts.value("error")));
-        routeCounts.select({enabledRoutes, errorRoutes}).from("vpn_route");
+        routeCounts.select({enabledRoutes, errorRoutes}).from(service::vpn::entities::VpnRouteEntity::tableName());
         const auto peers = co_await c.db().query(peerCounts);
         const auto routes = co_await c.db().query(routeCounts);
         runtime += ",\"activePeerCount\":" + detail::rowValue(peers.front(), 0) +
@@ -1548,12 +1550,12 @@ inline ruvia::Task<std::string> VpnService::ensureDefaultNetwork(ruvia::Context&
     using Op = ruvia::DbBinaryOperator;
     ruvia::DbQuery existingQuery(c.pool());
     existingQuery
-        .select(existingQuery.cast(existingQuery.column("id"), ruvia::DbDataType::kText))
-        .from("vpn_network")
-        .where(existingQuery.binary(existingQuery.column("name"), Op::kEqual,
+        .select(existingQuery.cast(existingQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">()), ruvia::DbDataType::kText))
+        .from(service::vpn::entities::VpnNetworkEntity::tableName())
+        .where(existingQuery.binary(existingQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"name">()), Op::kEqual,
                                    existingQuery.value(kDefaultNetworkName)))
         .andWhere(existingQuery.unary(ruvia::DbUnaryOperator::kIsNull,
-                                      existingQuery.column("deleted_at")))
+                                      existingQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"deleted_at">())))
         .limit(1);
     const auto existing = co_await transaction.query(existingQuery);
     std::string networkId = std::string(kDefaultNetworkId);
@@ -1562,7 +1564,7 @@ inline ruvia::Task<std::string> VpnService::ensureDefaultNetwork(ruvia::Context&
     } else {
         ruvia::DbQuery insert(c.pool());
         insert
-            .insertInto("vpn_network", {"id", "name", "overlay_cidr", "hub_public_key",
+            .insertInto(service::vpn::entities::VpnNetworkEntity::tableName(), {"id", "name", "overlay_cidr", "hub_public_key",
                                          "hub_endpoint", "hub_listen_port", "created_by"})
             .values({insert.cast(insert.value(kDefaultNetworkId), ruvia::DbDataType::kUuid),
                      insert.value(kDefaultNetworkName), insert.value(kDefaultOverlayCidr),
@@ -1570,11 +1572,11 @@ inline ruvia::Task<std::string> VpnService::ensureDefaultNetwork(ruvia::Context&
                      insert.value(static_cast<int>(hubListenPort)),
                      insert.cast(insert.value(principal.userId), ruvia::DbDataType::kUuid)})
             .onConflict({.columns = {"id"},
-                         .update = {{"name", insert.excluded("name")},
-                                    {"overlay_cidr", insert.excluded("overlay_cidr")},
+                         .update = {{"name", insert.excluded(service::vpn::entities::VpnNetworkEntity::columnName<"name">())},
+                                    {"overlay_cidr", insert.excluded(service::vpn::entities::VpnNetworkEntity::columnName<"overlay_cidr">())},
                                     {"deleted_at", insert.nullValue()},
                                     {"updated_at", insert.call("now")}}})
-            .returning({insert.cast(insert.column("id"), ruvia::DbDataType::kText)});
+            .returning({insert.cast(insert.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">()), ruvia::DbDataType::kText)});
         const auto inserted = co_await transaction.query(insert);
         if (inserted.empty())
             service::common::fail(21005, "默认 iot-server VPN 网络创建失败", 500);
@@ -1582,13 +1584,13 @@ inline ruvia::Task<std::string> VpnService::ensureDefaultNetwork(ruvia::Context&
     }
     ruvia::DbQuery update(c.pool());
     update
-        .update("vpn_network")
-        .set("name", update.value(kDefaultNetworkName))
-        .set("overlay_cidr", update.value(kDefaultOverlayCidr))
-        .set("status", update.value("enabled"))
-        .set("deleted_at", update.nullValue())
-        .set("updated_at", update.call("now"))
-        .where(update.binary(update.column("id"), Op::kEqual,
+        .update(service::vpn::entities::VpnNetworkEntity::tableName())
+        .set(service::vpn::entities::VpnNetworkEntity::columnName<"name">(), update.value(kDefaultNetworkName))
+        .set(service::vpn::entities::VpnNetworkEntity::columnName<"overlay_cidr">(), update.value(kDefaultOverlayCidr))
+        .set(service::vpn::entities::VpnNetworkEntity::columnName<"status">(), update.value("enabled"))
+        .set(service::vpn::entities::VpnNetworkEntity::columnName<"deleted_at">(), update.nullValue())
+        .set(service::vpn::entities::VpnNetworkEntity::columnName<"updated_at">(), update.call("now"))
+        .where(update.binary(update.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">()), Op::kEqual,
                              update.cast(update.value(networkId), ruvia::DbDataType::kUuid)));
     (void)co_await transaction.execute(update);
     co_await transaction.commit();
@@ -1601,13 +1603,13 @@ ruvia::Task<std::optional<std::uint32_t>> VpnService::allocateAddressFromDb(
     using Op = ruvia::DbBinaryOperator;
     ruvia::DbQuery query;
     const auto reusable = query.binary(
-        query.binary(query.column("peer_type"), Op::kNotEqual, query.value("windows")),
+        query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"peer_type">()), Op::kNotEqual, query.value("windows")),
         Op::kOr,
-        query.binary(query.column("status"), Op::kNotEqual, query.value("revoked")));
+        query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"status">()), Op::kNotEqual, query.value("revoked")));
     query
-        .select(query.call("host", {query.column("assigned_ipv4")}))
-        .from("vpn_peer")
-        .where(query.binary(query.column("network_id"), Op::kEqual,
+        .select(query.call("host", {query.column(service::vpn::entities::VpnPeerEntity::columnName<"assigned_ipv4">())}))
+        .from(service::vpn::entities::VpnPeerEntity::tableName())
+        .where(query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"network_id">()), Op::kEqual,
                             query.cast(query.value(networkId), ruvia::DbDataType::kUuid)))
         .andWhere(reusable);
     const auto rows = co_await db.query(query);
@@ -1634,11 +1636,11 @@ inline ruvia::Task<void> VpnService::validateAllowedRoutes(
     using Op = ruvia::DbBinaryOperator;
     ruvia::DbQuery query(c.pool());
     query
-        .select(query.column("virtual_cidr"))
-        .from("vpn_route")
-        .where(query.binary(query.column("network_id"), Op::kEqual,
+        .select(query.column(service::vpn::entities::VpnRouteEntity::columnName<"virtual_cidr">()))
+        .from(service::vpn::entities::VpnRouteEntity::tableName())
+        .where(query.binary(query.column(service::vpn::entities::VpnRouteEntity::columnName<"network_id">()), Op::kEqual,
                             query.cast(query.value(networkId), ruvia::DbDataType::kUuid)))
-        .andWhere(query.binary(query.column("enabled"), Op::kEqual, query.value(true)));
+        .andWhere(query.binary(query.column(service::vpn::entities::VpnRouteEntity::columnName<"enabled">()), Op::kEqual, query.value(true)));
     const auto rows = co_await c.db().query(query);
     std::unordered_set<std::string> allowed;
     for (const auto& row : rows)
@@ -1655,50 +1657,50 @@ inline ruvia::Task<std::string> VpnService::clientConfigJson(ruvia::Context& c,
     requireUuid(peerId, "VPN Peer ID 无效");
     ruvia::DbQuery routes(c.pool());
     const std::array routeOrder{
-        ruvia::DbOrderTerm{routes.column("virtual_cidr", "r")}};
+        ruvia::DbOrderTerm{routes.column(service::vpn::entities::VpnRouteEntity::columnName<"virtual_cidr">(), "r")}};
     routes
-        .select(routes.aggregate("jsonb_agg", {routes.column("virtual_cidr", "r")}, false,
+        .select(routes.aggregate("jsonb_agg", {routes.column(service::vpn::entities::VpnRouteEntity::columnName<"virtual_cidr">(), "r")}, false,
                                   routeOrder))
-        .from("vpn_route", "r")
-        .join(ruvia::DbJoinType::kInner, "vpn_peer",
-              routes.binary(routes.column("id", "edge_peer"), Op::kEqual,
-                            routes.column("edge_peer_id", "r")),
+        .from(service::vpn::entities::VpnRouteEntity::tableName(), "r")
+        .join(ruvia::DbJoinType::kInner, service::vpn::entities::VpnPeerEntity::tableName(),
+              routes.binary(routes.column(service::vpn::entities::VpnPeerEntity::columnName<"id">(), "edge_peer"), Op::kEqual,
+                            routes.column(service::vpn::entities::VpnRouteEntity::columnName<"edge_peer_id">(), "r")),
               "edge_peer")
-        .join(ruvia::DbJoinType::kInner, "edge_node",
-              routes.binary(routes.column("id", "e"), Op::kEqual,
-                            routes.column("edge_node_id", "edge_peer")),
+        .join(ruvia::DbJoinType::kInner, service::vpn::entities::EdgeNodeEntity::tableName(),
+              routes.binary(routes.column(service::vpn::entities::EdgeNodeEntity::columnName<"id">(), "e"), Op::kEqual,
+                            routes.column(service::vpn::entities::VpnPeerEntity::columnName<"edge_node_id">(), "edge_peer")),
               "e")
-        .where(routes.binary(routes.column("network_id", "r"), Op::kEqual,
-                             routes.column("id", "n")))
-        .andWhere(routes.binary(routes.column("enabled", "r"), Op::kEqual,
+        .where(routes.binary(routes.column(service::vpn::entities::VpnRouteEntity::columnName<"network_id">(), "r"), Op::kEqual,
+                             routes.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">(), "n")))
+        .andWhere(routes.binary(routes.column(service::vpn::entities::VpnRouteEntity::columnName<"enabled">(), "r"), Op::kEqual,
                                 routes.value(true)))
-        .andWhere(routes.binary(routes.column("status", "r"), Op::kEqual,
+        .andWhere(routes.binary(routes.column(service::vpn::entities::VpnRouteEntity::columnName<"status">(), "r"), Op::kEqual,
                                 routes.value("active")))
-        .andWhere(routes.binary(routes.column("status", "edge_peer"), Op::kEqual,
+        .andWhere(routes.binary(routes.column(service::vpn::entities::VpnPeerEntity::columnName<"status">(), "edge_peer"), Op::kEqual,
                                 routes.value("active")))
-        .andWhere(routes.binary(routes.column("enrollment_status", "e"), Op::kEqual,
+        .andWhere(routes.binary(routes.column(service::vpn::entities::EdgeNodeEntity::columnName<"enrollment_status">(), "e"), Op::kEqual,
                                 routes.value("approved")));
     ruvia::DbQuery query(c.pool());
     const auto emptyRoutes = query.cast(query.value("[]"), ruvia::DbDataType::kJsonb);
     query
-        .select({query.column("id", "p"), query.column("name", "p"),
-                 query.call("host", {query.column("assigned_ipv4", "p")}),
-                 query.cast(query.column("allowed_routes", "p"), ruvia::DbDataType::kText),
-                 query.column("hub_public_key", "n"), query.column("hub_endpoint", "n"),
-                 query.column("hub_listen_port", "n"), query.column("status", "n"),
-                 query.column("status", "p"), query.column("user_id", "p"),
+        .select({query.column(service::vpn::entities::VpnPeerEntity::columnName<"id">(), "p"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"name">(), "p"),
+                 query.call("host", {query.column(service::vpn::entities::VpnPeerEntity::columnName<"assigned_ipv4">(), "p")}),
+                 query.cast(query.column(service::vpn::entities::VpnPeerEntity::columnName<"allowed_routes">(), "p"), ruvia::DbDataType::kText),
+                 query.column(service::vpn::entities::VpnNetworkEntity::columnName<"hub_public_key">(), "n"), query.column(service::vpn::entities::VpnNetworkEntity::columnName<"hub_endpoint">(), "n"),
+                 query.column(service::vpn::entities::VpnNetworkEntity::columnName<"hub_listen_port">(), "n"), query.column(service::vpn::entities::VpnNetworkEntity::columnName<"status">(), "n"),
+                 query.column(service::vpn::entities::VpnPeerEntity::columnName<"status">(), "p"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"user_id">(), "p"),
                  query.cast(query.coalesce({query.subquery(routes), emptyRoutes}),
                             ruvia::DbDataType::kText)})
-        .from("vpn_peer", "p")
-        .join(ruvia::DbJoinType::kInner, "vpn_network",
-              query.binary(query.column("id", "n"), Op::kEqual,
-                           query.column("network_id", "p")),
+        .from(service::vpn::entities::VpnPeerEntity::tableName(), "p")
+        .join(ruvia::DbJoinType::kInner, service::vpn::entities::VpnNetworkEntity::tableName(),
+              query.binary(query.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">(), "n"), Op::kEqual,
+                           query.column(service::vpn::entities::VpnPeerEntity::columnName<"network_id">(), "p")),
               "n")
-        .where(query.binary(query.column("id", "p"), Op::kEqual,
+        .where(query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"id">(), "p"), Op::kEqual,
                            query.cast(query.value(peerId), ruvia::DbDataType::kUuid)))
-        .andWhere(query.binary(query.column("peer_type", "p"), Op::kEqual,
+        .andWhere(query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"peer_type">(), "p"), Op::kEqual,
                                query.value("windows")))
-        .andWhere(query.binary(query.column("user_id", "p"), Op::kEqual,
+        .andWhere(query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"user_id">(), "p"), Op::kEqual,
                                query.cast(query.value(userId), ruvia::DbDataType::kUuid)))
         .limit(1);
     const auto rows = co_await c.db().query(query);
@@ -1733,56 +1735,56 @@ inline ruvia::Task<std::string> VpnService::desktopDevices(ruvia::Context& c) {
     using Op = ruvia::DbBinaryOperator;
     ruvia::DbQuery routeQuery(c.pool());
     const std::array routeOrder{
-        ruvia::DbOrderTerm{routeQuery.column("virtual_cidr", "route")}};
+        ruvia::DbOrderTerm{routeQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"virtual_cidr">(), "route")}};
     routeQuery
-        .select(routeQuery.aggregate("jsonb_agg", {routeQuery.column("virtual_cidr", "route")},
+        .select(routeQuery.aggregate("jsonb_agg", {routeQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"virtual_cidr">(), "route")},
                                       false, routeOrder))
-        .from("vpn_route", "route")
-        .where(routeQuery.binary(routeQuery.column("edge_peer_id", "route"), Op::kEqual,
-                                 routeQuery.column("id", "peer")))
-        .andWhere(routeQuery.binary(routeQuery.column("network_id", "route"), Op::kEqual,
-                                    routeQuery.column("id", "network")))
-        .andWhere(routeQuery.binary(routeQuery.column("enabled", "route"), Op::kEqual,
+        .from(service::vpn::entities::VpnRouteEntity::tableName(), "route")
+        .where(routeQuery.binary(routeQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"edge_peer_id">(), "route"), Op::kEqual,
+                                 routeQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"id">(), "peer")))
+        .andWhere(routeQuery.binary(routeQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"network_id">(), "route"), Op::kEqual,
+                                    routeQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">(), "network")))
+        .andWhere(routeQuery.binary(routeQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"enabled">(), "route"), Op::kEqual,
                                     routeQuery.value(true)))
-        .andWhere(routeQuery.binary(routeQuery.column("status", "route"), Op::kEqual,
+        .andWhere(routeQuery.binary(routeQuery.column(service::vpn::entities::VpnRouteEntity::columnName<"status">(), "route"), Op::kEqual,
                                     routeQuery.value("active")));
     ruvia::DbQuery query(c.pool());
     const auto emptyRoutes = query.cast(query.value("[]"), ruvia::DbDataType::kJsonb);
     query
         .select({query.call(
                      "jsonb_build_object",
-                     {detail::jsonKey(query, "id"), query.column("id", "edge"),
+                     {detail::jsonKey(query, "id"), query.column(service::vpn::entities::EdgeNodeEntity::columnName<"id">(), "edge"),
                       detail::jsonKey(query, "name"),
-                      query.coalesce({query.column("name", "edge"), query.value("")}),
-                      detail::jsonKey(query, "imei"), query.column("imei", "edge"),
+                      query.coalesce({query.column(service::vpn::entities::EdgeNodeEntity::columnName<"name">(), "edge"), query.value("")}),
+                      detail::jsonKey(query, "imei"), query.column(service::vpn::entities::EdgeNodeEntity::columnName<"imei">(), "edge"),
                       detail::jsonKey(query, "virtualCidrs"),
                       query.coalesce({query.subquery(routeQuery), emptyRoutes}),
                       detail::jsonKey(query, "assignedIpv4"),
-                      query.call("host", {query.column("assigned_ipv4", "peer")})}),
-                 query.cast(query.column("id", "edge"), ruvia::DbDataType::kText)})
-        .from("edge_node", "edge")
-        .join(ruvia::DbJoinType::kInner, "vpn_peer",
-              query.binary(query.column("edge_node_id", "peer"), Op::kEqual,
-                           query.column("id", "edge")),
+                      query.call("host", {query.column(service::vpn::entities::VpnPeerEntity::columnName<"assigned_ipv4">(), "peer")})}),
+                 query.cast(query.column(service::vpn::entities::EdgeNodeEntity::columnName<"id">(), "edge"), ruvia::DbDataType::kText)})
+        .from(service::vpn::entities::EdgeNodeEntity::tableName(), "edge")
+        .join(ruvia::DbJoinType::kInner, service::vpn::entities::VpnPeerEntity::tableName(),
+              query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"edge_node_id">(), "peer"), Op::kEqual,
+                           query.column(service::vpn::entities::EdgeNodeEntity::columnName<"id">(), "edge")),
               "peer")
-        .join(ruvia::DbJoinType::kInner, "vpn_network",
-              query.binary(query.column("id", "network"), Op::kEqual,
-                           query.column("network_id", "peer")),
+        .join(ruvia::DbJoinType::kInner, service::vpn::entities::VpnNetworkEntity::tableName(),
+              query.binary(query.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">(), "network"), Op::kEqual,
+                           query.column(service::vpn::entities::VpnPeerEntity::columnName<"network_id">(), "peer")),
               "network")
-        .where(query.binary(query.column("peer_type", "peer"), Op::kEqual,
+        .where(query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"peer_type">(), "peer"), Op::kEqual,
                             query.value("edge")))
-        .andWhere(query.binary(query.column("status", "peer"), Op::kEqual,
+        .andWhere(query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"status">(), "peer"), Op::kEqual,
                                query.value("active")))
-        .andWhere(query.binary(query.column("enrollment_status", "edge"), Op::kEqual,
+        .andWhere(query.binary(query.column(service::vpn::entities::EdgeNodeEntity::columnName<"enrollment_status">(), "edge"), Op::kEqual,
                                query.value("approved")))
-        .andWhere(query.binary(query.column("name", "network"), Op::kEqual,
+        .andWhere(query.binary(query.column(service::vpn::entities::VpnNetworkEntity::columnName<"name">(), "network"), Op::kEqual,
                                query.value(kDefaultNetworkName)))
-        .andWhere(query.binary(query.column("status", "network"), Op::kEqual,
+        .andWhere(query.binary(query.column(service::vpn::entities::VpnNetworkEntity::columnName<"status">(), "network"), Op::kEqual,
                                query.value("enabled")))
         .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull,
-                              query.column("deleted_at", "network")))
-        .orderBy(query.coalesce({query.column("name", "edge"), query.value("")}))
-        .addOrderBy(query.column("id", "edge"));
+                              query.column(service::vpn::entities::VpnNetworkEntity::columnName<"deleted_at">(), "network")))
+        .orderBy(query.coalesce({query.column(service::vpn::entities::EdgeNodeEntity::columnName<"name">(), "edge"), query.value("")}))
+        .addOrderBy(query.column(service::vpn::entities::EdgeNodeEntity::columnName<"id">(), "edge"));
     const auto rows = co_await c.db().query(query);
     std::string result{"["};
     for (std::size_t index = 0; index < rows.size(); ++index) {
@@ -1812,11 +1814,11 @@ inline ruvia::Task<std::string> VpnService::desktopCreatePeer(ruvia::Context& c,
     using Op = ruvia::DbBinaryOperator;
     ruvia::DbQuery existingQuery(c.pool());
     existingQuery
-        .select({existingQuery.cast(existingQuery.column("id"), ruvia::DbDataType::kText),
-                 existingQuery.cast(existingQuery.column("user_id"), ruvia::DbDataType::kText),
-                 existingQuery.column("status"), existingQuery.column("client_managed")})
-        .from("vpn_peer")
-        .where(existingQuery.binary(existingQuery.column("public_key"), Op::kEqual,
+        .select({existingQuery.cast(existingQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"id">()), ruvia::DbDataType::kText),
+                 existingQuery.cast(existingQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"user_id">()), ruvia::DbDataType::kText),
+                 existingQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"status">()), existingQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"client_managed">())})
+        .from(service::vpn::entities::VpnPeerEntity::tableName())
+        .where(existingQuery.binary(existingQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"public_key">()), Op::kEqual,
                                    existingQuery.value(publicKey)))
         .lock({.mode = ruvia::DbRowLock::kUpdate});
     const auto existing = co_await tx.query(existingQuery);
@@ -1837,15 +1839,15 @@ inline ruvia::Task<std::string> VpnService::desktopCreatePeer(ruvia::Context& c,
     }
     ruvia::DbQuery networkQuery(c.pool());
     networkQuery
-        .select({networkQuery.cast(networkQuery.column("id"), ruvia::DbDataType::kText),
-                 networkQuery.column("overlay_cidr")})
-        .from("vpn_network")
-        .where(networkQuery.binary(networkQuery.column("name"), Op::kEqual,
+        .select({networkQuery.cast(networkQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">()), ruvia::DbDataType::kText),
+                 networkQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"overlay_cidr">())})
+        .from(service::vpn::entities::VpnNetworkEntity::tableName())
+        .where(networkQuery.binary(networkQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"name">()), Op::kEqual,
                                    networkQuery.value(kDefaultNetworkName)))
-        .andWhere(networkQuery.binary(networkQuery.column("status"), Op::kEqual,
+        .andWhere(networkQuery.binary(networkQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"status">()), Op::kEqual,
                                       networkQuery.value("enabled")))
         .andWhere(networkQuery.unary(ruvia::DbUnaryOperator::kIsNull,
-                                     networkQuery.column("deleted_at")))
+                                     networkQuery.column(service::vpn::entities::VpnNetworkEntity::columnName<"deleted_at">())))
         .lock({.mode = ruvia::DbRowLock::kShare});
     const auto network = co_await tx.query(networkQuery);
     if (network.empty()) service::common::fail(21004, "VPN 网络不存在或已停用", 404);
@@ -1859,7 +1861,7 @@ inline ruvia::Task<std::string> VpnService::desktopCreatePeer(ruvia::Context& c,
     const auto assignedText = detail::hostText(*assigned);
     ruvia::DbQuery insert(c.pool());
     insert
-        .insertInto("vpn_peer", {"id", "network_id", "peer_type", "user_id", "name",
+        .insertInto(service::vpn::entities::VpnPeerEntity::tableName(), {"id", "network_id", "peer_type", "user_id", "name",
                                   "public_key", "assigned_ipv4", "allowed_routes", "status",
                                   "client_managed"})
         .values({insert.cast(insert.value(id), ruvia::DbDataType::kUuid),
@@ -1874,7 +1876,7 @@ inline ruvia::Task<std::string> VpnService::desktopCreatePeer(ruvia::Context& c,
     for (const auto& edge : ids) {
         ruvia::DbQuery selection(c.pool());
         selection
-            .insertInto("vpn_peer_edge_selection", {"peer_id", "edge_node_id"})
+            .insertInto(service::vpn::entities::VpnPeerEdgeSelectionEntity::tableName(), {"peer_id", "edge_node_id"})
             .values({selection.cast(selection.value(id), ruvia::DbDataType::kUuid),
                      selection.cast(selection.value(edge), ruvia::DbDataType::kUuid)});
         (void)co_await tx.execute(selection);
@@ -1896,18 +1898,18 @@ inline ruvia::Task<std::string> VpnService::desktopUpdatePeer(ruvia::Context& c,
     using Op = ruvia::DbBinaryOperator;
     ruvia::DbQuery parent(c.pool());
     parent
-        .select(parent.cast(parent.column("network_id"), ruvia::DbDataType::kText))
-        .from("vpn_peer")
-        .where(parent.binary(parent.column("id"), Op::kEqual,
+        .select(parent.cast(parent.column(service::vpn::entities::VpnPeerEntity::columnName<"network_id">()), ruvia::DbDataType::kText))
+        .from(service::vpn::entities::VpnPeerEntity::tableName())
+        .where(parent.binary(parent.column(service::vpn::entities::VpnPeerEntity::columnName<"id">()), Op::kEqual,
                              parent.cast(parent.value(id), ruvia::DbDataType::kUuid)))
-        .andWhere(parent.binary(parent.column("user_id"), Op::kEqual,
+        .andWhere(parent.binary(parent.column(service::vpn::entities::VpnPeerEntity::columnName<"user_id">()), Op::kEqual,
                                 parent.cast(parent.value(principal.userId),
                                             ruvia::DbDataType::kUuid)))
-        .andWhere(parent.binary(parent.column("peer_type"), Op::kEqual,
+        .andWhere(parent.binary(parent.column(service::vpn::entities::VpnPeerEntity::columnName<"peer_type">()), Op::kEqual,
                                 parent.value("windows")))
-        .andWhere(parent.binary(parent.column("client_managed"), Op::kEqual,
+        .andWhere(parent.binary(parent.column(service::vpn::entities::VpnPeerEntity::columnName<"client_managed">()), Op::kEqual,
                                 parent.value(true)))
-        .andWhere(parent.binary(parent.column("status"), Op::kEqual,
+        .andWhere(parent.binary(parent.column(service::vpn::entities::VpnPeerEntity::columnName<"status">()), Op::kEqual,
                                 parent.value("active")))
         .lock({.mode = ruvia::DbRowLock::kUpdate});
     const auto rows = co_await tx.query(parent);
@@ -1915,14 +1917,14 @@ inline ruvia::Task<std::string> VpnService::desktopUpdatePeer(ruvia::Context& c,
     co_await detail::validateSelectedEdges(tx, detail::rowValue(rows.front(), 0), ids);
     ruvia::DbQuery removal(c.pool());
     removal
-        .deleteFrom("vpn_peer_edge_selection")
-        .where(removal.binary(removal.column("peer_id"), Op::kEqual,
+        .deleteFrom(service::vpn::entities::VpnPeerEdgeSelectionEntity::tableName())
+        .where(removal.binary(removal.column(service::vpn::entities::VpnPeerEdgeSelectionEntity::columnName<"peer_id">()), Op::kEqual,
                              removal.cast(removal.value(id), ruvia::DbDataType::kUuid)));
     (void)co_await tx.execute(removal);
     for (const auto& edge : ids) {
         ruvia::DbQuery selection(c.pool());
         selection
-            .insertInto("vpn_peer_edge_selection", {"peer_id", "edge_node_id"})
+            .insertInto(service::vpn::entities::VpnPeerEdgeSelectionEntity::tableName(), {"peer_id", "edge_node_id"})
             .values({selection.cast(selection.value(id), ruvia::DbDataType::kUuid),
                      selection.cast(selection.value(edge), ruvia::DbDataType::kUuid)});
         (void)co_await tx.execute(selection);
@@ -1939,29 +1941,29 @@ inline ruvia::Task<std::string> VpnService::desktopPeerConfig(ruvia::Context& c,
     const auto principal = service::middleware::requireAuth(c);
     ruvia::DbQuery selectionQuery(c.pool());
     const std::array selectionOrder{
-        ruvia::DbOrderTerm{selectionQuery.column("edge_node_id", "selection")}};
+        ruvia::DbOrderTerm{selectionQuery.column(service::vpn::entities::VpnPeerEdgeSelectionEntity::columnName<"edge_node_id">(), "selection")}};
     selectionQuery
         .select(selectionQuery.aggregate("jsonb_agg",
-                                         {selectionQuery.column("edge_node_id", "selection")},
+                                         {selectionQuery.column(service::vpn::entities::VpnPeerEdgeSelectionEntity::columnName<"edge_node_id">(), "selection")},
                                          false, selectionOrder))
-        .from("vpn_peer_edge_selection", "selection")
-        .where(selectionQuery.binary(selectionQuery.column("peer_id", "selection"), Op::kEqual,
-                                     selectionQuery.column("id", "peer")));
+        .from(service::vpn::entities::VpnPeerEdgeSelectionEntity::tableName(), "selection")
+        .where(selectionQuery.binary(selectionQuery.column(service::vpn::entities::VpnPeerEdgeSelectionEntity::columnName<"peer_id">(), "selection"), Op::kEqual,
+                                     selectionQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"id">(), "peer")));
 
     ruvia::DbQuery routeAccess(c.pool());
     routeAccess
-        .select(routeAccess.alias(routeAccess.column("virtual_cidr", "access"), "route"))
-        .from("vpn_effective_route_access", "access")
-        .where(routeAccess.binary(routeAccess.column("peer_id", "access"), Op::kEqual,
-                                  routeAccess.column("id", "peer")));
+        .select(routeAccess.alias(routeAccess.column(service::vpn::entities::VpnEffectiveRouteAccessEntity::columnName<"virtual_cidr">(), "access"), "route"))
+        .from(service::vpn::entities::VpnEffectiveRouteAccessEntity::tableName(), "access")
+        .where(routeAccess.binary(routeAccess.column(service::vpn::entities::VpnEffectiveRouteAccessEntity::columnName<"peer_id">(), "access"), Op::kEqual,
+                                  routeAccess.column(service::vpn::entities::VpnPeerEntity::columnName<"id">(), "peer")));
     ruvia::DbQuery edgeAccess(c.pool());
     edgeAccess
-        .select(edgeAccess.binary(edgeAccess.column("edge_address", "access"), Op::kConcat,
+        .select(edgeAccess.binary(edgeAccess.column(service::vpn::entities::VpnEffectiveEdgeAccessEntity::columnName<"edge_address">(), "access"), Op::kConcat,
                                   edgeAccess.cast(edgeAccess.value("/32"),
                                                   ruvia::DbDataType::kText)))
-        .from("vpn_effective_edge_access", "access")
-        .where(edgeAccess.binary(edgeAccess.column("peer_id", "access"), Op::kEqual,
-                                 edgeAccess.column("id", "peer")));
+        .from(service::vpn::entities::VpnEffectiveEdgeAccessEntity::tableName(), "access")
+        .where(edgeAccess.binary(edgeAccess.column(service::vpn::entities::VpnEffectiveEdgeAccessEntity::columnName<"peer_id">(), "access"), Op::kEqual,
+                                 edgeAccess.column(service::vpn::entities::VpnPeerEntity::columnName<"id">(), "peer")));
     routeAccess.combine(ruvia::DbSetOperation::kUnion, edgeAccess);
 
     ruvia::DbQuery allowedQuery(c.pool());
@@ -1974,18 +1976,18 @@ inline ruvia::Task<std::string> VpnService::desktopPeerConfig(ruvia::Context& c,
 
     ruvia::DbQuery edgeAddressQuery(c.pool());
     const std::array edgeAddressOrder{
-        ruvia::DbOrderTerm{edgeAddressQuery.column("edge_address", "access")}};
+        ruvia::DbOrderTerm{edgeAddressQuery.column(service::vpn::entities::VpnEffectiveEdgeAccessEntity::columnName<"edge_address">(), "access")}};
     edgeAddressQuery
         .select(edgeAddressQuery.aggregate(
-            "jsonb_agg", {edgeAddressQuery.column("edge_address", "access")}, false,
+            "jsonb_agg", {edgeAddressQuery.column(service::vpn::entities::VpnEffectiveEdgeAccessEntity::columnName<"edge_address">(), "access")}, false,
             edgeAddressOrder))
-        .from("vpn_effective_edge_access", "access")
-        .where(edgeAddressQuery.binary(edgeAddressQuery.column("peer_id", "access"), Op::kEqual,
-                                       edgeAddressQuery.column("id", "peer")));
+        .from(service::vpn::entities::VpnEffectiveEdgeAccessEntity::tableName(), "access")
+        .where(edgeAddressQuery.binary(edgeAddressQuery.column(service::vpn::entities::VpnEffectiveEdgeAccessEntity::columnName<"peer_id">(), "access"), Op::kEqual,
+                                       edgeAddressQuery.column(service::vpn::entities::VpnPeerEntity::columnName<"id">(), "peer")));
 
     ruvia::DbQuery query(c.pool());
     const auto emptyRoutes = query.cast(query.value("[]"), ruvia::DbDataType::kJsonb);
-    const auto networkEnabled = query.binary(query.column("status", "network"), Op::kEqual,
+    const auto networkEnabled = query.binary(query.column(service::vpn::entities::VpnNetworkEntity::columnName<"status">(), "network"), Op::kEqual,
                                              query.value("enabled"));
     const auto allowedRoutes = query.caseWhen(
         {{networkEnabled,
@@ -1998,48 +2000,48 @@ inline ruvia::Task<std::string> VpnService::desktopPeerConfig(ruvia::Context& c,
     query
         .select({query.call(
                      "jsonb_build_object",
-                     {detail::jsonKey(query, "peerId"), query.column("id", "peer"),
-                      detail::jsonKey(query, "name"), query.column("name", "peer"),
-                      detail::jsonKey(query, "publicKey"), query.column("public_key", "peer"),
+                     {detail::jsonKey(query, "peerId"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"id">(), "peer"),
+                      detail::jsonKey(query, "name"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"name">(), "peer"),
+                      detail::jsonKey(query, "publicKey"), query.column(service::vpn::entities::VpnPeerEntity::columnName<"public_key">(), "peer"),
                       detail::jsonKey(query, "networkEnabled"), networkEnabled,
                       detail::jsonKey(query, "assignedIpv4"),
-                      query.call("host", {query.column("assigned_ipv4", "peer")}),
+                      query.call("host", {query.column(service::vpn::entities::VpnPeerEntity::columnName<"assigned_ipv4">(), "peer")}),
                       detail::jsonKey(query, "hubPublicKey"),
-                      query.column("hub_public_key", "network"),
+                      query.column(service::vpn::entities::VpnNetworkEntity::columnName<"hub_public_key">(), "network"),
                       detail::jsonKey(query, "hubEndpoint"),
-                      query.column("hub_endpoint", "network"),
+                      query.column(service::vpn::entities::VpnNetworkEntity::columnName<"hub_endpoint">(), "network"),
                       detail::jsonKey(query, "hubListenPort"),
-                      query.column("hub_listen_port", "network"),
+                      query.column(service::vpn::entities::VpnNetworkEntity::columnName<"hub_listen_port">(), "network"),
                       detail::jsonKey(query, "mtu"),
                       query.cast(query.value(1280), ruvia::DbDataType::kInteger),
                       detail::jsonKey(query, "persistentKeepalive"),
                       query.cast(query.value(25), ruvia::DbDataType::kInteger),
                       detail::jsonKey(query, "configRevision"),
-                      query.column("config_revision", "peer"),
+                      query.column(service::vpn::entities::VpnPeerEntity::columnName<"config_revision">(), "peer"),
                       detail::jsonKey(query, "edgeNodeIds"),
                       query.coalesce({query.subquery(selectionQuery), emptyRoutes}),
                       detail::jsonKey(query, "allowedRoutes"), allowedRoutes,
                       detail::jsonKey(query, "edgeAddresses"), edgeAddresses}),
-                 query.column("hub_public_key", "network"),
-                 query.column("hub_endpoint", "network")})
-        .from("vpn_peer", "peer")
-        .join(ruvia::DbJoinType::kInner, "vpn_network",
-              query.binary(query.column("id", "network"), Op::kEqual,
-                           query.column("network_id", "peer")),
+                 query.column(service::vpn::entities::VpnNetworkEntity::columnName<"hub_public_key">(), "network"),
+                 query.column(service::vpn::entities::VpnNetworkEntity::columnName<"hub_endpoint">(), "network")})
+        .from(service::vpn::entities::VpnPeerEntity::tableName(), "peer")
+        .join(ruvia::DbJoinType::kInner, service::vpn::entities::VpnNetworkEntity::tableName(),
+              query.binary(query.column(service::vpn::entities::VpnNetworkEntity::columnName<"id">(), "network"), Op::kEqual,
+                           query.column(service::vpn::entities::VpnPeerEntity::columnName<"network_id">(), "peer")),
               "network")
-        .where(query.binary(query.column("id", "peer"), Op::kEqual,
+        .where(query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"id">(), "peer"), Op::kEqual,
                            query.cast(query.value(id), ruvia::DbDataType::kUuid)))
-        .andWhere(query.binary(query.column("user_id", "peer"), Op::kEqual,
+        .andWhere(query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"user_id">(), "peer"), Op::kEqual,
                                query.cast(query.value(principal.userId),
                                           ruvia::DbDataType::kUuid)))
-        .andWhere(query.binary(query.column("peer_type", "peer"), Op::kEqual,
+        .andWhere(query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"peer_type">(), "peer"), Op::kEqual,
                                query.value("windows")))
-        .andWhere(query.binary(query.column("client_managed", "peer"), Op::kEqual,
+        .andWhere(query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"client_managed">(), "peer"), Op::kEqual,
                                query.value(true)))
-        .andWhere(query.binary(query.column("status", "peer"), Op::kEqual,
+        .andWhere(query.binary(query.column(service::vpn::entities::VpnPeerEntity::columnName<"status">(), "peer"), Op::kEqual,
                                query.value("active")))
         .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull,
-                              query.column("deleted_at", "network")));
+                              query.column(service::vpn::entities::VpnNetworkEntity::columnName<"deleted_at">(), "network")));
     const auto rows = co_await c.db().query(query);
     if (rows.empty()) service::common::fail(21004, "Windows VPN 配置不存在或不属于当前用户", 404);
     if (!detail::validManagedKey(detail::rowValue(rows.front(), 1)) || detail::rowValue(rows.front(), 2).empty())
@@ -2053,20 +2055,20 @@ inline ruvia::Task<void> VpnService::desktopDeletePeer(ruvia::Context& c, std::s
     const auto principal = service::middleware::requireAuth(c);
     ruvia::DbQuery update(c.pool());
     update
-        .update("vpn_peer")
-        .set("status", update.value("revoked"))
-        .set("revoked_at", update.call("now"))
-        .set("updated_at", update.call("now"))
-        .where(update.binary(update.column("id"), Op::kEqual,
+        .update(service::vpn::entities::VpnPeerEntity::tableName())
+        .set(service::vpn::entities::VpnPeerEntity::columnName<"status">(), update.value("revoked"))
+        .set(service::vpn::entities::VpnPeerEntity::columnName<"revoked_at">(), update.call("now"))
+        .set(service::vpn::entities::VpnPeerEntity::columnName<"updated_at">(), update.call("now"))
+        .where(update.binary(update.column(service::vpn::entities::VpnPeerEntity::columnName<"id">()), Op::kEqual,
                              update.cast(update.value(id), ruvia::DbDataType::kUuid)))
-        .andWhere(update.binary(update.column("user_id"), Op::kEqual,
+        .andWhere(update.binary(update.column(service::vpn::entities::VpnPeerEntity::columnName<"user_id">()), Op::kEqual,
                                 update.cast(update.value(principal.userId),
                                             ruvia::DbDataType::kUuid)))
-        .andWhere(update.binary(update.column("peer_type"), Op::kEqual,
+        .andWhere(update.binary(update.column(service::vpn::entities::VpnPeerEntity::columnName<"peer_type">()), Op::kEqual,
                                 update.value("windows")))
-        .andWhere(update.binary(update.column("client_managed"), Op::kEqual,
+        .andWhere(update.binary(update.column(service::vpn::entities::VpnPeerEntity::columnName<"client_managed">()), Op::kEqual,
                                 update.value(true)))
-        .returning({update.column("public_key")});
+        .returning({update.column(service::vpn::entities::VpnPeerEntity::columnName<"public_key">())});
     const auto rows = co_await c.db().query(update);
     if (rows.empty()) service::common::fail(21004, "Windows VPN 配置不存在或不属于当前用户", 404);
     co_await audit(c, principal.userId, "vpn.desktop.revoke", "vpn_peer", id, "success", "{}");
@@ -2087,7 +2089,7 @@ inline ruvia::Task<void> VpnService::audit(ruvia::Context& c, std::string_view a
     const auto auditId = service::common::nextUuidV7();
     ruvia::DbQuery insert(c.pool());
     insert
-        .insertInto("security_audit_log", {"id", "actor_user_id", "action", "resource_type",
+        .insertInto(service::vpn::entities::SecurityAuditLogEntity::tableName(), {"id", "actor_user_id", "action", "resource_type",
                                             "resource_id", "outcome", "details"})
         .values({insert.cast(insert.value(auditId), ruvia::DbDataType::kUuid),
                  insert.cast(insert.value(actor), ruvia::DbDataType::kUuid),

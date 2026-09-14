@@ -72,7 +72,7 @@ int main() {
         requireContains(serviceSource, "query.call(\n            \"jsonb_build_object\"",
                         "edge task request does not use typed JSON construction");
         const auto controllerSource = edgeSource("service/modules/edge_node/edge_node.controller.h");
-        const auto gatewaySource = edgeSource("service/features/edge/gateway/gateway.transport.h");
+        const auto gatewaySource = edgeSource("service/features/edge/gateway/gateway.runtime.h");
         const auto dispatchSource = edgeSource("service/features/edge/edge.transport.h");
         const auto dispatcherSource = edgeSource("service/features/edge/edge.runtime.h");
         const auto multiplexerSource =
@@ -231,7 +231,7 @@ int main() {
                         "VPN task enabled flag has no explicit PostgreSQL type");
         requireContains(gatewaySource, "case pb::Envelope::kVpnConfigResult:",
                         "edge gateway does not project VPN configuration results");
-        requireContains(projectorServiceSource, "transitioned, transitioned.column(\"request\"), \"enabled\")",
+        requireContains(projectorServiceSource, "transitioned, transitioned.column(service::edge::persistence::EdgeTaskEntity::columnName<\"request\">()), \"enabled\")",
                         "VPN result transition does not return the requested enabled state");
         requireContains(projectorServiceSource, "\"config_version\")",
                         "VPN result transition does not return the requested config version");
@@ -244,7 +244,7 @@ int main() {
         requireContains(vpnServiceSource,
                         "reusableEdgePeerId.empty() ? service::common::nextUuidV7()",
                         "revoked Edge VPN peers are not reused when VPN is enabled again");
-        requireContains(vpnServiceSource, ".set(\"revoked_at\", reactivation.nullValue())",
+        requireContains(vpnServiceSource, ".set(service::vpn::entities::VpnPeerEntity::columnName<\"revoked_at\">(), reactivation.nullValue())",
                         "reactivating an Edge VPN peer does not clear its revoked state");
         requireContains(vpnServiceSource, "\"vpn.peer.reactivate\"",
                         "Edge VPN peer reactivation is not audited separately");

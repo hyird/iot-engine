@@ -67,7 +67,7 @@ void requireCanonicalBooleanPointValues(std::string_view source) {
 
 void requireAccessQueriesUseOrm(std::string_view source) {
     require(source.find("catalog.caseWhen(") != std::string_view::npos &&
-                source.find("catalog.column(\"skip_tls_verify\", \"webhook\")") !=
+                source.find("catalog.column(service::access::persistence::OpenWebhookEntity::columnName<\"skip_tls_verify\">(), \"webhook\")") !=
                     std::string_view::npos &&
                 source.find("catalog.value(\"1\")") != std::string_view::npos &&
                 source.find("catalog.value(\"0\")") != std::string_view::npos &&
@@ -87,7 +87,7 @@ void requireAccessQueriesUseOrm(std::string_view source) {
                     std::string_view::npos,
             "access projections lost aggregate FILTER or LATERAL JSON semantics");
     require(source.find("catalog.caseWhen(") != std::string_view::npos &&
-                source.find("catalog.column(\"skip_tls_verify\", \"webhook\")") !=
+                source.find("catalog.column(service::access::persistence::OpenWebhookEntity::columnName<\"skip_tls_verify\">(), \"webhook\")") !=
                     std::string_view::npos &&
                 source.find("catalog.value(\"1\")") != std::string_view::npos &&
                 source.find("catalog.value(\"0\")") != std::string_view::npos,

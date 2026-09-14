@@ -1,5 +1,7 @@
 #pragma once
 
+#include "service/modules/alert/alert.entity.h"
+
 #include <algorithm>
 #include <charconv>
 #include <cstdint>
@@ -38,14 +40,14 @@ class AlertService final {
 
     ruvia::Task<std::string> listRules(ruvia::Context& c) {
         Query filtered(c.pool());
-        filtered.select({ filtered.star("rule"), filtered.alias(filtered.column("name", "device"), "device_name") })
-            .from("alert_rule", "rule")
-            .join(ruvia::DbJoinType::kInner, "device", filtered.binary(filtered.column("id", "device"), Op::kEqual, filtered.column("device_id", "rule")))
-            .andWhere(filtered.unary(ruvia::DbUnaryOperator::kIsNull, filtered.column("deleted_at", "rule")));
-        appendTextFilter(c, "keyword", filtered, filtered.column("name", "rule"), true);
-        appendUuidFilter(c, "deviceId", filtered, filtered.column("device_id", "rule"));
-        appendTextFilter(c, "severity", filtered, filtered.column("severity", "rule"));
-        appendTextFilter(c, "status", filtered, filtered.cast(filtered.column("status", "rule"), Type::kText));
+        filtered.select({ filtered.star("rule"), filtered.alias(filtered.column(service::alert::entities::DeviceEntity::columnName<"name">(), "device"), "device_name") })
+            .from(service::alert::entities::AlertRuleEntity::tableName(), "rule")
+            .join(ruvia::DbJoinType::kInner, service::alert::entities::DeviceEntity::tableName(), filtered.binary(filtered.column(service::alert::entities::DeviceEntity::columnName<"id">(), "device"), Op::kEqual, filtered.column(service::alert::entities::AlertRuleEntity::columnName<"device_id">(), "rule")))
+            .andWhere(filtered.unary(ruvia::DbUnaryOperator::kIsNull, filtered.column(service::alert::entities::AlertRuleEntity::columnName<"deleted_at">(), "rule")));
+        appendTextFilter(c, "keyword", filtered, filtered.column(service::alert::entities::AlertRuleEntity::columnName<"name">(), "rule"), true);
+        appendUuidFilter(c, "deviceId", filtered, filtered.column(service::alert::entities::AlertRuleEntity::columnName<"device_id">(), "rule"));
+        appendTextFilter(c, "severity", filtered, filtered.column(service::alert::entities::AlertRuleEntity::columnName<"severity">(), "rule"));
+        appendTextFilter(c, "status", filtered, filtered.cast(filtered.column(service::alert::entities::AlertRuleEntity::columnName<"status">(), "rule"), Type::kText));
         Query listed(c.pool());
         listed.select(listed.star()).from("page_rows");
         co_return co_await pageResult(c, filtered, listed, { "id", "name", "device_id", "device_name", "severity", "conditions", "logic",
@@ -55,10 +57,10 @@ class AlertService final {
     ruvia::Task<std::string> ruleDetail(ruvia::Context& c, std::string_view id) {
         service::common::requireUuid(19002, id, "告警规则 ID 无效");
         Query rule(c.pool());
-        rule.select({ rule.star("rule"), rule.alias(rule.column("name", "device"), "device_name") }).from("alert_rule", "rule")
-            .join(ruvia::DbJoinType::kInner, "device", rule.binary(rule.column("id", "device"), Op::kEqual, rule.column("device_id", "rule")))
-            .andWhere(rule.binary(rule.column("id", "rule"), Op::kEqual, rule.cast(rule.value(id), Type::kUuid)))
-            .andWhere(rule.unary(ruvia::DbUnaryOperator::kIsNull, rule.column("deleted_at", "rule")));
+        rule.select({ rule.star("rule"), rule.alias(rule.column(service::alert::entities::DeviceEntity::columnName<"name">(), "device"), "device_name") }).from(service::alert::entities::AlertRuleEntity::tableName(), "rule")
+            .join(ruvia::DbJoinType::kInner, service::alert::entities::DeviceEntity::tableName(), rule.binary(rule.column(service::alert::entities::DeviceEntity::columnName<"id">(), "device"), Op::kEqual, rule.column(service::alert::entities::AlertRuleEntity::columnName<"device_id">(), "rule")))
+            .andWhere(rule.binary(rule.column(service::alert::entities::AlertRuleEntity::columnName<"id">(), "rule"), Op::kEqual, rule.cast(rule.value(id), Type::kUuid)))
+            .andWhere(rule.unary(ruvia::DbUnaryOperator::kIsNull, rule.column(service::alert::entities::AlertRuleEntity::columnName<"deleted_at">(), "rule")));
         Query result(c.pool());
         result.select(result.cast(fieldJson(result, { "id", "name", "device_id", "device_name", "severity", "conditions", "logic",
             "silence_duration", "recovery_condition", "recovery_wait_seconds", "status", "remark", "created_at", "updated_at" }), Type::kText)).from(rule, "rule");
@@ -72,7 +74,7 @@ class AlertService final {
         const auto principal = service::middleware::requireAuth(c);
         const auto id = service::common::nextUuidV7();
         Query query(c.pool());
-        query.insertInto("alert_rule", { "id", "name", "device_id", "severity", "conditions", "logic", "silence_duration", "recovery_condition", "recovery_wait_seconds", "status", "remark", "created_by" })
+        query.insertInto(service::alert::entities::AlertRuleEntity::tableName(), { "id", "name", "device_id", "severity", "conditions", "logic", "silence_duration", "recovery_condition", "recovery_wait_seconds", "status", "remark", "created_by" })
             .values({ query.cast(query.value(id), Type::kUuid),
                 query.value(input.name),
                 query.cast(query.value(input.deviceId), Type::kUuid),
@@ -97,20 +99,20 @@ class AlertService final {
         co_await ensureDevice(c, input.deviceId);
         co_await ensureRuleName(c, input.name, input.deviceId, std::string(id));
         Query query(c.pool());
-        query.update("alert_rule")
-            .set("name", query.value(input.name))
-            .set("device_id", query.cast(query.value(input.deviceId), Type::kUuid))
-            .set("severity", query.value(input.severity))
-            .set("conditions", query.cast(query.value(input.conditions), Type::kJsonb))
-            .set("logic", query.value(input.logic))
-            .set("silence_duration", query.cast(query.value(input.silenceDuration), Type::kInteger))
-            .set("recovery_condition", query.value(input.recoveryCondition))
-            .set("recovery_wait_seconds", query.cast(query.value(input.recoveryWaitSeconds), Type::kInteger))
-            .set("status", query.cast(query.value(input.status), { .customName = "status_enum" }))
-            .set("remark", query.nullIf(query.value(input.remark), query.value("")))
-            .set("updated_at", query.call("now"))
-            .andWhere(query.binary(query.column("id"), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
-            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+        query.update(service::alert::entities::AlertRuleEntity::tableName())
+            .set(service::alert::entities::AlertRuleEntity::columnName<"name">(), query.value(input.name))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"device_id">(), query.cast(query.value(input.deviceId), Type::kUuid))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"severity">(), query.value(input.severity))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"conditions">(), query.cast(query.value(input.conditions), Type::kJsonb))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"logic">(), query.value(input.logic))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"silence_duration">(), query.cast(query.value(input.silenceDuration), Type::kInteger))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"recovery_condition">(), query.value(input.recoveryCondition))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"recovery_wait_seconds">(), query.cast(query.value(input.recoveryWaitSeconds), Type::kInteger))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"status">(), query.cast(query.value(input.status), { .customName = "status_enum" }))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"remark">(), query.nullIf(query.value(input.remark), query.value("")))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"updated_at">(), query.call("now"))
+            .andWhere(query.binary(query.column(service::alert::entities::AlertRuleEntity::columnName<"id">()), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::alert::entities::AlertRuleEntity::columnName<"deleted_at">())));
         (void)co_await c.db().execute(query);
         (void)co_await service::rpc::call(c, "alert", "refresh", "{}");
     }
@@ -120,15 +122,15 @@ class AlertService final {
         co_await requireRule(c, id);
         auto transaction = co_await c.db().beginTransaction();
         Query records(c.pool());
-        records.update("open_alert_record").set("status", records.value("resolved"))
-            .set("resolved_at", records.call("now")).set("updated_at", records.call("now"))
-            .andWhere(records.binary(records.column("rule_id"), Op::kEqual, records.cast(records.value(id), Type::kUuid)))
-            .andWhere(records.binary(records.column("status"), Op::kIn, records.list({ records.value("active"), records.value("acknowledged") })));
+        records.update(service::alert::entities::OpenAlertRecordEntity::tableName()).set(service::alert::entities::OpenAlertRecordEntity::columnName<"status">(), records.value("resolved"))
+            .set(service::alert::entities::OpenAlertRecordEntity::columnName<"resolved_at">(), records.call("now")).set(service::alert::entities::OpenAlertRecordEntity::columnName<"updated_at">(), records.call("now"))
+            .andWhere(records.binary(records.column(service::alert::entities::OpenAlertRecordEntity::columnName<"rule_id">()), Op::kEqual, records.cast(records.value(id), Type::kUuid)))
+            .andWhere(records.binary(records.column(service::alert::entities::OpenAlertRecordEntity::columnName<"status">()), Op::kIn, records.list({ records.value("active"), records.value("acknowledged") })));
         (void)co_await transaction.execute(records);
         Query rules(c.pool());
-        rules.update("alert_rule").set("deleted_at", rules.call("now")).set("updated_at", rules.call("now"))
-            .andWhere(rules.binary(rules.column("id"), Op::kEqual, rules.cast(rules.value(id), Type::kUuid)))
-            .andWhere(rules.unary(ruvia::DbUnaryOperator::kIsNull, rules.column("deleted_at")));
+        rules.update(service::alert::entities::AlertRuleEntity::tableName()).set(service::alert::entities::AlertRuleEntity::columnName<"deleted_at">(), rules.call("now")).set(service::alert::entities::AlertRuleEntity::columnName<"updated_at">(), rules.call("now"))
+            .andWhere(rules.binary(rules.column(service::alert::entities::AlertRuleEntity::columnName<"id">()), Op::kEqual, rules.cast(rules.value(id), Type::kUuid)))
+            .andWhere(rules.unary(ruvia::DbUnaryOperator::kIsNull, rules.column(service::alert::entities::AlertRuleEntity::columnName<"deleted_at">())));
         (void)co_await transaction.execute(rules);
         co_await transaction.commit();
         (void)co_await service::rpc::call(c, "alert", "refresh", "{}");
@@ -138,15 +140,15 @@ class AlertService final {
         const auto ids = requiredUuids(payload, "ids", "请选择要删除的规则");
         auto transaction = co_await c.db().beginTransaction();
         Query records(c.pool());
-        records.update("open_alert_record").set("status", records.value("resolved"))
-            .set("resolved_at", records.call("now")).set("updated_at", records.call("now"))
-            .andWhere(records.binary(records.column("rule_id"), Op::kIn, uuidList(records, ids)))
-            .andWhere(records.binary(records.column("status"), Op::kIn, records.list({ records.value("active"), records.value("acknowledged") })));
+        records.update(service::alert::entities::OpenAlertRecordEntity::tableName()).set(service::alert::entities::OpenAlertRecordEntity::columnName<"status">(), records.value("resolved"))
+            .set(service::alert::entities::OpenAlertRecordEntity::columnName<"resolved_at">(), records.call("now")).set(service::alert::entities::OpenAlertRecordEntity::columnName<"updated_at">(), records.call("now"))
+            .andWhere(records.binary(records.column(service::alert::entities::OpenAlertRecordEntity::columnName<"rule_id">()), Op::kIn, uuidList(records, ids)))
+            .andWhere(records.binary(records.column(service::alert::entities::OpenAlertRecordEntity::columnName<"status">()), Op::kIn, records.list({ records.value("active"), records.value("acknowledged") })));
         (void)co_await transaction.execute(records);
         Query rules(c.pool());
-        rules.update("alert_rule").set("deleted_at", rules.call("now")).set("updated_at", rules.call("now"))
-            .andWhere(rules.binary(rules.column("id"), Op::kIn, uuidList(rules, ids)))
-            .andWhere(rules.unary(ruvia::DbUnaryOperator::kIsNull, rules.column("deleted_at")));
+        rules.update(service::alert::entities::AlertRuleEntity::tableName()).set(service::alert::entities::AlertRuleEntity::columnName<"deleted_at">(), rules.call("now")).set(service::alert::entities::AlertRuleEntity::columnName<"updated_at">(), rules.call("now"))
+            .andWhere(rules.binary(rules.column(service::alert::entities::AlertRuleEntity::columnName<"id">()), Op::kIn, uuidList(rules, ids)))
+            .andWhere(rules.unary(ruvia::DbUnaryOperator::kIsNull, rules.column(service::alert::entities::AlertRuleEntity::columnName<"deleted_at">())));
         (void)co_await transaction.execute(rules);
         co_await transaction.commit();
         (void)co_await service::rpc::call(c, "alert", "refresh", "{}");
@@ -154,13 +156,13 @@ class AlertService final {
 
     ruvia::Task<std::string> listTemplates(ruvia::Context& c) {
         Query filtered(c.pool());
-        filtered.select({ filtered.star("template"), filtered.alias(filtered.column("name", "config"), "config_name"),
-                filtered.alias(filtered.column("protocol", "config"), "protocol_type") })
-            .from("alert_rule_template", "template")
-            .join(ruvia::DbJoinType::kLeft, "protocol_config", filtered.binary(filtered.column("id", "config"), Op::kEqual,
-                filtered.column("protocol_config_id", "template")), "config")
-            .andWhere(filtered.unary(ruvia::DbUnaryOperator::kIsNull, filtered.column("deleted_at", "template")));
-        appendTextFilter(c, "category", filtered, filtered.column("category", "template"));
+        filtered.select({ filtered.star("template"), filtered.alias(filtered.column(service::alert::entities::ProtocolConfigEntity::columnName<"name">(), "config"), "config_name"),
+                filtered.alias(filtered.column(service::alert::entities::ProtocolConfigEntity::columnName<"protocol">(), "config"), "protocol_type") })
+            .from(service::alert::entities::AlertRuleTemplateEntity::tableName(), "template")
+            .join(ruvia::DbJoinType::kLeft, service::alert::entities::ProtocolConfigEntity::tableName(), filtered.binary(filtered.column(service::alert::entities::ProtocolConfigEntity::columnName<"id">(), "config"), Op::kEqual,
+                filtered.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"protocol_config_id">(), "template")), "config")
+            .andWhere(filtered.unary(ruvia::DbUnaryOperator::kIsNull, filtered.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"deleted_at">(), "template")));
+        appendTextFilter(c, "category", filtered, filtered.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"category">(), "template"));
         Query listed(c.pool());
         listed.select(listed.star()).from("page_rows");
         co_return co_await pageResult(c, filtered, listed, { "id", "name", "category", "description", "severity", "logic", "silence_duration",
@@ -172,9 +174,9 @@ class AlertService final {
         Query query(c.pool());
         query.select(query.cast(fieldJson(query, { "id", "name", "category", "description", "severity", "conditions", "logic", "silence_duration",
             "recovery_condition", "recovery_wait_seconds", "applicable_protocols", "protocol_config_id", "created_by", "created_at", "updated_at" }), Type::kText))
-            .from("alert_rule_template")
-            .andWhere(query.binary(query.column("id"), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
-            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+            .from(service::alert::entities::AlertRuleTemplateEntity::tableName())
+            .andWhere(query.binary(query.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"id">()), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"deleted_at">())));
         co_return firstObject(co_await c.db().query(query), "告警模板不存在");
     }
 
@@ -186,7 +188,7 @@ class AlertService final {
         const auto principal = service::middleware::requireAuth(c);
         const auto id = service::common::nextUuidV7();
         Query query(c.pool());
-        query.insertInto("alert_rule_template", { "id", "name", "category", "description", "severity", "conditions", "logic", "silence_duration", "recovery_condition", "recovery_wait_seconds", "applicable_protocols", "protocol_config_id", "created_by" })
+        query.insertInto(service::alert::entities::AlertRuleTemplateEntity::tableName(), { "id", "name", "category", "description", "severity", "conditions", "logic", "silence_duration", "recovery_condition", "recovery_wait_seconds", "applicable_protocols", "protocol_config_id", "created_by" })
             .values({ query.cast(query.value(id), Type::kUuid),
                 query.value(input.name),
                 query.nullIf(query.value(input.category), query.value("")),
@@ -212,21 +214,21 @@ class AlertService final {
         if (!input.protocolConfigId.empty())
             co_await ensureProtocolConfig(c, input.protocolConfigId);
         Query query(c.pool());
-        query.update("alert_rule_template")
-            .set("name", query.value(input.name))
-            .set("category", query.nullIf(query.value(input.category), query.value("")))
-            .set("description", query.nullIf(query.value(input.description), query.value("")))
-            .set("severity", query.value(input.severity))
-            .set("conditions", query.cast(query.value(input.conditions), Type::kJsonb))
-            .set("logic", query.value(input.logic))
-            .set("silence_duration", query.cast(query.value(input.silenceDuration), Type::kInteger))
-            .set("recovery_condition", query.value(input.recoveryCondition))
-            .set("recovery_wait_seconds", query.cast(query.value(input.recoveryWaitSeconds), Type::kInteger))
-            .set("applicable_protocols", query.cast(query.value(input.applicableProtocols), Type::kJsonb))
-            .set("protocol_config_id", query.cast(query.nullIf(query.value(input.protocolConfigId), query.value("")), Type::kUuid))
-            .set("updated_at", query.call("now"))
-            .andWhere(query.binary(query.column("id"), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
-            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+        query.update(service::alert::entities::AlertRuleTemplateEntity::tableName())
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"name">(), query.value(input.name))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"category">(), query.nullIf(query.value(input.category), query.value("")))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"description">(), query.nullIf(query.value(input.description), query.value("")))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"severity">(), query.value(input.severity))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"conditions">(), query.cast(query.value(input.conditions), Type::kJsonb))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"logic">(), query.value(input.logic))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"silence_duration">(), query.cast(query.value(input.silenceDuration), Type::kInteger))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"recovery_condition">(), query.value(input.recoveryCondition))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"recovery_wait_seconds">(), query.cast(query.value(input.recoveryWaitSeconds), Type::kInteger))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"applicable_protocols">(), query.cast(query.value(input.applicableProtocols), Type::kJsonb))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"protocol_config_id">(), query.cast(query.nullIf(query.value(input.protocolConfigId), query.value("")), Type::kUuid))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"updated_at">(), query.call("now"))
+            .andWhere(query.binary(query.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"id">()), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"deleted_at">())));
         (void)co_await c.db().execute(query);
     }
 
@@ -234,9 +236,9 @@ class AlertService final {
         service::common::requireUuid(19002, id, "告警模板 ID 无效");
         co_await requireTemplate(c, id);
         Query removal(c.pool());
-        removal.update("alert_rule_template").set("deleted_at", removal.call("now")).set("updated_at", removal.call("now"))
-            .andWhere(removal.binary(removal.column("id"), Op::kEqual, removal.cast(removal.value(id), Type::kUuid)))
-            .andWhere(removal.unary(ruvia::DbUnaryOperator::kIsNull, removal.column("deleted_at")));
+        removal.update(service::alert::entities::AlertRuleTemplateEntity::tableName()).set(service::alert::entities::AlertRuleTemplateEntity::columnName<"deleted_at">(), removal.call("now")).set(service::alert::entities::AlertRuleTemplateEntity::columnName<"updated_at">(), removal.call("now"))
+            .andWhere(removal.binary(removal.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"id">()), Op::kEqual, removal.cast(removal.value(id), Type::kUuid)))
+            .andWhere(removal.unary(ruvia::DbUnaryOperator::kIsNull, removal.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"deleted_at">())));
         (void)co_await c.db().execute(removal);
     }
 
@@ -247,31 +249,31 @@ class AlertService final {
         const auto principal = service::middleware::requireAuth(c);
         co_await requireTemplate(c, templateId);
         Query selected(c.pool());
-        selected.select(selected.star()).from("alert_rule_template")
-            .andWhere(selected.binary(selected.column("id"), Op::kEqual, selected.cast(selected.value(templateId), Type::kUuid)))
-            .andWhere(selected.unary(ruvia::DbUnaryOperator::kIsNull, selected.column("deleted_at")));
+        selected.select(selected.star()).from(service::alert::entities::AlertRuleTemplateEntity::tableName())
+            .andWhere(selected.binary(selected.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"id">()), Op::kEqual, selected.cast(selected.value(templateId), Type::kUuid)))
+            .andWhere(selected.unary(ruvia::DbUnaryOperator::kIsNull, selected.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"deleted_at">())));
         Query requested(c.pool());
         for (const auto& id : deviceIds) requested.values({ requested.cast(requested.value(id), Type::kUuid) });
         Query existing(c.pool());
-        const auto existingName = existing.binary(existing.binary(existing.column("name", "selected"), Op::kConcat, existing.value(" - ")), Op::kConcat, existing.column("name", "device"));
-        existing.select(existing.cast(existing.value(1), Type::kInteger)).from("alert_rule", "existing")
-            .andWhere(existing.binary(existing.column("device_id", "existing"), Op::kEqual, existing.column("id", "device")))
-            .andWhere(existing.binary(existing.column("name", "existing"), Op::kEqual, existingName))
-            .andWhere(existing.unary(ruvia::DbUnaryOperator::kIsNull, existing.column("deleted_at", "existing")));
+        const auto existingName = existing.binary(existing.binary(existing.column("name", "selected"), Op::kConcat, existing.value(" - ")), Op::kConcat, existing.column(service::alert::entities::DeviceEntity::columnName<"name">(), "device"));
+        existing.select(existing.cast(existing.value(1), Type::kInteger)).from(service::alert::entities::AlertRuleEntity::tableName(), "existing")
+            .andWhere(existing.binary(existing.column(service::alert::entities::AlertRuleEntity::columnName<"device_id">(), "existing"), Op::kEqual, existing.column(service::alert::entities::DeviceEntity::columnName<"id">(), "device")))
+            .andWhere(existing.binary(existing.column(service::alert::entities::AlertRuleEntity::columnName<"name">(), "existing"), Op::kEqual, existingName))
+            .andWhere(existing.unary(ruvia::DbUnaryOperator::kIsNull, existing.column(service::alert::entities::AlertRuleEntity::columnName<"deleted_at">(), "existing")));
         Query source(c.pool());
-        const auto name = source.binary(source.binary(source.column("name", "selected"), Op::kConcat, source.value(" - ")), Op::kConcat, source.column("name", "device"));
-        source.select({ source.call("gen_random_uuid"), name, source.column("id", "device"), source.column("severity", "selected"),
+        const auto name = source.binary(source.binary(source.column("name", "selected"), Op::kConcat, source.value(" - ")), Op::kConcat, source.column(service::alert::entities::DeviceEntity::columnName<"name">(), "device"));
+        source.select({ source.call("gen_random_uuid"), name, source.column(service::alert::entities::DeviceEntity::columnName<"id">(), "device"), source.column("severity", "selected"),
                 source.column("conditions", "selected"), source.column("logic", "selected"), source.column("silence_duration", "selected"),
                 source.column("recovery_condition", "selected"), source.column("recovery_wait_seconds", "selected"),
                 source.cast(source.value("enabled"), { .customName = "status_enum" }), source.column("description", "selected"), source.cast(source.value(principal.userId), Type::kUuid) })
             .from("selected").join(ruvia::DbJoinType::kCross, "requested")
-            .join(ruvia::DbJoinType::kInner, "device", source.binary(source.column("id", "device"), Op::kEqual, source.column("device_id", "requested")))
-            .andWhere(source.unary(ruvia::DbUnaryOperator::kIsNull, source.column("deleted_at", "device")))
+            .join(ruvia::DbJoinType::kInner, service::alert::entities::DeviceEntity::tableName(), source.binary(source.column(service::alert::entities::DeviceEntity::columnName<"id">(), "device"), Op::kEqual, source.column("device_id", "requested")))
+            .andWhere(source.unary(ruvia::DbUnaryOperator::kIsNull, source.column(service::alert::entities::DeviceEntity::columnName<"deleted_at">(), "device")))
             .andWhere(source.unary(ruvia::DbUnaryOperator::kNot, source.exists(existing)));
         Query created(c.pool());
-        created.insertInto("alert_rule", { "id", "name", "device_id", "severity", "conditions", "logic", "silence_duration",
+        created.insertInto(service::alert::entities::AlertRuleEntity::tableName(), { "id", "name", "device_id", "severity", "conditions", "logic", "silence_duration",
                 "recovery_condition", "recovery_wait_seconds", "status", "remark", "created_by" })
-            .insertFrom(source).returning({ created.column("id") });
+            .insertFrom(source).returning({ created.column(service::alert::entities::AlertRuleEntity::columnName<"id">()) });
         Query count(c.pool());
         count.select(count.aggregate("count", { count.star() })).from("created");
         Query ids(c.pool());
@@ -289,16 +291,16 @@ class AlertService final {
 
     ruvia::Task<std::string> listRecords(ruvia::Context& c) {
         Query filtered(c.pool());
-        filtered.select(filtered.star("record")).from("open_alert_record", "record");
-        appendUuidFilter(c, "deviceId", filtered, filtered.column("device_id", "record"));
-        appendUuidFilter(c, "ruleId", filtered, filtered.column("rule_id", "record"));
-        appendTextFilter(c, "status", filtered, filtered.column("status", "record"));
-        appendTextFilter(c, "severity", filtered, filtered.column("severity", "record"));
+        filtered.select(filtered.star("record")).from(service::alert::entities::OpenAlertRecordEntity::tableName(), "record");
+        appendUuidFilter(c, "deviceId", filtered, filtered.column(service::alert::entities::OpenAlertRecordEntity::columnName<"device_id">(), "record"));
+        appendUuidFilter(c, "ruleId", filtered, filtered.column(service::alert::entities::OpenAlertRecordEntity::columnName<"rule_id">(), "record"));
+        appendTextFilter(c, "status", filtered, filtered.column(service::alert::entities::OpenAlertRecordEntity::columnName<"status">(), "record"));
+        appendTextFilter(c, "severity", filtered, filtered.column(service::alert::entities::OpenAlertRecordEntity::columnName<"severity">(), "record"));
         Query listed(c.pool());
-        listed.select({ listed.star("page_rows"), listed.alias(listed.column("name", "rule"), "rule_name"), listed.alias(listed.column("name", "device"), "device_name") })
+        listed.select({ listed.star("page_rows"), listed.alias(listed.column(service::alert::entities::AlertRuleEntity::columnName<"name">(), "rule"), "rule_name"), listed.alias(listed.column(service::alert::entities::DeviceEntity::columnName<"name">(), "device"), "device_name") })
             .from("page_rows")
-            .join(ruvia::DbJoinType::kLeft, "alert_rule", listed.binary(listed.column("id", "rule"), Op::kEqual, listed.column("rule_id", "page_rows")), "rule")
-            .join(ruvia::DbJoinType::kInner, "device", listed.binary(listed.column("id", "device"), Op::kEqual, listed.column("device_id", "page_rows")));
+            .join(ruvia::DbJoinType::kLeft, service::alert::entities::AlertRuleEntity::tableName(), listed.binary(listed.column(service::alert::entities::AlertRuleEntity::columnName<"id">(), "rule"), Op::kEqual, listed.column("rule_id", "page_rows")), "rule")
+            .join(ruvia::DbJoinType::kInner, service::alert::entities::DeviceEntity::tableName(), listed.binary(listed.column(service::alert::entities::DeviceEntity::columnName<"id">(), "device"), Op::kEqual, listed.column("device_id", "page_rows")));
         co_return co_await pageResult(c, filtered, listed, { "id", "rule_id", "rule_name", "device_id", "device_name", "severity", "status", "message", "detail",
             "triggered_at", "acknowledged_at", "acknowledged_by", "resolved_at" }, "triggered_at");
     }
@@ -307,12 +309,12 @@ class AlertService final {
         service::common::requireUuid(19002, id, "告警记录 ID 无效");
         const auto principal = service::middleware::requireAuth(c);
         Query acknowledgement(c.pool());
-        acknowledgement.update("open_alert_record").set("status", acknowledgement.value("acknowledged"))
-            .set("acknowledged_at", acknowledgement.call("now"))
-            .set("acknowledged_by", acknowledgement.cast(acknowledgement.value(principal.userId), Type::kUuid))
-            .set("updated_at", acknowledgement.call("now"))
-            .andWhere(acknowledgement.binary(acknowledgement.column("id"), Op::kEqual, acknowledgement.cast(acknowledgement.value(id), Type::kUuid)))
-            .andWhere(acknowledgement.binary(acknowledgement.column("status"), Op::kEqual, acknowledgement.value("active")));
+        acknowledgement.update(service::alert::entities::OpenAlertRecordEntity::tableName()).set(service::alert::entities::OpenAlertRecordEntity::columnName<"status">(), acknowledgement.value("acknowledged"))
+            .set(service::alert::entities::OpenAlertRecordEntity::columnName<"acknowledged_at">(), acknowledgement.call("now"))
+            .set(service::alert::entities::OpenAlertRecordEntity::columnName<"acknowledged_by">(), acknowledgement.cast(acknowledgement.value(principal.userId), Type::kUuid))
+            .set(service::alert::entities::OpenAlertRecordEntity::columnName<"updated_at">(), acknowledgement.call("now"))
+            .andWhere(acknowledgement.binary(acknowledgement.column(service::alert::entities::OpenAlertRecordEntity::columnName<"id">()), Op::kEqual, acknowledgement.cast(acknowledgement.value(id), Type::kUuid)))
+            .andWhere(acknowledgement.binary(acknowledgement.column(service::alert::entities::OpenAlertRecordEntity::columnName<"status">()), Op::kEqual, acknowledgement.value("active")));
         const auto result = co_await c.db().execute(acknowledgement);
         if (result.affectedRows() == 0)
             service::common::fail(17003, "告警记录不存在或已处理", 404);
@@ -322,12 +324,12 @@ class AlertService final {
         const auto ids = requiredUuids(payload, "ids", "请选择要确认的告警");
         const auto principal = service::middleware::requireAuth(c);
         Query acknowledgement(c.pool());
-        acknowledgement.update("open_alert_record").set("status", acknowledgement.value("acknowledged"))
-            .set("acknowledged_at", acknowledgement.call("now"))
-            .set("acknowledged_by", acknowledgement.cast(acknowledgement.value(principal.userId), Type::kUuid))
-            .set("updated_at", acknowledgement.call("now"))
-            .andWhere(acknowledgement.binary(acknowledgement.column("id"), Op::kIn, uuidList(acknowledgement, ids)))
-            .andWhere(acknowledgement.binary(acknowledgement.column("status"), Op::kEqual, acknowledgement.value("active")));
+        acknowledgement.update(service::alert::entities::OpenAlertRecordEntity::tableName()).set(service::alert::entities::OpenAlertRecordEntity::columnName<"status">(), acknowledgement.value("acknowledged"))
+            .set(service::alert::entities::OpenAlertRecordEntity::columnName<"acknowledged_at">(), acknowledgement.call("now"))
+            .set(service::alert::entities::OpenAlertRecordEntity::columnName<"acknowledged_by">(), acknowledgement.cast(acknowledgement.value(principal.userId), Type::kUuid))
+            .set(service::alert::entities::OpenAlertRecordEntity::columnName<"updated_at">(), acknowledgement.call("now"))
+            .andWhere(acknowledgement.binary(acknowledgement.column(service::alert::entities::OpenAlertRecordEntity::columnName<"id">()), Op::kIn, uuidList(acknowledgement, ids)))
+            .andWhere(acknowledgement.binary(acknowledgement.column(service::alert::entities::OpenAlertRecordEntity::columnName<"status">()), Op::kEqual, acknowledgement.value("active")));
         (void)co_await c.db().execute(acknowledgement);
     }
 
@@ -336,21 +338,21 @@ class AlertService final {
         const auto count = unresolved.aggregate("count", { unresolved.star() });
         unresolved.select(unresolved.alias(count, "total"));
         for (const auto severity : { "critical", "warning", "info" }) {
-            unresolved.addSelect(unresolved.alias(unresolved.filter(count, unresolved.binary(unresolved.column("severity"), Op::kEqual, unresolved.value(severity))), severity));
+            unresolved.addSelect(unresolved.alias(unresolved.filter(count, unresolved.binary(unresolved.column(service::alert::entities::OpenAlertRecordEntity::columnName<"severity">()), Op::kEqual, unresolved.value(severity))), severity));
         }
-        unresolved.addSelect(unresolved.alias(unresolved.aggregate("count", { unresolved.column("device_id") }, true), "affected_devices"))
-            .from("open_alert_record").andWhere(unresolved.binary(unresolved.column("status"), Op::kIn,
+        unresolved.addSelect(unresolved.alias(unresolved.aggregate("count", { unresolved.column(service::alert::entities::OpenAlertRecordEntity::columnName<"device_id">()) }, true), "affected_devices"))
+            .from(service::alert::entities::OpenAlertRecordEntity::tableName()).andWhere(unresolved.binary(unresolved.column(service::alert::entities::OpenAlertRecordEntity::columnName<"status">()), Op::kIn,
                 unresolved.list({ unresolved.value("active"), unresolved.value("acknowledged") })));
         Query todayNew(c.pool());
-        todayNew.select(todayNew.alias(todayNew.aggregate("count", { todayNew.star() }), "total")).from("open_alert_record")
-            .andWhere(todayNew.binary(todayNew.column("triggered_at"), Op::kGreaterEqual, todayNew.cast(todayNew.call("now"), Type::kDate)));
+        todayNew.select(todayNew.alias(todayNew.aggregate("count", { todayNew.star() }), "total")).from(service::alert::entities::OpenAlertRecordEntity::tableName())
+            .andWhere(todayNew.binary(todayNew.column(service::alert::entities::OpenAlertRecordEntity::columnName<"triggered_at">()), Op::kGreaterEqual, todayNew.cast(todayNew.call("now"), Type::kDate)));
         Query acknowledged(c.pool());
-        acknowledged.select(acknowledged.alias(acknowledged.aggregate("count", { acknowledged.star() }), "total")).from("open_alert_record")
-            .andWhere(acknowledged.binary(acknowledged.column("status"), Op::kEqual, acknowledged.value("acknowledged")));
+        acknowledged.select(acknowledged.alias(acknowledged.aggregate("count", { acknowledged.star() }), "total")).from(service::alert::entities::OpenAlertRecordEntity::tableName())
+            .andWhere(acknowledged.binary(acknowledged.column(service::alert::entities::OpenAlertRecordEntity::columnName<"status">()), Op::kEqual, acknowledged.value("acknowledged")));
         Query todayResolved(c.pool());
-        todayResolved.select(todayResolved.alias(todayResolved.aggregate("count", { todayResolved.star() }), "total")).from("open_alert_record")
-            .andWhere(todayResolved.binary(todayResolved.column("status"), Op::kEqual, todayResolved.value("resolved")))
-            .andWhere(todayResolved.binary(todayResolved.column("resolved_at"), Op::kGreaterEqual, todayResolved.cast(todayResolved.call("now"), Type::kDate)));
+        todayResolved.select(todayResolved.alias(todayResolved.aggregate("count", { todayResolved.star() }), "total")).from(service::alert::entities::OpenAlertRecordEntity::tableName())
+            .andWhere(todayResolved.binary(todayResolved.column(service::alert::entities::OpenAlertRecordEntity::columnName<"status">()), Op::kEqual, todayResolved.value("resolved")))
+            .andWhere(todayResolved.binary(todayResolved.column(service::alert::entities::OpenAlertRecordEntity::columnName<"resolved_at">()), Op::kGreaterEqual, todayResolved.cast(todayResolved.call("now"), Type::kDate)));
         Query result(c.pool());
         std::vector<ruvia::DbExpression> values;
         for (const auto field : { "total", "critical", "warning", "info", "affected_devices" }) {
@@ -372,20 +374,20 @@ class AlertService final {
             service::common::parseInt64(c.req().query("days")).value_or(7), 1, 365);
         Query groups(c.pool());
         const auto count = groups.aggregate("count", { groups.star() });
-        groups.select({ groups.column("rule_id", "record"), groups.alias(groups.coalesce({ groups.column("name", "rule"), groups.value("已删除规则") }), "rule_name"),
-                groups.column("device_id", "record"), groups.alias(groups.column("name", "device"), "device_name"), groups.column("severity", "record"),
+        groups.select({ groups.column(service::alert::entities::OpenAlertRecordEntity::columnName<"rule_id">(), "record"), groups.alias(groups.coalesce({ groups.column(service::alert::entities::AlertRuleEntity::columnName<"name">(), "rule"), groups.value("已删除规则") }), "rule_name"),
+                groups.column(service::alert::entities::OpenAlertRecordEntity::columnName<"device_id">(), "record"), groups.alias(groups.column(service::alert::entities::DeviceEntity::columnName<"name">(), "device"), "device_name"), groups.column(service::alert::entities::OpenAlertRecordEntity::columnName<"severity">(), "record"),
                 groups.alias(count, "total_count") });
         for (const auto& [status, alias] : { std::pair{ "active", "active_count" }, std::pair{ "acknowledged", "acked_count" }, std::pair{ "resolved", "resolved_count" } }) {
-            groups.addSelect(groups.alias(groups.filter(count, groups.binary(groups.column("status", "record"), Op::kEqual, groups.value(status))), alias));
+            groups.addSelect(groups.alias(groups.filter(count, groups.binary(groups.column(service::alert::entities::OpenAlertRecordEntity::columnName<"status">(), "record"), Op::kEqual, groups.value(status))), alias));
         }
-        groups.addSelect(groups.alias(groups.aggregate("max", { groups.column("triggered_at", "record") }), "latest_trigger_time"))
-            .from("open_alert_record", "record")
-            .join(ruvia::DbJoinType::kLeft, "alert_rule", groups.binary(groups.column("id", "rule"), Op::kEqual, groups.column("rule_id", "record")), "rule")
-            .join(ruvia::DbJoinType::kInner, "device", groups.binary(groups.column("id", "device"), Op::kEqual, groups.column("device_id", "record")))
-            .andWhere(groups.binary(groups.column("triggered_at", "record"), Op::kGreaterEqual,
+        groups.addSelect(groups.alias(groups.aggregate("max", { groups.column(service::alert::entities::OpenAlertRecordEntity::columnName<"triggered_at">(), "record") }), "latest_trigger_time"))
+            .from(service::alert::entities::OpenAlertRecordEntity::tableName(), "record")
+            .join(ruvia::DbJoinType::kLeft, service::alert::entities::AlertRuleEntity::tableName(), groups.binary(groups.column(service::alert::entities::AlertRuleEntity::columnName<"id">(), "rule"), Op::kEqual, groups.column(service::alert::entities::OpenAlertRecordEntity::columnName<"rule_id">(), "record")), "rule")
+            .join(ruvia::DbJoinType::kInner, service::alert::entities::DeviceEntity::tableName(), groups.binary(groups.column(service::alert::entities::DeviceEntity::columnName<"id">(), "device"), Op::kEqual, groups.column(service::alert::entities::OpenAlertRecordEntity::columnName<"device_id">(), "record")))
+            .andWhere(groups.binary(groups.column(service::alert::entities::OpenAlertRecordEntity::columnName<"triggered_at">(), "record"), Op::kGreaterEqual,
                 groups.binary(groups.call("now"), Op::kSubtract, groups.binary(groups.cast(groups.value(days), Type::kBigInt), Op::kMultiply,
                     groups.cast(groups.value("1 day"), Type::kInterval)))))
-            .groupBy({ groups.column("rule_id", "record"), groups.column("name", "rule"), groups.column("device_id", "record"), groups.column("name", "device"), groups.column("severity", "record") });
+            .groupBy({ groups.column(service::alert::entities::OpenAlertRecordEntity::columnName<"rule_id">(), "record"), groups.column(service::alert::entities::AlertRuleEntity::columnName<"name">(), "rule"), groups.column(service::alert::entities::OpenAlertRecordEntity::columnName<"device_id">(), "record"), groups.column(service::alert::entities::DeviceEntity::columnName<"name">(), "device"), groups.column(service::alert::entities::OpenAlertRecordEntity::columnName<"severity">(), "record") });
         Query result(c.pool());
         const std::vector<ruvia::DbOrderTerm> order{ { result.column("latest_trigger_time"), ruvia::DbOrderDirection::kDesc } };
         result.select(result.cast(result.coalesce({ result.aggregate("jsonb_agg", { fieldJson(result, { "rule_id", "rule_name", "device_id", "device_name", "severity",
@@ -824,9 +826,9 @@ class AlertService final {
 
     static ruvia::Task<void> ensureDevice(ruvia::Context& c, std::string_view id) {
         Query query(c.pool());
-        query.select(query.cast(query.value(1), Type::kInteger)).from("device")
-            .andWhere(query.binary(query.column("id"), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
-            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+        query.select(query.cast(query.value(1), Type::kInteger)).from(service::alert::entities::DeviceEntity::tableName())
+            .andWhere(query.binary(query.column(service::alert::entities::DeviceEntity::columnName<"id">()), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::alert::entities::DeviceEntity::columnName<"deleted_at">())));
         const auto rows = co_await c.db().query(query);
         if (rows.empty())
             service::common::fail(17003, "关联设备不存在", 404);
@@ -834,9 +836,9 @@ class AlertService final {
 
     static ruvia::Task<void> ensureProtocolConfig(ruvia::Context& c, std::string_view id) {
         Query query(c.pool());
-        query.select(query.cast(query.value(1), Type::kInteger)).from("protocol_config")
-            .andWhere(query.binary(query.column("id"), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
-            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+        query.select(query.cast(query.value(1), Type::kInteger)).from(service::alert::entities::ProtocolConfigEntity::tableName())
+            .andWhere(query.binary(query.column(service::alert::entities::ProtocolConfigEntity::columnName<"id">()), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::alert::entities::ProtocolConfigEntity::columnName<"deleted_at">())));
         const auto rows = co_await c.db().query(query);
         if (rows.empty())
             service::common::fail(17003, "协议配置不存在", 404);
@@ -844,9 +846,9 @@ class AlertService final {
 
     static ruvia::Task<void> requireRule(ruvia::Context& c, std::string_view id) {
         Query query(c.pool());
-        query.select(query.cast(query.value(1), Type::kInteger)).from("alert_rule")
-            .andWhere(query.binary(query.column("id"), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
-            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+        query.select(query.cast(query.value(1), Type::kInteger)).from(service::alert::entities::AlertRuleEntity::tableName())
+            .andWhere(query.binary(query.column(service::alert::entities::AlertRuleEntity::columnName<"id">()), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::alert::entities::AlertRuleEntity::columnName<"deleted_at">())));
         const auto rows = co_await c.db().query(query);
         if (rows.empty())
             service::common::fail(17003, "告警规则不存在", 404);
@@ -854,9 +856,9 @@ class AlertService final {
 
     static ruvia::Task<void> requireTemplate(ruvia::Context& c, std::string_view id) {
         Query query(c.pool());
-        query.select(query.cast(query.value(1), Type::kInteger)).from("alert_rule_template")
-            .andWhere(query.binary(query.column("id"), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
-            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+        query.select(query.cast(query.value(1), Type::kInteger)).from(service::alert::entities::AlertRuleTemplateEntity::tableName())
+            .andWhere(query.binary(query.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"id">()), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"deleted_at">())));
         const auto rows = co_await c.db().query(query);
         if (rows.empty())
             service::common::fail(17003, "告警模板不存在", 404);
@@ -866,12 +868,12 @@ class AlertService final {
                                             std::string_view deviceId,
                                             const std::optional<std::string>& excluded) {
         Query query(c.pool());
-        query.select(query.cast(query.value(1), Type::kInteger)).from("alert_rule")
-            .andWhere(query.binary(query.column("name"), Op::kEqual, query.value(name)))
-            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
-        query.andWhere(query.binary(query.column("device_id"), Op::kEqual, query.cast(query.value(deviceId), Type::kUuid)));
+        query.select(query.cast(query.value(1), Type::kInteger)).from(service::alert::entities::AlertRuleEntity::tableName())
+            .andWhere(query.binary(query.column(service::alert::entities::AlertRuleEntity::columnName<"name">()), Op::kEqual, query.value(name)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::alert::entities::AlertRuleEntity::columnName<"deleted_at">())));
+        query.andWhere(query.binary(query.column(service::alert::entities::AlertRuleEntity::columnName<"device_id">()), Op::kEqual, query.cast(query.value(deviceId), Type::kUuid)));
         if (excluded && !excluded->empty())
-            query.andWhere(query.binary(query.column("id"), Op::kNotEqual, query.cast(query.value(*excluded), Type::kUuid)));
+            query.andWhere(query.binary(query.column(service::alert::entities::AlertRuleEntity::columnName<"id">()), Op::kNotEqual, query.cast(query.value(*excluded), Type::kUuid)));
         const auto rows = co_await c.db().query(query);
         if (!rows.empty())
             service::common::fail(17009, "该设备已存在同名告警规则", 409);
@@ -880,11 +882,11 @@ class AlertService final {
     static ruvia::Task<void> ensureTemplateName(ruvia::Context& c, std::string_view name,
                                                 const std::optional<std::string>& excluded) {
         Query query(c.pool());
-        query.select(query.cast(query.value(1), Type::kInteger)).from("alert_rule_template")
-            .andWhere(query.binary(query.column("name"), Op::kEqual, query.value(name)))
-            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at")));
+        query.select(query.cast(query.value(1), Type::kInteger)).from(service::alert::entities::AlertRuleTemplateEntity::tableName())
+            .andWhere(query.binary(query.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"name">()), Op::kEqual, query.value(name)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"deleted_at">())));
         if (excluded && !excluded->empty())
-            query.andWhere(query.binary(query.column("id"), Op::kNotEqual, query.cast(query.value(*excluded), Type::kUuid)));
+            query.andWhere(query.binary(query.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"id">()), Op::kNotEqual, query.cast(query.value(*excluded), Type::kUuid)));
         const auto rows = co_await c.db().query(query);
         if (!rows.empty())
             service::common::fail(17009, "告警模板名称已存在", 409);

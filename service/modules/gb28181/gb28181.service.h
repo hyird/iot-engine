@@ -1,5 +1,7 @@
 #pragma once
 
+#include "service/modules/gb28181/gb28181.entity.h"
+
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -419,14 +421,14 @@ public:
       ruvia::DbQuery targetQuery(c.pool());
       targetQuery
           .select(targetQuery.value(1))
-          .from("device")
+          .from(service::gb28181::entities::DeviceEntity::tableName())
           .where(targetQuery.binary(
-              targetQuery.column("id"), ruvia::DbBinaryOperator::kEqual,
+              targetQuery.column(service::gb28181::entities::DeviceEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual,
               targetQuery.cast(targetQuery.value(mappedDeviceId),
                                ruvia::DbDataType::kUuid)))
           .andWhere(targetQuery.unary(
               ruvia::DbUnaryOperator::kIsNull,
-              targetQuery.column("deleted_at")));
+              targetQuery.column(service::gb28181::entities::DeviceEntity::columnName<"deleted_at">())));
       const auto target = co_await c.db().query(targetQuery);
       if (target.empty())
         service::common::fail(10003, "映射目标设备不存在", 404);

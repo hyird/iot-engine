@@ -1,4 +1,6 @@
 #pragma once
+
+#include "service/features/telemetry/telemetry.entity.h"
 #include <ruvia/web/db/DbQuery.h>
 #include <utility>
 #include "service/features/messaging/messaging.transport.h"
@@ -204,20 +206,20 @@ class TelemetryService {
   protected:
     static ruvia::Task<std::string> prepareAlert(ruvia::WebWorkerContext& context, const message::ParsedDeviceMessage& value) {
         ruvia::DbQuery state(context.resource());
-        const auto newer = state.binary(state.tuple({ state.excluded("observed_at_ms"), state.excluded("message_id") }), ruvia::DbBinaryOperator::kGreater,
-            state.tuple({ state.column("observed_at_ms", "alert_input_state"), state.column("message_id", "alert_input_state") }));
-        state.insertInto("alert_input_state", { "device_id", "observed_at_ms", "message_id", "data", "previous_data" })
+        const auto newer = state.binary(state.tuple({ state.excluded(service::telemetry::persistence::AlertInputStateEntity::columnName<"observed_at_ms">()), state.excluded(service::telemetry::persistence::AlertInputStateEntity::columnName<"message_id">()) }), ruvia::DbBinaryOperator::kGreater,
+            state.tuple({ state.column(service::telemetry::persistence::AlertInputStateEntity::columnName<"observed_at_ms">(), "alert_input_state"), state.column(service::telemetry::persistence::AlertInputStateEntity::columnName<"message_id">(), "alert_input_state") }));
+        state.insertInto(service::telemetry::persistence::AlertInputStateEntity::tableName(), { "device_id", "observed_at_ms", "message_id", "data", "previous_data" })
             .values({ state.cast(state.value(value.deviceId), ruvia::DbDataType::kUuid), state.cast(state.value(value.observedAtMs), ruvia::DbDataType::kBigInt),
                 state.cast(state.value(value.messageId), ruvia::DbDataType::kUuid), state.cast(state.value(value.valuesJson), ruvia::DbDataType::kJsonb),
                 state.cast(state.value("{}"), ruvia::DbDataType::kJsonb) })
             .onConflict({ .columns = { "device_id" }, .update = {
-                { "previous_data", state.caseWhen({ { newer, state.column("data", "alert_input_state") } }, state.column("previous_data", "alert_input_state")) },
-                { "data", state.caseWhen({ { newer, state.excluded("data") } }, state.column("data", "alert_input_state")) },
-                { "observed_at_ms", state.greatest({ state.excluded("observed_at_ms"), state.column("observed_at_ms", "alert_input_state") }) },
-                { "message_id", state.caseWhen({ { newer, state.excluded("message_id") } }, state.column("message_id", "alert_input_state")) }
+                { "previous_data", state.caseWhen({ { newer, state.column(service::telemetry::persistence::AlertInputStateEntity::columnName<"data">(), "alert_input_state") } }, state.column(service::telemetry::persistence::AlertInputStateEntity::columnName<"previous_data">(), "alert_input_state")) },
+                { "data", state.caseWhen({ { newer, state.excluded(service::telemetry::persistence::AlertInputStateEntity::columnName<"data">()) } }, state.column(service::telemetry::persistence::AlertInputStateEntity::columnName<"data">(), "alert_input_state")) },
+                { "observed_at_ms", state.greatest({ state.excluded(service::telemetry::persistence::AlertInputStateEntity::columnName<"observed_at_ms">()), state.column(service::telemetry::persistence::AlertInputStateEntity::columnName<"observed_at_ms">(), "alert_input_state") }) },
+                { "message_id", state.caseWhen({ { newer, state.excluded(service::telemetry::persistence::AlertInputStateEntity::columnName<"message_id">()) } }, state.column(service::telemetry::persistence::AlertInputStateEntity::columnName<"message_id">(), "alert_input_state")) }
             } })
-            .returning({ state.cast(state.caseWhen({ { state.binary(state.column("message_id"), ruvia::DbBinaryOperator::kEqual,
-                state.cast(state.value(value.messageId), ruvia::DbDataType::kUuid)), state.column("previous_data") } },
+            .returning({ state.cast(state.caseWhen({ { state.binary(state.column(service::telemetry::persistence::AlertInputStateEntity::columnName<"message_id">()), ruvia::DbBinaryOperator::kEqual,
+                state.cast(state.value(value.messageId), ruvia::DbDataType::kUuid)), state.column(service::telemetry::persistence::AlertInputStateEntity::columnName<"previous_data">()) } },
                 state.cast(state.value("{}"), ruvia::DbDataType::kJsonb)), ruvia::DbDataType::kText) });
         const auto rows = co_await context.db().query(state);
         co_return std::string(rows.front()[0].value().value_or("{}"));
@@ -253,15 +255,15 @@ class TelemetryService {
         }
         Query valid(resource);
         valid.select(valid.star("incoming")).from("incoming")
-            .join(ruvia::DbJoinType::kInner, "device", valid.binary(
-                valid.binary(valid.column("id", "current_device"), Op::kEqual, valid.column("device_id", "incoming")), Op::kAnd,
-                valid.binary(valid.column("link_id", "current_device"), Op::kEqual, valid.column("link_id", "incoming"))), "current_device");
+            .join(ruvia::DbJoinType::kInner, service::telemetry::persistence::DeviceEntity::tableName(), valid.binary(
+                valid.binary(valid.column(service::telemetry::persistence::DeviceEntity::columnName<"id">(), "current_device"), Op::kEqual, valid.column("device_id", "incoming")), Op::kAnd,
+                valid.binary(valid.column(service::telemetry::persistence::DeviceEntity::columnName<"link_id">(), "current_device"), Op::kEqual, valid.column("link_id", "incoming"))), "current_device");
         Query requested(resource);
         requested.select(requested.column("device_id")).distinct().from("valid_incoming");
         Query states(resource);
         selectColumns(states, { "device_id", "last_stored_at", "last_observed_at", "last_observed_id", "last_data" }, "state");
-        states.from("device_data_ingest_state", "state").join(ruvia::DbJoinType::kInner, "requested",
-            states.binary(states.column("device_id", "state"), Op::kEqual, states.column("device_id", "requested")));
+        states.from(service::telemetry::persistence::DeviceDataIngestStateEntity::tableName(), "state").join(ruvia::DbJoinType::kInner, "requested",
+            states.binary(states.column(service::telemetry::persistence::DeviceDataIngestStateEntity::columnName<"device_id">(), "state"), Op::kEqual, states.column("device_id", "requested")));
         Query ordered(resource);
         const ruvia::DbWindowOptions reportOrder{ .partitionBy = { ordered.column("device_id", "incoming") },
             .orderBy = { { ordered.column("report_time", "incoming") }, { ordered.column("id", "incoming") } } };
@@ -299,9 +301,9 @@ class TelemetryService {
         timeline.select({ timeline.column("input_sequence"), timeline.column("device_id"), timeline.column("element_id"), timeline.alias(timeline.column("report_time"), "observed_at"),
                 timeline.column("record_id"), timeline.column("point_value"), timeline.alias(timeline.cast(timeline.value(false), Type::kBoolean), "baseline") }).from("incoming_points");
         Query baseline(resource);
-        baseline.select({ baseline.cast(baseline.nullValue(), Type::kBigInt), baseline.column("device_id", "latest"), baseline.column("element_id", "latest"),
-                baseline.column("observed_at", "latest"), baseline.column("record_id", "latest"), unpackValue(baseline, baseline.column("value", "latest")), baseline.cast(baseline.value(true), Type::kBoolean) })
-            .from("device_latest_value", "latest").join(ruvia::DbJoinType::kInner, "requested", baseline.binary(baseline.column("device_id", "latest"), Op::kEqual, baseline.column("device_id", "requested")));
+        baseline.select({ baseline.cast(baseline.nullValue(), Type::kBigInt), baseline.column(service::telemetry::persistence::DeviceLatestValueEntity::columnName<"device_id">(), "latest"), baseline.column(service::telemetry::persistence::DeviceLatestValueEntity::columnName<"element_id">(), "latest"),
+                baseline.column(service::telemetry::persistence::DeviceLatestValueEntity::columnName<"observed_at">(), "latest"), baseline.column(service::telemetry::persistence::DeviceLatestValueEntity::columnName<"record_id">(), "latest"), unpackValue(baseline, baseline.column(service::telemetry::persistence::DeviceLatestValueEntity::columnName<"value">(), "latest")), baseline.cast(baseline.value(true), Type::kBoolean) })
+            .from(service::telemetry::persistence::DeviceLatestValueEntity::tableName(), "latest").join(ruvia::DbJoinType::kInner, "requested", baseline.binary(baseline.column(service::telemetry::persistence::DeviceLatestValueEntity::columnName<"device_id">(), "latest"), Op::kEqual, baseline.column("device_id", "requested")));
         timeline.combine(ruvia::DbSetOperation::kUnionAll, baseline);
         Query pointLagged(resource);
         const ruvia::DbWindowOptions pointOrder{ .partitionBy = { pointLagged.column("device_id"), pointLagged.column("element_id") },
@@ -326,8 +328,8 @@ class TelemetryService {
         records.addSelect(records.cast(records.binary(model, Op::kJsonGetText, records.value("id")), Type::kUuid))
             .addSelect(records.cast(records.binary(model, Op::kJsonGetText, records.value("revision")), Type::kBigInt)).from("filtered").andWhere(records.column("accepted"));
         Query inserted(resource);
-        inserted.insertInto("device_data", { "report_time", "id", "device_id", "link_id", "connection_id", "protocol", "source", "occurred_at", "data", "raw_payload_hex", "model_id", "model_revision" })
-            .insertFrom(records).onConflict({ .columns = { "id", "report_time" }, .doNothing = true }).returning({ inserted.column("device_id") });
+        inserted.insertInto(service::telemetry::persistence::DeviceDataEntity::tableName(), { "report_time", "id", "device_id", "link_id", "connection_id", "protocol", "source", "occurred_at", "data", "raw_payload_hex", "model_id", "model_revision" })
+            .insertFrom(records).onConflict({ .columns = { "id", "report_time" }, .doNothing = true }).returning({ inserted.column(service::telemetry::persistence::DeviceDataEntity::columnName<"device_id">()) });
         Query storage(resource);
         const auto lastStored = storage.aggregate("max", { storage.column("last_stored") });
         const auto lastAccepted = storage.filter(storage.aggregate("max", { storage.column("report_time") }), storage.column("accepted"));
@@ -361,12 +363,12 @@ class TelemetryService {
         selectColumns(latestRows, { "device_id", "element_id", "value", "observed_at", "record_id" });
         latestRows.addSelect(latestRows.call("now")).from("latest_elements");
         Query latestValues(resource);
-        latestValues.insertInto("device_latest_value", { "device_id", "element_id", "value", "observed_at", "record_id", "updated_at" }).insertFrom(latestRows)
-            .onConflict({ .columns = { "device_id", "element_id" }, .update = { { "value", latestValues.excluded("value") }, { "observed_at", latestValues.excluded("observed_at") },
-                { "record_id", latestValues.excluded("record_id") }, { "updated_at", latestValues.call("now") } },
-                .updateWhere = latestValues.binary(latestValues.tuple({ latestValues.excluded("observed_at"), latestValues.excluded("record_id") }), Op::kGreater,
-                    latestValues.tuple({ latestValues.column("observed_at", "device_latest_value"), latestValues.column("record_id", "device_latest_value") })) })
-            .returning({ latestValues.column("device_id") });
+        latestValues.insertInto(service::telemetry::persistence::DeviceLatestValueEntity::tableName(), { "device_id", "element_id", "value", "observed_at", "record_id", "updated_at" }).insertFrom(latestRows)
+            .onConflict({ .columns = { "device_id", "element_id" }, .update = { { "value", latestValues.excluded(service::telemetry::persistence::DeviceLatestValueEntity::columnName<"value">()) }, { "observed_at", latestValues.excluded(service::telemetry::persistence::DeviceLatestValueEntity::columnName<"observed_at">()) },
+                { "record_id", latestValues.excluded(service::telemetry::persistence::DeviceLatestValueEntity::columnName<"record_id">()) }, { "updated_at", latestValues.call("now") } },
+                .updateWhere = latestValues.binary(latestValues.tuple({ latestValues.excluded(service::telemetry::persistence::DeviceLatestValueEntity::columnName<"observed_at">()), latestValues.excluded(service::telemetry::persistence::DeviceLatestValueEntity::columnName<"record_id">()) }), Op::kGreater,
+                    latestValues.tuple({ latestValues.column(service::telemetry::persistence::DeviceLatestValueEntity::columnName<"observed_at">(), "device_latest_value"), latestValues.column(service::telemetry::persistence::DeviceLatestValueEntity::columnName<"record_id">(), "device_latest_value") })) })
+            .returning({ latestValues.column(service::telemetry::persistence::DeviceLatestValueEntity::columnName<"device_id">()) });
         const auto barrier = [&](std::string_view table, std::string_view countName) {
             Query query(resource);
             query.select(query.alias(query.aggregate("count", { query.star() }), countName)).from(table);
@@ -374,16 +376,16 @@ class TelemetryService {
         };
         auto insertedBarrier = barrier("inserted", "inserted_count");
         Query stateUpdated(resource);
-        stateUpdated.update("device_data_ingest_state", "state").set("last_stored_at", stateUpdated.column("last_stored_at", "storage"))
-            .set("last_observed_at", stateUpdated.coalesce({ stateUpdated.column("last_observed_at", "observed"), stateUpdated.column("last_observed_at", "state") }))
-            .set("last_observed_id", stateUpdated.coalesce({ stateUpdated.column("last_observed_id", "observed"), stateUpdated.column("last_observed_id", "state") }))
-            .set("last_data", stateUpdated.coalesce({ stateUpdated.column("last_data", "observed"), stateUpdated.column("last_data", "state") }))
-            .set("previous_data", stateUpdated.caseWhen({ { stateUpdated.unary(ruvia::DbUnaryOperator::kIsNull, stateUpdated.column("device_id", "observed")), stateUpdated.column("previous_data", "state") } }, stateUpdated.column("previous_data", "observed")))
-            .set("updated_at", stateUpdated.call("now")).updateFrom("storage_summary", "storage")
+        stateUpdated.update(service::telemetry::persistence::DeviceDataIngestStateEntity::tableName(), "state").set(service::telemetry::persistence::DeviceDataIngestStateEntity::columnName<"last_stored_at">(), stateUpdated.column("last_stored_at", "storage"))
+            .set(service::telemetry::persistence::DeviceDataIngestStateEntity::columnName<"last_observed_at">(), stateUpdated.coalesce({ stateUpdated.column("last_observed_at", "observed"), stateUpdated.column(service::telemetry::persistence::DeviceDataIngestStateEntity::columnName<"last_observed_at">(), "state") }))
+            .set(service::telemetry::persistence::DeviceDataIngestStateEntity::columnName<"last_observed_id">(), stateUpdated.coalesce({ stateUpdated.column("last_observed_id", "observed"), stateUpdated.column(service::telemetry::persistence::DeviceDataIngestStateEntity::columnName<"last_observed_id">(), "state") }))
+            .set(service::telemetry::persistence::DeviceDataIngestStateEntity::columnName<"last_data">(), stateUpdated.coalesce({ stateUpdated.column("last_data", "observed"), stateUpdated.column(service::telemetry::persistence::DeviceDataIngestStateEntity::columnName<"last_data">(), "state") }))
+            .set(service::telemetry::persistence::DeviceDataIngestStateEntity::columnName<"previous_data">(), stateUpdated.caseWhen({ { stateUpdated.unary(ruvia::DbUnaryOperator::kIsNull, stateUpdated.column("device_id", "observed")), stateUpdated.column(service::telemetry::persistence::DeviceDataIngestStateEntity::columnName<"previous_data">(), "state") } }, stateUpdated.column("previous_data", "observed")))
+            .set(service::telemetry::persistence::DeviceDataIngestStateEntity::columnName<"updated_at">(), stateUpdated.call("now")).updateFrom("storage_summary", "storage")
             .join(ruvia::DbJoinType::kLeft, "observed_summary", stateUpdated.binary(stateUpdated.column("device_id", "storage"), Op::kEqual, stateUpdated.column("device_id", "observed")), "observed")
             .join(ruvia::DbJoinType::kCross, insertedBarrier, {}, "inserted_barrier")
-            .andWhere(stateUpdated.binary(stateUpdated.column("device_id", "state"), Op::kEqual, stateUpdated.column("device_id", "storage")))
-            .andWhere(stateUpdated.binary(stateUpdated.column("inserted_count", "inserted_barrier"), Op::kGreaterEqual, stateUpdated.value(0))).returning({ stateUpdated.column("device_id", "state") });
+            .andWhere(stateUpdated.binary(stateUpdated.column(service::telemetry::persistence::DeviceDataIngestStateEntity::columnName<"device_id">(), "state"), Op::kEqual, stateUpdated.column("device_id", "storage")))
+            .andWhere(stateUpdated.binary(stateUpdated.column("inserted_count", "inserted_barrier"), Op::kGreaterEqual, stateUpdated.value(0))).returning({ stateUpdated.column(service::telemetry::persistence::DeviceDataIngestStateEntity::columnName<"device_id">(), "state") });
         auto updateBarrier = barrier("state_updated", "updated_count");
         auto latestBarrier = barrier("latest_values", "latest_count");
         Query persisted(resource);
@@ -435,7 +437,7 @@ class TelemetryService {
         deviceRows.select(deviceRows.column("device_id")).from("requested");
         Query seed(context.resource());
         seed.with("requested", requestedDevices, { .columns = { "device_id" } })
-            .insertInto("device_data_ingest_state", { "device_id" }).insertFrom(deviceRows)
+            .insertInto(service::telemetry::persistence::DeviceDataIngestStateEntity::tableName(), { "device_id" }).insertFrom(deviceRows)
             .onConflict({ .columns = { "device_id" }, .doNothing = true });
         (void)co_await transaction.execute(seed);
         const auto rows = co_await transaction.query(persisted);

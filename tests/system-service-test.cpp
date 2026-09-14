@@ -42,24 +42,13 @@ void requireUserRoleIdsDeduplicated() {
 }
 
 void requireWorkerMetricSnapshotContract() {
-    const auto metrics0 = service::message::worker_metrics::metricsSnapshotKey(0, "test");
-    const auto metrics1 = service::message::worker_metrics::metricsSnapshotKey(1, "test");
-    const auto readiness0 =
-        service::message::worker_metrics::readinessSnapshotKey(0, "test");
-    require(metrics0 != metrics1, "worker metric snapshots share a Redis key");
-    require(metrics0.find(":test:worker:0") != std::string::npos,
-            "worker metric snapshot key omits worker identity");
-    require(metrics0 != readiness0, "metric and readiness snapshots share a Redis key");
+    const auto worker0 = service::message::worker_metrics::snapshotId(0, "test");
+    const auto worker1 = service::message::worker_metrics::snapshotId(1, "test");
+    require(worker0 != worker1, "worker snapshots share an identity");
+    require(worker0 == "test:worker:0", "snapshot omits process and worker identity");
+    require(worker0 != service::message::worker_metrics::snapshotId(0, "other"),
+            "snapshots from different processes share an identity");
 
-    const auto encoded = service::message::worker_metrics::encodeReadinessSnapshot(
-        true, R"({"status":"ready"})");
-    const auto decoded =
-        service::message::worker_metrics::decodeReadinessSnapshot(encoded);
-    require(decoded.has_value() && decoded->ready &&
-                decoded->healthJson == R"({"status":"ready"})",
-            "readiness snapshot payload does not round-trip");
-    require(!service::message::worker_metrics::decodeReadinessSnapshot("1\n{}x").has_value(),
-            "malformed readiness snapshot was accepted");
 }
 
 } // namespace

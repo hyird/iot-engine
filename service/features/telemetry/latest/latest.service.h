@@ -1,5 +1,7 @@
 #pragma once
 
+#include "service/features/telemetry/latest/latest.entity.h"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -441,16 +443,16 @@ ruvia::Task<void> project(Context& context, ProjectionScope scope, const std::ve
     const auto nowMs = service::message::utcNowMilliseconds();
     const auto now = std::to_string(nowMs);
     ruvia::DbQuery deviceQuery;
-    const auto timeout = deviceQuery.binary(deviceQuery.column("protocol_params", "d"), Op::kJsonGetText, deviceQuery.value("online_timeout"));
+    const auto timeout = deviceQuery.binary(deviceQuery.column(service::telemetry::latest::persistence::DeviceEntity::columnName<"protocol_params">(), "d"), Op::kJsonGetText, deviceQuery.value("online_timeout"));
     const auto parsedTimeout = deviceQuery.caseWhen({ { deviceQuery.binary(
         deviceQuery.coalesce({ timeout, deviceQuery.value("") }), Op::kRegex, deviceQuery.value("^-?[0-9]{1,18}$")),
         deviceQuery.cast(timeout, Type::kBigInt) } });
-    deviceQuery.select({ deviceQuery.cast(deviceQuery.column("id", "d"), Type::kText),
-        deviceQuery.binary(deviceQuery.column("protocol_params", "d"), Op::kJsonGetText, deviceQuery.value("device_code")),
+    deviceQuery.select({ deviceQuery.cast(deviceQuery.column(service::telemetry::latest::persistence::DeviceEntity::columnName<"id">(), "d"), Type::kText),
+        deviceQuery.binary(deviceQuery.column(service::telemetry::latest::persistence::DeviceEntity::columnName<"protocol_params">(), "d"), Op::kJsonGetText, deviceQuery.value("device_code")),
         deviceQuery.binary(deviceQuery.coalesce({ parsedTimeout, deviceQuery.value(300) }), Op::kMultiply, deviceQuery.value(1000)) })
-        .from("device", "d")
-        .andWhere(deviceQuery.unary(ruvia::DbUnaryOperator::kIsNull, deviceQuery.column("deleted_at", "d")))
-        .andWhere(selected(deviceQuery)).addOrderBy(deviceQuery.column("id", "d"));
+        .from(service::telemetry::latest::persistence::DeviceEntity::tableName(), "d")
+        .andWhere(deviceQuery.unary(ruvia::DbUnaryOperator::kIsNull, deviceQuery.column(service::telemetry::latest::persistence::DeviceEntity::columnName<"deleted_at">(), "d")))
+        .andWhere(selected(deviceQuery)).addOrderBy(deviceQuery.column(service::telemetry::latest::persistence::DeviceEntity::columnName<"id">(), "d"));
     const auto devices = co_await context.db().query(deviceQuery);
     if (devices.empty()) {
         co_return;
@@ -570,16 +572,16 @@ ruvia::Task<void> project(Context& context, ProjectionScope scope, const std::ve
 
     const auto configuredProtocol = [&](std::string_view protocol, std::string_view arrayKey, int order) {
         ruvia::DbQuery query;
-        query.from("device", "d")
-            .join(ruvia::DbJoinType::kInner, "device_model", query.binary(query.column("device_id", "p"), Op::kEqual, query.column("id", "d")), "p")
-            .andWhere(query.binary(query.column("protocol", "p"), Op::kEqual, query.value(protocol)))
-            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column("deleted_at", "d")))
+        query.from(service::telemetry::latest::persistence::DeviceEntity::tableName(), "d")
+            .join(ruvia::DbJoinType::kInner, service::telemetry::latest::persistence::DeviceModelEntity::tableName(), query.binary(query.column(service::telemetry::latest::persistence::DeviceModelEntity::columnName<"device_id">(), "p"), Op::kEqual, query.column(service::telemetry::latest::persistence::DeviceEntity::columnName<"id">(), "d")), "p")
+            .andWhere(query.binary(query.column(service::telemetry::latest::persistence::DeviceModelEntity::columnName<"protocol">(), "p"), Op::kEqual, query.value(protocol)))
+            .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::telemetry::latest::persistence::DeviceEntity::columnName<"deleted_at">(), "d")))
             .andWhere(selected(query));
         const auto entries = query.call("jsonb_array_elements", { query.coalesce({
-            query.binary(query.column("config", "p"), Op::kJsonGet, query.value(arrayKey)), query.cast(query.value("[]"), Type::kJsonb) }) });
-        std::vector<ruvia::DbExpression> columns{ query.column("id", "d"),
-            query.binary(query.column("protocol_params", "d"), Op::kJsonGetText, query.value("device_code")),
-            query.column("protocol", "p"), query.column("element"), query.cast(query.value(order), Type::kInteger) };
+            query.binary(query.column(service::telemetry::latest::persistence::DeviceModelEntity::columnName<"config">(), "p"), Op::kJsonGet, query.value(arrayKey)), query.cast(query.value("[]"), Type::kJsonb) }) });
+        std::vector<ruvia::DbExpression> columns{ query.column(service::telemetry::latest::persistence::DeviceEntity::columnName<"id">(), "d"),
+            query.binary(query.column(service::telemetry::latest::persistence::DeviceEntity::columnName<"protocol_params">(), "d"), Op::kJsonGetText, query.value("device_code")),
+            query.column(service::telemetry::latest::persistence::DeviceModelEntity::columnName<"protocol">(), "p"), query.column("element"), query.cast(query.value(order), Type::kInteger) };
         if (protocol == "SL651") {
             query.joinFunction(ruvia::DbJoinType::kCross, entries, {}, "functions",
                 { .lateral = true, .withOrdinality = true, .columns = { { .name = "function" }, { .name = "function_position" } } });
@@ -618,19 +620,19 @@ ruvia::Task<void> project(Context& context, ProjectionScope scope, const std::ve
     const auto defaultText = [&](std::string_view key, std::string_view fallback) {
         return points.coalesce({ elementText(key), points.value(fallback) });
     };
-    const auto pointValue = points.binary(points.column("value", "point"), Op::kJsonGetText, points.value("value"));
+    const auto pointValue = points.binary(points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::columnName<"value">(), "point"), Op::kJsonGetText, points.value("value"));
     const auto displayValue = points.caseWhen({ { points.binary(points.call("jsonb_typeof", {
-        points.binary(points.column("value", "point"), Op::kJsonGet, points.value("value")) }), Op::kEqual, points.value("boolean")),
+        points.binary(points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::columnName<"value">(), "point"), Op::kJsonGet, points.value("value")) }), Op::kEqual, points.value("boolean")),
         points.caseWhen({ { points.cast(pointValue, Type::kBoolean), points.value("1") } }, points.value("0")) } },
         points.coalesce({ pointValue, points.value("-") }));
     const auto observedAt = points.cast(points.binary(points.extract(ruvia::DbDatePart::kEpoch,
-        points.column("observed_at", "point")), Op::kMultiply, points.value(1000)), Type::kBigInt);
+        points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::columnName<"observed_at">(), "point")), Op::kMultiply, points.value(1000)), Type::kBigInt);
     const auto decimals = points.coalesce({ elementText("decimals"), elementText("digits") });
     const auto numericScale = points.coalesce({ points.caseWhen({ { points.binary(defaultText("scale", ""), Op::kRegex,
         points.value(R"(^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$)")), points.cast(elementText("scale"), Type::kNumeric) } }), points.value(1) });
     const auto numericDecimals = points.coalesce({ points.caseWhen({ { points.binary(
         points.coalesce({ decimals, points.value("") }), Op::kRegex, points.value("^-?[0-9]{1,18}$")), points.cast(decimals, Type::kBigInt) } }), points.value(-1) });
-    const auto missing = points.unary(ruvia::DbUnaryOperator::kIsNull, points.column("observed_at", "point"));
+    const auto missing = points.unary(ruvia::DbUnaryOperator::kIsNull, points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::columnName<"observed_at">(), "point"));
     const auto json = points.call("jsonb_build_object", {
         points.cast(points.value("id"), ruvia::DbDataType::kText), elementText("id"), points.cast(points.value("name"), ruvia::DbDataType::kText), elementText("name"), points.cast(points.value("value"), ruvia::DbDataType::kText), displayValue,
         points.cast(points.value("dataType"), ruvia::DbDataType::kText), defaultText("dataType", ""), points.cast(points.value("unit"), ruvia::DbDataType::kText), defaultText("unit", ""),
@@ -649,9 +651,9 @@ ruvia::Task<void> project(Context& context, ProjectionScope scope, const std::ve
             points.coalesce({ points.nullIf(decimals, points.value("")), points.value("-1") }),
             defaultText("group", ""), defaultText("encode", ""), points.cast(points.column("sort_order", "numbered"), Type::kText), points.cast(json, Type::kText) })
         .from("numbered")
-        .join(ruvia::DbJoinType::kLeft, "device_latest_value", points.binary(
-            points.binary(points.column("device_id", "point"), Op::kEqual, points.column("device_id", "numbered")), Op::kAnd,
-            points.binary(points.column("element_id", "point"), Op::kEqual, elementText("id"))), "point")
+        .join(ruvia::DbJoinType::kLeft, service::telemetry::latest::persistence::DeviceLatestValueEntity::tableName(), points.binary(
+            points.binary(points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::columnName<"device_id">(), "point"), Op::kEqual, points.column("device_id", "numbered")), Op::kAnd,
+            points.binary(points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::columnName<"element_id">(), "point"), Op::kEqual, elementText("id"))), "point")
         .addOrderBy(points.column("device_id", "numbered")).addOrderBy(points.column("protocol_order", "numbered"))
         .addOrderBy(points.column("function_order", "numbered")).addOrderBy(points.column("element_order", "numbered"));
     const auto elements = co_await context.db().query(points);
@@ -778,11 +780,11 @@ inline ruvia::Task<void> hydrate(ruvia::WebWorkerContext& context, std::size_t w
     std::string cursor = "00000000-0000-0000-0000-000000000000";
     for (;;) {
         ruvia::DbQuery page;
-        page.select(page.cast(page.column("id"), ruvia::DbDataType::kText)).from("device")
-            .andWhere(page.unary(ruvia::DbUnaryOperator::kIsNull, page.column("deleted_at")))
-            .andWhere(page.binary(page.column("id"), ruvia::DbBinaryOperator::kGreater,
+        page.select(page.cast(page.column(service::telemetry::latest::persistence::DeviceEntity::columnName<"id">()), ruvia::DbDataType::kText)).from(service::telemetry::latest::persistence::DeviceEntity::tableName())
+            .andWhere(page.unary(ruvia::DbUnaryOperator::kIsNull, page.column(service::telemetry::latest::persistence::DeviceEntity::columnName<"deleted_at">())))
+            .andWhere(page.binary(page.column(service::telemetry::latest::persistence::DeviceEntity::columnName<"id">()), ruvia::DbBinaryOperator::kGreater,
                 page.cast(page.value(cursor), ruvia::DbDataType::kUuid)))
-            .addOrderBy(page.column("id")).limit(kHydrationBatchSize);
+            .addOrderBy(page.column(service::telemetry::latest::persistence::DeviceEntity::columnName<"id">())).limit(kHydrationBatchSize);
         const auto devices = co_await context.db().query(page);
         if (devices.empty()) {
             break;

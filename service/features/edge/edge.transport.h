@@ -8,7 +8,7 @@
 #include <ruvia/core/Task.h>
 
 #include "service/common/message.h"
-#include "service/features/edge/session/session.service.h"
+#include "service/features/edge/session/session.protocol.h"
 #include "service/features/messaging/messaging.transport.h"
 
 namespace service::edge::dispatch {

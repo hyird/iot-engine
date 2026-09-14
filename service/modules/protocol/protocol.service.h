@@ -282,12 +282,12 @@ class ProtocolService {
         co_await requireOwner(c, existing.front()[0].value().value_or(std::string_view{}));
         ruvia::DbQuery used(c.pool());
         used.select(used.cast(used.value(1), ruvia::DbDataType::kInteger))
-            .from("device")
-            .where(used.binary(used.column("protocol_config_id"),
+            .from(service::protocol::entities::DeviceEntity::tableName())
+            .where(used.binary(used.column(service::protocol::entities::DeviceEntity::columnName<"protocol_config_id">()),
                                ruvia::DbBinaryOperator::kEqual,
                                used.cast(used.value(id), ruvia::DbDataType::kUuid)))
             .andWhere(used.unary(ruvia::DbUnaryOperator::kIsNull,
-                                 used.column("deleted_at")))
+                                 used.column(service::protocol::entities::DeviceEntity::columnName<"deleted_at">())))
             .limit(1);
         const auto usedRows = co_await c.db().query(used);
         if (!usedRows.empty())
@@ -323,16 +323,16 @@ class ProtocolService {
         const auto edgeNodeId =
             query.cast(query.column("edge_node_id", "l"), ruvia::DbDataType::kText);
         query.select(edgeNodeId)
-            .from("device", "d")
+            .from(service::protocol::entities::DeviceEntity::tableName(), "d")
             .join(ruvia::DbJoinType::kInner, service::link::LinkEntity::tableName(),
                   query.binary(query.column("id", "l"), ruvia::DbBinaryOperator::kEqual,
-                               query.column("link_id", "d")),
+                               query.column(service::protocol::entities::DeviceEntity::columnName<"link_id">(), "d")),
                   "l")
-            .where(query.binary(query.column("protocol_config_id", "d"),
+            .where(query.binary(query.column(service::protocol::entities::DeviceEntity::columnName<"protocol_config_id">(), "d"),
                                 ruvia::DbBinaryOperator::kEqual,
                                 query.cast(query.value(configId), ruvia::DbDataType::kUuid)))
             .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull,
-                                  query.column("deleted_at", "d")))
+                                  query.column(service::protocol::entities::DeviceEntity::columnName<"deleted_at">(), "d")))
             .andWhere(query.binary(query.column("execution", "l"),
                                    ruvia::DbBinaryOperator::kEqual, query.value("edge")))
             .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull,

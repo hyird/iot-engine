@@ -18,9 +18,15 @@
 extern char** environ;
 #endif
 
-#include "service/features/vpn/vpn.service.h"
+#include "service/common/message.h"
+#include "service/utils/network.h"
 
 namespace service::vpn::firewall {
+
+using service::message::vpn::kOverlayPool;
+using service::message::vpn::kVirtualLanPool;
+using service::utils::network::parseIpv4;
+using service::utils::network::parseCidr;
 
 struct ClientAccess final {
     std::string assignedIpv4;
