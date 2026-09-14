@@ -393,12 +393,15 @@ foreach(test_name
         telemetry-persistence
         command-service
         link-service
-        device-service
         protocol-service
         access-service)
     iot_engine_add_test("${test_name}"
         SOURCES "tests/${test_name}-test.cpp")
 endforeach()
+
+iot_engine_add_test(device-service LARGE
+    SOURCES tests/device-service-test.cpp
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
 
 iot_engine_add_test(system-service
     SOURCES tests/system-service-test.cpp

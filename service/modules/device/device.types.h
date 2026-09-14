@@ -1,11 +1,46 @@
 #pragma once
 
 #include <cctype>
+#include <cstdint>
+#include <string>
 #include <string_view>
 
 #include <ruvia/web/Model.h>
 
 namespace service::device {
+
+enum class DeviceAccessLevel : std::int64_t {
+    none = 0,
+    view = 1,
+    operate = 2,
+    owner = 4,
+};
+
+struct DeviceActor final {
+    std::string userId;
+    std::string departmentId;
+    bool superadmin{};
+    bool canEdit{};
+    bool canDelete{};
+    bool canShare{};
+    bool canCommand{};
+    bool canGroupShare{};
+};
+
+struct DeviceAccessDecision final {
+    DeviceActor actor;
+    DeviceAccessLevel level{DeviceAccessLevel::none};
+};
+
+struct DeviceCapabilities final {
+    bool canEdit{};
+    bool canDelete{};
+    bool canShare{};
+    bool canCommand{};
+    std::string_view accessLevel{"none"};
+};
+
+
 
 // 设备时区格式校验：[+-]HH:MM，范围 -14:00 .. +14:00（空视为合法，可选字段）。
 inline bool isDeviceTimezone(const ruvia::String& value) {

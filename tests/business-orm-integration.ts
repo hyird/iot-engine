@@ -168,6 +168,7 @@ async function closeSseDeletes(path: string, ids: string[]) {
 
 let protocol: string | undefined;
 let link: string | undefined;
+let alternateLink: string | undefined;
 const devices: string[] = [];
 const keys: string[] = [];
 const webhooks: string[] = [];
@@ -325,6 +326,24 @@ try {
     assert.equal(updatedDevice.status, 'disabled');
     console.log('PASS device ORM create, scoped list, detail, update and boolean JSON');
 
+    const alternateLinkName = `${tag}-alternate-channel`;
+    await jsonRequest('POST', '/v1/link', {
+        execution: 'collector', name: alternateLinkName, protocol: 'Modbus',
+        endpoint: { ...linkEndpoint, port: linkPort + 500 }, status: 'disabled',
+    });
+    alternateLink = (await db`SELECT id FROM link WHERE name=${alternateLinkName} AND deleted_at IS NULL`)[0].id;
+    const channelsBefore = (await db`SELECT count(*) AS count FROM link WHERE deleted_at IS NULL`)[0].count;
+    await jsonRequest('PUT', `/v1/device/${deviceOne}`, { link_id: alternateLink });
+    assert.equal((await snapshot(`/v1/device/${deviceOne}`)).link_id, alternateLink);
+    assert.equal((await snapshot(`/v1/device/${deviceTwo}`)).link_id, link);
+    assert.equal((await snapshot(`/v1/link/${link}`)).id, link);
+    assert.equal((await db`SELECT count(*) AS count FROM link WHERE deleted_at IS NULL`)[0].count, channelsBefore);
+    await jsonRequest('PUT', `/v1/device/${deviceOne}`, { link_id: link });
+    assert.equal((await snapshot(`/v1/device/${deviceOne}`)).link_id, link);
+    assert.equal((await snapshot(`/v1/link/${alternateLink}`)).id, alternateLink);
+    console.log('PASS device connection edits preserve both shared physical channels and other devices');
+
+
     const keyOneResult = await jsonRequest('POST', '/api/open-access-key', {
         name: keyOneName,
         status: 'enabled',
@@ -466,6 +485,7 @@ try {
     await closeSseDeletes('/api/open-webhook', webhooks);
     await closeSseDeletes('/api/open-access-key', keys);
     await closeSseDeletes('/v1/device', devices);
+    if (alternateLink) await closeSseDeletes('/v1/link', [alternateLink]);
     if (link)
         await closeSseDeletes('/v1/link', [link]);
     if (protocol)

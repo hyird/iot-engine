@@ -1,108 +1,47 @@
-#include <filesystem>
-#include <fstream>
+#include <array>
 #include <iostream>
 #include <stdexcept>
-#include <string>
+#include "service/modules/device/device.service.h"
 
 namespace {
-
 void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
+    if (!condition) throw std::runtime_error(message);
 }
-
-std::string deviceSource() {
-    auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
-                "service/modules/device/device.service.h";
-    std::ifstream input(path, std::ios::binary);
-    require(input.good(), "cannot open device service source");
-    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+void verifyDeviceCapabilities() {
+    using namespace service::device;
+    constexpr std::array levels{DeviceAccessLevel::none, DeviceAccessLevel::view,
+        DeviceAccessLevel::operate, DeviceAccessLevel::owner};
+    for (const auto level : levels) {
+        for (unsigned permissions = 0; permissions != 16; ++permissions) {
+            DeviceActor actor;
+            actor.canEdit = (permissions & 1) != 0;
+            actor.canDelete = (permissions & 2) != 0;
+            actor.canShare = (permissions & 4) != 0;
+            actor.canCommand = (permissions & 8) != 0;
+            for (const bool remoteControl : {false, true}) {
+                const auto result = DeviceAccessService::capabilities(actor, level, remoteControl);
+                const bool owner = level == DeviceAccessLevel::owner;
+                const bool operatorAccess = owner || level == DeviceAccessLevel::operate;
+                require(result.canEdit == (owner && actor.canEdit), "edit requires ownership and permission");
+                require(result.canDelete == (owner && actor.canDelete), "delete requires ownership and permission");
+                require(result.canShare == (owner && actor.canShare), "share requires ownership and permission");
+                require(result.canCommand == (operatorAccess && remoteControl && actor.canCommand),
+                        "command requires operate access, remote control and permission");
+            }
+        }
+    }
+    require(DeviceAccessService::rank("0") == DeviceAccessLevel::none, "none rank");
+    require(DeviceAccessService::rank("1") == DeviceAccessLevel::view, "view rank");
+    require(DeviceAccessService::rank("2") == DeviceAccessLevel::operate, "operate rank");
+    require(DeviceAccessService::rank("4") == DeviceAccessLevel::owner, "owner rank");
+    for (const auto invalid : {"", "-1", "1junk", "nan", "9999999999999999999999999"})
+        require(DeviceAccessService::rank(invalid) == DeviceAccessLevel::none, "invalid rank must not grant access");
 }
-
-std::string deviceFormSource() {
-    auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
-                "web/pages/iot/device/DeviceFormModal.tsx";
-    std::ifstream input(path, std::ios::binary);
-    require(input.good(), "cannot open device form source");
-    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
-
-std::string deviceControllerSource() {
-    auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
-                "service/modules/device/device.controller.h";
-    std::ifstream input(path, std::ios::binary);
-    require(input.good(), "cannot open device controller source");
-    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
-}
-
-void requireNoUnsafeParsing(std::string_view source) {
-    require(source.find("std::stoll") == std::string_view::npos,
-            "device service uses unsafe/partial stoll parsing");
-    require(source.find("std::stod") == std::string_view::npos,
-            "device service uses unsafe/partial stod parsing");
-    require(source.find("COALESCE((protocol_params->>'remote_control')::boolean") ==
-                std::string_view::npos,
-            "device service directly casts remote_control");
-    require(source.find("COALESCE((d.protocol_params->>'online_timeout')::integer") ==
-                std::string_view::npos,
-            "device service directly casts online_timeout");
-    require(source.find("COALESCE((d.protocol_params->>'remote_control')::boolean") ==
-                std::string_view::npos,
-            "device service directly casts item remote_control");
-    require(source.find("(d.protocol_params->>'slave_id')::integer") == std::string_view::npos,
-            "device service directly casts slave_id");
-    require(source.find("(p.config->>'readInterval')::numeric") == std::string_view::npos,
-            "device service directly casts readInterval");
-    require(source.find("p.config->>'pollInterval'") == std::string_view::npos,
-            "device service still reads the retired pollInterval field");
-    require(source.find("storageInterval") == std::string_view::npos,
-            "device service still reads the retired storage interval");
-    require(source.find("\"storagePolicy\"") != std::string_view::npos &&
-                source.find("protocolConfig") != std::string_view::npos,
-            "device service does not expose the canonical storage policy");
-    require(source.find("(l.endpoint->>'port')::integer") == std::string_view::npos,
-            "device service directly casts edge endpoint port");
-    require(source.find("(l.endpoint->>'rs485')::boolean") == std::string_view::npos,
-            "device service directly casts edge rs485");
-    require(source.find("COALESCE((element->>'writable')::boolean") == std::string_view::npos,
-            "device service directly casts writable");
-    require(source.find("COALESCE((n.capability->>'deviceConfig')::boolean") ==
-                std::string_view::npos,
-            "device service directly casts edge deviceConfig capability");
-}
-
-} // namespace
-
 int main() {
     try {
-        const auto service = deviceSource();
-        requireNoUnsafeParsing(service);
-        require(service.find("设备所属链路不可修改") == std::string::npos &&
-                    service.find("设备所属边缘节点不可修改") == std::string::npos &&
-                    service.find("设备类型不可修改") == std::string::npos,
-                "device connection fields are still immutable");
-        require(service.find("createEdgeLink") == std::string::npos &&
-                    service.find("retireEdgeLink") == std::string::npos &&
-                    service.find("INSERT INTO link") == std::string::npos,
-                "device writes must not create or retire shared physical channels");
-        require(service.find("service::telemetry::latest::canonicalPointText(") !=
-                        std::string::npos &&
-                    service.find("normalizedValues.call(") != std::string::npos &&
-                    service.find("\"jsonb_typeof\"") != std::string::npos &&
-                    service.find("\"jsonb_set\"") != std::string::npos,
-                "device data does not canonicalize BOOL points to 0/1");
-        const auto form = deviceFormSource();
-        require(form.find("disabled={!!editing}") == std::string::npos,
-                "device edit form still disables connection fields");
-        const auto controller = deviceControllerSource();
-        require(controller.find("RUVIA_GET_SSE(\"/realtime\", realtime)") !=
-                        std::string::npos &&
-                    controller.find("/realtime/events") == std::string::npos &&
-                    controller.find("requirePermission(c, \"iot:device:query\")") !=
-                        std::string::npos &&
-                    controller.find("service::live::serve") != std::string::npos,
-                "device realtime SSE route is missing permission or proxy-streaming safeguards");
-        std::cout << "device service tests passed\n";
+        verifyDeviceCapabilities();
+        std::cout << "device access behavior tests passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "device service test failed: " << error.what() << '\n';

@@ -36,37 +36,6 @@
 
 namespace service::device {
 
-enum class DeviceAccessLevel : std::int64_t {
-    none = 0,
-    view = 1,
-    operate = 2,
-    owner = 4,
-};
-
-struct DeviceActor final {
-    std::string userId;
-    std::string departmentId;
-    bool superadmin{};
-    bool canEdit{};
-    bool canDelete{};
-    bool canShare{};
-    bool canCommand{};
-    bool canGroupShare{};
-};
-
-struct DeviceAccessDecision final {
-    DeviceActor actor;
-    DeviceAccessLevel level{DeviceAccessLevel::none};
-};
-
-struct DeviceCapabilities final {
-    bool canEdit{};
-    bool canDelete{};
-    bool canShare{};
-    bool canCommand{};
-    std::string_view accessLevel{"none"};
-};
-
 inline ruvia::DbQuery::Expr andAll(ruvia::DbQuery& query, ruvia::DbQuery::Expr first,
                                    ruvia::DbQuery::Expr second) {
     return query.binary(first, ruvia::DbBinaryOperator::kAnd, second);
