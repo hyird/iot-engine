@@ -49,6 +49,7 @@ jobs:
       - name: Protocol and validation tests
         run: >-
           bun test
+          ./tests/session-refresh-test.ts
           ./tests/client-architecture-test.ts
           ./tests/frontend-architecture-test.ts
           ./tests/edge-group-view-test.ts

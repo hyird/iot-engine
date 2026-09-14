@@ -641,7 +641,7 @@ export function EdgeVpnPanel({ node }: { node: Edge.Node }) {
                 </>
             )}
 
-            <Modal
+            <FormModal
                 open={routeOpen}
                 title="修改虚拟网段"
                 onCancel={closeRoute}
@@ -689,7 +689,7 @@ export function EdgeVpnPanel({ node }: { node: Edge.Node }) {
                         <Input placeholder="172.168.1.0/24" />
                     </Form.Item>
                 </Form>
-            </Modal>
+            </FormModal>
         </div>
     );
 }
