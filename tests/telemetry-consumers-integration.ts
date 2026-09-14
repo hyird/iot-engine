@@ -10,6 +10,7 @@ const device = id(),
     event = id(),
     point = id();
 const admin = '00000000-0000-7000-8000-000000000002';
+const slDevice = id(), slLink = id(), slModel = id();
 let unlock: (() => void) | undefined;
 let blocking: Promise<unknown> | undefined;
 async function until(test: () => Promise<boolean>, message: string) {
@@ -132,6 +133,45 @@ try {
     );
     console.log('PASS history recovery, typed provenance and duplicate ingestion');
 
+    await db`INSERT INTO protocol_config(id,name,protocol,config,created_by)
+        VALUES(${slModel},${slModel},'SL651','{"storagePolicy":"report","elements":[]}'::jsonb,${admin})`;
+    await db`INSERT INTO link(id,name,protocol,endpoint,created_by,execution,status)
+        VALUES(${slLink},${slLink},'SL651','{"transport":"tcp","mode":"TCP Server","ip":"0.0.0.0","port":55200,"targets":[]}'::jsonb,${admin},'collector','disabled')`;
+    await db`INSERT INTO device(id,name,link_id,protocol_config_id,protocol_params,created_by)
+        VALUES(${slDevice},${slDevice},${slLink},${slModel},'{"device_code":"0001000102"}'::jsonb,${admin})`;
+    const raw = '7E7E010001000102FFFA320031020025260914142500F1F1000100010249F0F02609141425392300000587371B000125272B0000000001FFB028000000000303CF39';
+    async function publishSlReport(payload: string, sampleTime: string, receivedTime: string) {
+        const report = [...fields];
+        const replace = (key: string, value: string) => { report[report.indexOf(key) + 1] = value; };
+        replace('message_id', id());
+        replace('causation_id', id());
+        replace('connection_id', id());
+        replace('device_id', slDevice);
+        replace('link_id', slLink);
+        replace('model_id', slModel);
+        replace('protocol', 'SL651');
+        replace('observed_at_ms', sampleTime);
+        replace('occurred_at_ms', receivedTime);
+        replace('raw_payload_hex', JSON.stringify([payload]));
+        await publishFixtureEvent(redis, stream, report, 'telemetry');
+    }
+    await publishSlReport(raw, now, now);
+    await until(async () => (await db`SELECT 1 FROM device_data WHERE device_id=${slDevice}`).length === 1,
+        'SL651 initial report did not persist');
+    const stored = (await db`SELECT id FROM device_data WHERE device_id=${slDevice}`)[0].id;
+    await Promise.all([5000, 10000].map(offset => publishSlReport(raw, now, String(Number(now) + offset))));
+    // Simulate receipt expiration: durable uniqueness must also survive Redis receipt loss.
+    await Bun.sleep(500);
+    await redis.send('DEL', [`iot:telemetry:fanout:${stored}`]);
+    await publishSlReport(raw, now, String(Number(now) + 15000));
+    // A later sample acts as a processing barrier and must remain a separate record.
+    await publishSlReport(raw, String(Number(now) + 60000), String(Number(now) + 60000));
+    await until(async () => (await db`SELECT 1 FROM device_data WHERE device_id=${slDevice}`).length >= 2,
+        'SL651 next sample was incorrectly deduplicated');
+    await Bun.sleep(500);
+    assert.equal((await db`SELECT count(*)::int AS count FROM device_data WHERE device_id=${slDevice}`)[0].count, 2);
+    console.log('PASS SL651 retransmission, reconnect, receipt loss and distinct sample persistence');
+
     const source = await Bun.file('service/features/telemetry/telemetry.service.h').text();
     const lua = source.match(/R"lua\(([\s\S]*?)\)lua"/)![1];
     const keys = Array.from({ length: 5 }, (_, i) => `test:fanout:${event}:${i}`);
@@ -150,6 +190,9 @@ try {
 } finally {
     unlock?.();
     if (blocking) await blocking;
+    await db`UPDATE device SET deleted_at=NOW() WHERE id=${slDevice}`;
+    await db`UPDATE link SET deleted_at=NOW() WHERE id=${slLink}`;
+    await db`UPDATE protocol_config SET deleted_at=NOW() WHERE id=${slModel}`;
     await db`UPDATE device SET deleted_at=NOW() WHERE id=${device}`;
     await db`UPDATE link SET deleted_at=NOW() WHERE id=${link}`;
     await db`UPDATE protocol_config SET deleted_at=NOW() WHERE id=${model}`;

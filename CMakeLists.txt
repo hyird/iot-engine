@@ -351,7 +351,7 @@ iot_engine_add_test(edge-protocol
 
 iot_engine_add_test(telemetry-contract
     SOURCES tests/telemetry-contract-test.cpp
-    LIBRARIES ruvia::web)
+    LIBRARIES ruvia::web OpenSSL::Crypto)
 
 iot_engine_add_test(vpn-cidr
     SOURCES tests/vpn-cidr-test.cpp

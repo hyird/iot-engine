@@ -47,6 +47,38 @@ int main() {
         input.protocol = "Modbus";
         input.valuesJson = R"({"values":{}})";
         require(!service::telemetry::contract::isSl651EmptyReport(input), "SL651 empty report rule leaked to another protocol");
+        input.protocol = "SL651";
+        input.deviceId = "00000000-0000-7000-8000-000000000003";
+        input.messageId = service::message::nextMessageId();
+        input.rawPayloads = {{0x7e, 0x7e, 0x01}, {0x02, 0x03}};
+        input.valuesJson = R"({"values":{"flow":{"value":1}}})";
+        service::telemetry::contract::normalize(input);
+        const auto report = input;
+        require(service::common::isUuid(report.messageId), "report identity is not a UUID");
+        input.messageId = service::message::nextMessageId();
+        input.connectionId = service::message::nextMessageId();
+        input.causationId = service::message::nextMessageId();
+        input.occurredAtMs += 5000;
+        service::telemetry::contract::normalize(input);
+        require(input.messageId == report.messageId, "reconnected retransmission changed identity");
+        for (int difference = 0; difference < 4; ++difference) {
+            auto changed = report;
+            if (difference == 0) changed.deviceId.back() = '4';
+            if (difference == 1) ++changed.observedAtMs;
+            if (difference == 2) ++changed.rawPayloads.back().back();
+            if (difference == 3) changed.rawPayloads = {{0x7e}, {0x7e, 0x01, 0x02, 0x03}};
+            service::telemetry::contract::normalize(changed);
+            require(changed.messageId != report.messageId, "distinct report identity was collapsed");
+        }
+        for (const auto protocol : {"SL651", "Modbus"}) {
+            auto unsupported = report;
+            unsupported.protocol = protocol;
+            if (unsupported.protocol == "SL651") unsupported.rawPayloads.clear();
+            unsupported.messageId = service::message::nextMessageId();
+            const auto original = unsupported.messageId;
+            service::telemetry::contract::normalize(unsupported);
+            require(unsupported.messageId == original, "report without deduplication evidence changed identity");
+        }
         std::cout<<"telemetry contract tests passed\n";
         return 0;
     } catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}

@@ -1,7 +1,9 @@
 #pragma once
 
+#include <algorithm>
 #include <ruvia/web/ModelObject.h>
 #include "service/common/message.h"
+#include "service/utils/crypto.h"
 namespace service::telemetry::contract {
 template<class Visit> void fields(std::string_view raw, Visit visit) {
     if (!ruvia::detail::visitJsonObjectFields(ruvia::detail::ResolvedPmrResourceTag{},raw,
@@ -67,5 +69,20 @@ inline void normalize(message::ParsedDeviceMessage& input) {
     out+="\"schema_version\":1,\"event_kind\":"+service::utils::jsonQuoted(input.eventKind)+",\"values\":"+points+",\"model\":";
     out+=input.modelId.empty()?"null":"{\"id\":"+service::utils::jsonQuoted(input.modelId)+"}";
     input.valuesJson=out+'}';
+    // 重传有新的接收时间和连接，但设备、采样时间与完整报文身份不变。
+    // 在分发前统一身份，使直连与 EdgeNode 接入共用持久化及消息幂等边界。
+    if (input.protocol == "SL651" && !input.deviceId.empty() &&
+        input.observedAtMs > 0 && !input.rawPayloads.empty() &&
+        std::all_of(input.rawPayloads.begin(), input.rawPayloads.end(),
+                    [](const auto& bytes) { return !bytes.empty(); })) {
+        const auto identity = "sl651-report-v1:" + service::utils::jsonQuoted(input.deviceId) +
+            ':' + std::to_string(input.observedAtMs) + ':' +
+            message::rawPayloadsJson(input.rawPayloads);
+        auto hash = service::utils::sha256(identity);
+        hash[12] = '8';
+        hash[16] = "89ab"[service::common::hexDigit(hash[16]) & 3];
+        input.messageId = hash.substr(0, 8) + '-' + hash.substr(8, 4) + '-' +
+            hash.substr(12, 4) + '-' + hash.substr(16, 4) + '-' + hash.substr(20, 12);
+    }
 }
 }
