@@ -47,7 +47,7 @@ class UserService {
         if (status && (*status == "enabled" || *status == "disabled"))
             options.where = std::move(options.where) && UserEntity::column<"status">() == *status;
         const auto total = static_cast<std::int64_t>(
-            co_await c.db().getRepository<UserEntity>().count(options.where));
+            co_await c.db().getRepository<UserEntity>().count(options));
         auto query = userSelect(c.pool());
         query.where(options.where.expression(query, UserEntity::tableName(), "u"))
             .orderBy(query.column("id", "u"), ruvia::DbOrderDirection::kDesc)

@@ -48,7 +48,7 @@ class DeptService {
                                                : DeptEntity::column<"parent_id">() == *parentId);
         }
         const auto total = static_cast<std::int64_t>(
-            co_await c.db().getRepository<DeptEntity>().count(options.where));
+            co_await c.db().getRepository<DeptEntity>().count(options));
         auto query = departmentSelect(c.pool());
         query.where(options.where.expression(query, DeptEntity::tableName(), "d"))
             .orderBy(query.column("sort_order", "d"))

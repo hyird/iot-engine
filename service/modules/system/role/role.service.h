@@ -42,7 +42,7 @@ class RoleService {
         ruvia::DbFindOptions countOptions;
         countOptions.where = std::move(where);
         const auto total = static_cast<std::int64_t>(
-            co_await c.db().getRepository<RoleEntity>().count(countOptions.where));
+            co_await c.db().getRepository<RoleEntity>().count(countOptions));
         auto query = roleSelect(c.pool());
         query.where(countOptions.where.expression(query))
             .orderBy(query.column("id"), ruvia::DbOrderDirection::kDesc)
