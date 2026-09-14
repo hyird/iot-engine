@@ -2,7 +2,7 @@ import type { UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage } from '@/hooks/useMutation';
 import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import * as api from './gb28181.api';
-import type { GB28181 } from './gb28181.types';
+import type { GB28181, PlaybackCandidate, PlaybackCapabilities } from './gb28181.types';
 export const gb28181Keys = {
     all: ['gb28181'] as const,
     health: () => ['gb28181', 'health'] as const,
@@ -86,20 +86,6 @@ export function useGb28181RecordingStop() {
     });
 }
 
-export type PlaybackCandidate = {
-    decoder?: 'native-only' | 'software-only';
-    engine: 'adaptive-flv' | 'hls' | 'mpegts';
-    label: string;
-    mediaType?: 'flv' | 'mpegts';
-    url: string;
-};
-export type PlaybackCapabilities = {
-    hls: boolean;
-    mpegts: boolean;
-    mseH265: boolean;
-    softwareVideo: boolean;
-    webCodecs: boolean;
-};
 const compact = (candidates: Array<PlaybackCandidate | null>) =>
     candidates.filter((candidate): candidate is PlaybackCandidate => Boolean(candidate?.url));
 export function buildPlaybackCandidates(

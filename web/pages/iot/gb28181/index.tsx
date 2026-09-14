@@ -46,7 +46,6 @@ import { usePermission } from '@/hooks/usePermission';
 import type { AdaptiveFlvPlayer } from '@/lib/gb28181/adaptiveFlvPlayer';
 import { createAdaptiveFlvPlayer } from '@/lib/gb28181/adaptiveFlvPlayer';
 import { useAuthStore } from '@/store/authStore';
-import type { PlaybackCandidate, PlaybackCapabilities } from './gb28181.service';
 import {
     buildPlaybackCandidates,
     renewPreview,
@@ -64,7 +63,7 @@ import {
     useGb28181RenameChannel,
     useGb28181RenameDevice,
 } from './gb28181.service';
-import type { GB28181 } from './gb28181.types';
+import type { GB28181, PlaybackCandidate, PlaybackCapabilities } from './gb28181.types';
 export const onlineTag = (online: boolean) => (
     <Badge status={online ? 'processing' : 'default'} text={online ? '在线' : '离线'} />
 );

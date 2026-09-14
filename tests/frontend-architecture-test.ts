@@ -71,3 +71,8 @@ test('frontend source dependencies are acyclic', () => {
     };
     for (const file of sources) visit(file);
 });
+
+test('public page data types are defined in the owning types file', () => {
+    const violations = sources.filter(file => repoPath(file).startsWith('web/pages/') && file.endsWith('.service.ts') && /^export\s+(?:interface|type)\s/m.test(readFileSync(file, 'utf8'))).map(repoPath);
+    expect(violations).toEqual([]);
+});

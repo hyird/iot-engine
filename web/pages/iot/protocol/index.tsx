@@ -53,14 +53,6 @@ import {
 import { FormModal } from '@/components/FormModal';
 import { PageContainer } from '@/components/PageContainer';
 import { usePermissions } from '@/hooks/usePermission';
-import type {
-    DeviceTypeFormValues,
-    FormCondition,
-    FormMapItem,
-    DeviceTypeModalRef as importedDeviceTypeModalRef,
-    RegisterModalRef,
-    SaveMutation,
-} from './protocol.service';
 import {
     AREA_CARD_GRID_STYLE,
     areaAddressHintMap,
@@ -91,13 +83,14 @@ import {
     getConnectionModeTip,
     getConnectionTypeLabel,
     getDataTypeSize,
-    getDeviceTypeFormValues,
     getGroupKey,
+    getModbusDeviceTypeFormValues,
     getPlcPreset,
     getQuantityByDataType,
     getRegisterTypeMeta,
+    getS7DeviceTypeFormValues,
+    getSl651DeviceTypeFormValues,
     inferConnectionMode,
-    ModbusConfigurationNormalizeGroupName,
     normalizeAreaTypeForPlcModel,
     normalizeGroupName,
     normalizeModbusRegisters,
@@ -114,10 +107,6 @@ import {
     RegisterTypeOptions,
     reorderItemsByGroupOrder,
     reorderItemsWithinGroupOrder,
-    S7ConfigurationGenerateId,
-    S7ConfigurationGetDeviceTypeFormValues,
-    Sl651FormGenerateId,
-    Sl651FormGetDeviceTypeFormValues,
     sortSectionsByOrder,
     supportsBitAddress,
     supportsS7Decimals,
@@ -129,7 +118,18 @@ import {
     validateTsapValue,
     writableAreaTypes,
 } from './protocol.service';
-import type { Modbus, ModbusDictConfig, Protocol, S7, SL651 } from './protocol.types';
+import type {
+    DeviceTypeFormValues,
+    FormCondition,
+    FormMapItem,
+    Modbus,
+    DeviceTypeModalRef as ModbusDeviceTypeModalRef,
+    ModbusDictConfig,
+    Protocol,
+    RegisterModalRef,
+    S7,
+    SL651,
+} from './protocol.types';
 import { STORAGE_POLICY_OPTIONS } from './protocol.types';
 /**
  * Modbus 设备类型编辑弹窗（从 ModbusConfig 抽离）
@@ -138,7 +138,7 @@ export interface DeviceTypeModalProps {
     onSuccess?: () => void;
     saveMutation: ReturnType<typeof useProtocolConfigSave>;
 }
-export const DeviceTypeModal = forwardRef<importedDeviceTypeModalRef, DeviceTypeModalProps>(
+export const DeviceTypeModal = forwardRef<ModbusDeviceTypeModalRef, DeviceTypeModalProps>(
     ({ onSuccess, saveMutation }, ref) => {
         const [open, setOpen] = useState(false);
         const [mode, setMode] = useState<'create' | 'edit'>('create');
@@ -154,7 +154,7 @@ export const DeviceTypeModal = forwardRef<importedDeviceTypeModalRef, DeviceType
         useEffect(() => {
             if (!open) return;
             form.resetFields();
-            form.setFieldsValue(getDeviceTypeFormValues(current));
+            form.setFieldsValue(getModbusDeviceTypeFormValues(current));
         }, [current, form, open]);
         const handleOk = async () => {
             const values = await form.validateFields();
@@ -191,7 +191,7 @@ export const DeviceTypeModal = forwardRef<importedDeviceTypeModalRef, DeviceType
                 confirmLoading={saveMutation.isPending}
                 forceRender
             >
-                <Form form={form} layout="vertical" initialValues={getDeviceTypeFormValues()}>
+                <Form form={form} layout="vertical" initialValues={getModbusDeviceTypeFormValues()}>
                     <Divider titlePlacement="start" plain className="!my-4">
                         基础信息
                     </Divider>
@@ -386,10 +386,10 @@ export const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
             const config = currentType?.config as Modbus.Config | undefined;
             const groups = new Set<string>();
             for (const register of config?.registers || []) {
-                const group = ModbusConfigurationNormalizeGroupName(register.group);
+                const group = normalizeGroupName(register.group);
                 if (group) groups.add(group);
             }
-            const currentGroup = ModbusConfigurationNormalizeGroupName(current?.group);
+            const currentGroup = normalizeGroupName(current?.group);
             if (currentGroup) groups.add(currentGroup);
             return Array.from(groups);
         }, [current?.group, typeId, types]);
@@ -403,7 +403,7 @@ export const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
                 if (register) {
                     form.setFieldsValue({
                         ...register,
-                        group: ModbusConfigurationNormalizeGroupName(register.group) || undefined,
+                        group: normalizeGroupName(register.group) || undefined,
                         scale: typeof register.scale === 'number' ? register.scale : 1,
                         boolLabel0: register.dictConfig?.items?.find((i) => i.key === '0')?.label,
                         boolLabel1: register.dictConfig?.items?.find((i) => i.key === '1')?.label,
@@ -485,7 +485,7 @@ export const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
                     : Number.isFinite(inputScale) && inputScale > 0
                       ? inputScale
                       : 1;
-            const group = ModbusConfigurationNormalizeGroupName(values.group);
+            const group = normalizeGroupName(values.group);
             const registerFields = {
                 name: values.name,
                 group: group || undefined,
@@ -1409,7 +1409,7 @@ const ModbusConfigPage = () => {
     // 当前选中的设备类型 ID（用户手动选择）
     const [selectedTypeId, setSelectedTypeId] = useState<string>();
     // Modal refs
-    const deviceTypeModalRef = useRef<importedDeviceTypeModalRef>(null);
+    const deviceTypeModalRef = useRef<ModbusDeviceTypeModalRef>(null);
     const registerModalRef = useRef<RegisterModalRef>(null);
     // 设备类型列表（使用 useMemo 保持引用稳定）
     const types = useMemo(() => configList ?? [], [configList]);
@@ -2006,7 +2006,7 @@ export function AreaModal({
             startBit: nextStartBit,
             decimals: nextDecimals,
             dataType: resolvedDataType,
-            id: mode === 'create' ? S7ConfigurationGenerateId() : initialValue?.id || values.id,
+            id: mode === 'create' ? generateId() : initialValue?.id || values.id,
             size,
             writable: isWritableArea ? values.writable : false,
         };
@@ -2296,7 +2296,7 @@ const S7ConfigPage = () => {
     useEffect(() => {
         if (!deviceTypeModalOpen) return;
         createForm.resetFields();
-        createForm.setFieldsValue(S7ConfigurationGetDeviceTypeFormValues(editingDeviceTypeItem));
+        createForm.setFieldsValue(getS7DeviceTypeFormValues(editingDeviceTypeItem));
     }, [createForm, deviceTypeModalOpen, editingDeviceTypeItem]);
     const activeConfig = (activeType?.config as S7.Config) ?? null;
     const activeAreas = activeConfig?.areas ?? [];
@@ -2819,7 +2819,7 @@ const S7ConfigPage = () => {
                 <Form
                     form={createForm}
                     layout="vertical"
-                    initialValues={S7ConfigurationGetDeviceTypeFormValues()}
+                    initialValues={getS7DeviceTypeFormValues()}
                 >
                     <Divider titlePlacement="start" plain className="!my-4">
                         基础信息
@@ -3115,7 +3115,7 @@ const Sl651DeviceTypeModalDeviceTypeModal = forwardRef<
     useEffect(() => {
         if (!open) return;
         form.resetFields();
-        form.setFieldsValue(Sl651FormGetDeviceTypeFormValues(current));
+        form.setFieldsValue(getSl651DeviceTypeFormValues(current));
     }, [current, form, open]);
     const handleOk = async () => {
         const values = await form.validateFields();
@@ -3144,7 +3144,7 @@ const Sl651DeviceTypeModalDeviceTypeModal = forwardRef<
             confirmLoading={saveMutation.isPending}
             forceRender
         >
-            <Form form={form} layout="vertical" initialValues={Sl651FormGetDeviceTypeFormValues()}>
+            <Form form={form} layout="vertical" initialValues={getSl651DeviceTypeFormValues()}>
                 <Divider titlePlacement="start" plain className="!my-4">
                     基础信息
                 </Divider>
@@ -3789,7 +3789,7 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
                 let newElements: SL651.Element[];
                 if (mode === 'create') {
                     const newElement: SL651.Element = {
-                        id: Sl651FormGenerateId(),
+                        id: generateId(),
                         ...elementFields,
                     };
                     newElements = [...(f.elements || []), newElement];
@@ -3926,7 +3926,7 @@ const FuncModal = forwardRef<FuncModalRef, FuncModalProps>(
             let newFuncs: SL651.Func[];
             if (mode === 'create') {
                 const newFunc: SL651.Func = {
-                    id: Sl651FormGenerateId(),
+                    id: generateId(),
                     funcCode: values.funcCode,
                     dir: values.dir,
                     name: values.name,
@@ -4155,7 +4155,7 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                         ele.length !== undefined
                 )
                 .map((ele: Partial<SL651.Element>) => ({
-                    id: ele.id || Sl651FormGenerateId(),
+                    id: ele.id || generateId(),
                     name: ele.name?.trim(),
                     group: normalizeGroupName(ele.group) || undefined,
                     guideHex: ele.guideHex?.trim(),
@@ -4330,7 +4330,7 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                                     type="dashed"
                                     onClick={() =>
                                         add({
-                                            id: Sl651FormGenerateId(),
+                                            id: generateId(),
                                             name: '',
                                             group: undefined,
                                             guideHex: '',
@@ -5073,3 +5073,5 @@ const SL651ConfigPage = () => {
 };
 
 export { ModbusConfigPage, S7ConfigPage, SL651ConfigPage };
+
+export type SaveMutation = ReturnType<typeof useProtocolConfigSave>;

@@ -1,4 +1,4 @@
-import type { PageParams } from '@/utils/pagination';
+import type { PageParams, PaginatedResult } from '@/utils/pagination';
 import type { Link } from '../link/link.types';
 import type { Protocol, StoragePolicy } from '../protocol/protocol.types';
 /**
@@ -593,3 +593,5 @@ export namespace Device {
     export type HistoryRecordQuery = DeviceHistoryRecordQuery;
     export type CommandStatus = DeviceCommandStatus;
 }
+
+export type DeviceListResult = PaginatedResult<Device.Overview>;

@@ -2,7 +2,6 @@ import type { UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import { parseDateTime } from '@/utils/dateTime';
-import type { PaginatedResult } from '@/utils/pagination';
 import { createQueryKeys } from '@/utils/query';
 import { SnapshotStream } from '@/utils/snapshot-stream';
 import * as api from './device.api';
@@ -253,6 +252,5 @@ export function useAgentEndpoints(
         enabled: options?.enabled ?? !!agentId,
     });
 }
-export type DeviceListResult = PaginatedResult<Device.Overview>;
 
 export { getDeviceDetail } from './device.api';

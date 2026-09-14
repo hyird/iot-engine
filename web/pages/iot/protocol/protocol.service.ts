@@ -9,17 +9,21 @@ import type { PaginatedResult } from '@/utils/pagination';
 import { createQueryKeys } from '@/utils/query';
 import * as api from './protocol.api';
 import { protocolCreateSchema } from './protocol.schema';
-import type { Modbus, Protocol, S7, SL651, StoragePolicy } from './protocol.types';
+import type {
+    DeviceTypeFormValues,
+    GroupSection,
+    Modbus,
+    PlcConnectionPreset,
+    Protocol,
+    RegisterGroupSection,
+    S7,
+    SaveProtocolConfigParams,
+    SL651,
+} from './protocol.types';
 export const normalizeGroupName = (group?: string) => group?.trim() || '';
 export const UNGROUPED_GROUP_KEY = '__ungrouped__';
 export const getGroupKey = (group?: string) => normalizeGroupName(group) || UNGROUPED_GROUP_KEY;
-export interface GroupSection<T> {
-    key: string;
-    label: string;
-    count: number;
-    items: T[];
-    firstIndex: number;
-}
+
 export const buildGroupSections = <
     T extends {
         group?: string;
@@ -137,14 +141,7 @@ export const protocolQueryKeys = {
     ...createQueryKeys('protocol-configs'),
     list: (params?: Protocol.Query) => ['protocol-configs', 'list', params] as const,
 };
-export type SaveProtocolConfigParams =
-    | (Protocol.CreateDto & {
-          id?: undefined;
-      })
-    | (Protocol.UpdateDto & {
-          id: string;
-          protocol?: Protocol.Type;
-      });
+
 export function useProtocolConfigList(
     params?: Protocol.Query,
     options?: Omit<UseQueryOptions<Protocol.Item[]>, 'queryKey' | 'queryFn'>
@@ -197,9 +194,6 @@ export function useProtocolConfigDelete() {
     });
 }
 
-export interface GroupOption {
-    value: string;
-}
 export const useFilterableGroupOptions = (groups: string[]) => {
     const [searchText, setSearchText] = useState('');
     const [showAllOnOpen, setShowAllOnOpen] = useState(false);
@@ -481,7 +475,7 @@ export const numberOrDefault = (value: unknown, fallback: number) => {
     return Number.isFinite(numericValue) ? numericValue : fallback;
 };
 /** 设备类型表单的默认值，也用于兼容缺少新字段的历史配置。 */
-export const getDeviceTypeFormValues = (data?: Protocol.Item) => {
+export const getModbusDeviceTypeFormValues = (data?: Protocol.Item) => {
     const config = data?.config as Modbus.Config | undefined;
     const packet = normalizePacketConfig(config?.packet);
     return {
@@ -607,14 +601,7 @@ export const normalizeModbusRegisters = (registers: unknown): Modbus.Register[] 
 export const REGISTER_CARD_GRID_STYLE = {
     gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
 };
-export const ModbusConfigurationNormalizeGroupName = (group?: string) => group?.trim() || '';
-export interface RegisterGroupSection {
-    key: string;
-    label: string;
-    count: number;
-    registers: Modbus.Register[];
-    typeCounts: Record<Modbus.RegisterType, number>;
-}
+
 export const buildRegisterGroupSections = (
     registers: Modbus.Register[]
 ): RegisterGroupSection[] => {
@@ -678,50 +665,15 @@ export const checkAddressConflict = (
     return { conflict: false };
 };
 /** 设备类型 Modal Ref */
-export interface DeviceTypeModalRef {
-    open: (mode: 'create' | 'edit', data?: Protocol.Item) => void;
-}
+
 /** 寄存器 Modal Ref */
-export interface RegisterModalRef {
-    open: (mode: 'create' | 'edit', typeId: string, register?: Modbus.Register) => void;
-}
 
 /**
  * S7 协议配置
  */
-export type DeviceTypeFormValues = {
-    deviceType: string;
-    plcModel: S7.PlcModel;
-    connectionMode: S7.ConnectionMode;
-    connectionType: S7.ConnectionType;
-    rack: number;
-    slot: number;
-    localTSAP: string;
-    remoteTSAP: string;
-    probeMode: S7.ProbeMode;
-    handshakeTimeout: number;
-    directProbeTimeout: number;
-    readInterval: number;
-    storagePolicy: StoragePolicy;
-    commandFastReadDuration: number;
-    commandFastReadInterval: number;
-    enabled: boolean;
-    remark?: string;
-};
-export type PlcConnectionPreset = {
-    value: S7.PlcModel;
-    label: string;
-    mode: S7.ConnectionMode;
-    rack: number;
-    slot: number;
-    localTSAP: string;
-    remoteTSAP: string;
-};
+
 /** 生成唯一 ID（兼容非安全上下文） */
-export const S7ConfigurationGenerateId = (): string =>
-    '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (c) =>
-        (+c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (+c / 4)))).toString(16)
-    );
+
 export const defaultConfig = (): S7.Config => ({
     deviceType: '',
     plcModel: 'S7-1200',
@@ -862,9 +814,7 @@ export const getConnectionFormValues = (plcModel: S7.PlcModel, connection?: S7.C
     };
 };
 /** 设备类型表单默认值与编辑回填值。 */
-export const S7ConfigurationGetDeviceTypeFormValues = (
-    data?: Protocol.Item
-): DeviceTypeFormValues => {
+export const getS7DeviceTypeFormValues = (data?: Protocol.Item): DeviceTypeFormValues => {
     const config = data?.config as S7.Config | undefined;
     const plcModel = config?.plcModel ?? 'S7-1200';
     const numberOrDefault = (value: unknown, fallback: number) => {
@@ -1183,14 +1133,11 @@ export const getAreaAddressRangeText = (area: S7.Area) => {
 /** 编码类型列表 */
 export const EncodeList: SL651.EncodeType[] = ['BCD', 'TIME_YYMMDDHHMMSS', 'JPEG', 'DICT', 'HEX'];
 /** 生成唯一 ID（兼容非安全上下文） */
-export const Sl651FormGenerateId = (): string =>
-    '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (c) =>
-        (+c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (+c / 4)))).toString(16)
-    );
+
 /** SaveMutation 类型（避免每个 Modal 重复定义） */
-export type SaveMutation = ReturnType<typeof useProtocolConfigSave>;
+
 /** 设备类型表单默认值与编辑回填值。 */
-export const Sl651FormGetDeviceTypeFormValues = (data?: Protocol.Item) => {
+export const getSl651DeviceTypeFormValues = (data?: Protocol.Item) => {
     const config = data?.config as SL651.Config | undefined;
     return {
         name: data?.name ?? '',
@@ -1201,19 +1148,7 @@ export const Sl651FormGetDeviceTypeFormValues = (data?: Protocol.Item) => {
     };
 };
 /** 表单中的条件数据（可能不完整） */
-export interface FormCondition {
-    bitIndex?: string;
-    bitValue?: string;
-}
+
 /** 表单中的映射项数据（可能不完整） */
-export interface FormMapItem {
-    key?: string;
-    label?: string;
-    value?: string;
-    dependsOn?: {
-        operator?: 'AND' | 'OR';
-        conditions?: FormCondition[];
-    };
-}
 
 export { getRevisions } from './protocol.api';

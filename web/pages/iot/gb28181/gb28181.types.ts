@@ -140,3 +140,19 @@ export namespace GB28181 {
     }
     export type PtzAction = 'left' | 'right' | 'up' | 'down' | 'zoomin' | 'zoomout' | 'stop';
 }
+
+export type PlaybackCandidate = {
+    decoder?: 'native-only' | 'software-only';
+    engine: 'adaptive-flv' | 'hls' | 'mpegts';
+    label: string;
+    mediaType?: 'flv' | 'mpegts';
+    url: string;
+};
+
+export type PlaybackCapabilities = {
+    hls: boolean;
+    mpegts: boolean;
+    mseH265: boolean;
+    softwareVideo: boolean;
+    webCodecs: boolean;
+};

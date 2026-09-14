@@ -322,3 +322,85 @@ export namespace S7 {
     export type Connection = S7Connection;
     export type Config = S7Config;
 }
+
+export interface GroupSection<T> {
+    key: string;
+    label: string;
+    count: number;
+    items: T[];
+    firstIndex: number;
+}
+
+export type SaveProtocolConfigParams =
+    | (Protocol.CreateDto & {
+          id?: undefined;
+      })
+    | (Protocol.UpdateDto & {
+          id: string;
+          protocol?: Protocol.Type;
+      });
+
+export interface GroupOption {
+    value: string;
+}
+
+export interface RegisterGroupSection {
+    key: string;
+    label: string;
+    count: number;
+    registers: Modbus.Register[];
+    typeCounts: Record<Modbus.RegisterType, number>;
+}
+
+export interface DeviceTypeModalRef {
+    open: (mode: 'create' | 'edit', data?: Protocol.Item) => void;
+}
+
+export interface RegisterModalRef {
+    open: (mode: 'create' | 'edit', typeId: string, register?: Modbus.Register) => void;
+}
+
+export type DeviceTypeFormValues = {
+    deviceType: string;
+    plcModel: S7.PlcModel;
+    connectionMode: S7.ConnectionMode;
+    connectionType: S7.ConnectionType;
+    rack: number;
+    slot: number;
+    localTSAP: string;
+    remoteTSAP: string;
+    probeMode: S7.ProbeMode;
+    handshakeTimeout: number;
+    directProbeTimeout: number;
+    readInterval: number;
+    storagePolicy: StoragePolicy;
+    commandFastReadDuration: number;
+    commandFastReadInterval: number;
+    enabled: boolean;
+    remark?: string;
+};
+
+export type PlcConnectionPreset = {
+    value: S7.PlcModel;
+    label: string;
+    mode: S7.ConnectionMode;
+    rack: number;
+    slot: number;
+    localTSAP: string;
+    remoteTSAP: string;
+};
+
+export interface FormCondition {
+    bitIndex?: string;
+    bitValue?: string;
+}
+
+export interface FormMapItem {
+    key?: string;
+    label?: string;
+    value?: string;
+    dependsOn?: {
+        operator?: 'AND' | 'OR';
+        conditions?: FormCondition[];
+    };
+}
