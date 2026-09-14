@@ -1,13 +1,9 @@
 // Transactional checks in the disposable architecture fixture only.
 import assert from 'node:assert/strict';
-const db=new Bun.SQL('postgres://architecture_test@127.0.0.1:55439/iot_architecture');
+const db=new Bun.SQL(process.env.ARCHITECTURE_DATABASE_URL ?? 'postgres://architecture_test@127.0.0.1:55439/iot_architecture');
 const admin='00000000-0000-7000-8000-000000000002',platform='00000000-0000-7000-8000-000000000001';
 const id=()=>crypto.randomUUID();const rollback=new Error('fixture rollback');
 try { await db.begin(async tx=>{
-    // Allows running before the new executable has installed migration 0040.
-    const schema=await Bun.file('service/config/schema.h').text();
-    const guard=schema.match(/0040_channel_transport_guard", R"sql\(([\s\S]*?)\)sql"/)![1];
-    await tx.unsafe(guard);
     const node=id(),channel=id(),model=id(),first=id(),second=id();
     await tx`INSERT INTO edge_node(id,platform_id,imei,enrollment_status) VALUES(${node},${platform},'999999999999999','approved')`;
     await tx`INSERT INTO protocol_config(id,name,protocol,config,created_by) VALUES(${model},${model},'Modbus','{"registers":[],"storagePolicy":"report"}'::jsonb,${admin})`;
@@ -15,8 +11,8 @@ try { await db.begin(async tx=>{
         VALUES(${channel},${channel},'Modbus','edge',${node},'{"transport":"serial","interface":"/dev/ttyS1","baud_rate":9600,"data_bits":8,"stop_bits":1,"parity":"none","rs485":true}'::jsonb,${admin})`;
     for(const [device,slave] of [[first,1],[second,2]] as const) {
         const params={device_code:String(slave),slave_id:slave,modbus_mode:'TCP'};
-        await tx`INSERT INTO device(id,name,link_id,protocol_config_id,protocol_revision,protocol_params,created_by)
-            VALUES(${device},${device},${channel},${model},1,${params}::jsonb,${admin})`;
+        await tx`INSERT INTO device(id,name,link_id,protocol_config_id,protocol_params,created_by)
+            VALUES(${device},${device},${channel},${model},${params}::jsonb,${admin})`;
     }
     const devices=await tx`SELECT protocol_params FROM device WHERE link_id=${channel}`;
     assert.equal(devices.length,2);
@@ -33,11 +29,8 @@ try { await db.begin(async tx=>{
     assert.equal((await tx`SELECT 1 FROM link WHERE id=${channel} AND deleted_at IS NULL`).length,1);
     await rejects(()=>tx`UPDATE link SET deleted_at=NOW() WHERE id=${channel}`,/changing channel identity/);
     await tx`UPDATE protocol_config SET config='{"registers":[],"storagePolicy":"change"}'::jsonb WHERE id=${model}`;
-    const pinned=await tx`SELECT revision,config FROM device_model WHERE device_id=${second}`;
-    assert.equal(Number(pinned[0].revision),1);assert.equal(pinned[0].config.storagePolicy,'report');
-    await tx`UPDATE device SET protocol_revision=2 WHERE id=${second}`;
     assert.equal((await tx`SELECT config FROM device_model WHERE device_id=${second}`)[0].config.storagePolicy,'change');
     throw rollback;
 }); }catch(error){if(error!==rollback)throw error;
-    console.log('PASS shared serial channels, slave uniqueness, transport guards, deletion and explicit revision upgrade');
+    console.log('PASS shared serial channels, slave uniqueness, transport guards, deletion and current device type updates');
 }finally{await db.close();}

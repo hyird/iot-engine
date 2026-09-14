@@ -8,6 +8,7 @@
 #include <ruvia/web/db/DbMigration.h>
 #include <utility>
 #include "service/config/model-revisions.h"
+#include "service/config/current_device_model.h"
 #include "service/config/channels.h"
 
 namespace service::config {
@@ -1795,6 +1796,7 @@ END $schema$;
         auto result = schema.compile("0045_vpn_windows_address_reuse");
         return std::move(result.front());
     }(),
+    ruvia::DbMigration({.id="0046_current_device_model", .sql=std::string(kCurrentDeviceModelMigration)}),
     };
     // Only audited original digests may transition to their equivalent ORM definitions.
     // This transaction runs before normal checksum validation; all other drift still fails.

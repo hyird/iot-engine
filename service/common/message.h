@@ -189,7 +189,6 @@ struct ParsedDeviceMessage {
     std::string linkId;
     std::string deviceId;
     std::string modelId;
-    std::int64_t modelRevision = 0;
     std::string deviceCode;
     std::string protocol;
     std::string connectionId;
@@ -494,7 +493,6 @@ inline std::vector<StreamField> parsedFields(const ParsedDeviceMessage& message)
             {"schema_version", std::string(kMessageSchemaVersion)},
             {"aggregate_id", message.deviceId},
             {"model_id", message.modelId},
-             {"model_revision", std::to_string(message.modelRevision)},
              {"event_kind", message.eventKind},
             {"message_id", message.messageId},
             {"causation_id", message.causationId},
@@ -533,9 +531,6 @@ inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
     if (parsed.eventKind != "sample" && parsed.eventKind != "image")
         throw std::runtime_error("Invalid telemetry event kind");
     parsed.modelId = std::string(message.get("model_id"));
-    parsed.modelRevision = message.get("model_revision").empty() ? 0 : integer("model_revision");
-    if (parsed.modelId.empty() != (parsed.modelRevision == 0) || parsed.modelRevision < 0)
-        throw std::runtime_error("Invalid telemetry model reference");
     if (!parsed.modelId.empty() && !service::common::isUuid(parsed.modelId))
         throw std::runtime_error("Invalid telemetry model UUID");
     parsed.messageId = std::string(require("message_id"));

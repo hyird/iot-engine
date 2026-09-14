@@ -24,16 +24,29 @@ int main() {
         const auto once=input.valuesJson;
         service::telemetry::contract::normalize(input);
         require(input.valuesJson==once,"normalization is not idempotent");
-        input.modelId="00000000-0000-7000-8000-000000000002";input.modelRevision=7;
+        input.modelId="00000000-0000-7000-8000-000000000002";
         input.valuesJson=R"({"values":{"image":{"type":"JPEG","value":"INVALID_JPEG"}}})";
         service::telemetry::contract::normalize(input);
         require(input.eventKind=="image","JPEG was not classified as media");
         require(input.valuesJson.find("\"quality\":\"invalid\"")!=std::string::npos,"invalid media quality lost");
-        require(input.valuesJson.find("\"revision\":7")!=std::string::npos,"actual model revision lost");
+        require(input.valuesJson.find("\"revision\"")==std::string::npos,"removed model revision was emitted");
         input.valuesJson=R"({"values":{"bad":{"unit":"C"}}})";
         bool rejected=false;
         try {service::telemetry::contract::normalize(input);}catch(const std::runtime_error&){rejected=true;}
         require(rejected,"missing values silently accepted");
+        input.protocol = "SL651";
+        input.valuesJson = R"({"function_code":"2F","values":{ }})";
+        service::telemetry::contract::normalize(input);
+        require(service::telemetry::contract::isSl651EmptyReport(input), "SL651 heartbeat was treated as an element sample");
+        input.valuesJson = R"({"function_code":"32","values":{}})";
+        require(service::telemetry::contract::isSl651EmptyReport(input), "SL651 empty report would create an empty history row");
+        input.valuesJson = R"({"function_code":"32","values":{"flow":{"value":0}}})";
+        require(!service::telemetry::contract::isSl651EmptyReport(input), "SL651 zero measurement was discarded");
+        input.valuesJson = R"({"values":{"flow":{"value":null}}})";
+        require(!service::telemetry::contract::isSl651EmptyReport(input), "SL651 missing-quality point was discarded");
+        input.protocol = "Modbus";
+        input.valuesJson = R"({"values":{}})";
+        require(!service::telemetry::contract::isSl651EmptyReport(input), "SL651 empty report rule leaked to another protocol");
         std::cout<<"telemetry contract tests passed\n";
         return 0;
     } catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}

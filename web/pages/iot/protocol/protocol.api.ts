@@ -40,19 +40,7 @@ export const getDetail = (id: string) =>
 export const create = (data: Protocol.CreateDto, config?: RequestConfig) =>
     request.post<void>(BASE, protocolCreateSchema.parse(data), config);
 export const update = (id: string, data: Protocol.UpdateDto) =>
-    request.post<void>(
-        `${BASE}/${protocolIdSchema.parse(id)}/revisions`,
-        protocolUpdateSchema.parse(data)
-    );
-export const getRevisions = (id: string) =>
-    createSnapshotStream<
-        {
-            revision: number;
-            name: string;
-            origin: string;
-            created_at: string;
-        }[]
-    >(`${BASE}/${protocolIdSchema.parse(id)}/revisions`);
+    request.put<void>(`${BASE}/${protocolIdSchema.parse(id)}`, protocolUpdateSchema.parse(data));
 export const remove = (id: string) => request.delete<void>(`${BASE}/${protocolIdSchema.parse(id)}`);
 export const getOptions = (protocol: Protocol.Type) =>
     createSnapshotStream<PaginatedResult<Protocol.Option>>(

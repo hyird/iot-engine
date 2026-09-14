@@ -690,7 +690,6 @@ class Session final : public ProtocolSession,
         message.linkId = link_.id;
         message.deviceId = device.id;
         message.modelId = device.modelId;
-        message.modelRevision = device.modelRevision;
         message.deviceCode = device.code;
         message.protocol = "SL651";
         message.connectionId = connectionId_;
@@ -728,7 +727,6 @@ class Session final : public ProtocolSession,
             json << ",\"is_multi_packet\":true,\"total_packets\":" << frame.totalPackets;
         json << ",\"values\":{";
         bool first = true;
-        std::size_t searchOffset = 0;
         for (const auto& element : device.elements) {
             if (element.functionCode != functionCode ||
                 element.responseElement != useResponseElements)
@@ -737,7 +735,7 @@ class Session final : public ProtocolSession,
             if (guide.empty())
                 continue;
             const auto found =
-                std::search(frame.body.begin() + static_cast<std::ptrdiff_t>(searchOffset),
+                std::search(frame.body.begin(),
                             frame.body.end(), guide.begin(), guide.end());
             if (found == frame.body.end())
                 continue;
@@ -757,7 +755,6 @@ class Session final : public ProtocolSession,
                  << detail::jsonEscape(value) << "\",\"unit\":\""
                  << detail::jsonEscape(element.unit) << "\",\"type\":\""
                  << detail::jsonEscape(element.encoding) << "\"}";
-            searchOffset = valueOffset + length;
         }
         json << "}}";
         return json.str();

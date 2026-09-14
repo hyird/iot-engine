@@ -336,8 +336,7 @@ class CommandService final {
                          operationSource.value("ACCEPTED"),
                          operationSource.cast(operationSource.value(elements),
                                               ruvia::DbDataType::kJsonb),
-                         operationSource.column(service::command::entities::DeviceEntity::columnName<"protocol_config_id">()),
-                         operationSource.column(service::command::entities::DeviceEntity::columnName<"protocol_revision">())})
+                         operationSource.column(service::command::entities::DeviceEntity::columnName<"protocol_config_id">())})
                 .from(service::command::entities::DeviceEntity::tableName())
                 .where(operationSource.binary(
                     operationSource.column(service::command::entities::DeviceEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual,
@@ -347,7 +346,7 @@ class CommandService final {
             operationQuery
                 .insertInto(service::command::entities::CommandOperationEntity::tableName(),
                             {"id", "request_id", "ordinal", "device_id", "device_code",
-                             "protocol", "status", "elements", "model_id", "model_revision"})
+                             "protocol", "status", "elements", "model_id"})
                 .insertFrom(operationSource);
             (void)co_await transaction.execute(operationQuery);
 

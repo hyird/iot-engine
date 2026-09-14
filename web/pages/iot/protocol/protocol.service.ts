@@ -1150,5 +1150,3 @@ export const getSl651DeviceTypeFormValues = (data?: Protocol.Item) => {
 /** 表单中的条件数据（可能不完整） */
 
 /** 表单中的映射项数据（可能不完整） */
-
-export { getRevisions } from './protocol.api';

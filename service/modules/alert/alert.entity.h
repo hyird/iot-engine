@@ -98,8 +98,6 @@ RUVIA_DB_ENTITY(DeviceEntity, "device",
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz}),
     RUVIA_DB_COLUMN(deleted_at, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz, .nullable = true}),
-    RUVIA_DB_COLUMN(protocol_revision, std::int64_t,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kBigInt}),
     RUVIA_DB_COLUMN(protocol_address, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kText}))
 
@@ -151,8 +149,6 @@ RUVIA_DB_ENTITY(ProtocolConfigEntity, "protocol_config",
     RUVIA_DB_COLUMN(updated_at, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz}),
     RUVIA_DB_COLUMN(deleted_at, std::pmr::string,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz, .nullable = true}),
-    RUVIA_DB_COLUMN(revision, std::int64_t,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kBigInt}))
+        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz, .nullable = true}))
 
 } // namespace service::alert::entities

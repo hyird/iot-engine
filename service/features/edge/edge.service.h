@@ -2855,11 +2855,9 @@ protected:
             if (device == node->second.end())
                 continue;
             message::ParsedDeviceMessage parsed;
-            if (record.model_id().size() == 16 && record.model_revision() > 0 &&
-                record.model_revision() <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+            if (record.model_id().size() == 16) {
                 parsed.modelId = protocol::uuidText(record.model_id());
-                parsed.modelRevision = static_cast<std::int64_t>(record.model_revision());
-            } else if (!record.model_id().empty() || record.model_revision() != 0) {
+            } else if (!record.model_id().empty()) {
                 throw std::runtime_error("invalid edge telemetry model reference");
             }
             parsed.messageId = protocol::uuidText(record.record_id());

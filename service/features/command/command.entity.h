@@ -57,9 +57,7 @@ RUVIA_DB_ENTITY(CommandOperationEntity, "command_operation",
     RUVIA_DB_COLUMN(completed_at, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz, .nullable = true}),
     RUVIA_DB_COLUMN(model_id, std::pmr::string,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kUuid, .nullable = true}),
-    RUVIA_DB_COLUMN(model_revision, std::int64_t,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kBigInt, .nullable = true}))
+        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kUuid, .nullable = true}))
 
 RUVIA_DB_ENTITY(DeviceEntity, "device",
     RUVIA_DB_COLUMN(id, std::pmr::string,
@@ -86,8 +84,6 @@ RUVIA_DB_ENTITY(DeviceEntity, "device",
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz}),
     RUVIA_DB_COLUMN(deleted_at, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz, .nullable = true}),
-    RUVIA_DB_COLUMN(protocol_revision, std::int64_t,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kBigInt}),
     RUVIA_DB_COLUMN(protocol_address, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kText}))
 
@@ -96,8 +92,6 @@ RUVIA_DB_ENTITY(DeviceModelEntity, "device_model",
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kUuid, .nullable = true}),
     RUVIA_DB_COLUMN(id, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kUuid, .nullable = true}),
-    RUVIA_DB_COLUMN(revision, std::int64_t,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kBigInt, .nullable = true}),
     RUVIA_DB_COLUMN(protocol, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kVarchar, .nullable = true, .length = 20}),
     RUVIA_DB_COLUMN(name, std::pmr::string,

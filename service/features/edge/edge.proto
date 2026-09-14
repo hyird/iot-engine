@@ -475,7 +475,9 @@ message TelemetryRecord {
   DeviceStatus device_status = 11;
   // Absent in deployed v1 firmware: never infer provenance from current config.
   bytes model_id = 12 [(nanopb).max_size = 16];
-  uint64 model_revision = 13;
+  // 已移除历史版本；保留字段编号，防止旧固件报文被误解释。
+  reserved 13;
+  reserved "model_revision";
 }
 
 message TelemetryBatch {

@@ -87,35 +87,6 @@ class ProtocolService {
         co_return co_await detailData(c, id);
     }
 
-    ruvia::Task<std::string> revisions(ruvia::Context& c, std::string_view id) {
-        co_await service::middleware::requirePermission(c, "iot:protocol:query");
-        (void)co_await detailData(c, id);
-        ruvia::DbQuery query(c.pool());
-        query.select({query.cast(query.column("revision"), ruvia::DbDataType::kText),
-                      query.column("name"), query.column("origin"),
-                      query.cast(query.call("iot_utc_timestamp", {query.column("created_at")}),
-                                 ruvia::DbDataType::kText)})
-            .from(ProtocolRevisionEntity::tableName())
-            .where(query.binary(query.column("id"), ruvia::DbBinaryOperator::kEqual,
-                                query.cast(query.value(id), ruvia::DbDataType::kUuid)))
-            .orderBy(query.column("revision"), ruvia::DbOrderDirection::kDesc);
-        const auto rows = co_await c.db().query(query);
-        std::string result = "[";
-        bool first = true;
-        for (const auto& row : rows) {
-            if (!first)
-                result.push_back(',');
-            first = false;
-            result += "{\"revision\":" + std::string(row[0].value().value_or("0")) +
-                      ",\"name\":" + service::utils::jsonQuoted(row[1].value().value_or("")) +
-                      ",\"origin\":" + service::utils::jsonQuoted(row[2].value().value_or("")) +
-                      ",\"created_at\":" +
-                      service::utils::jsonQuoted(row[3].value().value_or("")) + "}";
-        }
-        result.push_back(']');
-        co_return result;
-    }
-
     ruvia::Task<std::string> options(ruvia::Context& c, const std::string& protocol,
                                      std::int64_t page, std::int64_t pageSize) {
         co_await service::middleware::requirePermission(c, "iot:protocol:query");
@@ -133,8 +104,7 @@ class ProtocolService {
                                : toInt(countRows.front()[0].value().value_or(std::string_view{}));
         ruvia::DbQuery query(c.pool());
         query.select({query.cast(query.column("id"), ruvia::DbDataType::kText),
-                      query.column("name"),
-                      query.cast(query.column("revision"), ruvia::DbDataType::kText)})
+                      query.column("name")})
             .from(ProtocolConfigEntity::tableName())
             .where(ProtocolConfigEntity::column<"deleted_at">().isNull().expression(query))
             .andWhere(query.binary(query.column("enabled"), ruvia::DbBinaryOperator::kEqual,
@@ -152,8 +122,7 @@ class ProtocolService {
                 result.push_back(',');
             first = false;
             result += "{\"id\":" + service::utils::jsonQuoted(row[0].value().value_or("")) +
-                      ",\"name\":" + service::utils::jsonQuoted(row[1].value().value_or("")) +
-                      ",\"revision\":" + std::string(row[2].value().value_or("0")) + "}";
+                      ",\"name\":" + service::utils::jsonQuoted(row[1].value().value_or("")) + "}";
         }
         result += "],\"total\":" + std::to_string(total) + ",\"page\":" + std::to_string(page) +
                   ",\"pageSize\":" + std::to_string(pageSize) + "}";
@@ -372,7 +341,6 @@ class ProtocolService {
         ruvia::DbQuery query(resource);
         query.select({query.cast(query.column("id"), ruvia::DbDataType::kText),
                       query.column("protocol"), query.column("name"), query.column("enabled"),
-                      query.cast(query.column("revision"), ruvia::DbDataType::kText),
                       query.column("config"), service::common::database::emptyText(query, "remark"),
                       query.cast(query.call("iot_utc_timestamp", {query.column("created_at")}),
                                  ruvia::DbDataType::kText),
@@ -390,13 +358,12 @@ class ProtocolService {
                              service::utils::jsonQuoted(row[1].value().value_or("")) +
                              ",\"name\":" + service::utils::jsonQuoted(row[2].value().value_or("")) +
                              ",\"enabled\":" + (enabled ? "true" : "false") +
-                             ",\"revision\":" + std::string(row[4].value().value_or("0")) +
-                             ",\"config\":" + std::string(row[5].value().value_or("{}")) +
-                             ",\"remark\":" + service::utils::jsonQuoted(row[6].value().value_or("")) +
+                             ",\"config\":" + std::string(row[4].value().value_or("{}")) +
+                             ",\"remark\":" + service::utils::jsonQuoted(row[5].value().value_or("")) +
                              ",\"created_at\":" +
-                             service::utils::jsonQuoted(row[7].value().value_or("")) +
+                             service::utils::jsonQuoted(row[6].value().value_or("")) +
                              ",\"updated_at\":" +
-                             service::utils::jsonQuoted(row[8].value().value_or("")) + "}";
+                             service::utils::jsonQuoted(row[7].value().value_or("")) + "}";
         return result;
     }
 

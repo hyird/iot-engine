@@ -173,6 +173,10 @@ class TelemetryService {
             parsedMessages.push_back(std::move(parsed));
         }
         const auto redis = context.redis();
+        if (consumer == Consumer::History || consumer == Consumer::Delivery) {
+            std::erase_if(parsedMessages, contract::isSl651EmptyReport);
+            if (parsedMessages.empty()) co_return;
+        }
         switch (consumer) {
             case Consumer::History:
                 (void)co_await persist(context, parsedMessages, std::vector<bool>(parsedMessages.size(), false));
@@ -186,14 +190,20 @@ class TelemetryService {
                 break;
             case Consumer::Alerts: {
                 const auto metadata = co_await service::alert::metadata::activity(context, parsedMessages);
-                std::vector<std::string> previous;
-                for (const auto& parsed : parsedMessages) {
-                    previous.push_back(co_await prepareAlert(context, parsed));
-                }
-                co_await service::alert::AlertEvaluationService::evaluateTelemetry(context, parsedMessages, previous, metadata.devices);
                 if (metadata.offlineRules) {
                     co_await service::alert::metadata::schedule(redis, parsedMessages);
                 }
+                auto active = metadata.devices;
+                std::vector<std::string> previous;
+                for (std::size_t index = 0; index < parsedMessages.size(); ++index) {
+                    if (contract::isSl651EmptyReport(parsedMessages[index])) {
+                        active[index] = false;
+                        previous.emplace_back("{}");
+                    } else {
+                        previous.push_back(co_await prepareAlert(context, parsedMessages[index]));
+                    }
+                }
+                co_await service::alert::AlertEvaluationService::evaluateTelemetry(context, parsedMessages, previous, active);
                 break;
             }
             case Consumer::Dispatch:
@@ -323,10 +333,9 @@ class TelemetryService {
         Query records(resource);
         selectColumns(records, { "report_time", "id", "device_id", "link_id", "connection_id", "protocol", "source", "occurred_at", "data", "raw_payload_hex" });
         const auto model = records.binary(records.column("data"), Op::kJsonGet, records.value("model"));
-        records.addSelect(records.cast(records.binary(model, Op::kJsonGetText, records.value("id")), Type::kUuid))
-            .addSelect(records.cast(records.binary(model, Op::kJsonGetText, records.value("revision")), Type::kBigInt)).from("filtered").andWhere(records.column("accepted"));
+        records.addSelect(records.cast(records.binary(model, Op::kJsonGetText, records.value("id")), Type::kUuid)).from("filtered").andWhere(records.column("accepted"));
         Query inserted(resource);
-        inserted.insertInto(service::telemetry::persistence::DeviceDataEntity::tableName(), { "report_time", "id", "device_id", "link_id", "connection_id", "protocol", "source", "occurred_at", "data", "raw_payload_hex", "model_id", "model_revision" })
+        inserted.insertInto(service::telemetry::persistence::DeviceDataEntity::tableName(), { "report_time", "id", "device_id", "link_id", "connection_id", "protocol", "source", "occurred_at", "data", "raw_payload_hex", "model_id" })
             .insertFrom(records).onConflict({ .columns = { "id", "report_time" }, .doNothing = true }).returning({ inserted.column(service::telemetry::persistence::DeviceDataEntity::columnName<"device_id">()) });
         Query storage(resource);
         const auto lastStored = storage.aggregate("max", { storage.column("last_stored") });

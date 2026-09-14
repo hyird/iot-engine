@@ -3777,7 +3777,7 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
             const elementFields = {
                 name: values.name,
                 group: normalizeGroupName(values.group) || undefined,
-                guideHex: values.guideHex,
+                guideHex: values.guideHex.replace(/\s/g, ''),
                 encode: values.encode,
                 length: values.length,
                 digits: values.digits,
@@ -3843,6 +3843,7 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
                     <Form.Item
                         label="引导符（HEX）"
                         name="guideHex"
+                        normalize={(value: string) => value.replace(/\s/g, '')}
                         rules={[{ required: true, message: '请输入引导符' }]}
                     >
                         <Input placeholder="例如：01 或 F3F3" />
@@ -4150,7 +4151,7 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                 .filter(
                     (ele: Partial<SL651.Element>) =>
                         ele.name?.trim() &&
-                        ele.guideHex?.trim() &&
+                        ele.guideHex?.replace(/\s/g, '') &&
                         ele.encode &&
                         ele.length !== undefined
                 )
@@ -4158,7 +4159,7 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                     id: ele.id || generateId(),
                     name: ele.name?.trim(),
                     group: normalizeGroupName(ele.group) || undefined,
-                    guideHex: ele.guideHex?.trim(),
+                    guideHex: ele.guideHex?.replace(/\s/g, ''),
                     encode: ele.encode,
                     length: ele.length,
                     digits: Number.isFinite(ele.digits) ? ele.digits : 0,
@@ -4266,6 +4267,9 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                                                     </Form.Item>
                                                     <Form.Item
                                                         name={[field.name, 'guideHex']}
+                                                        normalize={(value: string) =>
+                                                            value.replace(/\s/g, '')
+                                                        }
                                                         rules={[
                                                             { required: true, message: '必填' },
                                                         ]}

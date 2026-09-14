@@ -51,11 +51,10 @@ import DeviceCard from '@/components/DeviceCard';
 import { FormModal } from '@/components/FormModal';
 import { PageContainer } from '@/components/PageContainer';
 import { usePermissions } from '@/hooks/usePermission';
-import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import { formatDateTime } from '@/utils/dateTime';
 import { useLinkOptions } from '../link/link.service';
 import type { Link } from '../link/link.types';
-import { getRevisions, useProtocolConfigOptions } from '../protocol/protocol.service';
+import { useProtocolConfigOptions } from '../protocol/protocol.service';
 import {
     getDeviceDetail,
     isDeviceOnline,
@@ -352,16 +351,10 @@ export function DeviceFormModal({
 }: Props) {
     const [form] = Form.useForm<DeviceFormValues>();
     const linkId = Form.useWatch('link_id', form);
-    const modelId = Form.useWatch('protocol_config_id', form);
     const channel = linkOptions.find((value) => value.id === linkId);
     const protocol = channel?.protocol;
     const { data: models } = useProtocolConfigOptions(protocol ?? 'Modbus', {
         enabled: open && !!protocol,
-    });
-    const { data: revisions = [] } = useSnapshotQuery({
-        queryKey: ['protocol-configs', 'revisions', modelId],
-        queryFn: () => getRevisions(modelId ?? ''),
-        enabled: open && !!modelId,
     });
     const { data: groups = [] } = useDeviceGroupTree();
     const flatten = (
@@ -455,7 +448,6 @@ export function DeviceFormModal({
                         onChange={() =>
                             form.setFieldsValue({
                                 protocol_config_id: undefined,
-                                protocol_revision: undefined,
                                 target_id: undefined,
                             })
                         }
@@ -475,16 +467,6 @@ export function DeviceFormModal({
                     <Select
                         disabled={!protocol}
                         options={models?.list.map((m) => ({ value: m.id, label: m.name }))}
-                        onChange={() => form.setFieldValue('protocol_revision', undefined)}
-                    />
-                </Form.Item>
-                <Form.Item name="protocol_revision" label="已发布版本" rules={[{ required: true }]}>
-                    <Select
-                        disabled={!modelId}
-                        options={revisions.map((r) => ({
-                            value: r.revision,
-                            label: `v${r.revision} · ${r.name}`,
-                        }))}
                     />
                 </Form.Item>
                 {protocol === 'Modbus' && (
@@ -1533,26 +1515,10 @@ const DeviceHistoryModal = ({
                     );
                 },
             })),
-            {
-                title: '采集',
-                dataIndex: 'source',
-                key: 'source',
-                width: 120,
-                render: (_: unknown, record) => {
-                    const detail = [
-                        record.protocol ? `协议：${record.protocol}` : '',
-                        record.functionCode ? `功能码：${record.functionCode}` : '',
-                    ]
-                        .filter(Boolean)
-                        .join('，');
-                    const tag = <Tag className="!mr-0">{record.source || '-'}</Tag>;
-                    return detail ? <Tooltip title={detail}>{tag}</Tooltip> : tag;
-                },
-            },
         ];
         return tableColumns;
     }, [pointColumns]);
-    const tableWidth = Math.max(760, 180 + pointColumns.length * 150 + 120);
+    const tableWidth = Math.max(760, 180 + pointColumns.length * 150);
     return (
         <Modal
             open

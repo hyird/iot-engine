@@ -285,10 +285,13 @@ void testLegacyTelemetryWithoutModelRevision() {
                 record.device_id() == std::string(16, '\x02') &&
                 record.observed_at_ms() == 123 && record.raw_payload().size() == 2,
             "deployed telemetry fields changed");
-    require(record.model_id().empty() && record.model_revision() == 0,
-            "legacy telemetry acquired a fabricated model revision");
+    require(record.model_id().empty(),
+            "legacy telemetry acquired a fabricated model reference");
     require(record.SerializeAsString() == wire,
             "new optional model fields changed legacy wire encoding");
+    wire.append("\x68\x07", 2);
+    require(record.ParseFromString(wire) && record.observed_at_ms() == 123,
+            "removed version field broke deployed telemetry decoding");
 }
 
 void testPublicBaseUrlConfiguration() {

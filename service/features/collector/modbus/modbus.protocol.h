@@ -1136,7 +1136,6 @@ class Session final : public ProtocolSession,
         message.linkId = link_.id;
         message.deviceId = device.id;
         message.modelId = device.modelId;
-        message.modelRevision = device.modelRevision;
         message.deviceCode = device.code;
         message.protocol = "Modbus";
         message.connectionId = connectionId_;

@@ -44,8 +44,6 @@ RUVIA_DB_ENTITY(DeviceEntity, "device",
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz}),
     RUVIA_DB_COLUMN(deleted_at, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz, .nullable = true}),
-    RUVIA_DB_COLUMN(protocol_revision, std::int64_t,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kBigInt}),
     RUVIA_DB_COLUMN(protocol_address, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kText}))
 
@@ -73,9 +71,7 @@ RUVIA_DB_ENTITY(DeviceDataEntity, "device_data",
     RUVIA_DB_COLUMN(raw_payload_hex, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kJsonb}),
     RUVIA_DB_COLUMN(model_id, std::pmr::string,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kUuid, .nullable = true}),
-    RUVIA_DB_COLUMN(model_revision, std::int64_t,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kBigInt, .nullable = true}))
+        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kUuid, .nullable = true}))
 
 RUVIA_DB_ENTITY(DeviceDataIngestStateEntity, "device_data_ingest_state",
     RUVIA_DB_COLUMN(device_id, std::pmr::string,

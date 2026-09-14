@@ -22,9 +22,8 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
     RUVIA_GET_SSE("/", list, ProtocolListQueryValidator);
     RUVIA_GET_SSE("/options", options, ProtocolListQueryValidator);
     RUVIA_GET_SSE("/:id", detail, ProtocolIdParamsValidator);
-    RUVIA_GET_SSE("/:id/revisions", revisions, ProtocolIdParamsValidator);
     RUVIA_POST("/", create);
-    RUVIA_POST("/:id/revisions", publish, ProtocolIdParamsValidator);
+    RUVIA_PUT("/:id", update, ProtocolIdParamsValidator);
     RUVIA_DELETE("/:id", remove, ProtocolIdParamsValidator);
     RUVIA_ROUTES_END
 
@@ -80,22 +79,11 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
         co_return c.json(service::common::operation(c, "创建成功"));
     }
 
-    ruvia::Task<void> revisions(ruvia::Context& c) {
-        co_await service::live::serve(c, "protocol", [this, &c]() {
-            return revisionsSnapshot(c);
-        });
-    }
-
-    ruvia::Task<std::string> revisionsSnapshot(ruvia::Context& c) {
-        const auto modelId = id(c);
-        co_return service::live::data(c, co_await protocolService().revisions(c, modelId));
-    }
-
-    ruvia::Task<ruvia::HttpResponse> publish(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> update(ruvia::Context& c) {
         const auto payload = co_await c.req().jsonValue();
         const auto modelId = id(c);
         co_await protocolService().update(c, modelId, payload);
-        co_return c.json(service::common::operation(c, "新版本已发布，设备需显式切换版本"));
+        co_return c.json(service::common::operation(c, "更新成功"));
     }
 
     ruvia::Task<ruvia::HttpResponse> remove(ruvia::Context& c) {

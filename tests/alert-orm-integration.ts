@@ -73,7 +73,7 @@ async function publish(value: number, observedAt: number, messageId = crypto.ran
         'message_id', messageId, 'causation_id', messageId, 'link_id', link,
         'device_id', device, 'device_code', '1', 'protocol', 'Modbus',
         'connection_id', device, 'occurred_at_ms', String(observedAt),
-        'observed_at_ms', String(observedAt), 'model_id', model, 'model_revision', '1',
+        'observed_at_ms', String(observedAt), 'model_id', model,
         'storage_policy', 'change', 'source', 'collector', 'online_window_ms', '60000',
         'values_json', JSON.stringify({ values: { [point]: { name: 'temperature', value } } }),
         'raw_payload_hex', '[]',
@@ -89,8 +89,8 @@ try {
         VALUES(${model},${prefix},'Modbus',${{ registers: [{ id: point, name: 'temperature', registerType: 'HOLDING_REGISTER', dataType: 'UINT16', address: 0, quantity: 1 }], storagePolicy: 'change' }}::jsonb,${admin})`;
     await db`INSERT INTO link(id,name,protocol,endpoint,created_by,execution,status)
         VALUES(${link},${prefix},'Modbus','{"transport":"tcp","mode":"TCP Server","ip":"0.0.0.0","port":55209,"targets":[]}'::jsonb,${admin},'collector','disabled')`;
-    await db`INSERT INTO device(id,name,link_id,protocol_config_id,protocol_revision,protocol_params,created_by)
-        VALUES(${device},${prefix},${link},${model},1,'{"device_code":"1","slave_id":1,"modbus_mode":"TCP"}'::jsonb,${admin})`;
+    await db`INSERT INTO device(id,name,link_id,protocol_config_id,protocol_params,created_by)
+        VALUES(${device},${prefix},${link},${model},'{"device_code":"1","slave_id":1,"modbus_mode":"TCP"}'::jsonb,${admin})`;
     const threshold = await rule('threshold', { type: 'threshold', elementKey: point, operator: '>', value: '50' });
     const rate = await rule('rate', { type: 'rate_of_change', elementKey: point, changeRate: '50', changeDirection: 'rise' });
     const bit = await rule('bit', { type: 'threshold', elementKey: point, operator: '==', value: '1', bitIndex: 0 });

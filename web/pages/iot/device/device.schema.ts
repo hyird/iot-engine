@@ -52,7 +52,6 @@ export const saveDeviceSchema = z.object({
     link_id: z.uuid({ error: '请选择有效通道' }),
     target_id: z.string().trim().max(100).optional(),
     protocol_config_id: z.uuid({ error: '请选择有效设备类型' }),
-    protocol_revision: z.number().int().positive('请选择设备类型版本'),
     group_id: z.uuid({ error: '请选择有效设备分组' }).nullish(),
     status: statusSchema.default('enabled'),
     online_timeout: z.coerce.number().int().min(1).max(86400).default(300),

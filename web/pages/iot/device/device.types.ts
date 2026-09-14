@@ -110,7 +110,6 @@ export interface DeviceItem extends EdgeConnection {
     target_id?: string;
     /** 关联协议配置 ID */
     protocol_config_id: string;
-    protocol_revision: number;
     /** 启用状态 */
     status: DeviceStatus;
     /** 所属分组 ID */
@@ -177,7 +176,6 @@ export interface CreateDeviceDto {
     link_id?: string;
     target_id?: string;
     protocol_config_id: string;
-    protocol_revision: number;
     group_id?: string | null;
     status?: DeviceStatus;
     /** 在线超时时间（秒），默认 300 秒（5分钟） */
@@ -232,7 +230,6 @@ export interface DeviceStaticData extends EdgeConnection {
     link_id: string;
     target_id?: string;
     protocol_config_id: string;
-    protocol_revision: number;
     status: DeviceStatus;
     group_id?: string | null;
     online_timeout?: number;

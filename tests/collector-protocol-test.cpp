@@ -1027,6 +1027,53 @@ void testSl651() {
     require(first(commandActions, collector::ProtocolActionKind::FailCommand).reason == "sl651_negative_ack", "SL651 negative ACK did not fail with a precise reason");
 }
 
+void testSl651ElementOrder() {
+    collector::RuntimeSnapshot snapshot;
+    snapshot.links.push_back({ .id = "sl-link", .name = "SL", .mode = "TCP Server", .protocol = "SL651", .status = "enabled" });
+    collector::DeviceDefinition device;
+    device.id = "sl-device";
+    device.code = "0001000102";
+    device.linkId = "sl-link";
+    device.protocol = "SL651";
+    device.elements = {
+        { .id = "total", .name = "Total", .functionCode = "32", .guideHex = "FFB028", .encoding = "BCD", .length = 5 },
+        { .id = "velocity", .name = "Velocity", .functionCode = "32", .guideHex = "371B", .encoding = "BCD", .length = 3, .digits = 3 },
+        { .id = "water", .name = "Water", .functionCode = "32", .guideHex = "3923", .encoding = "BCD", .length = 4, .digits = 3 },
+        { .id = "flow", .name = "Flow", .functionCode = "32", .guideHex = "272B", .encoding = "BCD", .length = 5, .digits = 3 }
+    };
+    const auto frame = service::message::fromHex(
+        "7E7E010001000102FFFA32003102001D260914134500F1F1000100010249F0F02609141345392300000587371B000125272B0000000000FFB0280000000003036A65");
+    // 同一真实报文在所有配置顺序下都必须保留全部指标。
+    std::sort(device.elements.begin(), device.elements.end(), [](const auto& left, const auto& right) { return left.id < right.id; });
+    do {
+        snapshot.devices = { device };
+        collector::ProtocolEngine engine(runtimes());
+        engine.reload(snapshot);
+        (void)engine.connected({ .connectionId = "sl-connection", .linkId = "sl-link", .sessionEpoch = 1 });
+        const auto actions = engine.consume({ .messageId = "sl-ingress", .linkId = "sl-link", .connectionId = "sl-connection", .occurredAtMs = 1000, .payload = frame });
+        const auto& parsed = first(actions, collector::ProtocolActionKind::PublishParsed).parsed;
+        for (const auto expected : {
+                 "\"total\":{\"name\":\"Total\",\"value\":\"0000000003\"",
+                 "\"velocity\":{\"name\":\"Velocity\",\"value\":\"000.125\"",
+                 "\"water\":{\"name\":\"Water\",\"value\":\"00000.587\"",
+                 "\"flow\":{\"name\":\"Flow\",\"value\":\"0000000.000\"" })
+            require(parsed.valuesJson.find(expected) != std::string::npos, "SL651 real report lost an element with reordered configuration");
+        require(parsed.rawPayloads == std::vector<std::vector<std::uint8_t>>{ frame }, "SL651 real report raw payload changed");
+    } while (std::next_permutation(device.elements.begin(), device.elements.end(), [](const auto& left, const auto& right) { return left.id < right.id; }));
+    require(collector::sl651::detail::hexBytes("39 23").empty(), "SL651 noncanonical HEX guide was accepted");
+    require(collector::sl651::detail::hexBytes("39 X3").empty(), "SL651 invalid HEX guide was accepted");
+    require(collector::sl651::detail::hexBytes("39 2").empty(), "SL651 odd-length HEX guide was accepted");
+    collector::ProtocolEngine heartbeatEngine(runtimes());
+    heartbeatEngine.reload(snapshot);
+    (void)heartbeatEngine.connected({ .connectionId = "heartbeat-connection", .linkId = "sl-link", .sessionEpoch = 1 });
+    const auto heartbeat = service::message::fromHex("7E7E010001000102FFFA2F000802001D26091413461003A0BA");
+    const auto heartbeatActions = heartbeatEngine.consume({ .messageId = "heartbeat-ingress", .linkId = "sl-link", .connectionId = "heartbeat-connection", .occurredAtMs = 1789364770343, .payload = heartbeat });
+    require(has(heartbeatActions, collector::ProtocolActionKind::BindDevice), "SL651 heartbeat did not bind the device");
+    const auto& activity = first(heartbeatActions, collector::ProtocolActionKind::PublishParsed).parsed;
+    require(activity.valuesJson.find("\"values\":{}") != std::string::npos, "SL651 heartbeat fabricated element values");
+    require(activity.observedAtMs == 1789364770000 && activity.onlineWindowMs > 0, "SL651 heartbeat lost its online activity timing");
+}
+
 void testSl651AllEncodingsAndFunctionCodes() {
     collector::ElementDefinition element;
     element.encoding = "BCD";
@@ -2890,6 +2937,7 @@ int main() {
         run("TCP close during pending write", testTcpCloseDuringPendingWrite);
         run("station scope and instance identity", testStationScopeAndInstanceIdentity);
         run("sl651", testSl651);
+        run("sl651 element order", testSl651ElementOrder);
         run("sl651 encodings", testSl651AllEncodingsAndFunctionCodes);
         run("sl651 multi-packet images", testSl651MultiPacketImages);
         run("modbus", testModbus);

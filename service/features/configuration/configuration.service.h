@@ -241,7 +241,7 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
             deviceQuery.coalesce({ deviceQuery.nullIf(jsonText(config, "readInterval"), deviceQuery.value("")), deviceQuery.value("1") }),
             defaultText(config, "storagePolicy", "report"), defaultText(config, "commandFastReadDuration", "60"),
             defaultText(config, "commandFastReadInterval", "1"), defaultText(packet, "mergeGap", "100"),
-            defaultText(packet, "maxQuantity", "125"), deviceQuery.cast(deviceQuery.column(service::configuration::persistence::DeviceModelEntity::columnName<"id">(), "p"), Type::kText), deviceQuery.column(service::configuration::persistence::DeviceModelEntity::columnName<"revision">(), "p") })
+            defaultText(packet, "maxQuantity", "125"), deviceQuery.cast(deviceQuery.column(service::configuration::persistence::DeviceModelEntity::columnName<"id">(), "p"), Type::kText) })
         .from(service::configuration::persistence::DeviceEntity::tableName(), "d")
         .join(ruvia::DbJoinType::kInner, service::configuration::persistence::LinkEntity::tableName(),
             deviceQuery.binary(deviceQuery.column(service::configuration::persistence::LinkEntity::columnName<"id">(), "l"), Op::kEqual, deviceQuery.column(service::configuration::persistence::DeviceEntity::columnName<"link_id">(), "d")), "l")
@@ -295,7 +295,6 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
         device.modbusMergeGap = cellInt(row, 28);
         device.modbusMaxQuantity = cellInt(row, 29);
         device.modelId = cell(row, 30);
-        device.modelRevision = cellInt(row, 31);
         snapshot.devices.push_back(std::move(device));
     }
     std::unordered_map<std::string_view, std::size_t> deviceIndexes;

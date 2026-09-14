@@ -39,8 +39,8 @@ try {
     await db`INSERT INTO protocol_config(id,name,protocol,config,created_by) VALUES(${model},${model},'Modbus',${config}::jsonb,${admin})`;
     await db`INSERT INTO link(id,name,protocol,endpoint,created_by,execution,status)
         VALUES(${link},${link},'Modbus','{"transport":"tcp","mode":"TCP Server","ip":"0.0.0.0","port":55199,"targets":[]}'::jsonb,${admin},'collector','disabled')`;
-    await db`INSERT INTO device(id,name,link_id,protocol_config_id,protocol_revision,protocol_params,created_by)
-        VALUES(${device},${device},${link},${model},1,'{"device_code":"1","slave_id":1,"modbus_mode":"TCP"}'::jsonb,${admin})`;
+    await db`INSERT INTO device(id,name,link_id,protocol_config_id,protocol_params,created_by)
+        VALUES(${device},${device},${link},${model},'{"device_code":"1","slave_id":1,"modbus_mode":"TCP"}'::jsonb,${admin})`;
     // The API create path initializes these before acknowledging creation.
     await redis.send('HSET', [
         `iot:v2:runtime:device:${device}`,
@@ -74,8 +74,6 @@ try {
         now,
         'model_id',
         model,
-        'model_revision',
-        '1',
         'storage_policy',
         'report',
         'source',
@@ -120,9 +118,8 @@ try {
         'history consumer did not recover after lock release'
     );
     const rows =
-        await db`SELECT model_id,model_revision,data FROM device_data WHERE device_id=${device}`;
+        await db`SELECT model_id,data FROM device_data WHERE device_id=${device}`;
     assert.equal(rows[0].model_id, model);
-    assert.equal(Number(rows[0].model_revision), 1);
     assert.equal(rows[0].data.values[point].value_type, 'number');
     assert.equal(rows[0].data.values[point].quality, 'good');
     assert.equal(rows[0].data.values[point].sample_time_ms, Number(now));

@@ -64,7 +64,6 @@ struct ElementDefinition {
 struct DeviceDefinition {
     std::string id;
     std::string modelId;
-    std::int64_t modelRevision = 0;
     std::string code;
     std::string name;
     std::string linkId;

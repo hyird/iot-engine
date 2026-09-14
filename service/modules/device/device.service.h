@@ -283,7 +283,7 @@ class DeviceAccessService {
                                                             "protocol_config_id", "group_id",
                                                                     "status", "protocol_params", "remark",
                                                                     "created_by", "created_at", "updated_at",
-                                                            "deleted_at", "protocol_revision",
+                                                            "deleted_at",
                                                             "protocol_address",
                                                             "access_rank"}});
     }
@@ -781,8 +781,7 @@ class DeviceService {
                                                  ruvia::DbDataType::kJsonb),
                                            emptyPacket})})});
         insert.insertInto(service::device::entities::DeviceEntity::tableName(), {"id", "name", "link_id", "protocol_config_id", "group_id",
-                                      "status", "protocol_params", "remark", "created_by",
-                                      "protocol_revision"})
+                                      "status", "protocol_params", "remark", "created_by"})
             .values({DeviceAccessService::uuid(insert, id), insert.value(name),
                      DeviceAccessService::uuid(insert, linkId),
                      DeviceAccessService::uuid(insert, protocolConfigId),
@@ -790,8 +789,7 @@ class DeviceService {
                      protocolParams,
                      insert.nullIf(DeviceAccessService::text(insert, insert.value(remark)),
                                    insert.value("")),
-                     DeviceAccessService::uuid(insert, principal.userId),
-                     insert.value(static_cast<std::int64_t>(*body.get<"protocolRevision">()))});
+                     DeviceAccessService::uuid(insert, principal.userId)});
         (void)co_await transaction.execute(insert);
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "created", id);
         co_await transaction.commit();
@@ -902,9 +900,6 @@ class DeviceService {
         if (body.get<"groupId">())
             assign("group_id",
                    DeviceAccessService::nullableUuid(update, body.get<"groupId">()->view()));
-        if (body.get<"protocolRevision">())
-            assign("protocol_revision",
-                   update.value(static_cast<std::int64_t>(*body.get<"protocolRevision">())));
         if (body.get<"status">())
             assign("status", update.value(body.get<"status">()->view()));
         auto protocolParams = update.column(service::device::entities::DeviceEntity::columnName<"protocol_params">());
@@ -1608,8 +1603,7 @@ class DeviceService {
                                       query.nullIf(DeviceAccessService::jsonText(
                                                        query, endpoint, "parity"),
                                                    query.value(""))}}),
-                      query.caseWhen({{edgeExecution, rs485Enabled}}),
-                      query.column("protocol_revision", "d")});
+                      query.caseWhen({{edgeExecution, rs485Enabled}})});
     }
 
     template <typename Row>
@@ -1623,7 +1617,6 @@ class DeviceService {
         if (row[4].value().has_value())
             item.set<"targetId">(row[4].value().value_or(std::string_view{}));
         item.set<"protocolConfigId">(row[5].value().value_or(std::string_view{}));
-        item.set<"protocolRevision">(toInt(row[43].value().value_or(std::string_view{})));
         if (row[6].value().has_value())
             item.set<"groupId">(row[6].value().value_or(std::string_view{}));
         item.set<"status">(row[7].value().value_or(std::string_view{}));
@@ -2444,29 +2437,6 @@ class DeviceService {
         validatePacket(body.get<"registration">());
         const auto linkId = str(body.get<"linkId">());
         const auto configId = str(body.get<"protocolConfigId">());
-        const auto& modelRevision = body.get<"protocolRevision">();
-        if ((required || !configId.empty()) && !modelRevision)
-            service::common::fail(18003, "请选择设备类型版本", 400);
-        if (modelRevision && (configId.empty() || static_cast<std::int64_t>(*modelRevision) < 1))
-            service::common::fail(18003, "设备类型及版本必须一起指定", 400);
-        if (modelRevision) {
-            ruvia::DbQuery revisionQuery(c.pool());
-            revisionQuery
-                .select(DeviceAccessService::integer(revisionQuery, 1))
-                .from(service::device::entities::ProtocolRevisionEntity::tableName())
-                .where(andAll(revisionQuery,
-                              revisionQuery.binary(revisionQuery.column(service::device::entities::ProtocolRevisionEntity::columnName<"id">()),
-                                                   ruvia::DbBinaryOperator::kEqual,
-                                                   DeviceAccessService::uuid(revisionQuery,
-                                                                              configId)),
-                              revisionQuery.binary(
-                                  revisionQuery.column(service::device::entities::ProtocolRevisionEntity::columnName<"revision">()),
-                                  ruvia::DbBinaryOperator::kEqual,
-                                  revisionQuery.value(static_cast<std::int64_t>(*modelRevision)))));
-            const auto revision = co_await c.db().query(revisionQuery);
-            if (revision.empty())
-                service::common::fail(18003, "设备类型版本不存在", 400);
-        }
         if (required && linkId.empty()) service::common::fail(18003, "请选择通道", 400);
         if (required && configId.empty())
             service::common::fail(18003, "请选择设备类型", 400);

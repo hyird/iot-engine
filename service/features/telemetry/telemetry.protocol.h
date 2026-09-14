@@ -12,8 +12,19 @@ inline std::string_view field(std::string_view raw,std::string_view key) {
     fields(raw,[&](std::string_view name,std::string_view value){if(name==key)found=value;return true;});
     return found;
 }
-// Old firmware is adapted here using only fields it actually supplied. The
-// normalized envelope never guesses a model revision from mutable device state.
+// 无要素的 SL651 报文只表示设备活动，不能作为指标样本。
+inline bool isSl651EmptyReport(const message::ParsedDeviceMessage& input) {
+    if (input.protocol != "SL651") return false;
+    const auto values = field(input.valuesJson, "values");
+    bool empty = true;
+    fields(values, [&](std::string_view, std::string_view) {
+        empty = false;
+        return true;
+    });
+    return empty;
+}
+
+// 旧固件仅使用实际提供的字段进行适配。
 inline void normalize(message::ParsedDeviceMessage& input) {
     const auto root=ruvia::JsonValue::parse(input.valuesJson);
     if(!root || !root->isObject()) throw std::runtime_error("Telemetry must be a JSON object");
@@ -54,7 +65,7 @@ inline void normalize(message::ParsedDeviceMessage& input) {
     });
     input.eventKind=media?"image":"sample";
     out+="\"schema_version\":1,\"event_kind\":"+service::utils::jsonQuoted(input.eventKind)+",\"values\":"+points+",\"model\":";
-    out+=input.modelId.empty()?"null":"{\"id\":"+service::utils::jsonQuoted(input.modelId)+",\"revision\":"+std::to_string(input.modelRevision)+"}";
+    out+=input.modelId.empty()?"null":"{\"id\":"+service::utils::jsonQuoted(input.modelId)+"}";
     input.valuesJson=out+'}';
 }
 }

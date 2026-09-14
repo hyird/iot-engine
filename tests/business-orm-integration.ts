@@ -210,17 +210,17 @@ try {
     assert.equal(typeof protocolDetail.config.readInterval, 'number');
     assert.equal(protocolDetail.config.registers[0].writable, true);
 
-    const scientific = await fetch(`${apiBase}/v1/protocol/configs/${protocol}/revisions`, {
-        method: 'POST', headers: adminHeaders, body: '{"config":{"readInterval":1e3}}',
+    const scientific = await fetch(`${apiBase}/v1/protocol/configs/${protocol}`, {
+        method: 'PUT', headers: adminHeaders, body: '{"config":{"readInterval":1e3}}',
         signal: AbortSignal.timeout(15000),
     });
     assert.equal(scientific.status, 200, await scientific.text());
     assert.equal((await snapshot(`/v1/protocol/configs/${protocol}`)).config.readInterval, 1000);
-    await jsonRequest('POST', `/v1/protocol/configs/${protocol}/revisions`, {
+    await jsonRequest('PUT', `/v1/protocol/configs/${protocol}`, {
         config: { registers: [{ ...protocolConfig.registers[0], scale: '1000000000.000000000001' }] },
     }, 400);
 
-    await jsonRequest('POST', `/v1/protocol/configs/${protocol}/revisions`, {
+    await jsonRequest('PUT', `/v1/protocol/configs/${protocol}`, {
         enabled: false,
         config: { readInterval: 20, ormBooleanProbe: true },
         remark: `${tag}-updated-remark`,
@@ -271,16 +271,12 @@ try {
     assert.equal(updatedLink.endpoint.port, linkPort);
     console.log('PASS link ORM create, list, detail, update and numeric endpoint JSON');
 
-    const protocolRevisionRows = await db`SELECT revision FROM protocol_revision
-        WHERE id=${protocol} ORDER BY revision DESC LIMIT 1`;
-    const revision = Number(protocolRevisionRows[0]?.revision ?? 1);
     const createDevice = async (name: string, code: string, registrationContent: string) => {
         await jsonRequest('POST', '/v1/device', {
             name,
             device_code: code,
             link_id: link,
             protocol_config_id: protocol,
-            protocol_revision: revision,
             status: 'disabled',
             online_timeout: 120,
             remote_control: true,
