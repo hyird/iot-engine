@@ -1,4 +1,6 @@
-#include "service.h"
+#include "platform_vpn_api.h"
+#include "../common/product.h"
+#include "../common/text.h"
 #include "../common/win32.h"
 #include <winhttp.h>
 #include <array>
@@ -6,6 +8,17 @@
 #include <condition_variable>
 
 namespace iotvpn::service {
+std::string canonicalId(std::string_view text) {
+    if (text.size() != 36) throw std::invalid_argument("客户端或设备编号无效。");
+    std::string id(text);
+    for (std::size_t i = 0; i < id.size(); ++i) {
+        if (i == 8 || i == 13 || i == 18 || i == 23) { if (id[i] != '-') throw std::invalid_argument("客户端或设备编号无效。"); }
+        else if (!std::isxdigit(static_cast<unsigned char>(id[i]))) throw std::invalid_argument("客户端或设备编号无效。");
+        id[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(id[i])));
+    }
+    return id;
+}
+
 namespace {
 struct InternetHandle {
     HINTERNET value = nullptr;

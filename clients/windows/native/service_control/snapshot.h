@@ -1,6 +1,7 @@
 #pragma once
 #include "native_services.h"
-#include "../common/common.h"
+#include "../common/json.h"
+#include "../common/text.h"
 namespace iotvpn::service_control::services {
 inline Json encodeServiceSnapshot(const WindowsServiceSnapshot& s) {
     Json j;

@@ -1,4 +1,5 @@
-#include "../service/service.h"
+#include "../common/ipc.h"
+#include "../service/vpn_connection_service.h"
 #include <iostream>
 #include <chrono>
 int main(int argc, char** argv) {

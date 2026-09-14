@@ -20,6 +20,7 @@ import {
 } from 'antd';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import { useEffect, useMemo, useState } from 'react';
+import { FormModal } from '@/components/FormModal';
 import { PageContainer } from '@/components/PageContainer';
 import { StatusTag } from '@/components/StatusTag';
 import { useDebounceFn } from '@/hooks/useDebounceFn';
@@ -471,14 +472,13 @@ export function AlertRuleFormModal({
         );
     };
     return (
-        <Modal
+        <FormModal
             open={open}
             title={editing ? '编辑规则' : '新建规则'}
             onCancel={onClose}
             onOk={() => form.submit()}
             confirmLoading={saveMutation.isPending}
             destroyOnHidden
-            width={720}
         >
             <Form<AlertRuleFormValues> form={form} layout="vertical" onFinish={onFinish}>
                 <Form.Item name="id" hidden>
@@ -605,7 +605,7 @@ export function AlertRuleFormModal({
                     <Input.TextArea rows={2} placeholder="可选备注" />
                 </Form.Item>
             </Form>
-        </Modal>
+        </FormModal>
     );
 }
 
@@ -825,14 +825,13 @@ export function AlertTemplateFormModal({
         );
     };
     return (
-        <Modal
+        <FormModal
             open={open}
             title={editing ? '编辑模板' : '新建模板'}
             onCancel={onClose}
             onOk={() => form.submit()}
             confirmLoading={saveMutation.isPending}
             destroyOnHidden
-            width={720}
         >
             <Form<TemplateFormValues> form={form} layout="vertical" onFinish={onFinish}>
                 <Form.Item name="id" hidden>
@@ -962,7 +961,7 @@ export function AlertTemplateFormModal({
                     <InputNumber min={0} max={86400} className="w-full" />
                 </Form.Item>
             </Form>
-        </Modal>
+        </FormModal>
     );
 }
 

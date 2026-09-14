@@ -1,4 +1,7 @@
-#include "common.h"
+#include "files.h"
+#include "text.h"
+#include "ipc.h"
+#include "product.h"
 #include "win32.h"
 #include <sddl.h>
 #include <shlobj.h>
@@ -9,107 +12,6 @@
 #include <thread>
 
 namespace iotvpn {
-std::wstring utf16(std::string_view text) {
-    if (text.empty()) return {};
-    const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
-    if (!size) win32Error("Invalid UTF-8");
-    std::wstring out(size, L'\0');
-    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), out.data(), size);
-    return out;
-}
-std::string utf8(std::wstring_view text) {
-    if (text.empty()) return {};
-    const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
-    if (!size) win32Error("Invalid Unicode");
-    std::string out(size, '\0');
-    WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), out.data(), size, nullptr, nullptr);
-    return out;
-}
-std::filesystem::path stateDirectory() {
-    PWSTR value = nullptr;
-    if (FAILED(SHGetKnownFolderPath(FOLDERID_ProgramData, 0, nullptr, &value))) throw std::runtime_error("Cannot locate Windows state directory");
-    std::filesystem::path result(value); CoTaskMemFree(value);
-    return result / L"IotEngineVpn";
-}
-std::filesystem::path moduleDirectory() {
-    std::wstring path(32768, L'\0');
-    const DWORD count = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
-    if (!count || count >= path.size()) win32Error("Cannot locate application");
-    path.resize(count); return std::filesystem::path(path).parent_path();
-}
-Json parseJson(std::string_view text) {
-    if (text.size() > MaxMessageBytes) throw std::runtime_error("Message exceeds 1 MiB");
-    return Json::parse(text, [](int depth, Json::parse_event_t, Json&) {
-        if (depth > 16) throw std::runtime_error("JSON nesting exceeds limit");
-        return true;
-    });
-}
-
-std::vector<std::uint8_t> readFile(const std::filesystem::path& path, std::size_t limit) {
-    Handle file(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-    if (!file) win32Error("Cannot read file");
-    BY_HANDLE_FILE_INFORMATION info{};
-    if (!GetFileInformationByHandle(file.value, &info) || (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
-        throw std::runtime_error("File cannot be a reparse point");
-    LARGE_INTEGER length{};
-    if (!GetFileSizeEx(file.value, &length) || length.QuadPart < 0 || static_cast<std::uint64_t>(length.QuadPart) > limit)
-        throw std::runtime_error("File exceeds size limit");
-    std::vector<std::uint8_t> data(static_cast<std::size_t>(length.QuadPart));
-    DWORD read = 0;
-    if (!data.empty() && (!ReadFile(file.value, data.data(), static_cast<DWORD>(data.size()), &read, nullptr) || read != data.size()))
-        win32Error("Cannot read complete file");
-    return data;
-}
-void atomicWrite(const std::filesystem::path& path, std::span<const std::uint8_t> data) {
-    const auto temporary = std::filesystem::path(path.wstring() + L".new");
-    {
-        Handle file(CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-        if (!file) win32Error("Cannot stage file");
-        BY_HANDLE_FILE_INFORMATION info{};
-        if (!GetFileInformationByHandle(file.value, &info) || (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
-            throw std::runtime_error("State file cannot be a reparse point");
-        DWORD written = 0;
-        if (!WriteFile(file.value, data.data(), static_cast<DWORD>(data.size()), &written, nullptr) || written != data.size() || !FlushFileBuffers(file.value))
-            win32Error("Cannot save state");
-    }
-    if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) win32Error("Cannot replace state");
-}
-
-std::vector<std::uint8_t> protectData(std::span<const std::uint8_t> data, std::string_view entropy, std::wstring_view description) {
-    DATA_BLOB input{ static_cast<DWORD>(data.size()), const_cast<BYTE*>(data.data()) };
-    DATA_BLOB extra{ static_cast<DWORD>(entropy.size()), reinterpret_cast<BYTE*>(const_cast<char*>(entropy.data())) }, output{};
-    const std::wstring caption(description);
-    if (!CryptProtectData(&input, caption.c_str(), entropy.empty() ? nullptr : &extra, nullptr, nullptr,
-        CRYPTPROTECT_LOCAL_MACHINE | CRYPTPROTECT_UI_FORBIDDEN, &output)) win32Error("DPAPI encryption failed");
-    std::vector<std::uint8_t> result(output.pbData, output.pbData + output.cbData); LocalFree(output.pbData); return result;
-}
-std::vector<std::uint8_t> unprotectData(std::span<const std::uint8_t> data, std::string_view entropy) {
-    DATA_BLOB input{ static_cast<DWORD>(data.size()), const_cast<BYTE*>(data.data()) };
-    DATA_BLOB extra{ static_cast<DWORD>(entropy.size()), reinterpret_cast<BYTE*>(const_cast<char*>(entropy.data())) }, output{};
-    if (!CryptUnprotectData(&input, nullptr, entropy.empty() ? nullptr : &extra, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output))
-        win32Error("DPAPI decryption failed");
-    std::vector<std::uint8_t> result(output.pbData, output.pbData + output.cbData);
-    SecureZeroMemory(output.pbData, output.cbData); LocalFree(output.pbData); return result;
-}
-Json loadState() {
-    const auto path = stateDirectory() / L"state.dpapi";
-    if (!std::filesystem::exists(path)) return Json::object();
-    auto plaintext = unprotectData(readFile(path), "IotEngineVpn.Agent.v1");
-    try {
-        auto state = parseJson({reinterpret_cast<const char*>(plaintext.data()), plaintext.size()});
-        SecureZeroMemory(plaintext.data(), plaintext.size());
-        if (!state.is_object()) throw std::runtime_error("Invalid stored client state");
-        return state;
-    } catch (...) { SecureZeroMemory(plaintext.data(), plaintext.size()); throw; }
-}
-void saveState(const Json& state) {
-    auto plaintext = state.dump();
-    try {
-        const auto encrypted = protectData({reinterpret_cast<const std::uint8_t*>(plaintext.data()), plaintext.size()}, "IotEngineVpn.Agent.v1");
-        SecureZeroMemory(plaintext.data(), plaintext.size()); atomicWrite(stateDirectory() / L"state.dpapi", encrypted);
-    } catch (...) { SecureZeroMemory(plaintext.data(), plaintext.size()); throw; }
-}
-
 namespace {
 using Deadline = std::chrono::steady_clock::time_point;
 DWORD waitIo(HANDLE file, OVERLAPPED& operation, Deadline deadline, std::stop_token stop) {
@@ -226,4 +128,5 @@ void runPipeServer(std::stop_token stop, const std::function<Json(const Json&)>&
         DisconnectNamedPipe(pipe.value);
     }
 }
+
 }

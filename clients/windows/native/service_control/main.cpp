@@ -1,7 +1,9 @@
 #include "native_services.h"
 #include "snapshot.h"
 #include "safe_files.h"
-#include "../common/common.h"
+#include "../common/json.h"
+#include "../common/text.h"
+#include "../common/files.h"
 #include "../common/win32.h"
 #include <windows.h>
 #include <shellapi.h>

@@ -1,4 +1,5 @@
-#include "../service/service.h"
+#include "../common/product.h"
+#include "../service/vpn_connection_service.h"
 #include <atomic>
 #include <chrono>
 #include <deque>

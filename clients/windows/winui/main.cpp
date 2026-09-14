@@ -1,3 +1,5 @@
+#include "../native/common/ipc.h"
+#include "../native/common/product.h"
 #include <windows.h>
 #undef GetCurrentTime
 #include <shellapi.h>

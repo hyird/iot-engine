@@ -38,7 +38,7 @@
     <Link><SubSystem>Windows</SubSystem><AdditionalDependencies>advapi32.lib;crypt32.lib;shell32.lib;ole32.lib;ws2_32.lib;normaliz.lib;windowsapp.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="main.cpp"/><ClCompile Include="..\native\common\common.cpp"/>
+    <ClCompile Include="main.cpp"/><ClCompile Include="..\native\common\text.cpp"/><ClCompile Include="..\native\common\files.cpp"/><ClCompile Include="..\native\common\json.cpp"/><ClCompile Include="..\native\common\data_protection.cpp"/><ClCompile Include="..\native\common\ipc.cpp"/>
     <ClInclude Include="..\native\gui\connection_controller.h"/>
     <ResourceCompile Include="..\native\assets\product.rc"/>
     <Manifest Include="app.manifest"/>

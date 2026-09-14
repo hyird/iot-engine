@@ -1,4 +1,6 @@
-#include "../common/common.h"
+#include "../service/wireguard_tunnel.h"
+#include "../common/json.h"
+#include "../common/data_protection.h"
 #include <iostream>
 #include <set>
 using namespace iotvpn;

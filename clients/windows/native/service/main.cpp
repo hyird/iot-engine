@@ -1,4 +1,6 @@
-#include "service.h"
+#include "../common/product.h"
+#include "../common/ipc.h"
+#include "vpn_connection_service.h"
 #include "../common/win32.h"
 #include <atomic>
 #include <thread>

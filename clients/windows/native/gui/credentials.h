@@ -1,5 +1,5 @@
 #pragma once
-#include "../common/common.h"
+#include "../common/text.h"
 #include "../common/win32.h"
 #include <wincred.h>
 

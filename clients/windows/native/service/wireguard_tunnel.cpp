@@ -1,5 +1,7 @@
-#include "common.h"
-#include "win32.h"
+#include "wireguard_tunnel.h"
+#include "../common/files.h"
+#include "../common/text.h"
+#include "../common/win32.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <wincrypt.h>

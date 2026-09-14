@@ -1,5 +1,5 @@
 #include "safe_files.h"
-#include "../common/common.h"
+
 #include "../common/win32.h"
 #include <aclapi.h>
 #include <sddl.h>
