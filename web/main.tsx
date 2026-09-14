@@ -4,10 +4,14 @@ import zhCN from 'antd/es/locale/zh_CN';
 import ReactDOM from 'react-dom/client';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { APP_NAME } from './config/app';
+import { refreshAccessToken } from './pages/login/login.service';
 import { MessageContextBridge } from './providers/MessageContextBridge';
 import { TanStackQueryProvider } from './providers/TanStackQueryProvider';
 import { AppRoutes } from './routes';
+import { configureSessionRefresh } from './utils/http';
 import './styles/index.css';
+
+configureSessionRefresh(refreshAccessToken);
 
 const rootElement = document.getElementById('root');
 if (!rootElement) throw new Error('Root element #root not found in DOM');

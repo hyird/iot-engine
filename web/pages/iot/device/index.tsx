@@ -1,10 +1,7 @@
-/**
- * 设备管理页面。
- */
-
 import {
     ApartmentOutlined,
     DeleteOutlined,
+    DownOutlined,
     EditOutlined,
     HistoryOutlined,
     PlusOutlined,
@@ -17,12 +14,15 @@ import {
     App,
     Button,
     Card,
+    Checkbox,
     DatePicker,
     Drawer,
+    Dropdown,
     Empty,
     Flex,
     Form,
     Input,
+    InputNumber,
     Modal,
     Pagination,
     Popconfirm,
@@ -31,40 +31,41 @@ import {
     Select,
     Skeleton,
     Space,
+    Spin,
+    Switch,
     Table,
     Tag,
     Tooltip,
+    Tree,
+    TreeSelect,
     Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import dayjs, { type Dayjs } from 'dayjs';
-import {
-    type CSSProperties,
-    memo,
-    type ReactNode,
-    type RefObject,
-    useCallback,
-    useEffect,
-    useLayoutEffect,
-    useMemo,
-    useRef,
-    useState,
-} from 'react';
-import DeviceCard, { type DeviceCardItem } from '@/components/DeviceCard';
+import type { DataNode, TreeProps } from 'antd/es/tree';
+import type { Dayjs } from 'dayjs';
+import dayjs from 'dayjs';
+import type { CSSProperties, ReactNode, RefObject } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { DeviceCardItem } from '@/components/DeviceCard';
+import DeviceCard from '@/components/DeviceCard';
+import { FormModal } from '@/components/FormModal';
 import { PageContainer } from '@/components/PageContainer';
 import { usePermissions } from '@/hooks/usePermission';
+import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import { formatDateTime } from '@/utils/dateTime';
 import { useLinkOptions } from '../link/link.service';
 import type { Link } from '../link/link.types';
-import CommandPopover from './CommandPopover';
-import DeviceFormModal, { type DeviceFormValues } from './DeviceFormModal';
-import DeviceGroupPanel from './DeviceGroupPanel';
-import { getDeviceDetail } from './device.api';
-import { isDeviceOnline } from './device-status';
+import { getRevisions, useProtocolConfigOptions } from '../protocol/protocol.service';
 import {
+    getDeviceDetail,
+    isDeviceOnline,
+    useDeviceCommand,
     useDeviceDelete,
+    useDeviceGroupDelete,
+    useDeviceGroupSave,
     useDeviceGroupShares,
     useDeviceGroupShareTargets,
+    useDeviceGroupTree,
     useDeviceGroupTreeWithCount,
     useDeviceHistory,
     useDeviceList,
@@ -75,9 +76,814 @@ import {
     useReplaceDeviceGroupShares,
     useReplaceDeviceShares,
 } from './device.service';
-import type { Device, EdgeStatus } from './device.types';
-import type { DeviceGroup } from './device-group.types';
+import type { Device, DeviceGroup, EdgeStatus } from './device.types';
 
+interface CommandElement {
+    _key: string;
+    elementId: string;
+    name: string;
+    value: string;
+    unit?: string;
+    options?: Device.CommandOperationElement['options'];
+    dataType?: string;
+    size?: number;
+    encode?: string;
+    length?: number;
+    digits?: number;
+}
+interface CommandPopoverProps {
+    device: Device.Overview;
+    func: Device.CommandOperation;
+    onClose: () => void;
+}
+const INTEGER_RANGES: Record<string, [bigint, bigint]> = {
+    INT8: [-128n, 127n],
+    UINT8: [0n, 255n],
+    INT16: [-32768n, 32767n],
+    UINT16: [0n, 65535n],
+    INT32: [-2147483648n, 2147483647n],
+    UINT32: [0n, 4294967295n],
+    INT64: [-9223372036854775808n, 9223372036854775807n],
+    UINT64: [0n, 18446744073709551615n],
+};
+const HEX_VALUE_PATTERN = /^[0-9a-fA-F]+$/;
+const INTEGER_VALUE_PATTERN = /^[+-]?\d+$/;
+const DECIMAL_VALUE_PATTERN = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+const parseBigIntStrict = (value: string): bigint | null => {
+    if (!INTEGER_VALUE_PATTERN.test(value)) return null;
+    try {
+        return BigInt(value);
+    } catch {
+        return null;
+    }
+};
+export const validateValue = (element: CommandElement): string | null => {
+    const value = element.value.trim();
+    if (!value) return `「${element.name}」值不能为空`;
+    if (element.dataType === 'BOOL') {
+        return value === '0' || value === '1'
+            ? null
+            : `「${element.name}」BOOL 类型只能输入 0 或 1`;
+    }
+    if (element.dataType) {
+        if (element.dataType === 'STRING') {
+            if (
+                typeof element.size === 'number' &&
+                element.size > 0 &&
+                new TextEncoder().encode(value).byteLength > element.size
+            )
+                return `「${element.name}」STRING 长度不能超过 ${element.size} 字节`;
+            return null;
+        }
+        const range = INTEGER_RANGES[element.dataType];
+        if (range) {
+            const parsed = parseBigIntStrict(value);
+            if (parsed === null) return `「${element.name}」请输入有效整数`;
+            if (parsed < range[0] || parsed > range[1])
+                return `「${element.name}」${element.dataType} 范围 ${range[0]} ~ ${range[1]}`;
+            return null;
+        }
+        const number = DECIMAL_VALUE_PATTERN.test(value) ? Number(value) : Number.NaN;
+        if (!Number.isFinite(number)) return `「${element.name}」请输入有效数字`;
+        if (
+            (element.dataType === 'FLOAT32' || element.dataType === 'FLOAT') &&
+            !Number.isFinite(Math.fround(number))
+        )
+            return `「${element.name}」${element.dataType} 值超出范围`;
+        return null;
+    }
+    if (element.encode === 'BCD') {
+        const number = DECIMAL_VALUE_PATTERN.test(value) ? Number(value) : Number.NaN;
+        if (!Number.isFinite(number)) return `「${element.name}」BCD 编码只能输入数字`;
+        if (number < 0) return `「${element.name}」BCD 编码不支持负数`;
+        const digits = Math.max(0, Math.min(8, element.digits ?? 0));
+        const length = Math.max(1, element.length ?? 1);
+        if (Math.round(Math.abs(number) * 10 ** digits) >= 10 ** (length * 2))
+            return `「${element.name}」BCD 编码长度超出 ${length} 字节`;
+        return null;
+    }
+    if (element.encode) {
+        if (!HEX_VALUE_PATTERN.test(value))
+            return `「${element.name}」${element.encode} 编码只能输入十六进制字符`;
+        if (
+            typeof element.length === 'number' &&
+            element.length > 0 &&
+            value.length > element.length * 2
+        )
+            return `「${element.name}」${element.encode} 编码长度不能超过 ${element.length} 字节`;
+        return null;
+    }
+    return DECIMAL_VALUE_PATTERN.test(value) && Number.isFinite(Number(value))
+        ? null
+        : `「${element.name}」请输入有效数字`;
+};
+const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
+    const { message } = App.useApp();
+    const commandMutation = useDeviceCommand();
+    const isSl651CompleteCommand = device.protocol_type === 'SL651';
+    const [elements, setElements] = useState<CommandElement[]>(() =>
+        (func.elements || []).map((element) => ({
+            ...element,
+            _key: String(element.elementId ?? element.name),
+            value: element.value ?? '',
+        }))
+    );
+    const [selectedKeys, setSelectedKeys] = useState<string[]>(() =>
+        isSl651CompleteCommand
+            ? (func.elements || []).map((element) => String(element.elementId ?? element.name))
+            : []
+    );
+    const checkOnline = useCallback(() => {
+        if (isDeviceOnline(device)) return true;
+        message.warning('设备离线');
+        return false;
+    }, [device, message]);
+    const handleSend = useCallback(() => {
+        const selected = elements.filter((element) => selectedKeys.includes(element._key));
+        if (!selected.length) {
+            message.warning('请至少选择一个要素');
+            return;
+        }
+        for (const element of selected) {
+            const error = validateValue(element);
+            if (error) {
+                message.error(error);
+                return;
+            }
+        }
+        if (!checkOnline()) return;
+        commandMutation.mutate(
+            {
+                deviceId: device.id,
+                data: {
+                    elements: selected.map((element) => ({
+                        elementId: element.elementId,
+                        value: element.value.trim(),
+                    })),
+                },
+            },
+            { onSuccess: onClose }
+        );
+    }, [checkOnline, commandMutation, device.id, elements, message, onClose, selectedKeys]);
+    const handlePresetClick = useCallback(
+        (element: CommandElement, value: string) => {
+            if (isSl651CompleteCommand) {
+                setElements((current) =>
+                    current.map((item) => (item._key === element._key ? { ...item, value } : item))
+                );
+                setSelectedKeys(elements.map((item) => item._key));
+                return;
+            }
+            if (!checkOnline()) return;
+            commandMutation.mutate({
+                deviceId: device.id,
+                data: { elements: [{ elementId: element.elementId, value }] },
+            });
+        },
+        [checkOnline, commandMutation, device.id, elements, isSl651CompleteCommand]
+    );
+    if (!elements.length) return <div className="p-3">暂无可下发要素</div>;
+    return (
+        <div className="max-w-[360px]">
+            <div className="mb-2">
+                <div>
+                    设备：{device.name}（{device.device_code}）
+                </div>
+                <div className="text-xs text-gray-400">指令：{func.name}</div>
+            </div>
+            <div className="mb-2 max-h-[260px] overflow-y-auto pr-1">
+                {elements.map((element) => {
+                    const checked = selectedKeys.includes(element._key);
+                    const hasOptions = !!element.options?.length;
+                    return (
+                        <div
+                            key={element._key}
+                            className={`mb-2 pb-2 ${hasOptions ? 'border-b border-gray-100' : ''}`}
+                        >
+                            <Flex align="center" className={hasOptions ? 'mb-1.5' : ''}>
+                                <Checkbox
+                                    checked={checked}
+                                    disabled={isSl651CompleteCommand}
+                                    onChange={(event) =>
+                                        setSelectedKeys((current) =>
+                                            event.target.checked
+                                                ? [...current, element._key]
+                                                : current.filter((key) => key !== element._key)
+                                        )
+                                    }
+                                />
+                                <span className="mx-1.5 flex-1">
+                                    {element.name}
+                                    {element.unit ? `（${element.unit}）` : ''}
+                                </span>
+                                <Input
+                                    size="small"
+                                    className="!w-[120px]"
+                                    value={element.value}
+                                    placeholder={hasOptions ? '或手动输入' : ''}
+                                    onChange={(event) =>
+                                        setElements((current) =>
+                                            current.map((item) =>
+                                                item._key === element._key
+                                                    ? { ...item, value: event.target.value }
+                                                    : item
+                                            )
+                                        )
+                                    }
+                                />
+                            </Flex>
+                            {hasOptions && (
+                                <Flex wrap gap={6} className="ml-[26px]">
+                                    <span className="mr-1 text-xs text-gray-400">预设值：</span>
+                                    {element.options?.map((option) => (
+                                        <Button
+                                            key={option.value}
+                                            size="small"
+                                            type="primary"
+                                            ghost
+                                            loading={commandMutation.isPending}
+                                            onClick={() => handlePresetClick(element, option.value)}
+                                        >
+                                            {option.label}
+                                        </Button>
+                                    ))}
+                                </Flex>
+                            )}
+                        </div>
+                    );
+                })}
+            </div>
+            <Flex justify="flex-end" gap={8}>
+                <Button size="small" onClick={onClose}>
+                    取消
+                </Button>
+                <Button
+                    size="small"
+                    type="primary"
+                    loading={commandMutation.isPending}
+                    disabled={!selectedKeys.length}
+                    onClick={handleSend}
+                >
+                    下发
+                </Button>
+            </Flex>
+        </div>
+    );
+};
+
+export type DeviceFormValues = Device.CreateDto & {
+    id?: string;
+};
+interface Props {
+    open: boolean;
+    editing: Device.Overview | null;
+    loading: boolean;
+    linkOptions: Link.Option[];
+    onCancel: () => void;
+    onFinish: (values: DeviceFormValues) => void;
+}
+export function DeviceFormModal({
+    open,
+    editing,
+    loading,
+    linkOptions,
+    onCancel,
+    onFinish,
+}: Props) {
+    const [form] = Form.useForm<DeviceFormValues>();
+    const linkId = Form.useWatch('link_id', form);
+    const modelId = Form.useWatch('protocol_config_id', form);
+    const channel = linkOptions.find((value) => value.id === linkId);
+    const protocol = channel?.protocol;
+    const { data: models } = useProtocolConfigOptions(protocol ?? 'Modbus', {
+        enabled: open && !!protocol,
+    });
+    const { data: revisions = [] } = useSnapshotQuery({
+        queryKey: ['protocol-configs', 'revisions', modelId],
+        queryFn: () => getRevisions(modelId ?? ''),
+        enabled: open && !!modelId,
+    });
+    const { data: groups = [] } = useDeviceGroupTree();
+    const flatten = (
+        nodes: DeviceGroup.TreeItem[]
+    ): {
+        value: string;
+        label: string;
+    }[] =>
+        nodes.flatMap((node) => [
+            { value: node.id, label: node.name },
+            ...flatten(node.children ?? []),
+        ]);
+    const packet = (name: 'heartbeat' | 'registration', label: string) => (
+        <>
+            <Form.Item label={label} name={[name, 'mode']}>
+                <Select
+                    options={['OFF', 'HEX', 'ASCII'].map((value) => ({ value, label: value }))}
+                />
+            </Form.Item>
+            <Form.Item label={`${label}内容`} name={[name, 'content']}>
+                <Input />
+            </Form.Item>
+        </>
+    );
+    return (
+        <FormModal
+            open={open}
+            title={editing ? '编辑设备' : '新增设备'}
+            onCancel={onCancel}
+            onOk={() => form.submit()}
+            confirmLoading={loading}
+            destroyOnHidden
+            width={640}
+            afterOpenChange={(visible) => {
+                if (visible) {
+                    form.resetFields();
+                    form.setFieldsValue(
+                        editing
+                            ? {
+                                  ...editing,
+                                  heartbeat: editing.heartbeat ?? { mode: 'OFF' },
+                                  registration: editing.registration ?? { mode: 'OFF' },
+                              }
+                            : {
+                                  status: 'enabled',
+                                  online_timeout: 300,
+                                  remote_control: true,
+                                  timezone: '+08:00',
+                                  slave_id: 1,
+                                  heartbeat: { mode: 'OFF' },
+                                  registration: { mode: 'OFF' },
+                              }
+                    );
+                }
+            }}
+        >
+            <Form
+                form={form}
+                layout="vertical"
+                onFinish={(values) => {
+                    if (channel?.execution === 'edge') {
+                        values.registration = { mode: 'OFF' };
+                        values.heartbeat = { mode: 'OFF' };
+                        if (protocol === 'Modbus')
+                            values.modbus_mode =
+                                channel.endpoint.transport === 'serial' ? 'RTU' : 'TCP';
+                    }
+                    if (protocol === 'SL651')
+                        values.device_code = values.device_code.padStart(10, '0');
+                    onFinish(values);
+                }}
+            >
+                <Form.Item name="name" label="设备名称" rules={[{ required: true }]}>
+                    <Input maxLength={100} />
+                </Form.Item>
+                <Form.Item name="device_code" label="设备编码" rules={[{ required: true }]}>
+                    <Input maxLength={100} />
+                </Form.Item>
+                <Form.Item
+                    name="link_id"
+                    label="物理通道"
+                    rules={[{ required: true, message: '请先在链路管理中创建通道' }]}
+                >
+                    <Select
+                        showSearch
+                        optionFilterProp="label"
+                        options={linkOptions.map((c) => ({
+                            value: c.id,
+                            label: `${c.name} · ${c.execution === 'edge' ? '边缘' : '平台'} · ${c.protocol}`,
+                        }))}
+                        onChange={() =>
+                            form.setFieldsValue({
+                                protocol_config_id: undefined,
+                                protocol_revision: undefined,
+                                target_id: undefined,
+                            })
+                        }
+                    />
+                </Form.Item>
+                {channel?.execution !== 'edge' && channel?.endpoint.mode === 'TCP Client' && (
+                    <Form.Item name="target_id" label="目标地址" rules={[{ required: true }]}>
+                        <Select
+                            options={channel.endpoint.targets.map((t) => ({
+                                value: t.id,
+                                label: `${t.name} · ${t.ip}:${t.port}`,
+                            }))}
+                        />
+                    </Form.Item>
+                )}
+                <Form.Item name="protocol_config_id" label="设备类型" rules={[{ required: true }]}>
+                    <Select
+                        disabled={!protocol}
+                        options={models?.list.map((m) => ({ value: m.id, label: m.name }))}
+                        onChange={() => form.setFieldValue('protocol_revision', undefined)}
+                    />
+                </Form.Item>
+                <Form.Item name="protocol_revision" label="已发布版本" rules={[{ required: true }]}>
+                    <Select
+                        disabled={!modelId}
+                        options={revisions.map((r) => ({
+                            value: r.revision,
+                            label: `v${r.revision} · ${r.name}`,
+                        }))}
+                    />
+                </Form.Item>
+                {protocol === 'Modbus' && (
+                    <>
+                        <Form.Item name="slave_id" label="从站地址" rules={[{ required: true }]}>
+                            <InputNumber min={1} max={247} />
+                        </Form.Item>
+                        {channel?.execution !== 'edge' && (
+                            <Form.Item
+                                name="modbus_mode"
+                                label="Modbus 模式"
+                                rules={[{ required: true }]}
+                            >
+                                <Select
+                                    options={['TCP', 'RTU'].map((value) => ({
+                                        value,
+                                        label: value,
+                                    }))}
+                                />
+                            </Form.Item>
+                        )}
+                    </>
+                )}
+                {channel?.execution !== 'edge' &&
+                    channel?.endpoint.mode === 'TCP Server' &&
+                    protocol !== 'SL651' && (
+                        <>
+                            {packet('heartbeat', '心跳包')}
+                            {packet('registration', '注册包')}
+                        </>
+                    )}
+                <Form.Item name="group_id" label="设备分组">
+                    <Select allowClear options={flatten(groups)} />
+                </Form.Item>
+                <Form.Item name="status" label="状态">
+                    <Select
+                        options={[
+                            { value: 'enabled', label: '启用' },
+                            { value: 'disabled', label: '停用' },
+                        ]}
+                    />
+                </Form.Item>
+                <Form.Item name="online_timeout" label="离线超时（秒）">
+                    <InputNumber min={1} max={86400} />
+                </Form.Item>
+                <Form.Item name="remote_control" label="允许远控" valuePropName="checked">
+                    <Switch />
+                </Form.Item>
+                <Form.Item name="timezone" label="设备时区">
+                    <Input placeholder="+08:00" />
+                </Form.Item>
+                <Form.Item name="remark" label="备注">
+                    <Input.TextArea />
+                </Form.Item>
+            </Form>
+        </FormModal>
+    );
+}
+
+interface DeviceGroupFormModalProps {
+    open: boolean;
+    editing: DeviceGroup.TreeItem | null;
+    parentId: string | null;
+    treeData: DeviceGroup.TreeItem[];
+    loading: boolean;
+    onCancel: () => void;
+    onFinish: (
+        values: DeviceGroup.CreateDto & {
+            id?: string;
+        }
+    ) => void;
+}
+function convertTreeForSelect(
+    nodes: DeviceGroup.TreeItem[],
+    excludeId?: string
+): {
+    value: string;
+    title: string;
+    children?: ReturnType<typeof convertTreeForSelect>;
+}[] {
+    return nodes
+        .filter((n) => n.id !== excludeId)
+        .map((n) => ({
+            value: n.id,
+            title: n.name,
+            children: n.children ? convertTreeForSelect(n.children, excludeId) : undefined,
+        }));
+}
+const DeviceGroupFormModal = ({
+    open,
+    editing,
+    parentId,
+    treeData,
+    loading,
+    onCancel,
+    onFinish,
+}: DeviceGroupFormModalProps) => {
+    const [form] = Form.useForm();
+    useEffect(() => {
+        if (open) {
+            if (editing) {
+                form.setFieldsValue({
+                    id: editing.id,
+                    name: editing.name,
+                    parent_id: editing.parent_id || undefined,
+                    sort_order: editing.sort_order,
+                    status: editing.status,
+                    remark: editing.remark,
+                });
+            } else {
+                form.resetFields();
+                form.setFieldsValue({
+                    status: 'enabled',
+                    sort_order: 0,
+                    parent_id: parentId || undefined,
+                });
+            }
+        }
+    }, [open, editing, parentId, form]);
+    const treeSelectData = useMemo(
+        () => convertTreeForSelect(treeData, editing?.id),
+        [treeData, editing?.id]
+    );
+    return (
+        <FormModal
+            open={open}
+            title={editing ? '编辑分组' : '新建分组'}
+            okText="确定"
+            cancelText="取消"
+            confirmLoading={loading}
+            onCancel={onCancel}
+            onOk={() => form.submit()}
+            destroyOnClose
+        >
+            <Form form={form} layout="vertical" onFinish={onFinish} className="mt-4">
+                <Form.Item name="id" hidden>
+                    <Input />
+                </Form.Item>
+                <Form.Item
+                    label="分组名称"
+                    name="name"
+                    rules={[{ required: true, message: '请输入分组名称' }]}
+                >
+                    <Input placeholder="请输入分组名称" maxLength={100} />
+                </Form.Item>
+                <Form.Item label="上级分组" name="parent_id">
+                    <TreeSelect
+                        allowClear
+                        treeData={treeSelectData}
+                        placeholder="不选则为顶级分组"
+                        treeDefaultExpandAll
+                        fieldNames={{ label: 'title', value: 'value' }}
+                    />
+                </Form.Item>
+                <Form.Item label="排序" name="sort_order">
+                    <InputNumber className="!w-full" placeholder="数值越小越靠前" min={0} />
+                </Form.Item>
+                <Form.Item
+                    label="状态"
+                    name="status"
+                    rules={[{ required: true, message: '请选择状态' }]}
+                >
+                    <Select>
+                        <Select.Option value="enabled">启用</Select.Option>
+                        <Select.Option value="disabled">禁用</Select.Option>
+                    </Select>
+                </Form.Item>
+                <Form.Item label="备注" name="remark">
+                    <Input.TextArea rows={2} placeholder="可选备注" />
+                </Form.Item>
+            </Form>
+        </FormModal>
+    );
+};
+
+interface DeviceGroupPanelProps {
+    selectedGroupId: string | null;
+    onSelect: (groupId: string | null) => void;
+    canManageGroup: boolean;
+    ungroupedCount: number;
+    onShare: (group: DeviceGroup.TreeItem) => void;
+}
+type TreeKey = string | number;
+const DeviceGroupPanel = ({
+    selectedGroupId,
+    onSelect,
+    canManageGroup,
+    ungroupedCount,
+    onShare,
+}: DeviceGroupPanelProps) => {
+    const { modal } = App.useApp();
+    const [popoverOpen, setPopoverOpen] = useState(false);
+    const [formModalVisible, setFormModalVisible] = useState(false);
+    const [editingGroup, setEditingGroup] = useState<DeviceGroup.TreeItem | null>(null);
+    const [parentIdForCreate, setParentIdForCreate] = useState<string | null>(null);
+    const { data: treeData = [], isLoading } = useDeviceGroupTreeWithCount({
+        refetchOnWindowFocus: false,
+    });
+    const saveMutation = useDeviceGroupSave();
+    const deleteMutation = useDeviceGroupDelete();
+    const groupIndex = useMemo(() => {
+        const index = new Map<string, DeviceGroup.TreeItem>();
+        const walk = (nodes: DeviceGroup.TreeItem[]) => {
+            for (const node of nodes) {
+                index.set(node.id, node);
+                if (node.children?.length) {
+                    walk(node.children);
+                }
+            }
+        };
+        walk(treeData);
+        return index;
+    }, [treeData]);
+    const antTreeData = useMemo(() => {
+        const convert = (nodes: DeviceGroup.TreeItem[]): DataNode[] =>
+            nodes.map((node) => ({
+                key: node.id,
+                title: `${node.name} (${node.deviceCount ?? 0})`,
+                children: node.children?.length ? convert(node.children) : undefined,
+            }));
+        return [
+            { key: 'all', title: '全部设备', isLeaf: true } as DataNode,
+            ...(ungroupedCount > 0
+                ? [
+                      {
+                          key: 'ungrouped',
+                          title: `未分组 (${ungroupedCount})`,
+                          isLeaf: true,
+                      } as DataNode,
+                  ]
+                : []),
+            ...convert(treeData),
+        ];
+    }, [treeData, ungroupedCount]);
+    const selectedKeys = useMemo<TreeKey[]>(() => {
+        if (selectedGroupId === null) return ['all'];
+        if (selectedGroupId === 'ungrouped') return ['ungrouped'];
+        return [selectedGroupId];
+    }, [selectedGroupId]);
+    // 当前选中的分组名称（用于按钮显示）
+    const selectedLabel = useMemo(() => {
+        if (selectedGroupId === null) return '全部设备';
+        if (selectedGroupId === 'ungrouped') return '未分组';
+        return groupIndex.get(selectedGroupId)?.name ?? '全部设备';
+    }, [groupIndex, selectedGroupId]);
+    const handleSelect: TreeProps['onSelect'] = (keys) => {
+        if (!keys.length) return;
+        const key = keys[0];
+        if (key === 'all') onSelect(null);
+        else if (key === 'ungrouped') onSelect('ungrouped');
+        else onSelect(String(key));
+        setPopoverOpen(false);
+    };
+    const handleAddChild = (parentId: string) => {
+        setEditingGroup(null);
+        setParentIdForCreate(parentId);
+        setFormModalVisible(true);
+    };
+    const handleEdit = (id: string) => {
+        const group = groupIndex.get(id);
+        if (group) {
+            setEditingGroup(group);
+            setParentIdForCreate(null);
+            setFormModalVisible(true);
+        }
+    };
+    const handleDelete = (id: string) => {
+        const group = groupIndex.get(id);
+        if (!group) return;
+        modal.confirm({
+            title: `确认删除分组「${group.name}」？`,
+            content: '删除后该分组下的子分组和设备不会被删除，但需要先移除或转移。',
+            okText: '确定删除',
+            okButtonProps: { danger: true },
+            onOk: () => deleteMutation.mutate(id),
+        });
+    };
+    const contextMenuItems = (nodeKey: TreeKey) => {
+        if (nodeKey === 'all' || nodeKey === 'ungrouped') return [];
+        const items = [];
+        const group = groupIndex.get(String(nodeKey));
+        if (group?.can_share) {
+            items.push({ key: 'share', label: '分享分组', icon: <ShareAltOutlined /> });
+        }
+        if (canManageGroup) {
+            items.push(
+                { key: 'addChild', label: '新增子分组', icon: <PlusOutlined /> },
+                { key: 'edit', label: '编辑', icon: <EditOutlined /> },
+                { key: 'delete', label: '删除', icon: <DeleteOutlined />, danger: true }
+            );
+        }
+        return items;
+    };
+    const treeContent = (
+        <div className="w-72 max-w-[calc(100vw-32px)]">
+            {isLoading ? (
+                <div className="py-6 text-center">
+                    <Spin size="small" />
+                </div>
+            ) : (
+                <div className="max-h-[min(68vh,560px)] overflow-y-auto pr-1">
+                    <Tree
+                        treeData={antTreeData}
+                        selectedKeys={selectedKeys}
+                        onSelect={handleSelect}
+                        defaultExpandAll
+                        blockNode
+                        titleRender={(node) => {
+                            const items = contextMenuItems(node.key as TreeKey);
+                            const title = (
+                                <span className="block whitespace-normal break-words pr-2">
+                                    {node.title as string}
+                                </span>
+                            );
+                            if (!items.length) return title;
+                            return (
+                                <Dropdown
+                                    menu={{
+                                        items,
+                                        onClick: ({ key }) => {
+                                            const id = String(node.key);
+                                            if (key === 'share') {
+                                                const group = groupIndex.get(id);
+                                                if (group) onShare(group);
+                                            } else if (key === 'addChild') handleAddChild(id);
+                                            else if (key === 'edit') handleEdit(id);
+                                            else if (key === 'delete') handleDelete(id);
+                                        },
+                                    }}
+                                    trigger={['contextMenu']}
+                                >
+                                    {title}
+                                </Dropdown>
+                            );
+                        }}
+                    />
+                </div>
+            )}
+            {canManageGroup && (
+                <Button
+                    type="text"
+                    size="small"
+                    block
+                    icon={<PlusOutlined />}
+                    className="mt-1 !text-gray-500"
+                    onClick={() => {
+                        setEditingGroup(null);
+                        setParentIdForCreate(null);
+                        setFormModalVisible(true);
+                    }}
+                >
+                    新建分组
+                </Button>
+            )}
+        </div>
+    );
+    return (
+        <>
+            <Popover
+                content={treeContent}
+                trigger="click"
+                open={popoverOpen}
+                onOpenChange={setPopoverOpen}
+                placement="bottomLeft"
+            >
+                <Button icon={<ApartmentOutlined />}>
+                    <Space size={4}>
+                        {selectedLabel}
+                        <DownOutlined className="!text-[10px] text-gray-400" />
+                    </Space>
+                </Button>
+            </Popover>
+
+            <DeviceGroupFormModal
+                open={formModalVisible}
+                editing={editingGroup}
+                parentId={parentIdForCreate}
+                treeData={treeData}
+                loading={saveMutation.isPending}
+                onCancel={() => {
+                    setFormModalVisible(false);
+                    setEditingGroup(null);
+                }}
+                onFinish={(values) =>
+                    saveMutation.mutate(values, {
+                        onSuccess: () => {
+                            setFormModalVisible(false);
+                            setEditingGroup(null);
+                        },
+                    })
+                }
+            />
+        </>
+    );
+};
+
+/**
+ * 设备管理页面。
+ */
 const { Search } = Input;
 const EMPTY_DEVICE_LIST: Device.Overview[] = [];
 const EMPTY_COMMAND_OPERATIONS: Device.CommandOperation[] = [];
@@ -89,18 +895,15 @@ const DEVICE_CARD_DANGER_BUTTON_CLASS =
     '!flex !h-8 !w-8 items-center justify-center !rounded-md hover:!bg-red-50';
 const WIDE_DEVICE_CARD_ITEM_COUNT = 18;
 const DEVICE_VIRTUAL_ROW_GAP = 12;
-
 interface DeviceProtocolStats {
     total: number;
     online: number;
     offline: number;
     enabled: number;
 }
-
 interface DeviceStats extends DeviceProtocolStats {
     byProtocol: Record<string, DeviceProtocolStats>;
 }
-
 const createDeviceStats = (): DeviceStats => ({
     total: 0,
     online: 0,
@@ -108,11 +911,8 @@ const createDeviceStats = (): DeviceStats => ({
     enabled: 0,
     byProtocol: {},
 });
-
 interface DeviceGroupStats extends DeviceProtocolStats {}
-
 const createGroupStats = (): DeviceGroupStats => ({ total: 0, online: 0, offline: 0, enabled: 0 });
-
 const accumulateStats = <T extends DeviceProtocolStats>(
     stats: T,
     device: Device.Overview,
@@ -123,7 +923,6 @@ const accumulateStats = <T extends DeviceProtocolStats>(
     else stats.offline++;
     if (device.status === 'enabled') stats.enabled++;
 };
-
 const buildDeviceStats = (devices: Device.Overview[], now = Date.now()) => {
     const stats = createDeviceStats();
     for (const device of devices) {
@@ -134,7 +933,6 @@ const buildDeviceStats = (devices: Device.Overview[], now = Date.now()) => {
     }
     return stats;
 };
-
 const buildGroupIndex = (groups: DeviceGroup.TreeItem[]) => {
     const index = new Map<string, DeviceGroup.TreeItem>();
     const walk = (nodes: DeviceGroup.TreeItem[]) => {
@@ -146,7 +944,6 @@ const buildGroupIndex = (groups: DeviceGroup.TreeItem[]) => {
     walk(groups);
     return index;
 };
-
 const buildGroupScopeIds = (group?: DeviceGroup.TreeItem) => {
     const scope = new Set<string>();
     const walk = (node: DeviceGroup.TreeItem) => {
@@ -156,7 +953,6 @@ const buildGroupScopeIds = (group?: DeviceGroup.TreeItem) => {
     if (group) walk(group);
     return scope;
 };
-
 const buildGroupStats = (
     groups: DeviceGroup.TreeItem[],
     deviceMap: Map<string, Device.Overview[]>,
@@ -179,7 +975,6 @@ const buildGroupStats = (
     groups.forEach(walk);
     return result;
 };
-
 const formatElementValue = (element: Device.Element) => {
     if (element.value === null || element.value === undefined || element.value === '') return '-';
     if (element.dictConfig?.mapType === 'VALUE') {
@@ -195,7 +990,6 @@ const formatElementValue = (element: Device.Element) => {
             : String(element.value);
     return element.unit ? `${value} ${element.unit}` : value;
 };
-
 const buildCardItems = (device: Device.Overview): DeviceCardItem[] => {
     if (device.elements?.length) {
         return device.elements.map((element, index) => ({
@@ -208,13 +1002,10 @@ const buildCardItems = (device: Device.Overview): DeviceCardItem[] => {
     const count = device.element_count ?? 0;
     return count > 0 ? [{ key: 'elements', label: '采集要素', children: `${count} 个` }] : [];
 };
-
 const getDeviceDisplayElementCount = (device: Device.Overview) =>
     device.element_count ?? device.elements?.length ?? 0;
-
 const edgeNodeLabel = (device: Device.Overview) =>
     device.edge_node_name || device.edge_node_imei || device.edge_node_id || '未绑定节点';
-
 const edgeEndpointLabel = (device: Device.Overview) => {
     if (device.edge_transport === 'serial') {
         const settings = [
@@ -234,9 +1025,7 @@ const edgeEndpointLabel = (device: Device.Overview) => {
     }
     return '边缘链路未配置';
 };
-
 type TcpRuntimeStatus = EdgeStatus | Link.Runtime;
-
 const tcpRuntimeStatus = (
     device: Device.Overview,
     link?: Link.Item
@@ -257,7 +1046,6 @@ const tcpRuntimeStatus = (
         return { state: device.connected ? 'connected' : 'disconnected' };
     return undefined;
 };
-
 const tcpStateText = (status?: TcpRuntimeStatus) => {
     const state = status?.state?.trim();
     const clientCount = status?.clientCount ?? 0;
@@ -280,7 +1068,6 @@ const tcpStateText = (status?: TcpRuntimeStatus) => {
     const clients = clientCount > 0 ? ` · ${clientCount}连接` : '';
     return `TCP状态：${label}${clients}`;
 };
-
 const tcpStateColor = (status?: TcpRuntimeStatus) => {
     const state = status?.state?.toLowerCase();
     if (!state) return 'default';
@@ -289,7 +1076,6 @@ const tcpStateColor = (status?: TcpRuntimeStatus) => {
     if (['error', 'failed'].includes(state)) return 'red';
     return 'default';
 };
-
 const DEVICE_ACCESS_LEVEL_OPTIONS: Array<{
     value: Device.ShareAccessLevel;
     label: string;
@@ -297,18 +1083,19 @@ const DEVICE_ACCESS_LEVEL_OPTIONS: Array<{
     { value: 'view', label: '只读：查看设备与遥测' },
     { value: 'operate', label: '操作：只读 + 下发命令' },
 ];
-
 interface DeviceShareFormValues {
     department_ids?: string[];
     user_ids?: string[];
     access_level: Device.ShareAccessLevel;
 }
-
 interface DeviceShareDrawerProps {
-    resource: { kind: 'device' | 'group'; id: string; name: string } | null;
+    resource: {
+        kind: 'device' | 'group';
+        id: string;
+        name: string;
+    } | null;
     onClose: () => void;
 }
-
 const DeviceShareDrawer = ({ resource, onClose }: DeviceShareDrawerProps) => {
     const { message } = App.useApp();
     const [form] = Form.useForm<DeviceShareFormValues>();
@@ -331,7 +1118,6 @@ const DeviceShareDrawer = ({ resource, onClose }: DeviceShareDrawerProps) => {
     const sharesLoading = isGroup ? groupShares.isLoading : deviceShares.isLoading;
     const targetsLoading = isGroup ? groupTargets.isLoading : deviceTargets.isLoading;
     const replacing = replaceDeviceShares.isPending || replaceGroupShares.isPending;
-
     const departmentOptions = useMemo(
         () =>
             targets
@@ -346,7 +1132,6 @@ const DeviceShareDrawer = ({ resource, onClose }: DeviceShareDrawerProps) => {
                 .map((target) => ({ label: target.subject_name, value: target.subject_id })),
         [targets]
     );
-
     const replace = (nextShares: Device.ReplaceSharesDto['shares'], onSuccess?: () => void) => {
         if (!resource) return;
         if (resource.kind === 'group') {
@@ -361,7 +1146,6 @@ const DeviceShareDrawer = ({ resource, onClose }: DeviceShareDrawerProps) => {
             { onSuccess }
         );
     };
-
     const addOrUpdate = async () => {
         const values = await form.validateFields();
         const departmentIds = values.department_ids ?? [];
@@ -397,7 +1181,6 @@ const DeviceShareDrawer = ({ resource, onClose }: DeviceShareDrawerProps) => {
             form.setFieldsValue({ department_ids: [], user_ids: [] });
         });
     };
-
     const removeShare = (share: Device.ShareItem) => {
         replace(
             shares
@@ -409,7 +1192,6 @@ const DeviceShareDrawer = ({ resource, onClose }: DeviceShareDrawerProps) => {
                 }))
         );
     };
-
     const columns: ColumnsType<Device.ShareItem> = [
         {
             title: '类型',
@@ -473,7 +1255,6 @@ const DeviceShareDrawer = ({ resource, onClose }: DeviceShareDrawerProps) => {
                 ),
         },
     ];
-
     return (
         <Drawer
             open={open}
@@ -548,9 +1329,7 @@ const DeviceShareDrawer = ({ resource, onClose }: DeviceShareDrawerProps) => {
         </Drawer>
     );
 };
-
 const createDefaultHistoryRange = (): [Dayjs, Dayjs] => [dayjs().subtract(24, 'hour'), dayjs()];
-
 const getHistoryTimePresets = () => [
     {
         label: '最近1小时',
@@ -573,10 +1352,8 @@ const getHistoryTimePresets = () => [
         value: [dayjs().subtract(7, 'day').startOf('day'), dayjs()] as [Dayjs, Dayjs],
     },
 ];
-
 const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value);
-
 const normalizeHistoryPoint = (point: unknown, fallbackName?: string): Device.HistoryPointValue => {
     if (!isPlainRecord(point)) return { name: fallbackName, value: point };
     return {
@@ -585,7 +1362,6 @@ const normalizeHistoryPoint = (point: unknown, fallbackName?: string): Device.Hi
         unit: typeof point.unit === 'string' ? point.unit : undefined,
     };
 };
-
 const parseHistoryBitLabels = (
     value: unknown,
     dictConfig: NonNullable<Device.Element['dictConfig']>
@@ -614,7 +1390,6 @@ const parseHistoryBitLabels = (
         .map((item) => item.label)
         .filter(Boolean);
 };
-
 const formatHistoryValue = (
     point: Device.HistoryPointValue | undefined,
     meta?: Pick<Device.Element, 'decimals' | 'dictConfig' | 'unit'>
@@ -622,7 +1397,6 @@ const formatHistoryValue = (
     if (!point) return '-';
     const value = point.value;
     if (value === null || value === undefined || value === '') return '-';
-
     if (meta?.dictConfig?.mapType === 'VALUE') {
         const mapped = meta.dictConfig.items.find((item) => item.key === String(value))?.label;
         if (mapped) return mapped;
@@ -631,7 +1405,6 @@ const formatHistoryValue = (
         const labels = parseHistoryBitLabels(value, meta.dictConfig);
         if (labels.length) return labels.join('、');
     }
-
     const numeric = typeof value === 'number' ? value : Number(value);
     const formatted =
         Number.isFinite(numeric) && meta?.decimals !== undefined && meta.decimals >= 0
@@ -642,7 +1415,6 @@ const formatHistoryValue = (
     const unit = point.unit ?? meta?.unit;
     return unit ? `${formatted} ${unit}` : formatted;
 };
-
 interface HistoryPointColumn {
     key: string;
     keys: string[];
@@ -652,7 +1424,6 @@ interface HistoryPointColumn {
     decimals?: number;
     dictConfig?: Device.Element['dictConfig'];
 }
-
 const buildHistoryPointColumns = (
     device: Device.Overview,
     records: Device.HistoryRecord[]
@@ -674,7 +1445,6 @@ const buildHistoryPointColumns = (
         configuredByKey.set(key, meta);
         if (label) configuredByName.set(label, meta);
     });
-
     const columns = new Map<string, HistoryPointColumn>();
     let fallbackOrder = device.elements?.length ?? 0;
     for (const record of records) {
@@ -705,7 +1475,6 @@ const buildHistoryPointColumns = (
         (a, b) => a.order - b.order || a.label.localeCompare(b.label)
     );
 };
-
 const getHistoryPoint = (record: Device.HistoryRecord, column: HistoryPointColumn) => {
     for (const key of column.keys) {
         if (Object.hasOwn(record.values ?? {}, key)) {
@@ -716,7 +1485,6 @@ const getHistoryPoint = (record: Device.HistoryRecord, column: HistoryPointColum
         .map(([key, point]) => normalizeHistoryPoint(point, key))
         .find((point) => point.name === column.label);
 };
-
 const DeviceHistoryModal = ({
     device,
     onClose,
@@ -726,7 +1494,6 @@ const DeviceHistoryModal = ({
 }) => {
     const [pagination, setPagination] = useState({ page: 1, pageSize: 20 });
     const [range, setRange] = useState<[Dayjs, Dayjs]>(createDefaultHistoryRange);
-
     const query = useMemo<Device.HistoryRecordQuery>(
         () => ({
             ...pagination,
@@ -741,7 +1508,6 @@ const DeviceHistoryModal = ({
         () => buildHistoryPointColumns(device, records),
         [device, records]
     );
-
     const columns = useMemo<ColumnsType<Device.HistoryRecord>>(() => {
         const tableColumns: ColumnsType<Device.HistoryRecord> = [
             {
@@ -787,7 +1553,6 @@ const DeviceHistoryModal = ({
         return tableColumns;
     }, [pointColumns]);
     const tableWidth = Math.max(760, 180 + pointColumns.length * 150 + 120);
-
     return (
         <Modal
             open
@@ -853,7 +1618,6 @@ const DeviceHistoryModal = ({
         </Modal>
     );
 };
-
 interface DeviceGridItemProps {
     device: Device.Overview;
     online: boolean;
@@ -871,7 +1635,6 @@ interface DeviceGridItemProps {
     onSelectCommandOperation: (operation: Device.CommandOperation) => void;
     onCloseCommandPopover: () => void;
 }
-
 const DeviceGridItem = memo(
     ({
         device,
@@ -908,7 +1671,6 @@ const DeviceGridItem = memo(
             device.registration?.mode !== undefined &&
             device.registration.mode !== 'OFF' &&
             !!device.registration.content?.trim();
-
         return (
             <div className={`flex h-full min-w-0 flex-col ${wide ? 'lg:col-span-2' : ''}`}>
                 <DeviceCard
@@ -1100,23 +1862,19 @@ const DeviceGridItem = memo(
         );
     }
 );
-
 interface DeviceGridProps extends Omit<DeviceGridItemProps, 'device' | 'online'> {
     devices: Device.Overview[];
     statusNow: number;
     scrollElementRef: RefObject<HTMLDivElement | null>;
 }
-
 const getDeviceColumnCount = () => {
     if (window.matchMedia('(min-width: 1536px)').matches) return 4;
     if (window.matchMedia('(min-width: 1280px)').matches) return 3;
     if (window.matchMedia('(min-width: 1024px)').matches) return 2;
     return 1;
 };
-
 const useResponsiveDeviceColumnCount = () => {
     const [columnCount, setColumnCount] = useState(getDeviceColumnCount);
-
     useEffect(() => {
         const updateColumnCount = () => setColumnCount(getDeviceColumnCount());
         const tabletQuery = window.matchMedia('(min-width: 1024px)');
@@ -1131,15 +1889,12 @@ const useResponsiveDeviceColumnCount = () => {
             wideQuery.removeEventListener('change', updateColumnCount);
         };
     }, []);
-
     return columnCount;
 };
-
 const buildDeviceRows = (devices: Device.Overview[], columnCount: number) => {
     const rows: Device.Overview[][] = [];
     let row: Device.Overview[] = [];
     let occupiedColumns = 0;
-
     devices.forEach((device) => {
         const wide = getDeviceDisplayElementCount(device) >= WIDE_DEVICE_CARD_ITEM_COUNT;
         const span = wide && columnCount > 1 ? 2 : 1;
@@ -1148,7 +1903,6 @@ const buildDeviceRows = (devices: Device.Overview[], columnCount: number) => {
             row = [];
             occupiedColumns = 0;
         }
-
         row.push(device);
         occupiedColumns += span;
         if (occupiedColumns >= columnCount) {
@@ -1157,23 +1911,19 @@ const buildDeviceRows = (devices: Device.Overview[], columnCount: number) => {
             occupiedColumns = 0;
         }
     });
-
     if (row.length) rows.push(row);
     return rows;
 };
-
 const DeviceGrid = memo(
     ({ devices, statusNow, scrollElementRef, ...itemProps }: DeviceGridProps) => {
         const columnCount = useResponsiveDeviceColumnCount();
         const rows = useMemo(() => buildDeviceRows(devices, columnCount), [columnCount, devices]);
         const rootRef = useRef<HTMLDivElement>(null);
         const [scrollMargin, setScrollMargin] = useState(0);
-
         const updateScrollMargin = useCallback(() => {
             const root = rootRef.current;
             const scrollElement = scrollElementRef.current;
             if (!root || !scrollElement) return;
-
             const rootRect = root.getBoundingClientRect();
             const scrollRect = scrollElement.getBoundingClientRect();
             const nextMargin = rootRect.top - scrollRect.top + scrollElement.scrollTop;
@@ -1181,12 +1931,10 @@ const DeviceGrid = memo(
                 Math.abs(currentMargin - nextMargin) < 0.5 ? currentMargin : nextMargin
             );
         }, [scrollElementRef]);
-
         useLayoutEffect(() => {
             const root = rootRef.current;
             const scrollElement = scrollElementRef.current;
             if (!root || !scrollElement) return;
-
             updateScrollMargin();
             const observer = new ResizeObserver(updateScrollMargin);
             observer.observe(scrollElement);
@@ -1201,7 +1949,6 @@ const DeviceGrid = memo(
                 window.removeEventListener('resize', updateScrollMargin);
             };
         }, [scrollElementRef, updateScrollMargin]);
-
         const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
             count: rows.length,
             getScrollElement: () => scrollElementRef.current,
@@ -1210,9 +1957,7 @@ const DeviceGrid = memo(
             overscan: 3,
             scrollMargin,
         });
-
         if (devices.length === 0) return null;
-
         return (
             <div
                 ref={rootRef}
@@ -1246,7 +1991,6 @@ const DeviceGrid = memo(
         );
     }
 );
-
 const DevicePage = () => {
     const { modal, message } = App.useApp();
     const { has } = usePermissions();
@@ -1256,7 +2000,6 @@ const DevicePage = () => {
         has('iot:device-group:add') ||
         has('iot:device-group:edit') ||
         has('iot:device-group:delete');
-
     const [searchText, setSearchText] = useState('');
     const [keyword, setKeyword] = useState('');
     const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
@@ -1274,12 +2017,10 @@ const DevicePage = () => {
     const [commandLoadingId, setCommandLoadingId] = useState<string>();
     const [statusNow, setStatusNow] = useState(() => Date.now());
     const scrollContainerRef = useRef<HTMLDivElement>(null);
-
     useEffect(() => {
         const timer = window.setInterval(() => setStatusNow(Date.now()), 5000);
         return () => window.clearInterval(timer);
     }, []);
-
     const {
         data,
         isLoading,
@@ -1329,7 +2070,6 @@ const DevicePage = () => {
         () => new Map(linkOptions.map((link) => [link.id, link])),
         [linkOptions]
     );
-
     const groupIndex = useMemo(() => buildGroupIndex(groupTree), [groupTree]);
     const selectedGroup = useMemo(
         () =>
@@ -1398,12 +2138,10 @@ const DevicePage = () => {
         () => filteredDevices.filter((device) => !device.group_id),
         [filteredDevices]
     );
-
     const applySearch = useCallback((value: string) => {
         setSearchText(value);
         setKeyword(value.trim());
     }, []);
-
     const openCreate = () => {
         setEditing(null);
         setFormOpen(true);
@@ -1472,7 +2210,6 @@ const DevicePage = () => {
         setCommandDevice(null);
         setCommandFunc(null);
     }, []);
-
     const renderDeviceCards = (devices: Device.Overview[]) => (
         <DeviceGrid
             devices={devices}
@@ -1493,7 +2230,6 @@ const DevicePage = () => {
             onCloseCommandPopover={closeCommandPopover}
         />
     );
-
     const renderSectionStats = (sectionStats: DeviceGroupStats) => (
         <Space size={6} wrap>
             <Tag color="blue">{sectionStats.total} 个</Tag>
@@ -1502,7 +2238,6 @@ const DevicePage = () => {
             {sectionStats.enabled > 0 && <Tag color="purple">{sectionStats.enabled} 已启用</Tag>}
         </Space>
     );
-
     const renderGroupSection = (group: DeviceGroup.TreeItem, depth = 0): ReactNode => {
         const sectionStats = groupStats.get(group.id);
         if (!sectionStats?.total) return null;
@@ -1545,7 +2280,6 @@ const DevicePage = () => {
             </section>
         );
     };
-
     const renderUngroupedSection = (devices: Device.Overview[]) => {
         if (!devices.length) return null;
         return (
@@ -1563,7 +2297,6 @@ const DevicePage = () => {
             </section>
         );
     };
-
     if (!canQuery) {
         return (
             <PageContainer>
@@ -1575,7 +2308,6 @@ const DevicePage = () => {
             </PageContainer>
         );
     }
-
     return (
         <PageContainer
             header={

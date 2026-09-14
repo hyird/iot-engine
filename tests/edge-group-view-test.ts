@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
-import { buildEdgeNodeGroupView } from '../web/pages/iot/edge-node/edge-node.groups';
-import type { Edge } from '../web/pages/iot/edge-node/edge-node.types';
+import { buildEdgeNodeGroupView } from '../web/pages/iot/edge_node/edge_node.service';
+import { type Edge } from '../web/pages/iot/edge_node/edge_node.types';
 
 const groups = [{ id: 'parent', name: '父组', children: [{ id: 'child', name: '子组', children: [] }] }] as Edge.GroupTreeItem[];
 const node = (id: string, groupId: string, online: boolean) => ({ id, groupId, name: id, imei: id, enrollmentStatus: 'approved', status: { online } }) as Edge.Node;

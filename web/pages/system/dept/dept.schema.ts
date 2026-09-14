@@ -2,7 +2,6 @@ import { z } from 'zod';
 import { pageParamsSchema } from '@/utils/pagination';
 
 const statusSchema = z.enum(['enabled', 'disabled'], { error: '状态无效' });
-
 export const createDeptSchema = z.object({
     name: z
         .string()
@@ -14,7 +13,6 @@ export const createDeptSchema = z.object({
     sort_order: z.number().int().min(0, '排序不能小于 0').optional(),
     status: statusSchema.optional(),
 });
-
 export const updateDeptSchema = createDeptSchema.partial();
 export const deptListQuerySchema = pageParamsSchema.extend({
     status: statusSchema.optional(),

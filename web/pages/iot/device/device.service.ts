@@ -1,12 +1,18 @@
-import { SnapshotStream } from '@/utils/snapshot-stream';
-import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
-import { createQueryKeys } from '@/utils/query';
+import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
+import { parseDateTime } from '@/utils/dateTime';
 import type { PaginatedResult } from '@/utils/pagination';
+import { createQueryKeys } from '@/utils/query';
+import { SnapshotStream } from '@/utils/snapshot-stream';
 import * as api from './device.api';
-import type { Device } from './device.types';
-import type { DeviceGroup } from './device-group.types';
+import type { Device, DeviceGroup } from './device.types';
+export const isDeviceOnline = (device: Device.Overview, now = Date.now()) => {
+    if (!device.reportTime) return false;
+    const reportTime = parseDateTime(device.reportTime);
+    if (!reportTime || Number.isNaN(reportTime.getTime())) return false;
+    return now - reportTime.getTime() <= (device.online_timeout || 300) * 1000;
+};
 
 const deviceKeys = createQueryKeys('devices');
 const deviceRealtimeSnapshotKey = [...deviceKeys.all, 'realtime'] as const;
@@ -19,14 +25,12 @@ const shareKeys = {
 };
 const EMPTY_AGENTS: AgentOption[] = [];
 const EMPTY_ENDPOINTS: AgentEndpoint[] = [];
-
 interface AgentOption {
     id: string;
     name: string;
     code: string;
     is_online: boolean;
 }
-
 interface AgentEndpoint {
     id: string;
     name: string;
@@ -38,27 +42,24 @@ interface AgentEndpoint {
     ip?: string;
     port?: number;
 }
-
 export function useDeviceList(options?: { enabled?: boolean }) {
     return useSnapshotQuery({
         queryKey: deviceKeys.lists(),
         queryFn: api.getDeviceList,
         enabled: options?.enabled ?? true,
         refetchOnWindowFocus: false,
-        staleTime: 5_000,
+        staleTime: 5000,
     });
 }
-
 export function useDeviceRealtimeSnapshot(options?: { enabled?: boolean }) {
     return useSnapshotQuery({
         queryKey: deviceRealtimeSnapshotKey,
         queryFn: api.getDeviceRealtimeSnapshot,
         enabled: options?.enabled ?? true,
         refetchOnWindowFocus: false,
-        staleTime: 1_000,
+        staleTime: 1000,
     });
 }
-
 export function useDeviceHistory(
     deviceId: string | undefined,
     query: Device.HistoryRecordQuery,
@@ -70,9 +71,14 @@ export function useDeviceHistory(
         enabled: Boolean(deviceId) && enabled,
     });
 }
-
 export function useDeviceSave() {
-    return useSaveMutation<Device.CreateDto & { id?: string }, Device.CreateDto, Device.UpdateDto>({
+    return useSaveMutation<
+        Device.CreateDto & {
+            id?: string;
+        },
+        Device.CreateDto,
+        Device.UpdateDto
+    >({
         createFn: api.createDevice,
         updateFn: api.updateDevice,
         toUpdatePayload: ({ id: _id, ...data }) => data,
@@ -81,7 +87,6 @@ export function useDeviceSave() {
         invalidateKeys: [deviceKeys.all, groupKeys.all],
     });
 }
-
 export function useDeviceDelete() {
     return useMutationWithMessage({
         mutationFn: api.removeDevice,
@@ -89,7 +94,6 @@ export function useDeviceDelete() {
         invalidateKeys: [deviceKeys.all, groupKeys.all],
     });
 }
-
 export function useDeviceCommand() {
     return useMutationWithMessage({
         mutationFn: async ({ deviceId, data }: { deviceId: string; data: Device.Command }) => {
@@ -97,7 +101,7 @@ export function useDeviceCommand() {
             const result = await api
                 .getDeviceCommandStatuses(command.command_ids)
                 .filter((snapshot) => snapshot.complete)
-                .first(AbortSignal.timeout(60_000));
+                .first(AbortSignal.timeout(60000));
             const failed = result.statuses.find((state) =>
                 ['FAILED', 'REJECTED', 'UNKNOWN', 'READBACK_MISMATCH'].includes(state.status)
             );
@@ -125,23 +129,30 @@ export function useDeviceCommand() {
         invalidateKeys: [deviceKeys.all],
     });
 }
-
-export function useDeviceShares(deviceId?: string, options?: { enabled?: boolean }) {
+export function useDeviceShares(
+    deviceId?: string,
+    options?: {
+        enabled?: boolean;
+    }
+) {
     return useSnapshotQuery({
         queryKey: shareKeys.list('device', deviceId ?? ''),
         queryFn: () => api.getDeviceShares(deviceId as string),
         enabled: !!deviceId && (options?.enabled ?? true),
     });
 }
-
-export function useDeviceShareTargets(deviceId?: string, options?: { enabled?: boolean }) {
+export function useDeviceShareTargets(
+    deviceId?: string,
+    options?: {
+        enabled?: boolean;
+    }
+) {
     return useSnapshotQuery({
         queryKey: shareKeys.targets('device', deviceId ?? ''),
         queryFn: () => api.getDeviceShareTargets(deviceId as string),
         enabled: !!deviceId && (options?.enabled ?? true),
     });
 }
-
 export function useReplaceDeviceShares() {
     return useMutationWithMessage({
         mutationFn: ({ deviceId, data }: { deviceId: string; data: Device.ReplaceSharesDto }) =>
@@ -150,23 +161,30 @@ export function useReplaceDeviceShares() {
         invalidateKeys: [shareKeys.all, deviceKeys.all],
     });
 }
-
-export function useDeviceGroupShares(groupId?: string, options?: { enabled?: boolean }) {
+export function useDeviceGroupShares(
+    groupId?: string,
+    options?: {
+        enabled?: boolean;
+    }
+) {
     return useSnapshotQuery({
         queryKey: shareKeys.list('group', groupId ?? ''),
         queryFn: () => api.getDeviceGroupShares(groupId as string),
         enabled: !!groupId && (options?.enabled ?? true),
     });
 }
-
-export function useDeviceGroupShareTargets(groupId?: string, options?: { enabled?: boolean }) {
+export function useDeviceGroupShareTargets(
+    groupId?: string,
+    options?: {
+        enabled?: boolean;
+    }
+) {
     return useSnapshotQuery({
         queryKey: shareKeys.targets('group', groupId ?? ''),
         queryFn: () => api.getDeviceGroupShareTargets(groupId as string),
         enabled: !!groupId && (options?.enabled ?? true),
     });
 }
-
 export function useReplaceDeviceGroupShares() {
     return useMutationWithMessage({
         mutationFn: ({ groupId, data }: { groupId: string; data: Device.ReplaceSharesDto }) =>
@@ -175,7 +193,6 @@ export function useReplaceDeviceGroupShares() {
         invalidateKeys: [shareKeys.all, deviceKeys.all, groupKeys.all],
     });
 }
-
 export function useDeviceGroupTree(
     options?: Omit<UseQueryOptions<DeviceGroup.TreeItem[]>, 'queryKey' | 'queryFn'>
 ) {
@@ -185,7 +202,6 @@ export function useDeviceGroupTree(
         ...options,
     });
 }
-
 export function useDeviceGroupTreeWithCount(
     options?: Omit<UseQueryOptions<DeviceGroup.TreeItem[]>, 'queryKey' | 'queryFn'>
 ) {
@@ -195,10 +211,11 @@ export function useDeviceGroupTreeWithCount(
         ...options,
     });
 }
-
 export function useDeviceGroupSave() {
     return useSaveMutation<
-        DeviceGroup.CreateDto & { id?: string },
+        DeviceGroup.CreateDto & {
+            id?: string;
+        },
         DeviceGroup.CreateDto,
         DeviceGroup.UpdateDto
     >({
@@ -210,7 +227,6 @@ export function useDeviceGroupSave() {
         invalidateKeys: [groupKeys.all],
     });
 }
-
 export function useDeviceGroupDelete() {
     return useMutationWithMessage({
         mutationFn: api.removeDeviceGroup,
@@ -218,7 +234,6 @@ export function useDeviceGroupDelete() {
         invalidateKeys: [groupKeys.all],
     });
 }
-
 export function useAgentOptions(options?: { enabled?: boolean }) {
     return useSnapshotQuery({
         queryKey: ['agents', 'options'],
@@ -226,13 +241,18 @@ export function useAgentOptions(options?: { enabled?: boolean }) {
         enabled: options?.enabled ?? true,
     });
 }
-
-export function useAgentEndpoints(agentId?: string, options?: { enabled?: boolean }) {
+export function useAgentEndpoints(
+    agentId?: string,
+    options?: {
+        enabled?: boolean;
+    }
+) {
     return useSnapshotQuery({
         queryKey: ['agents', agentId, 'endpoints'],
         queryFn: () => SnapshotStream.value(EMPTY_ENDPOINTS),
         enabled: options?.enabled ?? !!agentId,
     });
 }
-
 export type DeviceListResult = PaginatedResult<Device.Overview>;
+
+export { getDeviceDetail } from './device.api';

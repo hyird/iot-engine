@@ -1,6 +1,7 @@
 import { useAuthStore } from '@/store/authStore';
+import { refreshSession } from './http';
+import { type SnapshotObserver, SnapshotStream } from './snapshot-stream';
 import { consumeServerSentEvents } from './sse';
-import { SnapshotStream, type SnapshotObserver } from './snapshot-stream';
 
 class SubscriptionError extends Error {
     constructor(
@@ -49,12 +50,9 @@ async function run(url: string, connection: Connection) {
                 signal,
             });
             if (response.status === 401) {
-                refresh ??= useAuthStore
-                    .getState()
-                    .refreshAccessToken()
-                    .finally(() => {
-                        refresh = undefined;
-                    });
+                refresh ??= refreshSession().finally(() => {
+                    refresh = undefined;
+                });
                 if (await refresh) continue;
                 throw new SubscriptionError('登录状态已失效', true);
             }

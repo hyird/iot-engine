@@ -1,13 +1,10 @@
-import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
-import { createQueryKeys } from '@/utils/query';
+import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import type { PaginatedResult } from '@/utils/pagination';
+import { createQueryKeys } from '@/utils/query';
 import * as alertApi from './alert.api';
 import type { Alert } from './alert.types';
-
-export { alertApi };
-
 export const alertKeys = {
     ...createQueryKeys('alerts'),
     rules: (params?: Record<string, unknown>) => ['alerts', 'rules', params] as const,
@@ -15,14 +12,12 @@ export const alertKeys = {
     templates: (params?: Record<string, unknown>) => ['alerts', 'templates', params] as const,
     stats: () => ['alerts', 'stats'] as const,
 };
-
 export function useAlertRuleList(params?: Record<string, unknown>) {
     return useSnapshotQuery({
         queryKey: alertKeys.rules(params),
         queryFn: () => alertApi.getRules(params),
     });
 }
-
 export function useAlertRecordList(
     params?: Record<string, unknown>,
     options?: Omit<UseQueryOptions<PaginatedResult<Alert.RecordItem>>, 'queryKey' | 'queryFn'>
@@ -33,14 +28,12 @@ export function useAlertRecordList(
         ...options,
     });
 }
-
 export function useAlertTemplateList(params?: Record<string, unknown>) {
     return useSnapshotQuery({
         queryKey: alertKeys.templates(params),
         queryFn: () => alertApi.getTemplates(params),
     });
 }
-
 export function useAlertStats(
     options?: Omit<UseQueryOptions<Alert.ActiveStats>, 'queryKey' | 'queryFn'>
 ) {
@@ -50,9 +43,14 @@ export function useAlertStats(
         ...options,
     });
 }
-
 export function useAlertRuleSave() {
-    return useSaveMutation<Alert.RuleDto & { id?: string }, Alert.RuleDto, Alert.RuleDto>({
+    return useSaveMutation<
+        Alert.RuleDto & {
+            id?: string;
+        },
+        Alert.RuleDto,
+        Alert.RuleDto
+    >({
         createFn: alertApi.createRule,
         updateFn: alertApi.updateRule,
         toUpdatePayload: ({ id: _id, ...data }) => data,
@@ -61,7 +59,6 @@ export function useAlertRuleSave() {
         invalidateKeys: [alertKeys.all],
     });
 }
-
 export function useAlertRuleDelete() {
     return useMutationWithMessage({
         mutationFn: alertApi.deleteRule,
@@ -69,7 +66,6 @@ export function useAlertRuleDelete() {
         invalidateKeys: [alertKeys.all],
     });
 }
-
 export function useAlertRuleBatchDelete() {
     return useMutationWithMessage({
         mutationFn: alertApi.batchDeleteRules,
@@ -77,10 +73,11 @@ export function useAlertRuleBatchDelete() {
         invalidateKeys: [alertKeys.all],
     });
 }
-
 export function useAlertTemplateSave() {
     return useSaveMutation<
-        Alert.TemplateDto & { id?: string },
+        Alert.TemplateDto & {
+            id?: string;
+        },
         Alert.TemplateDto,
         Alert.TemplateDto
     >({
@@ -92,7 +89,6 @@ export function useAlertTemplateSave() {
         invalidateKeys: [alertKeys.all],
     });
 }
-
 export function useAlertTemplateDelete() {
     return useMutationWithMessage({
         mutationFn: alertApi.deleteTemplate,
@@ -100,7 +96,6 @@ export function useAlertTemplateDelete() {
         invalidateKeys: [alertKeys.all],
     });
 }
-
 export function useAlertApplyTemplate() {
     return useMutationWithMessage({
         mutationFn: alertApi.applyTemplate,
@@ -108,7 +103,6 @@ export function useAlertApplyTemplate() {
         invalidateKeys: [alertKeys.all],
     });
 }
-
 export function useAlertAcknowledge() {
     return useMutationWithMessage({
         mutationFn: alertApi.acknowledgeRecord,
@@ -116,7 +110,6 @@ export function useAlertAcknowledge() {
         invalidateKeys: [alertKeys.all],
     });
 }
-
 export function useAlertBatchAcknowledge() {
     return useMutationWithMessage({
         mutationFn: alertApi.batchAcknowledge,
@@ -124,7 +117,6 @@ export function useAlertBatchAcknowledge() {
         invalidateKeys: [alertKeys.all],
     });
 }
-
 export function useDeviceOptions(options?: { enabled?: boolean }) {
     return useSnapshotQuery({
         queryKey: ['devices', 'options'],
@@ -132,3 +124,5 @@ export function useDeviceOptions(options?: { enabled?: boolean }) {
         enabled: options?.enabled ?? true,
     });
 }
+
+export { alertApi };

@@ -1,8 +1,6 @@
 import { z } from 'zod';
-
 export const protocolIdSchema = z.uuid({ error: 'id 必须是 UUID' });
 export const protocolTypeSchema = z.enum(['SL651', 'Modbus', 'S7']);
-
 const configSchema = z.record(z.string(), z.unknown());
 const modbusRegisterSchema = z.object({
     id: z.string().min(1, '寄存器 ID 不能为空'),
@@ -30,7 +28,6 @@ const modbusRegisterSchema = z.object({
         .min(1, '寄存器数量不能小于 1')
         .max(4, '寄存器数量不能大于 4'),
 });
-
 const s7AreaSchema = z
     .object({
         id: z.string().min(1, '寄存器 ID 不能为空'),
@@ -38,14 +35,30 @@ const s7AreaSchema = z
         group: z.string().optional(),
         area: z.enum(['DB', 'V', 'MK', 'PE', 'PA', 'CT', 'TM']),
         dataType: z
-            .enum(['BOOL', 'INT8', 'UINT8', 'INT16', 'UINT16', 'INT32', 'UINT32', 'FLOAT', 'LREAL', 'STRING'])
+            .enum([
+                'BOOL',
+                'INT8',
+                'UINT8',
+                'INT16',
+                'UINT16',
+                'INT32',
+                'UINT32',
+                'FLOAT',
+                'LREAL',
+                'STRING',
+            ])
             .optional(),
         dbNumber: z.number().int().min(1, 'DB 编号不能小于 1').optional(),
         start: z.number().int().min(0, '起始偏移不能小于 0'),
         startBit: z.number().int().min(0, '位号不能小于 0').max(7, '位号只能是 0~7').optional(),
         size: z.number().int().min(1, '长度不能小于 1'),
         unit: z.string().optional(),
-        decimals: z.number().int().min(-1, '小数位不能小于 -1').max(8, '小数位不能大于 8').optional(),
+        decimals: z
+            .number()
+            .int()
+            .min(-1, '小数位不能小于 -1')
+            .max(8, '小数位不能大于 8')
+            .optional(),
         writable: z.boolean().optional(),
         remark: z.string().optional(),
     })
@@ -57,18 +70,15 @@ const s7AreaSchema = z
                 message: 'DB 区域必须填写 DB 编号',
             });
     });
-
 function isObject(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-
 const baseSchema = z.object({
     name: z.string().trim().min(1, '请输入配置名称').max(64, '配置名称最多64个字符'),
     enabled: z.boolean().optional(),
     config: configSchema,
     remark: z.string().optional(),
 });
-
 export const protocolCreateSchema = baseSchema
     .extend({ protocol: protocolTypeSchema })
     .superRefine((value, context) => {
@@ -172,5 +182,4 @@ export const protocolCreateSchema = baseSchema
             }
         }
     });
-
 export const protocolUpdateSchema = baseSchema.partial();

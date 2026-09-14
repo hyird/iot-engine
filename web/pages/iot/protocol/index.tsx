@@ -1,0 +1,5075 @@
+import { DownloadOutlined, HolderOutlined, UploadOutlined } from '@ant-design/icons';
+import type { DragEndEvent } from '@dnd-kit/core';
+import { closestCenter, DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
+import {
+    arrayMove,
+    rectSortingStrategy,
+    SortableContext,
+    useSortable,
+    verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import {
+    App,
+    AutoComplete,
+    Button,
+    Card,
+    Col,
+    Divider,
+    Empty,
+    Flex,
+    Form,
+    Input,
+    InputNumber,
+    Modal,
+    Popconfirm,
+    Result,
+    Row,
+    Select,
+    Skeleton,
+    Space,
+    Switch,
+    Table,
+    Tag,
+    Tooltip,
+    Tree,
+} from 'antd';
+import type { ColumnsType, TableProps } from 'antd/es/table';
+import type { CSSProperties, ForwardedRef, HTMLAttributes, ReactNode } from 'react';
+import {
+    createContext,
+    forwardRef,
+    memo,
+    useCallback,
+    useContext,
+    useEffect,
+    useImperativeHandle,
+    useLayoutEffect,
+    useMemo,
+    useRef,
+    useState,
+} from 'react';
+import { FormModal } from '@/components/FormModal';
+import { PageContainer } from '@/components/PageContainer';
+import { usePermissions } from '@/hooks/usePermission';
+import type {
+    DeviceTypeFormValues,
+    FormCondition,
+    FormMapItem,
+    DeviceTypeModalRef as importedDeviceTypeModalRef,
+    RegisterModalRef,
+    SaveMutation,
+} from './protocol.service';
+import {
+    AREA_CARD_GRID_STYLE,
+    areaAddressHintMap,
+    ByteOrderOptions,
+    bitOnlyAreaTypes,
+    buildConnectionConfig,
+    buildGroupSections,
+    buildRegisterGroupSections,
+    buildRemoteTsapFromRackSlot,
+    checkAddressConflict,
+    connectionTypeOptions,
+    connectionTypeTips,
+    DataTypeOptions,
+    defaultConfig,
+    EncodeList,
+    formatScaleValue,
+    formatTsapValue,
+    generateId,
+    getAddressRuleText,
+    getAddressSuffixExample,
+    getAreaAddressRangeText,
+    getAreaAddressSample,
+    getAreaDataTypeOptions,
+    getAreaTypeOptions,
+    getConnectionFormValues,
+    getConnectionModeLabel,
+    getConnectionModeOptions,
+    getConnectionModeTip,
+    getConnectionTypeLabel,
+    getDataTypeSize,
+    getDeviceTypeFormValues,
+    getGroupKey,
+    getPlcPreset,
+    getQuantityByDataType,
+    getRegisterTypeMeta,
+    inferConnectionMode,
+    ModbusConfigurationNormalizeGroupName,
+    normalizeAreaTypeForPlcModel,
+    normalizeGroupName,
+    normalizeModbusRegisters,
+    normalizePacketConfig,
+    normalizeS7DataType,
+    numberOrDefault,
+    numericInputClassName,
+    numericUnitClassName,
+    pairedFormItemClassName,
+    plcModelOptions,
+    REGISTER_CARD_GRID_STYLE,
+    REGISTER_TYPE_META,
+    REGISTER_TYPE_ORDER,
+    RegisterTypeOptions,
+    reorderItemsByGroupOrder,
+    reorderItemsWithinGroupOrder,
+    S7ConfigurationGenerateId,
+    S7ConfigurationGetDeviceTypeFormValues,
+    Sl651FormGenerateId,
+    Sl651FormGetDeviceTypeFormValues,
+    sortSectionsByOrder,
+    supportsBitAddress,
+    supportsS7Decimals,
+    useFilterableGroupOptions,
+    useProtocolConfigDelete,
+    useProtocolConfigList,
+    useProtocolConfigSave,
+    useProtocolImportExport,
+    validateTsapValue,
+    writableAreaTypes,
+} from './protocol.service';
+import type { Modbus, ModbusDictConfig, Protocol, S7, SL651 } from './protocol.types';
+import { STORAGE_POLICY_OPTIONS } from './protocol.types';
+/**
+ * Modbus 设备类型编辑弹窗（从 ModbusConfig 抽离）
+ */
+export interface DeviceTypeModalProps {
+    onSuccess?: () => void;
+    saveMutation: ReturnType<typeof useProtocolConfigSave>;
+}
+export const DeviceTypeModal = forwardRef<importedDeviceTypeModalRef, DeviceTypeModalProps>(
+    ({ onSuccess, saveMutation }, ref) => {
+        const [open, setOpen] = useState(false);
+        const [mode, setMode] = useState<'create' | 'edit'>('create');
+        const [current, setCurrent] = useState<Protocol.Item>();
+        const [form] = Form.useForm();
+        useImperativeHandle(ref, () => ({
+            open(m, data) {
+                setMode(m);
+                setCurrent(data);
+                setOpen(true);
+            },
+        }));
+        useEffect(() => {
+            if (!open) return;
+            form.resetFields();
+            form.setFieldsValue(getDeviceTypeFormValues(current));
+        }, [current, form, open]);
+        const handleOk = async () => {
+            const values = await form.validateFields();
+            const existingConfig = (current?.config as Modbus.Config) || { registers: [] };
+            const packet = normalizePacketConfig({
+                mergeGap: values.packetMergeGap,
+                maxQuantity: values.packetMaxQuantity,
+            });
+            await saveMutation.mutateAsync({
+                id: current?.id,
+                protocol: 'Modbus',
+                name: values.name,
+                enabled: values.enabled,
+                config: {
+                    byteOrder: values.byteOrder,
+                    readInterval: values.readInterval,
+                    storagePolicy: values.storagePolicy,
+                    commandFastReadDuration: values.commandFastReadDuration,
+                    commandFastReadInterval: values.commandFastReadInterval,
+                    packet,
+                    registers: normalizeModbusRegisters(existingConfig.registers),
+                },
+                remark: values.remark,
+            });
+            onSuccess?.();
+            setOpen(false);
+        };
+        return (
+            <FormModal
+                title={mode === 'create' ? '新增设备类型' : '编辑设备类型'}
+                open={open}
+                onOk={handleOk}
+                onCancel={() => setOpen(false)}
+                confirmLoading={saveMutation.isPending}
+                forceRender
+            >
+                <Form form={form} layout="vertical" initialValues={getDeviceTypeFormValues()}>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        基础信息
+                    </Divider>
+                    <Flex gap={16} align="start">
+                        <Form.Item
+                            label="名称"
+                            name="name"
+                            rules={[{ required: true, message: '请输入名称' }]}
+                            className={pairedFormItemClassName}
+                        >
+                            <Input placeholder="如：温湿度传感器、电表" maxLength={64} />
+                        </Form.Item>
+                        <Form.Item
+                            label="字节序"
+                            name="byteOrder"
+                            rules={[{ required: true, message: '请选择字节序' }]}
+                            extra="不同字节序将影响寄存器值解析"
+                            className={pairedFormItemClassName}
+                        >
+                            <Select options={ByteOrderOptions} />
+                        </Form.Item>
+                    </Flex>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        采集与存储
+                    </Divider>
+                    <Flex gap={16} align="start">
+                        <Form.Item
+                            label="读取间隔（秒）"
+                            extra="数值越小采集越频繁，建议按设备负载设置间隔"
+                            className={pairedFormItemClassName}
+                        >
+                            <Space.Compact block>
+                                <Form.Item name="readInterval" noStyle>
+                                    <InputNumber
+                                        min={1}
+                                        max={3600}
+                                        className={numericInputClassName}
+                                    />
+                                </Form.Item>
+                                <Input
+                                    value="秒"
+                                    readOnly
+                                    tabIndex={-1}
+                                    className={numericUnitClassName}
+                                    aria-label="单位：秒"
+                                />
+                            </Space.Compact>
+                        </Form.Item>
+                        <Form.Item
+                            label="存储策略"
+                            name="storagePolicy"
+                            rules={[{ required: true, message: '请选择存储策略' }]}
+                            extra="上报时存储每条历史数据；数据改变时仅在点位值变化时存储"
+                            className={pairedFormItemClassName}
+                        >
+                            <Select options={STORAGE_POLICY_OPTIONS} />
+                        </Form.Item>
+                    </Flex>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        下发快读
+                    </Divider>
+                    <Flex gap={16} align="start">
+                        <Form.Item
+                            label="下发快读窗口"
+                            className={pairedFormItemClassName}
+                            extra="下发成功后保持快读的时长，0 表示关闭"
+                        >
+                            <Space.Compact block>
+                                <Form.Item name="commandFastReadDuration" noStyle>
+                                    <InputNumber
+                                        min={0}
+                                        max={3600}
+                                        className={numericInputClassName}
+                                    />
+                                </Form.Item>
+                                <Input
+                                    value="秒"
+                                    readOnly
+                                    tabIndex={-1}
+                                    className={numericUnitClassName}
+                                    aria-label="单位：秒"
+                                />
+                            </Space.Compact>
+                        </Form.Item>
+                        <Form.Item
+                            label="快读间隔"
+                            className={pairedFormItemClassName}
+                            extra="快读窗口内的读取间隔"
+                        >
+                            <Space.Compact block>
+                                <Form.Item name="commandFastReadInterval" noStyle>
+                                    <InputNumber
+                                        min={1}
+                                        max={60}
+                                        className={numericInputClassName}
+                                    />
+                                </Form.Item>
+                                <Input
+                                    value="秒"
+                                    readOnly
+                                    tabIndex={-1}
+                                    className={numericUnitClassName}
+                                    aria-label="单位：秒"
+                                />
+                            </Space.Compact>
+                        </Form.Item>
+                    </Flex>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        组包参数
+                    </Divider>
+                    <Flex gap={16} align="start">
+                        <Form.Item
+                            label="组包地址间隙"
+                            className={pairedFormItemClassName}
+                            extra="地址间隙 <= 该值时会合并成同一读包，0 表示只合并连续地址"
+                        >
+                            <Space.Compact block>
+                                <Form.Item name="packetMergeGap" noStyle>
+                                    <InputNumber
+                                        min={0}
+                                        max={2000}
+                                        className={numericInputClassName}
+                                    />
+                                </Form.Item>
+                                <Input
+                                    value="寄存器"
+                                    readOnly
+                                    tabIndex={-1}
+                                    className={numericUnitClassName}
+                                    aria-label="单位：寄存器"
+                                />
+                            </Space.Compact>
+                        </Form.Item>
+                        <Form.Item
+                            label="单包最大寄存器数"
+                            className={pairedFormItemClassName}
+                            extra="每个读包最多读取的字寄存器数量"
+                        >
+                            <Space.Compact block>
+                                <Form.Item name="packetMaxQuantity" noStyle>
+                                    <InputNumber
+                                        min={1}
+                                        max={125}
+                                        className={numericInputClassName}
+                                    />
+                                </Form.Item>
+                                <Input
+                                    value="个"
+                                    readOnly
+                                    tabIndex={-1}
+                                    className={numericUnitClassName}
+                                    aria-label="单位：个"
+                                />
+                            </Space.Compact>
+                        </Form.Item>
+                    </Flex>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        其他
+                    </Divider>
+                    <Form.Item label="备注" name="remark">
+                        <Input.TextArea rows={3} placeholder="备注说明" />
+                    </Form.Item>
+                    <Form.Item label="启用" name="enabled" valuePropName="checked">
+                        <Switch />
+                    </Form.Item>
+                </Form>
+            </FormModal>
+        );
+    }
+);
+
+/**
+ * Modbus 寄存器编辑弹窗（从 ModbusConfig 抽离）
+ */
+export interface RegisterModalProps {
+    types: Protocol.Item[];
+    onSuccess?: () => void;
+    saveMutation: ReturnType<typeof useProtocolConfigSave>;
+}
+export const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
+    ({ types, onSuccess, saveMutation }, ref) => {
+        const [open, setOpen] = useState(false);
+        const [mode, setMode] = useState<'create' | 'edit'>('create');
+        const [typeId, setTypeId] = useState<string>();
+        const [current, setCurrent] = useState<Modbus.Register>();
+        const [form] = Form.useForm();
+        // 监听寄存器类型和数据类型变化
+        const registerType = Form.useWatch('registerType', form);
+        const dataType = Form.useWatch('dataType', form);
+        const groupNames = useMemo(() => {
+            const currentType = types.find((t) => t.id === typeId);
+            const config = currentType?.config as Modbus.Config | undefined;
+            const groups = new Set<string>();
+            for (const register of config?.registers || []) {
+                const group = ModbusConfigurationNormalizeGroupName(register.group);
+                if (group) groups.add(group);
+            }
+            const currentGroup = ModbusConfigurationNormalizeGroupName(current?.group);
+            if (currentGroup) groups.add(currentGroup);
+            return Array.from(groups);
+        }, [current?.group, typeId, types]);
+        const groupOptions = useFilterableGroupOptions(groupNames);
+        useImperativeHandle(ref, () => ({
+            open(m, t, register) {
+                setMode(m);
+                setTypeId(t);
+                setCurrent(register);
+                form.resetFields();
+                if (register) {
+                    form.setFieldsValue({
+                        ...register,
+                        group: ModbusConfigurationNormalizeGroupName(register.group) || undefined,
+                        scale: typeof register.scale === 'number' ? register.scale : 1,
+                        boolLabel0: register.dictConfig?.items?.find((i) => i.key === '0')?.label,
+                        boolLabel1: register.dictConfig?.items?.find((i) => i.key === '1')?.label,
+                    });
+                } else {
+                    form.setFieldsValue({
+                        registerType: 'HOLDING_REGISTER',
+                        dataType: 'INT16',
+                        writable: false,
+                        scale: 1,
+                    });
+                }
+                setOpen(true);
+            },
+        }));
+        const handleOk = async () => {
+            if (!typeId) return;
+            const values = await form.validateFields();
+            const type = types.find((t) => t.id === typeId);
+            if (!type) return;
+            const config = type.config as Modbus.Config;
+            const registers = normalizeModbusRegisters(config.registers);
+            const actualQuantity = getQuantityByDataType(values.dataType);
+            // 检查地址 + 数量是否溢出 uint16 范围
+            if (values.address + actualQuantity - 1 > 65535) {
+                Modal.error({
+                    title: '地址溢出',
+                    content: `地址 ${values.address} + 数量 ${actualQuantity} 超出范围（末地址不能超过 65535）`,
+                });
+                return;
+            }
+            // 检查地址冲突
+            const conflictCheck = checkAddressConflict(
+                registers,
+                {
+                    registerType: values.registerType,
+                    address: values.address,
+                    quantity: actualQuantity,
+                },
+                mode === 'edit' ? current?.id : undefined
+            );
+            if (conflictCheck.conflict) {
+                const reg = conflictCheck.conflictWith;
+                if (!reg) return;
+                Modal.error({
+                    title: '地址冲突',
+                    content: `与寄存器「${reg.name}」地址范围冲突 (地址 ${reg.address}-${reg.address + reg.quantity - 1})`,
+                });
+                return;
+            }
+            // 构建 dictConfig（Bool 值映射；非 BOOL 类型保留已有配置）
+            let dictConfig: ModbusDictConfig | undefined;
+            if (values.dataType === 'BOOL') {
+                dictConfig =
+                    values.boolLabel0 || values.boolLabel1
+                        ? {
+                              items: [
+                                  ...(values.boolLabel0
+                                      ? [{ key: '0', label: values.boolLabel0 }]
+                                      : []),
+                                  ...(values.boolLabel1
+                                      ? [{ key: '1', label: values.boolLabel1 }]
+                                      : []),
+                              ],
+                          }
+                        : undefined;
+            } else {
+                // 非 BOOL 类型：编辑时保留已有 dictConfig，创建时无
+                dictConfig = mode === 'edit' ? current?.dictConfig : undefined;
+            }
+            // 仅 COIL/HOLDING_REGISTER 可配置 writable，其他类型始终 false
+            const isWritableType =
+                values.registerType === 'COIL' || values.registerType === 'HOLDING_REGISTER';
+            const writable = isWritableType ? !!values.writable : false;
+            const inputScale = Number(values.scale);
+            const scale =
+                values.registerType === 'COIL' || values.registerType === 'DISCRETE_INPUT'
+                    ? 1
+                    : Number.isFinite(inputScale) && inputScale > 0
+                      ? inputScale
+                      : 1;
+            const group = ModbusConfigurationNormalizeGroupName(values.group);
+            const registerFields = {
+                name: values.name,
+                group: group || undefined,
+                registerType: values.registerType,
+                address: values.address,
+                dataType: values.dataType,
+                byteOrder:
+                    values.registerType === 'HOLDING_REGISTER' ||
+                    values.registerType === 'INPUT_REGISTER'
+                        ? values.byteOrder || undefined
+                        : undefined,
+                quantity: actualQuantity,
+                writable,
+                unit: values.unit,
+                scale,
+                decimals: values.decimals,
+                dictConfig,
+                remark: values.remark,
+            };
+            let newRegisters: Modbus.Register[];
+            if (mode === 'create') {
+                newRegisters = [...registers, { id: generateId(), ...registerFields }];
+            } else {
+                newRegisters = registers.map((r) =>
+                    r.id === current?.id ? { ...r, ...registerFields } : r
+                );
+            }
+            await saveMutation.mutateAsync({
+                id: typeId,
+                protocol: 'Modbus',
+                config: {
+                    byteOrder: config.byteOrder,
+                    readInterval: config.readInterval,
+                    packet: normalizePacketConfig(config.packet),
+                    registers: newRegisters,
+                },
+            });
+            onSuccess?.();
+            setOpen(false);
+        };
+        // 线圈/离散输入只支持 BOOL；保持寄存器/输入寄存器不支持 BOOL
+        const isBitRegister = registerType === 'COIL' || registerType === 'DISCRETE_INPUT';
+        const isWordRegister =
+            registerType === 'HOLDING_REGISTER' || registerType === 'INPUT_REGISTER';
+        return (
+            <FormModal
+                title={mode === 'create' ? '新增寄存器' : '编辑寄存器'}
+                open={open}
+                onOk={handleOk}
+                onCancel={() => setOpen(false)}
+                confirmLoading={saveMutation.isPending}
+                forceRender
+            >
+                <Form form={form} layout="vertical">
+                    <Form.Item
+                        label="名称"
+                        name="name"
+                        rules={[{ required: true, message: '请输入名称' }]}
+                    >
+                        <Input placeholder="如：温度、湿度、电压" />
+                    </Form.Item>
+
+                    <Form.Item
+                        label="分组"
+                        name="group"
+                        extra="同一分组的寄存器会在配置页聚合为同一组卡片，留空则显示在未分组中"
+                    >
+                        <AutoComplete
+                            allowClear
+                            options={groupOptions.options}
+                            placeholder="例如：基础信息、告警、控制"
+                            filterOption={false}
+                            onDropdownVisibleChange={groupOptions.onDropdownVisibleChange}
+                            onSearch={groupOptions.onSearch}
+                        />
+                    </Form.Item>
+
+                    <Flex gap={16}>
+                        <Form.Item
+                            label="寄存器类型"
+                            name="registerType"
+                            rules={[{ required: true, message: '请选择寄存器类型' }]}
+                            className="flex-1"
+                        >
+                            <Select
+                                options={RegisterTypeOptions}
+                                onChange={(val) => {
+                                    if (val === 'COIL' || val === 'DISCRETE_INPUT') {
+                                        form.setFieldsValue({
+                                            dataType: 'BOOL',
+                                            decimals: undefined,
+                                            writable: false,
+                                            scale: 1,
+                                            byteOrder: undefined,
+                                        });
+                                    } else if (form.getFieldValue('dataType') === 'BOOL') {
+                                        form.setFieldsValue({
+                                            dataType: 'INT16',
+                                            decimals: undefined,
+                                            boolLabel0: undefined,
+                                            boolLabel1: undefined,
+                                        });
+                                    }
+                                    // 切换到只读类型时清除 writable
+                                    if (val === 'DISCRETE_INPUT' || val === 'INPUT_REGISTER') {
+                                        form.setFieldsValue({ writable: false });
+                                    }
+                                }}
+                            />
+                        </Form.Item>
+                        <Form.Item
+                            label="地址"
+                            name="address"
+                            rules={[{ required: true, message: '请输入地址' }]}
+                            className="flex-1"
+                        >
+                            <InputNumber
+                                min={0}
+                                max={65535}
+                                className="!w-full"
+                                placeholder="0-65535"
+                            />
+                        </Form.Item>
+                    </Flex>
+
+                    <Form.Item
+                        label="数据类型"
+                        name="dataType"
+                        rules={[{ required: true, message: '请选择数据类型' }]}
+                    >
+                        <Select
+                            options={
+                                isBitRegister
+                                    ? [
+                                          {
+                                              value: 'BOOL' as const,
+                                              label: 'BOOL (1 bit)',
+                                              quantity: 1,
+                                          },
+                                      ]
+                                    : isWordRegister
+                                      ? DataTypeOptions.filter((o) => o.value !== 'BOOL')
+                                      : DataTypeOptions
+                            }
+                            disabled={isBitRegister}
+                            onChange={() => {
+                                form.setFieldsValue({
+                                    decimals: undefined,
+                                    boolLabel0: undefined,
+                                    boolLabel1: undefined,
+                                });
+                            }}
+                        />
+                    </Form.Item>
+
+                    {isWordRegister && (
+                        <Form.Item
+                            label="字节序"
+                            name="byteOrder"
+                            extra="留空时继承设备配置；选择后仅覆盖当前寄存器的读写字节序"
+                        >
+                            <Select
+                                allowClear
+                                options={ByteOrderOptions}
+                                placeholder="继承设备配置"
+                            />
+                        </Form.Item>
+                    )}
+
+                    {dataType === 'BOOL' && (
+                        <Flex gap={16}>
+                            <Form.Item label="0 值显示" name="boolLabel0" className="flex-1">
+                                <Input placeholder="如：关闭、OFF" />
+                            </Form.Item>
+                            <Form.Item label="1 值显示" name="boolLabel1" className="flex-1">
+                                <Input placeholder="如：开启、ON" />
+                            </Form.Item>
+                        </Flex>
+                    )}
+
+                    <Flex gap={16}>
+                        <Form.Item label="单位" name="unit" className="flex-1">
+                            <Input placeholder="如：V、A、℃、%" />
+                        </Form.Item>
+                        <Form.Item
+                            label="缩放系数"
+                            name="scale"
+                            className="flex-1"
+                            extra="入库值 = 原始值 × 缩放系数（默认 1）"
+                            rules={[
+                                {
+                                    validator: async (_, value) => {
+                                        const numericValue = Number(value);
+                                        if (!Number.isFinite(numericValue) || numericValue <= 0) {
+                                            throw new Error('请输入大于 0 的缩放系数');
+                                        }
+                                    },
+                                },
+                            ]}
+                        >
+                            <InputNumber
+                                min={0.000001 as number}
+                                max={1000000 as number}
+                                step={0.1}
+                                precision={6}
+                                formatter={(value) => formatScaleValue(value)}
+                                parser={(value) => Number(value || 1)}
+                                className="!w-full"
+                                disabled={isBitRegister}
+                            />
+                        </Form.Item>
+                        {(dataType === 'FLOAT32' || dataType === 'DOUBLE') && (
+                            <Form.Item label="小数位数" name="decimals" className="flex-1">
+                                <InputNumber
+                                    min={0}
+                                    max={8}
+                                    placeholder="不限制"
+                                    className="!w-full"
+                                />
+                            </Form.Item>
+                        )}
+                    </Flex>
+
+                    {(registerType === 'COIL' || registerType === 'HOLDING_REGISTER') && (
+                        <Form.Item
+                            label="可写"
+                            name="writable"
+                            valuePropName="checked"
+                            extra="开启后该寄存器可用于写操作下发"
+                        >
+                            <Switch />
+                        </Form.Item>
+                    )}
+
+                    <Form.Item label="备注" name="remark">
+                        <Input placeholder="备注信息" />
+                    </Form.Item>
+                </Form>
+            </FormModal>
+        );
+    }
+);
+
+interface SortableGroupSectionFrameProps {
+    id: string;
+    title: ReactNode;
+    description?: ReactNode;
+    meta?: ReactNode;
+    actions?: ReactNode;
+    children: ReactNode;
+    disabled?: boolean;
+    className?: string;
+    bodyClassName?: string;
+    style?: CSSProperties;
+}
+export const SortableGroupSectionFrame = memo(
+    ({
+        id,
+        title,
+        description,
+        meta,
+        actions,
+        children,
+        disabled = false,
+        className,
+        bodyClassName,
+        style,
+    }: SortableGroupSectionFrameProps) => {
+        const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+            useSortable({
+                id,
+                disabled,
+            });
+        return (
+            <section
+                ref={setNodeRef}
+                className={className}
+                style={{
+                    transform: CSS.Transform.toString(transform),
+                    transition: transition || undefined,
+                    opacity: isDragging ? 0.75 : 1,
+                    zIndex: isDragging ? 1 : undefined,
+                    ...style,
+                }}
+            >
+                <Flex justify="space-between" align="center" gap={12} wrap className="mb-3">
+                    <div className="min-w-0">
+                        <div className="text-sm font-semibold text-slate-800">{title}</div>
+                        {description ? (
+                            <div className="mt-1 text-xs text-slate-500">{description}</div>
+                        ) : null}
+                    </div>
+
+                    <Space size={6} wrap>
+                        {meta}
+                        {actions}
+                        <Button
+                            type="text"
+                            size="small"
+                            icon={<HolderOutlined />}
+                            disabled={disabled}
+                            aria-label="拖拽排序"
+                            title="拖拽排序"
+                            className="!cursor-grab active:!cursor-grabbing"
+                            style={{ touchAction: 'none' }}
+                            {...attributes}
+                            {...listeners}
+                        />
+                    </Space>
+                </Flex>
+
+                <div className={bodyClassName}>{children}</div>
+            </section>
+        );
+    }
+);
+interface SortableGroupItemFrameProps {
+    id: string;
+    children: (dragHandle: ReactNode) => ReactNode;
+    disabled?: boolean;
+    className?: string;
+    style?: CSSProperties;
+}
+export const SortableGroupItemFrame = memo(
+    ({ id, children, disabled = false, className, style }: SortableGroupItemFrameProps) => {
+        const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+            useSortable({
+                id,
+                disabled,
+            });
+        const dragHandle = (
+            <Button
+                type="text"
+                size="small"
+                icon={<HolderOutlined />}
+                disabled={disabled}
+                aria-label="拖拽排序"
+                title="拖拽排序"
+                className="!cursor-grab active:!cursor-grabbing"
+                style={{ touchAction: 'none' }}
+                {...attributes}
+                {...listeners}
+            />
+        );
+        return (
+            <div
+                ref={setNodeRef}
+                className={className}
+                style={{
+                    transform: CSS.Transform.toString(transform),
+                    transition: transition || undefined,
+                    opacity: isDragging ? 0.75 : 1,
+                    zIndex: isDragging ? 1 : undefined,
+                    ...style,
+                }}
+            >
+                {children(dragHandle)}
+            </div>
+        );
+    }
+);
+interface SortableGroupSectionListProps<
+    T extends {
+        key: string;
+    },
+> {
+    sections: T[];
+    children: (section: T) => ReactNode;
+    empty?: ReactNode;
+    className?: string;
+    disabled?: boolean;
+    onOrderChange?: (nextOrder: string[]) => void;
+}
+const areOrdersEqual = (left: string[], right: string[]) =>
+    left.length === right.length && left.every((value, index) => value === right[index]);
+const reconcileOrder = (previousOrder: string[], currentKeys: string[]) => {
+    if (currentKeys.length === 0) return [];
+    if (previousOrder.length === 0) return currentKeys;
+    const currentKeySet = new Set(currentKeys);
+    const filtered = previousOrder.filter((key) => currentKeySet.has(key));
+    const missing = currentKeys.filter((key) => !filtered.includes(key));
+    if (filtered.length === 0) return currentKeys;
+    const nextOrder = [...filtered, ...missing];
+    return areOrdersEqual(previousOrder, nextOrder) ? previousOrder : nextOrder;
+};
+const findVerticalScrollParent = (element: HTMLElement) => {
+    let parent = element.parentElement;
+    while (parent) {
+        const overflowY = window.getComputedStyle(parent).overflowY;
+        if (overflowY === 'auto' || overflowY === 'scroll') return parent;
+        parent = parent.parentElement;
+    }
+    return null;
+};
+interface VirtualStackProps<T> {
+    items: T[];
+    getItemKey: (item: T) => string;
+    children: (item: T, index: number) => ReactNode;
+    className?: string;
+    estimateSize?: number;
+    gap?: number;
+    overscan?: number;
+}
+export const VirtualStack = <T,>({
+    items,
+    getItemKey,
+    children,
+    className,
+    estimateSize = 320,
+    gap = 16,
+    overscan = 4,
+}: VirtualStackProps<T>) => {
+    const rootRef = useRef<HTMLDivElement>(null);
+    const [scrollElement, setScrollElement] = useState<HTMLElement | null>(null);
+    const [scrollMargin, setScrollMargin] = useState(0);
+    useLayoutEffect(() => {
+        if (!rootRef.current) return;
+        setScrollElement(findVerticalScrollParent(rootRef.current));
+    }, []);
+    const updateScrollMargin = useCallback(() => {
+        const root = rootRef.current;
+        if (!root || !scrollElement) return;
+        const rootRect = root.getBoundingClientRect();
+        const scrollRect = scrollElement.getBoundingClientRect();
+        const nextMargin = rootRect.top - scrollRect.top + scrollElement.scrollTop;
+        setScrollMargin((currentMargin) =>
+            Math.abs(currentMargin - nextMargin) < 0.5 ? currentMargin : nextMargin
+        );
+    }, [scrollElement]);
+    useLayoutEffect(() => {
+        const root = rootRef.current;
+        if (!root || !scrollElement) return;
+        updateScrollMargin();
+        const observer = new ResizeObserver(updateScrollMargin);
+        observer.observe(scrollElement);
+        let ancestor = root.parentElement;
+        while (ancestor && ancestor !== scrollElement) {
+            observer.observe(ancestor);
+            ancestor = ancestor.parentElement;
+        }
+        window.addEventListener('resize', updateScrollMargin);
+        return () => {
+            observer.disconnect();
+            window.removeEventListener('resize', updateScrollMargin);
+        };
+    }, [scrollElement, updateScrollMargin]);
+    const virtualizer = useVirtualizer<HTMLElement, HTMLDivElement>({
+        count: items.length,
+        getScrollElement: () => scrollElement,
+        estimateSize: () => estimateSize,
+        getItemKey: (index) => getItemKey(items[index]),
+        overscan,
+        scrollMargin,
+    });
+    return (
+        <div className={className}>
+            <div
+                ref={rootRef}
+                className="relative w-full"
+                style={{ height: virtualizer.getTotalSize() }}
+            >
+                {virtualizer.getVirtualItems().map((virtualItem) => (
+                    <div
+                        key={virtualItem.key}
+                        ref={virtualizer.measureElement}
+                        data-index={virtualItem.index}
+                        className="absolute left-0 top-0 w-full"
+                        style={{
+                            transform: `translateY(${virtualItem.start - scrollMargin}px)`,
+                            paddingBottom: gap,
+                        }}
+                    >
+                        {children(items[virtualItem.index], virtualItem.index)}
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+};
+interface VirtualGridProps<T> extends VirtualStackProps<T> {
+    gridClassName?: string;
+    gridStyle?: CSSProperties;
+    minItemWidth?: number;
+}
+const VirtualGrid = <T,>({
+    items,
+    getItemKey,
+    children,
+    className,
+    gridClassName,
+    gridStyle,
+    minItemWidth = 280,
+    estimateSize = 220,
+    gap = 12,
+    overscan,
+}: VirtualGridProps<T>) => {
+    const widthRef = useRef<HTMLDivElement>(null);
+    const [columnCount, setColumnCount] = useState(1);
+    useLayoutEffect(() => {
+        const root = widthRef.current;
+        if (!root) return;
+        const updateColumnCount = () => {
+            const width = root.getBoundingClientRect().width;
+            const nextCount = Math.max(1, Math.floor((width + gap) / (minItemWidth + gap)));
+            setColumnCount((currentCount) =>
+                currentCount === nextCount ? currentCount : nextCount
+            );
+        };
+        updateColumnCount();
+        const observer = new ResizeObserver(updateColumnCount);
+        observer.observe(root);
+        return () => observer.disconnect();
+    }, [gap, minItemWidth]);
+    const rows = useMemo(() => {
+        const nextRows: T[][] = [];
+        for (let index = 0; index < items.length; index += columnCount) {
+            nextRows.push(items.slice(index, index + columnCount));
+        }
+        return nextRows;
+    }, [columnCount, items]);
+    return (
+        <div ref={widthRef} className={className}>
+            <VirtualStack
+                items={rows}
+                getItemKey={(row) => row.map(getItemKey).join(':')}
+                estimateSize={estimateSize}
+                gap={gap}
+                overscan={overscan}
+            >
+                {(row) => (
+                    <div className={gridClassName} style={gridStyle}>
+                        {row.map((item) => children(item, items.indexOf(item)))}
+                    </div>
+                )}
+            </VirtualStack>
+        </div>
+    );
+};
+export const SortableGroupSectionList = <
+    T extends {
+        key: string;
+    },
+>({
+    sections,
+    children,
+    empty,
+    className,
+    disabled = false,
+    onOrderChange,
+}: SortableGroupSectionListProps<T>) => {
+    const currentKeys = useMemo(() => sections.map((section) => section.key), [sections]);
+    const [order, setOrder] = useState<string[]>(currentKeys);
+    useEffect(() => {
+        setOrder((previousOrder) => reconcileOrder(previousOrder, currentKeys));
+    }, [currentKeys]);
+    const orderedSections = useMemo(() => sortSectionsByOrder(sections, order), [sections, order]);
+    const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
+    const handleDragEnd = useCallback(
+        ({ active, over }: DragEndEvent) => {
+            if (!over || active.id === over.id) return;
+            const activeKey = String(active.id);
+            const overKey = String(over.id);
+            const activeIndex = order.indexOf(activeKey);
+            const overIndex = order.indexOf(overKey);
+            if (activeIndex < 0 || overIndex < 0) return;
+            const nextOrder = arrayMove(order, activeIndex, overIndex);
+            setOrder(nextOrder);
+            onOrderChange?.(nextOrder);
+        },
+        [onOrderChange, order]
+    );
+    if (orderedSections.length === 0) {
+        return empty ?? null;
+    }
+    return (
+        <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={disabled ? undefined : handleDragEnd}
+        >
+            <SortableContext
+                items={orderedSections.map((section) => section.key)}
+                strategy={verticalListSortingStrategy}
+            >
+                <VirtualStack
+                    items={orderedSections}
+                    getItemKey={(section) => section.key}
+                    className={className ?? 'w-full'}
+                    estimateSize={420}
+                    gap={24}
+                >
+                    {children}
+                </VirtualStack>
+            </SortableContext>
+        </DndContext>
+    );
+};
+interface SortableGroupItemListProps<
+    T extends {
+        id: string;
+    },
+> {
+    items: T[];
+    children: (item: T, dragHandle: ReactNode) => ReactNode;
+    empty?: ReactNode;
+    className?: string;
+    style?: CSSProperties;
+    minItemWidth?: number;
+    disabled?: boolean;
+    onOrderChange?: (nextOrder: string[]) => void;
+}
+const reconcileItemOrder = (previousOrder: string[], currentIds: string[]) => {
+    if (currentIds.length === 0) return [];
+    if (previousOrder.length === 0) return currentIds;
+    const currentIdSet = new Set(currentIds);
+    const filtered = previousOrder.filter((id) => currentIdSet.has(id));
+    const missing = currentIds.filter((id) => !filtered.includes(id));
+    if (filtered.length === 0) return currentIds;
+    const nextOrder = [...filtered, ...missing];
+    return areOrdersEqual(previousOrder, nextOrder) ? previousOrder : nextOrder;
+};
+export const SortableGroupItemList = <
+    T extends {
+        id: string;
+    },
+>({
+    items,
+    children,
+    empty,
+    className,
+    style,
+    minItemWidth = 280,
+    disabled = false,
+    onOrderChange,
+}: SortableGroupItemListProps<T>) => {
+    const currentIds = useMemo(() => items.map((item) => item.id), [items]);
+    const [order, setOrder] = useState<string[]>(currentIds);
+    useEffect(() => {
+        setOrder((previousOrder) => reconcileItemOrder(previousOrder, currentIds));
+    }, [currentIds]);
+    const orderedItems = useMemo(() => {
+        const orderIndex = new Map<string, number>(order.map((id, index) => [id, index]));
+        const originalIndex = new Map<string, number>(items.map((item, index) => [item.id, index]));
+        return [...items].sort((left, right) => {
+            const leftOrder = orderIndex.get(left.id);
+            const rightOrder = orderIndex.get(right.id);
+            if (leftOrder !== undefined && rightOrder !== undefined) {
+                return leftOrder - rightOrder;
+            }
+            if (leftOrder !== undefined) return -1;
+            if (rightOrder !== undefined) return 1;
+            return (originalIndex.get(left.id) ?? 0) - (originalIndex.get(right.id) ?? 0);
+        });
+    }, [items, order]);
+    const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
+    const handleDragEnd = useCallback(
+        ({ active, over }: DragEndEvent) => {
+            if (!over || active.id === over.id) return;
+            const activeId = String(active.id);
+            const overId = String(over.id);
+            const activeIndex = order.indexOf(activeId);
+            const overIndex = order.indexOf(overId);
+            if (activeIndex < 0 || overIndex < 0) return;
+            const nextOrder = arrayMove(order, activeIndex, overIndex);
+            setOrder(nextOrder);
+            onOrderChange?.(nextOrder);
+        },
+        [onOrderChange, order]
+    );
+    if (orderedItems.length === 0) {
+        return empty ?? null;
+    }
+    return (
+        <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={disabled ? undefined : handleDragEnd}
+        >
+            <SortableContext
+                items={orderedItems.map((item) => item.id)}
+                strategy={rectSortingStrategy}
+            >
+                <VirtualGrid
+                    items={orderedItems}
+                    getItemKey={(item) => item.id}
+                    className="w-full"
+                    gridClassName={className}
+                    gridStyle={style}
+                    minItemWidth={minItemWidth}
+                    estimateSize={220}
+                    gap={12}
+                >
+                    {(item) => (
+                        <SortableGroupItemFrame
+                            key={item.id}
+                            id={item.id}
+                            disabled={disabled}
+                            className="h-full"
+                        >
+                            {(dragHandle) => children(item, dragHandle)}
+                        </SortableGroupItemFrame>
+                    )}
+                </VirtualGrid>
+            </SortableContext>
+        </DndContext>
+    );
+};
+const SortableGroupTableDisabledContext = createContext(false);
+const SortableGroupTableDragHandleContext = createContext<ReactNode>(null);
+const assignForwardedRef = <T,>(ref: ForwardedRef<T> | null | undefined, node: T | null) => {
+    if (!ref) return;
+    if (typeof ref === 'function') {
+        ref(node);
+        return;
+    }
+    (
+        ref as {
+            current: T | null;
+        }
+    ).current = node;
+};
+const mergeForwardedRefs =
+    <T,>(...refs: Array<ForwardedRef<T> | undefined>) =>
+    (node: T | null) => {
+        refs.forEach((ref) => {
+            assignForwardedRef(ref, node);
+        });
+    };
+const SortableGroupTableDragHandleCell = memo(() => {
+    const dragHandle = useContext(SortableGroupTableDragHandleContext);
+    return <div className="flex items-center justify-center">{dragHandle}</div>;
+});
+interface SortableGroupTableRowProps extends HTMLAttributes<HTMLTableRowElement> {
+    'data-row-key'?: string | number;
+}
+const SortableGroupTableRow = forwardRef<HTMLTableRowElement, SortableGroupTableRowProps>(
+    ({ children, style, ...restProps }, ref) => {
+        const disabled = useContext(SortableGroupTableDisabledContext);
+        const rowKey = String(restProps['data-row-key'] ?? '');
+        const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+            useSortable({
+                id: rowKey,
+                disabled,
+            });
+        const dragHandle = (
+            <Button
+                type="text"
+                size="small"
+                icon={<HolderOutlined />}
+                disabled={disabled}
+                aria-label="拖拽排序"
+                title="拖拽排序"
+                className="!cursor-grab active:!cursor-grabbing"
+                style={{ touchAction: 'none' }}
+                {...attributes}
+                {...listeners}
+            />
+        );
+        return (
+            <SortableGroupTableDragHandleContext.Provider value={dragHandle}>
+                <tr
+                    ref={mergeForwardedRefs(ref, setNodeRef)}
+                    {...restProps}
+                    style={{
+                        ...style,
+                        transform: CSS.Transform.toString(transform),
+                        transition: transition || undefined,
+                        opacity: isDragging ? 0.75 : 1,
+                        zIndex: isDragging ? 1 : undefined,
+                    }}
+                >
+                    {children}
+                </tr>
+            </SortableGroupTableDragHandleContext.Provider>
+        );
+    }
+);
+interface SortableGroupTableListProps<
+    T extends {
+        id: string;
+    },
+> {
+    items: T[];
+    columns: ColumnsType<T>;
+    empty?: ReactNode;
+    className?: string;
+    style?: CSSProperties;
+    disabled?: boolean;
+    onOrderChange?: (nextOrder: string[]) => void;
+    tableProps?: Omit<TableProps<T>, 'columns' | 'dataSource' | 'rowKey' | 'components'>;
+}
+export const SortableGroupTableList = <
+    T extends {
+        id: string;
+    },
+>({
+    items,
+    columns,
+    empty,
+    className,
+    style,
+    disabled = false,
+    onOrderChange,
+    tableProps,
+}: SortableGroupTableListProps<T>) => {
+    const currentIds = useMemo(() => items.map((item) => item.id), [items]);
+    const [order, setOrder] = useState<string[]>(currentIds);
+    useEffect(() => {
+        setOrder((previousOrder) => reconcileItemOrder(previousOrder, currentIds));
+    }, [currentIds]);
+    const orderedItems = useMemo(() => {
+        const orderIndex = new Map<string, number>(order.map((id, index) => [id, index]));
+        const originalIndex = new Map<string, number>(items.map((item, index) => [item.id, index]));
+        return [...items].sort((left, right) => {
+            const leftOrder = orderIndex.get(left.id);
+            const rightOrder = orderIndex.get(right.id);
+            if (leftOrder !== undefined && rightOrder !== undefined) {
+                return leftOrder - rightOrder;
+            }
+            if (leftOrder !== undefined) return -1;
+            if (rightOrder !== undefined) return 1;
+            return (originalIndex.get(left.id) ?? 0) - (originalIndex.get(right.id) ?? 0);
+        });
+    }, [items, order]);
+    const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
+    const handleDragEnd = useCallback(
+        ({ active, over }: DragEndEvent) => {
+            if (!over || active.id === over.id) return;
+            const activeId = String(active.id);
+            const overId = String(over.id);
+            const activeIndex = order.indexOf(activeId);
+            const overIndex = order.indexOf(overId);
+            if (activeIndex < 0 || overIndex < 0) return;
+            const nextOrder = arrayMove(order, activeIndex, overIndex);
+            setOrder(nextOrder);
+            onOrderChange?.(nextOrder);
+        },
+        [onOrderChange, order]
+    );
+    const columnsWithHandle = useMemo<ColumnsType<T>>(
+        () => [
+            {
+                key: '__sortable_drag_handle__',
+                title: '',
+                width: 48,
+                fixed: 'left' as const,
+                align: 'center',
+                render: () => <SortableGroupTableDragHandleCell />,
+            },
+            ...columns,
+        ],
+        [columns]
+    );
+    if (orderedItems.length === 0) {
+        return empty ?? null;
+    }
+    const locale = {
+        ...(tableProps?.locale ?? {}),
+        emptyText: empty ?? tableProps?.locale?.emptyText ?? <Empty description="暂无数据" />,
+    };
+    const scroll = {
+        x: 'max-content' as const,
+        y: 320,
+        ...(tableProps?.scroll ?? {}),
+    };
+    return (
+        <SortableGroupTableDisabledContext.Provider value={disabled}>
+            <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={disabled ? undefined : handleDragEnd}
+            >
+                <SortableContext
+                    items={orderedItems.map((item) => item.id)}
+                    strategy={verticalListSortingStrategy}
+                >
+                    <div className={className ? className : 'w-full'} style={style}>
+                        <Table
+                            {...tableProps}
+                            rowKey="id"
+                            pagination={false}
+                            dataSource={orderedItems}
+                            columns={columnsWithHandle}
+                            components={{ body: { row: SortableGroupTableRow } }}
+                            locale={locale}
+                            sticky={tableProps?.sticky ?? true}
+                            scroll={scroll}
+                        />
+                    </div>
+                </SortableContext>
+            </DndContext>
+        </SortableGroupTableDisabledContext.Provider>
+    );
+};
+
+/**
+ * Modbus 协议配置页面
+ * 布局：左侧设备类型列表 + 右侧寄存器配置
+ */
+const ModbusConfigPage = () => {
+    // 权限检查
+    const { has } = usePermissions();
+    const canQuery = has('iot:protocol:query');
+    const canAdd = has('iot:protocol:add');
+    const canEdit = has('iot:protocol:edit');
+    const canDelete = has('iot:protocol:delete');
+    const canImport = has('iot:protocol:import') && canAdd;
+    const canExport = has('iot:protocol:export');
+    // 设备类型列表查询
+    const {
+        data: configList,
+        isLoading: loadingTypes,
+        refetch: refetchTypes,
+    } = useProtocolConfigList({ protocol: 'Modbus' }, { enabled: canQuery });
+    // 保存和删除 mutations
+    const saveMutation = useProtocolConfigSave();
+    const deleteMutation = useProtocolConfigDelete();
+    // 导入导出
+    const { exportConfigs, triggerImport, exporting, importing } =
+        useProtocolImportExport('Modbus');
+    // 当前选中的设备类型 ID（用户手动选择）
+    const [selectedTypeId, setSelectedTypeId] = useState<string>();
+    // Modal refs
+    const deviceTypeModalRef = useRef<importedDeviceTypeModalRef>(null);
+    const registerModalRef = useRef<RegisterModalRef>(null);
+    // 设备类型列表（使用 useMemo 保持引用稳定）
+    const types = useMemo(() => configList ?? [], [configList]);
+    const emptyTypeDesc = types.length ? '未选择设备类型' : '暂无设备类型';
+    // 计算当前激活的类型 ID：优先用户选择，否则默认第一个
+    const activeTypeId = useMemo(() => {
+        if (selectedTypeId && types.some((t) => t.id === selectedTypeId)) {
+            return selectedTypeId;
+        }
+        return types.length > 0 ? types[0].id : undefined;
+    }, [selectedTypeId, types]);
+    // 当前激活的设备类型
+    const activeType = useMemo(() => {
+        return types.find((t) => t.id === activeTypeId);
+    }, [activeTypeId, types]);
+    // 寄存器列表（派生状态，根据 activeTypeId 计算）
+    const registers = useMemo<Modbus.Register[]>(() => {
+        if (!activeType) return [];
+        const config = activeType.config as Modbus.Config;
+        return normalizeModbusRegisters(config?.registers);
+    }, [activeType]);
+    const registerGroups = useMemo(() => buildRegisterGroupSections(registers), [registers]);
+    const writableRegisterCount = useMemo(
+        () => registers.filter((register) => register.writable).length,
+        [registers]
+    );
+    const saveRegisterConfig = useCallback(
+        async (nextRegisters: Modbus.Register[]) => {
+            if (!activeTypeId || !activeType) return;
+            const config = activeType.config as Modbus.Config;
+            if (nextRegisters.length === registers.length) {
+                const isSameOrder =
+                    nextRegisters.every(
+                        (register, index) => register.id === registers[index]?.id
+                    ) &&
+                    nextRegisters.every(
+                        (register, index) =>
+                            getGroupKey(register.group) === getGroupKey(registers[index]?.group)
+                    );
+                if (isSameOrder) return;
+            }
+            await saveMutation.mutateAsync({
+                id: activeTypeId,
+                protocol: 'Modbus',
+                config: {
+                    byteOrder: config.byteOrder,
+                    readInterval: numberOrDefault(config.readInterval, 1),
+                    packet: normalizePacketConfig(config.packet),
+                    registers: nextRegisters,
+                },
+            });
+            await refetchTypes();
+        },
+        [activeType, activeTypeId, refetchTypes, registers, saveMutation]
+    );
+    const handleRegisterGroupOrderChange = useCallback(
+        async (nextOrder: string[]) => {
+            await saveRegisterConfig(reorderItemsByGroupOrder(registers, nextOrder));
+        },
+        [registers, saveRegisterConfig]
+    );
+    const handleRegisterItemOrderChange = useCallback(
+        async (groupKey: string, nextOrder: string[]) => {
+            await saveRegisterConfig(reorderItemsWithinGroupOrder(registers, groupKey, nextOrder));
+        },
+        [registers, saveRegisterConfig]
+    );
+    // 加载状态（与数据加载状态同步）
+    const loadingRegisters = loadingTypes;
+    // ========== 设备类型操作 ==========
+    const handleDeleteDeviceType = async () => {
+        if (!activeTypeId) return;
+        // 删除前记录下一个可选中的类型
+        const idx = types.findIndex((t) => t.id === activeTypeId);
+        const nextType = types[idx + 1] ?? types[idx - 1];
+        await deleteMutation.mutateAsync(activeTypeId);
+        setSelectedTypeId(nextType?.id);
+    };
+    // ========== 寄存器操作 ==========
+    const handleDeleteRegister = async (registerId: string) => {
+        if (!activeTypeId || !activeType) return;
+        const config = activeType.config as Modbus.Config;
+        const newConfig: Modbus.Config = {
+            byteOrder: config.byteOrder,
+            readInterval: numberOrDefault(config.readInterval, 1),
+            packet: normalizePacketConfig(config.packet),
+            registers: registers.filter((register) => register.id !== registerId),
+        };
+        await saveMutation.mutateAsync({
+            id: activeTypeId,
+            protocol: 'Modbus',
+            config: newConfig,
+        });
+    };
+    const renderRegisterCard = (register: Modbus.Register, dragHandle?: ReactNode) => {
+        const meta = getRegisterTypeMeta(register.registerType);
+        const typeLabel = RegisterTypeOptions.find(
+            (opt) => opt.value === register.registerType
+        )?.label;
+        const dataTypeLabel = DataTypeOptions.find((opt) => opt.value === register.dataType)?.label;
+        const byteOrderLabel = ByteOrderOptions.find(
+            (opt) => opt.value === register.byteOrder
+        )?.label;
+        const isWritableType =
+            register.registerType === 'COIL' || register.registerType === 'HOLDING_REGISTER';
+        const addressLabel = `${meta.prefix}${register.address}`;
+        return (
+            <Card
+                key={register.id}
+                size="small"
+                hoverable
+                className="h-full border-slate-200 shadow-[0_1px_4px_rgba(15,23,42,0.06)]"
+                styles={{ body: { padding: 12 } }}
+            >
+                <Flex justify="space-between" gap={12} align="start" className="mb-2">
+                    <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-semibold text-slate-800">
+                            {register.name}
+                        </div>
+                        <div className="mt-0.5 text-[12px] text-slate-400">地址 {addressLabel}</div>
+                    </div>
+                    <Space size={4} className="shrink-0">
+                        {dragHandle}
+                        {canEdit && (
+                            <Button
+                                size="small"
+                                type="link"
+                                onClick={() => {
+                                    if (activeTypeId)
+                                        registerModalRef.current?.open(
+                                            'edit',
+                                            activeTypeId,
+                                            register
+                                        );
+                                }}
+                            >
+                                编辑
+                            </Button>
+                        )}
+                        {canDelete && (
+                            <Popconfirm
+                                title="确认删除？"
+                                onConfirm={() => handleDeleteRegister(register.id)}
+                            >
+                                <Button size="small" danger type="link">
+                                    删除
+                                </Button>
+                            </Popconfirm>
+                        )}
+                    </Space>
+                </Flex>
+
+                <Space size={6} wrap className="mb-2">
+                    <Tag color={meta.color}>{typeLabel || meta.label}</Tag>
+                    <Tag>{addressLabel}</Tag>
+                    <Tag color="geekblue">{dataTypeLabel || register.dataType}</Tag>
+                    {register.registerType === 'HOLDING_REGISTER' ||
+                    register.registerType === 'INPUT_REGISTER' ? (
+                        byteOrderLabel ? (
+                            <Tag color="purple">字节序 {byteOrderLabel}</Tag>
+                        ) : (
+                            <Tag>字节序 继承设备</Tag>
+                        )
+                    ) : null}
+                    {isWritableType ? (
+                        register.writable ? (
+                            <Tag color="orange">读写</Tag>
+                        ) : (
+                            <Tag>只读</Tag>
+                        )
+                    ) : (
+                        <Tag>只读</Tag>
+                    )}
+                    {register.unit ? <Tag>{register.unit}</Tag> : null}
+                    {typeof register.scale === 'number' && register.scale !== 1 ? (
+                        <Tag color="geekblue">x{formatScaleValue(register.scale)}</Tag>
+                    ) : null}
+                    {typeof register.decimals === 'number' ? (
+                        <Tag>小数 {register.decimals}</Tag>
+                    ) : null}
+                </Space>
+
+                {register.remark ? (
+                    <div className="text-xs leading-5 text-slate-500">{register.remark}</div>
+                ) : (
+                    <div className="text-xs leading-5 text-slate-400">暂无备注</div>
+                )}
+            </Card>
+        );
+    };
+    // 权限检查
+    if (!canQuery) {
+        return (
+            <PageContainer title="Modbus配置">
+                <Result status="403" title="无权访问" subTitle="您没有权限访问此页面" />
+            </PageContainer>
+        );
+    }
+    return (
+        <PageContainer title="Modbus配置">
+            <div className="flex h-full min-h-0 overflow-hidden">
+                {/* 左侧：设备类型列表 */}
+                <div className="h-full min-h-0 w-[360px] shrink-0 pr-3">
+                    <Card
+                        title="设备类型"
+                        className="flex h-full min-h-0 flex-col overflow-hidden"
+                        styles={{
+                            body: { flex: 1, minHeight: 0, overflow: 'auto', padding: 16 },
+                        }}
+                        extra={
+                            <Space size={4}>
+                                {canAdd && (
+                                    <Button
+                                        size="small"
+                                        type="primary"
+                                        onClick={() => deviceTypeModalRef.current?.open('create')}
+                                    >
+                                        新增
+                                    </Button>
+                                )}
+                                {canEdit && (
+                                    <Button
+                                        size="small"
+                                        disabled={!activeTypeId}
+                                        onClick={() =>
+                                            deviceTypeModalRef.current?.open('edit', activeType)
+                                        }
+                                    >
+                                        编辑
+                                    </Button>
+                                )}
+                                {canDelete && (
+                                    <Popconfirm
+                                        title="确认删除该设备类型？"
+                                        onConfirm={handleDeleteDeviceType}
+                                        disabled={!activeTypeId}
+                                    >
+                                        <Button size="small" danger disabled={!activeTypeId}>
+                                            删除
+                                        </Button>
+                                    </Popconfirm>
+                                )}
+                                {canExport && (
+                                    <Tooltip title="导出">
+                                        <Button
+                                            size="small"
+                                            icon={<DownloadOutlined />}
+                                            disabled={loadingTypes || importing}
+                                            loading={exporting}
+                                            onClick={exportConfigs}
+                                        />
+                                    </Tooltip>
+                                )}
+                                {canImport && (
+                                    <Tooltip title="导入">
+                                        <Button
+                                            size="small"
+                                            icon={<UploadOutlined />}
+                                            disabled={exporting}
+                                            loading={importing}
+                                            onClick={triggerImport}
+                                        />
+                                    </Tooltip>
+                                )}
+                            </Space>
+                        }
+                    >
+                        {loadingTypes ? (
+                            <Skeleton active paragraph={{ rows: 6 }} />
+                        ) : types.length === 0 ? (
+                            <Empty description="暂无设备类型" />
+                        ) : (
+                            <Tree
+                                blockNode
+                                className="[&_.ant-tree-switcher]:hidden"
+                                selectedKeys={activeTypeId ? [String(activeTypeId)] : []}
+                                onSelect={(keys) => {
+                                    if (keys.length > 0) {
+                                        setSelectedTypeId(String(keys[0]));
+                                    }
+                                }}
+                                treeData={types.map((t) => {
+                                    const config = t.config as Modbus.Config;
+                                    const regCount = config?.registers?.length || 0;
+                                    return {
+                                        key: String(t.id),
+                                        title: (
+                                            <Tooltip
+                                                title={t.remark || '暂无备注'}
+                                                placement="right"
+                                            >
+                                                <Flex
+                                                    justify="space-between"
+                                                    align="center"
+                                                    className="h-8 p-1"
+                                                >
+                                                    <Space size={4}>
+                                                        <span>{t.name}</span>
+                                                        <Tag color="blue">{regCount}个寄存器</Tag>
+                                                    </Space>
+                                                    {t.enabled ? (
+                                                        <Tag color="green">启用</Tag>
+                                                    ) : (
+                                                        <Tag color="red">禁用</Tag>
+                                                    )}
+                                                </Flex>
+                                            </Tooltip>
+                                        ),
+                                    };
+                                })}
+                            />
+                        )}
+                    </Card>
+                </div>
+
+                {/* 右侧：寄存器配置 */}
+                <div className="h-full min-h-0 min-w-0 flex-1">
+                    <Card
+                        title={
+                            activeType ? (
+                                <Space wrap>
+                                    <span>寄存器配置</span>
+                                    <Tag>
+                                        {ByteOrderOptions.find(
+                                            (o) =>
+                                                o.value ===
+                                                (activeType.config as Modbus.Config)?.byteOrder
+                                        )?.label || 'Big-endian'}
+                                    </Tag>
+                                    <Tag>
+                                        间隔{' '}
+                                        {(activeType.config as Modbus.Config)?.readInterval ?? 1}s
+                                    </Tag>
+                                    <Tag>
+                                        组包 gap≤
+                                        {
+                                            normalizePacketConfig(
+                                                (activeType.config as Modbus.Config)?.packet
+                                            ).mergeGap
+                                        }
+                                    </Tag>
+                                    <Tag>
+                                        单包≤
+                                        {
+                                            normalizePacketConfig(
+                                                (activeType.config as Modbus.Config)?.packet
+                                            ).maxQuantity
+                                        }
+                                    </Tag>
+                                    <Tag color="blue">{registers.length} 个寄存器</Tag>
+                                    <Tag color="geekblue">{registerGroups.length} 个分组</Tag>
+                                    {writableRegisterCount > 0 && (
+                                        <Tag color="orange">{writableRegisterCount} 个可写</Tag>
+                                    )}
+                                </Space>
+                            ) : types.length > 0 ? (
+                                '请选择设备类型'
+                            ) : (
+                                '暂无设备类型'
+                            )
+                        }
+                        className="flex h-full min-h-0 flex-col overflow-hidden"
+                        styles={{
+                            body: { flex: 1, minHeight: 0, overflow: 'auto', padding: 16 },
+                        }}
+                        extra={
+                            activeTypeId &&
+                            canAdd && (
+                                <Button
+                                    type="primary"
+                                    onClick={() =>
+                                        registerModalRef.current?.open('create', activeTypeId)
+                                    }
+                                >
+                                    新增寄存器
+                                </Button>
+                            )
+                        }
+                    >
+                        {!activeTypeId ? (
+                            <Empty description={emptyTypeDesc} />
+                        ) : loadingRegisters ? (
+                            <Skeleton active paragraph={{ rows: 5 }} />
+                        ) : registers.length === 0 ? (
+                            <Empty description="暂无寄存器，点击右上角新增寄存器" />
+                        ) : (
+                            <SortableGroupSectionList
+                                sections={registerGroups}
+                                className="w-full"
+                                disabled={saveMutation.isPending}
+                                onOrderChange={handleRegisterGroupOrderChange}
+                                empty={<Empty description="暂无寄存器，点击右上角新增寄存器" />}
+                            >
+                                {(group) => (
+                                    <SortableGroupSectionFrame
+                                        id={group.key}
+                                        key={group.key}
+                                        className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4"
+                                        bodyClassName="mt-4"
+                                        disabled={saveMutation.isPending}
+                                        title={group.label}
+                                        meta={
+                                            <Space size={6} wrap>
+                                                <Tag color="blue">{group.count} 个</Tag>
+                                                {REGISTER_TYPE_ORDER.map((type) =>
+                                                    group.typeCounts[type] > 0 ? (
+                                                        <Tag
+                                                            key={type}
+                                                            color={REGISTER_TYPE_META[type].color}
+                                                        >
+                                                            {REGISTER_TYPE_META[type].short}{' '}
+                                                            {group.typeCounts[type]}
+                                                        </Tag>
+                                                    ) : null
+                                                )}
+                                            </Space>
+                                        }
+                                    >
+                                        <SortableGroupItemList
+                                            items={group.registers}
+                                            className="grid gap-3"
+                                            style={REGISTER_CARD_GRID_STYLE}
+                                            minItemWidth={240}
+                                            disabled={saveMutation.isPending}
+                                            onOrderChange={(nextOrder) =>
+                                                handleRegisterItemOrderChange(group.key, nextOrder)
+                                            }
+                                        >
+                                            {(register, dragHandle) =>
+                                                renderRegisterCard(register, dragHandle)
+                                            }
+                                        </SortableGroupItemList>
+                                    </SortableGroupSectionFrame>
+                                )}
+                            </SortableGroupSectionList>
+                        )}
+                    </Card>
+                </div>
+            </div>
+
+            {/* 设备类型 Modal */}
+            <DeviceTypeModal
+                ref={deviceTypeModalRef}
+                onSuccess={refetchTypes}
+                saveMutation={saveMutation}
+            />
+
+            {/* 寄存器 Modal */}
+            <RegisterModal
+                ref={registerModalRef}
+                types={types}
+                onSuccess={refetchTypes}
+                saveMutation={saveMutation}
+            />
+        </PageContainer>
+    );
+};
+
+/**
+ * S7 寄存器（Area）编辑弹窗（从 S7Config 抽离）
+ */
+export interface AreaModalProps {
+    open: boolean;
+    mode: 'create' | 'edit';
+    initialValue?: S7.Area;
+    plcModel?: S7.PlcModel;
+    groupOptions?: string[];
+    onCancel: () => void;
+    onSubmit: (value: S7.Area) => void;
+}
+export function AreaModal({
+    open,
+    mode,
+    initialValue,
+    plcModel,
+    groupOptions = [],
+    onCancel,
+    onSubmit,
+}: AreaModalProps) {
+    const [form] = Form.useForm<S7.Area>();
+    const areaType = Form.useWatch('area', form);
+    const dataType = normalizeS7DataType(Form.useWatch('dataType', form) as string | undefined);
+    const dbNumber = Form.useWatch('dbNumber', form);
+    const startAddress = Form.useWatch('start', form);
+    const startBit = Form.useWatch('startBit', form);
+    const stringLength = Form.useWatch('size', form);
+    const parsedAreaType = areaType as S7.AreaType | undefined;
+    const areaTypeOptions = getAreaTypeOptions(plcModel);
+    const defaultAreaType = areaTypeOptions[0]?.value ?? 'DB';
+    const normalizedInitialArea =
+        normalizeAreaTypeForPlcModel(plcModel, initialValue?.area) ?? defaultAreaType;
+    const initialDataType = normalizeS7DataType(initialValue?.dataType as string | undefined);
+    const initialDbNumber =
+        normalizedInitialArea === 'V'
+            ? undefined
+            : (initialValue?.dbNumber ?? (normalizedInitialArea === 'DB' ? 1 : undefined));
+    const initialFormValues = useMemo<Partial<S7.Area>>(
+        () =>
+            initialValue
+                ? {
+                      ...initialValue,
+                      area: normalizedInitialArea,
+                      dbNumber: initialDbNumber,
+                      dataType: initialDataType,
+                      decimals: supportsS7Decimals(initialDataType)
+                          ? initialValue.decimals
+                          : undefined,
+                      group: initialValue.group,
+                  }
+                : {
+                      name: '',
+                      group: undefined,
+                      area: defaultAreaType,
+                      dbNumber: initialDbNumber,
+                      dataType: 'INT16' as S7.AreaDataType,
+                      start: 0,
+                      size: 1,
+                      unit: undefined,
+                      decimals: undefined,
+                      writable: false,
+                      remark: '',
+                      startBit: undefined,
+                  },
+        [defaultAreaType, initialDataType, initialDbNumber, initialValue, normalizedInitialArea]
+    );
+    const groupOptionList = useFilterableGroupOptions(groupOptions);
+    const isStringType = dataType === 'STRING';
+    const isBoolDataType = dataType === 'BOOL';
+    const canUseDecimals = supportsS7Decimals(dataType);
+    const isWritableArea = writableAreaTypes.includes(parsedAreaType as S7.AreaType);
+    const showBitInput = supportsBitAddress(parsedAreaType, dataType);
+    const addressExample = getAddressSuffixExample(parsedAreaType, dataType);
+    const calcPreviewSize =
+        dataType === 'STRING'
+            ? typeof stringLength === 'number' && stringLength > 0
+                ? stringLength
+                : 1
+            : getDataTypeSize(dataType);
+    const startOffset = typeof startAddress === 'number' && startAddress >= 0 ? startAddress : 0;
+    const endOffset =
+        dataType === 'STRING'
+            ? startOffset + Math.max(calcPreviewSize, 1) - 1
+            : dataType === 'LREAL'
+              ? startOffset + 1
+              : startOffset;
+    const addressSample = getAreaAddressSample(
+        parsedAreaType,
+        dataType,
+        dbNumber,
+        startOffset,
+        startBit
+    );
+    useEffect(() => {
+        if (!open) {
+            form.resetFields();
+            return;
+        }
+        form.resetFields();
+        form.setFieldsValue(initialFormValues);
+    }, [form, initialFormValues, open]);
+    const endAddressSample = getAreaAddressSample(
+        parsedAreaType,
+        dataType,
+        dbNumber,
+        endOffset,
+        startBit
+    );
+    const canUseBoolAddress =
+        parsedAreaType === 'DB' ||
+        parsedAreaType === 'V' ||
+        parsedAreaType === 'MK' ||
+        parsedAreaType === 'PE' ||
+        parsedAreaType === 'PA';
+    const handleOk = async () => {
+        const values = await form.validateFields();
+        const resolvedDataType =
+            parsedAreaType === 'CT' || parsedAreaType === 'TM'
+                ? values.dataType || 'UINT16'
+                : parsedAreaType === 'PE' || parsedAreaType === 'PA'
+                  ? 'BOOL'
+                  : values.dataType;
+        const size =
+            resolvedDataType === 'STRING' ? values.size : getDataTypeSize(resolvedDataType);
+        const nextDbNumber = parsedAreaType === 'DB' ? values.dbNumber : undefined;
+        const nextStartBit = isBoolDataType && canUseBoolAddress ? values.startBit : undefined;
+        const nextDecimals =
+            supportsS7Decimals(resolvedDataType) && typeof values.decimals === 'number'
+                ? values.decimals
+                : undefined;
+        const nextValues = {
+            ...values,
+            group: normalizeGroupName(values.group) || undefined,
+            dbNumber: nextDbNumber,
+            startBit: nextStartBit,
+            decimals: nextDecimals,
+            dataType: resolvedDataType,
+            id: mode === 'create' ? S7ConfigurationGenerateId() : initialValue?.id || values.id,
+            size,
+            writable: isWritableArea ? values.writable : false,
+        };
+        onSubmit(nextValues);
+    };
+    return (
+        <FormModal
+            title={mode === 'create' ? '新增寄存器' : '编辑寄存器'}
+            open={open}
+            onCancel={onCancel}
+            onOk={handleOk}
+            destroyOnHidden
+        >
+            <Form form={form} layout="vertical" initialValues={initialFormValues}>
+                <Form.Item
+                    name="name"
+                    label="寄存器名称"
+                    rules={[{ required: true, message: '请输入寄存器名称' }]}
+                >
+                    <Input placeholder="例如: 温度寄存器" />
+                </Form.Item>
+                <Form.Item
+                    name="group"
+                    label="分组"
+                    extra="同一分组的寄存器会在配置页聚合为同一组卡片，留空则显示在未分组中"
+                >
+                    <AutoComplete
+                        allowClear
+                        options={groupOptionList.options}
+                        placeholder="例如: 基础信息、告警、控制"
+                        filterOption={false}
+                        onDropdownVisibleChange={groupOptionList.onDropdownVisibleChange}
+                        onSearch={groupOptionList.onSearch}
+                    />
+                </Form.Item>
+                <Row gutter={12}>
+                    <Col xs={24} sm={12}>
+                        <Form.Item
+                            name="area"
+                            label="寄存器类型"
+                            rules={[{ required: true }]}
+                            extra={
+                                plcModel === 'S7-200'
+                                    ? 'S7-200 使用 V/M/I/Q/C/T 区域'
+                                    : '不同区域类型映射不同读取方式'
+                            }
+                        >
+                            <Select
+                                options={areaTypeOptions}
+                                onChange={(value: S7.AreaType) => {
+                                    const currentDataType = normalizeS7DataType(
+                                        form.getFieldValue('dataType') as string | undefined
+                                    );
+                                    const updates: Partial<S7.Area> = {};
+                                    const nextDataType =
+                                        value === 'CT' || value === 'TM'
+                                            ? 'UINT16'
+                                            : bitOnlyAreaTypes.includes(value)
+                                              ? 'BOOL'
+                                              : currentDataType;
+                                    if (value === 'CT' || value === 'TM') {
+                                        updates.dataType = nextDataType;
+                                        updates.size = getDataTypeSize(nextDataType);
+                                    } else if (bitOnlyAreaTypes.includes(value)) {
+                                        updates.dataType = nextDataType;
+                                        updates.size = getDataTypeSize('BOOL');
+                                    } else if (nextDataType !== 'STRING') {
+                                        updates.size = getDataTypeSize(nextDataType);
+                                    }
+                                    if (value !== 'DB') {
+                                        updates.dbNumber = undefined;
+                                    }
+                                    if (value === 'DB' && form.getFieldValue('dbNumber') == null) {
+                                        updates.dbNumber = 1;
+                                    }
+                                    updates.startBit = undefined;
+                                    if (!supportsS7Decimals(nextDataType)) {
+                                        updates.decimals = undefined;
+                                    }
+                                    if (Object.keys(updates).length > 0) {
+                                        form.setFieldsValue(updates);
+                                    }
+                                }}
+                            />
+                        </Form.Item>
+                    </Col>
+                    <Col xs={24} sm={12}>
+                        <Form.Item
+                            name="dataType"
+                            label="数据类型"
+                            rules={[{ required: true }]}
+                            extra="不同数据类型对应不同解析方式"
+                        >
+                            <Select
+                                options={getAreaDataTypeOptions(
+                                    areaType as S7.AreaType | undefined
+                                )}
+                                onChange={(value: S7.AreaDataType) => {
+                                    const updates: Partial<S7.Area> = {};
+                                    if (value !== 'BOOL') {
+                                        updates.startBit = undefined;
+                                    }
+                                    if (value === 'STRING') {
+                                        const currentSize = form.getFieldValue('size') as
+                                            | number
+                                            | undefined;
+                                        if (
+                                            typeof currentSize !== 'number' ||
+                                            Number.isNaN(currentSize)
+                                        ) {
+                                            updates.size = 1;
+                                        }
+                                    } else {
+                                        updates.size = getDataTypeSize(value);
+                                    }
+                                    if (!supportsS7Decimals(value)) {
+                                        updates.decimals = undefined;
+                                    }
+                                    if (Object.keys(updates).length > 0) {
+                                        form.setFieldsValue(updates);
+                                    }
+                                }}
+                            />
+                        </Form.Item>
+                    </Col>
+                </Row>
+                {areaType === 'DB' && (
+                    <Row gutter={12}>
+                        <Col xs={24} sm={12}>
+                            <Form.Item
+                                name="dbNumber"
+                                label="DB 编号"
+                                rules={[{ required: true, message: '请输入 DB 编号' }]}
+                                extra="示例：S7-300 上可读 DB1~DB999；S7-1200 常见为 DB1、DB100 等"
+                            >
+                                <InputNumber min={1} className="w-full" />
+                            </Form.Item>
+                        </Col>
+                    </Row>
+                )}
+                <Flex gap={16} className="w-full" align="flex-start" wrap>
+                    <Form.Item
+                        name="start"
+                        label="起始偏移"
+                        rules={[
+                            {
+                                required: true,
+                                message: getAddressRuleText(parsedAreaType, isBoolDataType),
+                            },
+                            { type: 'number', min: 0, message: '偏移不能小于 0' },
+                        ]}
+                        className="flex-1"
+                    >
+                        <InputNumber min={0} className="!w-full" />
+                    </Form.Item>
+                    {showBitInput && (
+                        <Form.Item
+                            name="startBit"
+                            label="位号"
+                            rules={
+                                isBoolDataType
+                                    ? [
+                                          { required: true, message: '请输入位号' },
+                                          {
+                                              type: 'number',
+                                              min: 0,
+                                              max: 7,
+                                              message: '位号只能是 0~7',
+                                          },
+                                      ]
+                                    : undefined
+                            }
+                            className="flex-1"
+                        >
+                            <InputNumber min={0} max={7} className="!w-full" />
+                        </Form.Item>
+                    )}
+                    {isStringType && (
+                        <Form.Item
+                            name="size"
+                            label="长度（字节）"
+                            rules={[{ required: true, message: '请输入字符串长度' }]}
+                            className="flex-1"
+                            extra="字符串长度单位为字节"
+                        >
+                            <InputNumber min={1} className="!w-full" />
+                        </Form.Item>
+                    )}
+                </Flex>
+                <Form.Item label="地址示例">
+                    <div className="text-xs text-gray-500">
+                        参考示例：
+                        {addressExample ||
+                            (parsedAreaType ? '按区域规则自动拼接' : '请先选择寄存器类型')}
+                    </div>
+                    <div className="text-xs text-gray-500">
+                        {areaType ? `示例：${areaAddressHintMap[areaType]}` : '请先选择寄存器类型'}
+                    </div>
+                    <div className="text-xs text-gray-500">
+                        当前起始地址：{addressSample || '暂无'}
+                    </div>
+                    <div className="text-xs text-gray-500">
+                        当前结束地址：{endAddressSample || '暂无'}
+                    </div>
+                </Form.Item>
+                <Row gutter={12}>
+                    <Col xs={24} sm={canUseDecimals ? 12 : 24}>
+                        <Form.Item name="unit" label="单位">
+                            <Input placeholder="如：V、A、℃、%" />
+                        </Form.Item>
+                    </Col>
+                    {canUseDecimals && (
+                        <Col xs={24} sm={12}>
+                            <Form.Item name="decimals" label="小数位数">
+                                <InputNumber
+                                    min={0}
+                                    max={8}
+                                    placeholder="例如 2"
+                                    className="!w-full"
+                                />
+                            </Form.Item>
+                        </Col>
+                    )}
+                </Row>
+                {isWritableArea && (
+                    <Form.Item name="writable" label="可写" valuePropName="checked">
+                        <Switch />
+                    </Form.Item>
+                )}
+                <Form.Item name="remark" label="备注">
+                    <Input.TextArea rows={3} placeholder="备注说明" />
+                </Form.Item>
+            </Form>
+        </FormModal>
+    );
+}
+
+/**
+ * S7 协议配置页面
+ * 布局：左侧设备类型列表 + 右侧寄存器配置
+ */
+const S7ConfigPage = () => {
+    const { has } = usePermissions();
+    const canQuery = has('iot:protocol:query');
+    const canAdd = has('iot:protocol:add');
+    const canEdit = has('iot:protocol:edit');
+    const canDelete = has('iot:protocol:delete');
+    const canImport = has('iot:protocol:import') && canAdd;
+    const canExport = has('iot:protocol:export');
+    const {
+        data: configList,
+        isLoading: loadingTypes,
+        refetch,
+    } = useProtocolConfigList({ protocol: 'S7' }, { enabled: canQuery });
+    const saveMutation = useProtocolConfigSave();
+    const deleteMutation = useProtocolConfigDelete();
+    const { exportConfigs, triggerImport, exporting, importing } = useProtocolImportExport('S7');
+    const [selectedTypeId, setSelectedTypeId] = useState<string>();
+    const [deviceTypeModalOpen, setDeviceTypeModalOpen] = useState(false);
+    const [editingDeviceType, setEditingDeviceType] = useState<boolean>(false);
+    const [editingDeviceTypeItem, setEditingDeviceTypeItem] = useState<Protocol.Item>();
+    const [createForm] = Form.useForm<DeviceTypeFormValues>();
+    const [areaModalOpen, setAreaModalOpen] = useState(false);
+    const [editingAreaId, setEditingAreaId] = useState<string | null>(null);
+    const types = useMemo(() => configList ?? [], [configList]);
+    const emptyTypeDesc = types.length ? '未选择设备类型' : '暂无设备类型';
+    const selectedPlcModel = Form.useWatch('plcModel', createForm) as S7.PlcModel | undefined;
+    const selectedConnectionType = Form.useWatch('connectionType', createForm) as
+        | S7.ConnectionType
+        | undefined;
+    const selectedConnectionMode = Form.useWatch('connectionMode', createForm) as
+        | S7.ConnectionMode
+        | undefined;
+    const connectionTypeTip = connectionTypeTips[selectedConnectionType || 'PG'];
+    const connectionModeTip = getConnectionModeTip(selectedPlcModel, selectedConnectionMode);
+    const connectionModeSelectOptions = getConnectionModeOptions(selectedPlcModel);
+    const activeTypeId = useMemo(() => {
+        if (selectedTypeId && types.some((t) => t.id === selectedTypeId)) {
+            return selectedTypeId;
+        }
+        return types.length > 0 ? types[0].id : undefined;
+    }, [selectedTypeId, types]);
+    const activeType = useMemo(
+        () => types.find((t) => t.id === activeTypeId),
+        [activeTypeId, types]
+    );
+    useEffect(() => {
+        if (!deviceTypeModalOpen) return;
+        createForm.resetFields();
+        createForm.setFieldsValue(S7ConfigurationGetDeviceTypeFormValues(editingDeviceTypeItem));
+    }, [createForm, deviceTypeModalOpen, editingDeviceTypeItem]);
+    const activeConfig = (activeType?.config as S7.Config) ?? null;
+    const activeAreas = activeConfig?.areas ?? [];
+    const areaGroups = useMemo(() => buildGroupSections(activeAreas), [activeAreas]);
+    const areaGroupNames = useMemo(
+        () =>
+            Array.from(
+                new Set(activeAreas.map((area) => normalizeGroupName(area.group)).filter(Boolean))
+            ),
+        [activeAreas]
+    );
+    const activeConnectionMode = activeConfig
+        ? inferConnectionMode(activeConfig.plcModel, activeConfig.connection)
+        : undefined;
+    const activeConnectionPreset = activeConfig
+        ? getConnectionFormValues(activeConfig.plcModel, activeConfig.connection)
+        : null;
+    const persistAreas = useCallback(
+        async (nextAreas: S7.Area[]) => {
+            if (!activeTypeId || !activeConfig) return;
+            if (nextAreas.length === activeAreas.length) {
+                const isSameOrder =
+                    nextAreas.every((area, index) => area.id === activeAreas[index]?.id) &&
+                    nextAreas.every(
+                        (area, index) =>
+                            getGroupKey(area.group) === getGroupKey(activeAreas[index]?.group)
+                    );
+                if (isSameOrder) return;
+            }
+            await saveMutation.mutateAsync({
+                id: activeTypeId,
+                protocol: 'S7',
+                config: {
+                    ...activeConfig,
+                    areas: nextAreas,
+                },
+            });
+            await refetch();
+        },
+        [activeAreas, activeConfig, activeTypeId, refetch, saveMutation]
+    );
+    const handleAreaGroupOrderChange = useCallback(
+        async (nextOrder: string[]) => {
+            await persistAreas(reorderItemsByGroupOrder(activeAreas, nextOrder));
+        },
+        [activeAreas, persistAreas]
+    );
+    const handleAreaItemOrderChange = useCallback(
+        async (groupKey: string, nextOrder: string[]) => {
+            await persistAreas(reorderItemsWithinGroupOrder(activeAreas, groupKey, nextOrder));
+        },
+        [activeAreas, persistAreas]
+    );
+    const renderAreaCard = (area: S7.Area, dragHandle?: ReactNode) => {
+        const displayArea =
+            normalizeAreaTypeForPlcModel(activeConfig?.plcModel, area.area) ?? area.area;
+        const displayDataType = normalizeS7DataType(area.dataType);
+        const addressRange = getAreaAddressRangeText({ ...area, area: displayArea });
+        const canShowDecimals = supportsS7Decimals(displayDataType);
+        const areaLocationLabel =
+            displayArea === 'DB'
+                ? `DB ${area.dbNumber ?? '-'}`
+                : displayArea === 'V'
+                  ? 'V 区'
+                  : `${displayArea} 区`;
+        return (
+            <Card
+                key={area.id}
+                size="small"
+                hoverable
+                className="h-full border-slate-200 shadow-[0_1px_4px_rgba(15,23,42,0.06)]"
+                styles={{ body: { padding: 12 } }}
+            >
+                <Flex justify="space-between" gap={12} align="start" className="mb-2">
+                    <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-semibold text-slate-800">
+                            {area.name}
+                        </div>
+                        <div className="mt-0.5 text-[12px] text-slate-400">
+                            起始 {addressRange.start} · 结束 {addressRange.end}
+                        </div>
+                    </div>
+                    <Space size={4} className="shrink-0">
+                        {dragHandle}
+                        {canEdit && (
+                            <Button
+                                size="small"
+                                type="link"
+                                onClick={() => {
+                                    setEditingAreaId(area.id);
+                                    setAreaModalOpen(true);
+                                }}
+                            >
+                                编辑
+                            </Button>
+                        )}
+                        {canDelete && (
+                            <Popconfirm
+                                title="确认删除该寄存器？"
+                                onConfirm={async () => {
+                                    if (!activeTypeId || !activeConfig) return;
+                                    const nextAreas = activeConfig.areas.filter(
+                                        (item) => item.id !== area.id
+                                    );
+                                    await saveMutation.mutateAsync({
+                                        id: activeTypeId,
+                                        protocol: 'S7',
+                                        config: {
+                                            ...activeConfig,
+                                            areas: nextAreas,
+                                        },
+                                    });
+                                    await refetch();
+                                }}
+                            >
+                                <Button size="small" danger type="link">
+                                    删除
+                                </Button>
+                            </Popconfirm>
+                        )}
+                    </Space>
+                </Flex>
+
+                <Space size={6} wrap className="mb-2">
+                    <Tag color="blue">{displayArea}</Tag>
+                    <Tag color="geekblue">{displayDataType}</Tag>
+                    <Tag>{areaLocationLabel}</Tag>
+                    <Tag>{area.size} 字节</Tag>
+                    {area.writable ? <Tag color="orange">可写</Tag> : <Tag>只读</Tag>}
+                    {area.unit ? <Tag>{area.unit}</Tag> : null}
+                    {canShowDecimals && typeof area.decimals === 'number' ? (
+                        <Tag>小数位数 {area.decimals}</Tag>
+                    ) : null}
+                    {displayDataType === 'BOOL' && typeof area.startBit === 'number' ? (
+                        <Tag>位 {area.startBit}</Tag>
+                    ) : null}
+                </Space>
+
+                {area.remark ? (
+                    <div className="text-xs leading-5 text-slate-500">{area.remark}</div>
+                ) : (
+                    <div className="text-xs leading-5 text-slate-400">暂无备注</div>
+                )}
+            </Card>
+        );
+    };
+    const handleDeleteType = async () => {
+        if (!activeTypeId) return;
+        const idx = types.findIndex((t) => t.id === activeTypeId);
+        const nextType = types[idx + 1] ?? types[idx - 1];
+        await deleteMutation.mutateAsync(activeTypeId);
+        setSelectedTypeId(nextType?.id);
+        await refetch();
+    };
+    const handleOpenCreateType = () => {
+        setEditingDeviceType(false);
+        setEditingDeviceTypeItem(undefined);
+        setDeviceTypeModalOpen(true);
+    };
+    const handleOpenEditType = () => {
+        if (!activeType) return;
+        setEditingDeviceType(true);
+        setEditingDeviceTypeItem(activeType);
+        setDeviceTypeModalOpen(true);
+    };
+    const handlePlcModelChange = (plcModel: S7.PlcModel) => {
+        const preset = getPlcPreset(plcModel);
+        createForm.setFieldsValue({
+            connectionMode: preset.mode,
+            rack: preset.rack,
+            slot: preset.slot,
+            localTSAP: preset.localTSAP,
+            remoteTSAP: preset.remoteTSAP,
+        });
+    };
+    const handleConnectionModeChange = (connectionMode: S7.ConnectionMode) => {
+        const plcModel =
+            (createForm.getFieldValue('plcModel') as S7.PlcModel | undefined) ?? 'S7-1200';
+        const preset = getPlcPreset(plcModel);
+        if (connectionMode === 'RACK_SLOT') {
+            createForm.setFieldsValue({
+                rack: (createForm.getFieldValue('rack') as number | undefined) ?? preset.rack,
+                slot: (createForm.getFieldValue('slot') as number | undefined) ?? preset.slot,
+            });
+            return;
+        }
+        const connectionType =
+            (createForm.getFieldValue('connectionType') as S7.ConnectionType | undefined) ?? 'PG';
+        const rack = (createForm.getFieldValue('rack') as number | undefined) ?? preset.rack;
+        const slot = (createForm.getFieldValue('slot') as number | undefined) ?? preset.slot;
+        const currentLocalTSAP = formatTsapValue(
+            createForm.getFieldValue('localTSAP') as string | undefined
+        );
+        const currentRemoteTSAP = formatTsapValue(
+            createForm.getFieldValue('remoteTSAP') as string | undefined
+        );
+        createForm.setFieldsValue({
+            localTSAP: currentLocalTSAP ?? (preset.mode === 'TSAP' ? preset.localTSAP : '0100'),
+            remoteTSAP:
+                currentRemoteTSAP ??
+                (preset.mode === 'TSAP'
+                    ? preset.remoteTSAP
+                    : buildRemoteTsapFromRackSlot(rack, slot, connectionType)),
+        });
+    };
+    const handleSaveDeviceType = async () => {
+        const values = await createForm.validateFields();
+        if (editingDeviceType) {
+            if (!activeTypeId || !activeType) return;
+            const currentConfig = (activeType.config as S7.Config) ?? defaultConfig();
+            const nextConfig: S7.Config = {
+                ...currentConfig,
+                plcModel: values.plcModel,
+                connection: {
+                    ...currentConfig.connection,
+                    ...buildConnectionConfig(values),
+                },
+                readInterval: values.readInterval,
+                storagePolicy: values.storagePolicy,
+                commandFastReadDuration: values.commandFastReadDuration,
+                commandFastReadInterval: values.commandFastReadInterval,
+            };
+            await saveMutation.mutateAsync({
+                id: activeTypeId,
+                protocol: 'S7',
+                name: values.deviceType,
+                enabled: values.enabled,
+                config: nextConfig,
+                remark: values.remark,
+            });
+        } else {
+            const config = defaultConfig();
+            const nextConfig: S7.Config = {
+                ...config,
+                deviceType: values.deviceType,
+                plcModel: values.plcModel,
+                readInterval: values.readInterval,
+                storagePolicy: values.storagePolicy,
+                commandFastReadDuration: values.commandFastReadDuration,
+                commandFastReadInterval: values.commandFastReadInterval,
+                connection: buildConnectionConfig(values),
+            };
+            await saveMutation.mutateAsync({
+                protocol: 'S7',
+                name: values.deviceType,
+                enabled: values.enabled,
+                config: nextConfig,
+                remark: values.remark,
+            });
+        }
+        setDeviceTypeModalOpen(false);
+        setEditingDeviceType(false);
+        setEditingDeviceTypeItem(undefined);
+        createForm.resetFields();
+        await refetch();
+    };
+    const loadingAreas = loadingTypes;
+    const editingArea = activeConfig?.areas.find((area) => area.id === editingAreaId);
+    if (!canQuery) {
+        return (
+            <PageContainer title="S7配置">
+                <Result status="403" title="无权访问" subTitle="您没有权限访问此页面" />
+            </PageContainer>
+        );
+    }
+    return (
+        <PageContainer title="S7配置">
+            <div className="flex h-full min-h-0 overflow-hidden">
+                <div className="h-full min-h-0 w-[360px] shrink-0 pr-3">
+                    <Card
+                        title="设备类型"
+                        className="flex h-full min-h-0 flex-col overflow-hidden"
+                        styles={{
+                            body: { flex: 1, minHeight: 0, overflow: 'auto', padding: 16 },
+                        }}
+                        extra={
+                            <Space size={4}>
+                                {canAdd && (
+                                    <Button
+                                        size="small"
+                                        type="primary"
+                                        onClick={handleOpenCreateType}
+                                    >
+                                        新增
+                                    </Button>
+                                )}
+                                {canEdit && (
+                                    <Button
+                                        size="small"
+                                        disabled={!activeTypeId}
+                                        onClick={handleOpenEditType}
+                                    >
+                                        编辑
+                                    </Button>
+                                )}
+                                {canDelete && (
+                                    <Popconfirm
+                                        title="确认删除该设备类型？"
+                                        onConfirm={handleDeleteType}
+                                        disabled={!activeTypeId}
+                                    >
+                                        <Button size="small" danger disabled={!activeTypeId}>
+                                            删除
+                                        </Button>
+                                    </Popconfirm>
+                                )}
+                                {canExport && (
+                                    <Tooltip title="导出">
+                                        <Button
+                                            size="small"
+                                            icon={<DownloadOutlined />}
+                                            disabled={loadingTypes || importing}
+                                            loading={exporting}
+                                            onClick={exportConfigs}
+                                        />
+                                    </Tooltip>
+                                )}
+                                {canImport && (
+                                    <Tooltip title="导入">
+                                        <Button
+                                            size="small"
+                                            icon={<UploadOutlined />}
+                                            disabled={exporting}
+                                            loading={importing}
+                                            onClick={triggerImport}
+                                        />
+                                    </Tooltip>
+                                )}
+                            </Space>
+                        }
+                    >
+                        {loadingTypes ? (
+                            <Skeleton active paragraph={{ rows: 6 }} />
+                        ) : types.length === 0 ? (
+                            <Empty description="暂无设备类型" />
+                        ) : (
+                            <Tree
+                                blockNode
+                                className="[&_.ant-tree-switcher]:hidden"
+                                selectedKeys={activeTypeId ? [String(activeTypeId)] : []}
+                                onSelect={(keys) => {
+                                    if (keys.length > 0) {
+                                        setSelectedTypeId(String(keys[0]));
+                                    }
+                                }}
+                                treeData={types.map((t) => {
+                                    const config = t.config as S7.Config;
+                                    const regCount = config?.areas?.length || 0;
+                                    return {
+                                        key: String(t.id),
+                                        title: (
+                                            <Tooltip
+                                                title={t.remark || '暂无备注'}
+                                                placement="right"
+                                            >
+                                                <Flex
+                                                    justify="space-between"
+                                                    align="center"
+                                                    className="h-8 p-1"
+                                                >
+                                                    <Space size={4}>
+                                                        <span>{t.name}</span>
+                                                        <Tag color="blue">{regCount}个寄存器</Tag>
+                                                    </Space>
+                                                    {t.enabled ? (
+                                                        <Tag color="green">启用</Tag>
+                                                    ) : (
+                                                        <Tag color="red">禁用</Tag>
+                                                    )}
+                                                </Flex>
+                                            </Tooltip>
+                                        ),
+                                    };
+                                })}
+                            />
+                        )}
+                    </Card>
+                </div>
+
+                <div className="h-full min-h-0 min-w-0 flex-1">
+                    <Card
+                        title={
+                            activeType ? (
+                                <Space>
+                                    <span>寄存器配置</span>
+                                    {activeType?.enabled ? (
+                                        <Tag color="green">启用</Tag>
+                                    ) : (
+                                        <Tag color="red">禁用</Tag>
+                                    )}
+                                    <Tag color={activeConnectionMode === 'TSAP' ? 'cyan' : 'blue'}>
+                                        {getConnectionModeLabel(activeConnectionMode)}
+                                    </Tag>
+                                    <Tag color="geekblue">{activeAreas.length} 个寄存器</Tag>
+                                    <Tag color="purple">{areaGroups.length} 个分组</Tag>
+                                    {activeConnectionMode === 'TSAP' ? (
+                                        <Tag>
+                                            TSAP {activeConnectionPreset?.localTSAP ?? '0100'} /{' '}
+                                            {activeConnectionPreset?.remoteTSAP ?? '0100'}
+                                        </Tag>
+                                    ) : (
+                                        <>
+                                            <Tag color="blue">
+                                                {getConnectionTypeLabel(
+                                                    (activeType.config as S7.Config)?.connection
+                                                        ?.connectionType
+                                                )}
+                                            </Tag>
+                                            <Tag>
+                                                Rack {activeConnectionPreset?.rack ?? 0} / Slot{' '}
+                                                {activeConnectionPreset?.slot ?? 1}
+                                            </Tag>
+                                        </>
+                                    )}
+                                    <Tag>
+                                        读取间隔{' '}
+                                        {(activeType.config as S7.Config)?.readInterval ?? 5}s
+                                    </Tag>
+                                </Space>
+                            ) : types.length > 0 ? (
+                                '请选择设备类型'
+                            ) : (
+                                '暂无设备类型'
+                            )
+                        }
+                        className="flex h-full min-h-0 flex-col overflow-hidden"
+                        styles={{
+                            body: { flex: 1, minHeight: 0, overflow: 'auto', padding: 0 },
+                        }}
+                        extra={
+                            canAdd &&
+                            activeTypeId && (
+                                <Button
+                                    size="small"
+                                    type="primary"
+                                    onClick={() => {
+                                        setEditingAreaId(null);
+                                        setAreaModalOpen(true);
+                                    }}
+                                >
+                                    新增寄存器
+                                </Button>
+                            )
+                        }
+                    >
+                        {!activeType ? (
+                            <Empty description={emptyTypeDesc} />
+                        ) : loadingAreas ? (
+                            <Skeleton active paragraph={{ rows: 6 }} />
+                        ) : activeAreas.length === 0 ? (
+                            <Empty description="暂无寄存器，点击右上角新增寄存器" />
+                        ) : (
+                            <SortableGroupSectionList
+                                sections={areaGroups}
+                                className="w-full p-4"
+                                disabled={saveMutation.isPending || !canEdit}
+                                onOrderChange={handleAreaGroupOrderChange}
+                                empty={<Empty description="暂无寄存器，点击右上角新增寄存器" />}
+                            >
+                                {(group) => {
+                                    const writableCount = group.items.filter(
+                                        (area) => area.writable
+                                    ).length;
+                                    return (
+                                        <SortableGroupSectionFrame
+                                            id={group.key}
+                                            key={group.key}
+                                            className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4"
+                                            bodyClassName="mt-4"
+                                            disabled={saveMutation.isPending || !canEdit}
+                                            title={group.label}
+                                            meta={
+                                                <Space size={6} wrap>
+                                                    <Tag color="blue">{group.count} 个</Tag>
+                                                    {writableCount > 0 && (
+                                                        <Tag color="orange">
+                                                            {writableCount} 个可写
+                                                        </Tag>
+                                                    )}
+                                                </Space>
+                                            }
+                                        >
+                                            <SortableGroupItemList
+                                                items={group.items}
+                                                className="grid gap-3"
+                                                style={AREA_CARD_GRID_STYLE}
+                                                minItemWidth={320}
+                                                disabled={saveMutation.isPending || !canEdit}
+                                                empty={<Empty description="暂无寄存器" />}
+                                                onOrderChange={(nextOrder) =>
+                                                    handleAreaItemOrderChange(group.key, nextOrder)
+                                                }
+                                            >
+                                                {(area, dragHandle) =>
+                                                    renderAreaCard(area, dragHandle)
+                                                }
+                                            </SortableGroupItemList>
+                                        </SortableGroupSectionFrame>
+                                    );
+                                }}
+                            </SortableGroupSectionList>
+                        )}
+                    </Card>
+                </div>
+            </div>
+
+            <FormModal
+                title={editingDeviceType ? '编辑设备类型' : '新建设备类型'}
+                open={deviceTypeModalOpen}
+                confirmLoading={saveMutation.isPending}
+                onCancel={() => {
+                    setDeviceTypeModalOpen(false);
+                    setEditingDeviceType(false);
+                    setEditingDeviceTypeItem(undefined);
+                    createForm.resetFields();
+                }}
+                onOk={handleSaveDeviceType}
+                forceRender
+            >
+                <Form
+                    form={createForm}
+                    layout="vertical"
+                    initialValues={S7ConfigurationGetDeviceTypeFormValues()}
+                >
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        基础信息
+                    </Divider>
+                    <Form.Item
+                        name="deviceType"
+                        label="名称"
+                        rules={[{ required: true, message: '请输入名称' }]}
+                        extra="用于区分同一协议下不同设备类别"
+                    >
+                        <Input placeholder="例如: 温湿度传感器" maxLength={64} />
+                    </Form.Item>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        连接参数
+                    </Divider>
+                    <Form.Item
+                        name="plcModel"
+                        label="PLC型号"
+                        rules={[{ required: true, message: '请选择PLC型号' }]}
+                        extra="切换型号会自动带入对应的默认连接模式和参数"
+                    >
+                        <Select
+                            options={plcModelOptions.map(({ value, label }) => ({ value, label }))}
+                            onChange={(value) => handlePlcModelChange(value as S7.PlcModel)}
+                        />
+                    </Form.Item>
+                    <Form.Item
+                        name="connectionMode"
+                        label="连接模式"
+                        rules={[{ required: true, message: '请选择连接模式' }]}
+                        extra={connectionModeTip}
+                    >
+                        <Select
+                            options={connectionModeSelectOptions}
+                            onChange={(value) =>
+                                handleConnectionModeChange(value as S7.ConnectionMode)
+                            }
+                        />
+                    </Form.Item>
+                    {selectedConnectionMode === 'TSAP' ? (
+                        <Row gutter={12}>
+                            <Col xs={24} sm={12}>
+                                <Form.Item
+                                    name="localTSAP"
+                                    label="本地 TSAP"
+                                    rules={[
+                                        { required: true, message: '请输入本地 TSAP' },
+                                        { validator: validateTsapValue },
+                                    ]}
+                                    extra="支持 4D57、0200、0x4D57、4D.57"
+                                >
+                                    <Input placeholder="例如 4D57" />
+                                </Form.Item>
+                            </Col>
+                            <Col xs={24} sm={12}>
+                                <Form.Item
+                                    name="remoteTSAP"
+                                    label="远端 TSAP"
+                                    rules={[
+                                        { required: true, message: '请输入远端 TSAP' },
+                                        { validator: validateTsapValue },
+                                    ]}
+                                    extra="S7-200 常见值为 4D57 或 0200"
+                                >
+                                    <Input placeholder="例如 4D57" />
+                                </Form.Item>
+                            </Col>
+                        </Row>
+                    ) : (
+                        <>
+                            <Form.Item
+                                name="connectionType"
+                                label="连接类型"
+                                rules={[{ required: true, message: '请选择连接类型' }]}
+                                extra={connectionTypeTip}
+                            >
+                                <Select options={connectionTypeOptions} />
+                            </Form.Item>
+                            <Row gutter={12}>
+                                <Col xs={24} sm={12}>
+                                    <Form.Item
+                                        name="rack"
+                                        label="Rack"
+                                        rules={[{ required: true, message: '请输入 Rack' }]}
+                                        extra="西门子机架号，通常从 0 开始"
+                                    >
+                                        <InputNumber min={0} className="w-full" />
+                                    </Form.Item>
+                                </Col>
+                                <Col xs={24} sm={12}>
+                                    <Form.Item
+                                        name="slot"
+                                        label="Slot"
+                                        rules={[{ required: true, message: '请输入 Slot' }]}
+                                        extra="CPU 或通信模块所在槽位"
+                                    >
+                                        <InputNumber min={0} className="w-full" />
+                                    </Form.Item>
+                                </Col>
+                            </Row>
+                        </>
+                    )}
+                    <Form.Item
+                        name="probeMode"
+                        label="连接探测模式"
+                        rules={[{ required: true, message: '请选择探测模式' }]}
+                        extra="标准模式完成 ISO-CC 和通信协商后才读数据；兼容模式直接读；自动模式仅在标准握手超时后降级"
+                    >
+                        <Select
+                            options={[
+                                { value: 'STANDARD', label: '标准模式（推荐）' },
+                                { value: 'COMPATIBLE', label: '兼容模式（直接读）' },
+                                { value: 'AUTO', label: '自动降级' },
+                            ]}
+                        />
+                    </Form.Item>
+                    <Row gutter={12}>
+                        <Col xs={24} sm={12}>
+                            <Form.Item
+                                name="handshakeTimeout"
+                                label="握手超时"
+                                rules={[{ required: true, message: '请输入握手超时' }]}
+                            >
+                                <InputNumber
+                                    min={1000}
+                                    max={30000}
+                                    step={1000}
+                                    className="w-full"
+                                    addonAfter="ms"
+                                />
+                            </Form.Item>
+                        </Col>
+                        <Col xs={24} sm={12}>
+                            <Form.Item
+                                name="directProbeTimeout"
+                                label="兼容探测超时"
+                                rules={[{ required: true, message: '请输入兼容探测超时' }]}
+                            >
+                                <InputNumber
+                                    min={1000}
+                                    max={30000}
+                                    step={1000}
+                                    className="w-full"
+                                    addonAfter="ms"
+                                />
+                            </Form.Item>
+                        </Col>
+                    </Row>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        采集与存储
+                    </Divider>
+                    <Form.Item
+                        name="readInterval"
+                        label="读取/上报间隔（秒）"
+                        rules={[{ required: true, message: '请输入读取/上报间隔' }]}
+                        extra="平台采集时控制读取频率；边缘采集时控制上报频率，底层读取固定为 1 秒"
+                    >
+                        <InputNumber min={1} max={3600} className="w-full" addonAfter="秒" />
+                    </Form.Item>
+                    <Form.Item
+                        name="storagePolicy"
+                        label="存储策略"
+                        rules={[{ required: true, message: '请选择存储策略' }]}
+                        extra="上报时存储每条历史数据；数据改变时仅在点位值变化时存储"
+                    >
+                        <Select options={STORAGE_POLICY_OPTIONS} />
+                    </Form.Item>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        下发快读
+                    </Divider>
+                    <Row gutter={12}>
+                        <Col xs={24} sm={12}>
+                            <Form.Item
+                                name="commandFastReadDuration"
+                                label="下发快读窗口"
+                                rules={[{ required: true, message: '请输入快读窗口' }]}
+                                extra="下发成功后保持快读的时长，0 表示关闭"
+                            >
+                                <InputNumber
+                                    min={0}
+                                    max={3600}
+                                    className="w-full"
+                                    addonAfter="秒"
+                                />
+                            </Form.Item>
+                        </Col>
+                        <Col xs={24} sm={12}>
+                            <Form.Item
+                                name="commandFastReadInterval"
+                                label="快读间隔"
+                                rules={[{ required: true, message: '请输入快读间隔' }]}
+                                extra="快读窗口内的读取间隔"
+                            >
+                                <InputNumber min={1} max={60} className="w-full" addonAfter="秒" />
+                            </Form.Item>
+                        </Col>
+                    </Row>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        其他
+                    </Divider>
+                    <Form.Item name="remark" label="备注">
+                        <Input.TextArea rows={3} placeholder="备注说明" />
+                    </Form.Item>
+                    <Form.Item name="enabled" label="启用" valuePropName="checked">
+                        <Switch />
+                    </Form.Item>
+                </Form>
+            </FormModal>
+
+            <AreaModal
+                open={areaModalOpen}
+                mode={editingArea ? 'edit' : 'create'}
+                initialValue={
+                    editingArea
+                        ? {
+                              ...editingArea,
+                              area:
+                                  normalizeAreaTypeForPlcModel(
+                                      activeConfig?.plcModel,
+                                      editingArea.area
+                                  ) ?? editingArea.area,
+                              dataType: bitOnlyAreaTypes.includes(editingArea.area as S7.AreaType)
+                                  ? 'BOOL'
+                                  : editingArea.area === 'CT' || editingArea.area === 'TM'
+                                    ? 'UINT16'
+                                    : normalizeS7DataType(editingArea.dataType),
+                              size: bitOnlyAreaTypes.includes(editingArea.area as S7.AreaType)
+                                  ? 1
+                                  : editingArea.area === 'CT' || editingArea.area === 'TM'
+                                    ? getDataTypeSize('UINT16')
+                                    : editingArea.size,
+                              dbNumber:
+                                  normalizeAreaTypeForPlcModel(
+                                      activeConfig?.plcModel,
+                                      editingArea.area
+                                  ) === 'V'
+                                      ? undefined
+                                      : editingArea.dbNumber,
+                              startBit: editingArea.startBit,
+                          }
+                        : undefined
+                }
+                plcModel={activeConfig?.plcModel}
+                groupOptions={areaGroupNames}
+                onCancel={() => setAreaModalOpen(false)}
+                onSubmit={async (value) => {
+                    if (!activeTypeId || !activeConfig) return;
+                    const nextAreas = activeConfig.areas.some((area) => area.id === value.id)
+                        ? activeConfig.areas.map((area) => (area.id === value.id ? value : area))
+                        : [...activeConfig.areas, value];
+                    await saveMutation.mutateAsync({
+                        id: activeTypeId,
+                        protocol: 'S7',
+                        config: {
+                            ...activeConfig,
+                            areas: nextAreas,
+                        },
+                    });
+                    await refetch();
+                    setAreaModalOpen(false);
+                    setEditingAreaId(null);
+                }}
+            />
+        </PageContainer>
+    );
+};
+
+/**
+ * SL651 设备类型 Modal
+ */
+export interface DeviceTypeModalRef {
+    open: (mode: 'create' | 'edit', data?: Protocol.Item) => void;
+}
+interface Sl651DeviceTypeModalDeviceTypeModalProps {
+    onSuccess?: () => void;
+    saveMutation: SaveMutation;
+}
+const Sl651DeviceTypeModalDeviceTypeModal = forwardRef<
+    DeviceTypeModalRef,
+    Sl651DeviceTypeModalDeviceTypeModalProps
+>(({ onSuccess, saveMutation }, ref) => {
+    const [open, setOpen] = useState(false);
+    const [mode, setMode] = useState<'create' | 'edit'>('create');
+    const [current, setCurrent] = useState<Protocol.Item>();
+    const [form] = Form.useForm();
+    useImperativeHandle(ref, () => ({
+        open(m, data) {
+            setMode(m);
+            setCurrent(data);
+            setOpen(true);
+        },
+    }));
+    useEffect(() => {
+        if (!open) return;
+        form.resetFields();
+        form.setFieldsValue(Sl651FormGetDeviceTypeFormValues(current));
+    }, [current, form, open]);
+    const handleOk = async () => {
+        const values = await form.validateFields();
+        const existingConfig = (current?.config as SL651.Config) || { funcs: [] };
+        await saveMutation.mutateAsync({
+            id: current?.id,
+            protocol: 'SL651',
+            name: values.name,
+            enabled: values.enabled,
+            config: {
+                ...existingConfig,
+                responseMode: values.responseMode,
+                storagePolicy: values.storagePolicy,
+            },
+            remark: values.remark,
+        });
+        onSuccess?.();
+        setOpen(false);
+    };
+    return (
+        <FormModal
+            title={mode === 'create' ? '新增设备类型' : '编辑设备类型'}
+            open={open}
+            onOk={handleOk}
+            onCancel={() => setOpen(false)}
+            confirmLoading={saveMutation.isPending}
+            forceRender
+        >
+            <Form form={form} layout="vertical" initialValues={Sl651FormGetDeviceTypeFormValues()}>
+                <Divider titlePlacement="start" plain className="!my-4">
+                    基础信息
+                </Divider>
+                <Form.Item
+                    label="名称"
+                    name="name"
+                    rules={[{ required: true, message: '请输入名称' }]}
+                >
+                    <Input maxLength={64} />
+                </Form.Item>
+                <Divider titlePlacement="start" plain className="!my-4">
+                    协议参数
+                </Divider>
+                <Form.Item
+                    label="应答模式"
+                    name="responseMode"
+                    rules={[{ required: true, message: '请选择应答模式' }]}
+                >
+                    <Select
+                        options={[
+                            { value: 'M1', label: 'M1 - 自报' },
+                            { value: 'M2', label: 'M2 - 自报/查询应答兼容' },
+                            { value: 'M3', label: 'M3 - 查询应答' },
+                            { value: 'M4', label: 'M4 - 调试/召测' },
+                        ]}
+                    />
+                </Form.Item>
+                <Divider titlePlacement="start" plain className="!my-4">
+                    存储策略
+                </Divider>
+                <Form.Item
+                    label="存储策略"
+                    name="storagePolicy"
+                    rules={[{ required: true, message: '请选择存储策略' }]}
+                    extra="上报时存储每条历史数据；数据改变时仅在点位值变化时存储"
+                >
+                    <Select options={STORAGE_POLICY_OPTIONS} />
+                </Form.Item>
+                <Divider titlePlacement="start" plain className="!my-4">
+                    其他
+                </Divider>
+                <Form.Item label="启用" name="enabled" valuePropName="checked">
+                    <Switch />
+                </Form.Item>
+                <Form.Item label="备注" name="remark">
+                    <Input.TextArea rows={3} />
+                </Form.Item>
+            </Form>
+        </FormModal>
+    );
+});
+
+/**
+ * SL651 字典配置 Modal
+ */
+export interface DictConfigModalRef {
+    open: (typeId: string, funcId: string, element: SL651.Element) => void;
+}
+interface DictConfigModalProps {
+    types: Protocol.Item[];
+    onSuccess?: () => void;
+    saveMutation: SaveMutation;
+}
+const DictConfigModal = forwardRef<DictConfigModalRef, DictConfigModalProps>(
+    ({ types, onSuccess, saveMutation }, ref) => {
+        const [open, setOpen] = useState(false);
+        const [typeId, setTypeId] = useState<string>();
+        const [funcId, setFuncId] = useState<string>();
+        const [element, setElement] = useState<SL651.Element>();
+        const [pendingElement, setPendingElement] = useState<SL651.Element>();
+        const [form] = Form.useForm();
+        /** Modal 打开动画完成后设置表单值，避免闪烁 */
+        const initForm = (ele: SL651.Element) => {
+            form.resetFields();
+            const mapType = ele.dictConfig?.mapType || 'VALUE';
+            const items = (ele.dictConfig?.items || [])
+                .filter((item) => item && typeof item === 'object')
+                .map((item) => {
+                    if (mapType === 'VALUE') {
+                        return {
+                            key: item.key || '',
+                            label: item.label || '',
+                        };
+                    }
+                    const validConditions = (item.dependsOn?.conditions || [])
+                        .filter(
+                            (c: FormCondition) =>
+                                c &&
+                                typeof c === 'object' &&
+                                c.bitIndex !== undefined &&
+                                c.bitValue !== undefined
+                        )
+                        .map((c: FormCondition) => ({
+                            bitIndex: String(c.bitIndex),
+                            bitValue: String(c.bitValue),
+                        }));
+                    return {
+                        key: item.key || '',
+                        label: item.label || '',
+                        value: item.value || '1',
+                        dependsOn: {
+                            operator: item.dependsOn?.operator || 'AND',
+                            conditions: validConditions,
+                        },
+                    };
+                });
+            form.setFieldsValue({ mapType, items });
+        };
+        useImperativeHandle(ref, () => ({
+            open(t, fId, ele) {
+                setTypeId(t);
+                setFuncId(fId);
+                setElement(ele);
+                setPendingElement(ele);
+                setOpen(true);
+            },
+        }));
+        const handleOk = async () => {
+            if (!typeId || !funcId || !element) return;
+            const values = await form.validateFields();
+            const type = types.find((t) => t.id === typeId);
+            if (!type) return;
+            // 根据映射类型清理数据，过滤掉空项
+            const cleanedItems = (values.items || [])
+                .filter((item: FormMapItem) => {
+                    const key = String(item.key || '').trim();
+                    const label = String(item.label || '').trim();
+                    return key !== '' && label !== '';
+                })
+                .map((item: FormMapItem) => {
+                    if (values.mapType === 'VALUE') {
+                        return {
+                            key: String(item.key || '').trim(),
+                            label: String(item.label || '').trim(),
+                        };
+                    } else {
+                        const cleanedItem: SL651.DictMapItem = {
+                            key: String(item.key || '').trim(),
+                            label: String(item.label || '').trim(),
+                            value: item.value || '1',
+                        };
+                        const validConditions = (item.dependsOn?.conditions || [])
+                            .filter(
+                                (c: FormCondition) =>
+                                    c &&
+                                    typeof c === 'object' &&
+                                    c.bitIndex !== undefined &&
+                                    c.bitValue !== undefined &&
+                                    String(c.bitIndex).trim() !== ''
+                            )
+                            .map((c: FormCondition) => ({
+                                bitIndex: String(c.bitIndex).trim(),
+                                bitValue: String(c.bitValue),
+                            }));
+                        if (validConditions.length > 0) {
+                            cleanedItem.dependsOn = {
+                                operator: item.dependsOn?.operator || 'AND',
+                                conditions: validConditions,
+                            };
+                        }
+                        return cleanedItem;
+                    }
+                });
+            const config = type.config as SL651.Config;
+            const newFuncs = config.funcs.map((f) => {
+                if (f.id !== funcId) return f;
+                const newElements = f.elements.map((e) => {
+                    if (e.id !== element.id) return e;
+                    if (cleanedItems.length === 0) {
+                        const { dictConfig: _dictConfig, ...rest } = e;
+                        return rest;
+                    }
+                    return {
+                        ...e,
+                        dictConfig: {
+                            mapType: values.mapType,
+                            items: cleanedItems,
+                        },
+                    };
+                });
+                return { ...f, elements: newElements };
+            });
+            await saveMutation.mutateAsync({
+                id: typeId,
+                protocol: 'SL651',
+                config: { funcs: newFuncs },
+            });
+            onSuccess?.();
+            setOpen(false);
+        };
+        const mapType = Form.useWatch('mapType', form);
+        return (
+            <FormModal
+                open={open}
+                title={`字典配置 - ${element?.name}`}
+                onCancel={() => setOpen(false)}
+                onOk={handleOk}
+                confirmLoading={saveMutation.isPending}
+                afterOpenChange={(visible) => {
+                    if (visible && pendingElement) {
+                        initForm(pendingElement);
+                        setPendingElement(undefined);
+                    }
+                }}
+                forceRender
+                width={800}
+            >
+                <Form form={form} layout="vertical">
+                    <Form.Item
+                        label="映射类型"
+                        name="mapType"
+                        rules={[{ required: true, message: '请选择映射类型' }]}
+                    >
+                        <Select
+                            options={[
+                                { value: 'VALUE', label: '值映射 - 根据数值映射文本' },
+                                { value: 'BIT', label: '位映射 - 根据二进制位映射文本' },
+                            ]}
+                            onChange={() => {
+                                form.setFieldsValue({ items: [] });
+                            }}
+                        />
+                    </Form.Item>
+
+                    <Form.Item
+                        label="映射项"
+                        extra={
+                            mapType === 'BIT'
+                                ? '配置二进制位对应的文本（位号范围 0-31，可选择位值为0或1时触发）'
+                                : '配置数值对应的文本'
+                        }
+                    >
+                        <Form.List name="items">
+                            {(fields, { add, remove }) => (
+                                <>
+                                    {fields.map(({ key, name: itemName, ...restField }) => (
+                                        <div
+                                            key={key}
+                                            className="mb-3 border border-gray-100 p-3 rounded"
+                                        >
+                                            {mapType === 'BIT' ? (
+                                                <>
+                                                    <Flex gap={8} align="center" wrap="nowrap">
+                                                        <Form.Item
+                                                            {...restField}
+                                                            name={[itemName, 'key']}
+                                                            rules={[
+                                                                {
+                                                                    required: true,
+                                                                    message: '请输入位号',
+                                                                },
+                                                                {
+                                                                    pattern:
+                                                                        /^([0-9]|[1-2][0-9]|3[0-1])$/,
+                                                                    message: '位号范围 0-31',
+                                                                },
+                                                            ]}
+                                                            className="flex-1 !mb-0"
+                                                        >
+                                                            <Input placeholder="位号(0-31)" />
+                                                        </Form.Item>
+                                                        <Form.Item
+                                                            {...restField}
+                                                            name={[itemName, 'value']}
+                                                            initialValue="1"
+                                                            rules={[
+                                                                {
+                                                                    required: true,
+                                                                    message: '请选择触发值',
+                                                                },
+                                                            ]}
+                                                            className="w-20 !mb-0"
+                                                        >
+                                                            <Select
+                                                                options={[
+                                                                    { value: '1', label: '位=1' },
+                                                                    { value: '0', label: '位=0' },
+                                                                ]}
+                                                            />
+                                                        </Form.Item>
+                                                        <Form.Item
+                                                            {...restField}
+                                                            name={[itemName, 'label']}
+                                                            rules={[
+                                                                { required: true, message: '' },
+                                                            ]}
+                                                            className="flex-[2] !mb-0"
+                                                        >
+                                                            <Input placeholder="映射文本" />
+                                                        </Form.Item>
+                                                        <Tooltip title="添加依赖条件">
+                                                            <Button
+                                                                size="small"
+                                                                type="text"
+                                                                icon={
+                                                                    <span className="text-base font-bold">
+                                                                        +
+                                                                    </span>
+                                                                }
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    const conditions =
+                                                                        form.getFieldValue([
+                                                                            'items',
+                                                                            itemName,
+                                                                            'dependsOn',
+                                                                            'conditions',
+                                                                        ]) || [];
+                                                                    form.setFieldValue(
+                                                                        [
+                                                                            'items',
+                                                                            itemName,
+                                                                            'dependsOn',
+                                                                            'conditions',
+                                                                        ],
+                                                                        [
+                                                                            ...conditions,
+                                                                            {
+                                                                                bitIndex: '',
+                                                                                bitValue: '1',
+                                                                            },
+                                                                        ]
+                                                                    );
+                                                                }}
+                                                                className="shrink-0"
+                                                            />
+                                                        </Tooltip>
+                                                        <Button
+                                                            type="text"
+                                                            danger
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                remove(itemName);
+                                                            }}
+                                                            className="shrink-0"
+                                                        >
+                                                            删除
+                                                        </Button>
+                                                    </Flex>
+
+                                                    {/* operator 字段 */}
+                                                    <Form.Item
+                                                        noStyle
+                                                        shouldUpdate={(prev, curr) => {
+                                                            const prevConds =
+                                                                prev.items?.[itemName]?.dependsOn
+                                                                    ?.conditions;
+                                                            const currConds =
+                                                                curr.items?.[itemName]?.dependsOn
+                                                                    ?.conditions;
+                                                            return (
+                                                                prevConds?.length !==
+                                                                currConds?.length
+                                                            );
+                                                        }}
+                                                    >
+                                                        {() => {
+                                                            const conditions =
+                                                                form.getFieldValue([
+                                                                    'items',
+                                                                    itemName,
+                                                                    'dependsOn',
+                                                                    'conditions',
+                                                                ]) || [];
+                                                            return conditions.length > 0 ? (
+                                                                <div className="pl-3 border-l-2 border-gray-200 mt-2">
+                                                                    <Flex
+                                                                        justify="space-between"
+                                                                        align="center"
+                                                                        className="mb-2"
+                                                                    >
+                                                                        <span className="text-xs text-gray-500">
+                                                                            依赖条件
+                                                                        </span>
+                                                                        <Form.Item
+                                                                            name={[
+                                                                                itemName,
+                                                                                'dependsOn',
+                                                                                'operator',
+                                                                            ]}
+                                                                            initialValue="AND"
+                                                                            className="!mb-0"
+                                                                        >
+                                                                            <Select
+                                                                                size="small"
+                                                                                className="!w-[140px]"
+                                                                                options={[
+                                                                                    {
+                                                                                        value: 'AND',
+                                                                                        label: 'AND（全满足）',
+                                                                                    },
+                                                                                    {
+                                                                                        value: 'OR',
+                                                                                        label: 'OR（任一满足）',
+                                                                                    },
+                                                                                ]}
+                                                                            />
+                                                                        </Form.Item>
+                                                                    </Flex>
+                                                                </div>
+                                                            ) : null;
+                                                        }}
+                                                    </Form.Item>
+
+                                                    {/* 依赖条件列表 */}
+                                                    <Form.List
+                                                        name={[itemName, 'dependsOn', 'conditions']}
+                                                    >
+                                                        {(condFields, { remove: removeCond }) => (
+                                                            <>
+                                                                {condFields.length > 0 && (
+                                                                    <div className="pl-3 border-l-2 border-gray-200 -mt-2">
+                                                                        {condFields.map(
+                                                                            ({
+                                                                                key: condKey,
+                                                                                name: condName,
+                                                                                ...condRestField
+                                                                            }) => (
+                                                                                <Flex
+                                                                                    key={condKey}
+                                                                                    gap={8}
+                                                                                    align="center"
+                                                                                    className="mb-1"
+                                                                                >
+                                                                                    <span className="text-xs text-gray-400 w-[60px]">
+                                                                                        依赖位号
+                                                                                    </span>
+                                                                                    <Form.Item
+                                                                                        {...condRestField}
+                                                                                        name={[
+                                                                                            condName,
+                                                                                            'bitIndex',
+                                                                                        ]}
+                                                                                        rules={[
+                                                                                            {
+                                                                                                required: true,
+                                                                                                message:
+                                                                                                    '请输入位号',
+                                                                                            },
+                                                                                            {
+                                                                                                pattern:
+                                                                                                    /^([0-9]|[1-2][0-9]|3[0-1])$/,
+                                                                                                message:
+                                                                                                    '位号 0-31',
+                                                                                            },
+                                                                                        ]}
+                                                                                        className="flex-1 !mb-0"
+                                                                                    >
+                                                                                        <Input
+                                                                                            size="small"
+                                                                                            placeholder="位号(0-31)"
+                                                                                        />
+                                                                                    </Form.Item>
+                                                                                    <span className="text-xs text-gray-400">
+                                                                                        期望值
+                                                                                    </span>
+                                                                                    <Form.Item
+                                                                                        {...condRestField}
+                                                                                        name={[
+                                                                                            condName,
+                                                                                            'bitValue',
+                                                                                        ]}
+                                                                                        initialValue="1"
+                                                                                        rules={[
+                                                                                            {
+                                                                                                required: true,
+                                                                                                message:
+                                                                                                    '请选择',
+                                                                                            },
+                                                                                        ]}
+                                                                                        className="w-20 !mb-0"
+                                                                                    >
+                                                                                        <Select
+                                                                                            size="small"
+                                                                                            options={[
+                                                                                                {
+                                                                                                    value: '1',
+                                                                                                    label: '=1',
+                                                                                                },
+                                                                                                {
+                                                                                                    value: '0',
+                                                                                                    label: '=0',
+                                                                                                },
+                                                                                            ]}
+                                                                                        />
+                                                                                    </Form.Item>
+                                                                                    <Button
+                                                                                        size="small"
+                                                                                        type="text"
+                                                                                        danger
+                                                                                        onClick={(
+                                                                                            e
+                                                                                        ) => {
+                                                                                            e.stopPropagation();
+                                                                                            removeCond(
+                                                                                                condName
+                                                                                            );
+                                                                                        }}
+                                                                                    >
+                                                                                        删除
+                                                                                    </Button>
+                                                                                </Flex>
+                                                                            )
+                                                                        )}
+                                                                    </div>
+                                                                )}
+                                                            </>
+                                                        )}
+                                                    </Form.List>
+                                                </>
+                                            ) : (
+                                                <Flex gap={8} align="center">
+                                                    <Form.Item
+                                                        {...restField}
+                                                        name={[itemName, 'key']}
+                                                        rules={[
+                                                            { required: true, message: '请输入值' },
+                                                        ]}
+                                                        className="flex-1 !mb-0"
+                                                    >
+                                                        <Input placeholder="数值" />
+                                                    </Form.Item>
+                                                    <Form.Item
+                                                        {...restField}
+                                                        name={[itemName, 'label']}
+                                                        rules={[{ required: true, message: '' }]}
+                                                        className="flex-1 !mb-0"
+                                                    >
+                                                        <Input placeholder="映射文本" />
+                                                    </Form.Item>
+                                                    <Button
+                                                        type="text"
+                                                        danger
+                                                        onClick={() => remove(itemName)}
+                                                    >
+                                                        删除
+                                                    </Button>
+                                                </Flex>
+                                            )}
+                                        </div>
+                                    ))}
+                                    <Button
+                                        type="dashed"
+                                        onClick={() => {
+                                            if (mapType === 'BIT') {
+                                                add({
+                                                    key: '',
+                                                    label: '',
+                                                    value: '1',
+                                                    dependsOn: { operator: 'AND', conditions: [] },
+                                                });
+                                            } else {
+                                                add({ key: '', label: '' });
+                                            }
+                                        }}
+                                        block
+                                    >
+                                        + 添加映射项
+                                    </Button>
+                                </>
+                            )}
+                        </Form.List>
+                    </Form.Item>
+                </Form>
+            </FormModal>
+        );
+    }
+);
+
+/**
+ * SL651 要素 Modal
+ */
+export interface ElementModalRef {
+    open: (
+        mode: 'create' | 'edit',
+        typeId: string,
+        funcId: string,
+        element?: SL651.Element
+    ) => void;
+}
+interface ElementModalProps {
+    types: Protocol.Item[];
+    onSuccess?: () => void;
+    saveMutation: SaveMutation;
+}
+const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
+    ({ types, onSuccess, saveMutation }, ref) => {
+        const [open, setOpen] = useState(false);
+        const [mode, setMode] = useState<'create' | 'edit'>('create');
+        const [typeId, setTypeId] = useState<string>();
+        const [funcId, setFuncId] = useState<string>();
+        const [current, setCurrent] = useState<SL651.Element>();
+        const [form] = Form.useForm();
+        const groupNames = useMemo(() => {
+            const type = types.find((t) => t.id === typeId);
+            const config = type?.config as SL651.Config | undefined;
+            const groups = new Set<string>();
+            for (const func of config?.funcs || []) {
+                for (const element of func.elements || []) {
+                    const group = normalizeGroupName(element.group);
+                    if (group) groups.add(group);
+                }
+                for (const element of func.responseElements || []) {
+                    const group = normalizeGroupName(element.group);
+                    if (group) groups.add(group);
+                }
+            }
+            const currentGroup = normalizeGroupName(current?.group);
+            if (currentGroup) groups.add(currentGroup);
+            return Array.from(groups);
+        }, [current?.group, typeId, types]);
+        const groupOptions = useFilterableGroupOptions(groupNames);
+        useImperativeHandle(ref, () => ({
+            open(m, t, fId, element) {
+                setMode(m);
+                setTypeId(t);
+                setFuncId(fId);
+                setCurrent(element);
+                form.resetFields();
+                form.setFieldsValue(element ?? { encode: 'BCD', length: 1, digits: 0 });
+                setOpen(true);
+            },
+        }));
+        const handleOk = async () => {
+            if (!typeId || !funcId) return;
+            const values = await form.validateFields();
+            const type = types.find((t) => t.id === typeId);
+            if (!type) return;
+            const config = type.config as SL651.Config;
+            const elementFields = {
+                name: values.name,
+                group: normalizeGroupName(values.group) || undefined,
+                guideHex: values.guideHex,
+                encode: values.encode,
+                length: values.length,
+                digits: values.digits,
+                unit: values.unit,
+                remark: values.remark,
+            };
+            const newFuncs = config.funcs.map((f) => {
+                if (f.id !== funcId) return f;
+                let newElements: SL651.Element[];
+                if (mode === 'create') {
+                    const newElement: SL651.Element = {
+                        id: Sl651FormGenerateId(),
+                        ...elementFields,
+                    };
+                    newElements = [...(f.elements || []), newElement];
+                } else {
+                    newElements = f.elements.map((e) =>
+                        e.id === current?.id ? { ...e, ...elementFields } : e
+                    );
+                }
+                return { ...f, elements: newElements };
+            });
+            await saveMutation.mutateAsync({
+                id: typeId,
+                protocol: 'SL651',
+                config: { funcs: newFuncs },
+            });
+            onSuccess?.();
+            setOpen(false);
+        };
+        return (
+            <FormModal
+                open={open}
+                title={mode === 'create' ? '新增要素' : '编辑要素'}
+                onCancel={() => setOpen(false)}
+                onOk={handleOk}
+                confirmLoading={saveMutation.isPending}
+                forceRender
+                width={520}
+            >
+                <Form form={form} layout="vertical">
+                    <Form.Item
+                        label="要素名称"
+                        name="name"
+                        rules={[{ required: true, message: '请输入名称' }]}
+                    >
+                        <Input />
+                    </Form.Item>
+                    <Form.Item
+                        label="分组"
+                        name="group"
+                        extra="同一分组的要素会在配置页聚合为同一组卡片，留空则显示在未分组中"
+                    >
+                        <AutoComplete
+                            allowClear
+                            options={groupOptions.options}
+                            placeholder="例如：基础信息、告警、控制"
+                            filterOption={false}
+                            onDropdownVisibleChange={groupOptions.onDropdownVisibleChange}
+                            onSearch={groupOptions.onSearch}
+                        />
+                    </Form.Item>
+                    <Form.Item
+                        label="引导符（HEX）"
+                        name="guideHex"
+                        rules={[{ required: true, message: '请输入引导符' }]}
+                    >
+                        <Input placeholder="例如：01 或 F3F3" />
+                    </Form.Item>
+                    <Form.Item
+                        label="编码"
+                        name="encode"
+                        rules={[{ required: true, message: '请选择编码' }]}
+                    >
+                        <Select options={EncodeList.map((e) => ({ value: e, label: e }))} />
+                    </Form.Item>
+                    <Form.Item
+                        label="长度"
+                        name="length"
+                        rules={[{ required: true, message: '请输入长度' }]}
+                    >
+                        <InputNumber min={1} className="!w-full" />
+                    </Form.Item>
+                    <Form.Item label="单位" name="unit">
+                        <Input placeholder="例如 V、℃、m³/s" />
+                    </Form.Item>
+                    <Form.Item
+                        label="小数位数"
+                        name="digits"
+                        rules={[{ required: true, message: '请输入小数位数' }]}
+                    >
+                        <InputNumber min={0} max={8} className="!w-full" />
+                    </Form.Item>
+                    <Form.Item label="备注" name="remark">
+                        <Input.TextArea rows={2} />
+                    </Form.Item>
+                </Form>
+            </FormModal>
+        );
+    }
+);
+
+/**
+ * SL651 功能码 Modal
+ */
+export interface FuncModalRef {
+    open: (mode: 'create' | 'edit', typeId: string, func?: SL651.Func) => void;
+}
+interface FuncModalProps {
+    types: Protocol.Item[];
+    onSuccess?: () => void;
+    saveMutation: SaveMutation;
+}
+const FuncModal = forwardRef<FuncModalRef, FuncModalProps>(
+    ({ types, onSuccess, saveMutation }, ref) => {
+        const { message } = App.useApp();
+        const [open, setOpen] = useState(false);
+        const [mode, setMode] = useState<'create' | 'edit'>('create');
+        const [typeId, setTypeId] = useState<string>();
+        const [current, setCurrent] = useState<SL651.Func>();
+        const [form] = Form.useForm();
+        useImperativeHandle(ref, () => ({
+            open(m, t, func) {
+                setMode(m);
+                setTypeId(t);
+                setCurrent(func);
+                form.resetFields();
+                form.setFieldsValue(func ?? { dir: 'UP' });
+                setOpen(true);
+            },
+        }));
+        const handleOk = async () => {
+            if (!typeId) return;
+            const values = await form.validateFields();
+            const type = types.find((t) => t.id === typeId);
+            if (!type) return;
+            const config = type.config as SL651.Config;
+            // 检查功能码唯一性（排除自身）
+            const duplicate = (config.funcs || []).find(
+                (f) => f.funcCode === values.funcCode && (mode === 'create' || f.id !== current?.id)
+            );
+            if (duplicate) {
+                message.error(`功能码 ${values.funcCode} 已存在（${duplicate.name}）`);
+                return;
+            }
+            let newFuncs: SL651.Func[];
+            if (mode === 'create') {
+                const newFunc: SL651.Func = {
+                    id: Sl651FormGenerateId(),
+                    funcCode: values.funcCode,
+                    dir: values.dir,
+                    name: values.name,
+                    remark: values.remark,
+                    elements: [],
+                };
+                newFuncs = [...(config.funcs || []), newFunc];
+            } else {
+                newFuncs = config.funcs.map((f) =>
+                    f.id === current?.id
+                        ? {
+                              ...f,
+                              funcCode: values.funcCode,
+                              dir: values.dir,
+                              name: values.name,
+                              remark: values.remark,
+                          }
+                        : f
+                );
+            }
+            await saveMutation.mutateAsync({
+                id: typeId,
+                protocol: 'SL651',
+                config: { funcs: newFuncs },
+            });
+            onSuccess?.();
+            setOpen(false);
+        };
+        return (
+            <FormModal
+                title={mode === 'create' ? '新增功能码' : '编辑功能码'}
+                open={open}
+                onOk={handleOk}
+                onCancel={() => setOpen(false)}
+                confirmLoading={saveMutation.isPending}
+                forceRender
+            >
+                <Form form={form} layout="vertical">
+                    <Form.Item
+                        label="名称"
+                        name="name"
+                        rules={[{ required: true, message: '请输入名称' }]}
+                    >
+                        <Input />
+                    </Form.Item>
+                    <Form.Item
+                        label="功能码"
+                        name="funcCode"
+                        rules={[{ required: true, message: '请输入功能码' }]}
+                    >
+                        <Input placeholder="例如 2F" />
+                    </Form.Item>
+                    <Form.Item
+                        label="方向"
+                        name="dir"
+                        rules={[{ required: true, message: '请选择方向' }]}
+                    >
+                        <Select
+                            options={[
+                                { value: 'UP', label: '上行' },
+                                { value: 'DOWN', label: '下行' },
+                            ]}
+                        />
+                    </Form.Item>
+                    <Form.Item label="备注" name="remark">
+                        <Input.TextArea rows={3} />
+                    </Form.Item>
+                </Form>
+            </FormModal>
+        );
+    }
+);
+
+/**
+ * SL651 预设值 Modal
+ */
+export interface PresetValueModalRef {
+    open: (typeId: string, funcId: string, element: SL651.Element) => void;
+}
+interface PresetValueModalProps {
+    types: Protocol.Item[];
+    onSuccess?: () => void;
+    saveMutation: SaveMutation;
+}
+const PresetValueModal = forwardRef<PresetValueModalRef, PresetValueModalProps>(
+    ({ types, onSuccess, saveMutation }, ref) => {
+        const [open, setOpen] = useState(false);
+        const [typeId, setTypeId] = useState<string>();
+        const [funcId, setFuncId] = useState<string>();
+        const [element, setElement] = useState<SL651.Element>();
+        const [form] = Form.useForm();
+        useImperativeHandle(ref, () => ({
+            open(t, fId, ele) {
+                setTypeId(t);
+                setFuncId(fId);
+                setElement(ele);
+                form.resetFields();
+                form.setFieldsValue({ options: ele.options || [] });
+                setOpen(true);
+            },
+        }));
+        const handleOk = async () => {
+            if (!typeId || !funcId || !element) return;
+            const values = await form.validateFields();
+            const type = types.find((t) => t.id === typeId);
+            if (!type) return;
+            const config = type.config as SL651.Config;
+            const newFuncs = config.funcs.map((f) => {
+                if (f.id !== funcId) return f;
+                const newElements = f.elements.map((e) =>
+                    e.id === element.id ? { ...e, options: values.options } : e
+                );
+                return { ...f, elements: newElements };
+            });
+            await saveMutation.mutateAsync({
+                id: typeId,
+                protocol: 'SL651',
+                config: { funcs: newFuncs },
+            });
+            onSuccess?.();
+            setOpen(false);
+        };
+        return (
+            <FormModal
+                open={open}
+                title={`配置预设值 - ${element?.name}`}
+                onCancel={() => setOpen(false)}
+                onOk={handleOk}
+                confirmLoading={saveMutation.isPending}
+                forceRender
+                width={600}
+            >
+                <Form form={form} layout="vertical">
+                    <Form.Item label="预设值选项" extra="配置后指令下发时可从下拉列表选择">
+                        <Form.List name="options">
+                            {(fields, { add, remove }) => (
+                                <>
+                                    {fields.map(({ key, name, ...restField }) => (
+                                        <Flex key={key} gap={8} align="center" className="mb-2">
+                                            <Form.Item
+                                                {...restField}
+                                                name={[name, 'label']}
+                                                rules={[{ required: true, message: '请输入名称' }]}
+                                                className="flex-1 !mb-0"
+                                            >
+                                                <Input placeholder="显示名称" />
+                                            </Form.Item>
+                                            <Form.Item
+                                                {...restField}
+                                                name={[name, 'value']}
+                                                rules={[{ required: true, message: '请输入值' }]}
+                                                className="flex-1 !mb-0"
+                                            >
+                                                <Input placeholder="实际值" />
+                                            </Form.Item>
+                                            <Button type="text" danger onClick={() => remove(name)}>
+                                                删除
+                                            </Button>
+                                        </Flex>
+                                    ))}
+                                    <Button type="dashed" onClick={() => add()} block>
+                                        + 添加预设值
+                                    </Button>
+                                </>
+                            )}
+                        </Form.List>
+                    </Form.Item>
+                </Form>
+            </FormModal>
+        );
+    }
+);
+
+/**
+ * SL651 应答要素 Modal
+ */
+export interface ResponseElementsModalRef {
+    open: (typeId: string, func: SL651.Func) => void;
+}
+interface ResponseElementsModalProps {
+    types: Protocol.Item[];
+    onSuccess?: () => void;
+    saveMutation: SaveMutation;
+}
+const RESPONSE_ELEMENT_CARD_GRID_STYLE: CSSProperties = {
+    gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+};
+const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseElementsModalProps>(
+    ({ types, onSuccess, saveMutation }, ref) => {
+        const [open, setOpen] = useState(false);
+        const [typeId, setTypeId] = useState<string>();
+        const [func, setFunc] = useState<SL651.Func>();
+        const [form] = Form.useForm();
+        const groupNames = useMemo(() => {
+            const groups = new Set<string>();
+            for (const element of [...(func?.elements || []), ...(func?.responseElements || [])]) {
+                const group = normalizeGroupName(element.group);
+                if (group) groups.add(group);
+            }
+            return Array.from(groups);
+        }, [func]);
+        const groupOptions = useFilterableGroupOptions(groupNames);
+        useImperativeHandle(ref, () => ({
+            open(t, f) {
+                setTypeId(t);
+                setFunc(f);
+                form.resetFields();
+                form.setFieldsValue({
+                    responseElements: f.responseElements || [],
+                });
+                setOpen(true);
+            },
+        }));
+        const handleOk = async () => {
+            if (!typeId || !func) return;
+            const values = await form.validateFields();
+            const type = types.find((t) => t.id === typeId);
+            if (!type) return;
+            // 过滤掉不完整的要素
+            const cleanedElements = (values.responseElements || [])
+                .filter(
+                    (ele: Partial<SL651.Element>) =>
+                        ele.name?.trim() &&
+                        ele.guideHex?.trim() &&
+                        ele.encode &&
+                        ele.length !== undefined
+                )
+                .map((ele: Partial<SL651.Element>) => ({
+                    id: ele.id || Sl651FormGenerateId(),
+                    name: ele.name?.trim(),
+                    group: normalizeGroupName(ele.group) || undefined,
+                    guideHex: ele.guideHex?.trim(),
+                    encode: ele.encode,
+                    length: ele.length,
+                    digits: Number.isFinite(ele.digits) ? ele.digits : 0,
+                    unit: ele.unit?.trim() || undefined,
+                    remark: ele.remark?.trim() || undefined,
+                }));
+            const config = type.config as SL651.Config;
+            const newFuncs = config.funcs.map((f) => {
+                if (f.id !== func.id) return f;
+                return {
+                    ...f,
+                    responseElements: cleanedElements.length > 0 ? cleanedElements : undefined,
+                };
+            });
+            await saveMutation.mutateAsync({
+                id: typeId,
+                protocol: 'SL651',
+                config: { funcs: newFuncs },
+            });
+            onSuccess?.();
+            setOpen(false);
+        };
+        return (
+            <FormModal
+                open={open}
+                title={`应答要素配置 - ${func?.name} (${func?.funcCode})`}
+                onCancel={() => setOpen(false)}
+                onOk={handleOk}
+                confirmLoading={saveMutation.isPending}
+                forceRender
+                width={900}
+            >
+                <div className="mb-4">
+                    <Tag color="blue">下行功能码</Tag>
+                    <span className="text-gray-500 ml-2">
+                        配置设备应答报文的解析要素。设备收到下行指令后会返回应答报文，这里定义如何解析应答报文中的数据。
+                    </span>
+                </div>
+
+                <Form form={form} layout="vertical">
+                    <Form.List name="responseElements">
+                        {(fields, { add, remove }) => (
+                            <>
+                                {fields.length > 0 ? (
+                                    <div
+                                        className="grid gap-3"
+                                        style={RESPONSE_ELEMENT_CARD_GRID_STYLE}
+                                    >
+                                        {fields.map((field, index) => (
+                                            <Card
+                                                key={field.key}
+                                                size="small"
+                                                hoverable
+                                                className="h-full border-slate-200 shadow-[0_1px_4px_rgba(15,23,42,0.06)]"
+                                                styles={{ body: { padding: 12 } }}
+                                            >
+                                                <Flex
+                                                    justify="space-between"
+                                                    gap={12}
+                                                    align="start"
+                                                    className="mb-3"
+                                                >
+                                                    <div className="min-w-0 flex-1">
+                                                        <div className="text-sm font-semibold text-slate-800">
+                                                            应答要素 {index + 1}
+                                                        </div>
+                                                        <div className="mt-0.5 text-[12px] text-slate-400">
+                                                            配置名称、引导符、编码、长度、单位和小数位数
+                                                        </div>
+                                                    </div>
+                                                    <Button
+                                                        type="text"
+                                                        danger
+                                                        size="small"
+                                                        onClick={() => remove(field.name)}
+                                                    >
+                                                        删除
+                                                    </Button>
+                                                </Flex>
+
+                                                <div className="grid gap-3 sm:grid-cols-2">
+                                                    <Form.Item
+                                                        name={[field.name, 'name']}
+                                                        rules={[
+                                                            { required: true, message: '必填' },
+                                                        ]}
+                                                        className="!mb-0"
+                                                    >
+                                                        <Input placeholder="要素名称" />
+                                                    </Form.Item>
+                                                    <Form.Item
+                                                        name={[field.name, 'group']}
+                                                        className="!mb-0"
+                                                    >
+                                                        <AutoComplete
+                                                            allowClear
+                                                            options={groupOptions.options}
+                                                            placeholder="分组"
+                                                            filterOption={false}
+                                                            onDropdownVisibleChange={
+                                                                groupOptions.onDropdownVisibleChange
+                                                            }
+                                                            onSearch={groupOptions.onSearch}
+                                                        />
+                                                    </Form.Item>
+                                                    <Form.Item
+                                                        name={[field.name, 'guideHex']}
+                                                        rules={[
+                                                            { required: true, message: '必填' },
+                                                        ]}
+                                                        className="!mb-0"
+                                                    >
+                                                        <Input placeholder="如: 01" />
+                                                    </Form.Item>
+                                                    <Form.Item
+                                                        name={[field.name, 'encode']}
+                                                        rules={[
+                                                            { required: true, message: '必填' },
+                                                        ]}
+                                                        className="!mb-0"
+                                                    >
+                                                        <Select
+                                                            placeholder="选择"
+                                                            options={EncodeList.map((e) => ({
+                                                                value: e,
+                                                                label: e,
+                                                            }))}
+                                                        />
+                                                    </Form.Item>
+                                                    <Form.Item
+                                                        name={[field.name, 'length']}
+                                                        rules={[
+                                                            { required: true, message: '必填' },
+                                                        ]}
+                                                        className="!mb-0"
+                                                    >
+                                                        <InputNumber min={1} className="!w-full" />
+                                                    </Form.Item>
+                                                    <Form.Item
+                                                        name={[field.name, 'unit']}
+                                                        className="!mb-0"
+                                                    >
+                                                        <Input placeholder="单位" />
+                                                    </Form.Item>
+                                                    <Form.Item
+                                                        name={[field.name, 'digits']}
+                                                        className="!mb-0"
+                                                    >
+                                                        <InputNumber
+                                                            min={0}
+                                                            max={8}
+                                                            className="!w-full"
+                                                        />
+                                                    </Form.Item>
+                                                    <Form.Item
+                                                        name={[field.name, 'remark']}
+                                                        className="!mb-0 sm:col-span-2"
+                                                    >
+                                                        <Input placeholder="备注" />
+                                                    </Form.Item>
+                                                </div>
+                                            </Card>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <Empty description="暂无应答要素，点击下方按钮添加" />
+                                )}
+                                <Button
+                                    type="dashed"
+                                    onClick={() =>
+                                        add({
+                                            id: Sl651FormGenerateId(),
+                                            name: '',
+                                            group: undefined,
+                                            guideHex: '',
+                                            encode: 'BCD',
+                                            length: 1,
+                                            digits: 0,
+                                        })
+                                    }
+                                    block
+                                    className="mt-3"
+                                >
+                                    + 添加应答要素
+                                </Button>
+                            </>
+                        )}
+                    </Form.List>
+                </Form>
+            </FormModal>
+        );
+    }
+);
+
+/**
+ * SL651 协议配置 - Modal 组件导出
+ */
+
+/**
+ * SL651 协议配置页面
+ * 布局：左侧设备类型列表 + 右侧功能码/要素配置
+ */
+/** 带要素的功能码 */
+interface FuncWithElements extends SL651.Func {
+    elements: SL651.Element[];
+    responseElements?: SL651.Element[];
+}
+const ELEMENT_CARD_GRID_STYLE: CSSProperties = {
+    gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+};
+const SL651ConfigPage = () => {
+    // 权限检查
+    const { has } = usePermissions();
+    const canQuery = has('iot:protocol:query');
+    const canAdd = has('iot:protocol:add');
+    const canEdit = has('iot:protocol:edit');
+    const canDelete = has('iot:protocol:delete');
+    const canImport = has('iot:protocol:import') && canAdd;
+    const canExport = has('iot:protocol:export');
+    // 设备类型列表查询
+    const {
+        data: configList,
+        isLoading: loadingTypes,
+        refetch: refetchTypes,
+    } = useProtocolConfigList({ protocol: 'SL651' }, { enabled: canQuery });
+    // 保存和删除 mutations
+    const saveMutation = useProtocolConfigSave();
+    const deleteMutation = useProtocolConfigDelete();
+    // 导入导出
+    const { exportConfigs, triggerImport, exporting, importing } = useProtocolImportExport('SL651');
+    // 当前选中的设备类型 ID（用户手动选择）
+    const [selectedTypeId, setSelectedTypeId] = useState<string>();
+    // Modal refs
+    const deviceTypeModalRef = useRef<DeviceTypeModalRef>(null);
+    const funcModalRef = useRef<FuncModalRef>(null);
+    const elementModalRef = useRef<ElementModalRef>(null);
+    const presetValueModalRef = useRef<PresetValueModalRef>(null);
+    const dictConfigModalRef = useRef<DictConfigModalRef>(null);
+    const responseElementsModalRef = useRef<ResponseElementsModalRef>(null);
+    // 设备类型列表（使用 useMemo 保持引用稳定）
+    const types = useMemo(() => configList ?? [], [configList]);
+    const emptyTypeDesc = types.length ? '未选择设备类型' : '暂无设备类型';
+    // 计算当前激活的类型 ID：优先用户选择，否则默认第一个
+    const activeTypeId = useMemo(() => {
+        if (selectedTypeId && types.some((t) => t.id === selectedTypeId)) {
+            return selectedTypeId;
+        }
+        return types.length > 0 ? types[0].id : undefined;
+    }, [selectedTypeId, types]);
+    // 功能码列表（派生状态，根据 activeTypeId 计算）
+    const funcs = useMemo<FuncWithElements[]>(() => {
+        if (!activeTypeId) return [];
+        const type = types.find((t) => t.id === activeTypeId);
+        if (!type) return [];
+        const config = type.config as SL651.Config;
+        return config?.funcs || [];
+    }, [activeTypeId, types]);
+    // 加载状态（与数据加载状态同步）
+    const loadingFuncs = loadingTypes;
+    // ========== 设备类型操作 ==========
+    const handleDeleteDeviceType = async () => {
+        if (!activeTypeId) return;
+        // 删除前记录下一个可选中的类型
+        const idx = types.findIndex((t) => t.id === activeTypeId);
+        const nextType = types[idx + 1] ?? types[idx - 1];
+        await deleteMutation.mutateAsync(activeTypeId);
+        setSelectedTypeId(nextType?.id);
+    };
+    // ========== 功能码操作 ==========
+    const handleDeleteFunc = async (funcId: string) => {
+        if (!activeTypeId) return;
+        const type = types.find((t) => t.id === activeTypeId);
+        if (!type) return;
+        const config = type.config as SL651.Config;
+        const newConfig: SL651.Config = {
+            funcs: config.funcs.filter((f) => f.id !== funcId),
+        };
+        await saveMutation.mutateAsync({
+            id: activeTypeId,
+            protocol: 'SL651',
+            config: newConfig,
+        });
+    };
+    // ========== 要素操作 ==========
+    const handleDeleteElement = async (funcId: string, eleId: string) => {
+        if (!activeTypeId) return;
+        const type = types.find((t) => t.id === activeTypeId);
+        if (!type) return;
+        const config = type.config as SL651.Config;
+        const newConfig: SL651.Config = {
+            funcs: config.funcs.map((f) =>
+                f.id === funcId ? { ...f, elements: f.elements.filter((e) => e.id !== eleId) } : f
+            ),
+        };
+        await saveMutation.mutateAsync({
+            id: activeTypeId,
+            protocol: 'SL651',
+            config: newConfig,
+        });
+    };
+    const persistElements = useCallback(
+        async (
+            funcId: string,
+            listKind: 'elements' | 'responseElements',
+            nextItems: SL651.Element[],
+            currentItems: SL651.Element[]
+        ) => {
+            if (!activeTypeId) return;
+            const type = types.find((t) => t.id === activeTypeId);
+            if (!type) return;
+            if (nextItems.length === currentItems.length) {
+                const isSameOrder =
+                    nextItems.every((item, index) => item.id === currentItems[index]?.id) &&
+                    nextItems.every(
+                        (item, index) =>
+                            getGroupKey(item.group) === getGroupKey(currentItems[index]?.group)
+                    );
+                if (isSameOrder) return;
+            }
+            const config = type.config as SL651.Config;
+            const newFuncs = config.funcs.map((func) => {
+                if (func.id !== funcId) return func;
+                if (listKind === 'responseElements') {
+                    return {
+                        ...func,
+                        responseElements: nextItems.length > 0 ? nextItems : undefined,
+                    };
+                }
+                return {
+                    ...func,
+                    elements: nextItems,
+                };
+            });
+            await saveMutation.mutateAsync({
+                id: activeTypeId,
+                protocol: 'SL651',
+                config: { funcs: newFuncs },
+            });
+            await refetchTypes();
+        },
+        [activeTypeId, refetchTypes, saveMutation, types]
+    );
+    const handleReorderElements = useCallback(
+        async (
+            funcId: string,
+            listKind: 'elements' | 'responseElements',
+            nextOrder: string[],
+            currentItems: SL651.Element[]
+        ) => {
+            await persistElements(
+                funcId,
+                listKind,
+                reorderItemsByGroupOrder(currentItems, nextOrder),
+                currentItems
+            );
+        },
+        [persistElements]
+    );
+    const handleReorderElementItems = useCallback(
+        async (
+            funcId: string,
+            listKind: 'elements' | 'responseElements',
+            groupKey: string,
+            nextOrder: string[],
+            currentItems: SL651.Element[]
+        ) => {
+            await persistElements(
+                funcId,
+                listKind,
+                reorderItemsWithinGroupOrder(currentItems, groupKey, nextOrder),
+                currentItems
+            );
+        },
+        [persistElements]
+    );
+    const renderElementCard = (
+        element: SL651.Element,
+        funcId: string,
+        funcDir: SL651.Direction,
+        options?: {
+            advancedActions?: boolean;
+        },
+        dragHandle?: ReactNode
+    ) => {
+        const advancedActions = options?.advancedActions !== false;
+        const presetValueCount = element.options?.length ?? 0;
+        const dictItemCount = element.dictConfig?.items?.length ?? 0;
+        const showPresetValueTag = funcDir === 'DOWN' && advancedActions && presetValueCount > 0;
+        const showDictTag = advancedActions && element.encode === 'DICT' && dictItemCount > 0;
+        return (
+            <Card
+                key={element.id}
+                size="small"
+                hoverable
+                className="h-full border-slate-200 shadow-[0_1px_4px_rgba(15,23,42,0.06)]"
+                styles={{ body: { padding: 12 } }}
+            >
+                <Flex justify="space-between" gap={12} align="start" className="mb-2">
+                    <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-semibold text-slate-800">
+                            {element.name}
+                        </div>
+                        <div className="mt-0.5 text-[12px] text-slate-400">
+                            引导符 {element.guideHex}
+                        </div>
+                    </div>
+                    <Space size={4} className="shrink-0">
+                        {dragHandle}
+                        {canEdit && (
+                            <Button
+                                size="small"
+                                type="link"
+                                onClick={() => {
+                                    if (activeTypeId)
+                                        elementModalRef.current?.open(
+                                            'edit',
+                                            activeTypeId,
+                                            funcId,
+                                            element
+                                        );
+                                }}
+                            >
+                                编辑
+                            </Button>
+                        )}
+                        {canDelete && (
+                            <Popconfirm
+                                title="确认删除？"
+                                onConfirm={() => handleDeleteElement(funcId, element.id)}
+                            >
+                                <Button size="small" danger type="link">
+                                    删除
+                                </Button>
+                            </Popconfirm>
+                        )}
+                    </Space>
+                </Flex>
+
+                <Space size={6} wrap className="mb-2">
+                    <Tag color="blue">{element.encode}</Tag>
+                    <Tag>{element.length} 字节</Tag>
+                    {typeof element.digits === 'number' ? (
+                        <Tag>小数位数 {element.digits}</Tag>
+                    ) : null}
+                    {element.unit ? <Tag>{element.unit}</Tag> : null}
+                    {showPresetValueTag ? (
+                        <Tag color="cyan">{presetValueCount} 个预设值</Tag>
+                    ) : null}
+                    {showDictTag ? <Tag color="purple">{dictItemCount} 个字典项</Tag> : null}
+                </Space>
+
+                {element.remark ? (
+                    <div className="text-xs leading-5 text-slate-500">{element.remark}</div>
+                ) : (
+                    <div className="text-xs leading-5 text-slate-400">暂无备注</div>
+                )}
+
+                {(funcDir === 'DOWN' && advancedActions && canEdit) ||
+                (advancedActions && element.encode === 'DICT' && canEdit) ? (
+                    <Space size={4} wrap className="mt-3">
+                        {funcDir === 'DOWN' && advancedActions && canEdit && (
+                            <Button
+                                size="small"
+                                onClick={() => {
+                                    if (activeTypeId)
+                                        presetValueModalRef.current?.open(
+                                            activeTypeId,
+                                            funcId,
+                                            element
+                                        );
+                                }}
+                            >
+                                预设值
+                            </Button>
+                        )}
+                        {advancedActions && element.encode === 'DICT' && canEdit && (
+                            <Button
+                                size="small"
+                                onClick={() => {
+                                    if (activeTypeId)
+                                        dictConfigModalRef.current?.open(
+                                            activeTypeId,
+                                            funcId,
+                                            element
+                                        );
+                                }}
+                            >
+                                字典
+                            </Button>
+                        )}
+                    </Space>
+                ) : null}
+            </Card>
+        );
+    };
+    const renderGroupedElements = (
+        elements: SL651.Element[] | undefined,
+        funcId: string,
+        funcDir: SL651.Direction,
+        emptyDescription: string,
+        options?: {
+            advancedActions?: boolean;
+            listKind?: 'elements' | 'responseElements';
+        }
+    ) => {
+        const advancedActions = options?.advancedActions !== false;
+        const listKind = options?.listKind ?? 'elements';
+        const groups = buildGroupSections(elements || []);
+        if (!groups.length) {
+            return <Empty description={emptyDescription} />;
+        }
+        return (
+            <SortableGroupSectionList
+                sections={groups}
+                className="w-full"
+                disabled={saveMutation.isPending || !canEdit}
+                onOrderChange={(nextOrder) =>
+                    handleReorderElements(funcId, listKind, nextOrder, elements || [])
+                }
+                empty={<Empty description={emptyDescription} />}
+            >
+                {(group) => (
+                    <SortableGroupSectionFrame
+                        id={group.key}
+                        key={group.key}
+                        className="rounded-xl border border-slate-200 bg-white p-3"
+                        bodyClassName="mt-4"
+                        disabled={saveMutation.isPending || !canEdit}
+                        title={group.label}
+                        meta={<Tag color="blue">{group.count} 个</Tag>}
+                    >
+                        <SortableGroupItemList
+                            items={group.items}
+                            className="grid gap-3"
+                            style={ELEMENT_CARD_GRID_STYLE}
+                            minItemWidth={280}
+                            disabled={saveMutation.isPending || !canEdit}
+                            empty={<Empty description={emptyDescription} />}
+                            onOrderChange={(nextOrder) =>
+                                handleReorderElementItems(
+                                    funcId,
+                                    listKind,
+                                    group.key,
+                                    nextOrder,
+                                    elements || []
+                                )
+                            }
+                        >
+                            {(element, dragHandle) =>
+                                renderElementCard(
+                                    element,
+                                    funcId,
+                                    funcDir,
+                                    { advancedActions },
+                                    dragHandle
+                                )
+                            }
+                        </SortableGroupItemList>
+                    </SortableGroupSectionFrame>
+                )}
+            </SortableGroupSectionList>
+        );
+    };
+    const renderFuncCard = (record: FuncWithElements) => {
+        const elementCount = record.elements?.length ?? 0;
+        const responseCount = record.responseElements?.length ?? 0;
+        return (
+            <Card
+                key={record.id}
+                size="small"
+                hoverable
+                className="w-full border-slate-200 shadow-[0_1px_4px_rgba(15,23,42,0.06)]"
+                styles={{ body: { padding: 16 } }}
+            >
+                <Flex justify="space-between" gap={12} align="start" className="mb-2">
+                    <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-semibold text-slate-800">
+                            {record.name}
+                        </div>
+                        <div className="mt-0.5 text-[12px] text-slate-400">
+                            功能码 {record.funcCode}
+                        </div>
+                    </div>
+                    <Space size={4} className="shrink-0">
+                        {canEdit && (
+                            <Button
+                                size="small"
+                                type="link"
+                                onClick={() => {
+                                    if (activeTypeId)
+                                        funcModalRef.current?.open('edit', activeTypeId, record);
+                                }}
+                            >
+                                编辑
+                            </Button>
+                        )}
+                        {canDelete && (
+                            <Popconfirm
+                                title="确认删除？"
+                                onConfirm={() => handleDeleteFunc(record.id)}
+                            >
+                                <Button size="small" danger type="link">
+                                    删除
+                                </Button>
+                            </Popconfirm>
+                        )}
+                    </Space>
+                </Flex>
+
+                <Space size={6} wrap className="mb-2">
+                    <Tag color={record.dir === 'UP' ? 'green' : 'orange'}>
+                        {record.dir === 'UP' ? '上行' : '下行'}
+                    </Tag>
+                    <Tag color="blue">{elementCount} 个要素</Tag>
+                    {record.dir === 'DOWN' ? (
+                        <Tag color="cyan">{responseCount} 个应答要素</Tag>
+                    ) : null}
+                </Space>
+
+                {record.remark ? (
+                    <div className="text-xs leading-5 text-slate-500">{record.remark}</div>
+                ) : (
+                    <div className="text-xs leading-5 text-slate-400">暂无备注</div>
+                )}
+
+                <Space size={4} wrap className="mt-3">
+                    {record.dir === 'DOWN' && canEdit && (
+                        <Button
+                            size="small"
+                            onClick={() => {
+                                if (activeTypeId)
+                                    responseElementsModalRef.current?.open(activeTypeId, record);
+                            }}
+                        >
+                            应答要素
+                        </Button>
+                    )}
+                </Space>
+
+                <div className="mt-4 space-y-4">
+                    <div>
+                        <Flex justify="space-between" align="center" gap={12} className="mb-2">
+                            <div className="text-sm font-semibold text-slate-700">要素配置</div>
+                            {canAdd && (
+                                <Button
+                                    size="small"
+                                    type="primary"
+                                    onClick={() => {
+                                        if (activeTypeId)
+                                            elementModalRef.current?.open(
+                                                'create',
+                                                activeTypeId,
+                                                record.id
+                                            );
+                                    }}
+                                >
+                                    新增要素
+                                </Button>
+                            )}
+                        </Flex>
+                        {renderGroupedElements(record.elements, record.id, record.dir, '暂无要素', {
+                            listKind: 'elements',
+                        })}
+                    </div>
+                    {record.dir === 'DOWN' && (
+                        <div>
+                            <div className="mb-2 text-sm font-semibold text-slate-700">
+                                应答要素
+                            </div>
+                            {renderGroupedElements(
+                                record.responseElements,
+                                record.id,
+                                record.dir,
+                                '暂无应答要素',
+                                {
+                                    advancedActions: false,
+                                    listKind: 'responseElements',
+                                }
+                            )}
+                        </div>
+                    )}
+                </div>
+            </Card>
+        );
+    };
+    const emptyFuncDesc = activeTypeId ? '暂无功能码，点击右上角新增功能码' : emptyTypeDesc;
+    // 权限检查
+    if (!canQuery) {
+        return (
+            <PageContainer title="SL651配置">
+                <Result status="403" title="无权访问" subTitle="您没有权限访问此页面" />
+            </PageContainer>
+        );
+    }
+    return (
+        <PageContainer title="SL651配置">
+            <div className="flex h-full min-h-0 overflow-hidden">
+                {/* 左侧：设备类型列表 */}
+                <div className="h-full min-h-0 w-[360px] shrink-0 pr-3">
+                    <Card
+                        title="设备类型"
+                        className="flex h-full min-h-0 flex-col overflow-hidden"
+                        styles={{
+                            body: { flex: 1, minHeight: 0, overflow: 'auto', padding: 16 },
+                        }}
+                        extra={
+                            <Space size={4}>
+                                {canAdd && (
+                                    <Button
+                                        size="small"
+                                        type="primary"
+                                        onClick={() => deviceTypeModalRef.current?.open('create')}
+                                    >
+                                        新增
+                                    </Button>
+                                )}
+                                {canEdit && (
+                                    <Button
+                                        size="small"
+                                        disabled={!activeTypeId}
+                                        onClick={() =>
+                                            deviceTypeModalRef.current?.open(
+                                                'edit',
+                                                types.find((t) => t.id === activeTypeId)
+                                            )
+                                        }
+                                    >
+                                        编辑
+                                    </Button>
+                                )}
+                                {canDelete && (
+                                    <Popconfirm
+                                        title="确认删除该设备类型？"
+                                        onConfirm={handleDeleteDeviceType}
+                                        disabled={!activeTypeId}
+                                    >
+                                        <Button size="small" danger disabled={!activeTypeId}>
+                                            删除
+                                        </Button>
+                                    </Popconfirm>
+                                )}
+                                {canExport && (
+                                    <Tooltip title="导出">
+                                        <Button
+                                            size="small"
+                                            icon={<DownloadOutlined />}
+                                            disabled={loadingTypes || importing}
+                                            loading={exporting}
+                                            onClick={exportConfigs}
+                                        />
+                                    </Tooltip>
+                                )}
+                                {canImport && (
+                                    <Tooltip title="导入">
+                                        <Button
+                                            size="small"
+                                            icon={<UploadOutlined />}
+                                            disabled={exporting}
+                                            loading={importing}
+                                            onClick={triggerImport}
+                                        />
+                                    </Tooltip>
+                                )}
+                            </Space>
+                        }
+                    >
+                        {loadingTypes ? (
+                            <Skeleton active paragraph={{ rows: 6 }} />
+                        ) : types.length === 0 ? (
+                            <Empty description="暂无设备类型" />
+                        ) : (
+                            <Tree
+                                blockNode
+                                className="[&_.ant-tree-switcher]:hidden"
+                                selectedKeys={activeTypeId ? [String(activeTypeId)] : []}
+                                onSelect={(keys) => {
+                                    if (keys.length > 0) {
+                                        setSelectedTypeId(String(keys[0]));
+                                    }
+                                }}
+                                treeData={types.map((t) => {
+                                    const config = t.config as SL651.Config;
+                                    const mode = config?.responseMode || 'M1';
+                                    return {
+                                        key: String(t.id),
+                                        title: (
+                                            <Tooltip
+                                                title={t.remark || '暂无备注'}
+                                                placement="right"
+                                            >
+                                                <Flex
+                                                    justify="space-between"
+                                                    align="center"
+                                                    className="h-8 p-1"
+                                                >
+                                                    <Space size={4}>
+                                                        <span>{t.name}</span>
+                                                        <Tag color="blue">{mode}</Tag>
+                                                    </Space>
+                                                    {t.enabled ? (
+                                                        <Tag color="green">启用</Tag>
+                                                    ) : (
+                                                        <Tag color="red">禁用</Tag>
+                                                    )}
+                                                </Flex>
+                                            </Tooltip>
+                                        ),
+                                    };
+                                })}
+                            />
+                        )}
+                    </Card>
+                </div>
+
+                {/* 右侧：功能码配置 */}
+                <div className="h-full min-h-0 min-w-0 flex-1">
+                    <Card
+                        title={
+                            activeTypeId
+                                ? '功能码配置'
+                                : types.length > 0
+                                  ? '请选择设备类型'
+                                  : '暂无设备类型'
+                        }
+                        className="flex h-full min-h-0 flex-col overflow-hidden"
+                        styles={{
+                            body: { flex: 1, minHeight: 0, overflow: 'auto', padding: 0 },
+                        }}
+                        extra={
+                            activeTypeId &&
+                            canAdd && (
+                                <Button
+                                    type="primary"
+                                    onClick={() =>
+                                        funcModalRef.current?.open('create', activeTypeId)
+                                    }
+                                >
+                                    新增功能码
+                                </Button>
+                            )
+                        }
+                    >
+                        {!activeTypeId ? (
+                            <Empty description={emptyTypeDesc} />
+                        ) : loadingFuncs ? (
+                            <Skeleton active paragraph={{ rows: 6 }} className="p-4" />
+                        ) : funcs.length === 0 ? (
+                            <Empty description={emptyFuncDesc} />
+                        ) : (
+                            <VirtualStack
+                                items={funcs}
+                                getItemKey={(record) => record.id}
+                                className="p-4"
+                                estimateSize={520}
+                                gap={16}
+                            >
+                                {(record) => renderFuncCard(record)}
+                            </VirtualStack>
+                        )}
+                    </Card>
+                </div>
+            </div>
+
+            {/* 设备类型 Modal */}
+            <Sl651DeviceTypeModalDeviceTypeModal
+                ref={deviceTypeModalRef}
+                onSuccess={refetchTypes}
+                saveMutation={saveMutation}
+            />
+
+            {/* 功能码 Modal */}
+            <FuncModal
+                ref={funcModalRef}
+                types={types}
+                onSuccess={refetchTypes}
+                saveMutation={saveMutation}
+            />
+
+            {/* 要素 Modal */}
+            <ElementModal
+                ref={elementModalRef}
+                types={types}
+                onSuccess={refetchTypes}
+                saveMutation={saveMutation}
+            />
+
+            {/* 预设值 Modal */}
+            <PresetValueModal
+                ref={presetValueModalRef}
+                types={types}
+                onSuccess={refetchTypes}
+                saveMutation={saveMutation}
+            />
+
+            {/* 字典配置 Modal */}
+            <DictConfigModal
+                ref={dictConfigModalRef}
+                types={types}
+                onSuccess={refetchTypes}
+                saveMutation={saveMutation}
+            />
+
+            {/* 应答要素 Modal */}
+            <ResponseElementsModal
+                ref={responseElementsModalRef}
+                types={types}
+                onSuccess={refetchTypes}
+                saveMutation={saveMutation}
+            />
+        </PageContainer>
+    );
+};
+
+export { ModbusConfigPage, S7ConfigPage, SL651ConfigPage };

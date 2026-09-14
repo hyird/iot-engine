@@ -1,17 +1,16 @@
-import { createSnapshotStream } from '@/utils/snapshot-request';
 import request from '@/utils/http';
-import { appendQueryParams } from '@/utils/query';
 import type { PaginatedResult } from '@/utils/pagination';
-import type { Role } from './role.types';
+import { appendQueryParams } from '@/utils/query';
+import { createSnapshotStream } from '@/utils/snapshot-request';
 import {
     createRoleSchema,
     roleIdSchema,
     roleListQuerySchema,
     updateRoleSchema,
 } from './role.schema';
+import type { Role } from './role.types';
 
 const BASE = '/v1/roles';
-
 export const getList = (params?: Role.Query) =>
     createSnapshotStream<PaginatedResult<Role.Item>>(
         appendQueryParams(BASE, roleListQuerySchema.parse(params ?? {}))

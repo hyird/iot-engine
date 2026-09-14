@@ -25,7 +25,6 @@ const emailSchema = z
         });
     }, '邮箱格式不正确')
     .transform((value) => value || undefined);
-
 export const createUserSchema = z.object({
     username: z.string().min(2, '用户名长度需在 2 - 50 之间').max(50, '用户名长度需在 2 - 50 之间'),
     password: z.string().min(6, '密码长度需在 6 - 100 之间').max(100, '密码长度需在 6 - 100 之间'),
@@ -36,7 +35,6 @@ export const createUserSchema = z.object({
     department_id: z.uuid({ error: '部门 ID 必须是 UUID' }).optional(),
     role_ids: z.array(z.uuid({ error: '角色 ID 必须是 UUID' })).min(1, '至少选择一个角色'),
 });
-
 export const updateUserSchema = z.object({
     nickname: z.string().max(100, '昵称不能超过 100 个字符').optional(),
     phone: phoneSchema.optional(),
@@ -54,13 +52,10 @@ export const updateUserSchema = z.object({
         .min(1, '至少选择一个角色')
         .optional(),
 });
-
 export const userListQuerySchema = pageParamsSchema.extend({
     status: statusSchema.optional(),
 });
-
 export const userOptionsQuerySchema = z.object({
     keyword: z.string().max(100, '搜索关键字过长').optional(),
 });
-
 export const userIdSchema = z.uuid({ error: 'id 必须是 UUID' });

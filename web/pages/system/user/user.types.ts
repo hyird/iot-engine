@@ -1,33 +1,24 @@
+import type { PageParams } from '@/utils/pagination';
+import { createQueryKeys } from '@/utils/query';
+
 /**
  * 用户管理类型定义
  */
-
-import { createQueryKeys } from '@/utils/query';
-import type { PageParams } from '@/utils/pagination';
-
 // ============ QueryKeys ============
-
 const userKeys = createQueryKeys('users');
-
 export const userQueryKeys = {
     ...userKeys,
     list: (params?: User.Query) => [...userKeys.lists(), params] as const,
 };
-
 export const roleOptionQueryKey = ['roles', 'options'] as const;
-
 // ============ 枚举/状态类型 ============
-
 type UserStatus = 'enabled' | 'disabled';
-
 // ============ 基础类型 ============
-
 interface UserRole {
     id: string;
     name: string;
     code: string;
 }
-
 interface UserOption {
     id: string;
     username: string;
@@ -35,9 +26,7 @@ interface UserOption {
     phone?: string;
     email?: string;
 }
-
 // ============ 列表项/详情类型 ============
-
 interface UserItem {
     id: string;
     username: string;
@@ -51,15 +40,11 @@ interface UserItem {
     created_at?: string;
     updated_at?: string;
 }
-
 // ============ 查询参数 ============
-
 interface UserQuery extends PageParams {
     status?: UserStatus;
 }
-
 // ============ DTO 类型 ============
-
 interface CreateUserDto {
     username: string;
     password: string;
@@ -70,7 +55,6 @@ interface CreateUserDto {
     department_id?: string;
     role_ids?: string[];
 }
-
 interface UpdateUserDto {
     nickname?: string;
     phone?: string;
@@ -80,7 +64,6 @@ interface UpdateUserDto {
     department_id?: string;
     role_ids?: string[];
 }
-
 export namespace User {
     export type Status = UserStatus;
     export type Role = UserRole;

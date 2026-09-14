@@ -1,8 +1,8 @@
+import request from '@/utils/http';
+import type { PaginatedResult } from '@/utils/pagination';
+import { appendQueryParams } from '@/utils/query';
 import { createSnapshotStream } from '@/utils/snapshot-request';
 import { SnapshotStream } from '@/utils/snapshot-stream';
-import request from '@/utils/http';
-import { appendQueryParams } from '@/utils/query';
-import type { PaginatedResult } from '@/utils/pagination';
 import {
     deviceCommandSchema,
     deviceIdSchema,
@@ -10,12 +10,10 @@ import {
     saveDeviceGroupSchema,
     saveDeviceSchema,
 } from './device.schema';
-import type { Device } from './device.types';
-import type { DeviceGroup } from './device-group.types';
+import type { Device, DeviceGroup } from './device.types';
 
 const DEVICE_BASE = '/v1/device';
 const GROUP_BASE = '/v1/device/groups';
-
 const buildTree = (items: DeviceGroup.TreeItem[]) => {
     const map = new Map<string, DeviceGroup.TreeItem>();
     const roots: DeviceGroup.TreeItem[] = [];
@@ -27,7 +25,6 @@ const buildTree = (items: DeviceGroup.TreeItem[]) => {
     }
     return roots;
 };
-
 export const getDeviceList = () =>
     createSnapshotStream<PaginatedResult<Device.Overview>>(DEVICE_BASE);
 export const getDeviceRealtimeSnapshot = () =>
@@ -91,7 +88,6 @@ export const replaceDeviceShares = (id: string, data: Device.ReplaceSharesDto) =
         `${DEVICE_BASE}/${deviceIdSchema.parse(id)}/shares`,
         replaceDeviceSharesSchema.parse(data)
     );
-
 export const getDeviceGroupTree = (withCount = false) =>
     createSnapshotStream<DeviceGroup.TreeItem[]>(
         `${GROUP_BASE}/${withCount ? 'tree-count' : 'tree'}`

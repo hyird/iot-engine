@@ -1,10 +1,10 @@
-import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
+import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import type { PaginatedResult } from '@/utils/pagination';
 import { create, getEnums, getList, getPublicIp, remove, update } from './link.api';
-import { type Link, linkQueryKeys } from './link.types';
-
+import type { Link } from './link.types';
+import { linkQueryKeys } from './link.types';
 export function useLinkList(
     params?: Link.Query,
     options?: Omit<UseQueryOptions<PaginatedResult<Link.Item>>, 'queryKey' | 'queryFn'>
@@ -15,7 +15,6 @@ export function useLinkList(
         ...options,
     });
 }
-
 export function useLinkEnums(options?: { enabled?: boolean }) {
     return useSnapshotQuery({
         queryKey: [...linkQueryKeys.all, 'enums'],
@@ -24,7 +23,6 @@ export function useLinkEnums(options?: { enabled?: boolean }) {
         staleTime: Number.POSITIVE_INFINITY,
     });
 }
-
 export function usePublicIp(options?: { enabled?: boolean }) {
     return useSnapshotQuery({
         queryKey: [...linkQueryKeys.all, 'public-ip'],
@@ -34,7 +32,6 @@ export function usePublicIp(options?: { enabled?: boolean }) {
         retry: false,
     });
 }
-
 export function useLinkOptions(
     options?: Omit<UseQueryOptions<Link.Item[]>, 'queryKey' | 'queryFn'>
 ) {
@@ -45,9 +42,14 @@ export function useLinkOptions(
         enabled: options?.enabled ?? true,
     });
 }
-
 export function useLinkSave() {
-    return useSaveMutation<Link.SaveDto & { id?: string }, Link.SaveDto, Link.SaveDto>({
+    return useSaveMutation<
+        Link.SaveDto & {
+            id?: string;
+        },
+        Link.SaveDto,
+        Link.SaveDto
+    >({
         createFn: create,
         updateFn: update,
         toUpdatePayload: ({ id: _id, ...data }) => data,
@@ -56,7 +58,6 @@ export function useLinkSave() {
         invalidateKeys: [linkQueryKeys.all],
     });
 }
-
 export function useLinkDelete() {
     return useMutationWithMessage({
         mutationFn: remove,

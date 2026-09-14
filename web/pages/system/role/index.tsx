@@ -13,7 +13,6 @@ import { useRoleDelete, useRoleList, useRoleSave } from './role.service';
 import type { Role } from './role.types';
 
 const { Search, TextArea } = Input;
-
 const permissionOptions = [
     ['system:role:query', '查询角色'],
     ['system:role:add', '新增角色'],
@@ -73,10 +72,10 @@ const permissionOptions = [
     ['iot:vpn:revoke', '撤销 VPN Peer'],
     ['iot:vpn:diagnose', '诊断 VPN Hub'],
 ].map(([value, label]) => ({ value, label }));
-
-type RoleFormValues = Role.CreateDto & { id?: string };
-
-export default function SystemRolePage() {
+type RoleFormValues = Role.CreateDto & {
+    id?: string;
+};
+export function SystemRolePage() {
     const [keyword, setKeyword] = useState('');
     const [pagination, setPagination] = useState({ page: 1, pageSize: 10 });
     const [editing, setEditing] = useState<Role.Item | null>(null);
@@ -98,7 +97,6 @@ export default function SystemRolePage() {
     );
     const save = useRoleSave();
     const remove = useRoleDelete();
-
     const showCreate = () => {
         setEditing(null);
         form.resetFields();
@@ -119,7 +117,6 @@ export default function SystemRolePage() {
             });
             return;
         }
-
         const validated = validateForm(form, createRoleSchema, values);
         if (validated) save.mutate(validated, { onSuccess: () => setOpen(false) });
     };
@@ -131,7 +128,6 @@ export default function SystemRolePage() {
             onOk: () => remove.mutate(role.id),
         });
     };
-
     if (!canQuery) {
         return (
             <PageContainer>
@@ -139,7 +135,6 @@ export default function SystemRolePage() {
             </PageContainer>
         );
     }
-
     const columns: ColumnsType<Role.Item> = [
         { title: '角色名称', dataIndex: 'name' },
         { title: '角色编码', dataIndex: 'code' },
@@ -187,7 +182,6 @@ export default function SystemRolePage() {
             },
         },
     ];
-
     return (
         <PageContainer
             header={
@@ -269,3 +263,5 @@ export default function SystemRolePage() {
         </PageContainer>
     );
 }
+
+export default SystemRolePage;

@@ -1,20 +1,18 @@
+import type { PageParams } from '@/utils/pagination';
 /**
  * 协议配置类型定义
  */
-
-import type { PageParams } from '@/utils/pagination';
-
 /** 协议类型 */
 export type ProtocolType = 'SL651' | 'Modbus' | 'S7';
-
 /** 历史数据存储策略 */
 export type StoragePolicy = 'report' | 'change';
-
-export const STORAGE_POLICY_OPTIONS: { value: StoragePolicy; label: string }[] = [
+export const STORAGE_POLICY_OPTIONS: {
+    value: StoragePolicy;
+    label: string;
+}[] = [
     { value: 'report', label: '上报时' },
     { value: 'change', label: '数据改变时' },
 ];
-
 /** 设备类型采集与存储策略 */
 export interface DeviceTypeTimingConfig {
     /** 定时读取/边缘上报间隔（秒），默认 1 */
@@ -26,25 +24,19 @@ export interface DeviceTypeTimingConfig {
     /** 下发后快读间隔（秒），默认 1 */
     commandFastReadInterval?: number;
 }
-
 /** SL651 传输方向 */
 export type SL651Direction = 'UP' | 'DOWN';
-
 /** SL651 应答模式 */
 export type SL651ResponseMode = 'M1' | 'M2' | 'M3' | 'M4';
-
 /** SL651 编码类型 */
 export type SL651EncodeType = 'BCD' | 'TIME_YYMMDDHHMMSS' | 'JPEG' | 'DICT' | 'HEX';
-
 /** SL651 要素预设值选项 */
 export interface SL651ElementOption {
     label: string;
     value: string;
 }
-
 /** SL651 字典映射类型 */
 export type SL651DictMapType = 'VALUE' | 'BIT';
-
 /** SL651 字典映射依赖条件 */
 export interface SL651DictDependency {
     /** 依赖的位号 */
@@ -52,7 +44,6 @@ export interface SL651DictDependency {
     /** 依赖位的期望值（"0"或"1"） */
     bitValue: string;
 }
-
 /** SL651 字典映射项 */
 export interface SL651DictMapItem {
     /** 值或位号（VALUE模式下为值，BIT模式下为位号0-31） */
@@ -69,7 +60,6 @@ export interface SL651DictMapItem {
         conditions: SL651DictDependency[];
     };
 }
-
 /** SL651 字典配置 */
 export interface SL651DictConfig {
     /** 映射类型 */
@@ -77,7 +67,6 @@ export interface SL651DictConfig {
     /** 映射项列表 */
     items: SL651DictMapItem[];
 }
-
 /** SL651 要素定义 */
 export interface SL651Element {
     id: string;
@@ -95,7 +84,6 @@ export interface SL651Element {
     /** 字典配置（仅 DICT 编码类型使用） */
     dictConfig?: SL651DictConfig;
 }
-
 /** SL651 功能码定义 */
 export interface SL651Func {
     id: string;
@@ -107,20 +95,17 @@ export interface SL651Func {
     /** 应答要素（仅下行功能码使用，用于解析设备对下行指令的应答报文） */
     responseElements?: SL651Element[];
 }
-
 /** SL651 配置结构 */
 export interface SL651Config extends DeviceTypeTimingConfig {
     responseMode?: SL651ResponseMode;
     funcs: SL651Func[];
 }
-
 /** Modbus 寄存器类型 */
 export type ModbusRegisterType =
     | 'COIL' // 线圈（读01/写05/写多个15）
     | 'DISCRETE_INPUT' // 离散输入（只读02）
     | 'HOLDING_REGISTER' // 保持寄存器（读03/写06/写多个16）
     | 'INPUT_REGISTER'; // 输入寄存器（只读04）
-
 /** Modbus 数据类型 */
 export type ModbusDataType =
     | 'BOOL'
@@ -132,14 +117,12 @@ export type ModbusDataType =
     | 'INT64'
     | 'UINT64'
     | 'DOUBLE';
-
 /** Modbus 字节序 */
 export type ModbusByteOrder =
     | 'BIG_ENDIAN'
     | 'LITTLE_ENDIAN'
     | 'BIG_ENDIAN_BYTE_SWAP'
     | 'LITTLE_ENDIAN_BYTE_SWAP';
-
 /** Modbus 字典映射项 */
 export interface ModbusDictMapItem {
     /** 数值 */
@@ -147,13 +130,11 @@ export interface ModbusDictMapItem {
     /** 映射文本 */
     label: string;
 }
-
 /** Modbus 字典配置 */
 export interface ModbusDictConfig {
     /** 映射项列表 */
     items: ModbusDictMapItem[];
 }
-
 /** Modbus 寄存器定义 */
 export interface ModbusRegister {
     /** 唯一 ID */
@@ -185,7 +166,6 @@ export interface ModbusRegister {
     /** 备注 */
     remark?: string;
 }
-
 /** Modbus 配置结构 */
 export interface ModbusPacketConfig {
     /** 组包地址间隙（两个寄存器地址差 <= 该值时可合并） */
@@ -193,7 +173,6 @@ export interface ModbusPacketConfig {
     /** 单包最大寄存器数量（字寄存器，1-125） */
     maxQuantity?: number;
 }
-
 /** Modbus 配置结构 */
 export interface ModbusConfig extends DeviceTypeTimingConfig {
     /** 字节序 */
@@ -203,22 +182,16 @@ export interface ModbusConfig extends DeviceTypeTimingConfig {
     /** 寄存器列表 */
     registers: ModbusRegister[];
 }
-
 /** S7 连接类型 */
 export type S7ConnectionType = 'PG' | 'OP' | 'S7_BASIC';
-
 /** S7 连接模式 */
 export type S7ConnectionMode = 'RACK_SLOT' | 'TSAP';
-
 /** S7 连接探测模式 */
 export type S7ProbeMode = 'STANDARD' | 'COMPATIBLE' | 'AUTO';
-
 /** S7 PLC 型号 */
 export type S7PlcModel = 'S7-200' | 'S7-300' | 'S7-400' | 'S7-1200' | 'S7-1500';
-
 /** S7 区域类型 */
 export type S7AreaType = 'DB' | 'V' | 'MK' | 'PE' | 'PA' | 'CT' | 'TM';
-
 /** S7 数据类型 */
 export type S7AreaDataType =
     | 'BOOL'
@@ -231,7 +204,6 @@ export type S7AreaDataType =
     | 'FLOAT'
     | 'LREAL'
     | 'STRING';
-
 /** S7 区域定义 */
 export interface S7Area {
     id: string;
@@ -251,7 +223,6 @@ export interface S7Area {
     writable?: boolean;
     remark?: string;
 }
-
 /** S7 连接配置（连接地址由链路决定） */
 export interface S7Connection {
     mode?: S7ConnectionMode;
@@ -264,7 +235,6 @@ export interface S7Connection {
     handshakeTimeout?: number;
     directProbeTimeout?: number;
 }
-
 /** S7 配置结构 */
 export interface S7Config extends DeviceTypeTimingConfig {
     deviceType: string;
@@ -272,7 +242,6 @@ export interface S7Config extends DeviceTypeTimingConfig {
     connection: S7Connection;
     areas: S7Area[];
 }
-
 /** 协议配置项 */
 export interface ProtocolConfigItem {
     id: string;
@@ -284,18 +253,15 @@ export interface ProtocolConfigItem {
     created_at?: string;
     updated_at?: string;
 }
-
 /** 协议配置选项（下拉列表） */
 export interface ProtocolConfigOption {
     id: string;
     name: string;
 }
-
 /** 协议配置查询参数 */
 export interface ProtocolConfigQuery extends PageParams {
     protocol?: ProtocolType;
 }
-
 /** 创建协议配置 DTO */
 export interface CreateProtocolConfigDto {
     protocol: ProtocolType;
@@ -304,7 +270,6 @@ export interface CreateProtocolConfigDto {
     config: SL651Config | ModbusConfig | S7Config | Record<string, unknown>;
     remark?: string;
 }
-
 /** 更新协议配置 DTO */
 export interface UpdateProtocolConfigDto {
     name?: string;
@@ -312,7 +277,6 @@ export interface UpdateProtocolConfigDto {
     config?: SL651Config | ModbusConfig | S7Config | Record<string, unknown>;
     remark?: string;
 }
-
 /** 协议配置命名空间 */
 export namespace Protocol {
     export type Type = ProtocolType;
@@ -322,7 +286,6 @@ export namespace Protocol {
     export type CreateDto = CreateProtocolConfigDto;
     export type UpdateDto = UpdateProtocolConfigDto;
 }
-
 /** SL651 命名空间 */
 export namespace SL651 {
     export type Direction = SL651Direction;
@@ -336,7 +299,6 @@ export namespace SL651 {
     export type DictConfig = SL651DictConfig;
     export type DictDependency = SL651DictDependency;
 }
-
 /** Modbus 命名空间 */
 export namespace Modbus {
     export type RegisterType = ModbusRegisterType;
@@ -348,7 +310,6 @@ export namespace Modbus {
     export type Register = ModbusRegister;
     export type Config = ModbusConfig;
 }
-
 /** S7 命名空间 */
 export namespace S7 {
     export type ConnectionMode = S7ConnectionMode;

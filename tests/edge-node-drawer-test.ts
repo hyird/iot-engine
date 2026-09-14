@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 
 const source = readFileSync(
-    new URL('../web/pages/iot/edge-node/index.tsx', import.meta.url),
+    new URL('../web/pages/iot/edge_node/index.tsx', import.meta.url),
     'utf8'
 );
 const deviceSource = readFileSync(
@@ -10,15 +10,15 @@ const deviceSource = readFileSync(
     'utf8'
 );
 const client = readFileSync(
-    new URL('../web/pages/iot/edge-node/edge-node.api.ts', import.meta.url),
+    new URL('../web/pages/iot/edge_node/edge_node.api.ts', import.meta.url),
     'utf8'
 );
 const service = readFileSync(
-    new URL('../web/pages/iot/edge-node/edge-node.service.ts', import.meta.url),
+    new URL('../web/pages/iot/edge_node/edge_node.service.ts', import.meta.url),
     'utf8'
 );
 const groupPanel = readFileSync(
-    new URL('../web/pages/iot/edge-node/EdgeNodeGroupPanel.tsx', import.meta.url),
+    new URL('../web/pages/iot/edge_node/index.tsx', import.meta.url),
     'utf8'
 );
 const edgeProjector = readFileSync(

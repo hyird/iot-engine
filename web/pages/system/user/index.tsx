@@ -1,7 +1,3 @@
-/**
- * 用户管理
- */
-
 import { App, Button, Form, Input, Pagination, Result, Select, Space, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useMemo, useState } from 'react';
@@ -16,8 +12,10 @@ import { createUserSchema, updateUserSchema } from './user.schema';
 import { useRoleOptions, useUserDelete, useUserList, useUserSave } from './user.service';
 import type { User } from './user.types';
 
+/**
+ * 用户管理
+ */
 const { Search } = Input;
-
 interface UserFormValues {
     id?: string;
     username: string;
@@ -29,7 +27,6 @@ interface UserFormValues {
     department_id?: string;
     role_ids?: string[];
 }
-
 const SystemUserPage = () => {
     const [keyword, setKeyword] = useState('');
     const [pagination, setPagination] = useState({ page: 1, pageSize: 10 });
@@ -37,21 +34,17 @@ const SystemUserPage = () => {
     const [editing, setEditing] = useState<User.Item | null>(null);
     const [form] = Form.useForm<UserFormValues>();
     const { modal } = App.useApp();
-
     const { has } = usePermissions();
     const canQuery = has('system:user:query');
     const canAdd = has('system:user:add');
     const canEdit = has('system:user:edit');
     const canDelete = has('system:user:delete');
     const canQueryDept = has('system:dept:query');
-
     const doSearch = (value: string) => {
         setKeyword(value);
         setPagination((prev) => ({ ...prev, page: 1 }));
     };
-
     const { run: debouncedSearch } = useDebounceFn(doSearch, 300);
-
     const { data: userPage, isLoading: loadingUsers } = useUserList(
         {
             page: pagination.page,
@@ -60,7 +53,6 @@ const SystemUserPage = () => {
         },
         { enabled: canQuery }
     );
-
     const { data: roleOptionsData } = useRoleOptions({
         enabled: canAdd || canEdit,
     });
@@ -69,7 +61,6 @@ const SystemUserPage = () => {
         enabled: (canAdd || canEdit) && canQueryDept,
     });
     const departmentOptions = departmentOptionsData ?? [];
-
     const roleSelectOptions = useMemo(
         () => roleOptions.map((role) => ({ label: role.name, value: role.id })),
         [roleOptions]
@@ -82,17 +73,14 @@ const SystemUserPage = () => {
             })),
         [departmentOptions]
     );
-
     const saveMutation = useUserSave();
     const deleteMutation = useUserDelete();
-
     const openCreateModal = () => {
         setEditing(null);
         form.resetFields();
         form.setFieldsValue({ status: 'enabled' });
         setModalVisible(true);
     };
-
     const openEditModal = (record: User.Item) => {
         setEditing(record);
         form.setFieldsValue({
@@ -107,7 +95,6 @@ const SystemUserPage = () => {
         });
         setModalVisible(true);
     };
-
     const onDelete = (record: User.Item) => {
         modal.confirm({
             title: `确认删除用户「${record.username}」吗？`,
@@ -118,13 +105,11 @@ const SystemUserPage = () => {
             onOk: () => deleteMutation.mutate(record.id),
         });
     };
-
     const onFinish = (values: UserFormValues) => {
         const onSuccess = () => {
             setModalVisible(false);
             setEditing(null);
         };
-
         if (editing) {
             const validated = validateForm(form, updateUserSchema, {
                 ...values,
@@ -136,26 +121,25 @@ const SystemUserPage = () => {
                     ...validated,
                     id: editing.id,
                     username: values.username,
-                } as User.CreateDto & { id?: string },
+                } as User.CreateDto & {
+                    id?: string;
+                },
                 { onSuccess }
             );
             return;
         }
-
         const validated = validateForm(form, createUserSchema, values);
         if (!validated) return;
         saveMutation.mutate(validated, {
             onSuccess,
         });
     };
-
     const handlePageChange = (page: number, pageSize: number) => {
         setPagination({
             page,
             pageSize,
         });
     };
-
     if (!canQuery) {
         return (
             <PageContainer>
@@ -167,7 +151,6 @@ const SystemUserPage = () => {
             </PageContainer>
         );
     }
-
     const columns: ColumnsType<User.Item> = [
         { title: '用户名', dataIndex: 'username', ellipsis: true },
         { title: '昵称', dataIndex: 'nickname', ellipsis: true },
@@ -226,7 +209,6 @@ const SystemUserPage = () => {
             },
         },
     ];
-
     return (
         <PageContainer
             header={

@@ -1,9 +1,3 @@
-/**
- * 认证
- */
-
-export { useCurrentUser, useLogout } from './login.service';
-
 import {
     ClusterOutlined,
     HddOutlined,
@@ -18,54 +12,49 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { APP_NAME, getAppTitle } from '@/config/app';
 import { useAuthStore } from '@/store/authStore';
 import { validateForm } from '@/utils/validation';
-import { login } from './login.api';
 import { loginSchema } from './login.schema';
+import { login } from './login.service';
 import type { Auth } from './login.types';
 
+/**
+ * 认证
+ */
 interface LocationState {
     from?: {
         pathname: string;
     };
 }
-
 const pageTitle = getAppTitle('登录系统');
-
 function LoginPage() {
     const [form] = Form.useForm<Auth.LoginRequest>();
     const navigate = useNavigate();
     const location = useLocation();
     const { token, setAuth } = useAuthStore();
     const { token: themeToken } = theme.useToken();
-
     const mutation = useMutation({
         mutationFn: login,
         onSuccess: (data) => {
             setAuth(data.token, data.refresh_token, data.user);
         },
     });
-
     useEffect(() => {
         if (token && !mutation.isPending) {
             const from = (location.state as LocationState)?.from?.pathname || '/home';
             navigate(from, { replace: true });
         }
     }, [token, mutation.isPending, location.state, navigate]);
-
     useEffect(() => {
         const previousTitle = document.title;
         document.title = pageTitle;
-
         return () => {
             document.title = previousTitle;
         };
     }, []);
-
     const onFinish = (values: Auth.LoginRequest) => {
         if (mutation.isPending) return;
         const validated = validateForm(form, loginSchema, values);
         if (validated) mutation.mutate(validated);
     };
-
     return (
         <main
             className="flex min-h-screen items-center justify-center overflow-hidden p-4 sm:p-8"

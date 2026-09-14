@@ -1,24 +1,22 @@
 import { create, type StateCreator } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { Auth } from '@/pages/login/login.types';
-import { refreshToken } from '@/pages/login/login.api';
+import type { SessionUser } from '@/types/session';
 
 interface AuthState {
     token: string | null;
     refresh_token: string | null;
-    user: Auth.UserInfo | null;
+    user: SessionUser | null;
 }
 
 interface AuthActions {
-    setAuth: (token: string, refresh_token: string, user: Auth.UserInfo) => void;
+    setAuth: (token: string, refresh_token: string, user: SessionUser) => void;
     clearAuth: () => void;
-    setUser: (user: Auth.UserInfo) => void;
-    refreshAccessToken: () => Promise<boolean>;
+    setUser: (user: SessionUser) => void;
 }
 
 export type AuthStore = AuthState & AuthActions;
 
-const authStateCreator: StateCreator<AuthStore> = (set, get) => ({
+const authStateCreator: StateCreator<AuthStore> = (set) => ({
     token: null,
     refresh_token: null,
     user: null,
@@ -33,26 +31,6 @@ const authStateCreator: StateCreator<AuthStore> = (set, get) => ({
 
     setUser: (user) => {
         set({ user });
-    },
-
-    refreshAccessToken: async () => {
-        const { refresh_token: currentRefreshToken } = get();
-        if (!currentRefreshToken) return false;
-
-        try {
-            const {
-                token,
-                refresh_token: nextRefreshToken,
-                user,
-            } = await refreshToken(currentRefreshToken, {
-                _silent: true,
-            });
-            set({ token, refresh_token: nextRefreshToken, user });
-            return true;
-        } catch {
-            set({ token: null, refresh_token: null, user: null });
-            return false;
-        }
     },
 });
 

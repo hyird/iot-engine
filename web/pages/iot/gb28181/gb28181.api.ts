@@ -1,11 +1,10 @@
-import { createSnapshotStream } from '@/utils/snapshot-request';
 import request from '@/utils/http';
 import { appendQueryParams } from '@/utils/query';
+import { createSnapshotStream } from '@/utils/snapshot-request';
 import type { GB28181 } from './gb28181.types';
 
 const BASE = '/v1/gb28181';
 const pathPart = (value: string) => encodeURIComponent(value);
-
 export function stopPreviewKeepalive(sessionId: string, token?: string | null) {
     const headers = new Headers();
     if (token) headers.set('Authorization', `Bearer ${token}`);
@@ -16,7 +15,6 @@ export function stopPreviewKeepalive(sessionId: string, token?: string | null) {
         keepalive: true,
     }).catch(() => undefined);
 }
-
 export const getHealth = () =>
     createSnapshotStream<GB28181.Health>(`${BASE}/health`, { _silent: true });
 export const getSipConfig = () => createSnapshotStream<GB28181.SipConfig>(`${BASE}/config/sip`);

@@ -6,9 +6,7 @@ export const roleQueryKeys = {
     ...roleKeys,
     list: (params?: Role.Query) => [...roleKeys.lists(), params] as const,
 };
-
 type RoleStatus = 'enabled' | 'disabled';
-
 interface RoleItem {
     id: string;
     name: string;
@@ -19,11 +17,9 @@ interface RoleItem {
     created_at?: string;
     updated_at?: string;
 }
-
 interface RoleQuery extends PageParams {
     status?: RoleStatus;
 }
-
 interface CreateRoleDto {
     name: string;
     code: string;
@@ -31,9 +27,7 @@ interface CreateRoleDto {
     status?: RoleStatus;
     permissions?: string[];
 }
-
 interface UpdateRoleDto extends Partial<CreateRoleDto> {}
-
 export namespace Role {
     export type Status = RoleStatus;
     export type Item = RoleItem;

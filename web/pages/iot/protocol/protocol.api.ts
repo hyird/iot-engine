@@ -1,8 +1,9 @@
-import { SnapshotStream } from '@/utils/snapshot-stream';
-import { createSnapshotStream } from '@/utils/snapshot-request';
-import request, { type RequestConfig } from '@/utils/http';
-import { appendQueryParams } from '@/utils/query';
+import type { RequestConfig } from '@/utils/http';
+import request from '@/utils/http';
 import type { PaginatedResult } from '@/utils/pagination';
+import { appendQueryParams } from '@/utils/query';
+import { createSnapshotStream } from '@/utils/snapshot-request';
+import { SnapshotStream } from '@/utils/snapshot-stream';
 import {
     protocolCreateSchema,
     protocolIdSchema,
@@ -13,7 +14,6 @@ import type { Protocol } from './protocol.types';
 
 const BASE = '/v1/protocol/configs';
 const MAX_PAGE_SIZE = 1000;
-
 export const getList = (params?: Protocol.Query, config?: RequestConfig) =>
     createSnapshotStream<PaginatedResult<Protocol.Item>>(appendQueryParams(BASE, params), config);
 export const getAll = (params?: Protocol.Query, requestConfig?: RequestConfig) => {
@@ -45,9 +45,14 @@ export const update = (id: string, data: Protocol.UpdateDto) =>
         protocolUpdateSchema.parse(data)
     );
 export const getRevisions = (id: string) =>
-    createSnapshotStream<{ revision: number; name: string; origin: string; created_at: string }[]>(
-        `${BASE}/${protocolIdSchema.parse(id)}/revisions`
-    );
+    createSnapshotStream<
+        {
+            revision: number;
+            name: string;
+            origin: string;
+            created_at: string;
+        }[]
+    >(`${BASE}/${protocolIdSchema.parse(id)}/revisions`);
 export const remove = (id: string) => request.delete<void>(`${BASE}/${protocolIdSchema.parse(id)}`);
 export const getOptions = (protocol: Protocol.Type) =>
     createSnapshotStream<PaginatedResult<Protocol.Option>>(

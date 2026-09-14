@@ -9,14 +9,20 @@ const RolePage = lazy(() => import('@/pages/system/role'));
 const DeptPage = lazy(() => import('@/pages/system/dept'));
 const UserPage = lazy(() => import('@/pages/system/user'));
 const LinkPage = lazy(() => import('@/pages/iot/link'));
-const ModbusConfigPage = lazy(() => import('@/pages/iot/protocol/ModbusConfig'));
-const SL651ConfigPage = lazy(() => import('@/pages/iot/protocol/SL651Config'));
-const S7ConfigPage = lazy(() => import('@/pages/iot/protocol/S7Config'));
+const ModbusConfigPage = lazy(() =>
+    import('@/pages/iot/protocol').then((module) => ({ default: module.ModbusConfigPage }))
+);
+const SL651ConfigPage = lazy(() =>
+    import('@/pages/iot/protocol').then((module) => ({ default: module.SL651ConfigPage }))
+);
+const S7ConfigPage = lazy(() =>
+    import('@/pages/iot/protocol').then((module) => ({ default: module.S7ConfigPage }))
+);
 const DevicePage = lazy(() => import('@/pages/iot/device'));
-const AccessPage = lazy(() => import('@/pages/iot/open-access'));
-const EdgeNodePage = lazy(() => import('@/pages/iot/edge-node'));
-const AlertPage = lazy(() => import('@/pages/iot/alert/Alert'));
-const Gb28181Page = lazy(() => import('@/pages/iot/gb28181/GB28181'));
+const AccessPage = lazy(() => import('@/pages/iot/open_access'));
+const EdgeNodePage = lazy(() => import('@/pages/iot/edge_node'));
+const AlertPage = lazy(() => import('@/pages/iot/alert'));
+const Gb28181Page = lazy(() => import('@/pages/iot/gb28181'));
 
 const routeErrorElement = (
     <div className="flex h-screen items-center justify-center p-6">

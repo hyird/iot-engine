@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 
-import { numberOrDefault } from '../web/pages/iot/protocol/modbus/modbus-configuration';
+import { numberOrDefault } from '../web/pages/iot/protocol/protocol.service';
 import { protocolCreateSchema } from '../web/pages/iot/protocol/protocol.schema';
 
 test('S7 protocol schema rejects malformed area fields', () => {

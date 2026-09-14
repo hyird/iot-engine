@@ -2,7 +2,6 @@ import { z } from 'zod';
 import { pageParamsSchema } from '@/utils/pagination';
 
 const statusSchema = z.enum(['enabled', 'disabled'], { error: '状态无效' });
-
 export const createRoleSchema = z.object({
     name: z
         .string()
@@ -13,7 +12,6 @@ export const createRoleSchema = z.object({
     status: statusSchema.optional(),
     permissions: z.array(z.string()).optional(),
 });
-
 export const updateRoleSchema = createRoleSchema.partial();
 export const roleListQuerySchema = pageParamsSchema.extend({
     status: statusSchema.optional(),

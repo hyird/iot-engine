@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { validateValue } from '../web/pages/iot/device/CommandPopover';
+import { validateValue } from '../web/pages/iot/device/index';
 
 describe('device command validation', () => {
     test('rejects negative BCD values because the wire format has no sign', () => {

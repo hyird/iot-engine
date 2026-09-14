@@ -7,7 +7,6 @@ export const deptQueryKeys = {
     list: (params?: Dept.Query) => [...deptKeys.lists(), params] as const,
 };
 type DeptStatus = 'enabled' | 'disabled';
-
 interface DeptItem {
     id: string;
     name: string;

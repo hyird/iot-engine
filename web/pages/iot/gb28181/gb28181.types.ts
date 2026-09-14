@@ -30,7 +30,6 @@ export namespace GB28181 {
             recording: boolean;
         };
     }
-
     export interface SipConfig {
         domain: string;
         id: string;
@@ -39,7 +38,6 @@ export namespace GB28181 {
         port: number;
         transport: string;
     }
-
     export interface Channel {
         id: string;
         name: string;
@@ -50,7 +48,6 @@ export namespace GB28181 {
         ptz_type: number;
         ptz_capable: boolean;
     }
-
     export interface Device {
         id: string;
         name: string;
@@ -65,7 +62,6 @@ export namespace GB28181 {
         online: boolean;
         channels: Channel[];
     }
-
     export interface StreamStatus {
         id: string;
         app: string;
@@ -74,11 +70,9 @@ export namespace GB28181 {
         online: boolean;
         reader_count: number;
     }
-
     export interface Items<T> {
         items: T[];
     }
-
     export interface PlayUrls {
         http_flv: string;
         ws_flv: string;
@@ -88,7 +82,6 @@ export namespace GB28181 {
         rtsp: string;
         rtmp: string;
     }
-
     export interface PreviewStartResult {
         sent: boolean;
         session_id: string;
@@ -100,7 +93,6 @@ export namespace GB28181 {
         lease_timeout_seconds: number;
         play_urls: PlayUrls;
     }
-
     export interface PreviewStopResult {
         stopped: boolean;
         session_id: string;
@@ -108,7 +100,6 @@ export namespace GB28181 {
         bye_sent: boolean;
         rtp_server_closed: boolean;
     }
-
     export interface CommandResult {
         sent: boolean;
         device_id?: string;
@@ -117,23 +108,19 @@ export namespace GB28181 {
         speed?: number;
         recording?: boolean;
     }
-
     export interface StartPreviewPayload {
         deviceId: string;
         channelId: string;
     }
-
     export interface StopPreviewPayload {
         sessionId: string;
     }
-
     export interface PtzPayload {
         deviceId: string;
         channelId: string;
         action: PtzAction;
         speed: number;
     }
-
     export interface PtzPositionPayload {
         deviceId: string;
         channelId: string;
@@ -141,19 +128,15 @@ export namespace GB28181 {
         tilt: number;
         zoom: number;
     }
-
     export interface StreamPayload {
         streamId: string;
     }
-
     export interface DeviceNamePayload {
         deviceId: string;
         name: string;
     }
-
     export interface ChannelNamePayload extends DeviceNamePayload {
         channelId: string;
     }
-
     export type PtzAction = 'left' | 'right' | 'up' | 'down' | 'zoomin' | 'zoomout' | 'stop';
 }

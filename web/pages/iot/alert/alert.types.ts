@@ -4,7 +4,6 @@ export namespace Alert {
     export type ConditionType = 'threshold' | 'offline' | 'rate_of_change';
     export type Operator = '>' | '>=' | '<' | '<=' | '==' | '!=';
     export type ChangeDirection = 'rise' | 'fall' | 'any';
-
     export interface Condition {
         type: ConditionType;
         elementKey?: string;
@@ -15,7 +14,6 @@ export namespace Alert {
         changeDirection?: ChangeDirection;
         bitIndex?: number;
     }
-
     export interface RuleItem {
         id: string;
         name: string;
@@ -32,7 +30,6 @@ export namespace Alert {
         created_at: string;
         updated_at: string;
     }
-
     export interface RuleDto {
         name: string;
         device_id: string;
@@ -45,7 +42,6 @@ export namespace Alert {
         status?: 'enabled' | 'disabled';
         remark?: string;
     }
-
     export interface RecordItem {
         id: string;
         rule_id: string;
@@ -61,7 +57,6 @@ export namespace Alert {
         acknowledged_by?: string;
         resolved_at?: string;
     }
-
     export interface ActiveStats {
         total: number;
         critical: number;
@@ -72,7 +67,6 @@ export namespace Alert {
         today_resolved: number;
         affected_devices: number;
     }
-
     export interface TemplateItem {
         id: string;
         name: string;
@@ -86,7 +80,6 @@ export namespace Alert {
         protocol_type?: string;
         created_at: string;
     }
-
     export interface TemplateDetail {
         id: string;
         name: string;
@@ -103,7 +96,6 @@ export namespace Alert {
         created_by: string;
         created_at: string;
     }
-
     export interface TemplateDto {
         name: string;
         category?: string;
@@ -117,7 +109,6 @@ export namespace Alert {
         applicable_protocols?: string[];
         protocol_config_id?: string;
     }
-
     export interface GroupedRecord {
         rule_id: string;
         rule_name: string;
@@ -130,12 +121,10 @@ export namespace Alert {
         resolved_count: number;
         latest_trigger_time: string;
     }
-
     export interface ApplyTemplateRequest {
         template_id: string;
         device_ids: string[];
     }
-
     export interface ApplyTemplateResponse {
         success: number;
         total: number;

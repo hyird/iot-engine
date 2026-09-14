@@ -1,0 +1,291 @@
+export namespace Edge {
+    export type EnrollmentStatus = 'pending' | 'approved';
+    export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+    export interface Query {
+        page?: number;
+        pageSize?: number;
+        keyword?: string;
+        status?: EnrollmentStatus;
+        groupId?: string;
+    }
+    export interface NetworkInterface {
+        name: string;
+        displayName: string;
+        mac: string;
+        up: boolean;
+        bridge: boolean;
+        ipv4: string;
+        prefixLength: number;
+        gateway: string;
+        bridgePorts: string[];
+    }
+    export interface Network {
+        name: string;
+        mode: 'dhcp' | 'static' | 'none';
+        device: string;
+        up: boolean;
+        bridge: boolean;
+        bridgePorts: string[];
+        ipv4: string;
+        prefixLength: number;
+        gateway: string;
+    }
+    export interface SerialPort {
+        path: string;
+        displayName: string;
+        available: boolean;
+        rs485: boolean;
+    }
+    export interface Task {
+        id: string;
+        taskType: 'network' | 'firmware' | 'modem' | 'platform_upsert' | 'platform_delete';
+        status: 'pending' | 'accepted' | 'running' | 'succeeded' | 'failed';
+        message: string;
+        progressPercent: number;
+        downloadedBytes: number;
+        totalBytes: number;
+        createdAt: string;
+        updatedAt: string;
+    }
+    export interface ConfigStatus {
+        activeVersion: number;
+        desiredVersion: number;
+        state: 'idle' | 'pending' | 'applied' | 'rejected';
+        message: string;
+    }
+    export interface OutboxStatus {
+        records: number;
+        bytes: number;
+    }
+    export interface LogStatus {
+        level: LogLevel;
+    }
+    export interface NodeStatus {
+        online: boolean;
+        lastSeenAt: string;
+        config: ConfigStatus;
+        outbox: OutboxStatus;
+        log: LogStatus;
+    }
+    export interface Capability {
+        networkConfig: boolean;
+        networkConfigVersion: number;
+        firmwareUpdate: boolean;
+        deviceConfig: boolean;
+        modemControl: boolean;
+        terminal: boolean;
+        logs: boolean;
+        vpn?: {
+            supportsVpn: boolean;
+            wireguardVersion: string;
+            agentVersion: string;
+            publicKey: string;
+        };
+    }
+    export interface Signal {
+        csq: number;
+        rssiDbm: number;
+        percent: number;
+    }
+    export interface Mobile {
+        available: boolean;
+        simState:
+            | 'unknown'
+            | 'ready'
+            | 'not_inserted'
+            | 'pin_required'
+            | 'puk_required'
+            | 'blocked';
+        iccid: string;
+        signal: Signal;
+        registered: boolean;
+        registrationStatus: number;
+        apn: string;
+        operator: string;
+        connected: boolean;
+        ipv4: string;
+    }
+    export interface FirmwareStatus {
+        state: Task['status'] | '';
+        progressPercent: number;
+        downloadedBytes: number;
+        totalBytes: number;
+        message: string;
+    }
+    export interface Node {
+        id: string;
+        imei: string;
+        name: string;
+        groupId: string;
+        groupName: string;
+        model: string;
+        softwareVersion: string;
+        hostname: string;
+        architecture: string;
+        openwrtRelease: string;
+        enrollmentStatus: EnrollmentStatus;
+        status: NodeStatus;
+        capability: Capability;
+        mobile: Mobile;
+        firmware: FirmwareStatus;
+        vpnVirtualCidrs: string[];
+        createdAt: string;
+        interfaces?: NetworkInterface[];
+        networks?: Network[];
+        serialPorts?: SerialPort[];
+        tasks?: Task[];
+    }
+    export interface NetworkConfig {
+        operation: 'upsert' | 'delete';
+        name: string;
+        previousName?: string;
+        mode?: 'dhcp' | 'static';
+        device?: string;
+        bridge?: boolean;
+        bridgePorts?: string[];
+        ip?: string;
+        prefixLength?: number;
+        gateway?: string;
+    }
+    export interface NetworkDto {
+        interfaces: NetworkConfig[];
+        rollbackTimeoutSec: number;
+    }
+    export interface NameDto {
+        name: string;
+    }
+    export interface GroupDto {
+        groupId: string;
+    }
+    export type GroupStatus = 'enabled' | 'disabled';
+    export interface GroupItem {
+        id: string;
+        name: string;
+        parentId: string;
+        status: GroupStatus;
+        sortOrder: number;
+        remark: string;
+        nodeCount: number;
+    }
+    export interface GroupTreeItem extends GroupItem {
+        children?: GroupTreeItem[];
+    }
+    export interface GroupSaveDto {
+        name: string;
+        parentId?: string;
+        status: GroupStatus;
+        sortOrder: number;
+        remark?: string;
+    }
+    export interface FirmwareUpgradeDto {
+        file: File;
+        keepSettings: boolean;
+    }
+    export interface FirmwareUploadProgress {
+        loadedBytes: number;
+        totalBytes: number;
+        percent: number;
+    }
+    export interface LogsQuery {
+        limit?: number;
+        level?: LogLevel;
+        source?: string;
+    }
+    export interface LogLine {
+        time: string;
+        level: LogLevel;
+        source: string;
+        message: string;
+        detail: string;
+    }
+    export interface Logs {
+        lines: LogLine[];
+    }
+    export interface LogLevelDto {
+        level: LogLevel;
+    }
+}
+export const edgeQueryKeys = {
+    all: ['edge'] as const,
+    list: (query?: Edge.Query) => [...edgeQueryKeys.all, 'list', query ?? {}] as const,
+    detail: (id?: string) => [...edgeQueryKeys.all, 'detail', id ?? ''] as const,
+    logs: (id?: string, query?: Edge.LogsQuery) =>
+        [...edgeQueryKeys.all, 'logs', id ?? '', query ?? {}] as const,
+    groups: () => [...edgeQueryKeys.all, 'groups'] as const,
+};
+
+export namespace EdgeVpn {
+    export type NetworkStatus = 'enabled' | 'disabled';
+    export type PeerStatus = 'pending' | 'active' | 'revoked';
+    export type RouteStatus = 'active' | 'error' | 'disabled';
+    export type RouteMode = 'nat' | 'routed';
+    export interface Network {
+        id: string;
+        name: string;
+        overlayCidr: string;
+        hubPublicKey: string;
+        hubEndpoint: string;
+        hubListenPort: number;
+        status: NetworkStatus;
+        peerCount: number;
+        routeCount: number;
+    }
+    export interface Peer {
+        id: string;
+        networkId: string;
+        peerType: 'edge' | 'windows';
+        edgeNodeId?: string;
+        name: string;
+        publicKey: string;
+        assignedIpv4: string;
+        allowedRoutes: string[];
+        status: PeerStatus;
+        configRevision: number;
+        lastHandshakeAt?: string | null;
+    }
+    export interface Route {
+        id: string;
+        networkId: string;
+        edgePeerId: string;
+        edgeNodeId: string;
+        lanInterface: string;
+        targetCidr: string;
+        virtualCidr: string;
+        mode: RouteMode;
+        natMode: 'masquerade' | 'none';
+        status: RouteStatus;
+        enabled: boolean;
+        lastError: string;
+    }
+    export interface PeerCreateDto {
+        networkId?: string;
+        peerType: 'edge';
+        edgeNodeId: string;
+        name: string;
+    }
+    export interface NetworkCreateDto {
+        name: string;
+        overlayCidr?: string;
+        hubEndpoint?: string;
+        hubListenPort?: number;
+    }
+    export interface RouteDto {
+        networkId: string;
+        edgePeerId: string;
+        lanInterface: string;
+        targetCidr: string;
+        virtualCidr: string;
+        mode: RouteMode;
+        enabled: boolean;
+    }
+    export interface Overview {
+        networks: Network[];
+        peers: Peer[];
+        routes: Route[];
+    }
+    export type Node = Edge.Node;
+}
+export const edgeVpnQueryKeys = {
+    all: ['edge-vpn'] as const,
+    node: (nodeId?: string) => [...edgeVpnQueryKeys.all, nodeId ?? ''] as const,
+};

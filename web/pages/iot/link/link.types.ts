@@ -1,12 +1,11 @@
-import { createQueryKeys } from '@/utils/query';
 import type { PageParams } from '@/utils/pagination';
+import { createQueryKeys } from '@/utils/query';
 
 const keys = createQueryKeys('links');
 export const linkQueryKeys = {
     ...keys,
     list: (params?: Link.Query) => [...keys.lists(), params] as const,
 };
-
 type LinkMode = 'TCP Server' | 'TCP Client';
 type LinkProtocol = 'SL651' | 'Modbus' | 'S7';
 type LinkStatus = 'enabled' | 'disabled';
@@ -18,7 +17,6 @@ type ConnectionStatus =
     | 'connecting'
     | 'reconnecting'
     | 'error';
-
 interface LinkTarget {
     id: string;
     name: string;
@@ -27,7 +25,6 @@ interface LinkTarget {
     status: LinkStatus;
     runtime?: RuntimeStatus;
 }
-
 interface RuntimeStatus {
     state?: ConnectionStatus;
     reason?: string;
@@ -36,7 +33,6 @@ interface RuntimeStatus {
     clients?: string[];
     lastActivityAt?: string;
 }
-
 interface LinkEndpoint {
     transport?: 'serial' | 'tcp';
     interface?: string;
@@ -50,7 +46,6 @@ interface LinkEndpoint {
     port: number;
     targets: LinkTarget[];
 }
-
 interface LinkItem {
     execution?: 'collector' | 'edge';
     edge_node_id?: string;
@@ -64,13 +59,11 @@ interface LinkItem {
     created_at: string;
     updated_at: string;
 }
-
 interface LinkQuery extends PageParams {
     mode?: LinkMode;
     protocol?: LinkProtocol;
     status?: LinkStatus;
 }
-
 interface SaveLinkDto {
     execution?: 'collector' | 'edge';
     edge_node_id?: string;
@@ -79,15 +72,12 @@ interface SaveLinkDto {
     endpoint: LinkEndpoint;
     status: LinkStatus;
 }
-
 interface LinkEnums {
     modes: LinkMode[];
     protocols: LinkProtocol[];
     statuses: LinkStatus[];
 }
-
 interface LinkOption extends LinkItem {}
-
 export namespace Link {
     export type Mode = LinkMode;
     export type Protocol = LinkProtocol;

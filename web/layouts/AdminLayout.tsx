@@ -1,10 +1,10 @@
 import {
-    ApartmentOutlined,
     AlertOutlined,
+    ApartmentOutlined,
     ApiOutlined,
     AppstoreOutlined,
-    ClusterOutlined,
     CloudServerOutlined,
+    ClusterOutlined,
     DownOutlined,
     HddOutlined,
     LinkOutlined,
@@ -32,8 +32,8 @@ import { useMemo, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { APP_NAME } from '@/config/app';
 import { usePermissions } from '@/hooks/usePermission';
-import { useGb28181Health } from '@/pages/iot/gb28181/gb28181.service';
-import { useCurrentUser, useLogout } from '@/pages/login';
+import { useGb28181Health } from '../pages/iot/gb28181/gb28181.service';
+import { useCurrentUser, useLogout } from '../pages/login/login.service';
 
 const { Header, Sider, Content } = Layout;
 

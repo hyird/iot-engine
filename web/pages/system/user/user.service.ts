@@ -1,19 +1,13 @@
-import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
-/**
- * 用户管理 Service
- */
-
 import type { UseQueryOptions } from '@tanstack/react-query';
+import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
+import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
+import type { PaginatedResult } from '@/utils/pagination';
+import { create, getList, getOptions, getRoleOptions, remove, update } from './user.api';
 import type { User } from './user.types';
 import { roleOptionQueryKey, userQueryKeys } from './user.types';
-import type { PaginatedResult } from '@/utils/pagination';
-import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
-import { create, getList, getOptions, getRoleOptions, remove, update } from './user.api';
 
 // ============ Queries ============
-
 type UserListResult = PaginatedResult<User.Item>;
-
 export function useUserList(
     params?: User.Query,
     options?: Omit<UseQueryOptions<UserListResult>, 'queryKey' | 'queryFn'>
@@ -24,7 +18,6 @@ export function useUserList(
         ...options,
     });
 }
-
 export function useUserOptions(
     options?: Omit<UseQueryOptions<User.Option[]>, 'queryKey' | 'queryFn'>
 ) {
@@ -35,7 +28,6 @@ export function useUserOptions(
         ...options,
     });
 }
-
 export function useRoleOptions(options?: { enabled?: boolean }) {
     return useSnapshotQuery({
         queryKey: roleOptionQueryKey,
@@ -44,9 +36,7 @@ export function useRoleOptions(options?: { enabled?: boolean }) {
         enabled: options?.enabled ?? true,
     });
 }
-
 // ============ Mutations ============
-
 export function useUserDelete() {
     return useMutationWithMessage({
         mutationFn: remove,
@@ -54,16 +44,23 @@ export function useUserDelete() {
         invalidateKeys: [userQueryKeys.all],
     });
 }
-
 export function useUserSave() {
-    return useSaveMutation<User.CreateDto & { id?: string }, User.CreateDto, User.UpdateDto>({
+    return useSaveMutation<
+        User.CreateDto & {
+            id?: string;
+        },
+        User.CreateDto,
+        User.UpdateDto
+    >({
         createFn: create,
         updateFn: update,
         toUpdatePayload: ({
             id: _id,
             username: _username,
             ...data
-        }: User.CreateDto & { id?: string }) => data as User.UpdateDto,
+        }: User.CreateDto & {
+            id?: string;
+        }) => data as User.UpdateDto,
         createMessage: '保存成功',
         updateMessage: '保存成功',
         invalidateKeys: [userQueryKeys.all],

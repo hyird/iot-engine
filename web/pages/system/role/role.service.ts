@@ -1,10 +1,10 @@
-import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
+import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import type { PaginatedResult } from '@/utils/pagination';
 import { create, getList, remove, update } from './role.api';
-import { roleQueryKeys, type Role } from './role.types';
-
+import type { Role } from './role.types';
+import { roleQueryKeys } from './role.types';
 export function useRoleList(
     params?: Role.Query,
     options?: Omit<UseQueryOptions<PaginatedResult<Role.Item>>, 'queryKey' | 'queryFn'>
@@ -15,9 +15,14 @@ export function useRoleList(
         ...options,
     });
 }
-
 export function useRoleSave() {
-    return useSaveMutation<Role.CreateDto & { id?: string }, Role.CreateDto, Role.UpdateDto>({
+    return useSaveMutation<
+        Role.CreateDto & {
+            id?: string;
+        },
+        Role.CreateDto,
+        Role.UpdateDto
+    >({
         createFn: create,
         updateFn: update,
         toUpdatePayload: ({ id: _id, ...data }) => data,
@@ -26,7 +31,6 @@ export function useRoleSave() {
         invalidateKeys: [roleQueryKeys.all, ['roles', 'options']],
     });
 }
-
 export function useRoleDelete() {
     return useMutationWithMessage({
         mutationFn: remove,

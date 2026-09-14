@@ -1,3 +1,4 @@
+import type { TreeDataNode } from 'antd';
 import {
     App,
     Button,
@@ -11,7 +12,6 @@ import {
     Table,
     Tree,
 } from 'antd';
-import type { TreeDataNode } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useEffect, useMemo, useState } from 'react';
 import { FormModal } from '@/components/FormModal';
@@ -26,9 +26,10 @@ import { useDeptDelete, useDeptList, useDeptOptions, useDeptSave } from './dept.
 import type { Dept } from './dept.types';
 
 const { Search } = Input;
-type DeptFormValues = Dept.CreateDto & { id?: string };
-
-export default function SystemDeptPage() {
+type DeptFormValues = Dept.CreateDto & {
+    id?: string;
+};
+export function SystemDeptPage() {
     const [keyword, setKeyword] = useState('');
     const [selectedParentId, setSelectedParentId] = useState<string>();
     const [expandedTreeKeys, setExpandedTreeKeys] = useState<(string | number)[]>(['all']);
@@ -77,7 +78,6 @@ export default function SystemDeptPage() {
             siblings.push(department);
             childrenByParent.set(department.parent_id, siblings);
         }
-
         const buildNodes = (parentId: string, ancestors = new Set<string>()): TreeDataNode[] =>
             (childrenByParent.get(parentId) ?? [])
                 .filter((department) => !ancestors.has(department.id))
@@ -91,7 +91,6 @@ export default function SystemDeptPage() {
                         children: children.length ? children : undefined,
                     };
                 });
-
         return [
             {
                 key: 'all',
@@ -104,7 +103,6 @@ export default function SystemDeptPage() {
         () => departments.find((department) => department.id === selectedParentId),
         [departments, selectedParentId]
     );
-
     useEffect(() => {
         if (!departmentData) return;
         setExpandedTreeKeys([
@@ -112,7 +110,6 @@ export default function SystemDeptPage() {
             ...departmentData.map((department) => `dept-${department.id}`),
         ]);
     }, [departmentData]);
-
     const showCreate = () => {
         setEditing(null);
         form.resetFields();
@@ -133,7 +130,6 @@ export default function SystemDeptPage() {
             });
             return;
         }
-
         const validated = validateForm(form, createDeptSchema, values);
         if (validated) save.mutate(validated, { onSuccess: () => setOpen(false) });
     };
@@ -144,14 +140,12 @@ export default function SystemDeptPage() {
             okButtonProps: { danger: true },
             onOk: () => remove.mutate(dept.id),
         });
-
     if (!canQuery)
         return (
             <PageContainer>
                 <Result status="403" title="无权限" subTitle="您没有查询部门的权限" />
             </PageContainer>
         );
-
     const columns: ColumnsType<Dept.Item> = [
         { title: '部门名称', dataIndex: 'name' },
         { title: '部门编码', dataIndex: 'code', render: (value) => value || '-' },
@@ -183,7 +177,6 @@ export default function SystemDeptPage() {
             ),
         },
     ];
-
     return (
         <PageContainer
             header={
@@ -309,3 +302,5 @@ export default function SystemDeptPage() {
         </PageContainer>
     );
 }
+
+export default SystemDeptPage;

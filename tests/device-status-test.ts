@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { isDeviceOnline } from '../web/pages/iot/device/device-status';
-import type { Device } from '../web/pages/iot/device/device.types';
+import { isDeviceOnline } from '../web/pages/iot/device/device.service';
+import { type Device } from '../web/pages/iot/device/device.types';
 
 const device = (values: Partial<Device.Overview>): Device.Overview =>
     ({

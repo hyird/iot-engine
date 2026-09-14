@@ -1,10 +1,10 @@
-import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
+import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import type { PaginatedResult } from '@/utils/pagination';
 import { create, getList, getOptions, remove, update } from './dept.api';
-import { deptQueryKeys, type Dept } from './dept.types';
-
+import type { Dept } from './dept.types';
+import { deptQueryKeys } from './dept.types';
 export function useDeptList(
     params?: Dept.Query,
     options?: Omit<UseQueryOptions<PaginatedResult<Dept.Item>>, 'queryKey' | 'queryFn'>
@@ -23,7 +23,13 @@ export function useDeptOptions(options?: { enabled?: boolean }) {
     });
 }
 export function useDeptSave() {
-    return useSaveMutation<Dept.CreateDto & { id?: string }, Dept.CreateDto, Dept.UpdateDto>({
+    return useSaveMutation<
+        Dept.CreateDto & {
+            id?: string;
+        },
+        Dept.CreateDto,
+        Dept.UpdateDto
+    >({
         createFn: create,
         updateFn: update,
         toUpdatePayload: ({ id: _id, ...data }) => data,

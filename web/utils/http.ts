@@ -294,7 +294,7 @@ request.interceptors.response.use(
             isRefreshing = true;
 
             try {
-                const success = await useAuthStore.getState().refreshAccessToken();
+                const success = await refreshSession();
                 if (success) {
                     const newToken = useAuthStore.getState().token;
                     // biome-ignore lint/style/noNonNullAssertion: refreshAccessToken returns true only when token is set
@@ -339,3 +339,11 @@ request.interceptors.response.use(
 );
 
 export default request;
+
+let refreshSessionCallback: () => Promise<boolean> = () => Promise.resolve(false);
+export function configureSessionRefresh(callback: () => Promise<boolean>) {
+    refreshSessionCallback = callback;
+}
+export function refreshSession(): Promise<boolean> {
+    return refreshSessionCallback();
+}

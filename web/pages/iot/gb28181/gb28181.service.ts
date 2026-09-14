@@ -1,12 +1,8 @@
-import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage } from '@/hooks/useMutation';
+import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import * as api from './gb28181.api';
 import type { GB28181 } from './gb28181.types';
-
-export { api as gb28181Api };
-export { renewPreview, sendPtz, sendPtzPosition, stopPreviewKeepalive } from './gb28181.api';
-
 export const gb28181Keys = {
     all: ['gb28181'] as const,
     health: () => ['gb28181', 'health'] as const,
@@ -14,7 +10,6 @@ export const gb28181Keys = {
     streams: () => ['gb28181', 'streams'] as const,
     recording: (streamId: string) => ['gb28181', 'streams', streamId, 'recording'] as const,
 };
-
 export function useGb28181Health(
     options?: Omit<UseQueryOptions<GB28181.Health>, 'queryKey' | 'queryFn'>
 ) {
@@ -25,7 +20,6 @@ export function useGb28181Health(
         ...options,
     });
 }
-
 export function useGb28181Devices(
     options?: Omit<UseQueryOptions<GB28181.Items<GB28181.Device>>, 'queryKey' | 'queryFn'>
 ) {
@@ -35,7 +29,6 @@ export function useGb28181Devices(
         ...options,
     });
 }
-
 export function useGb28181CatalogQuery() {
     return useMutationWithMessage({
         mutationFn: api.queryCatalog,
@@ -43,7 +36,6 @@ export function useGb28181CatalogQuery() {
         invalidateKeys: [gb28181Keys.devices()],
     });
 }
-
 export function useGb28181RenameDevice() {
     return useMutationWithMessage<void, GB28181.DeviceNamePayload>({
         mutationFn: api.renameDevice,
@@ -51,7 +43,6 @@ export function useGb28181RenameDevice() {
         invalidateKeys: [gb28181Keys.devices()],
     });
 }
-
 export function useGb28181RenameChannel() {
     return useMutationWithMessage<void, GB28181.ChannelNamePayload>({
         mutationFn: api.renameChannel,
@@ -59,7 +50,6 @@ export function useGb28181RenameChannel() {
         invalidateKeys: [gb28181Keys.devices()],
     });
 }
-
 export function useGb28181PreviewStart() {
     return useMutationWithMessage<GB28181.PreviewStartResult, GB28181.StartPreviewPayload>({
         mutationFn: api.startPreview,
@@ -67,7 +57,6 @@ export function useGb28181PreviewStart() {
         invalidateKeys: [gb28181Keys.streams()],
     });
 }
-
 export function useGb28181PreviewStop() {
     return useMutationWithMessage<GB28181.PreviewStopResult, GB28181.StopPreviewPayload>({
         mutationFn: api.stopPreview,
@@ -75,7 +64,6 @@ export function useGb28181PreviewStop() {
         invalidateKeys: [gb28181Keys.streams()],
     });
 }
-
 export function useGb28181Recording(streamId?: string, enabled = true) {
     return useSnapshotQuery({
         queryKey: gb28181Keys.recording(streamId ?? ''),
@@ -83,7 +71,6 @@ export function useGb28181Recording(streamId?: string, enabled = true) {
         enabled: enabled && Boolean(streamId),
     });
 }
-
 export function useGb28181RecordingStart() {
     return useMutationWithMessage<GB28181.CommandResult, GB28181.StreamPayload>({
         mutationFn: api.startRecording,
@@ -91,7 +78,6 @@ export function useGb28181RecordingStart() {
         invalidateKeys: [gb28181Keys.streams()],
     });
 }
-
 export function useGb28181RecordingStop() {
     return useMutationWithMessage<GB28181.CommandResult, GB28181.StreamPayload>({
         mutationFn: api.stopRecording,
@@ -99,3 +85,102 @@ export function useGb28181RecordingStop() {
         invalidateKeys: [gb28181Keys.streams()],
     });
 }
+
+export type PlaybackCandidate = {
+    decoder?: 'native-only' | 'software-only';
+    engine: 'adaptive-flv' | 'hls' | 'mpegts';
+    label: string;
+    mediaType?: 'flv' | 'mpegts';
+    url: string;
+};
+export type PlaybackCapabilities = {
+    hls: boolean;
+    mpegts: boolean;
+    mseH265: boolean;
+    softwareVideo: boolean;
+    webCodecs: boolean;
+};
+const compact = (candidates: Array<PlaybackCandidate | null>) =>
+    candidates.filter((candidate): candidate is PlaybackCandidate => Boolean(candidate?.url));
+export function buildPlaybackCandidates(
+    urls: GB28181.PlayUrls,
+    capabilities: PlaybackCapabilities
+): PlaybackCandidate[] {
+    const nativeFlv = capabilities.webCodecs
+        ? compact([
+              urls.ws_flv
+                  ? {
+                        decoder: 'native-only',
+                        engine: 'adaptive-flv',
+                        label: 'WS-FLV · WebCodecs',
+                        url: urls.ws_flv,
+                    }
+                  : null,
+              urls.http_flv
+                  ? {
+                        decoder: 'native-only',
+                        engine: 'adaptive-flv',
+                        label: 'HTTP-FLV · WebCodecs',
+                        url: urls.http_flv,
+                    }
+                  : null,
+          ])
+        : [];
+    const mse = capabilities.mpegts
+        ? compact([
+              urls.http_ts
+                  ? {
+                        engine: 'mpegts',
+                        label: 'HTTP-TS · 原生解码',
+                        mediaType: 'mpegts',
+                        url: urls.http_ts,
+                    }
+                  : null,
+              urls.ws_flv
+                  ? {
+                        engine: 'mpegts',
+                        label: 'WS-FLV · 原生解码',
+                        mediaType: 'flv',
+                        url: urls.ws_flv,
+                    }
+                  : null,
+              urls.http_flv
+                  ? {
+                        engine: 'mpegts',
+                        label: 'HTTP-FLV · 原生解码',
+                        mediaType: 'flv',
+                        url: urls.http_flv,
+                    }
+                  : null,
+          ])
+        : [];
+    const softwareFlv = capabilities.softwareVideo
+        ? compact([
+              urls.ws_flv
+                  ? {
+                        decoder: 'software-only',
+                        engine: 'adaptive-flv',
+                        label: 'WS-FLV · Worker软解',
+                        url: urls.ws_flv,
+                    }
+                  : null,
+              urls.http_flv
+                  ? {
+                        decoder: 'software-only',
+                        engine: 'adaptive-flv',
+                        label: 'HTTP-FLV · Worker软解',
+                        url: urls.http_flv,
+                    }
+                  : null,
+          ])
+        : [];
+    const ordered = capabilities.mseH265
+        ? [...mse.slice(0, 1), ...nativeFlv, ...mse.slice(1), ...softwareFlv]
+        : [...nativeFlv, ...mse, ...softwareFlv];
+    if (capabilities.hls && urls.hls) {
+        ordered.push({ engine: 'hls', label: 'HLS', url: urls.hls });
+    }
+    return ordered;
+}
+
+export { renewPreview, sendPtz, sendPtzPosition, stopPreviewKeepalive } from './gb28181.api';

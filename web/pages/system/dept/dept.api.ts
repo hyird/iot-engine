@@ -1,14 +1,14 @@
-import { createSnapshotStream } from '@/utils/snapshot-request';
 import request from '@/utils/http';
-import { appendQueryParams } from '@/utils/query';
 import type { PaginatedResult } from '@/utils/pagination';
-import type { Dept } from './dept.types';
+import { appendQueryParams } from '@/utils/query';
+import { createSnapshotStream } from '@/utils/snapshot-request';
 import {
     createDeptSchema,
     deptIdSchema,
     deptListQuerySchema,
     updateDeptSchema,
 } from './dept.schema';
+import type { Dept } from './dept.types';
 
 const BASE = '/v1/departments';
 export const getList = (params?: Dept.Query) =>

@@ -5,7 +5,6 @@ const ipv4Schema = z.ipv4({ error: '请输入有效的 IPv4 地址' });
 const modeSchema = z.enum(['TCP Server', 'TCP Client'], { error: '链路模式无效' });
 const protocolSchema = z.enum(['SL651', 'Modbus', 'S7'], { error: '协议无效' });
 const statusSchema = z.enum(['enabled', 'disabled'], { error: '状态无效' });
-
 const targetSchema = z.object({
     id: z.string().min(1, '目标 ID 不能为空').max(64, '目标 ID 不能超过 64 个字符'),
     name: z.string().min(1, '目标名称不能为空').max(100, '目标名称不能超过 100 个字符'),
@@ -13,7 +12,6 @@ const targetSchema = z.object({
     port: z.number().int().min(1, '端口必须在 1 - 65535 之间').max(65535),
     status: statusSchema,
 });
-
 export const saveLinkSchema = z
     .object({
         execution: z.enum(['collector', 'edge']).default('collector'),
@@ -89,7 +87,6 @@ export const saveLinkSchema = z
             });
         }
     });
-
 export const linkListQuerySchema = pageParamsSchema.extend({
     mode: modeSchema.optional(),
     protocol: protocolSchema.optional(),
