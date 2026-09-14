@@ -23,7 +23,7 @@
 #include <ruvia/web/WebWorker.h>
 
 #include "service/features/messaging/messaging.transport.h"
-#include "service/features/messaging/messaging.types.h"
+#include "service/common/message.h"
 
 namespace service::message {
 

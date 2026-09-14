@@ -1876,7 +1876,7 @@ void testRuntimeRepositoryRejectsInvalidScale() {
     RuntimeRepositoryScaleDb db;
     bool rejected = false;
     try {
-        (void)runTask(service::runtime::repository::loadRuntimeSnapshot(db));
+        (void)runTask(service::configuration::loadRuntimeSnapshot(db));
     } catch (const std::exception& error) {
         rejected = std::string_view(error.what()).find("invalid runtime repository decimal: scale") != std::string_view::npos;
     }

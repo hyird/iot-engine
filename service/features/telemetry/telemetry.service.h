@@ -4,7 +4,7 @@
 #include <ruvia/web/db/DbQuery.h>
 #include <utility>
 #include "service/features/messaging/messaging.transport.h"
-#include "service/features/messaging/messaging.types.h"
+#include "service/common/message.h"
 #include "service/features/telemetry/latest/latest.service.h"
 #include "service/features/telemetry/telemetry.protocol.h"
 
@@ -80,7 +80,6 @@ ruvia::Task<void> fanout(const Redis& redis, const std::vector<service::message:
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 #include <ruvia/core/Task.h>
@@ -88,7 +87,6 @@ ruvia::Task<void> fanout(const Redis& redis, const std::vector<service::message:
 #include <ruvia/web/WebWorker.h>
 #include <ruvia/web/db/Db.h>
 
-#include "service/common/message.h"
 #include "service/features/access/access.transport.h"
 #include "service/features/alert/alert.service.h"
 

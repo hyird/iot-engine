@@ -547,7 +547,7 @@ auto makeApplicationStart(ruvia::App& app, ApplicationComponents& components, st
                                 owner->multiplexer->configure(worker, index);
                                 initializeServiceWorker(worker, [owner](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
                                     service::observability::setCurrentWorkerDiagnostics(*owner->observability);
-                                    (void)co_await service::runtime::ConfigurationService::project(context);
+                                    (void)co_await service::configuration::ConfigurationService::project(context);
                                 });
                             },
                              .stop = [] {

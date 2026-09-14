@@ -2,9 +2,7 @@
 
 #include "service/features/configuration/configuration.entity.h"
 
-// 基于 ruvia DbHandle 的南桥运行时配置加载。
-//
-// 注意：M2 增量，被协程实例化前不会完整编译。
+// 数据库配置读取与 Collector 配置投影编排。
 
 #include <algorithm>
 #include <charconv>
@@ -27,7 +25,7 @@
 #include "service/features/live/live.service.h"
 #include "service/utils/number.h"
 
-namespace service::runtime::repository {
+namespace service::configuration {
 
 using service::collector::DeviceDefinition;
 using service::collector::ElementDefinition;
@@ -503,9 +501,9 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
     co_return snapshot;
 }
 
-} // namespace service::runtime::repository
+} // namespace service::configuration
 
-namespace service::runtime {
+namespace service::configuration {
 
 class ConfigurationService final {
   public:
@@ -520,7 +518,7 @@ class ConfigurationService final {
             lock.cast(lock.value(std::int64_t{5282804697543808067}), ruvia::DbDataType::kBigInt) }));
         (void)co_await transaction.query(lock);
         auto snapshot =
-            co_await service::runtime::repository::loadRuntimeSnapshot(transaction);
+            co_await service::configuration::loadRuntimeSnapshot(transaction);
         auto version =
             co_await service::collector::config::project(context.redis(), snapshot);
         if (notify)
@@ -530,4 +528,4 @@ class ConfigurationService final {
     }
 };
 
-} // namespace service::runtime
+} // namespace service::configuration

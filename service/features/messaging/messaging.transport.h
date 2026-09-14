@@ -1,6 +1,6 @@
 #pragma once
 
-#include "service/features/messaging/messaging.types.h"
+#include "service/common/message.h"
 #include "service/utils/redis.h"
 
 namespace service::message::redis {

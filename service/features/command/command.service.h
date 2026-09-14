@@ -526,7 +526,7 @@ private:
         }
 
         const auto snapshot =
-            co_await service::runtime::repository::loadRuntimeSnapshot(transaction);
+            co_await service::configuration::loadRuntimeSnapshot(transaction);
         const auto device =
             std::find_if(snapshot.devices.begin(), snapshot.devices.end(),
                          [deviceId](const auto& current) { return current.id == deviceId; });

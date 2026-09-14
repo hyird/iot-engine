@@ -396,10 +396,18 @@ void testIncludeGraphBoundaries() {
     const auto graph = buildIncludeGraph();
     requireNoLayerReachability(graph, true);
     requireNoLayerReachability(graph, false);
+    for (const auto& [owner, imports] : graph.includes) {
+        if (!owner.starts_with("service/common/") && !owner.starts_with("service/utils/"))
+            continue;
+        for (const auto& target : imports)
+            requireFeatureRule(!isModulePath(target) && !isFeaturePath(target), graph.paths.at(owner),
+                               "shared infrastructure depends on business implementation");
+    }
+
 
     for (const auto& path : graph.files) {
         const auto start = pathKey(path);
-        if (!isFeaturePath(start) || !start.ends_with(".service.h"))
+        if ((!isFeaturePath(start) && !isModulePath(start)) || !start.ends_with(".service.h"))
             continue;
         std::unordered_set<std::string> visited{start};
         std::vector<std::string> pending{start};
@@ -421,8 +429,6 @@ void testIncludeGraphBoundaries() {
 
     for (const auto& path : graph.files) {
         const auto start = pathKey(path);
-        if (!isFeaturePath(start))
-            continue;
         std::unordered_map<std::string, unsigned char> state;
         std::function<void(const std::string&)> visit = [&](const std::string& current) {
             state[current] = 1;
@@ -431,7 +437,7 @@ void testIncludeGraphBoundaries() {
                 for (const auto& target : edge->second) {
                     const auto targetState = state.contains(target) ? state.at(target) : 0;
                     if (targetState == 1)
-                        throw std::runtime_error("feature include cycle: " + current +
+                        throw std::runtime_error("service include cycle: " + current +
                                                  " -> " + target);
                     if (targetState == 0)
                         visit(target);

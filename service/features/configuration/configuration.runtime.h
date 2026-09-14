@@ -290,7 +290,7 @@ class Reconciler final {
                         }
                     );
                     if (projectionRequired) {
-                        (void)co_await service::runtime::ConfigurationService::project(
+                        (void)co_await service::configuration::ConfigurationService::project(
                             context,
                             true
                         );
