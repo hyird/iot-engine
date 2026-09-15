@@ -89,10 +89,11 @@ if(NOT _package_suffix MATCHES "^/")
 endif()
 
 if(EXISTS "${_package}")
-  if(NOT EXISTS "${_package}/manifest.json")
+  file(GLOB_RECURSE _entries LIST_DIRECTORIES true "${_package}/*" "${_package}/.*")
+  # CMake generators can create the output parent before the first invocation.
+  if(_entries AND NOT EXISTS "${_package}/manifest.json")
     fail("Refusing to clear a package directory without a generated manifest: ${_package}")
   endif()
-  file(GLOB_RECURSE _entries LIST_DIRECTORIES true "${_package}/*" "${_package}/.*")
   foreach(_entry IN LISTS _entries)
     if(IS_SYMLINK "${_entry}")
       fail("Package path contains a reparse point: ${_entry}")
