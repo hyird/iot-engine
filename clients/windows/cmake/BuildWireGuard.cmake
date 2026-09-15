@@ -120,15 +120,16 @@ file(MAKE_DIRECTORY "${_build_root}")
 
 if(NOT EXISTS "${_source}/.git")
   run_checked(git clone --no-checkout "${_repository}" "${_source}")
-endif()
-execute_process(
-  COMMAND git -C "${_source}" status --porcelain --untracked-files=no
-  RESULT_VARIABLE _status_result
-  OUTPUT_VARIABLE _dirty
-  ERROR_VARIABLE _status_error
-  OUTPUT_STRIP_TRAILING_WHITESPACE)
-if(NOT _status_result EQUAL 0 OR _dirty)
-  message(FATAL_ERROR "WireGuard source checkout contains local edits: ${_dirty}${_status_error}")
+else()
+  execute_process(
+    COMMAND git -C "${_source}" status --porcelain --untracked-files=no
+    RESULT_VARIABLE _status_result
+    OUTPUT_VARIABLE _dirty
+    ERROR_VARIABLE _status_error
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if(NOT _status_result EQUAL 0 OR _dirty)
+    message(FATAL_ERROR "WireGuard source checkout contains local edits: ${_dirty}${_status_error}")
+  endif()
 endif()
 run_checked(git -C "${_source}" checkout --detach "${_revision}")
 execute_process(
