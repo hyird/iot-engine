@@ -1,5 +1,6 @@
 import { BugOutlined, FileTextOutlined } from '@ant-design/icons';
 import { Alert, Button, Empty, Modal, Space, Table, Tag, Tooltip, Typography } from 'antd';
+import dayjs from 'dayjs';
 import { useEffect, useRef, useState } from 'react';
 import type { DebugPacket } from '@/types/packet_debug';
 
@@ -142,19 +143,12 @@ export function PacketDebugPanel(props: Props) {
                             columns={[
                                 {
                                     title: '时间',
-                                    width: 128,
+                                    width: 228,
                                     onCell: () => ({ style: { verticalAlign: 'top' } }),
                                     render: (_, row) => (
                                         <div className="whitespace-nowrap tabular-nums">
-                                            {new Date(Number(row.time_ms)).toLocaleTimeString(
-                                                'zh-CN',
-                                                {
-                                                    hour12: false,
-                                                    hour: '2-digit',
-                                                    minute: '2-digit',
-                                                    second: '2-digit',
-                                                    fractionalSecondDigits: 3,
-                                                }
+                                            {dayjs(Number(row.time_ms)).format(
+                                                'YYYY-MM-DD HH:mm:ss.SSS'
                                             )}
                                         </div>
                                     ),
@@ -170,12 +164,6 @@ export function PacketDebugPanel(props: Props) {
                                                 : '接收'}
                                         </Tag>
                                     ),
-                                },
-                                {
-                                    title: '来源',
-                                    width: 100,
-                                    render: (_, row) =>
-                                        row.source === 'edge' ? '边缘节点' : '平台直采',
                                 },
                                 {
                                     title: '状态',
