@@ -1149,12 +1149,10 @@ class ConfigService final {
   public:
     template <typename Context>
     static ruvia::Task<void> storeDebugPacket(Context& c, std::string_view nodeId, const pb::RawPacket& packet) {
-        if (packet.acquisition_id().size() != 16)
-            throw std::invalid_argument("debug acquisition ID is required");
-        if (packet.packet_id().size() != 16) throw std::invalid_argument("debug packet ID is required");
         if (!packet.debug() || packet.endpoint_id().size() != 16 || (packet.payload().empty() && packet.acquisition_state().empty()) ||
             packet.payload().size() > 4096 || (packet.direction() != "RX" &&
             packet.direction() != "TX" && packet.direction() != "TX_ATTEMPT" && packet.direction() != "RX_DROP")) co_return;
+        const auto acquisitionId = protocol::debugAcquisitionId(nodeId, packet);
         const auto linkId = protocol::uuidText(packet.endpoint_id());
         const auto deviceId = packet.device_id().size() == 16 ? protocol::uuidText(packet.device_id()) : std::string{};
         ruvia::DbQuery link;
@@ -1180,7 +1178,7 @@ class ConfigService final {
         if (!enabled) co_return;
         if (packet.payload().empty() && packet.acquisition_state() != "running") {
             co_await packet_log::DebugPacketService::finishAcquisition(c.redis(),
-                protocol::uuidText(packet.acquisition_id()), packet.acquisition_state());
+                acquisitionId, packet.acquisition_state());
             co_return;
         }
         co_await packet_log::DebugPacketService::recordPacket(c.redis(), linkId, deviceId,
@@ -1190,7 +1188,7 @@ class ConfigService final {
             packet.packet_id().size() == 16 ? std::string(nodeId) + ":" + protocol::uuidText(packet.packet_id()) : std::string{},
             packet.status(), packet.reason(), {}, {},
             packet.reply_to_packet_id().size() == 16 ? std::string(nodeId) + ":" + protocol::uuidText(packet.reply_to_packet_id()) : std::string{},
-            false, packet.payload_offset(), protocol::uuidText(packet.acquisition_id()));
+            false, packet.payload_offset(), acquisitionId);
     }
 
     static ConfigService& instance() {
@@ -3307,12 +3305,19 @@ return 1
                 for (const auto& raw : record.raw_payloads())
                     parsed.rawPayloads.emplace_back(raw.begin(), raw.end());
             }
-            if (
+            if (record.raw_packet_ids_size() != 0 &&
                 static_cast<std::size_t>(record.raw_packet_ids_size()) != parsed.rawPayloads.size())
                 throw std::runtime_error("original packet ID count mismatch");
             for (const auto& id : record.raw_packet_ids()) {
                 if (id.size() != 16) throw std::runtime_error("invalid original packet ID");
                 parsed.rawPacketIds.push_back(std::string(nodeId) + ":" + protocol::uuidText(id));
+            }
+            // Older firmware has original frames but no per-frame IDs. Derive
+            // replay-stable history identities; do not correlate them to debug packets.
+            if (record.raw_packet_ids_size() == 0) {
+                for (std::size_t index = 0; index < parsed.rawPayloads.size(); ++index)
+                    parsed.rawPacketIds.push_back(std::string(nodeId) + ":legacy-history:" +
+                        parsed.messageId + ":" + std::to_string(index));
             }
             service::message::StreamMessage streamMessage;
             streamMessage.fields = message::parsedFields(parsed);

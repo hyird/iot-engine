@@ -23,7 +23,7 @@ export interface DebugAcquisition {
     started_at_ms: string;
     finished_at_ms?: string;
     last_packet_at_ms: string;
-    state: 'running' | 'success' | 'partial' | 'failed';
+    state: 'running' | 'success' | 'partial' | 'failed' | 'unreported';
     device_id?: string;
     storage_status?: string;
     history_id?: string;

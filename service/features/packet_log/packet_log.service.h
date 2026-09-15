@@ -92,10 +92,19 @@ for i=1,#ARGV,2 do fields[ARGV[i]]=ARGV[i+1] end
 local prefix='iot:debug:v3:'
 local acquisition=fields.acquisition_id
 if not acquisition or acquisition=='' then return redis.error_reply('missing acquisition ID') end
+local packet=prefix..'packet:'..fields.event_id
+-- Only legacy edge packets lack an acquisition ID matching the history record.
+-- Preserve their original identity when persistence enriches an existing packet.
+if fields.update_only=='1' and fields.source=='edge' then
+    local previous=redis.call('HGET',packet,'acquisition_id')
+    if previous and string.sub(previous,1,7)=='legacy:' then
+        acquisition=previous
+        fields.acquisition_id=previous
+    end
+end
 local round=fields.acquisition_prefix..acquisition
 fields.acquisition_prefix=nil
 local members=round..':packets'
-local packet=prefix..'packet:'..fields.event_id
 local hasPacket=fields.payload_hex and fields.payload_hex~=''
 local clock=redis.call('TIME')
 local now=tonumber(clock[1])*1000+math.floor(tonumber(clock[2])/1000)
@@ -177,7 +186,7 @@ if changed then redis.call('HINCRBY',packet,'revision',1) end
 redis.call('PEXPIREAT',packet,expires)
 end
 redis.call('HSET',round,'acquisition_id',acquisition,'created_ms',created)
-local state=fields.acquisition_state
+local state=string.sub(acquisition,1,7)=='legacy:' and 'unreported' or fields.acquisition_state
 local previousState=redis.call('HGET',round,'state')
 local terminal=previousState and previousState~='running'
 if state and state~='' and (not previousState or previousState=='running') then

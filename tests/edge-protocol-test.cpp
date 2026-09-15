@@ -462,6 +462,26 @@ void testFirmwareChunkSource() {
     std::filesystem::remove(path, ignored);
 }
 
+void testLegacyDebugAcquisitionIdentity() {
+    service::edge::pb::RawPacket packet;
+    packet.set_packet_id(std::string(16, '\x03'));
+    const auto legacy = service::edge::protocol::debugAcquisitionId("node-a", packet);
+    require(legacy.starts_with("legacy:node-a:"), "legacy debug packet has no fallback identity");
+    require(legacy == service::edge::protocol::debugAcquisitionId("node-a", packet),
+            "legacy replay changed debug identity");
+    require(legacy != service::edge::protocol::debugAcquisitionId("node-b", packet),
+            "legacy packets from different nodes collided");
+    packet.set_acquisition_id(std::string(16, '\x04'));
+    require(service::edge::protocol::debugAcquisitionId("node-a", packet) ==
+                service::edge::protocol::uuidText(packet.acquisition_id()),
+            "current firmware acquisition identity changed");
+    packet.set_acquisition_id("malformed");
+    bool rejected = false;
+    try { (void)service::edge::protocol::debugAcquisitionId("node-a", packet); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    require(rejected, "malformed nonempty acquisition ID was accepted as legacy");
+}
+
 void testCommandResultRequiresTerminalState() {
     require(!service::edge::protocol::terminalCommandResultState(
                 service::edge::pb::COMMAND_STATE_UNSPECIFIED) &&
@@ -513,6 +533,7 @@ int main() {
     testWebTerminalProtobuf();
     testFirmwareRequestDefersVersionToNodeHello();
     testFirmwareChunkSource();
+    testLegacyDebugAcquisitionIdentity();
     testCommandResultRequiresTerminalState();
     std::cout << "edge protocol tests passed\n";
 }

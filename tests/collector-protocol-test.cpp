@@ -3238,6 +3238,22 @@ void testEdgeParsedMessageContract() {
     require(service::message::parsedFrom(projected.front()).rawPayloads ==
                 std::vector<std::vector<std::uint8_t>>{{0x7e, 0x7e, 0x00, 0xff}},
             "edge raw array did not preserve the exact response");
+    record->clear_raw_packet_ids();
+    record->add_raw_payloads(std::string("\x01\x02", 2));
+    projected.clear();
+    EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId,
+                                            parsed.occurredAtMs, batch, projected);
+    const auto legacyRecord = service::message::parsedFrom(projected.front());
+    require(legacyRecord.rawPacketIds.size() == 2 &&
+                legacyRecord.rawPacketIds[0] != legacyRecord.rawPacketIds[1],
+            "legacy telemetry did not retain distinct original frame identities");
+    projected.clear();
+    EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId,
+                                            parsed.occurredAtMs, batch, projected);
+    require(service::message::parsedFrom(projected.front()).rawPacketIds == legacyRecord.rawPacketIds,
+            "legacy telemetry replay changed original frame identities");
+    record->mutable_raw_payloads()->RemoveLast();
+    record->add_raw_packet_ids(std::string(16, '\x05'));
     std::vector<service::edge::pb::TelemetryRecord> parts(3, *record);
     for (std::size_t index = 0; index < parts.size(); ++index) {
         parts[index].set_protocol(service::edge::pb::PROTOCOL_SL651);

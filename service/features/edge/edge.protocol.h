@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -124,6 +125,19 @@ inline bool configurePublicBaseUrl(std::string_view publicBaseUrl) {
 }
 
 using service::common::uuidText;
+
+// 0.3.44/0.3.45 do not report acquisition identities. Keep each original packet
+// independently identifiable without inventing collection-round boundaries.
+inline std::string debugAcquisitionId(std::string_view nodeId, const pb::RawPacket& packet) {
+    if (packet.packet_id().size() != 16)
+        throw std::invalid_argument("debug packet ID is required");
+    if (packet.acquisition_id().empty())
+        return "legacy:" + std::string(nodeId) + ":" + uuidText(packet.packet_id());
+    if (packet.acquisition_id().size() != 16)
+        throw std::invalid_argument("invalid debug acquisition ID");
+    return uuidText(packet.acquisition_id());
+}
+
 
 inline std::string bytes(const std::uint8_t* data, std::size_t size) {
     if (size == 0)

@@ -16,8 +16,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DebugAcquisition, DebugPacket } from '@/types/packet_debug';
 import {
     type AcquisitionSummary,
-    summarizeAcquisitions,
     flattenAcquisitionPackets,
+    summarizeAcquisitions,
 } from '@/utils/packet_debug';
 
 interface Props {
@@ -310,12 +310,15 @@ function AcquisitionTable({
                                       ? 'error'
                                       : round.state === 'partial'
                                         ? 'warning'
-                                        : 'processing'
+                                        : round.state === 'unreported'
+                                          ? 'default'
+                                          : 'processing'
                             }
                         >
                             {
                                 {
                                     running: '采集中',
+                                    unreported: '未上报轮次',
                                     success: '成功',
                                     partial: '部分失败',
                                     failed: '失败',

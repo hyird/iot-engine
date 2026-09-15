@@ -35,6 +35,17 @@ try {
     await write('empty','metadata',{payload_hex:''});
     assert.equal(Number(await redis.send('EXISTS',[key('acquisition','empty')])),1);
     assert.equal(Number(await redis.send('EXISTS',[key('packet','metadata')])),0);
+    const legacyRound=`legacy:${identity('old-packet')}`;
+    for(const suffix of ['',':packets',':retired'])cleanup.add('iot:debug:v3:acquisition:'+legacyRound+suffix);
+    await write('ignored','old-packet',{acquisition_id:legacyRound});
+    assert.equal(await redis.send('HGET',['iot:debug:v3:acquisition:'+legacyRound,'state']),'unreported');
+    await write('history','old-packet',{update_only:'1',storage_status:'stored',history_id:identity('history'),parsed_json:'{"values":{"level":2}}'});
+    assert.equal(await redis.send('HGET',[key('packet','old-packet'),'acquisition_id']),legacyRound);
+    assert.equal(await redis.send('HGET',['iot:debug:v3:acquisition:'+legacyRound,'storage_status']),'stored');
+    assert.equal(await redis.send('EXISTS',[key('acquisition','history')]),0);
+    await assert.rejects(write('history','old-packet',{update_only:'1',device_id:'other-device'}));
+    assert.equal(await write('history','one',{update_only:'1'}),0);
+    assert.equal(await redis.send('HGET',[key('packet','one'),'acquisition_id']),identity('round'));
     for(let index=0;index<101;index++)await write(`retained-${index}`,`packet-${index}`);
     assert.equal(Number(await redis.send('ZCARD',[key('device','scope')])),100);
     assert.equal(Number(await redis.send('EXISTS',[key('packet','one')])),0);
