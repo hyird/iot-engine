@@ -175,9 +175,12 @@ struct EgressPacket {
     std::uint64_t sessionEpoch = 0;
     std::int64_t createdAtMs = 0;
     std::vector<std::uint8_t> payload;
+    std::string replyToPacketId;
 };
 
 struct ParsedDeviceMessage {
+    // 原始帧身份独立于历史幂等 ID，按 rawPayloads 相同顺序排列。
+    std::vector<std::string> rawPacketIds;
     std::string eventKind = "sample";
     std::string messageId;
     std::string causationId;
@@ -429,6 +432,7 @@ inline ConnectionEvent connectionEventFrom(const StreamMessage& message) {
 
 inline std::vector<StreamField> egressFields(const EgressPacket& packet) {
     return {{"event_id", packet.messageId},
+            {"reply_to_packet_id", packet.replyToPacketId},
             {"event_type", "packet.egress"},
             {"schema_version", std::string(kMessageSchemaVersion)},
             {"message_id", packet.messageId},
@@ -457,6 +461,7 @@ inline EgressPacket egressFrom(const StreamMessage& message) {
         return result;
     };
     EgressPacket packet;
+    packet.replyToPacketId = std::string(message.get("reply_to_packet_id"));
     packet.messageId = std::string(require("message_id"));
     packet.workerInstanceId = std::string(require("worker_instance_id"));
     packet.causationId = std::string(message.get("causation_id"));
@@ -471,7 +476,14 @@ inline EgressPacket egressFrom(const StreamMessage& message) {
 }
 
 inline std::vector<StreamField> parsedFields(const ParsedDeviceMessage& message) {
+    std::string packetIds = "[";
+    for (const auto& id : message.rawPacketIds) {
+        if (packetIds.size() > 1) packetIds += ',';
+        packetIds += service::utils::jsonQuoted(id);
+    }
+    packetIds += ']';
     return {{"event_id", message.messageId},
+            {"raw_packet_ids", packetIds},
             {"event_type", "device.data.parsed"},
             {"schema_version", std::string(kMessageSchemaVersion)},
             {"aggregate_id", message.deviceId},
@@ -510,6 +522,14 @@ inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
         return result;
     };
     ParsedDeviceMessage parsed;
+    const auto packetIds = message.get("raw_packet_ids");
+    if (!packetIds.empty()) {
+        auto remaining = packetIds;
+        const auto ids = ruvia::detail::parseJsonValue<ruvia::Array<ruvia::String>>(
+            remaining, std::pmr::get_default_resource());
+        if (!ids) throw std::runtime_error("Invalid raw packet IDs");
+        for (const auto& id : *ids) parsed.rawPacketIds.emplace_back(id.view());
+    }
     parsed.eventKind = message.get("event_kind").empty() ? "sample" : std::string(message.get("event_kind"));
     if (parsed.eventKind != "sample" && parsed.eventKind != "image")
         throw std::runtime_error("Invalid telemetry event kind");

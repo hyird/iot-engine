@@ -1092,12 +1092,14 @@ class ConfigService final {
             enabled = enabled || devices.front()[0].value().value_or("") == "t";
         }
         if (!enabled) co_return;
-        co_await packet_log::DebugPacketService::append(c.redis(), linkId, deviceId,
+        co_await packet_log::DebugPacketService::recordPacket(c.redis(), linkId, deviceId,
             packet.direction(), "edge", packet.client_address(),
             std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(packet.payload().data()), packet.payload().size()),
             packet.observed_at_ms(), packet.device_only(),
-            packet.packet_id().size() == 16 ? protocol::uuidText(packet.packet_id()) : std::string{},
-            packet.status(), packet.reason());
+            packet.packet_id().size() == 16 ? std::string(nodeId) + ":" + protocol::uuidText(packet.packet_id()) : std::string{},
+            packet.status(), packet.reason(), {}, {},
+            packet.reply_to_packet_id().size() == 16 ? std::string(nodeId) + ":" + protocol::uuidText(packet.reply_to_packet_id()) + ":0" : std::string{},
+            false, packet.payload_offset());
     }
 
     static ConfigService& instance() {
@@ -2961,6 +2963,7 @@ return parts
         result.clear_values();
         result.clear_raw_payload();
         result.clear_raw_payloads();
+        result.clear_raw_packet_ids();
         std::set<std::string> elements;
         std::size_t rawBytes = 0;
         for (std::size_t index = 0; index < parts.size(); ++index) {
@@ -2984,6 +2987,12 @@ return parts
                     throw std::runtime_error("invalid telemetry original frame array");
                 result.add_raw_payloads(raw);
             }
+            if (part.raw_packet_ids_size() != 0 && part.raw_packet_ids_size() != part.raw_payloads_size())
+                throw std::runtime_error("original packet ID count mismatch");
+            for (const auto& id : part.raw_packet_ids()) {
+                if (id.size() != 16) throw std::runtime_error("invalid original packet ID");
+                result.add_raw_packet_ids(id);
+            }
         }
         if (result.raw_payloads().empty())
             throw std::runtime_error("telemetry upload has no original frames");
@@ -2999,7 +3008,8 @@ return parts
         if (record.report_id().size() != 16 || record.record_id().size() != 16 ||
             record.device_id().size() != 16 || record.part_count() == 0 ||
             record.part_count() > 256 || record.part_index() >= record.part_count() ||
-            record.protocol() != pb::PROTOCOL_SL651 || !record.raw_payload().empty() ||
+            (record.protocol() != pb::PROTOCOL_SL651 && record.protocol() != pb::PROTOCOL_MODBUS &&
+             record.protocol() != pb::PROTOCOL_S7) || !record.raw_payload().empty() ||
             record.ByteSizeLong() > 14000)
             throw std::runtime_error("invalid telemetry upload part");
         const persistence::TelemetryUploadRecord stored{std::string(nodeId),
@@ -3008,6 +3018,7 @@ return parts
         metadata.clear_record_id();
         metadata.clear_values();
         metadata.clear_raw_payloads();
+        metadata.clear_raw_packet_ids();
         metadata.clear_part_index();
         const auto signature = metadata.SerializeAsString();
         const auto wire = record.SerializeAsString();
@@ -3093,6 +3104,13 @@ return 1
             } else if (!record.raw_payload().empty())
                 parsed.rawPayloads.emplace_back(record.raw_payload().begin(),
                                                 record.raw_payload().end());
+            if (record.raw_packet_ids_size() != 0 &&
+                static_cast<std::size_t>(record.raw_packet_ids_size()) != parsed.rawPayloads.size())
+                throw std::runtime_error("original packet ID count mismatch");
+            for (const auto& id : record.raw_packet_ids()) {
+                if (id.size() != 16) throw std::runtime_error("invalid original packet ID");
+                parsed.rawPacketIds.push_back(std::string(nodeId) + ":" + protocol::uuidText(id));
+            }
             service::message::StreamMessage streamMessage;
             streamMessage.fields = message::parsedFields(parsed);
             messages.push_back(std::move(streamMessage));

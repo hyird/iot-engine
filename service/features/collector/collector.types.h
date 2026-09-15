@@ -55,6 +55,8 @@ enum class ProtocolActionKind {
     Send,
     Close,
     BindDevice,
+    ObserveParsed,
+    DiscardCollection,
     PublishParsed,
     CompleteCommand,
     FailCommand,

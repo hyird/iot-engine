@@ -167,6 +167,7 @@ class CollectorWorker final {
     };
 
     struct EgressLogContext {
+        std::string replyToPacketId;
         std::string operation;
         std::string protocol;
         std::string linkId;
@@ -815,7 +816,8 @@ class CollectorWorker final {
     ruvia::Task<void> captureDebug(std::string_view linkId, std::string_view connectionId,
         std::string_view address, std::string_view direction, std::span<const std::uint8_t> bytes,
         std::int64_t timestamp, std::string_view knownDevice = {}, bool deviceOnly = false,
-        std::string_view eventId = {}, std::string_view status = {}, std::string_view reason = {}) {
+        std::string_view eventId = {}, std::string_view status = {}, std::string_view reason = {},
+        std::string_view parsedJson = {}, std::string_view replyToPacketId = {}) {
         const auto link = std::find_if(loadedSnapshot_.links.begin(), loadedSnapshot_.links.end(),
             [&](const auto& value) { return value.id == linkId; });
         if (link == loadedSnapshot_.links.end()) co_return;
@@ -849,12 +851,12 @@ class CollectorWorker final {
             selected = &device;
         }
         if (ambiguous) selected = nullptr;
-        if (link->protocol == "SL651" && direction == "RX" && !deviceOnly) selected = nullptr;
+        if (link->protocol == "SL651" && direction == "RX" && !deviceOnly && knownDevice.empty()) selected = nullptr;
         if (!link->debugEnabled && !(selected && selected->debugEnabled)) co_return;
         try {
-            co_await packet_log::DebugPacketService::append(redis_, linkId,
+            co_await packet_log::DebugPacketService::recordPacket(redis_, linkId,
                 selected ? std::string_view(selected->id) : std::string_view{}, direction,
-                "collector", address, bytes, timestamp, deviceOnly, eventId, status, reason);
+                "collector", address, bytes, timestamp, deviceOnly, eventId, status, reason, {}, parsedJson, replyToPacketId);
         } catch (const std::exception& error) {
             lastCoordinatorError_ = std::string("debug_packet_failed: ") + error.what();
         }
@@ -1102,10 +1104,19 @@ class CollectorWorker final {
                     );
                     continue;
                 }
-                co_await captureDebug(packet.linkId, packet.connectionId, packet.remoteAddress,
-                    "RX", packet.payload, packet.occurredAtMs);
                 try {
                     auto actions = engine_.consume(packet);
+                    // 完整解析帧在 PublishParsed 中记录；同一网络读取不能再记录一遍。
+                    // 非完整帧（包括分片、握手和解析失败）仍保留传输层原文。
+                    const bool completeFrame = std::any_of(actions.begin(), actions.end(), [&](const auto& action) {
+                        return (action.kind == ProtocolActionKind::PublishParsed ||
+                                action.kind == ProtocolActionKind::ObserveParsed) &&
+                            std::find(action.parsed.rawPayloads.begin(), action.parsed.rawPayloads.end(),
+                                      packet.payload) != action.parsed.rawPayloads.end();
+                    });
+                    if (!completeFrame)
+                        co_await captureDebug(packet.linkId, packet.connectionId, packet.remoteAddress,
+                            "RX", packet.payload, packet.occurredAtMs, {}, false, packet.messageId, "received");
                     co_await applyActions(packet.connectionId, std::move(actions));
                 } catch (const std::exception& error) {
                     const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
@@ -1228,6 +1239,7 @@ class CollectorWorker final {
         egressWritePending_ = true;
         const auto entryId = message.id;
         EgressLogContext egressLog;
+        egressLog.replyToPacketId = packet.replyToPacketId;
         egressLog.connectionId = packet.connectionId;
         egressLog.messageId = packet.messageId;
         egressLog.causationId = packet.causationId;
@@ -1259,7 +1271,7 @@ class CollectorWorker final {
             (egressLog.protocol == "SL651" && !egressLog.causationId.empty());
         if (egressLog.awaitResponse) debugPendingSends_[packet.connectionId] = egressLog;
         co_await captureDebug(egressLog.linkId, packet.connectionId, egressLog.remoteAddress,
-            "TX", packet.payload, egressLog.debugTime, egressLog.deviceId, false, egressLog.messageId, "sending");
+            "TX", packet.payload, egressLog.debugTime, egressLog.deviceId, false, egressLog.messageId, "sending", {}, {}, egressLog.replyToPacketId);
         tcp_.send(packet.connectionId, std::move(packet.payload), [this, entryId, egressLog = std::move(egressLog)](bool success) mutable {
             if (!stopping_) {
                 scope_.spawn(
@@ -1279,7 +1291,7 @@ class CollectorWorker final {
         debugPendingSends_.erase(found);
         co_await captureDebug(context.linkId, context.connectionId, context.remoteAddress,
             "TX", context.debugPayload, context.debugTime, context.deviceId, false,
-            context.messageId, success ? "success" : "failed", reason);
+            context.messageId, success ? "success" : "failed", reason, {}, context.replyToPacketId);
     }
 
     ruvia::Task<void> completeEgress(std::string entryId, bool success, EgressLogContext egressLog) {
@@ -1289,7 +1301,7 @@ class CollectorWorker final {
             co_await captureDebug(egressLog.linkId, egressLog.connectionId, egressLog.remoteAddress,
                 "TX", egressLog.debugPayload, egressLog.debugTime, egressLog.deviceId, false,
                 egressLog.messageId, success ? (egressLog.awaitResponse ? "waiting" : "sent") : "failed",
-                success ? "" : "socket_write_failed");
+                success ? "" : "socket_write_failed", {}, egressLog.replyToPacketId);
             if (!success) debugPendingSends_.erase(egressLog.connectionId);
         }
 
@@ -1325,7 +1337,7 @@ class CollectorWorker final {
         scope_.spawn(applyActions(std::move(connectionId), std::move(actions), disconnected, std::move(reason)));
     }
 
-    ruvia::Task<void> applyActions(std::string connectionId, std::vector<ProtocolAction> actions, bool disconnected = false, std::string reason = {}) {
+    ruvia::Task<void> applyActions(std::string connectionId, std::vector<ProtocolAction> actions, bool disconnected = false, std::string reason = {}, std::string replyToPacketId = {}) {
         // A closed socket must stop being routable before potentially slow command-result
         // publication. Otherwise one Redis failure can leave an offline device advertised as
         // online indefinitely.
@@ -1355,6 +1367,7 @@ class CollectorWorker final {
                                                       .sessionEpoch = epoch->second,
                                                       .createdAtMs = message::utcNowMilliseconds(),
                                                       .payload = std::move(action.bytes) };
+                        packet.replyToPacketId = replyToPacketId;
                         (void)co_await message::redis::publish(redis_, egressStream(), message::egressFields(packet), kEgressStreamCapacity);
                     } else if (!action.commandId.empty()) {
                         co_await finishCommand(action.commandId, false, "stale_session_epoch");
@@ -1382,13 +1395,22 @@ class CollectorWorker final {
                     );
                     co_await bindRouteIfConnected(action);
                     break;
+                case ProtocolActionKind::ObserveParsed:
+                case ProtocolActionKind::DiscardCollection:
                 case ProtocolActionKind::PublishParsed:
                     action.parsed.messageId = message::nextMessageId();
-                    if (action.parsed.protocol == "SL651") {
+                    for (std::size_t index = action.parsed.rawPacketIds.size(); index < action.parsed.rawPayloads.size(); ++index)
+                        action.parsed.rawPacketIds.push_back(message::nextMessageId());
+                    {
+                        std::size_t rawIndex = 0;
                         for (const auto& raw : action.parsed.rawPayloads)
                             co_await captureDebug(action.parsed.linkId, action.connectionId, "", "RX", raw,
-                                message::utcNowMilliseconds(), action.parsed.deviceId, true);
+                                action.parsed.occurredAtMs, action.parsed.deviceId, false,
+                                action.parsed.rawPacketIds[rawIndex++],
+                                action.kind == ProtocolActionKind::DiscardCollection ? "skipped" : "received",
+                                action.reason, action.parsed.valuesJson);
                     }
+                    if (action.kind != ProtocolActionKind::PublishParsed) break;
                     service::packet_log::write(
                         service::packet_log::Level::Debug,
                         "PARSE_SUCCESS",
@@ -1404,7 +1426,8 @@ class CollectorWorker final {
                         message::WorkerStreamTask::Telemetry
                     );
                     co_await applyActions(action.connectionId,
-                        engine_.parsedPublished(action.connectionId, action.publicationToken));
+                        engine_.parsedPublished(action.connectionId, action.publicationToken), false, {},
+                        action.parsed.rawPacketIds.empty() ? std::string{} : action.parsed.rawPacketIds.front() + ":0");
                     break;
                 case ProtocolActionKind::CompleteCommand: {
                     co_await finishDebugResponse(action.connectionId, true, {}, action.commandId);

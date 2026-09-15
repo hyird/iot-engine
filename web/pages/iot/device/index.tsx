@@ -1503,14 +1503,6 @@ const DeviceHistoryModal = ({
                 fixed: 'left',
                 render: (value) => formatDateTime(value),
             },
-            {
-                title: '原始报文',
-                key: 'rawPayloadHex',
-                width: 100,
-                render: (_, record) => (
-                    <HistoryRawPayloadButton payloads={record.rawPayloadHex ?? []} />
-                ),
-            },
             ...pointColumns.map((column) => ({
                 title: column.label,
                 key: column.key,
@@ -1526,6 +1518,14 @@ const DeviceHistoryModal = ({
                     );
                 },
             })),
+            {
+                title: '原始报文',
+                key: 'rawPayloadHex',
+                width: 100,
+                render: (_, record) => (
+                    <HistoryRawPayloadButton payloads={record.rawPayloadHex ?? []} />
+                ),
+            },
         ];
         return tableColumns;
     }, [pointColumns]);

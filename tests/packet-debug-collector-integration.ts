@@ -50,10 +50,10 @@ const server=Bun.listen<{buffer:Buffer}>({hostname:'127.0.0.1',port:0,socket:{
         }
     },error(_socket,error){throw error;},close(){}
 }});
-const link=uuid(),target=uuid(),model=uuid(),device1=uuid(),device2=uuid(),point=uuid();
-const length=(scope:string,id:string)=>redis.send('XLEN',[`iot:debug:packets:${scope}:${id}`]).then(Number);
+const link=uuid(),target=uuid(),model=uuid(),device1=uuid(),device2=uuid(),point=uuid(),secondPoint=uuid();
+const length=(scope:string,id:string)=>redis.send('ZCARD',[`iot:debug:v2:${scope}:${id}`]).then(Number);
 try {
-    const config={storagePolicy:'report',readInterval:1,byteOrder:'BIG_ENDIAN',registers:[{id:point,name:'value',registerType:'HOLDING_REGISTER',dataType:'UINT16',address:0,quantity:1,scale:1}]};
+    const config={storagePolicy:'report',readInterval:1,byteOrder:'BIG_ENDIAN',registers:[{id:point,name:'value',registerType:'HOLDING_REGISTER',dataType:'UINT16',address:0,quantity:1,scale:1},{id:secondPoint,name:'second',registerType:'HOLDING_REGISTER',dataType:'UINT16',address:200,quantity:1,scale:1}]};
     await db`INSERT INTO protocol_config(id,name,protocol,config,created_by) VALUES(${model},${model},'Modbus',${config}::jsonb,${admin})`;
     const endpoint={transport:'tcp',mode:'TCP Client',ip:'',port:0,targets:[{id:target,name:'local',ip:'127.0.0.1',port:server.port,status:'enabled'}]};
     await db`INSERT INTO link(id,name,protocol,endpoint,status,execution,created_by) VALUES(${link},${link},'Modbus',${endpoint}::jsonb,'enabled','collector',${admin})`;
@@ -64,16 +64,29 @@ try {
     await toggle('device',device1,true);
     await until(async()=>await length('device',device1)>=2,'device debug did not capture direct TX/RX');
     assert.equal(await length('device',device2),0,'device debug leaked sibling traffic');
-    const rows=await redis.send('XRANGE',[`iot:debug:packets:device:${device1}`,'-','+']) as [string,string[]][];
-    assert(rows.some(([,fields])=>fields.includes('RX')));
-    assert(rows.some(([,fields])=>fields.includes('TX')));
-    for(const [,fields] of rows){const index=fields.indexOf('payload_hex');assert.equal(fields[index+1].slice(12,14),'01');}
-    const events = async () => (await redis.send('XRANGE',[`iot:debug:packets:device:${device1}`,'-','+']) as [string,string[]][])
-        .map(([,fields]) => Object.fromEntries(Array.from({length: fields.length/2},(_,i)=>[fields[i*2],fields[i*2+1]])));
-    await until(async()=>(await events()).some(row=>row.status==='success'), 'matched response did not finalize TX');
+    const readRows = async () => {
+        const ids = await redis.send('ZRANGE', [`iot:debug:v2:device:${device1}`,'0','-1']) as string[];
+        return await Promise.all(ids.map(async id=>[id,await redis.send('HGETALL',['iot:debug:v2:packet:'+id])] as const));
+    };
+    const rows=await readRows();
+    assert(rows.some(([,fields])=>fields.direction==='RX'));
+    assert(rows.some(([,fields])=>fields.direction==='TX'));
+    for(const [,fields] of rows) assert.equal(fields.payload_hex.slice(12,14),'01');
+    const events = async () => (await readRows())
+        .map(([,fields]) => fields);
+    await until(async()=>(await events()).some(row=>row.response_status==='success'), 'matched response did not finalize TX');
     await until(async()=>(await events()).some(row=>row.history_id && row.parsed_json), 'persisted history was not shown in debug');
     const stored=(await events()).find(row=>row.history_id)!;
-    const history=await db`SELECT data FROM device_data WHERE id=${stored.history_id}`;
+    const storedEvents=await events();
+    assert.equal(storedEvents.filter(row=>row.direction==='RX' && row.payload_hex===stored.payload_hex).length,1,
+        'Redis retained both received and stored copies of one Modbus response');
+    assert.equal(new Set(storedEvents.map(row=>row.event_id)).size,storedEvents.length,
+        'Redis retained multiple states of the same event');
+    const history=await db`SELECT data,raw_payload_hex FROM device_data WHERE id=${stored.history_id}`;
+    assert.equal(history[0].raw_payload_hex.length,2,'one cycle must retain both responses');
+    assert.equal(Object.keys(history[0].data.values).length,2,'one cycle must merge both read ranges');
+    assert.equal(storedEvents.filter(row=>row.direction==='RX' && row.history_id===stored.history_id).length,2,
+        'both response packets must link to the same history record');
     assert.deepEqual(JSON.parse(stored.parsed_json),history[0].data, 'debug history must be the actual stored record');
     const packets=await snapshot(`/v1/device/${device1}/debug/packets`);
     assert.equal(new Set(packets.map((packet: {id:string})=>packet.id)).size,packets.length,'status updates created duplicate display rows');
@@ -82,7 +95,7 @@ try {
     const historyPage=await snapshot(`/v1/device/${device1}/history?${range}`);
     assert(historyPage.list.length && historyPage.list.every((record: {rawPayloadHex:unknown})=>Array.isArray(record.rawPayloadHex)), 'history API omitted raw payload arrays');
     responseMode='exception';
-    await until(async()=>(await events()).some(row=>row.status==='failed' && row.reason==='modbus_exception_response'), 'exception response was not failure');
+    await until(async()=>(await events()).some(row=>row.response_status==='failed' && row.reason==='modbus_exception_response'), 'exception response was not failure');
     responseMode='normal';
     const opened=connections;
     await toggle('link',link,true);
@@ -92,7 +105,7 @@ try {
     await until(async()=>await length('device',device1)>before,'closing device suppressed active link debug');
     assert.equal(connections,opened,'debug toggle reopened TCP connection');
     responseMode='silent';
-    await until(async()=>(await events()).some(row=>row.status==='failed' && /timeout/.test(row.reason)), 'response timeout did not become failure');
+    await until(async()=>(await events()).some(row=>row.response_status==='failed' && /timeout/.test(row.reason)), 'response timeout did not become failure');
     responseMode='normal';
     await toggle('link',link,false);
     const requestBarrier=requests+8;

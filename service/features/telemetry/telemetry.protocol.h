@@ -62,10 +62,16 @@ inline void normalize(message::ParsedDeviceMessage& input) {
     });
     points+='}';
     fields(root->view(),[&](std::string_view key,std::string_view value){
-        if(key!="values" && key!="model" && key!="event_kind" && key!="schema_version")out+=service::utils::jsonQuoted(key)+":"+std::string(value)+",";
+        if(key!="values" && key!="model" && key!="event_kind" && key!="schema_version" && key!="raw_packet_ids")out+=service::utils::jsonQuoted(key)+":"+std::string(value)+",";
         return true;
     });
     input.eventKind=media?"image":"sample";
+    out += "\"raw_packet_ids\":[";
+    for (std::size_t index = 0; index < input.rawPacketIds.size(); ++index) {
+        if (index) out += ',';
+        out += service::utils::jsonQuoted(input.rawPacketIds[index]);
+    }
+    out += "],";
     out+="\"schema_version\":1,\"event_kind\":"+service::utils::jsonQuoted(input.eventKind)+",\"values\":"+points+",\"model\":";
     out+=input.modelId.empty()?"null":"{\"id\":"+service::utils::jsonQuoted(input.modelId)+"}";
     input.valuesJson=out+'}';

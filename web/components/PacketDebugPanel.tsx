@@ -118,7 +118,7 @@ export function PacketDebugPanel(props: Props) {
                                   ? '设备独立调试已关闭，链路调试仍在运行'
                                   : '调试已关闭'
                         }
-                        description="最近 500 条报文，实时更新；可拖动右下角调整窗口大小。关闭窗口不会关闭调试，列表在无新报文 24 小时后清理。"
+                        description="最近 500 条报文，实时更新，每条保留 24 小时；可拖动右下角调整窗口大小。关闭窗口不会关闭调试。"
                     />
                     {props.error && (
                         <Alert
@@ -148,7 +148,16 @@ export function PacketDebugPanel(props: Props) {
                                     render: (_, row) => (
                                         <>
                                             <div>
-                                                {new Date(Number(row.time_ms)).toLocaleTimeString()}
+                                                {new Date(Number(row.time_ms)).toLocaleTimeString(
+                                                    'zh-CN',
+                                                    {
+                                                        hour12: false,
+                                                        hour: '2-digit',
+                                                        minute: '2-digit',
+                                                        second: '2-digit',
+                                                        fractionalSecondDigits: 3,
+                                                    }
+                                                )}
                                             </div>
                                             <Tag>
                                                 {row.direction === 'TX_ATTEMPT' ||
@@ -165,22 +174,7 @@ export function PacketDebugPanel(props: Props) {
                                 {
                                     title: '状态',
                                     width: 140,
-                                    render: (_, row) => (
-                                        <Tooltip title={row.reason || undefined}>
-                                            <Tag
-                                                color={
-                                                    row.status === 'failed'
-                                                        ? 'error'
-                                                        : row.status === 'success' ||
-                                                            row.status === 'stored'
-                                                          ? 'success'
-                                                          : 'default'
-                                                }
-                                            >
-                                                {packetStatus(row)}
-                                            </Tag>
-                                        </Tooltip>
-                                    ),
+                                    render: (_, row) => <PacketStatuses packet={row} />,
                                 },
                                 {
                                     title: '原始报文 HEX',
@@ -190,6 +184,13 @@ export function PacketDebugPanel(props: Props) {
                                             <div className="text-xs text-gray-500">
                                                 {row.device_id || '未识别设备'} {row.address}
                                             </div>
+                                            {row.reply_to_packet_id && (
+                                                <Tooltip title={row.reply_to_packet_id}>
+                                                    <Typography.Text type="secondary">
+                                                        关联接收报文
+                                                    </Typography.Text>
+                                                </Tooltip>
+                                            )}
                                             <Typography.Paragraph
                                                 copyable={{ text: row.payload_hex }}
                                                 ellipsis={{
@@ -219,16 +220,41 @@ export function PacketDebugPanel(props: Props) {
     );
 }
 
-function packetStatus(packet: DebugPacket) {
-    const labels: Record<string, string> = {
-        sending: '发送中',
-        waiting: '等待应答',
-        sent: '已发送',
-        success: '应答成功',
-        failed: '失败',
-        stored: '已入库',
-    };
-    return labels[packet.status ?? ''] ?? (packet.direction === 'RX' ? '已接收' : '状态未知');
+function PacketStatuses({ packet }: { packet: DebugPacket }) {
+    const groups: [string | undefined, Record<string, string>][] = [
+        [
+            packet.transport_status,
+            { sending: '发送中', sent: '已发送', received: '已接收', failed: '发送失败' },
+        ],
+        [packet.response_status, { waiting: '等待应答', success: '应答成功', failed: '应答失败' }],
+        [packet.parse_status, { pending: '待解析', success: '解析成功', failed: '解析失败' }],
+        [
+            packet.storage_status,
+            { pending: '待入库', stored: '已入库', skipped: '按策略不保存', failed: '入库失败' },
+        ],
+    ];
+    return (
+        <Tooltip title={packet.reason || undefined}>
+            <div className="flex flex-col items-start gap-1">
+                {groups.map(([status, labels]) =>
+                    status && labels[status] ? (
+                        <Tag
+                            key={labels[status]}
+                            color={
+                                status === 'failed'
+                                    ? 'error'
+                                    : status === 'stored' || status === 'success'
+                                      ? 'success'
+                                      : 'default'
+                            }
+                        >
+                            {labels[status]}
+                        </Tag>
+                    ) : null
+                )}
+            </div>
+        </Tooltip>
+    );
 }
 
 function ParsedHistory({ packet }: { packet: DebugPacket }) {

@@ -6,9 +6,9 @@
 #include <ruvia/web/db/DbEntity.h>
 
 namespace service::link {
-// 调试报文使用有界 Redis Stream；固定 Hash ORM 无法表达动态原始报文字段。
-struct LinkDebugStream {
-    static std::string key(std::string_view id) { return "iot:debug:packets:link:" + std::string(id); }
+// 有界 ZSET 索引与报文 Hash 的一致性读取需要 Lua，ORM 无原子跨键读取接口。
+struct LinkDebugIndex {
+    static std::string key(std::string_view id) { return "iot:debug:v2:link:" + std::string(id); }
 };
 
 

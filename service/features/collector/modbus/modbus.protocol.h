@@ -316,6 +316,11 @@ class Session final : public ProtocolSession,
 
     [[nodiscard]] std::vector<ProtocolAction> disconnected(std::string_view reason) override {
         std::vector<ProtocolAction> actions;
+        for (auto& [id, cycle] : pollCycles_) {
+            cycle.fail();
+            cycle.finish(actions);
+        }
+        pollCycles_.clear();
         if (inflight_) {
             actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
                                .connectionId = connectionId_,
@@ -979,7 +984,10 @@ class Session final : public ProtocolSession,
 
         const auto parsed =
             parsedAction(input, device, frame, inflight_->request, inflight_->command.id);
-        actions.push_back(parsed);
+        if (inflight_->command.kind == "poll")
+            pollCycles_[device.id].observe(parsed, actions);
+        else
+            actions.push_back(parsed);
         if (inflight_->phase == Phase::Readback &&
             !inflight_->command.expectedReadbackData.empty()) {
             const auto values = frame.data.empty()
@@ -1109,8 +1117,14 @@ class Session final : public ProtocolSession,
                                                    [](const auto& command) {
                                                        return command.kind == "poll";
                                                    });
-            if (!pollRemaining)
+            const bool failed = std::any_of(actions.begin(), actions.end(), [&](const auto& action) {
+                return action.kind == ProtocolActionKind::FailCommand && action.commandId == completed.id;
+            });
+            if (failed) pollCycles_[device.id].fail();
+            if (!pollRemaining) {
+                pollCycles_[device.id].finish(actions);
                 schedulePoll(device, actions);
+            }
         }
         appendNext(actions);
     }
@@ -1149,6 +1163,7 @@ class Session final : public ProtocolSession,
             std::clamp<std::int64_t>(device.onlineTimeout, 1, 86400) * 1000;
         message.source = "query";
         message.rawPayloads = {frame.raw};
+        message.rawPacketIds = {std::string(input.messageId) + ":frame:" + std::to_string(nextPacketSequence_++)};
         message.valuesJson = valuesJson(device, frame, request);
         return {.kind = ProtocolActionKind::PublishParsed,
                 .connectionId = connectionId_,
@@ -1216,6 +1231,8 @@ class Session final : public ProtocolSession,
     std::map<std::string, const DeviceDefinition*, std::less<>> devicesById_;
     std::map<std::string, const DeviceDefinition*, std::less<>> devicesByCode_;
     std::map<std::string, DeviceQueues, std::less<>> queues_;
+    std::map<std::string, AcquisitionCycle, std::less<>> pollCycles_;
+    mutable std::uint64_t nextPacketSequence_ = 0;
     std::vector<const DeviceDefinition*> boundDevices_;
     std::vector<std::uint8_t> receiveBuffer_;
     std::optional<Inflight> inflight_;

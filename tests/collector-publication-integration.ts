@@ -94,6 +94,8 @@ try {
         protocol_config_id:protocol,status:'enabled',online_timeout:120,remote_control:true,
         timezone:'+00:00',heartbeat:{mode:'OFF'},registration:{mode:'OFF'}});
     const device = (await db`SELECT id FROM device WHERE name=${tag}`)[0].id;
+    await jsonRequest('PUT',`/v1/device/${device}/debug`,{enabled:true});
+    await jsonRequest('PUT',`/v1/link/${link}/debug`,{enabled:true});
     await until(async () => {
         const candidate = net.createConnection({host:'127.0.0.1',port});
         const connected = await new Promise<boolean>((resolve) => {
@@ -116,6 +118,21 @@ try {
     const fields = raw[stream][0][1];
     const first = fields[fields.indexOf("message_id") + 1];
     assert.match(first,/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    const debugRows = async (scope: string, id: string) => {
+        const ids = await redis.send('ZRANGE',[`iot:debug:v2:${scope}:${id}`,'0','-1']) as string[];
+        const rows = await Promise.all(ids.map(async id=>[id,await redis.send('HGETALL',['iot:debug:v2:packet:'+id])] as const));
+        return rows.map(([,values])=>values);
+    };
+    for (const [scope,id] of [['device',device],['link',link]]) {
+        await until(async()=>(await debugRows(scope,id)).some(row=>row.storage_status==='stored'),'debug history missing');
+        const rows=await debugRows(scope,id);
+        const receivedRows=rows.filter(row=>row.payload_hex===frame(1).toString('hex').toUpperCase());
+        assert.equal(receivedRows.length,1,`${scope}: Redis duplicated the SL651 receive during persistence`);
+        assert.equal(receivedRows[0].storage_status,'stored');
+        assert(receivedRows[0].history_id && receivedRows[0].parsed_json);
+        assert.equal(new Set(rows.map(row=>row.event_id)).size,rows.length,`${scope}: duplicate status events`);
+        assert(rows.some(row=>row.direction==='TX' && row.reply_to_packet_id===receivedRows[0].event_id),'ACK must reference the received packet');
+    }
     received=Buffer.alloc(0);
     saved=Number(await redis.send('EXISTS',[stream]))===1;
     if(saved) await redis.send('RENAME',[stream,savedStream]);

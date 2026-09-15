@@ -813,20 +813,25 @@ class DeviceService {
 
     ruvia::Task<ruvia::BoxedArray<DeviceDebugPacketDto>> debugPackets(ruvia::Context& c, std::string_view id) {
         (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner);
-        const auto key = service::device::entities::DeviceDebugStream::key(id);
-        const auto reply = co_await service::message::redis::command(c.redis(), {"XREVRANGE", key, "+", "-", "COUNT", "500"});
+        const auto key = service::device::entities::DeviceDebugIndex::key(id);
+        static constexpr std::string_view readPackets = R"lua(
+local result={}
+for _,id in ipairs(redis.call('ZREVRANGE',KEYS[1],0,499)) do
+    local fields=redis.call('HGETALL','iot:debug:v2:packet:'..id)
+    if #fields>0 then result[#result+1]={id,fields} else redis.call('ZREM',KEYS[1],id) end
+end
+return result
+)lua";
+        const std::vector<std::string_view> keys{key};
+        const std::vector<std::string_view> args;
+        const auto reply = co_await c.redis().eval(readPackets,keys,args);
         if (reply.kind() != ruvia::RedisValue::Kind::kArray)
             service::message::redis::throwValue("read debug packets", reply);
         ruvia::BoxedArray<DeviceDebugPacketDto> result(ruvia::ModelOptions{.resource=c.arena()});
-        std::set<std::string> seen;
         for (const auto& row : reply.array()) {
             if (row.kind() != ruvia::RedisValue::Kind::kArray || row.array().size() != 2) continue;
             const auto fields = row.array()[1].array();
             std::string eventId(row.array()[0].string());
-            for (std::size_t index = 0; index + 1 < fields.size(); index += 2)
-                if (fields[index].string() == "event_id" && !fields[index+1].string().empty())
-                    eventId = fields[index+1].string();
-            if (!seen.insert(eventId).second) continue;
             auto& packet = result.emplace(ruvia::ModelOptions{.resource=c.arena()});
             packet.set<"id">(eventId);
             for (std::size_t index = 0; index + 1 < fields.size(); index += 2) {
@@ -838,7 +843,12 @@ class DeviceService {
                 else if (name == "address") packet.set<"address">(value);
                 else if (name == "payload_hex") packet.set<"payloadHex">(value);
                 else if (name == "time_ms") packet.set<"timeMs">(value);
-                else if (name == "status") packet.set<"status">(value);
+                else if (name == "transport_status") packet.set<"transportStatus">(value);
+                else if (name == "response_status") packet.set<"responseStatus">(value);
+                else if (name == "parse_status") packet.set<"parseStatus">(value);
+                else if (name == "storage_status") packet.set<"storageStatus">(value);
+                else if (name == "revision") packet.set<"revision">(value);
+                else if (name == "reply_to_packet_id") packet.set<"replyToPacketId">(value);
                 else if (name == "reason") packet.set<"reason">(value);
                 else if (name == "history_id") packet.set<"historyId">(value);
                 else if (name == "parsed_json") packet.set<"parsedJson">(value);

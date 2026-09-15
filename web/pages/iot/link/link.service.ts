@@ -1,3 +1,4 @@
+import { retainNewerRecords } from '@/utils/versioned-records';
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { setDebug as saveDebugSwitch, getDebugPackets } from './link.api';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
@@ -71,6 +72,7 @@ export function useLinkDebug(id: string, open: boolean) {
     const packets = useSnapshotQuery({
         queryKey: ['link-debug-packets', id],
         queryFn: () => getDebugPackets(id),
+        structuralSharing: retainNewerRecords,
         enabled: open,
     });
     const toggle = useMutationWithMessage({

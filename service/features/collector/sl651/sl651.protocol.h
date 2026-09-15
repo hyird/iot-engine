@@ -559,6 +559,7 @@ class Session final : public ProtocolSession,
         std::uint16_t sequence = 0;
         std::vector<std::uint8_t> body;
         std::vector<std::vector<std::uint8_t>> rawFrames;
+        std::vector<std::string> rawPacketIds;
     };
 
     struct PendingCommand {
@@ -575,6 +576,7 @@ class Session final : public ProtocolSession,
         std::uint16_t total = 0;
         std::map<std::uint16_t, std::vector<std::uint8_t>> bodies;
         std::map<std::uint16_t, std::vector<std::uint8_t>> rawFrames;
+        std::map<std::uint16_t, std::string> rawPacketIds;
         std::uint64_t deadlineToken = 0;
         ParsedFrame header;
         std::map<std::uint16_t, unsigned> retries;
@@ -789,6 +791,17 @@ class Session final : public ProtocolSession,
                                .deviceCode = device->second->code});
         }
 
+        parsed->rawPacketIds = {std::string(input.messageId) + ":frame:" + std::to_string(nextPacketSequence_++)};
+        ProtocolAction received{.kind = ProtocolActionKind::ObserveParsed,
+            .connectionId = connectionId_, .deviceId = device->second->id,
+            .deviceCode = device->second->code};
+        received.parsed.linkId = link_.id;
+        received.parsed.deviceId = device->second->id;
+        received.parsed.occurredAtMs = input.receivedAtMs;
+        received.parsed.rawPayloads = parsed->rawFrames;
+        received.parsed.rawPacketIds = parsed->rawPacketIds;
+        actions.push_back(std::move(received));
+
         if (parsed->multiPacket) {
             auto more = consumeMulti(input, *device->second, std::move(*parsed));
             actions.insert(actions.end(), std::make_move_iterator(more.begin()),
@@ -907,6 +920,7 @@ class Session final : public ProtocolSession,
             packet.bodies.emplace(frame.sequence, frame.body);
             packet.rawFrames.emplace(frame.sequence, frame.rawFrames.front());
         }
+        packet.rawPacketIds.insert_or_assign(frame.sequence, frame.rawPacketIds.front());
         if (frame.sequence == 1)
             packet.header.body.assign(frame.body.begin(), frame.body.begin() +
                 static_cast<std::ptrdiff_t>(std::min<std::size_t>(8, frame.body.size())));
@@ -935,10 +949,12 @@ class Session final : public ProtocolSession,
         combined.ending = 0x03;
         combined.body.clear();
         combined.rawFrames.clear();
+        combined.rawPacketIds.clear();
         for (std::uint16_t sequence = 1; sequence <= packet.total; ++sequence) {
             const auto& body = packet.bodies.at(sequence);
             combined.body.insert(combined.body.end(), body.begin(), body.end());
             combined.rawFrames.push_back(packet.rawFrames.at(sequence));
+            combined.rawPacketIds.push_back(packet.rawPacketIds.at(sequence));
         }
         packet.completed = true;
         packet.deadlineToken = nextDeadlineToken_++;
@@ -968,6 +984,7 @@ class Session final : public ProtocolSession,
         message.onlineWindowMs = std::clamp<std::int64_t>(device.onlineTimeout, 1, 86400) * 1000;
         message.source = "push";
         message.rawPayloads = frame.rawFrames;
+        message.rawPacketIds = frame.rawPacketIds;
         message.valuesJson = valuesJson(device, frame);
         return {.kind = ProtocolActionKind::PublishParsed,
                 .connectionId = connectionId_,
@@ -1090,6 +1107,7 @@ class Session final : public ProtocolSession,
     std::map<std::string, const DeviceDefinition*, std::less<>> devicesByCode_;
     std::set<std::string, std::less<>> boundDeviceIds_;
     std::vector<std::uint8_t> receiveBuffer_;
+    std::uint64_t nextPacketSequence_ = 0;
     std::map<std::string, PendingCommand, std::less<>> pendingCommands_;
     std::map<std::string, MultiPacket, std::less<>> multiPackets_;
     std::uint64_t nextDeadlineToken_ = 1;

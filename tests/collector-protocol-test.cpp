@@ -1437,6 +1437,45 @@ void testModbus() {
     require(poll.size() == 12 && poll[7] == 3 && poll[10] == 0 && poll[11] == 3, "Modbus register mergeGap did not combine one read range");
 }
 
+void testAcquisitionCycle() {
+    collector::AcquisitionCycle cycle;
+    std::vector<collector::ProtocolAction> actions;
+    collector::ProtocolAction response;
+    response.parsed.rawPayloads = {{1, 2}};
+    response.parsed.rawPacketIds = {"ingress-1:frame:0"};
+    response.parsed.valuesJson = R"({"values":{"a":{"value":1}}})";
+    cycle.observe(response, actions);
+    const auto firstId = actions.back().parsed.rawPacketIds.front();
+    require(actions.back().kind == collector::ProtocolActionKind::ObserveParsed,
+            "partial cycle published a history record");
+    response.parsed.rawPayloads = {{3, 4}};
+    response.parsed.rawPacketIds = {"ingress-2:frame:1"};
+    response.parsed.valuesJson = R"({"values":{"b":{"value":2}}})";
+    cycle.observe(response, actions);
+    const auto secondId = actions.back().parsed.rawPacketIds.front();
+    cycle.finish(actions);
+    const auto& record = actions.back();
+    require(record.kind == collector::ProtocolActionKind::PublishParsed &&
+            record.parsed.rawPayloads == std::vector<std::vector<std::uint8_t>>{{1, 2}, {3, 4}} &&
+            record.parsed.rawPacketIds == std::vector<std::string>{firstId, secondId} && firstId != secondId,
+            "cycle lost response ordering or physical packet identity");
+    require(record.parsed.valuesJson.find("\"a\"") != std::string::npos &&
+            record.parsed.valuesJson.find("\"b\"") != std::string::npos,
+            "cycle did not merge all parsed points");
+    actions.clear();
+    cycle.observe(response, actions);
+    cycle.fail();
+    cycle.finish(actions);
+    require(actions.back().kind == collector::ProtocolActionKind::DiscardCollection,
+            "failed cycle was persisted as complete history");
+    actions.clear();
+    cycle.observe(response, actions);
+    cycle.finish(actions);
+    require(actions.back().kind == collector::ProtocolActionKind::PublishParsed &&
+            actions.back().parsed.rawPayloads.size() == 1,
+            "failed cycle contaminated the next collection");
+}
+
 void testModbusTypesAndPriority() {
     collector::ElementDefinition element;
     element.dataType = "UINT64";
@@ -3178,6 +3217,7 @@ int main() {
         };
         run("capabilities", testCapabilities);
         run("runtime reconcile", testRuntimeReconcile);
+        run("acquisition cycle", testAcquisitionCycle);
         run("poll stagger", testPollStagger);
         run("TCP Server worker-local listeners", testTcpServerListenersAreWorkerLocal);
         run("TCP Client target reconcile", testTcpClientTargetReconcile);

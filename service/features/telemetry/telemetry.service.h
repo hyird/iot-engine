@@ -32,7 +32,15 @@ inline std::string consumerStream(Consumer consumer) {
 // The ingress receipt and all four durable copies are committed atomically.
 // Consumer streams never trim pending entries. Each consumer owns XACK/XDEL.
 inline constexpr std::string_view kFanoutScript = R"lua(
-if redis.call('EXISTS',KEYS[1]) ~= 0 then return 0 end
+if redis.call('EXISTS',KEYS[1]) ~= 0 then
+ for i=1,#ARGV,2 do
+  if ARGV[i] == 'raw_packet_ids' and ARGV[i+1] ~= '[]' then
+   redis.call('XADD',KEYS[2],'*',unpack(ARGV))
+   break
+  end
+ end
+ return 0
+end
 for i=2,5 do
  local kind = redis.call('TYPE',KEYS[i]).ok
  if kind ~= 'none' and kind ~= 'stream' then
@@ -202,15 +210,32 @@ class TelemetryService {
             parsedMessages.push_back(std::move(parsed));
         }
         const auto redis = context.redis();
+        if (consumer == Consumer::History) {
+            for (const auto& parsed : parsedMessages) {
+                if (!contract::isSl651EmptyReport(parsed)) continue;
+                try { co_await packet_log::DebugPacketService::updateHistoryState(redis, parsed, "skipped"); }
+                catch (const std::exception& error) { spdlog::warn("Empty report debug update failed: {}", error.what()); }
+            }
+        }
         if (consumer == Consumer::History || consumer == Consumer::Delivery) {
             std::erase_if(parsedMessages, contract::isSl651EmptyReport);
             if (parsedMessages.empty()) co_return;
         }
         switch (consumer) {
-            case Consumer::History:
-                (void)co_await persist(context, parsedMessages, std::vector<bool>(parsedMessages.size(), false));
+            case Consumer::History: {
+                std::exception_ptr failure;
+                try { (void)co_await persist(context, parsedMessages, std::vector<bool>(parsedMessages.size(), false)); }
+                catch (...) { failure = std::current_exception(); }
+                if (failure) {
+                    for (const auto& parsed : parsedMessages) {
+                        try { co_await packet_log::DebugPacketService::updateHistoryState(redis, parsed, "storage_failed"); }
+                        catch (const std::exception& error) { spdlog::warn("Failed history debug update failed: {}", error.what()); }
+                    }
+                    std::rethrow_exception(failure);
+                }
                 co_await latest::publishRealtimeChange(redis);
                 break;
+            }
             case Consumer::Latest:
                 co_await latest::update(redis, parsedMessages);
                 break;

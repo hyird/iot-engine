@@ -8,11 +8,74 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <map>
+#include <optional>
+#include <ruvia/web/ModelObject.h>
+#include "service/utils/crypto.h"
 
 #include "service/common/message.h"
 #include "service/features/collector/collector.types.h"
 
 namespace service::collector {
+
+// 一轮采集持有自己的响应，队列结束后仅发布一次；失败轮次不得污染下一轮。
+class AcquisitionCycle final {
+  public:
+    void observe(ProtocolAction response, std::vector<ProtocolAction>& actions) {
+        if (response.parsed.rawPacketIds.size() != response.parsed.rawPayloads.size())
+            throw std::invalid_argument("acquisition response requires packet identities");
+        if (!collected_) {
+            collected_ = response;
+            collected_->parsed.rawPayloads.clear();
+            collected_->parsed.rawPacketIds.clear();
+        }
+        auto& combined = collected_->parsed;
+        combined.rawPayloads.insert(combined.rawPayloads.end(), response.parsed.rawPayloads.begin(),
+                                    response.parsed.rawPayloads.end());
+        combined.rawPacketIds.insert(combined.rawPacketIds.end(), response.parsed.rawPacketIds.begin(),
+                                     response.parsed.rawPacketIds.end());
+        const auto readFields = [](std::string_view json, auto visit) {
+            if (!ruvia::detail::visitJsonObjectFields(ruvia::detail::ResolvedPmrResourceTag{}, json,
+                    std::pmr::get_default_resource(), visit))
+                throw std::runtime_error("invalid acquisition values");
+        };
+        readFields(response.parsed.valuesJson, [&](std::string_view name, std::string_view value) {
+            if (name == "values")
+                readFields(value, [&](std::string_view id, std::string_view point) {
+                    values_.insert_or_assign(std::string(id), std::string(point));
+                    return true;
+                });
+            return true;
+        });
+        response.kind = ProtocolActionKind::ObserveParsed;
+        actions.push_back(std::move(response));
+    }
+
+    void fail() noexcept { failed_ = true; }
+
+    void finish(std::vector<ProtocolAction>& actions) {
+        if (collected_) {
+            auto result = std::move(*collected_);
+            result.kind = failed_ ? ProtocolActionKind::DiscardCollection : ProtocolActionKind::PublishParsed;
+            result.reason = failed_ ? "acquisition_cycle_incomplete" : "";
+            result.parsed.valuesJson = "{\"function_code\":\"POLL\",\"values\":{";
+            bool first = true;
+            for (const auto& [id, point] : values_) {
+                if (!first) result.parsed.valuesJson += ',';
+                first = false;
+                result.parsed.valuesJson += service::utils::jsonQuoted(id) + ":" + point;
+            }
+            result.parsed.valuesJson += "}}";
+            actions.push_back(std::move(result));
+        }
+        *this = AcquisitionCycle{};
+    }
+
+  private:
+    std::optional<ProtocolAction> collected_;
+    std::map<std::string, std::string, std::less<>> values_;
+    bool failed_ = false;
+};
 
 class ProtocolSession {
   public:

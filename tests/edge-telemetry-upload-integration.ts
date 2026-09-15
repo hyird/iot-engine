@@ -161,14 +161,14 @@ try {
             assert.equal(linkView.debug_enabled,linkOn);
             const packetId = uuid();
             const trace = Buffer.concat([field(1,bytes(packetId)),field(2,bytes(link)),field(3,bytes(device)),field(5,Date.now()),field(6,Buffer.from('AABBCC','hex')),field(7,1),field(8,'RX'),field(10,'received')]);
-            const key = `iot:debug:packets:device:${device}`;
-            const before = Number(await redis.send('XLEN',[key]));
+            const key = `iot:debug:v2:device:${device}`;
+            const before = Number(await redis.send('ZCARD',[key]));
             socket!.send(envelope(42,trace));
-            if(linkOn||deviceOn) await until(async()=>Number(await redis.send('XLEN',[key]))===before+1,'debug packet was not captured');
-            else { await Bun.sleep(150); assert.equal(Number(await redis.send('XLEN',[key])),before); }
+            if(linkOn||deviceOn) await until(async()=>Number(await redis.send('ZCARD',[key]))===before+1,'debug packet was not captured');
+            else { await Bun.sleep(150); assert.equal(Number(await redis.send('ZCARD',[key])),before); }
             const packets = await firstSnapshot(`/v1/device/${device}/debug/packets`);
             assert.equal(packets.length, linkOn||deviceOn ? before+1 : before);
-            if(packets.length) { assert.equal(packets[0].payload_hex,'AABBCC'); assert.equal(packets[0].status,'received'); }
+            if(packets.length) { assert.equal(packets[0].payload_hex,'AABBCC'); assert.equal(packets[0].transport_status,'received'); }
         }
         assert.equal((await db`SELECT debug_enabled FROM device WHERE id=${device}`)[0].debug_enabled,false);
         console.log(`PASS ${protocol}: independent link/device debug switches, capture gating and separate authorized views`);
@@ -176,15 +176,22 @@ try {
         const values = field(9, Buffer.concat([field(1, point), field(2, 'temperature'), field(3, 'C'),
             field(4, Buffer.concat([field(1, 3), field(4, 42)]))]));
         const raw = [Buffer.from('7E7E0100FF', 'hex'), Buffer.from('7E7E020000', 'hex')];
+        const packetIds = raw.map(() => uuid());
+        await debugSwitch('device',device,true);
+        for (let index=0;index<raw.length;index++) {
+            socket!.send(envelope(42,Buffer.concat([field(1,bytes(packetIds[index])),field(2,bytes(link)),
+                field(3,bytes(device)),field(5,observed),field(6,raw[index]),field(7,1),field(8,'RX'),field(10,'received')])));
+            await until(async()=>Number(await redis.send('EXISTS',[`iot:debug:v2:packet:${node}:${packetIds[index]}:0`]))===1,'raw packet missing');
+        }
         const record = (id: string, additions: Buffer[], sampledAt = observed) => Buffer.concat([
             field(1, bytes(id)), field(2, bytes(device)), field(3, bytes(link)), field(4, protocolNumber),
             field(5, '32'), field(7, 'UP'), field(8, sampledAt), field(12, bytes(model)), ...additions,
         ]);
         const send = (data: Buffer) => socket!.send(envelope(40, field(1, data)));
-        if (protocol === 'SL651') {
+        {
             const ids = [uuid(), uuid(), uuid()];
             const parts = ids.map((id, index) => record(id, [field(15, bytes(report)), field(16, index), field(17, 3),
-                index === 0 ? values : field(14, raw[index - 1])]));
+                ...(index === 0 ? [values] : [field(14, raw[index - 1]),field(18,bytes(packetIds[index-1]))])]));
             send(parts[2]); send(parts[0]); send(parts[2]);
             const key = `iot:edge:telemetry-upload:${node}:${device}:${report}`;
             await until(async () => Number(await redis.send('HLEN', [key])) >= 4, 'parts were not staged');
@@ -196,11 +203,6 @@ try {
             await until(async () => (await redis.send('HGET', [key, 'done'])) === '1', 'completed upload not reclaimed');
             assert(Number(await redis.send('TTL', [key])) > 0);
             assert.equal(await redis.send('HLEN', [key]), 1);
-        } else {
-            // 同时携带旧字段，证明新数组优先且不会重复存储。
-            const data = record(report, [values, field(10, Buffer.from('FF', 'hex')), field(14, raw[0])]);
-            send(data); send(data);
-            await until(async () => (await db`SELECT 1 FROM device_data WHERE device_id=${device}`).length === 1, 'response history missing');
         }
         // 后续采样作为处理屏障，确保前面的重复上传已经经过历史消费。
         send(record(uuid(), [values, ...raw.map(value => field(14, value))], observed + 1));
@@ -209,12 +211,18 @@ try {
         const rows = await db`SELECT raw_payload_hex,data,protocol,source,model_id FROM device_data
             WHERE device_id=${device} AND report_time=to_timestamp(${observed}/1000.0)`;
         assert.equal(rows.length, 1);
-        assert.deepEqual(rows[0].raw_payload_hex, (protocol === 'SL651' ? raw : raw.slice(0, 1)).map(value => value.toString('hex').toUpperCase()));
+        assert.deepEqual(rows[0].raw_payload_hex, raw.map(value => value.toString('hex').toUpperCase()));
         assert.equal(rows[0].data.values[point].value, 42);
         assert.equal(rows[0].data.values[point].value_type, 'number');
         assert.equal(rows[0].model_id, model);
         assert.equal(rows[0].protocol, protocol);
         assert.equal(rows[0].source, 'edge');
+        for (const packetId of packetIds) {
+            const key=`iot:debug:v2:packet:${node}:${packetId}:0`;
+            await until(async()=>await redis.send('HGET',[key,'storage_status'])==='stored','raw packet was not updated after history commit');
+            assert.equal(await redis.send('HGET',[key,'payload_hex']),raw[packetIds.indexOf(packetId)].toString('hex').toUpperCase());
+            assert((await redis.send('HGET',[key,'history_id'])));
+        }
         console.log(`PASS ${protocol}: WebSocket → projection → one historical record, raw array and normalized values`);
     }
 } finally {

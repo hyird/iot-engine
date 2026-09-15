@@ -339,6 +339,8 @@ class Session final : public ProtocolSession,
 
     [[nodiscard]] std::vector<ProtocolAction> disconnected(std::string_view reason) override {
         std::vector<ProtocolAction> actions;
+        pollCycle_.fail();
+        pollCycle_.finish(actions);
         if (deadlineToken_ != 0)
             actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
                                .connectionId = connectionId_,
@@ -1025,8 +1027,12 @@ class Session final : public ProtocolSession,
                                .deadlineAfter = inflight_->command.timeout});
             return actions;
         }
-        actions.push_back(parsedAction(input, *inflight_->device, frame, *payloads,
-                                       inflight_->request, inflight_->command.id));
+        auto parsed = parsedAction(input, *inflight_->device, frame, *payloads,
+                                   inflight_->request, inflight_->command.id);
+        if (inflight_->command.kind == "poll")
+            pollCycle_.observe(std::move(parsed), actions);
+        else
+            actions.push_back(std::move(parsed));
         if (inflight_->phase == Phase::Readback && inflight_->boolElement) {
             const auto bit = static_cast<unsigned>(
                 std::clamp<std::int64_t>(inflight_->boolElement->startBit, 0, 7));
@@ -1175,15 +1181,22 @@ class Session final : public ProtocolSession,
     void finishCompletedOperation(const ProtocolCommand& completed,
                                   std::vector<ProtocolAction>& actions) {
         if (completed.kind == "poll" && device_) {
+            if (std::any_of(actions.begin(), actions.end(), [&](const auto& action) {
+                    return action.kind == ProtocolActionKind::FailCommand && action.commandId == completed.id;
+                })) pollCycle_.fail();
             auto& queue = queues_.at(device_->id);
             const bool highPriorityWaiting = !queue.highWrites.empty() || !queue.highReads.empty();
             if (highPriorityWaiting) {
+                if (std::any_of(queue.normalReads.begin(), queue.normalReads.end(),
+                                [](const auto& command) { return command.kind == "poll"; }))
+                    pollCycle_.fail();
                 std::erase_if(queue.normalReads,
                               [](const auto& command) { return command.kind == "poll"; });
             } else if (!queue.normalReads.empty() && queue.normalReads.front().kind == "poll") {
                 appendNext(actions);
                 return;
             }
+            pollCycle_.finish(actions);
             schedulePoll(actions);
         }
         appendDisconnect(actions);
@@ -1539,6 +1552,7 @@ class Session final : public ProtocolSession,
             std::clamp<std::int64_t>(device.onlineTimeout, 1, 86400) * 1000;
         message.source = "query";
         message.rawPayloads = {frame};
+        message.rawPacketIds = {std::string(input.messageId) + ":frame:" + std::to_string(nextPacketSequence_++)};
         message.valuesJson = valuesJson(device, payloads, request);
         return {.kind = ProtocolActionKind::PublishParsed,
                 .connectionId = connectionId_,
@@ -1607,6 +1621,8 @@ class Session final : public ProtocolSession,
     std::map<std::string, const DeviceDefinition*, std::less<>> devicesById_;
     std::map<std::string, const DeviceDefinition*, std::less<>> devicesByCode_;
     std::map<std::string, DeviceQueues, std::less<>> queues_;
+    AcquisitionCycle pollCycle_;
+    mutable std::uint64_t nextPacketSequence_ = 0;
     const DeviceDefinition* device_ = nullptr;
     State state_ = State::AwaitRegistration;
     std::vector<std::uint8_t> receiveBuffer_;
