@@ -624,7 +624,7 @@ class CollectorWorker final {
             }
             auto snapshot = co_await ownership::retain(redis_, desiredSnapshot_);
             if (version != loadedConfigVersion_ || config::signature(snapshot) != config::signature(loadedSnapshot_)) {
-                const auto plan = planRuntimeReconcile(loadedSnapshot_, snapshot);
+                const auto plan = engine_.planReconcile(loadedSnapshot_, snapshot);
                 tcp_.reconcile(snapshot, plan);
                 engine_.reload(snapshot, plan.affectedLinks);
                 auto sessionRefreshes =
@@ -821,37 +821,14 @@ class CollectorWorker final {
         const auto link = std::find_if(loadedSnapshot_.links.begin(), loadedSnapshot_.links.end(),
             [&](const auto& value) { return value.id == linkId; });
         if (link == loadedSnapshot_.links.end()) co_return;
-        const DeviceDefinition* selected = nullptr;
-        bool ambiguous = false;
         const auto connection = networkConnections_.find(connectionId);
         const auto routes = routes_.find(connectionId);
-        for (const auto& device : loadedSnapshot_.devices) {
-            if (device.linkId != linkId) continue;
-            if (!knownDevice.empty() && device.id != knownDevice) continue;
-            if (connection != networkConnections_.end() && !connection->second.targetId.empty() &&
-                device.targetId != connection->second.targetId) continue;
-            if (device.protocol != "SL651" && knownDevice.empty() && routes != routes_.end() && !routes->second.empty() &&
-                !routes->second.contains(device.id)) continue;
-            if (device.protocol == "SL651" && bytes.size() >= 8 && bytes[0] == 0x7e && bytes[1] == 0x7e) {
-                const auto offset = direction == "RX" ? 3U : 2U;
-                std::uint64_t station = 0;
-                for (std::size_t i = 0; i < 5; ++i) station = station * 100 + (bytes[offset+i] >> 4) * 10 + (bytes[offset+i] & 15);
-                const auto nonzero = device.code.find_first_not_of('0');
-                const auto normalized = nonzero == std::string::npos ? std::string("0") : device.code.substr(nonzero);
-                if (std::to_string(station) != normalized) continue;
-            }
-            if (device.protocol == "Modbus" && !bytes.empty()) {
-                if (device.modbusMode == "RTU") {
-                    if (bytes[0] != device.slaveId) continue;
-                } else if (bytes.size() >= 7 && bytes[2] == 0 && bytes[3] == 0) {
-                    if (bytes[6] != device.slaveId) continue;
-                }
-            }
-            if (selected) ambiguous = true;
-            selected = &device;
-        }
-        if (ambiguous) selected = nullptr;
-        if (link->protocol == "SL651" && direction == "RX" && !deviceOnly && knownDevice.empty()) selected = nullptr;
+        const auto* selected = engine_.identifyDebugDevice(loadedSnapshot_, {
+            .linkId = linkId,
+            .targetId = connection == networkConnections_.end() ? std::string_view{} : connection->second.targetId,
+            .direction = direction, .knownDevice = knownDevice, .deviceOnly = deviceOnly,
+            .bytes = bytes,
+            .boundDevices = routes == routes_.end() ? nullptr : &routes->second});
         if (!link->debugEnabled && !(selected && selected->debugEnabled)) co_return;
         try {
             co_await packet_log::DebugPacketService::recordPacket(redis_, linkId,
@@ -1267,8 +1244,7 @@ class CollectorWorker final {
         service::packet_log::write(service::packet_log::Level::Debug, "TX_BYTES", egressLogContext(egressLog), packet.payload);
         egressLog.debugPayload = packet.payload;
         egressLog.debugTime = message::utcNowMilliseconds();
-        egressLog.awaitResponse = egressLog.protocol == "S7" || egressLog.protocol == "Modbus" ||
-            (egressLog.protocol == "SL651" && !egressLog.causationId.empty());
+        egressLog.awaitResponse = engine_.expectsResponse(egressLog.protocol, egressLog.causationId);
         if (egressLog.awaitResponse) debugPendingSends_[packet.connectionId] = egressLog;
         co_await captureDebug(egressLog.linkId, packet.connectionId, egressLog.remoteAddress,
             "TX", packet.payload, egressLog.debugTime, egressLog.deviceId, false, egressLog.messageId, "sending", {}, {}, egressLog.replyToPacketId);

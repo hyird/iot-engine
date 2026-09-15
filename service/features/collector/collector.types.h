@@ -64,6 +64,21 @@ enum class ProtocolActionKind {
     CancelDeadline,
 };
 
+// 协议能力描述不持有连接、任务或其他可变运行状态。
+enum class CommandLayout { WritableElements, CompleteFunction };
+enum class CommandTransport { Raw, DeviceConfigured };
+enum class ResponseTracking { EverySend, CommandsOnly };
+enum class PacketAttribution { Connection, ParsedFrame };
+
+struct ProtocolDefinition {
+    std::string_view name;
+    ProtocolCapabilities capabilities;
+    CommandLayout commandLayout;
+    CommandTransport commandTransport;
+    ResponseTracking responseTracking;
+    PacketAttribution packetAttribution;
+};
+
 struct ProtocolAction {
     ProtocolActionKind kind = ProtocolActionKind::PublishParsed;
     std::string connectionId;

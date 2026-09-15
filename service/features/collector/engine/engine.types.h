@@ -21,4 +21,14 @@ struct ProtocolSessionRefresh {
     std::vector<ProtocolAction> startedActions;
 };
 
+struct DebugPacketIdentity {
+    std::string_view linkId;
+    std::string_view targetId;
+    std::string_view direction;
+    std::string_view knownDevice;
+    bool deviceOnly = false;
+    std::span<const std::uint8_t> bytes;
+    const std::set<std::string>* boundDevices = nullptr;
+};
+
 } // namespace service::collector

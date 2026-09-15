@@ -1641,24 +1641,16 @@ class Session final : public ProtocolSession,
 
 class SessionFactory final : public ProtocolSessionFactory {
   public:
-    [[nodiscard]] std::string_view protocol() const noexcept override { return "S7"; }
-
-    [[nodiscard]] ProtocolCapabilities capabilities() const noexcept override {
-        return ProtocolCapability::TcpServer | ProtocolCapability::TcpClient |
-               ProtocolCapability::Registration | ProtocolCapability::Heartbeat |
-               ProtocolCapability::Polling | ProtocolCapability::Discovery |
-               ProtocolCapability::Commands;
+    [[nodiscard]] const ProtocolDefinition& definition() const noexcept override {
+        return kS7Protocol;
     }
 
+  protected:
     [[nodiscard]] std::unique_ptr<ProtocolSession>
-    createSession(const LinkDefinition& link, std::string_view connectionId,
+    createDeviceSession(const LinkDefinition& link, std::string_view connectionId,
                   std::string_view targetId,
-                  const std::shared_ptr<const RuntimeSnapshot>& snapshot) const override {
-        std::vector<const DeviceDefinition*> devices;
-        for (const auto& device : snapshot->devices)
-            if (device.linkId == link.id && device.protocol == "S7" &&
-                (targetId.empty() || device.targetId == targetId))
-                devices.push_back(&device);
+                  const std::shared_ptr<const RuntimeSnapshot>& snapshot,
+                  std::vector<const DeviceDefinition*> devices) const override {
         return std::make_unique<Session>(link, std::string(connectionId), std::string(targetId),
                                          snapshot, std::move(devices));
     }

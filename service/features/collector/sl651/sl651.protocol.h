@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -1122,23 +1123,32 @@ class Session final : public ProtocolSession,
 
 class SessionFactory final : public ProtocolSessionFactory {
   public:
-    [[nodiscard]] std::string_view protocol() const noexcept override { return "SL651"; }
-
-    [[nodiscard]] ProtocolCapabilities capabilities() const noexcept override {
-        return ProtocolCapability::TcpServer | ProtocolCapability::Commands |
-               ProtocolCapability::UnsolicitedReports;
+    [[nodiscard]] const ProtocolDefinition& definition() const noexcept override {
+        return kSl651Protocol;
     }
 
+    [[nodiscard]] bool packetMatchesDevice(const DeviceDefinition& device, std::string_view direction,
+        std::span<const std::uint8_t> bytes) const noexcept override {
+        if (bytes.size() < 8 || bytes[0] != 0x7e || bytes[1] != 0x7e) return true;
+        const auto offset = direction == "RX" ? 3U : 2U;
+        std::uint64_t station = 0;
+        for (std::size_t i = 0; i < 5; ++i)
+            station = station * 100 + (bytes[offset + i] >> 4) * 10 + (bytes[offset + i] & 15);
+        const auto nonzero = device.code.find_first_not_of('0');
+        const auto normalized = nonzero == std::string::npos ? std::string_view("0")
+            : std::string_view(device.code).substr(nonzero);
+        // 不分配内存；完整帧和 BCD 合法性由会话解析验证。
+        std::array<char, 20> address{};
+        const auto result = std::to_chars(address.data(), address.data() + address.size(), station);
+        return result.ec == std::errc{} && std::string_view(address.data(), result.ptr) == normalized;
+    }
+
+  protected:
     [[nodiscard]] std::unique_ptr<ProtocolSession>
-    createSession(const LinkDefinition& link, std::string_view connectionId,
-                  std::string_view targetId,
-                  const std::shared_ptr<const RuntimeSnapshot>& snapshot) const override {
-        if (!targetId.empty())
-            throw std::invalid_argument("SL651 cannot create a TCP Client target session");
-        std::vector<const DeviceDefinition*> devices;
-        for (const auto& device : snapshot->devices)
-            if (device.linkId == link.id && device.protocol == "SL651")
-                devices.push_back(&device);
+    createDeviceSession(const LinkDefinition& link, std::string_view connectionId,
+                  std::string_view,
+                  const std::shared_ptr<const RuntimeSnapshot>& snapshot,
+                  std::vector<const DeviceDefinition*> devices) const override {
         return std::make_unique<Session>(link, std::string(connectionId), snapshot,
                                          std::move(devices));
     }

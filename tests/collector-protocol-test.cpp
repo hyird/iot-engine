@@ -861,12 +861,120 @@ collector::ProtocolSessionFactoryRegistry sessionFactories() {
 void testCapabilities() {
     require(collector::DeviceDefinition{}.timezone == "+08:00", "device timezone must default to UTC+8");
     auto registry = sessionFactories();
-    require(registry.require("SL651").capabilities().has(collector::ProtocolCapability::TcpServer), "SL651 must support TCP Server");
-    require(!registry.require("SL651").capabilities().has(collector::ProtocolCapability::TcpClient), "SL651 must reject TCP Client");
-    require(!registry.require("SL651").capabilities().has(collector::ProtocolCapability::Polling), "SL651 must not expose polling");
-    require(!registry.require("SL651").capabilities().has(collector::ProtocolCapability::Registration) && !registry.require("SL651").capabilities().has(collector::ProtocolCapability::Heartbeat), "SL651 must derive identity from protocol frames without registration or heartbeat");
-    require(registry.require("Modbus").capabilities().has(collector::ProtocolCapability::Discovery), "Modbus discovery capability missing");
-    require(registry.require("S7").capabilities().has(collector::ProtocolCapability::Polling), "S7 polling capability missing");
+    require(registry.require("SL651").definition().capabilities.has(collector::ProtocolCapability::TcpServer), "SL651 must support TCP Server");
+    require(!registry.require("SL651").definition().capabilities.has(collector::ProtocolCapability::TcpClient), "SL651 must reject TCP Client");
+    require(!registry.require("SL651").definition().capabilities.has(collector::ProtocolCapability::Polling), "SL651 must not expose polling");
+    require(!registry.require("SL651").definition().capabilities.has(collector::ProtocolCapability::Registration) && !registry.require("SL651").definition().capabilities.has(collector::ProtocolCapability::Heartbeat), "SL651 must derive identity from protocol frames without registration or heartbeat");
+    require(registry.require("Modbus").definition().capabilities.has(collector::ProtocolCapability::Discovery), "Modbus discovery capability missing");
+    require(registry.require("S7").definition().capabilities.has(collector::ProtocolCapability::Polling), "S7 polling capability missing");
+}
+
+void testProtocolFactoryBoundary() {
+    auto registry = sessionFactories();
+    auto snapshot = std::make_shared<collector::RuntimeSnapshot>();
+    snapshot->links.push_back({ .id = "link", .mode = "TCP Client", .protocol = "Modbus", .status = "enabled" });
+    for (const auto& [id, link, protocol, target] : std::array{
+        std::array{"selected", "link", "Modbus", "target"},
+        std::array{"other-target", "link", "Modbus", "other"},
+        std::array{"other-link", "other", "Modbus", "target"},
+        std::array{"other-protocol", "link", "S7", "target"}}) {
+        collector::DeviceDefinition device;
+        device.id = id; device.code = id; device.linkId = link;
+        device.protocol = protocol; device.targetId = target;
+        device.modbusMode = "TCP";
+        snapshot->devices.push_back(device);
+    }
+    auto session = registry.require("Modbus").createSession(snapshot->links.front(), "connection", "target", snapshot);
+    const auto started = session->connected();
+    const auto count = std::count_if(started.begin(), started.end(), [](const auto& action) {
+        return action.kind == collector::ProtocolActionKind::BindDevice;
+    });
+    require(count == 1 && first(started, collector::ProtocolActionKind::BindDevice).deviceId == "selected",
+        "factory bound devices from another target, link or protocol");
+    const auto rejects = [](auto&& operation) {
+        try { operation(); } catch (const std::invalid_argument&) { return true; }
+        return false;
+    };
+    require(rejects([&] { (void)registry.require("S7").createSession(snapshot->links.front(), "c", "target", snapshot); }),
+        "factory accepted another protocol's link");
+    auto invalid = snapshot->links.front();
+    invalid.protocol = "SL651";
+    require(rejects([&] { (void)registry.require("SL651").createSession(invalid, "c", "target", snapshot); }),
+        "reporting protocol accepted an unsupported client transport");
+    invalid = snapshot->links.front();
+    invalid.mode = "TCP Server";
+    require(rejects([&] { (void)registry.require("Modbus").createSession(invalid, "c", "target", snapshot); }),
+        "server session accepted a client target");
+    require(rejects([&] { (void)registry.require("Modbus").createSession(snapshot->links.front(), "c", "target", {}); }),
+        "factory accepted a missing immutable snapshot");
+}
+
+void testProtocolDebugAttribution() {
+    collector::ProtocolEngine engine(sessionFactories());
+    collector::RuntimeSnapshot snapshot;
+    snapshot.links.push_back({ .id = "link", .mode = "TCP Client", .protocol = "Modbus" });
+    for (const auto& id : {"first", "second"}) {
+        collector::DeviceDefinition device;
+        device.id = id; device.code = id; device.linkId = "link";
+        device.targetId = "target"; device.protocol = "Modbus"; device.modbusMode = "TCP";
+        device.slaveId = static_cast<std::uint8_t>(snapshot.devices.size() + 1);
+        snapshot.devices.push_back(device);
+    }
+    const std::array<std::uint8_t, 9> response{0, 1, 0, 0, 0, 3, 2, 3, 0};
+    collector::DebugPacketIdentity packet{.linkId = "link", .targetId = "target", .direction = "RX", .bytes = response};
+    require(engine.identifyDebugDevice(snapshot, packet) == &snapshot.devices[1],
+        "TCP debug packet was attributed to the wrong unit");
+    packet.bytes = std::span(response).first(3);
+    require(!engine.identifyDebugDevice(snapshot, packet), "ambiguous TCP fragment was assigned a device");
+    std::set<std::string> bound{"first"};
+    packet.boundDevices = &bound;
+    require(engine.identifyDebugDevice(snapshot, packet) == &snapshot.devices[0],
+        "debug fragment ignored the connection's bound device");
+    packet.bytes = response;
+    require(!engine.identifyDebugDevice(snapshot, packet), "debug packet escaped connection ownership");
+    packet.knownDevice = "second";
+    require(engine.identifyDebugDevice(snapshot, packet) == &snapshot.devices[1],
+        "validated device identity was overridden by stale route hints");
+    packet.knownDevice = {}; packet.boundDevices = nullptr;
+    packet.targetId = "another-target";
+    require(!engine.identifyDebugDevice(snapshot, packet), "debug attribution escaped the client target");
+    packet.targetId = "target";
+    for (auto& device : snapshot.devices) device.modbusMode = "RTU";
+    const std::array<std::uint8_t, 3> rtu{2, 3, 0};
+    packet.bytes = rtu;
+    require(engine.identifyDebugDevice(snapshot, packet) == &snapshot.devices[1], "RTU unit attribution changed");
+
+    snapshot.links.front().protocol = "SL651";
+    snapshot.links.front().mode = "TCP Server";
+    for (auto& device : snapshot.devices) { device.protocol = "SL651"; device.code = device.slaveId == 1 ? "0000000001" : "0000000002"; }
+    const std::array<std::uint8_t, 8> station{0x7e, 0x7e, 1, 0, 0, 0, 0, 2};
+    packet.bytes = station;
+    require(!engine.identifyDebugDevice(snapshot, packet), "unvalidated reporting frame was attributed to a station");
+    packet.deviceOnly = true;
+    require(engine.identifyDebugDevice(snapshot, packet) == &snapshot.devices[1], "reporting station address did not match");
+    const std::array<std::uint8_t, 8> outbound{0x7e, 0x7e, 0, 0, 0, 0, 2, 1};
+    packet.direction = "TX"; packet.deviceOnly = false; packet.bytes = outbound;
+    require(engine.identifyDebugDevice(snapshot, packet) == &snapshot.devices[1], "downlink station address offset changed");
+    require(engine.expectsResponse("Modbus", {}) && engine.expectsResponse("S7", {}),
+        "request protocols lost response tracking");
+    require(!engine.expectsResponse("SL651", {}) && engine.expectsResponse("SL651", "command"),
+        "report acknowledgements were treated as requests");
+    require(!engine.expectsResponse("unregistered", "command"), "unknown protocol exposed response tracking");
+}
+
+void testProtocolCommandGrouping() {
+    const std::vector<collector::CommandElementValue> values{{"first", "1"}, {"second", "2"}};
+    for (const auto* protocol : {"Modbus", "S7"}) {
+        const auto tasks = collector::command::groupElements(collector::protocolDefinition(protocol), values);
+        require(tasks.size() == 2 && tasks[0].size() == 1 && tasks[1].size() == 1 &&
+            tasks[0][0].elementId == "first" && tasks[1][0].value == "2",
+            "independent writes no longer have separate receipts");
+    }
+    const auto tasks = collector::command::groupElements(collector::protocolDefinition("SL651"), values);
+    require(tasks.size() == 1 && tasks[0].size() == 2 && tasks[0][1].elementId == "second",
+        "complete function command was split into incomplete requests");
+    require(collector::command::groupElements(collector::kSl651Protocol, {}).empty(),
+        "empty command created an empty task");
 }
 
 void testStationScopeAndInstanceIdentity() {
@@ -2233,7 +2341,7 @@ void testRuntimeSetOrderingContract() {
     for (const auto& id : second) {
         next.devices.front().elements.push_back({ .configKey = id, .id = id });
     }
-    const auto plan = collector::planRuntimeReconcile(previous, next);
+    const auto plan = collector::ProtocolEngine(sessionFactories()).planReconcile(previous, next);
     require(plan.affectedLinks.empty() && plan.restartLinks.empty(), "equivalent Redis Set order restarted an unrelated TCP Server link");
 }
 
@@ -2498,7 +2606,7 @@ void testRuntimeReconcile() {
     auto debugUpdate = previous;
     debugUpdate.links.front().debugEnabled = true;
     debugUpdate.devices.front().debugEnabled = true;
-    const auto debugPlan = collector::planRuntimeReconcile(previous, debugUpdate);
+    const auto debugPlan = collector::ProtocolEngine(sessionFactories()).planReconcile(previous, debugUpdate);
     require(debugPlan.affectedLinks.empty() && debugPlan.refreshClientSessions.empty() &&
         debugPlan.restartLinks.empty() && debugPlan.restartClientTargets.empty(), "debug switches restarted live protocol sessions");
     require(collector::config::signature(previous) != collector::config::signature(debugUpdate),
@@ -2506,7 +2614,7 @@ void testRuntimeReconcile() {
 
     auto deviceUpdate = previous;
     deviceUpdate.devices.front().readInterval = 10;
-    const auto devicePlan = collector::planRuntimeReconcile(previous, deviceUpdate);
+    const auto devicePlan = collector::ProtocolEngine(sessionFactories()).planReconcile(previous, deviceUpdate);
     require(devicePlan.affectedLinks.contains("client-link"), "device update did not affect its link");
     require(devicePlan.refreshClientSessions.contains({ "client-link", "target-a" }), "changed Modbus device target was not scheduled for a session refresh");
     require(!devicePlan.refreshClientSessions.contains({ "client-link", "target-b" }), "unchanged sibling target was scheduled for a session refresh");
@@ -2516,7 +2624,7 @@ void testRuntimeReconcile() {
     auto metadataUpdate = previous;
     metadataUpdate.links.front().name = "Renamed client";
     metadataUpdate.links.front().targets.back().name = "Renamed B";
-    const auto metadataPlan = collector::planRuntimeReconcile(previous, metadataUpdate);
+    const auto metadataPlan = collector::ProtocolEngine(sessionFactories()).planReconcile(previous, metadataUpdate);
     require(metadataPlan.affectedLinks.contains("client-link"), "link metadata update was not observed");
     require(metadataPlan.refreshClientSessions.empty() && metadataPlan.restartClientTargets.empty() && metadataPlan.restartLinks.empty(), "metadata-only update restarted a TCP Client transport");
 
@@ -2527,14 +2635,14 @@ void testRuntimeReconcile() {
     }
     auto s7Next = s7Previous;
     s7Next.devices.front().readInterval = 10;
-    const auto s7Plan = collector::planRuntimeReconcile(s7Previous, s7Next);
+    const auto s7Plan = collector::ProtocolEngine(sessionFactories()).planReconcile(s7Previous, s7Next);
     require(s7Plan.restartClientTargets.contains({ "client-link", "target-a" }) && s7Plan.refreshClientSessions.empty(), "stateful S7 session update did not retain transport restart semantics");
 
     auto rtuPrevious = previous;
     rtuPrevious.devices.front().modbusMode = "RTU";
     auto rtuNext = rtuPrevious;
     rtuNext.devices.front().readInterval = 10;
-    const auto rtuPlan = collector::planRuntimeReconcile(rtuPrevious, rtuNext);
+    const auto rtuPlan = collector::ProtocolEngine(sessionFactories()).planReconcile(rtuPrevious, rtuNext);
     require(rtuPlan.restartClientTargets.contains({ "client-link", "target-a" }) && rtuPlan.refreshClientSessions.empty(), "Modbus RTU-over-TCP update did not retain transport restart semantics");
 
     auto serverPrevious = previous;
@@ -2544,7 +2652,7 @@ void testRuntimeReconcile() {
     serverPrevious.devices.back().linkMode = "TCP Server";
     auto serverNext = serverPrevious;
     serverNext.devices.front().readInterval = 10;
-    const auto serverPlan = collector::planRuntimeReconcile(serverPrevious, serverNext);
+    const auto serverPlan = collector::ProtocolEngine(sessionFactories()).planReconcile(serverPrevious, serverNext);
     require(serverPlan.restartLinks.contains("client-link"), "TCP Server device update did not restart the server link");
 
     collector::ProtocolEngine engine(sessionFactories());
@@ -2564,7 +2672,7 @@ void testRuntimeReconcile() {
     auto pollingUpdate = pollingPrevious;
     pollingUpdate.devices.front().readInterval = 10;
     const auto pollingPlan =
-        collector::planRuntimeReconcile(pollingPrevious, pollingUpdate);
+        collector::ProtocolEngine(sessionFactories()).planReconcile(pollingPrevious, pollingUpdate);
 
     collector::ProtocolEngine refreshEngine(sessionFactories());
     refreshEngine.reload(pollingPrevious);
@@ -2737,7 +2845,7 @@ void testTcpClientTargetReconcile() {
 
     auto next = previous;
     next.devices.front().readInterval = 10;
-    const auto plan = collector::planRuntimeReconcile(previous, next);
+    const auto plan = collector::ProtocolEngine(sessionFactories()).planReconcile(previous, next);
     tcp.reconcile(next, plan);
     io.restart();
     io.run_for(std::chrono::milliseconds(250));
@@ -3216,6 +3324,9 @@ int main() {
             test();
         };
         run("capabilities", testCapabilities);
+        run("protocol factory boundary", testProtocolFactoryBoundary);
+        run("protocol debug attribution", testProtocolDebugAttribution);
+        run("protocol command grouping", testProtocolCommandGrouping);
         run("runtime reconcile", testRuntimeReconcile);
         run("acquisition cycle", testAcquisitionCycle);
         run("poll stagger", testPollStagger);

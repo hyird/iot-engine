@@ -19,7 +19,7 @@ class ProtocolSessionFactoryRegistry final {
     void add(std::unique_ptr<ProtocolSessionFactory> factory) {
         if (!factory)
             throw std::invalid_argument("protocol factory is null");
-        const std::string name(factory->protocol());
+        const std::string name(factory->definition().name);
         if (name.empty())
             throw std::invalid_argument("protocol factory name is empty");
         if (!factories_.emplace(name, std::move(factory)).second)
@@ -64,20 +64,19 @@ inline const LinkDefinition* findLink(
 }
 
 inline bool targetAllowsSessionRefresh(const RuntimeSnapshot& snapshot,
-                                       const ClientTargetKey& target) {
+                                       const ClientTargetKey& target, const ProtocolSessionFactoryRegistry& registry) {
     return std::none_of(snapshot.devices.begin(), snapshot.devices.end(),
-                        [&target](const auto& device) {
+                        [&target, &registry](const auto& device) {
                             return device.linkId == target.first &&
                                    device.targetId == target.second &&
-                                   (device.protocol != "Modbus" ||
-                                    device.modbusMode != "TCP");
+                                   !registry.require(device.protocol).canRefreshTransport(device);
                         });
 }
 
 inline void addChangedDeviceTransport(
     RuntimeReconcilePlan& plan,
     const std::map<std::string, LinkDefinition, std::less<>>& links,
-    const DeviceDefinition& device) {
+    const DeviceDefinition& device, const ProtocolSessionFactoryRegistry& registry) {
     plan.affectedLinks.insert(device.linkId);
     const auto* link = findLink(links, device.linkId);
     if (!link || link->mode != "TCP Client") {
@@ -88,7 +87,7 @@ inline void addChangedDeviceTransport(
         plan.restartLinks.insert(device.linkId);
         return;
     }
-    if (link->protocol == "Modbus" && device.modbusMode == "TCP")
+    if (registry.require(device.protocol).canRefreshTransport(device))
         plan.refreshClientSessions.emplace(device.linkId, device.targetId);
     else
         plan.restartClientTargets.emplace(device.linkId, device.targetId);
@@ -96,73 +95,103 @@ inline void addChangedDeviceTransport(
 
 } // namespace detail
 
-[[nodiscard]] inline RuntimeReconcilePlan
-planRuntimeReconcile(const RuntimeSnapshot& previous, const RuntimeSnapshot& next) {
-    std::map<std::string, LinkDefinition, std::less<>> previousLinks;
-    std::map<std::string, LinkDefinition, std::less<>> nextLinks;
-    std::map<std::string, DeviceDefinition, std::less<>> previousDevices;
-    std::map<std::string, DeviceDefinition, std::less<>> nextDevices;
-
-    for (const auto& link : previous.links)
-        previousLinks.insert_or_assign(link.id, link);
-    for (auto& [id, link] : previousLinks) link.debugEnabled = false;
-    for (const auto& link : next.links)
-        nextLinks.insert_or_assign(link.id, link);
-    for (auto& [id, link] : nextLinks) link.debugEnabled = false;
-    for (const auto& device : previous.devices)
-        previousDevices.insert_or_assign(device.id, device);
-    for (auto& [id, device] : previousDevices) device.debugEnabled = false;
-    for (const auto& device : next.devices)
-        nextDevices.insert_or_assign(device.id, device);
-    for (auto& [id, device] : nextDevices) device.debugEnabled = false;
-
-    RuntimeReconcilePlan plan;
-    for (const auto& [id, link] : previousLinks) {
-        const auto current = nextLinks.find(id);
-        if (current == nextLinks.end() || current->second != link)
-            plan.affectedLinks.insert(id);
-    }
-    for (const auto& [id, link] : nextLinks) {
-        const auto old = previousLinks.find(id);
-        if (old == previousLinks.end() || old->second != link)
-            plan.affectedLinks.insert(id);
-    }
-
-    for (const auto& [id, device] : previousDevices) {
-        const auto current = nextDevices.find(id);
-        if (current == nextDevices.end() || current->second != device) {
-            detail::addChangedDeviceTransport(plan, previousLinks, device);
-            if (current != nextDevices.end())
-                detail::addChangedDeviceTransport(plan, nextLinks, current->second);
-        }
-    }
-    for (const auto& [id, device] : nextDevices) {
-        if (!previousDevices.contains(id))
-            detail::addChangedDeviceTransport(plan, nextLinks, device);
-    }
-    for (auto current = plan.refreshClientSessions.begin();
-         current != plan.refreshClientSessions.end();) {
-        if (!detail::targetAllowsSessionRefresh(previous, *current) ||
-            !detail::targetAllowsSessionRefresh(next, *current)) {
-            plan.restartClientTargets.insert(*current);
-            current = plan.refreshClientSessions.erase(current);
-        } else
-            ++current;
-    }
-    return plan;
-}
-
-
 // Worker-affine protocol engine. It owns every socket's protocol session and is the only layer
 // shared by Modbus, S7 and SL651. Scheduling semantics remain inside each concrete session.
 class ProtocolEngine final {
   public:
     explicit ProtocolEngine(ProtocolSessionFactoryRegistry registry) : registry_(std::move(registry)) {}
 
+    [[nodiscard]] const DeviceDefinition* identifyDebugDevice(
+        const RuntimeSnapshot& snapshot, const DebugPacketIdentity& packet) const {
+        const auto link = std::find_if(snapshot.links.begin(), snapshot.links.end(),
+            [&](const auto& candidate) { return candidate.id == packet.linkId; });
+        if (link == snapshot.links.end()) return nullptr;
+        const auto& factory = registry_.require(link->protocol);
+        const auto attribution = factory.definition().packetAttribution;
+        // 主动上报协议的传输片段不能代替已通过完整帧校验的设备身份。
+        if (attribution == PacketAttribution::ParsedFrame && packet.direction == "RX" &&
+            !packet.deviceOnly && packet.knownDevice.empty()) return nullptr;
+        const DeviceDefinition* selected = nullptr;
+        for (const auto& device : snapshot.devices) {
+            if (device.linkId != packet.linkId || device.protocol != link->protocol) continue;
+            if (!packet.knownDevice.empty() && device.id != packet.knownDevice) continue;
+            if (!packet.targetId.empty() && device.targetId != packet.targetId) continue;
+            if (attribution == PacketAttribution::Connection && packet.knownDevice.empty() &&
+                packet.boundDevices && !packet.boundDevices->empty() &&
+                !packet.boundDevices->contains(device.id)) continue;
+            if (!factory.packetMatchesDevice(device, packet.direction, packet.bytes)) continue;
+            if (selected) return nullptr;
+            selected = &device;
+        }
+        return selected;
+    }
+
+    [[nodiscard]] bool expectsResponse(std::string_view protocol, std::string_view causationId) const {
+        const auto* factory = registry_.find(protocol);
+        return factory && (factory->definition().responseTracking == ResponseTracking::EverySend ||
+                           !causationId.empty());
+    }
+
+    [[nodiscard]] RuntimeReconcilePlan
+    planReconcile(const RuntimeSnapshot& previous, const RuntimeSnapshot& next) const {
+        std::map<std::string, LinkDefinition, std::less<>> previousLinks;
+        std::map<std::string, LinkDefinition, std::less<>> nextLinks;
+        std::map<std::string, DeviceDefinition, std::less<>> previousDevices;
+        std::map<std::string, DeviceDefinition, std::less<>> nextDevices;
+
+        for (const auto& link : previous.links)
+            previousLinks.insert_or_assign(link.id, link);
+        for (auto& [id, link] : previousLinks) link.debugEnabled = false;
+        for (const auto& link : next.links)
+            nextLinks.insert_or_assign(link.id, link);
+        for (auto& [id, link] : nextLinks) link.debugEnabled = false;
+        for (const auto& device : previous.devices)
+            previousDevices.insert_or_assign(device.id, device);
+        for (auto& [id, device] : previousDevices) device.debugEnabled = false;
+        for (const auto& device : next.devices)
+            nextDevices.insert_or_assign(device.id, device);
+        for (auto& [id, device] : nextDevices) device.debugEnabled = false;
+
+        RuntimeReconcilePlan plan;
+        for (const auto& [id, link] : previousLinks) {
+            const auto current = nextLinks.find(id);
+            if (current == nextLinks.end() || current->second != link)
+                plan.affectedLinks.insert(id);
+        }
+        for (const auto& [id, link] : nextLinks) {
+            const auto old = previousLinks.find(id);
+            if (old == previousLinks.end() || old->second != link)
+                plan.affectedLinks.insert(id);
+        }
+
+        for (const auto& [id, device] : previousDevices) {
+            const auto current = nextDevices.find(id);
+            if (current == nextDevices.end() || current->second != device) {
+                detail::addChangedDeviceTransport(plan, previousLinks, device, registry_);
+                if (current != nextDevices.end())
+                    detail::addChangedDeviceTransport(plan, nextLinks, current->second, registry_);
+            }
+        }
+        for (const auto& [id, device] : nextDevices) {
+            if (!previousDevices.contains(id))
+                detail::addChangedDeviceTransport(plan, nextLinks, device, registry_);
+        }
+        for (auto current = plan.refreshClientSessions.begin();
+             current != plan.refreshClientSessions.end();) {
+            if (!detail::targetAllowsSessionRefresh(previous, *current, registry_) ||
+                !detail::targetAllowsSessionRefresh(next, *current, registry_)) {
+                plan.restartClientTargets.insert(*current);
+                current = plan.refreshClientSessions.erase(current);
+            } else
+                ++current;
+        }
+        return plan;
+    }
+
     void reload(RuntimeSnapshot snapshot) {
         for (const auto& link : snapshot.links) {
             const auto& factory = registry_.require(link.protocol);
-            validateProtocolLink(factory, link);
+            factory.validateLink(link);
         }
         snapshot_ = std::make_shared<RuntimeSnapshot>(std::move(snapshot));
         links_.clear();
@@ -178,7 +207,7 @@ class ProtocolEngine final {
     void reload(RuntimeSnapshot snapshot, const std::set<std::string, std::less<>>& affectedLinks) {
         for (const auto& link : snapshot.links) {
             const auto& factory = registry_.require(link.protocol);
-            validateProtocolLink(factory, link);
+            factory.validateLink(link);
         }
         (void)affectedLinks;
         snapshot_ = std::make_shared<RuntimeSnapshot>(std::move(snapshot));
@@ -216,8 +245,6 @@ class ProtocolEngine final {
             const auto& factory = registry_.require(link->second->protocol);
             auto nextSession = factory.createSession(*link->second, connectionId,
                                                      entry.info.targetId, snapshot_);
-            if (!nextSession)
-                throw std::runtime_error("protocol factory returned a null session");
             nextSession->inheritTransportState(*entry.session);
             auto startedActions = nextSession->connected();
             auto retiredActions = entry.session->disconnected("configuration_reloaded");
@@ -238,8 +265,6 @@ class ProtocolEngine final {
         const auto& factory = registry_.require(link->second->protocol);
         auto session =
             factory.createSession(*link->second, info.connectionId, info.targetId, snapshot_);
-        if (!session)
-            throw std::runtime_error("protocol factory returned a null session");
         auto actions = session->connected();
         auto connectionId = info.connectionId;
         sessions_.insert_or_assign(std::move(connectionId),
@@ -281,12 +306,20 @@ class ProtocolEngine final {
                      .commandId = std::move(command.id),
                      .reason = "device_offline"}};
         const auto link = links_.find(current->second.info.linkId);
-        if (!command.protocol.empty() &&
-            (link == links_.end() || link->second->protocol != command.protocol))
+        if (link == links_.end() || (!command.protocol.empty() &&
+            link->second->protocol != command.protocol))
             return {{.kind = ProtocolActionKind::FailCommand,
                      .connectionId = std::string(connectionId),
                      .commandId = std::move(command.id),
                      .reason = "protocol_route_mismatch"}};
+        const auto& definition = registry_.require(link->second->protocol).definition();
+        const auto supported = command.kind == "discovery" ? ProtocolCapability::Discovery
+                                                          : ProtocolCapability::Commands;
+        if (!definition.capabilities.has(supported))
+            return {{.kind = ProtocolActionKind::FailCommand,
+                     .connectionId = std::string(connectionId),
+                     .commandId = std::move(command.id),
+                     .reason = "protocol_command_not_supported"}};
         const auto capability =
             dynamic_cast<CommandCapabilitySession*>(current->second.session.get());
         if (!capability)

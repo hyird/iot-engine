@@ -15,6 +15,7 @@
 
 #include "service/common/message.h"
 #include "service/features/collector/collector.types.h"
+#include "service/features/collector/collector.config.h"
 
 namespace service::collector {
 
@@ -105,23 +106,60 @@ class ProtocolSessionFactory {
   public:
     virtual ~ProtocolSessionFactory() = default;
 
-    [[nodiscard]] virtual std::string_view protocol() const noexcept = 0;
-    [[nodiscard]] virtual ProtocolCapabilities capabilities() const noexcept = 0;
-    [[nodiscard]] virtual std::unique_ptr<ProtocolSession>
+    [[nodiscard]] virtual const ProtocolDefinition& definition() const noexcept = 0;
+
+    // 只有能区分新旧应答的协议才允许保留 TCP 连接并重建会话。
+    [[nodiscard]] virtual bool canRefreshTransport(const DeviceDefinition&) const noexcept {
+        return false;
+    }
+
+    // 仅作日志归属筛选，不能据此绑定设备或改变连接归属。
+    [[nodiscard]] virtual bool packetMatchesDevice(const DeviceDefinition&,
+        std::string_view, std::span<const std::uint8_t>) const noexcept { return true; }
+
+    void validateLink(const LinkDefinition& link) const {
+        const auto& descriptor = definition();
+        if (link.protocol != descriptor.name)
+            throw std::invalid_argument("protocol factory does not match link");
+        if (link.mode != "TCP Server" && link.mode != "TCP Client")
+            throw std::invalid_argument("unsupported collector link mode");
+        const auto capability = link.mode == "TCP Server" ? ProtocolCapability::TcpServer
+                                                         : ProtocolCapability::TcpClient;
+        if (!descriptor.capabilities.has(capability))
+            throw std::invalid_argument(std::string(descriptor.name) + " does not support " + link.mode + " links");
+    }
+
+    [[nodiscard]] std::unique_ptr<ProtocolSession>
     createSession(const LinkDefinition& link, std::string_view connectionId,
                   std::string_view targetId,
-                  const std::shared_ptr<const RuntimeSnapshot>& snapshot) const = 0;
-};
+                  const std::shared_ptr<const RuntimeSnapshot>& snapshot) const {
+        validateLink(link);
+        if (!snapshot) throw std::invalid_argument("protocol snapshot is null");
+        if (link.mode == "TCP Server" && !targetId.empty())
+            throw std::invalid_argument("TCP Server session cannot have a client target");
+        std::vector<const DeviceDefinition*> devices;
+        for (const auto& device : snapshot->devices)
+            if (device.linkId == link.id && device.protocol == definition().name &&
+                (targetId.empty() || device.targetId == targetId))
+                devices.push_back(&device);
+        auto session = createDeviceSession(link, connectionId, targetId, snapshot, std::move(devices));
+        if (!session) throw std::runtime_error("protocol factory returned a null session");
+        if (definition().capabilities.has(ProtocolCapability::Commands) &&
+            !dynamic_cast<CommandCapabilitySession*>(session.get()))
+            throw std::logic_error("protocol declares commands without a command session");
+        if (definition().capabilities.has(ProtocolCapability::Polling) &&
+            !dynamic_cast<DeadlineCapabilitySession*>(session.get()))
+            throw std::logic_error("protocol declares polling without a deadline session");
+        return session;
+    }
 
-inline void validateProtocolLink(const ProtocolSessionFactory& factory, const LinkDefinition& link) {
-    const auto capabilities = factory.capabilities();
-    if (link.mode == "TCP Server" && !capabilities.has(ProtocolCapability::TcpServer))
-        throw std::invalid_argument(std::string(factory.protocol()) +
-                                    " does not support TCP Server links");
-    if (link.mode == "TCP Client" && !capabilities.has(ProtocolCapability::TcpClient))
-        throw std::invalid_argument(std::string(factory.protocol()) +
-                                    " does not support TCP Client links");
-}
+  protected:
+    [[nodiscard]] virtual std::unique_ptr<ProtocolSession>
+    createDeviceSession(const LinkDefinition& link, std::string_view connectionId,
+                  std::string_view targetId,
+                  const std::shared_ptr<const RuntimeSnapshot>& snapshot,
+                  std::vector<const DeviceDefinition*> devices) const = 0;
+};
 
 } // namespace service::collector
 
@@ -136,6 +174,20 @@ inline void validateProtocolLink(const ProtocolSessionFactory& factory, const Li
 
 
 namespace service::collector::command {
+
+// 完整功能命令保持为一个任务；可独立写入的点位分别跟踪应答和回读。
+inline std::vector<std::vector<CommandElementValue>> groupElements(
+    const ProtocolDefinition& definition, std::vector<CommandElementValue> requested) {
+    std::vector<std::vector<CommandElementValue>> tasks;
+    if (requested.empty()) return tasks;
+    if (definition.commandLayout == CommandLayout::CompleteFunction) {
+        tasks.push_back(std::move(requested));
+    } else {
+        tasks.reserve(requested.size());
+        for (auto& element : requested) tasks.push_back({std::move(element)});
+    }
+    return tasks;
+}
 
 inline std::string_view trim(std::string_view value) {
     while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())))
@@ -259,6 +311,7 @@ inline void validateValue(const ElementDefinition& element, std::string_view val
 
 inline ResolvedCommand resolve(const DeviceDefinition& device,
                                std::span<const CommandElementValue> requested) {
+    const auto& definition = protocolDefinition(device.protocol);
     if (requested.empty() || requested.size() > 256)
         throw std::invalid_argument("command_invalid: element count must be between 1 and 256");
     ResolvedCommand result;
@@ -273,9 +326,9 @@ inline ResolvedCommand resolve(const DeviceDefinition& device,
             });
         if (matched == device.elements.end())
             throw std::invalid_argument("command_invalid: element is not configured");
-        if ((device.protocol == "Modbus" || device.protocol == "S7") && !matched->writable)
+        if (definition.commandLayout == CommandLayout::WritableElements && !matched->writable)
             throw std::invalid_argument("command_invalid: element is not writable");
-        if (device.protocol == "SL651") {
+        if (definition.commandLayout == CommandLayout::CompleteFunction) {
             if (matched->direction != "DOWN" || matched->encoding == "JPEG")
                 throw std::invalid_argument("command_invalid: SL651 element is not writable");
             if (result.functionCode.empty())
@@ -287,7 +340,7 @@ inline ResolvedCommand resolve(const DeviceDefinition& device,
         validateValue(*matched, value);
         result.elements.push_back({&*matched, std::string(value)});
     }
-    if (device.protocol == "SL651") {
+    if (definition.commandLayout == CommandLayout::CompleteFunction) {
         std::size_t required = 0;
         for (const auto& element : device.elements)
             if (!element.responseElement && element.direction == "DOWN" &&
@@ -296,8 +349,6 @@ inline ResolvedCommand resolve(const DeviceDefinition& device,
         if (required == 0 || required != result.elements.size())
             throw std::invalid_argument(
                 "command_invalid: SL651 command requires every element in the function");
-    } else if (device.protocol != "Modbus" && device.protocol != "S7") {
-        throw std::invalid_argument("command_invalid: unsupported protocol");
     }
     return result;
 }

@@ -557,14 +557,8 @@ private:
         } catch (const DeviceRouteError&) {
             service::common::fail(18013, "设备离线或没有可用的南桥连接", 409);
         }
-        std::vector<std::vector<service::collector::CommandElementValue>> tasks;
-        if (device->protocol == "SL651")
-            tasks.push_back(std::move(requested));
-        else {
-            tasks.reserve(requested.size());
-            for (auto& element : requested)
-                tasks.push_back({std::move(element)});
-        }
+        const auto& definition = service::collector::protocolDefinition(device->protocol);
+        auto tasks = service::collector::command::groupElements(definition, std::move(requested));
 
         std::vector<PendingDispatch> dispatches;
         dispatches.reserve(tasks.size());
@@ -574,7 +568,8 @@ private:
             task.messageId = service::common::nextUuidV7();
             task.groupKey = "device:" + device->id;
             task.protocol = device->protocol;
-            task.transport = device->protocol == "Modbus" ? device->modbusMode : "RAW";
+            task.transport = definition.commandTransport == service::collector::CommandTransport::DeviceConfigured
+                ? device->modbusMode : "RAW";
             task.kind = "command";
             task.linkId = device->linkId;
             task.deviceId = device->id;
@@ -623,14 +618,8 @@ private:
         if (device.protocol == "SL651" && resolved.elements.size() > 8)
             service::common::fail(18010, "SL651 边缘命令最多包含 8 个要素", 400);
 
-        std::vector<std::vector<service::collector::CommandElementValue>> tasks;
-        if (device.protocol == "SL651") {
-            tasks.push_back(std::move(requested));
-        } else {
-            tasks.reserve(requested.size());
-            for (auto& element : requested)
-                tasks.push_back({std::move(element)});
-        }
+        auto tasks = service::collector::command::groupElements(
+            service::collector::protocolDefinition(device.protocol), std::move(requested));
 
         std::vector<PendingDispatch> dispatches;
         dispatches.reserve(tasks.size());
