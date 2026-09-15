@@ -1,6 +1,6 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
  <Package Name="iot-egine" Manufacturer="iot-egine" Version="$(var.Version)" UpgradeCode="CBC5AE35-AEF4-4969-89F3-EDE9967F3115" Scope="perMachine" Language="2052" Codepage="936">
-  <MajorUpgrade DowngradeErrorMessage="已安装较新版本。" Schedule="afterInstallExecute" />
+  <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="已安装较新版本。" Schedule="afterInstallExecute" />
   <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
   <Property Id="ARPPRODUCTICON" Value="ProductIcon"/><Icon Id="ProductIcon" SourceFile="$(var.SourceRoot)\native\assets\product.ico"/>
   <Property Id="OWNER" Secure="yes"/>

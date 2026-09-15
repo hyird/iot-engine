@@ -6,7 +6,7 @@ if(NOT WIN32)
   message(FATAL_ERROR "The Windows client must be configured on Windows.")
 endif()
 
-set(IOT_EGINE_WINDOWS_VERSION "0.7.3" CACHE STRING "Windows client version")
+set(IOT_EGINE_WINDOWS_VERSION "0.7.4" CACHE STRING "Windows client version")
 set(IOT_EGINE_WINDOWS_REPOSITORY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 get_filename_component(IOT_EGINE_WINDOWS_REPOSITORY_ROOT
   "${IOT_EGINE_WINDOWS_REPOSITORY_ROOT}" ABSOLUTE)
@@ -170,5 +170,16 @@ add_custom_target(windows-installer-from-package
   VERBATIM)
 
 add_custom_target(windows-client ALL DEPENDS windows-package)
+
+add_custom_target(windows-installer-lifecycle-test
+  COMMAND "${CMAKE_COMMAND}"
+    "-DBUILD_ROOT=${IOT_EGINE_WINDOWS_BUILD_ROOT}"
+    "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+    "-DPACKAGE_DIRECTORY=${IOT_EGINE_WINDOWS_PACKAGE_OUTPUT}"
+    "-DOUTPUT_FILE=${IOT_EGINE_WINDOWS_INSTALLER_OUTPUT}"
+    "-DVERSION=${IOT_EGINE_WINDOWS_VERSION}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestWindowsInstaller.cmake"
+  DEPENDS windows-installer
+  VERBATIM)
 
 message(STATUS "Windows client targets: windows-client, windows-package, windows-installer, windows-installer-from-package")

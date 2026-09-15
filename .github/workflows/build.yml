@@ -40,6 +40,18 @@ jobs:
       - name: Build, test and package Windows client
         run: cmake --build build/ci/windows-client --config Release --target windows-installer --parallel 4
 
+      - name: Verify installed service survives upgrades
+        run: cmake --build build/ci/windows-client --config Release --target windows-installer-lifecycle-test
+
+      - name: Upload installer lifecycle logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-installer-lifecycle-${{ github.sha }}
+          path: build/windows-installer-lifecycle/*.log
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Upload Windows installer
         uses: actions/upload-artifact@v7
         with:

@@ -17,7 +17,7 @@ cmake --build build/windows-client-cmake --config Release --target windows-clien
 cmake --build build/windows-client-cmake --config Release --target windows-installer --parallel 4
 ```
 
-`windows-client` 会构建 WinUI、后台服务、WireGuard 原生 DLL，运行 native CTest、生成自包含包并执行打包 GUI 自测；`windows-installer` 在此基础上生成 `build/iot-egine-Setup-0.7.3-x64.exe`。已验证的包可以直接运行 `cmake --build build/windows-client-cmake --config Release --target windows-installer-from-package` 重新生成 WiX 安装包。
+`windows-client` 会构建 WinUI、后台服务、WireGuard 原生 DLL，运行 native CTest、生成自包含包并执行打包 GUI 自测；`windows-installer` 在此基础上生成 `build/iot-egine-Setup-0.7.4-x64.exe`。已验证的包可以直接运行 `cmake --build build/windows-client-cmake --config Release --target windows-installer-from-package` 重新生成 WiX 安装包。
 
 WinUI NuGet 依赖版本和 SHA256 固定在 winui/packages.lock.json；WireGuard 固定在 wireguard.lock.json。安装时要求管理员权限，日常 GUI 不需要提升权限。安装会绑定发起安装的用户 SID，可通过 MSI OWNER 属性指定用户。
 
@@ -29,7 +29,7 @@ WinUI NuGet 依赖版本和 SHA256 固定在 winui/packages.lock.json；WireGuar
 
 部署时必须保留完整 `web/downloads/`；仅更新前端时也需带上已发布的客户端文件。在源站 HTTPS 的 Nginx `server` 块中引入 `ports/nginx/windows-client-downloads.conf`，由 Nginx 直接提供下载、支持范围请求并让缺失文件返回 404。后端默认静态类型不包含 EXE，不应将下载请求转发给 SPA。部署后核对下载内容与 SHA256。前端页面仍由后端提供，替换页面后需重启服务刷新静态缓存。
 
-WiX 安装事务保存服务配置，失败时恢复；不包含旧 Inno 或旧服务名的迁移路径。旧版本须先卸载。代码自测不等同于多显示器实机验收。
+WiX 安装事务保存服务配置，失败时恢复；同版本重构包通过 MSI 升级事务替换旧包，避免旧 Bundle 的后续卸载删掉新服务。不包含旧 Inno 或旧服务名的迁移路径，这类旧安装须先卸载。CI 通过 `windows-installer-lifecycle-test` 实际验证首次安装、同版本覆盖升级、修复后服务存在且自动运行，以及卸载后服务移除；此目标仅允许在隔离 Windows CI 环境运行。代码自测不等同于多显示器实机验收。
 
 同一账号可在多台电脑同时使用：每台电脑生成独立密钥，服务端按客户端公钥创建 Peer 和分配独立 IP；同一公钥重试保留原 IP，退出一台不撤销另一台。同步时间按本机时区显示 yyyy-MM-dd HH:mm:ss。
 

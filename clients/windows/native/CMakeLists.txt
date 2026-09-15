@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(iot_egine_windows VERSION 0.7.3 LANGUAGES CXX RC)
+project(iot_egine_windows VERSION 0.7.4 LANGUAGES CXX RC)
 if(NOT WIN32 OR NOT MSVC)
   message(FATAL_ERROR "The Windows client requires MSVC 2022 on Windows x64")
 endif()

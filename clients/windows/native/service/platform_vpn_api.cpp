@@ -46,7 +46,7 @@ class AsyncRequest {
 public:
     ~AsyncRequest() { close(); }
     void open(std::string_view method, std::string_view path, std::string_view token, bool stream) {
-        session_.value = WinHttpOpen(L"iot-egine/0.7.3", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+        session_.value = WinHttpOpen(L"iot-egine/0.7.4", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
         if (!session_.value) win32Error("Cannot initialize HTTPS transport");
         if (!WinHttpSetTimeouts(session_.value, 10000, 15000, 15000, 45000)) win32Error("Cannot configure HTTPS timeouts");
         connection_.value = WinHttpConnect(session_.value, L"i.a-z.xin", INTERNET_DEFAULT_HTTPS_PORT, 0);
