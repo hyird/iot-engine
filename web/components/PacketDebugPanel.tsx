@@ -118,7 +118,6 @@ export function PacketDebugPanel(props: Props) {
                                   ? '设备独立调试已关闭，链路调试仍在运行'
                                   : '调试已关闭'
                         }
-                        description="最近 500 条报文，实时更新，每条保留 24 小时；可拖动右下角调整窗口大小。关闭窗口不会关闭调试。"
                     />
                     {props.error && (
                         <Alert
@@ -134,7 +133,7 @@ export function PacketDebugPanel(props: Props) {
                             loading={props.loading}
                             dataSource={props.packets}
                             pagination={{ pageSize: 20, showSizeChanger: false }}
-                            scroll={{ x: 1100, y: tableHeight }}
+                            scroll={{ x: 1200, y: tableHeight }}
                             locale={{
                                 emptyText: (
                                     <Empty description="暂无调试报文；边缘节点需支持调试并连接平台" />
@@ -142,38 +141,45 @@ export function PacketDebugPanel(props: Props) {
                             }}
                             columns={[
                                 {
-                                    title: '时间 / 方向',
-                                    width: 160,
+                                    title: '时间',
+                                    width: 128,
                                     onCell: () => ({ style: { verticalAlign: 'top' } }),
                                     render: (_, row) => (
-                                        <>
-                                            <div>
-                                                {new Date(Number(row.time_ms)).toLocaleTimeString(
-                                                    'zh-CN',
-                                                    {
-                                                        hour12: false,
-                                                        hour: '2-digit',
-                                                        minute: '2-digit',
-                                                        second: '2-digit',
-                                                        fractionalSecondDigits: 3,
-                                                    }
-                                                )}
-                                            </div>
-                                            <Tag>
-                                                {row.direction === 'TX_ATTEMPT' ||
-                                                row.direction === 'TX'
-                                                    ? '发送'
-                                                    : '接收'}
-                                            </Tag>
-                                            <div>
-                                                {row.source === 'edge' ? '边缘节点' : '平台直采'}
-                                            </div>
-                                        </>
+                                        <div className="whitespace-nowrap tabular-nums">
+                                            {new Date(Number(row.time_ms)).toLocaleTimeString(
+                                                'zh-CN',
+                                                {
+                                                    hour12: false,
+                                                    hour: '2-digit',
+                                                    minute: '2-digit',
+                                                    second: '2-digit',
+                                                    fractionalSecondDigits: 3,
+                                                }
+                                            )}
+                                        </div>
                                     ),
                                 },
                                 {
+                                    title: '方向',
+                                    width: 80,
+                                    render: (_, row) => (
+                                        <Tag>
+                                            {row.direction === 'TX_ATTEMPT' ||
+                                            row.direction === 'TX'
+                                                ? '发送'
+                                                : '接收'}
+                                        </Tag>
+                                    ),
+                                },
+                                {
+                                    title: '来源',
+                                    width: 100,
+                                    render: (_, row) =>
+                                        row.source === 'edge' ? '边缘节点' : '平台直采',
+                                },
+                                {
                                     title: '状态',
-                                    width: 140,
+                                    width: 132,
                                     render: (_, row) => <PacketStatuses packet={row} />,
                                 },
                                 {
@@ -208,7 +214,7 @@ export function PacketDebugPanel(props: Props) {
                                 },
                                 {
                                     title: '对应历史解析数据',
-                                    width: 360,
+                                    width: 320,
                                     render: (_, row) => <ParsedHistory packet={row} />,
                                 },
                             ]}
