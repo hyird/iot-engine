@@ -133,6 +133,7 @@ inline std::string signature(const RuntimeSnapshot& snapshot) {
         integer(device.s7HandshakeTimeoutMs);
         integer(device.s7DirectProbeTimeoutMs);
         text(device.s7ProbeMode);
+        for (const auto& field : ConnectionConfig::fields(device)) { text(field.name); text(field.value); }
         integer(device.readInterval);
         text(device.storagePolicy);
         integer(device.commandFastReadDuration);
@@ -447,6 +448,7 @@ inline DeviceDefinition device(const std::vector<message::StreamField>& fields) 
     if (result.s7ProbeMode.empty()) {
         result.s7ProbeMode = "STANDARD";
     }
+    ConnectionConfig::apply(result, fields);
     result.readInterval = integer(fields, "read_interval", 1);
     result.storagePolicy = field(fields, "storage_policy");
     if (result.storagePolicy != "report" && result.storagePolicy != "change") {
@@ -598,6 +600,7 @@ ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
 
     for (const auto& device : snapshot.devices) {
         detail::appendId(commands, version, devicesKey, device.id);
+        detail::appendHash(commands, version, deviceKey(version, device.id), ConnectionConfig::fields(device));
         detail::appendHash(
             commands,
             version,

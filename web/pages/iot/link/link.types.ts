@@ -7,7 +7,7 @@ export const linkQueryKeys = {
     list: (params?: Link.Query) => [...keys.lists(), params] as const,
 };
 type LinkMode = 'TCP Server' | 'TCP Client';
-type LinkProtocol = 'SL651' | 'Modbus' | 'S7';
+type LinkProtocol = 'SL651' | 'Modbus' | 'S7' | 'MC' | 'FINS' | 'DLT645';
 type LinkStatus = 'enabled' | 'disabled';
 type ConnectionStatus =
     | 'stopped'

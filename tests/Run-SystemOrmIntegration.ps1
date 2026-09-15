@@ -3,9 +3,13 @@ param(
     [string]$PostgresBin = 'C:/Program Files/PostgreSQL/18/bin',
     [string]$RedisExe = 'C:/Redis/redis-server.exe',
     [string]$Bun = 'bun',
+    [int]$DatabasePort = 55459,
+    [int]$RedisPort = 56459,
+    [int]$ApiPort = 55122,
     [string[]]$TestFiles = @('system-orm-integration.ts', 'live-query-integration.ts', 'protocol-offset-integration.ts'),
     [switch]$ReplayCounterMigration,
-    [switch]$PacketDebugMigration
+    [switch]$PacketDebugMigration,
+    [switch]$IndustrialProtocolsMigration
 )
 $ErrorActionPreference = 'Stop'
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -16,7 +20,7 @@ $backend = Join-Path $build 'Release/iot-engine.exe'
 foreach ($file in @($backend, $RedisExe, (Join-Path $PostgresBin 'initdb.exe'), (Join-Path $PostgresBin 'pg_ctl.exe'))) {
     if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing test dependency: $file" }
 }
-foreach ($port in @(55459,56459,55122)) {
+foreach ($port in @($DatabasePort,$RedisPort,$ApiPort)) {
     $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $port)
     try { $listener.Start() } finally { $listener.Stop() }
 }
@@ -52,7 +56,7 @@ function Start-FixtureApi([string]$Label, [string]$ExpectedFailure = '') {
             }
             if (!$ExpectedFailure) {
                 $probe = [Net.Sockets.TcpClient]::new()
-                try { $probe.Connect('127.0.0.1',55122); return $process } catch { } finally { $probe.Dispose() }
+                try { $probe.Connect('127.0.0.1',$ApiPort); return $process } catch { } finally { $probe.Dispose() }
             }
             Start-Sleep -Milliseconds 250
         }
@@ -63,7 +67,7 @@ function Start-FixtureApi([string]$Label, [string]$ExpectedFailure = '') {
     }
 }
 function Invoke-CounterMigrationPhase([string]$Phase) {
-    $migrationTest = if ($PacketDebugMigration) { 'tests/packet-debug-migration-integration.ts' } else { 'tests/replay-counter-migration-integration.ts' }
+    $migrationTest = if ($IndustrialProtocolsMigration) { 'tests/industrial-protocol-migration-integration.ts' } elseif ($PacketDebugMigration) { 'tests/packet-debug-migration-integration.ts' } else { 'tests/replay-counter-migration-integration.ts' }
     & $Bun run (Join-Path $repository $migrationTest) $Phase
     if ($LASTEXITCODE -ne 0) { throw "Migration phase $Phase failed; inspect $fixture" }
 }
@@ -71,39 +75,39 @@ try {
     & (Join-Path $PostgresBin 'initdb.exe') -D $data -U architecture_test --auth=trust -E UTF8 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Test database initialization failed.' }
     Add-Content -LiteralPath (Join-Path $data 'postgresql.conf') -Value "shared_preload_libraries = 'timescaledb'"
-    $pgArguments = '-D "{0}" -l "{1}" -o "-p 55459 -h 127.0.0.1" -w start' -f $data,(Join-Path $fixture 'postgres.log')
+    $pgArguments = '-D "{0}" -l "{1}" -o "-p {2} -h 127.0.0.1" -w start' -f $data,(Join-Path $fixture 'postgres.log'),$DatabasePort
     $launcher = Start-Process -FilePath (Join-Path $PostgresBin 'pg_ctl.exe') -ArgumentList $pgArguments -WindowStyle Hidden -PassThru
     if (!$launcher.WaitForExit(30000)) { throw 'Test PostgreSQL launcher timed out.' }
     if ($launcher.ExitCode -ne 0) { throw "Test PostgreSQL startup failed; see $fixture" }
-    & (Join-Path $PostgresBin 'createdb.exe') -h 127.0.0.1 -p 55459 -U architecture_test iot_architecture
+    & (Join-Path $PostgresBin 'createdb.exe') -h 127.0.0.1 -p $DatabasePort -U architecture_test iot_architecture
     if ($LASTEXITCODE -ne 0) { throw 'Test database creation failed.' }
-    Set-Content -LiteralPath (Join-Path $fixture 'redis.conf') -Encoding ascii -Value "bind 127.0.0.1`nport 56459`nsave `"`"`nappendonly no"
+    Set-Content -LiteralPath (Join-Path $fixture 'redis.conf') -Encoding ascii -Value "bind 127.0.0.1`nport $RedisPort`nsave `"`"`nappendonly no"
     # A relative config path also works with the Cygwin Redis distribution.
     $redisProcess = Start-Process -FilePath $RedisExe -ArgumentList 'redis.conf' -WorkingDirectory $fixture -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $fixture 'redis.out') -RedirectStandardError (Join-Path $fixture 'redis.err')
     Copy-Item -LiteralPath $backend -Destination (Join-Path $fixture 'iot-engine.exe')
-    @'
+    @"
 JWT_SECRET=architecture-test-only-access-secret-000000000
 JWT_REFRESH_SECRET=architecture-test-only-refresh-secret-00000000
 DB_HOST=127.0.0.1
-DB_PORT=55459
+DB_PORT=$DatabasePort
 DB_USERNAME=architecture_test
 DB_PASSWORD=
 DB_DATABASE=iot_architecture
 REDIS_HOST=127.0.0.1
-REDIS_PORT=56459
+REDIS_PORT=$RedisPort
 HOST=127.0.0.1
-PORT=55122
+PORT=$ApiPort
 SERVICE_WORKERS=2
 COLLECTOR_WORKERS=1
 GB28181_ENABLED=false
 VPN_HUB_ENABLED=false
-EDGE_PUBLIC_BASE_URL=http://127.0.0.1:55122
+EDGE_PUBLIC_BASE_URL=http://127.0.0.1:$ApiPort
 EDGE_PLATFORM_ID=00000000-0000-7000-8000-000000000001
-'@ | Set-Content -LiteralPath (Join-Path $fixture '.env') -Encoding ascii
+"@ | Set-Content -LiteralPath (Join-Path $fixture '.env') -Encoding ascii
     $env:Path = (Join-Path $build 'Release') + ';' + $oldPath
-    $env:ARCHITECTURE_DATABASE_URL = 'postgres://architecture_test@127.0.0.1:55459/iot_architecture'
-    $env:TEST_BASE_URL = 'http://127.0.0.1:55122'
-    $env:ARCHITECTURE_REDIS_URL = 'redis://127.0.0.1:56459'
+    $env:ARCHITECTURE_DATABASE_URL = "postgres://architecture_test@127.0.0.1:$DatabasePort/iot_architecture"
+    $env:TEST_BASE_URL = "http://127.0.0.1:$ApiPort"
+    $env:ARCHITECTURE_REDIS_URL = "redis://127.0.0.1:$RedisPort"
     $apiProcess = Start-Process -FilePath (Join-Path $fixture 'iot-engine.exe') -WorkingDirectory $fixture -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $fixture 'api.out') -RedirectStandardError (Join-Path $fixture 'api.err')
     $ready = $false
     for ($attempt = 0; $attempt -lt 60; $attempt++) {
@@ -111,7 +115,7 @@ EDGE_PLATFORM_ID=00000000-0000-7000-8000-000000000001
         if ($apiProcess.HasExited -or $redisProcess.HasExited) { throw "Test process exited; inspect logs in $fixture" }
         try {
             $probe = [Net.Sockets.TcpClient]::new()
-            $probe.Connect('127.0.0.1',55122)
+            $probe.Connect('127.0.0.1',$ApiPort)
             $ready = $true
         } catch { } finally { if ($probe) { $probe.Dispose() } }
         if ($ready) { break }
@@ -122,7 +126,7 @@ EDGE_PLATFORM_ID=00000000-0000-7000-8000-000000000001
         & $Bun run (Join-Path $repository ('tests/' + $test))
         if ($LASTEXITCODE -ne 0) { throw "$test failed; logs retained at $fixture" }
     }
-    if ($ReplayCounterMigration -or $PacketDebugMigration) {
+    if ($ReplayCounterMigration -or $PacketDebugMigration -or $IndustrialProtocolsMigration) {
         $env:ARCHITECTURE_MIGRATION_STATE = Join-Path $fixture 'migration-state.json'
         Invoke-CounterMigrationPhase 'initial'
         Stop-OwnedProcess $apiProcess (Join-Path $fixture 'iot-engine.exe')
@@ -137,7 +141,7 @@ EDGE_PLATFORM_ID=00000000-0000-7000-8000-000000000001
         $apiProcess = Start-FixtureApi 'drift' 'checksum|migration'
         Invoke-CounterMigrationPhase 'check-drift'
         Invoke-CounterMigrationPhase 'prepare-failure'
-        $apiProcess = Start-FixtureApi 'failure' 'outbox_replay_counter|debug_enabled|already exists'
+        $apiProcess = Start-FixtureApi 'failure' 'outbox_replay_counter|debug_enabled|already exists|protocol_config_protocol_check'
         Invoke-CounterMigrationPhase 'check-failure'
         $apiProcess = Start-FixtureApi 'recovered'
         Invoke-CounterMigrationPhase 'upgraded'

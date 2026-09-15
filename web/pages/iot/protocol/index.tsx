@@ -124,9 +124,12 @@ import type {
     RegisterModalRef,
     S7,
     SL651,
+    IndustrialProtocol,
+    IndustrialConfig,
+    IndustrialPoint,
 } from './protocol.types';
 import { STORAGE_POLICY_OPTIONS } from './protocol.types';
-import { parseProtocolImport } from './protocol.schema';
+import { parseProtocolImport, industrialConfigSchema } from './protocol.schema';
 
 function useProtocolImportExport(protocol: Protocol.Type) {
     const { message } = App.useApp();
@@ -5281,3 +5284,545 @@ const SL651ConfigPage = () => {
 export { ModbusConfigPage, S7ConfigPage, SL651ConfigPage };
 
 export type SaveMutation = ReturnType<typeof useProtocolConfigSave>;
+
+function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
+    const { has } = usePermissions();
+    const { message } = App.useApp();
+    const canQuery = has('iot:protocol:query');
+    const canEdit = has('iot:protocol:edit');
+    const { data, isLoading, error } = useProtocolConfigList({ protocol }, { enabled: canQuery });
+    const types = useMemo(() => data ?? [], [data]);
+    const save = useProtocolConfigSave();
+    const remove = useProtocolConfigDelete();
+    const transfer = useProtocolImportExport(protocol);
+    const [selected, setSelected] = useState<string>();
+    const active = types.find((item) => item.id === selected) ?? types[0];
+    const config = active?.config as IndustrialConfig | undefined;
+    const [typeOpen, setTypeOpen] = useState(false);
+    const [editingType, setEditingType] = useState<Protocol.Item>();
+    const [pointOpen, setPointOpen] = useState(false);
+    const [editingPoint, setEditingPoint] = useState<string>();
+    const [pointTypeId, setPointTypeId] = useState<string>();
+    const tableViewport = useRef<HTMLDivElement>(null);
+    const [tableBodyHeight, setTableBodyHeight] = useState(240);
+    useEffect(() => {
+        if (!active?.id) return;
+        const viewport = tableViewport.current;
+        if (!viewport) return;
+        const observer = new ResizeObserver(([entry]) => {
+            setTableBodyHeight(Math.max(80, Math.floor(entry.contentRect.height) - 96));
+        });
+        observer.observe(viewport);
+        return () => observer.disconnect();
+    }, [active?.id]);
+    const [typeForm] = Form.useForm<{
+        name: string;
+        enabled: boolean;
+        remark?: string;
+        config: IndustrialConfig;
+    }>();
+    const [pointForm] = Form.useForm<IndustrialPoint>();
+    const pointType = Form.useWatch('dataType', pointForm);
+    const label =
+        protocol === 'MC' ? '三菱 MC / SLMP' : protocol === 'FINS' ? '欧姆龙 FINS' : 'DL/T645';
+    const connectionFields: {
+        name: keyof IndustrialConfig['connection'];
+        label: string;
+        max: number;
+        min?: number;
+    }[] =
+        protocol === 'MC'
+            ? [
+                  { name: 'network', label: '网络号', max: 255 },
+                  { name: 'station', label: '目标站号（本机 255）', max: 255 },
+                  { name: 'moduleIo', label: '目标模块 I/O 号（十进制）', max: 65535 },
+                  { name: 'multidrop', label: '多点站号', max: 255 },
+                  {
+                      name: 'monitoringTimer',
+                      label: '监视定时器（每单位 250 ms）',
+                      min: 1,
+                      max: 65535,
+                  },
+              ]
+            : protocol === 'FINS'
+              ? [
+                    { name: 'sourceNetwork', label: '源网络号', max: 127 },
+                    { name: 'sourceNode', label: '源节点号（0 为自动分配）', max: 254 },
+                    { name: 'sourceUnit', label: '源单元号', max: 255 },
+                    { name: 'destinationNetwork', label: '目标网络号', max: 127 },
+                    { name: 'destinationNode', label: '目标节点号（0 使用握手结果）', max: 254 },
+                    { name: 'destinationUnit', label: '目标单元号', max: 255 },
+                ]
+              : [{ name: 'wakeupBytes', label: '唤醒字节数', max: 4 }];
+    const openType = (item?: Protocol.Item) => {
+        setEditingType(item);
+        typeForm.resetFields();
+        typeForm.setFieldsValue(
+            item
+                ? { ...item, config: item.config as IndustrialConfig }
+                : {
+                      name: '',
+                      enabled: true,
+                      config: {
+                          storagePolicy: 'report',
+                          readInterval: 1,
+                          commandFastReadDuration: 60,
+                          commandFastReadInterval: 1,
+                          points: [],
+                          connection:
+                              protocol === 'MC'
+                                  ? {
+                                        frame: '3E',
+                                        network: 0,
+                                        station: 255,
+                                        moduleIo: 1023,
+                                        multidrop: 0,
+                                        monitoringTimer: 16,
+                                    }
+                                  : protocol === 'FINS'
+                                    ? {
+                                          sourceNetwork: 0,
+                                          sourceNode: 0,
+                                          sourceUnit: 0,
+                                          destinationNetwork: 0,
+                                          destinationNode: 0,
+                                          destinationUnit: 0,
+                                      }
+                                    : {
+                                          version: '2007',
+                                          wakeupBytes: 4,
+                                          writePassword: '',
+                                          operatorCode: '',
+                                      },
+                      },
+                  }
+        );
+        setTypeOpen(true);
+    };
+    const saveConfig = async (next: IndustrialConfig, item = active) => {
+        if (!item) return;
+        const validation = industrialConfigSchema(protocol).safeParse(next);
+        if (!validation.success) {
+            message.error(validation.error.issues[0].message);
+            return false;
+        }
+        await save.mutateAsync({ id: item.id, protocol, config: next });
+        return true;
+    };
+    const openPoint = (point?: IndustrialPoint) => {
+        setPointTypeId(active?.id);
+        setEditingPoint(point?.id);
+        pointForm.resetFields();
+        pointForm.setFieldsValue(
+            point ?? {
+                id: generateId(),
+                name: '',
+                dataType: protocol === 'DLT645' ? 'BCD' : 'UINT16',
+                writable: false,
+                ...(protocol === 'DLT645'
+                    ? {
+                          identifier: config?.connection.version === '1997' ? '9010' : '00000000',
+                          length: 4,
+                          digits: 2,
+                      }
+                    : {
+                          area: 'D',
+                          address: 0,
+                          bit: 0,
+                          byteOrder: protocol === 'MC' ? 'LITTLE_ENDIAN' : 'BIG_ENDIAN',
+                          scale: 1,
+                          decimals: -1,
+                      }),
+            }
+        );
+        setPointOpen(true);
+    };
+    if (!canQuery) return <Result status="403" title="无权查看设备类型" />;
+    if (error) return <Result status="error" title="设备类型加载失败" subTitle={error.message} />;
+    return (
+        <PageContainer
+            title={`${label} 配置`}
+            header={
+                <Space wrap>
+                    {has('iot:protocol:add') && (
+                        <Button type="primary" onClick={() => openType()}>
+                            新增设备类型
+                        </Button>
+                    )}
+                    {has('iot:protocol:import') && has('iot:protocol:add') && (
+                        <Button loading={transfer.importing} onClick={transfer.triggerImport}>
+                            导入
+                        </Button>
+                    )}
+                    {has('iot:protocol:export') && (
+                        <Button loading={transfer.exporting} onClick={transfer.exportConfigs}>
+                            导出
+                        </Button>
+                    )}
+                </Space>
+            }
+        >
+            <div className="flex h-full min-h-0 flex-col gap-4 md:flex-row">
+                <div className="max-h-32 shrink-0 overflow-auto border-b pb-3 md:max-h-none md:w-56 md:border-r md:border-b-0 md:pr-3 md:pb-0">
+                    <Tree
+                        selectedKeys={active ? [active.id] : []}
+                        onSelect={(keys) => setSelected(String(keys[0] ?? ''))}
+                        treeData={types.map((item) => ({ key: item.id, title: item.name }))}
+                    />
+                    {!isLoading && !types.length && (
+                        <Empty description="暂无设备类型" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                    )}
+                </div>
+                <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+                    {active ? (
+                        <>
+                            <Flex justify="space-between" wrap gap={8} className="shrink-0">
+                                <Space wrap>
+                                    <strong>{active.name}</strong>
+                                    <Tag>{active.enabled ? '启用' : '停用'}</Tag>
+                                    <span>采集间隔 {config?.readInterval ?? 1} 秒</span>
+                                </Space>
+                                <Space wrap>
+                                    {canEdit && (
+                                        <>
+                                            <Button onClick={() => openType(active)}>
+                                                连接与采集参数
+                                            </Button>
+                                            <Button type="primary" onClick={() => openPoint()}>
+                                                新增点位
+                                            </Button>
+                                        </>
+                                    )}
+                                    {has('iot:protocol:delete') && (
+                                        <Popconfirm
+                                            title="删除此设备类型？"
+                                            onConfirm={() => remove.mutateAsync(active.id)}
+                                        >
+                                            <Button danger>删除类型</Button>
+                                        </Popconfirm>
+                                    )}
+                                </Space>
+                            </Flex>
+                            <div ref={tableViewport} className="min-h-0 flex-1 overflow-hidden">
+                                <Table<IndustrialPoint>
+                                    rowKey="id"
+                                    size="small"
+                                    loading={isLoading}
+                                    dataSource={config?.points ?? []}
+                                    pagination={{ pageSize: 20, showSizeChanger: false }}
+                                    scroll={{ x: 920, y: tableBodyHeight }}
+                                    columns={[
+                                        { title: '名称', dataIndex: 'name', width: 160 },
+                                        {
+                                            title: '点位标识',
+                                            dataIndex: 'id',
+                                            width: 170,
+                                            ellipsis: true,
+                                        },
+                                        {
+                                            title: protocol === 'DLT645' ? '数据标识 DI' : '地址',
+                                            width: 140,
+                                            render: (_, point) =>
+                                                protocol === 'DLT645'
+                                                    ? point.identifier
+                                                    : `${point.area}${point.address}${protocol === 'FINS' && point.dataType === 'BOOL' ? `.${point.bit ?? 0}` : ''}`,
+                                        },
+                                        { title: '数据类型', dataIndex: 'dataType', width: 110 },
+                                        { title: '单位', dataIndex: 'unit', width: 80 },
+                                        {
+                                            title: '读写',
+                                            width: 80,
+                                            render: (_, point) =>
+                                                point.writable ? '可写' : '只读',
+                                        },
+                                        {
+                                            title: '操作',
+                                            width: 140,
+                                            fixed: 'right',
+                                            render: (_, point) =>
+                                                canEdit && (
+                                                    <Space>
+                                                        <Button
+                                                            type="link"
+                                                            size="small"
+                                                            onClick={() => openPoint(point)}
+                                                        >
+                                                            编辑
+                                                        </Button>
+                                                        <Popconfirm
+                                                            title="删除此点位？"
+                                                            onConfirm={() =>
+                                                                config &&
+                                                                saveConfig({
+                                                                    ...config,
+                                                                    points: config.points.filter(
+                                                                        (item) =>
+                                                                            item.id !== point.id
+                                                                    ),
+                                                                })
+                                                            }
+                                                        >
+                                                            <Button type="link" size="small" danger>
+                                                                删除
+                                                            </Button>
+                                                        </Popconfirm>
+                                                    </Space>
+                                                ),
+                                        },
+                                    ]}
+                                />
+                            </div>
+                        </>
+                    ) : (
+                        <Empty description="新增或选择设备类型后配置点位" />
+                    )}
+                </div>
+            </div>
+            <FormModal
+                open={typeOpen}
+                title={`${editingType ? '编辑' : '新增'}${label}设备类型`}
+                onCancel={() => setTypeOpen(false)}
+                confirmLoading={save.isPending}
+                onOk={async () => {
+                    const values = await typeForm.validateFields();
+                    const next = {
+                        ...values.config,
+                        points: (editingType?.config as IndustrialConfig | undefined)?.points ?? [],
+                    };
+                    const validation = industrialConfigSchema(protocol).safeParse(next);
+                    if (!validation.success) {
+                        message.error(validation.error.issues[0].message);
+                        return;
+                    }
+                    await save.mutateAsync({
+                        ...values,
+                        protocol,
+                        id: editingType?.id,
+                        config: next,
+                    });
+                    setTypeOpen(false);
+                }}
+            >
+                <Form name={`industrial-type-${protocol}`} form={typeForm} layout="vertical">
+                    <Form.Item name="name" label="名称" rules={[{ required: true, max: 64 }]}>
+                        <Input />
+                    </Form.Item>
+                    <Form.Item name="enabled" label="启用" valuePropName="checked">
+                        <Switch />
+                    </Form.Item>
+                    {protocol === 'MC' && (
+                        <Form.Item name={['config', 'connection', 'frame']} label="二进制帧格式">
+                            <Select
+                                options={[
+                                    { value: '3E', label: '3E' },
+                                    { value: '4E', label: '4E（带事务号）' },
+                                ]}
+                            />
+                        </Form.Item>
+                    )}
+                    {protocol === 'DLT645' && (
+                        <Form.Item name={['config', 'connection', 'version']} label="协议版本">
+                            <Select
+                                options={[
+                                    { value: '2007', label: 'DL/T645-2007' },
+                                    { value: '1997', label: 'DL/T645-1997' },
+                                ]}
+                            />
+                        </Form.Item>
+                    )}
+                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                        {connectionFields.map((field) => (
+                            <Form.Item
+                                key={field.name}
+                                name={['config', 'connection', field.name]}
+                                label={field.label}
+                                rules={[{ required: true }]}
+                            >
+                                <InputNumber
+                                    className="w-full"
+                                    min={field.min ?? 0}
+                                    max={field.max}
+                                    precision={0}
+                                />
+                            </Form.Item>
+                        ))}
+                    </div>
+                    {protocol === 'DLT645' && (
+                        <>
+                            <Form.Item
+                                name={['config', 'connection', 'writePassword']}
+                                label="写入认证（权限字节＋密码，按报文字节顺序）"
+                                extra="只读采集可留空；配置可写点位时需填写。"
+                            >
+                                <Input.Password maxLength={8} autoComplete="new-password" />
+                            </Form.Item>
+                            <Form.Item
+                                name={['config', 'connection', 'operatorCode']}
+                                label="操作者代码（2007 版写入需要，8 位 HEX）"
+                            >
+                                <Input maxLength={8} />
+                            </Form.Item>
+                        </>
+                    )}
+                    <Form.Item name={['config', 'storagePolicy']} label="历史存储策略">
+                        <Select options={STORAGE_POLICY_OPTIONS} />
+                    </Form.Item>
+                    <Form.Item name={['config', 'readInterval']} label="采集间隔（秒）">
+                        <InputNumber min={1} max={3600} precision={0} />
+                    </Form.Item>
+                    <Form.Item
+                        name={['config', 'commandFastReadDuration']}
+                        label="写入后快读时长（秒，0 关闭）"
+                    >
+                        <InputNumber min={0} max={3600} precision={0} />
+                    </Form.Item>
+                    <Form.Item name={['config', 'commandFastReadInterval']} label="快读间隔（秒）">
+                        <InputNumber min={1} max={3600} precision={0} />
+                    </Form.Item>
+                    <Form.Item name="remark" label="备注">
+                        <Input.TextArea />
+                    </Form.Item>
+                </Form>
+            </FormModal>
+            <FormModal
+                open={pointOpen}
+                title={editingPoint ? '编辑点位' : '新增点位'}
+                onCancel={() => setPointOpen(false)}
+                confirmLoading={save.isPending}
+                onOk={async () => {
+                    const target = types.find((item) => item.id === pointTypeId);
+                    if (!target) return;
+                    const targetConfig = target.config as IndustrialConfig;
+                    const point = await pointForm.validateFields();
+                    const points = editingPoint
+                        ? targetConfig.points.map((item) =>
+                              item.id === editingPoint ? point : item
+                          )
+                        : [...targetConfig.points, point];
+                    if (await saveConfig({ ...targetConfig, points }, target)) setPointOpen(false);
+                }}
+            >
+                <Form name={`industrial-point-${protocol}`} form={pointForm} layout="vertical">
+                    <Form.Item name="id" label="点位标识" rules={[{ required: true, max: 64 }]}>
+                        <Input disabled={Boolean(editingPoint)} />
+                    </Form.Item>
+                    <Form.Item name="name" label="名称" rules={[{ required: true, max: 128 }]}>
+                        <Input />
+                    </Form.Item>
+                    <Form.Item name="dataType" label="数据类型" rules={[{ required: true }]}>
+                        <Select
+                            onChange={() => pointForm.setFieldValue('bit', 0)}
+                            options={(protocol === 'DLT645'
+                                ? ['BCD', 'BCD_SIGNED', 'HEX']
+                                : [
+                                      'BOOL',
+                                      'INT16',
+                                      'UINT16',
+                                      'INT32',
+                                      'UINT32',
+                                      'FLOAT32',
+                                      'INT64',
+                                      'UINT64',
+                                      'DOUBLE',
+                                  ]
+                            ).map((value) => ({ value, label: value }))}
+                        />
+                    </Form.Item>
+                    {protocol === 'DLT645' ? (
+                        <>
+                            <Form.Item
+                                name="identifier"
+                                label="数据标识 DI（高字节在前）"
+                                rules={[{ required: true }]}
+                            >
+                                <Input maxLength={config?.connection.version === '1997' ? 4 : 8} />
+                            </Form.Item>
+                            <Form.Item
+                                name="length"
+                                label="数据长度（字节，不包含 DI）"
+                                rules={[{ required: true }]}
+                            >
+                                <InputNumber
+                                    min={1}
+                                    max={pointType === 'HEX' ? 200 : 8}
+                                    precision={0}
+                                />
+                            </Form.Item>
+                            <Form.Item name="digits" label="小数位数">
+                                <InputNumber min={0} max={8} precision={0} />
+                            </Form.Item>
+                        </>
+                    ) : (
+                        <>
+                            <Form.Item name="area" label="存储区域" rules={[{ required: true }]}>
+                                <Select
+                                    options={(protocol === 'MC'
+                                        ? [
+                                              'D',
+                                              'W',
+                                              'R',
+                                              'ZR',
+                                              'M',
+                                              'X',
+                                              'Y',
+                                              'B',
+                                              'L',
+                                              'F',
+                                              'V',
+                                              'S',
+                                              'TN',
+                                              'CN',
+                                              'TS',
+                                              'CS',
+                                          ]
+                                        : ['D', 'CIO', 'W', 'H', 'A']
+                                    ).map((value) => ({ value, label: value }))}
+                                />
+                            </Form.Item>
+                            <Form.Item
+                                name="address"
+                                label="地址（十进制）"
+                                extra={
+                                    protocol === 'MC'
+                                        ? 'X、Y、B、W 等十六进制地址先换算为十进制，例如 X10 填 16。'
+                                        : undefined
+                                }
+                                rules={[{ required: true }]}
+                            >
+                                <InputNumber
+                                    min={0}
+                                    max={protocol === 'MC' ? 16777215 : 65535}
+                                    precision={0}
+                                />
+                            </Form.Item>
+                            {protocol === 'FINS' && pointType === 'BOOL' && (
+                                <Form.Item name="bit" label="位号">
+                                    <InputNumber min={0} max={15} precision={0} />
+                                </Form.Item>
+                            )}
+                            <Form.Item name="byteOrder" label="字节序">
+                                <Select options={ByteOrderOptions} />
+                            </Form.Item>
+                            <Form.Item name="scale" label="采集值缩放系数">
+                                <InputNumber />
+                            </Form.Item>
+                            <Form.Item name="decimals" label="采集值小数位（-1 保留原精度）">
+                                <InputNumber min={-1} max={8} precision={0} />
+                            </Form.Item>
+                        </>
+                    )}
+                    <Form.Item name="unit" label="单位">
+                        <Input />
+                    </Form.Item>
+                    <Form.Item name="writable" label="允许写入" valuePropName="checked">
+                        <Switch />
+                    </Form.Item>
+                </Form>
+            </FormModal>
+        </PageContainer>
+    );
+}
+
+export const McConfigPage = () => <IndustrialConfigPage protocol="MC" />;
+export const FinsConfigPage = () => <IndustrialConfigPage protocol="FINS" />;
+export const Dlt645ConfigPage = () => <IndustrialConfigPage protocol="DLT645" />;

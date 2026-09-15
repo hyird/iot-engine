@@ -151,7 +151,7 @@ struct RuntimeRepositoryScaleDb {
             std::string_view::npos) {
             result.values.emplace_back(FakeDbRow{ "link-1", "collector link", "TCP Client", "Modbus", "127.0.0.1", "1502", "enabled", "f" });
         } else if (sql.find("ORDER BY \"d\".\"link_id\"") != std::string_view::npos) {
-            result.values.emplace_back(FakeDbRow{ "device-1", "MODBUS001", "modbus device", "link-1", "TCP Client", "", "Modbus", "+08:00", "300", "OFF", "", "OFF", "", "TCP", "1", "RACK_SLOT", "PG", "0", "1", "0100", "0101", "5000", "5000", "STANDARD", "5", "1", "60", "1", "100", "125", "model-1", "1", "f" });
+            result.values.emplace_back(FakeDbRow{ "device-1", "MODBUS001", "modbus device", "link-1", "TCP Client", "", "Modbus", "+08:00", "300", "OFF", "", "OFF", "", "TCP", "1", "RACK_SLOT", "PG", "0", "1", "0100", "0101", "5000", "5000", "STANDARD", "5", "1", "60", "1", "100", "125", "model-1", "1", "f", "3E", "2007", "0", "255", "1023", "0", "16", "0", "0", "0", "0", "0", "0", "4", "", "" });
         } else if (sql.find("\"p\".\"protocol\" = E'Modbus'") != std::string_view::npos &&
                    sql.find("'registerType'") != std::string_view::npos) {
             result.values.emplace_back(FakeDbRow{ "device-1", "temperature", "Temperature", "℃", "UINT16", "BIG_ENDIAN", "HOLDING_REGISTER", "0", "1", "1x", "-1", "f" });
@@ -1589,14 +1589,14 @@ void testModbusTypesAndPriority() {
     element.dataType = "UINT64";
     element.byteOrder = "BIG_ENDIAN";
     const std::array<std::uint8_t, 8> maximum{ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
-    require(collector::modbus::detail::numericJson(maximum, element) == "18446744073709551615", "Modbus UINT64 lost integer precision");
+    require(collector::register_value::numericJson(maximum, element) == "18446744073709551615", "Modbus UINT64 lost integer precision");
     element.dataType = "UINT32";
     element.byteOrder = "BIG_ENDIAN_BYTE_SWAP";
     const std::array<std::uint8_t, 4> bigSwap{ 0x34, 0x12, 0x78, 0x56 };
-    require(collector::modbus::detail::numericJson(bigSwap, element) == "305419896", "Modbus BIG_ENDIAN_BYTE_SWAP was decoded incorrectly");
+    require(collector::register_value::numericJson(bigSwap, element) == "305419896", "Modbus BIG_ENDIAN_BYTE_SWAP was decoded incorrectly");
     element.byteOrder = "LITTLE_ENDIAN_BYTE_SWAP";
     const std::array<std::uint8_t, 4> littleSwap{ 0x56, 0x78, 0x12, 0x34 };
-    require(collector::modbus::detail::numericJson(littleSwap, element) == "305419896", "Modbus LITTLE_ENDIAN_BYTE_SWAP was decoded incorrectly");
+    require(collector::register_value::numericJson(littleSwap, element) == "305419896", "Modbus LITTLE_ENDIAN_BYTE_SWAP was decoded incorrectly");
 
     collector::RuntimeSnapshot snapshot;
     collector::LinkDefinition link{ .id = "priority-link",
@@ -1669,8 +1669,8 @@ void testModbusAllDataTypesAndByteOrders() {
         element.dataType = current.type;
         for (const auto order : orders) {
             element.byteOrder = order;
-            const auto wire = collector::modbus::detail::orderedBytes(current.canonical, order);
-            const auto decoded = collector::modbus::detail::numericJson(wire, element);
+            const auto wire = collector::register_value::orderedBytes(current.canonical, order);
+            const auto decoded = collector::register_value::numericJson(wire, element);
             require(decoded && *decoded == current.expected, "Modbus data type or byte order matrix failed");
         }
     }
@@ -1681,7 +1681,7 @@ void testModbusAllDataTypesAndByteOrders() {
     scaled.scale = 0.1;
     scaled.decimals = 1;
     const std::array<std::uint8_t, 2> raw{ 0x04, 0xD2 };
-    require(collector::modbus::detail::numericJson(raw, scaled) == "123.4", "Modbus scale and decimals were not applied");
+    require(collector::register_value::numericJson(raw, scaled) == "123.4", "Modbus scale and decimals were not applied");
 }
 
 void testModbusAllFunctionCodes(bool tcp) {

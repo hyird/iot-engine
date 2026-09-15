@@ -101,6 +101,12 @@ class ProtocolEngine final {
   public:
     explicit ProtocolEngine(ProtocolSessionFactoryRegistry registry) : registry_(std::move(registry)) {}
 
+    [[nodiscard]] std::vector<std::uint8_t> packetForLogging(std::string_view protocol,
+        std::span<const std::uint8_t> bytes) const {
+        const auto* factory = registry_.find(protocol);
+        return factory ? factory->packetForLogging(bytes) : std::vector<std::uint8_t>(bytes.begin(), bytes.end());
+    }
+
     [[nodiscard]] const DeviceDefinition* identifyDebugDevice(
         const RuntimeSnapshot& snapshot, const DebugPacketIdentity& packet) const {
         const auto link = std::find_if(snapshot.links.begin(), snapshot.links.end(),

@@ -3,7 +3,9 @@ import { pageParamsSchema } from '@/utils/pagination';
 
 const ipv4Schema = z.ipv4({ error: '请输入有效的 IPv4 地址' });
 const modeSchema = z.enum(['TCP Server', 'TCP Client'], { error: '链路模式无效' });
-const protocolSchema = z.enum(['SL651', 'Modbus', 'S7'], { error: '协议无效' });
+const protocolSchema = z.enum(['SL651', 'Modbus', 'S7', 'MC', 'FINS', 'DLT645'], {
+    error: '协议无效',
+});
 const statusSchema = z.enum(['enabled', 'disabled'], { error: '状态无效' });
 const targetSchema = z.object({
     id: z.string().min(1, '目标 ID 不能为空').max(64, '目标 ID 不能超过 64 个字符'),
@@ -50,8 +52,15 @@ export const saveLinkSchema = z
                     path: ['endpoint', 'ip'],
                     message: '请输入有效 TCP 地址和端口',
                 });
-            if (value.endpoint.transport === 'serial' && value.protocol === 'S7')
-                context.addIssue({ code: 'custom', path: ['protocol'], message: 'S7 不支持串口' });
+            if (
+                value.endpoint.transport === 'serial' &&
+                ['S7', 'MC', 'FINS'].includes(value.protocol)
+            )
+                context.addIssue({
+                    code: 'custom',
+                    path: ['protocol'],
+                    message: '所选 PLC 协议仅支持 TCP',
+                });
             return;
         }
         if (value.protocol === 'SL651' && value.endpoint.mode !== 'TCP Server')

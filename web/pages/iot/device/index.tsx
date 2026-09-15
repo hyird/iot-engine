@@ -427,13 +427,29 @@ export function DeviceFormModal({
                     }
                     if (protocol === 'SL651')
                         values.device_code = values.device_code.padStart(10, '0');
+                    if (protocol === 'DLT645')
+                        values.device_code = values.device_code.padStart(12, '0');
                     onFinish(values);
                 }}
             >
                 <Form.Item name="name" label="设备名称" rules={[{ required: true }]}>
                     <Input maxLength={100} />
                 </Form.Item>
-                <Form.Item name="device_code" label="设备编码" rules={[{ required: true }]}>
+                <Form.Item
+                    name="device_code"
+                    label={protocol === 'DLT645' ? '电表地址（12 位数字）' : '设备编码'}
+                    rules={[
+                        { required: true },
+                        ...(protocol === 'DLT645'
+                            ? [
+                                  {
+                                      pattern: /^\d{1,12}$/,
+                                      message: '表地址须为 1 至 12 位数字，保存时补零',
+                                  },
+                              ]
+                            : []),
+                    ]}
+                >
                     <Input maxLength={100} />
                 </Form.Item>
                 <Form.Item

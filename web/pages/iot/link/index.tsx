@@ -356,7 +356,7 @@ export function IotLinkPage() {
         },
     ];
     const modes = linkEnums?.modes ?? ['TCP Server', 'TCP Client'];
-    const protocols = linkEnums?.protocols ?? ['SL651', 'Modbus', 'S7'];
+    const protocols = linkEnums?.protocols ?? ['SL651', 'Modbus', 'S7', 'MC', 'FINS', 'DLT645'];
     const availableProtocols =
         selectedExecution !== 'edge' && selectedMode === 'TCP Client'
             ? protocols.filter((protocol) => protocol !== 'SL651')

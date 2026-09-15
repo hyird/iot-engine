@@ -53,6 +53,9 @@ const breadcrumbGroups = [
             { path: '/iot/sl651', title: 'SL651 配置', permission: 'iot:protocol:query' },
             { path: '/iot/modbus', title: 'Modbus 配置', permission: 'iot:protocol:query' },
             { path: '/iot/s7', title: 'S7 配置', permission: 'iot:protocol:query' },
+            { path: '/iot/dlt645', title: 'DL/T645 配置', permission: 'iot:protocol:query' },
+            { path: '/iot/fins', title: 'FINS 配置', permission: 'iot:protocol:query' },
+            { path: '/iot/mc', title: 'MC / SLMP 配置', permission: 'iot:protocol:query' },
         ],
     },
     {
@@ -187,6 +190,9 @@ export default function AdminLayout() {
                     { key: '/iot/sl651', label: 'SL651 配置' },
                     { key: '/iot/modbus', label: 'Modbus 配置' },
                     { key: '/iot/s7', label: 'S7 配置' },
+                    { key: '/iot/dlt645', label: 'DL/T645 配置' },
+                    { key: '/iot/fins', label: 'FINS 配置' },
+                    { key: '/iot/mc', label: 'MC / SLMP 配置' },
                 ],
             });
         }

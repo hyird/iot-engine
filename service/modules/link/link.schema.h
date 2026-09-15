@@ -55,7 +55,7 @@ class LinkPayloadValidator final {
                                      std::string_view transport, std::string_view interfaceName) {
         if (interfaceName.size() > 96) service::common::fail(15002, "接口名称过长", 400);
         if (transport == "serial") {
-            if (protocol == "S7") service::common::fail(15002, "S7 不支持串口", 400);
+            if (protocol == "S7" || protocol == "MC" || protocol == "FINS") service::common::fail(15002, "所选 PLC 协议仅支持 TCP", 400);
             const auto baud = endpoint.get<"baudRate">().value_or(9600);
             const auto bits = endpoint.get<"dataBits">().value_or(8);
             const auto stops = endpoint.get<"stopBits">().value_or(1);
@@ -80,7 +80,7 @@ class LinkPayloadValidator final {
                                       const Targets& targets) {
         if (mode != "TCP Server" && mode != "TCP Client")
             service::common::fail(15003, "链路模式无效", 400);
-        if (protocol != "SL651" && protocol != "Modbus" && protocol != "S7")
+        if (protocol != "SL651" && protocol != "Modbus" && protocol != "S7" && protocol != "MC" && protocol != "FINS" && protocol != "DLT645")
             service::common::fail(15003, "协议无效", 400);
         if (protocol == "SL651" && mode != "TCP Server")
             service::common::fail(15003, "SL651 只支持 TCP Server 模式", 400);
@@ -169,7 +169,7 @@ class SaveLinkValidator final : public ruvia::Middleware<SaveLinkValidator> {
                         RUVIA_RULE(name, RUVIA_REQUIRED("链路名称不能为空"),
                                    RUVIA_MAX(100, "链路名称不能超过 100 个字符")),
                         RUVIA_RULE(protocol, RUVIA_REQUIRED("协议不能为空"),
-                                   RUVIA_ONE_OF("协议无效", "SL651", "Modbus", "S7")),
+                                   RUVIA_ONE_OF("协议无效", "SL651", "Modbus", "S7", "MC", "FINS", "DLT645")),
                         RUVIA_RULE(endpoint, RUVIA_REQUIRED("链路端点不能为空")),
                         RUVIA_RULE(execution, RUVIA_ONE_OF("采集位置无效", "collector", "edge")),
                         RUVIA_RULE(status, RUVIA_ONE_OF("状态无效", "enabled", "disabled")))
@@ -182,7 +182,7 @@ class LinkListQueryValidator final : public ruvia::Middleware<LinkListQueryValid
                                          RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"),
                                          RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")),
                          RUVIA_RULE(mode, RUVIA_ONE_OF("链路模式无效", "TCP Server", "TCP Client")),
-                         RUVIA_RULE(protocol, RUVIA_ONE_OF("协议无效", "SL651", "Modbus", "S7")),
+                         RUVIA_RULE(protocol, RUVIA_ONE_OF("协议无效", "SL651", "Modbus", "S7", "MC", "FINS", "DLT645")),
                          RUVIA_RULE(status, RUVIA_ONE_OF("状态无效", "enabled", "disabled")))
 };
 

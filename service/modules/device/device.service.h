@@ -1596,7 +1596,9 @@ return result
                          {query.coalesce({DeviceAccessService::jsonValue(
                                              query, protocolConfig, "areas"),
                                          emptyArray})})}},
-            query.coalesce({query.subquery(functionCount), DeviceAccessService::integer(query, 0)}));
+            query.caseWhen({{query.binary(query.column("protocol", "p"), ruvia::DbBinaryOperator::kEqual,
+                query.value("SL651")), query.coalesce({query.subquery(functionCount), DeviceAccessService::integer(query, 0)})}},
+                query.call("jsonb_array_length", {query.coalesce({DeviceAccessService::jsonValue(query, protocolConfig, "points"), emptyArray})})));
 
         query.select({DeviceAccessService::text(query, query.column("id", "d")),
                       query.column("name", "d"),
@@ -1984,7 +1986,8 @@ return result
                                   "{\"label\":\"0\",\"value\":\"0\"}]"),
                       ruvia::DbDataType::kJsonb)}},
             emptyArray(s7));
-         s7.select({s7.column(service::device::entities::DeviceEntity::columnName<"id">(), "d"), DeviceAccessService::text(s7, "S7_WRITE"),
+         s7.select({s7.column(service::device::entities::DeviceEntity::columnName<"id">(), "d"),
+                    s7.binary(s7.column("protocol", "p"), ruvia::DbBinaryOperator::kConcat, s7.value("_WRITE")),
                     DeviceAccessService::text(s7, "写寄存器"), s7Element,
                     DeviceAccessService::integer(s7, 2), s7.column("element_position", "elements"),
                    s7.column("preset", "presets"), s7.column("preset_position", "presets")})
@@ -1994,13 +1997,14 @@ return result
                          s7.binary(s7.column(service::device::entities::DeviceModelEntity::columnName<"device_id">(), "p"),
                                   ruvia::DbBinaryOperator::kEqual, s7.column(service::device::entities::DeviceEntity::columnName<"id">(), "d")),
                          s7.binary(s7.column(service::device::entities::DeviceModelEntity::columnName<"protocol">(), "p"),
-                                  ruvia::DbBinaryOperator::kEqual, s7.value("S7"))),
+                                  ruvia::DbBinaryOperator::kIn, s7.list({s7.value("S7"), s7.value("MC"), s7.value("FINS"), s7.value("DLT645")}))),
                   "p")
             .joinFunction(
                 ruvia::DbJoinType::kCross,
                 s7.call("jsonb_array_elements",
                         {s7.coalesce({DeviceAccessService::jsonValue(
                                          s7, s7.column(service::device::entities::DeviceModelEntity::columnName<"config">(), "p"), "areas"),
+                                     DeviceAccessService::jsonValue(s7, s7.column("config", "p"), "points"),
                                      emptyArray(s7)})}),
                 {},
                 "elements", {.lateral = true, .withOrdinality = true,
@@ -2571,6 +2575,11 @@ return result
         if (configProtocol == "SL651" &&
             (packetEnabled(body.get<"heartbeat">()) || packetEnabled(body.get<"registration">())))
             service::common::fail(18002, "SL651 设备不支持配置注册包或心跳包", 400);
+        if (configProtocol == "DLT645" && code) {
+            if (code->view().size() != 12 || !std::all_of(code->view().begin(), code->view().end(),
+                [](unsigned char c) { return std::isdigit(c) != 0; }))
+                service::common::fail(18002, "DL/T645 表地址必须是 12 位数字，不足时左侧补零", 400);
+        }
         if (configProtocol == "SL651" && code) {
             if (code->view().size() != 10)
                 service::common::fail(18002, "SL651 遥测站地址必须是 10 位数字，不足时左侧补零", 400);
@@ -2730,7 +2739,7 @@ return result
                                           : "仅 TCP Server 设备支持配置注册包或心跳包",
                                       400);
         }
-        if (protocol != "Modbus" && protocol != "S7")
+        if (protocol != "Modbus" && protocol != "S7" && protocol != "MC" && protocol != "FINS")
             co_return;
 
         ruvia::DbQuery siblingsQuery(c.pool());
@@ -2807,9 +2816,9 @@ return result
                 if (sibling[2].value().value_or(std::string_view{}) != targetId)
                     continue;
                 const std::string name(sibling[0].value().value_or(std::string_view{}));
-                if (protocol == "S7")
+                if (protocol == "S7" || protocol == "MC" || protocol == "FINS")
                     service::common::fail(
-                        18006, "S7 同一目标地址只能关联一个设备，冲突设备: " + name, 409);
+                        18006, protocol + " 同一目标地址只能关联一个设备，冲突设备: " + name, 409);
                 if (toInt(sibling[1].value().value_or(std::string_view{})) == slaveId)
                     service::common::fail(
                         18006, "Modbus 同一目标地址下 Slave ID 重复，冲突设备: " + name, 409);
@@ -2835,11 +2844,11 @@ return result
             co_return;
         }
 
-        if (protocol == "S7") {
+        if (protocol == "S7" || protocol == "MC" || protocol == "FINS") {
             for (const auto& sibling : siblings)
                 if (sibling[4].value().value_or(std::string_view{}) == registrationKey)
                     service::common::fail(18006,
-                                          "S7 TCP Server 同一链路下注册码重复，冲突设备: " +
+                                          protocol + " TCP Server 同一链路下注册码重复，冲突设备: " +
                                               std::string(sibling[0].value().value_or(std::string_view{})),
                                           409);
         }

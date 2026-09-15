@@ -129,6 +129,9 @@ class LinkService {
         protocols.emplace("SL651", modelOptions);
         protocols.emplace("Modbus", modelOptions);
         protocols.emplace("S7", modelOptions);
+        protocols.emplace("MC", modelOptions);
+        protocols.emplace("FINS", modelOptions);
+        protocols.emplace("DLT645", modelOptions);
         ruvia::BoxedArray<ruvia::String> statuses(modelOptions);
         statuses.emplace("enabled", modelOptions);
         statuses.emplace("disabled", modelOptions);
@@ -453,6 +456,10 @@ return result
             .andWhere(nodeQuery.binary(jsonText(nodeQuery, "capability", "deviceConfig"),
                                        ruvia::DbBinaryOperator::kEqual,
                                        nodeQuery.value("true")));
+        if (protocol == "MC" || protocol == "FINS" || protocol == "DLT645")
+            nodeQuery.andWhere(nodeQuery.call("jsonb_exists", {
+                nodeQuery.binary(nodeQuery.column(service::link::entities::EdgeNodeEntity::columnName<"capability">()),
+                    ruvia::DbBinaryOperator::kJsonGet, nodeQuery.value("protocols")), nodeQuery.value(protocol)}));
         const auto node = co_await c.db().query(nodeQuery);
         if (node.empty()) service::common::fail(15002, "节点未批准或不支持采集配置", 400);
         if (transport == "serial") {

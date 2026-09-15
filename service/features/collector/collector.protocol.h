@@ -117,6 +117,10 @@ class ProtocolSessionFactory {
     [[nodiscard]] virtual bool packetMatchesDevice(const DeviceDefinition&,
         std::string_view, std::span<const std::uint8_t>) const noexcept { return true; }
 
+    [[nodiscard]] virtual std::vector<std::uint8_t> packetForLogging(std::span<const std::uint8_t> bytes) const {
+        return {bytes.begin(), bytes.end()};
+    }
+
     void validateLink(const LinkDefinition& link) const {
         const auto& descriptor = definition();
         if (link.protocol != descriptor.name)

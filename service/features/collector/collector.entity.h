@@ -3,6 +3,9 @@
 #include <cstddef>
 #include <string_view>
 #include "service/common/message.h"
+#include "service/features/collector/mc/mc.types.h"
+#include "service/features/collector/fins/fins.types.h"
+#include "service/features/collector/dlt645/dlt645.types.h"
 
 #include <cstdint>
 #include <string>
@@ -94,6 +97,9 @@ struct DeviceDefinition {
     std::int64_t s7HandshakeTimeoutMs = 5000;
     std::int64_t s7DirectProbeTimeoutMs = 5000;
     std::string s7ProbeMode = "STANDARD";
+    mc::Connection mcConnection;
+    fins::Connection finsConnection;
+    dlt645::Connection dlt645Connection;
     std::int64_t readInterval = 1;
     std::string storagePolicy = "report";
     std::int64_t commandFastReadDuration = 60;

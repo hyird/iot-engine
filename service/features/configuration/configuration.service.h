@@ -243,7 +243,23 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
             defaultText(config, "storagePolicy", "report"), defaultText(config, "commandFastReadDuration", "60"),
             defaultText(config, "commandFastReadInterval", "1"), defaultText(packet, "mergeGap", "100"),
             defaultText(packet, "maxQuantity", "125"), deviceQuery.cast(deviceQuery.column(service::configuration::persistence::DeviceModelEntity::columnName<"id">(), "p"), Type::kText),
-            defaultText(config, "responseMode", "M1"), deviceQuery.column(service::configuration::persistence::DeviceEntity::columnName<"debug_enabled">(), "d") })
+            defaultText(config, "responseMode", "M1"), deviceQuery.column(service::configuration::persistence::DeviceEntity::columnName<"debug_enabled">(), "d"),
+            defaultText(connection, "frame", "3E"),
+            defaultText(connection, "version", "2007"),
+            defaultText(connection, "network", "0"),
+            defaultText(connection, "station", "255"),
+            defaultText(connection, "moduleIo", "1023"),
+            defaultText(connection, "multidrop", "0"),
+            defaultText(connection, "monitoringTimer", "16"),
+            defaultText(connection, "destinationNetwork", "0"),
+            defaultText(connection, "destinationNode", "0"),
+            defaultText(connection, "destinationUnit", "0"),
+            defaultText(connection, "sourceNetwork", "0"),
+            defaultText(connection, "sourceNode", "0"),
+            defaultText(connection, "sourceUnit", "0"),
+            defaultText(connection, "wakeupBytes", "4"),
+            defaultText(connection, "writePassword", ""),
+            defaultText(connection, "operatorCode", "") })
         .from(service::configuration::persistence::DeviceEntity::tableName(), "d")
         .join(ruvia::DbJoinType::kInner, service::configuration::persistence::LinkEntity::tableName(),
             deviceQuery.binary(deviceQuery.column(service::configuration::persistence::LinkEntity::columnName<"id">(), "l"), Op::kEqual, deviceQuery.column(service::configuration::persistence::DeviceEntity::columnName<"link_id">(), "d")), "l")
@@ -299,6 +315,24 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
         device.modelId = cell(row, 30);
         device.sl651ResponseMode = cell(row, 31);
         device.debugEnabled = cellBool(row, 32);
+        service::collector::ConnectionConfig::apply(device, {
+            {"mc_frame", cell(row, 33)},
+            {"dlt645_version", cell(row, 34)},
+            {"mc_network", cell(row, 35)},
+            {"mc_station", cell(row, 36)},
+            {"mc_module_io", cell(row, 37)},
+            {"mc_multidrop", cell(row, 38)},
+            {"mc_monitoring_timer", cell(row, 39)},
+            {"fins_destination_network", cell(row, 40)},
+            {"fins_destination_node", cell(row, 41)},
+            {"fins_destination_unit", cell(row, 42)},
+            {"fins_source_network", cell(row, 43)},
+            {"fins_source_node", cell(row, 44)},
+            {"fins_source_unit", cell(row, 45)},
+            {"dlt645_wakeup_bytes", cell(row, 46)},
+            {"dlt645_write_password", cell(row, 47)},
+            {"dlt645_operator_code", cell(row, 48)}
+        });
         snapshot.devices.push_back(std::move(device));
     }
     std::unordered_map<std::string_view, std::size_t> deviceIndexes;
@@ -339,6 +373,8 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
         return query;
     };
     auto configured = configuredProtocol("Modbus", "registers", 1);
+    for (const auto protocol : {"MC", "FINS", "DLT645"})
+        configured.combine(ruvia::DbSetOperation::kUnionAll, configuredProtocol(protocol, "points", 4));
     const auto s7Configured = configuredProtocol("S7", "areas", 2);
     const auto sl651Configured = configuredProtocol("SL651", "funcs", 3);
     configured.combine(ruvia::DbSetOperation::kUnionAll, s7Configured).combine(ruvia::DbSetOperation::kUnionAll, sl651Configured);
@@ -429,6 +465,34 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
         element.decimals = cellInt(row, 10);
         element.writable = cellBool(row, 11);
         device->elements.push_back(std::move(element));
+    }
+
+    for (const auto protocol : {"MC", "FINS", "DLT645"}) {
+        auto query = protocolElements(protocol, "points", "element");
+        query.select({query.cast(query.column("id", "d"), Type::kText),
+            elementText(query, "id"), elementText(query, "name"), elementDefault(query, "unit", ""),
+            elementText(query, "dataType"), elementDefault(query, "byteOrder", std::string_view(protocol) == "MC" ? "LITTLE_ENDIAN" : "BIG_ENDIAN"),
+            elementDefault(query, "area", ""), elementDefault(query, "address", "0"),
+            elementDefault(query, "bit", "0"), elementDefault(query, "scale", "1"),
+            elementDefault(query, "decimals", "-1"), writableElement(query),
+            elementDefault(query, "identifier", ""), elementDefault(query, "length", "0"),
+            elementDefault(query, "digits", "0")});
+        orderElementAddress(query, "address");
+        const auto rows = co_await db.query(query);
+        for (const auto& row : rows) {
+            auto* device = findDevice(row[0].value().value_or(std::string_view{}));
+            if (!device) continue;
+            ElementDefinition element;
+            element.configKey = "element:" + cell(row, 1);
+            element.id = cell(row, 1); element.name = cell(row, 2); element.unit = cell(row, 3);
+            element.dataType = cell(row, 4); element.byteOrder = cell(row, 5); element.area = cell(row, 6);
+            element.address = cellInt(row, 7); element.startBit = cellInt(row, 8);
+            element.scale = decimal(row[9].value().value_or(std::string_view{}), "scale");
+            element.decimals = cellInt(row, 10); element.writable = cellBool(row, 11);
+            element.guideHex = cell(row, 12); element.length = cellInt(row, 13); element.digits = cellInt(row, 14);
+            if (element.dataType == "HEX") element.encoding = "HEX";
+            device->elements.push_back(std::move(element));
+        }
     }
 
     auto s7Query = protocolElements("S7", "areas", "element");

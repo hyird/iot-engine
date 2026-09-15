@@ -1,6 +1,152 @@
 import { z } from 'zod';
 export const protocolIdSchema = z.uuid({ error: 'id 必须是 UUID' });
-export const protocolTypeSchema = z.enum(['SL651', 'Modbus', 'S7']);
+export const protocolTypeSchema = z.enum(['SL651', 'Modbus', 'S7', 'MC', 'FINS', 'DLT645']);
+
+export function industrialConfigSchema(protocol: 'MC' | 'FINS' | 'DLT645') {
+    const integer = (max: number, min = 0) => z.number().int().min(min).max(max).optional();
+    const connection =
+        protocol === 'MC'
+            ? z.object({
+                  frame: z.enum(['3E', '4E']).optional(),
+                  network: integer(255),
+                  station: integer(255),
+                  moduleIo: integer(65535),
+                  multidrop: integer(255),
+                  monitoringTimer: integer(65535, 1),
+              })
+            : protocol === 'FINS'
+              ? z.object({
+                    sourceNetwork: integer(127),
+                    sourceNode: integer(254),
+                    sourceUnit: integer(255),
+                    destinationNetwork: integer(127),
+                    destinationNode: integer(254),
+                    destinationUnit: integer(255),
+                })
+              : z.object({
+                    version: z.enum(['1997', '2007']).optional(),
+                    wakeupBytes: integer(4),
+                    writePassword: z
+                        .string()
+                        .regex(/^(?:[\da-fA-F]{8})?$/)
+                        .optional(),
+                    operatorCode: z
+                        .string()
+                        .regex(/^(?:[\da-fA-F]{8})?$/)
+                        .optional(),
+                });
+    return z
+        .object({
+            storagePolicy: z.enum(['report', 'change']),
+            readInterval: integer(3600, 1),
+            commandFastReadDuration: integer(3600),
+            commandFastReadInterval: integer(3600, 1),
+            connection,
+            points: z
+                .array(
+                    z.object({
+                        id: z.uuid(),
+                        name: z.string().trim().min(1).max(100),
+                        unit: z.string().max(32).optional(),
+                        writable: z.boolean().optional(),
+                        dataType: z.enum([
+                            'BOOL',
+                            'INT16',
+                            'UINT16',
+                            'INT32',
+                            'UINT32',
+                            'FLOAT32',
+                            'INT64',
+                            'UINT64',
+                            'DOUBLE',
+                            'BCD',
+                            'BCD_SIGNED',
+                            'HEX',
+                        ]),
+                        area: z.string().optional(),
+                        address: integer(protocol === 'MC' ? 16777215 : 65535),
+                        bit: integer(15),
+                        byteOrder: z
+                            .enum([
+                                'BIG_ENDIAN',
+                                'LITTLE_ENDIAN',
+                                'BIG_ENDIAN_BYTE_SWAP',
+                                'LITTLE_ENDIAN_BYTE_SWAP',
+                            ])
+                            .optional(),
+                        scale: z.number().finite().optional(),
+                        decimals: integer(8, -1),
+                        identifier: z.string().optional(),
+                        length: integer(200, 1),
+                        digits: integer(8),
+                    })
+                )
+                .max(256),
+        })
+        .superRefine((config, context) => {
+            const ids = new Set<string>();
+            for (const [index, point] of config.points.entries()) {
+                const invalid = (message: string) =>
+                    context.addIssue({ code: 'custom', path: ['points', index], message });
+                if (ids.has(point.id)) invalid('点位标识不能重复');
+                ids.add(point.id);
+                if (protocol === 'DLT645') {
+                    const meter = config.connection as {
+                        version?: string;
+                        writePassword?: string;
+                        operatorCode?: string;
+                    };
+                    const legacy = meter.version === '1997';
+                    if (
+                        !new RegExp(`^[0-9A-Fa-f]{${legacy ? 4 : 8}}$`).test(point.identifier ?? '')
+                    )
+                        invalid('数据标识与 DL/T645 版本不匹配');
+                    if (
+                        !['BCD', 'BCD_SIGNED', 'HEX'].includes(point.dataType) ||
+                        !point.length ||
+                        (point.dataType !== 'HEX' && point.length > 8)
+                    )
+                        invalid('电表数据类型或长度无效');
+                    if (
+                        point.writable &&
+                        (!meter.writePassword ||
+                            (!legacy && !meter.operatorCode) ||
+                            (point.length ?? 0) > (legacy ? 44 : 38))
+                    )
+                        invalid('可写点位必须配置认证字段，长度不得超过写帧上限');
+                    continue;
+                }
+                const bits = point.dataType === 'BOOL';
+                if (['BCD', 'BCD_SIGNED', 'HEX'].includes(point.dataType))
+                    invalid('PLC 数据类型无效');
+                const width =
+                    bits || ['INT16', 'UINT16'].includes(point.dataType)
+                        ? 1
+                        : ['INT64', 'UINT64', 'DOUBLE'].includes(point.dataType)
+                          ? 4
+                          : 2;
+                if (point.address === undefined) invalid('请输入十进制地址');
+                if (protocol === 'MC') {
+                    const bitArea = ['M', 'X', 'Y', 'B', 'L', 'F', 'V', 'S', 'TS', 'CS'].includes(
+                        point.area ?? ''
+                    );
+                    if (
+                        (!bitArea &&
+                            !['D', 'W', 'R', 'ZR', 'TN', 'CN'].includes(point.area ?? '')) ||
+                        (bits && !bitArea)
+                    )
+                        invalid('软元件区域与数据类型不匹配');
+                    if ((point.address ?? 0) + width * (bitArea && !bits ? 16 : 1) - 1 > 16777215)
+                        invalid('地址范围越界');
+                } else if (
+                    !['D', 'CIO', 'W', 'H', 'A'].includes(point.area ?? '') ||
+                    (!bits && (point.bit ?? 0) !== 0) ||
+                    (point.address ?? 0) + (bits ? 0 : width - 1) > 65535
+                )
+                    invalid('FINS 区域、位地址或范围无效');
+            }
+        });
+}
 const sl651ElementSchema = z
     .object({
         guideHex: z.string().optional().default(''),
@@ -150,6 +296,17 @@ export const protocolCreateSchema = baseSchema
     .extend({ protocol: protocolTypeSchema })
     .superRefine((value, context) => {
         const config = value.config;
+        if (value.protocol === 'MC' || value.protocol === 'FINS' || value.protocol === 'DLT645') {
+            const result = industrialConfigSchema(value.protocol).safeParse(config);
+            if (!result.success)
+                for (const issue of result.error.issues)
+                    context.addIssue({
+                        code: 'custom',
+                        path: ['config', ...issue.path],
+                        message: issue.message,
+                    });
+            return;
+        }
         if (value.protocol === 'Modbus') {
             if (
                 ![

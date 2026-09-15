@@ -731,6 +731,22 @@ inline ruvia::DbQuery buildItemsQuery(std::string_view nodeId) {
             textDefault(query, jsonText(query, modelConfig, "responseMode"), "M1"),
             query.column(service::edge::persistence::LinkEntity::columnName<"debug_enabled">(), "l"),
             query.column(service::edge::persistence::DeviceEntity::columnName<"debug_enabled">(), "d"),
+            textDefault(query, jsonText(query, connectionConfig, "frame"), "3E"),
+            textDefault(query, jsonText(query, connectionConfig, "version"), "2007"),
+            textDefault(query, jsonText(query, connectionConfig, "network"), "0"),
+            textDefault(query, jsonText(query, connectionConfig, "station"), "255"),
+            textDefault(query, jsonText(query, connectionConfig, "moduleIo"), "1023"),
+            textDefault(query, jsonText(query, connectionConfig, "multidrop"), "0"),
+            textDefault(query, jsonText(query, connectionConfig, "monitoringTimer"), "16"),
+            textDefault(query, jsonText(query, connectionConfig, "destinationNetwork"), "0"),
+            textDefault(query, jsonText(query, connectionConfig, "destinationNode"), "0"),
+            textDefault(query, jsonText(query, connectionConfig, "destinationUnit"), "0"),
+            textDefault(query, jsonText(query, connectionConfig, "sourceNetwork"), "0"),
+            textDefault(query, jsonText(query, connectionConfig, "sourceNode"), "0"),
+            textDefault(query, jsonText(query, connectionConfig, "sourceUnit"), "0"),
+            textDefault(query, jsonText(query, connectionConfig, "wakeupBytes"), "4"),
+            textDefault(query, jsonText(query, connectionConfig, "writePassword"), ""),
+            textDefault(query, jsonText(query, connectionConfig, "operatorCode"), ""),
         })
         .from(service::edge::persistence::DeviceEntity::tableName(), "d")
         .join(
@@ -884,6 +900,73 @@ inline ruvia::DbQuery appendS7Query(std::string_view nodeId) {
                 query.binary(query.column(service::edge::persistence::DeviceModelEntity::columnName<"protocol">(), "p"),
                              ruvia::DbBinaryOperator::kEqual,
                              query.value(std::string_view{"S7"}))),
+            "p")
+        .joinFunction(ruvia::DbJoinType::kCross, itemSource, {}, "item",
+                      {.lateral = true})
+        .where(query.binary(query.column(service::edge::persistence::LinkEntity::columnName<"edge_node_id">(), "l"),
+                           ruvia::DbBinaryOperator::kEqual,
+                           query.cast(query.value(nodeId),
+                                      ruvia::DbDataType::kUuid)))
+        .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull,
+                              query.column(service::edge::persistence::DeviceEntity::columnName<"deleted_at">(), "d")))
+        .orderBy(query.column(service::edge::persistence::DeviceEntity::columnName<"id">(), "d"))
+        .addOrderBy(jsonText(query, item, "id"));
+    return query;
+}
+
+inline ruvia::DbQuery appendIndustrialQuery(std::string_view nodeId) {
+    ruvia::DbQuery query;
+    const auto config = query.column(service::edge::persistence::DeviceModelEntity::columnName<"config">(), "p");
+    const auto itemSource = query.call(
+        "jsonb_array_elements",
+        {query.coalesce({jsonGet(query, config, "points"),
+                         query.cast(query.value(std::string_view{"[]"}),
+                                    ruvia::DbDataType::kJsonb)})});
+    const auto item = query.column("item");
+    query
+        .select({
+            query.cast(query.column(service::edge::persistence::DeviceEntity::columnName<"id">(), "d"), ruvia::DbDataType::kText),
+            jsonText(query, item, "id"),
+            jsonText(query, item, "name"),
+            nullableDefault(query, jsonText(query, item, "unit"), ""),
+            textDefault(query, jsonText(query, item, "area"), ""),
+            textDefault(query, jsonText(query, item, "dataType"), "UINT16"),
+            textDefault(query, jsonText(query, item, "byteOrder"), "BIG_ENDIAN"),
+            textDefault(query, jsonText(query, item, "address"), "0"),
+            textDefault(query, jsonText(query, item, "bit"), "0"),
+            textDefault(query, jsonText(query, item, "scale"), "1"),
+            textDefault(query, jsonText(query, item, "decimals"), "-1"),
+            textDefault(query, jsonText(query, item, "identifier"), ""),
+            textDefault(query, jsonText(query, item, "length"), "4"),
+            textDefault(query, jsonText(query, item, "digits"), "2"),
+            booleanText(query, jsonText(query, item, "writable")),
+        })
+        .from(service::edge::persistence::DeviceEntity::tableName(), "d")
+        .join(
+            ruvia::DbJoinType::kInner, service::edge::persistence::LinkEntity::tableName(),
+            query.binary(
+                query.binary(query.column(service::edge::persistence::LinkEntity::columnName<"id">(), "l"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.column(service::edge::persistence::DeviceEntity::columnName<"link_id">(), "d")),
+                ruvia::DbBinaryOperator::kAnd,
+                query.binary(
+                    query.binary(query.column(service::edge::persistence::LinkEntity::columnName<"execution">(), "l"),
+                                 ruvia::DbBinaryOperator::kEqual,
+                                 query.value(std::string_view{"edge"})),
+                    ruvia::DbBinaryOperator::kAnd,
+                    query.unary(ruvia::DbUnaryOperator::kIsNull,
+                                query.column(service::edge::persistence::LinkEntity::columnName<"deleted_at">(), "l")))),
+            "l")
+        .join(
+            ruvia::DbJoinType::kInner, service::edge::persistence::DeviceModelEntity::tableName(),
+            query.binary(
+                query.binary(query.column(service::edge::persistence::DeviceModelEntity::columnName<"device_id">(), "p"),
+                             ruvia::DbBinaryOperator::kEqual,
+                             query.column(service::edge::persistence::DeviceEntity::columnName<"id">(), "d")),
+                ruvia::DbBinaryOperator::kAnd,
+                query.binary(query.column(service::edge::persistence::DeviceModelEntity::columnName<"protocol">(), "p"),
+                             ruvia::DbBinaryOperator::kIn,
+                             query.list({query.value("MC"), query.value("FINS"), query.value("DLT645")}))),
             "p")
         .joinFunction(ruvia::DbJoinType::kCross, itemSource, {}, "item",
                       {.lateral = true})
@@ -1227,6 +1310,9 @@ class ConfigService final {
             return pb::PROTOCOL_S7;
         if (value == "SL651")
             return pb::PROTOCOL_SL651;
+        if (value == "MC") return pb::PROTOCOL_MC;
+        if (value == "FINS") return pb::PROTOCOL_FINS;
+        if (value == "DLT645") return pb::PROTOCOL_DLT645;
         return pb::PROTOCOL_UNSPECIFIED;
     }
 
@@ -1305,6 +1391,30 @@ class ConfigService final {
                                                                std::string_view nodeId,
                                                                std::uint64_t revision) {
         auto items = co_await buildItems(c, nodeId);
+        std::set<std::string> requiredProtocols;
+        for (const auto& item : items) {
+            if (!item.has_device()) continue;
+            switch (item.device().protocol()) {
+            case pb::PROTOCOL_MC: requiredProtocols.emplace("MC"); break;
+            case pb::PROTOCOL_FINS: requiredProtocols.emplace("FINS"); break;
+            case pb::PROTOCOL_DLT645: requiredProtocols.emplace("DLT645"); break;
+            default: break;
+            }
+        }
+        for (const auto& name : requiredProtocols) {
+            ruvia::DbQuery capability;
+            capability.select(capability.coalesce({capability.call("jsonb_exists", {
+                config::detail::jsonGet(capability, capability.column(persistence::EdgeNodeEntity::columnName<"capability">()), "protocols"),
+                capability.value(name)}), capability.value(false)}))
+                .from(persistence::EdgeNodeEntity::tableName())
+                .where(capability.binary(capability.column(persistence::EdgeNodeEntity::columnName<"id">()),
+                    ruvia::DbBinaryOperator::kEqual, capability.cast(capability.value(nodeId), ruvia::DbDataType::kUuid)));
+            const auto rows = co_await c.db().query(capability);
+            if (rows.empty() || rows.front()[0].value().value_or("") != "t") {
+                co_await rejectBuild(c, nodeId, revision, "边缘固件尚未声明支持协议 " + name);
+                co_return std::nullopt;
+            }
+        }
         if (items.size() > 512) {
             co_await rejectBuild(c, nodeId, revision, "配置条目超过 nanopb v1 的 512 条上限");
             co_return std::nullopt;
@@ -1428,6 +1538,25 @@ class ConfigService final {
             deviceValue->set_device_code(row[2].value().value_or(std::string_view{}));
             deviceValue->set_name(row[1].value().value_or(std::string_view{}));
             deviceValue->set_protocol(protocol);
+            if (protocol == pb::PROTOCOL_MC || protocol == pb::PROTOCOL_FINS || protocol == pb::PROTOCOL_DLT645) {
+                auto* connection = deviceValue->mutable_industrial();
+                connection->set_mc_four_e(row[38].value().value_or("3E") == "4E");
+                connection->set_dlt645_version(static_cast<std::uint32_t>(integer(row[39].value().value_or("2007"), 2007)));
+                connection->set_mc_network(static_cast<std::uint32_t>(integer(row[40].value().value_or("0"), 0)));
+                connection->set_mc_station(static_cast<std::uint32_t>(integer(row[41].value().value_or("255"), 255)));
+                connection->set_mc_module_io(static_cast<std::uint32_t>(integer(row[42].value().value_or("1023"), 1023)));
+                connection->set_mc_multidrop(static_cast<std::uint32_t>(integer(row[43].value().value_or("0"), 0)));
+                connection->set_mc_monitoring_timer(static_cast<std::uint32_t>(integer(row[44].value().value_or("16"), 16)));
+                connection->set_fins_destination_network(static_cast<std::uint32_t>(integer(row[45].value().value_or("0"), 0)));
+                connection->set_fins_destination_node(static_cast<std::uint32_t>(integer(row[46].value().value_or("0"), 0)));
+                connection->set_fins_destination_unit(static_cast<std::uint32_t>(integer(row[47].value().value_or("0"), 0)));
+                connection->set_fins_source_network(static_cast<std::uint32_t>(integer(row[48].value().value_or("0"), 0)));
+                connection->set_fins_source_node(static_cast<std::uint32_t>(integer(row[49].value().value_or("0"), 0)));
+                connection->set_fins_source_unit(static_cast<std::uint32_t>(integer(row[50].value().value_or("0"), 0)));
+                connection->set_dlt645_wakeup_bytes(static_cast<std::uint32_t>(integer(row[51].value().value_or("4"), 4)));
+                packet(connection->mutable_dlt645_write_password(), "HEX", row[52].value().value_or(""), "meter password");
+                packet(connection->mutable_dlt645_operator_code(), "HEX", row[53].value().value_or(""), "meter operator");
+            }
             deviceValue->set_debug_enabled(row[37].value().value_or("") == "t");
             deviceValue->set_timezone(row[4].value().value_or(std::string_view{}));
             if (protocol == pb::PROTOCOL_SL651) {
@@ -1472,6 +1601,7 @@ class ConfigService final {
 
         co_await appendModbus(c, nodeId, items);
         co_await appendS7(c, nodeId, items);
+        co_await appendIndustrial(c, nodeId, items);
         co_await appendSl651(c, nodeId, items);
         co_return items;
     }
@@ -1529,6 +1659,33 @@ class ConfigService final {
             value->set_decimals(
                 static_cast<std::int32_t>(integer(row[10].value().value_or(std::string_view{}), -1)));
             value->set_writable(row[11].value().value_or(std::string_view{}) == "t");
+            items.push_back(std::move(item));
+        }
+    }
+
+    template <typename Context>
+    static ruvia::Task<void> appendIndustrial(Context& c, std::string_view nodeId,
+                                             std::vector<pb::ConfigItem>& items) {
+        const auto rows = co_await c.db().query(config::detail::appendIndustrialQuery(nodeId));
+        for (const auto& row : rows) {
+            pb::ConfigItem item;
+            item.set_kind(pb::CONFIG_ITEM_INDUSTRIAL_POINT);
+            auto* value = item.mutable_industrial_point();
+            setUuid(value->mutable_device_id(), row[0].value().value_or(""));
+            value->set_element_id(row[1].value().value_or(""));
+            value->set_name(row[2].value().value_or(""));
+            value->set_unit(row[3].value().value_or(""));
+            value->set_area(row[4].value().value_or(""));
+            value->set_data_type(row[5].value().value_or(""));
+            value->set_byte_order(row[6].value().value_or(""));
+            value->set_address(static_cast<std::uint32_t>(integer(row[7].value().value_or("0"))));
+            value->set_bit(static_cast<std::uint32_t>(integer(row[8].value().value_or("0"))));
+            value->set_scale(config::detail::number(row[9].value().value_or("1"), 1));
+            value->set_decimals(static_cast<std::int32_t>(integer(row[10].value().value_or("-1"), -1)));
+            value->set_identifier(row[11].value().value_or(""));
+            value->set_length(static_cast<std::uint32_t>(integer(row[12].value().value_or("4"), 4)));
+            value->set_digits(static_cast<std::uint32_t>(integer(row[13].value().value_or("2"), 2)));
+            value->set_writable(row[14].value().value_or("") == "t");
             items.push_back(std::move(item));
         }
     }
@@ -2146,8 +2303,8 @@ protected:
         return output;
     }
 
-    static std::string
-    jsonArray(const google::protobuf::RepeatedPtrField<std::string>& bridgePorts) {
+    template <typename Strings>
+    static std::string jsonArray(const Strings& bridgePorts) {
         std::string output{"["};
         bool first = true;
         for (const auto& port : bridgePorts) {
@@ -2258,11 +2415,28 @@ protected:
                 });
             (void)co_await context.db().execute(insert);
         }
+        std::vector<std::string> supported;
+        for (const auto protocol : report.supported_protocols()) {
+            switch (protocol) {
+            case pb::PROTOCOL_MODBUS: supported.emplace_back("Modbus"); break;
+            case pb::PROTOCOL_S7: supported.emplace_back("S7"); break;
+            case pb::PROTOCOL_SL651: supported.emplace_back("SL651"); break;
+            case pb::PROTOCOL_MC: supported.emplace_back("MC"); break;
+            case pb::PROTOCOL_FINS: supported.emplace_back("FINS"); break;
+            case pb::PROTOCOL_DLT645: supported.emplace_back("DLT645"); break;
+            default: break;
+            }
+        }
+        const auto protocols = jsonArray(supported);
         ruvia::DbQuery terminal;
         terminal.update(service::edge::persistence::EdgeNodeEntity::tableName())
             .set(service::edge::persistence::EdgeNodeEntity::columnName<"capability">(), terminal.call(
                                    "jsonb_set",
-                                   {terminal.column(service::edge::persistence::EdgeNodeEntity::columnName<"capability">()),
+                                   {terminal.call("jsonb_set", {
+                                        terminal.column(service::edge::persistence::EdgeNodeEntity::columnName<"capability">()),
+                                        config::detail::jsonPath(terminal, "{protocols}"),
+                                        terminal.cast(terminal.value(std::string_view(protocols)), ruvia::DbDataType::kJsonb),
+                                        terminal.value(true)}),
                                     config::detail::jsonPath(terminal, "{terminal}"),
                                     config::detail::toJsonb(
                                         terminal, terminal.cast(terminal.value(
@@ -2814,6 +2988,9 @@ protected:
             return "S7";
         if (value == pb::PROTOCOL_SL651)
             return "SL651";
+        if (value == pb::PROTOCOL_MC) return "MC";
+        if (value == pb::PROTOCOL_FINS) return "FINS";
+        if (value == pb::PROTOCOL_DLT645) return "DLT645";
         return {};
     }
 
@@ -2833,6 +3010,21 @@ protected:
         }
         case pb::ScalarValue::kStringValue:
             return "\"" + jsonEscape(value.string_value()) + "\"";
+        case pb::ScalarValue::kDecimalValue: {
+            const auto& text = value.decimal_value();
+            std::size_t index = !text.empty() && text[0] == '-' ? 1 : 0;
+            if (index == text.size() || text.size() > 32) throw std::invalid_argument("invalid decimal telemetry");
+            const auto start = index;
+            while (index < text.size() && text[index] >= '0' && text[index] <= '9') ++index;
+            if (index == start || (index - start > 1 && text[start] == '0')) throw std::invalid_argument("invalid decimal telemetry");
+            if (index < text.size() && text[index] == '.') {
+                const auto fraction = ++index;
+                while (index < text.size() && text[index] >= '0' && text[index] <= '9') ++index;
+                if (fraction == index) throw std::invalid_argument("invalid decimal telemetry");
+            }
+            if (index != text.size()) throw std::invalid_argument("invalid decimal telemetry");
+            return text;
+        }
         case pb::ScalarValue::kBytesValue:
             return "\"" + hex(value.bytes_value()) + "\"";
         default:
@@ -2852,6 +3044,8 @@ protected:
             return "DOUBLE";
         case pb::VALUE_STRING:
             return "STRING";
+        case pb::VALUE_DECIMAL:
+            return "DECIMAL";
         case pb::VALUE_BYTES:
             return "BYTES";
         default:
@@ -2875,6 +3069,8 @@ protected:
         }
         case pb::ScalarValue::kStringValue:
             return value.string_value();
+        case pb::ScalarValue::kDecimalValue:
+            return scalarJson(value);
         case pb::ScalarValue::kBytesValue:
             return hex(value.bytes_value());
         default:
@@ -3009,7 +3205,8 @@ return parts
             record.device_id().size() != 16 || record.part_count() == 0 ||
             record.part_count() > 256 || record.part_index() >= record.part_count() ||
             (record.protocol() != pb::PROTOCOL_SL651 && record.protocol() != pb::PROTOCOL_MODBUS &&
-             record.protocol() != pb::PROTOCOL_S7) || !record.raw_payload().empty() ||
+             record.protocol() != pb::PROTOCOL_S7 && record.protocol() != pb::PROTOCOL_MC &&
+             record.protocol() != pb::PROTOCOL_FINS && record.protocol() != pb::PROTOCOL_DLT645) || !record.raw_payload().empty() ||
             record.ByteSizeLong() > 14000)
             throw std::runtime_error("invalid telemetry upload part");
         const persistence::TelemetryUploadRecord stored{std::string(nodeId),

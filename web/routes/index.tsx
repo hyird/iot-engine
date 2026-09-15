@@ -1,3 +1,12 @@
+const Dlt645ConfigPage = lazy(() =>
+    import('@/pages/iot/protocol').then((module) => ({ default: module.Dlt645ConfigPage }))
+);
+const FinsConfigPage = lazy(() =>
+    import('@/pages/iot/protocol').then((module) => ({ default: module.FinsConfigPage }))
+);
+const McConfigPage = lazy(() =>
+    import('@/pages/iot/protocol').then((module) => ({ default: module.McConfigPage }))
+);
 import { Button, Result, Spin } from 'antd';
 import { lazy, Suspense } from 'react';
 import { createHashRouter, Navigate, Outlet, RouterProvider, useLocation } from 'react-router-dom';
@@ -70,6 +79,9 @@ const router = createHashRouter([
                     { path: 'iot/modbus', element: <ModbusConfigPage /> },
                     { path: 'iot/sl651', element: <SL651ConfigPage /> },
                     { path: 'iot/s7', element: <S7ConfigPage /> },
+                    { path: 'iot/dlt645', element: <Dlt645ConfigPage /> },
+                    { path: 'iot/fins', element: <FinsConfigPage /> },
+                    { path: 'iot/mc', element: <McConfigPage /> },
                     { path: 'device', element: <DevicePage /> },
                     { path: 'iot/open-access', element: <AccessPage /> },
                     { path: 'iot/edge', element: <EdgeNodePage /> },

@@ -34,6 +34,9 @@
 #include "service/features/collector/modbus/modbus.protocol.h"
 #include "service/features/collector/redis/redis.transport.h"
 #include "service/features/collector/s7/s7.protocol.h"
+#include "service/features/collector/mc/mc.protocol.h"
+#include "service/features/collector/fins/fins.protocol.h"
+#include "service/features/collector/dlt645/dlt645.protocol.h"
 #include "service/features/collector/sl651/sl651.protocol.h"
 #include "service/features/collector/tcp/tcp.transport.h"
 #include "service/features/messaging/messaging.transport.h"
@@ -195,6 +198,9 @@ class CollectorWorker final {
         ProtocolSessionFactoryRegistry result;
         result.add(std::make_unique<modbus::SessionFactory>());
         result.add(std::make_unique<s7::SessionFactory>());
+        result.add(std::make_unique<mc::SessionFactory>());
+        result.add(std::make_unique<fins::SessionFactory>());
+        result.add(std::make_unique<dlt645::SessionFactory>());
         result.add(std::make_unique<sl651::SessionFactory>());
         return result;
     }
@@ -1155,12 +1161,11 @@ class CollectorWorker final {
             logContext.connectionId = message.get("connection_id");
             logContext.messageId = message.get("message_id");
             logContext.causationId = message.get("causation_id");
-            const auto raw = message::fromHex(message.get("payload_hex"));
             service::packet_log::write(
                 service::packet_log::Level::Error,
                 "TX_REJECTED",
                 logContext,
-                raw,
+                std::span<const std::uint8_t>{},
                 parseError
             );
             co_await deadLetterAndAcknowledge(message, "socket_egress_invalid", parseError, stream, group);
@@ -1179,7 +1184,7 @@ class CollectorWorker final {
                 service::packet_log::Level::Warn,
                 "TX_REJECTED",
                 logContext,
-                packet.payload,
+                std::span<const std::uint8_t>{},
                 "stale_worker_instance"
             );
             co_await deadLetterAndAcknowledge(message, "stale_worker_instance", {}, stream, group);
@@ -1207,7 +1212,7 @@ class CollectorWorker final {
                 service::packet_log::Level::Warn,
                 "TX_REJECTED",
                 logContext,
-                packet.payload,
+                std::span<const std::uint8_t>{},
                 "stale_session_epoch"
             );
             co_await deadLetterAndAcknowledge(message, "stale_session_epoch", {}, stream, group);
@@ -1241,13 +1246,13 @@ class CollectorWorker final {
             }
             egressLog.remoteAddress = network->second.remoteAddress;
         }
-        service::packet_log::write(service::packet_log::Level::Debug, "TX_BYTES", egressLogContext(egressLog), packet.payload);
-        egressLog.debugPayload = packet.payload;
+        egressLog.debugPayload = engine_.packetForLogging(egressLog.protocol, packet.payload);
+        service::packet_log::write(service::packet_log::Level::Debug, "TX_BYTES", egressLogContext(egressLog), egressLog.debugPayload);
         egressLog.debugTime = message::utcNowMilliseconds();
         egressLog.awaitResponse = engine_.expectsResponse(egressLog.protocol, egressLog.causationId);
         if (egressLog.awaitResponse) debugPendingSends_[packet.connectionId] = egressLog;
         co_await captureDebug(egressLog.linkId, packet.connectionId, egressLog.remoteAddress,
-            "TX", packet.payload, egressLog.debugTime, egressLog.deviceId, false, egressLog.messageId, "sending", {}, {}, egressLog.replyToPacketId);
+            "TX", egressLog.debugPayload, egressLog.debugTime, egressLog.deviceId, false, egressLog.messageId, "sending", {}, {}, egressLog.replyToPacketId);
         tcp_.send(packet.connectionId, std::move(packet.payload), [this, entryId, egressLog = std::move(egressLog)](bool success) mutable {
             if (!stopping_) {
                 scope_.spawn(

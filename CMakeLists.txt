@@ -324,6 +324,10 @@ if(MSVC)
 endif()
 
 enable_testing()
+iot_engine_add_test(industrial-protocol
+    SOURCES tests/industrial-protocol-test.cpp
+    LIBRARIES ruvia::web OpenSSL::Crypto)
+
 iot_engine_add_test(context-operation-memory LARGE
     SOURCES tests/context-operation-memory-test.cpp
     LIBRARIES ruvia::web)

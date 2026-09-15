@@ -3,7 +3,45 @@ import type { PageParams } from '@/types/pagination';
  * 协议配置类型定义
  */
 /** 协议类型 */
-export type ProtocolType = 'SL651' | 'Modbus' | 'S7';
+export type ProtocolType = 'SL651' | 'Modbus' | 'S7' | 'MC' | 'FINS' | 'DLT645';
+export type IndustrialProtocol = 'MC' | 'FINS' | 'DLT645';
+export interface IndustrialPoint {
+    id: string;
+    name: string;
+    unit?: string;
+    dataType: ModbusDataType | 'BCD' | 'BCD_SIGNED' | 'HEX';
+    area?: string;
+    address?: number;
+    bit?: number;
+    byteOrder?: ModbusByteOrder;
+    scale?: number;
+    decimals?: number;
+    identifier?: string;
+    length?: number;
+    digits?: number;
+    writable?: boolean;
+}
+export interface IndustrialConfig extends DeviceTypeTimingConfig {
+    connection: {
+        frame?: '3E' | '4E';
+        network?: number;
+        station?: number;
+        moduleIo?: number;
+        multidrop?: number;
+        monitoringTimer?: number;
+        sourceNetwork?: number;
+        sourceNode?: number;
+        sourceUnit?: number;
+        destinationNetwork?: number;
+        destinationNode?: number;
+        destinationUnit?: number;
+        version?: '1997' | '2007';
+        wakeupBytes?: number;
+        writePassword?: string;
+        operatorCode?: string;
+    };
+    points: IndustrialPoint[];
+}
 /** 历史数据存储策略 */
 export type StoragePolicy = 'report' | 'change';
 export const STORAGE_POLICY_OPTIONS: {
@@ -251,7 +289,7 @@ export interface ProtocolConfigItem {
     protocol: ProtocolType;
     name: string;
     enabled: boolean;
-    config: SL651Config | ModbusConfig | S7Config | Record<string, unknown>;
+    config: SL651Config | ModbusConfig | S7Config | IndustrialConfig | Record<string, unknown>;
     remark?: string;
     created_at?: string;
     updated_at?: string;
@@ -270,14 +308,14 @@ export interface CreateProtocolConfigDto {
     protocol: ProtocolType;
     name: string;
     enabled?: boolean;
-    config: SL651Config | ModbusConfig | S7Config | Record<string, unknown>;
+    config: SL651Config | ModbusConfig | S7Config | IndustrialConfig | Record<string, unknown>;
     remark?: string;
 }
 /** 更新协议配置 DTO */
 export interface UpdateProtocolConfigDto {
     name?: string;
     enabled?: boolean;
-    config?: SL651Config | ModbusConfig | S7Config | Record<string, unknown>;
+    config?: SL651Config | ModbusConfig | S7Config | IndustrialConfig | Record<string, unknown>;
     remark?: string;
 }
 /** 协议配置命名空间 */

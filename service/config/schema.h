@@ -9,6 +9,7 @@
 #include <utility>
 #include "service/config/model-revisions.h"
 #include "service/config/current_device_model.h"
+#include "service/config/industrial_protocols.h"
 #include "service/config/channels.h"
 
 namespace service::config {
@@ -1815,6 +1816,24 @@ END $schema$;
             schema.addColumn(table, {.name="debug_enabled", .type={.dataType=Type::kBoolean}, .defaultValue=q.value(false)});
         auto result = schema.compile("0048_packet_debug_switches");
         return std::move(result.front());
+    }(),
+    [] {
+        ruvia::DbSchema schema({.driver=ruvia::DbDriver::kPostgreSql});
+        ruvia::DbQuery q;
+        for (const auto table : {"link", "protocol_config", "device_data"}) {
+            const auto name = std::string(table) + "_protocol_check";
+            schema.dropConstraint(table, name);
+            schema.addConstraint(table, {.name=name, .kind=ruvia::DbConstraintKind::kCheck,
+                .check=q.binary(q.column("protocol"), ruvia::DbBinaryOperator::kIn,
+                    q.list({q.value("SL651"), q.value("Modbus"), q.value("S7"),
+                        q.value("MC"), q.value("FINS"), q.value("DLT645")}))});
+        }
+        auto statements = schema.compile("0049_industrial_protocols");
+        std::string sql = "DO $industrial$ BEGIN\n";
+        for (const auto& statement : statements)
+            sql += "EXECUTE $ddl$" + std::string(statement.sql()) + "$ddl$;\n";
+        sql += "EXECUTE $ddl$" + std::string(kIndustrialProtocolAddressMigration) + "$ddl$;\nEND $industrial$;";
+        return ruvia::DbMigration({.id="0049_industrial_protocols", .sql=std::move(sql)});
     }(),
     };
     // Only audited original digests may transition to their equivalent ORM definitions.

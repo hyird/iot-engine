@@ -674,7 +674,8 @@ private:
                                                service::collector::DeviceDefinition& device) {
         using Op = ruvia::DbBinaryOperator;
         using Type = ruvia::DbDataType;
-        if (device.protocol != "Modbus" && device.protocol != "S7" && device.protocol != "SL651")
+        if (device.protocol != "Modbus" && device.protocol != "S7" && device.protocol != "SL651" &&
+            device.protocol != "MC" && device.protocol != "FINS" && device.protocol != "DLT645")
             service::common::fail(18010, "边缘节点不支持该设备协议", 400);
         ruvia::DbQuery elements;
         const auto field = [&](std::string_view key) {
@@ -688,6 +689,8 @@ private:
         const auto functionText = [&](std::string_view key) {
             return elements.binary(elements.column("func"), Op::kJsonGetText, elements.value(key));
         };
+        const auto isIndustrial = device.protocol == "MC" || device.protocol == "FINS" || device.protocol == "DLT645";
+        const auto isDlt645 = device.protocol == "DLT645";
         const auto isSl651 = device.protocol == "SL651";
         const auto isS7 = device.protocol == "S7";
         const auto writable = elements.binary(elements.call("lower", { elements.coalesce({ field("writable"), elements.value("") }) }), Op::kIn,
@@ -695,16 +698,16 @@ private:
         elements.select({ field("id"), field("name"), elements.coalesce({ field("unit"), elements.value("") }),
                 isSl651 ? elements.value("") : isS7 ? elements.coalesce({ field("dataType"), elements.value("BOOL") }) : field("dataType"),
                 isSl651 ? functionText("dir") : elements.value(""),
-                isSl651 ? integer("length", 1) : isS7 ? integer("size", 1) : elements.value(0),
-                isSl651 ? integer("digits", 0) : elements.value(0),
+                (isSl651 || isDlt645) ? integer("length", 1) : isS7 ? integer("size", 1) : elements.value(0),
+                (isSl651 || isDlt645) ? integer("digits", 0) : elements.value(0),
                 isSl651 ? elements.binary(functionText("dir"), Op::kEqual, elements.value("DOWN")) : writable,
                 isSl651 ? elements.column("response_element") : elements.cast(elements.value(false), Type::kBoolean),
-                isSl651 ? functionText("funcCode") : elements.value(""), isSl651 ? field("encode") : elements.value("") })
+                isSl651 ? functionText("funcCode") : elements.value(""), isSl651 ? field("encode") : isDlt645 ? field("dataType") : elements.value("") })
             .from(service::command::persistence::DeviceEntity::tableName(), "d")
             .join(ruvia::DbJoinType::kInner, service::command::persistence::LinkEntity::tableName(), elements.binary(elements.column(service::command::persistence::LinkEntity::columnName<"id">(), "l"), Op::kEqual, elements.column(service::command::persistence::DeviceEntity::columnName<"link_id">(), "d")), "l")
             .join(ruvia::DbJoinType::kInner, service::command::persistence::DeviceModelEntity::tableName(), elements.binary(elements.column(service::command::persistence::DeviceModelEntity::columnName<"device_id">(), "p"), Op::kEqual, elements.column(service::command::persistence::DeviceEntity::columnName<"id">(), "d")), "p")
             .joinFunction(ruvia::DbJoinType::kCross, elements.call("jsonb_array_elements", { elements.coalesce({
-                elements.binary(elements.column(service::command::persistence::DeviceModelEntity::columnName<"config">(), "p"), Op::kJsonGet, elements.value(isSl651 ? "funcs" : isS7 ? "areas" : "registers")),
+                elements.binary(elements.column(service::command::persistence::DeviceModelEntity::columnName<"config">(), "p"), Op::kJsonGet, elements.value(isSl651 ? "funcs" : isS7 ? "areas" : isIndustrial ? "points" : "registers")),
                 elements.cast(elements.value("[]"), Type::kJsonb) }) }), {}, isSl651 ? "func" : "item", { .lateral = true })
             .andWhere(elements.binary(elements.column(service::command::persistence::DeviceEntity::columnName<"id">(), "d"), Op::kEqual, elements.cast(elements.value(device.id), Type::kUuid)))
             .andWhere(elements.binary(elements.column(service::command::persistence::DeviceModelEntity::columnName<"protocol">(), "p"), Op::kEqual, elements.value(device.protocol)))
