@@ -5437,79 +5437,197 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
         );
         setPointOpen(true);
     };
-    if (!canQuery) return <Result status="403" title="无权查看设备类型" />;
-    if (error) return <Result status="error" title="设备类型加载失败" subTitle={error.message} />;
+    if (!canQuery || error) {
+        return (
+            <PageContainer title={`${label}配置`}>
+                <Result
+                    status={error ? 'error' : '403'}
+                    title={error ? '设备类型加载失败' : '无权访问'}
+                    subTitle={error?.message ?? '您没有权限访问此页面'}
+                />
+            </PageContainer>
+        );
+    }
     return (
-        <PageContainer
-            title={`${label} 配置`}
-            header={
-                <Space wrap>
-                    {has('iot:protocol:add') && (
-                        <Button type="primary" onClick={() => openType()}>
-                            新增设备类型
-                        </Button>
-                    )}
-                    {has('iot:protocol:import') && has('iot:protocol:add') && (
-                        <Button loading={transfer.importing} onClick={transfer.triggerImport}>
-                            导入
-                        </Button>
-                    )}
-                    {has('iot:protocol:export') && (
-                        <Button loading={transfer.exporting} onClick={transfer.exportConfigs}>
-                            导出
-                        </Button>
-                    )}
-                </Space>
-            }
-        >
-            <div className="flex h-full min-h-0 flex-col gap-4 md:flex-row">
-                <div className="max-h-32 shrink-0 overflow-auto border-b pb-3 md:max-h-none md:w-56 md:border-r md:border-b-0 md:pr-3 md:pb-0">
-                    <Tree
-                        selectedKeys={active ? [active.id] : []}
-                        onSelect={(keys) => setSelected(String(keys[0] ?? ''))}
-                        treeData={types.map((item) => ({ key: item.id, title: item.name }))}
-                    />
-                    {!isLoading && !types.length && (
-                        <Empty description="暂无设备类型" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-                    )}
-                </div>
-                <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
-                    {active ? (
-                        <>
-                            <Flex justify="space-between" wrap gap={8} className="shrink-0">
-                                <Space wrap>
-                                    <strong>{active.name}</strong>
-                                    <Tag>{active.enabled ? '启用' : '停用'}</Tag>
-                                    <span>采集间隔 {config?.readInterval ?? 1} 秒</span>
-                                </Space>
-                                <Space wrap>
-                                    {canEdit && (
-                                        <>
-                                            <Button onClick={() => openType(active)}>
-                                                连接与采集参数
-                                            </Button>
-                                            <Button type="primary" onClick={() => openPoint()}>
-                                                新增点位
-                                            </Button>
-                                        </>
-                                    )}
-                                    {has('iot:protocol:delete') && (
-                                        <Popconfirm
-                                            title="删除此设备类型？"
-                                            onConfirm={() => remove.mutateAsync(active.id)}
+        <PageContainer title={`${label}配置`}>
+            <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden lg:flex-row lg:gap-0">
+                <div className="h-48 min-h-0 shrink-0 lg:h-full lg:w-[360px] lg:pr-3">
+                    <Card
+                        title="设备类型"
+                        className="flex h-full min-h-0 flex-col overflow-hidden"
+                        styles={{ body: { flex: 1, minHeight: 0, overflow: 'auto', padding: 16 } }}
+                        extra={
+                            <Space size={4}>
+                                {has('iot:protocol:add') && (
+                                    <Button size="small" type="primary" onClick={() => openType()}>
+                                        新增
+                                    </Button>
+                                )}
+                                {canEdit && (
+                                    <Button
+                                        size="small"
+                                        disabled={!active}
+                                        onClick={() => openType(active)}
+                                    >
+                                        编辑
+                                    </Button>
+                                )}
+                                {has('iot:protocol:delete') && (
+                                    <Popconfirm
+                                        title="确认删除该设备类型？"
+                                        disabled={!active}
+                                        onConfirm={() => active && remove.mutateAsync(active.id)}
+                                    >
+                                        <Button
+                                            size="small"
+                                            danger
+                                            disabled={!active}
+                                            loading={remove.isPending}
                                         >
-                                            <Button danger>删除类型</Button>
-                                        </Popconfirm>
+                                            删除
+                                        </Button>
+                                    </Popconfirm>
+                                )}
+                                {has('iot:protocol:export') && (
+                                    <Tooltip title="导出">
+                                        <Button
+                                            size="small"
+                                            aria-label="导出"
+                                            icon={<DownloadOutlined />}
+                                            disabled={isLoading || transfer.importing}
+                                            loading={transfer.exporting}
+                                            onClick={transfer.exportConfigs}
+                                        />
+                                    </Tooltip>
+                                )}
+                                {has('iot:protocol:import') && has('iot:protocol:add') && (
+                                    <Tooltip title="导入">
+                                        <Button
+                                            size="small"
+                                            aria-label="导入"
+                                            icon={<UploadOutlined />}
+                                            disabled={transfer.exporting}
+                                            loading={transfer.importing}
+                                            onClick={transfer.triggerImport}
+                                        />
+                                    </Tooltip>
+                                )}
+                            </Space>
+                        }
+                    >
+                        {isLoading ? (
+                            <Skeleton active paragraph={{ rows: 6 }} />
+                        ) : types.length === 0 ? (
+                            <Empty description="暂无设备类型" />
+                        ) : (
+                            <Tree
+                                blockNode
+                                className="[&_.ant-tree-switcher]:hidden"
+                                selectedKeys={active ? [active.id] : []}
+                                onSelect={(keys) => {
+                                    if (keys.length) setSelected(String(keys[0]));
+                                }}
+                                treeData={types.map((item) => ({
+                                    key: item.id,
+                                    title: (
+                                        <Tooltip
+                                            title={item.remark || '暂无备注'}
+                                            placement="right"
+                                        >
+                                            <Flex
+                                                justify="space-between"
+                                                align="center"
+                                                gap={4}
+                                                className="h-8 min-w-0 p-1"
+                                            >
+                                                <span className="min-w-0 truncate">
+                                                    {item.name}
+                                                </span>
+                                                <Space size={4} className="shrink-0">
+                                                    <Tag color="blue">
+                                                        {(item.config as IndustrialConfig).points
+                                                            ?.length ?? 0}
+                                                        个点位
+                                                    </Tag>
+                                                    <Tag color={item.enabled ? 'green' : 'red'}>
+                                                        {item.enabled ? '启用' : '禁用'}
+                                                    </Tag>
+                                                </Space>
+                                            </Flex>
+                                        </Tooltip>
+                                    ),
+                                }))}
+                            />
+                        )}
+                    </Card>
+                </div>
+                <div className="min-h-0 min-w-0 flex-1">
+                    <Card
+                        title={
+                            active ? (
+                                <Space size={4} wrap>
+                                    <span>点位配置</span>
+                                    <Tag>
+                                        {protocol === 'MC'
+                                            ? `${config?.connection.frame ?? '3E'} 帧`
+                                            : protocol === 'DLT645'
+                                              ? `DL/T645-${config?.connection.version ?? '2007'}`
+                                              : 'FINS/TCP'}
+                                    </Tag>
+                                    <Tag>间隔 {config?.readInterval ?? 1}s</Tag>
+                                    <Tag color="blue">{config?.points.length ?? 0} 个点位</Tag>
+                                    {!!config?.points.some((point) => point.writable) && (
+                                        <Tag color="orange">
+                                            {config.points.filter((point) => point.writable).length}{' '}
+                                            个可写
+                                        </Tag>
                                     )}
                                 </Space>
-                            </Flex>
+                            ) : (
+                                '暂无设备类型'
+                            )
+                        }
+                        className="flex h-full min-h-0 flex-col overflow-hidden"
+                        styles={{
+                            header: { flexShrink: 0 },
+                            body: {
+                                display: 'flex',
+                                flexDirection: 'column',
+                                flex: 1,
+                                minHeight: 0,
+                                overflow: 'hidden',
+                                padding: 16,
+                            },
+                        }}
+                        extra={
+                            active &&
+                            canEdit && (
+                                <Button type="primary" onClick={() => openPoint()}>
+                                    新增点位
+                                </Button>
+                            )
+                        }
+                    >
+                        {isLoading ? (
+                            <Skeleton active paragraph={{ rows: 6 }} />
+                        ) : active ? (
                             <div ref={tableViewport} className="min-h-0 flex-1 overflow-hidden">
                                 <Table<IndustrialPoint>
+                                    key={active.id}
                                     rowKey="id"
                                     size="small"
                                     loading={isLoading}
                                     dataSource={config?.points ?? []}
-                                    pagination={{ pageSize: 20, showSizeChanger: false }}
+                                    pagination={{
+                                        pageSize: 20,
+                                        showSizeChanger: false,
+                                        showTotal: (total) => `共 ${total} 个点位`,
+                                    }}
+                                    locale={{
+                                        emptyText: (
+                                            <Empty description="暂无点位，点击右上角新增点位" />
+                                        ),
+                                    }}
                                     scroll={{ x: 920, y: tableBodyHeight }}
                                     columns={[
                                         { title: '名称', dataIndex: 'name', width: 160 },
@@ -5572,10 +5690,10 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
                                     ]}
                                 />
                             </div>
-                        </>
-                    ) : (
-                        <Empty description="新增或选择设备类型后配置点位" />
-                    )}
+                        ) : (
+                            <Empty description="暂无设备类型，请先新增设备类型" />
+                        )}
+                    </Card>
                 </div>
             </div>
             <FormModal
@@ -5604,12 +5722,20 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
                 }}
             >
                 <Form name={`industrial-type-${protocol}`} form={typeForm} layout="vertical">
-                    <Form.Item name="name" label="名称" rules={[{ required: true, max: 64 }]}>
-                        <Input />
-                    </Form.Item>
-                    <Form.Item name="enabled" label="启用" valuePropName="checked">
-                        <Switch />
-                    </Form.Item>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        基础信息
+                    </Divider>
+                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                        <Form.Item name="name" label="名称" rules={[{ required: true, max: 64 }]}>
+                            <Input />
+                        </Form.Item>
+                        <Form.Item name="enabled" label="启用" valuePropName="checked">
+                            <Switch />
+                        </Form.Item>
+                    </div>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        连接参数
+                    </Divider>
                     {protocol === 'MC' && (
                         <Form.Item name={['config', 'connection', 'frame']} label="二进制帧格式">
                             <Select
@@ -5664,23 +5790,39 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
                             </Form.Item>
                         </>
                     )}
-                    <Form.Item name={['config', 'storagePolicy']} label="历史存储策略">
-                        <Select options={STORAGE_POLICY_OPTIONS} />
-                    </Form.Item>
-                    <Form.Item name={['config', 'readInterval']} label="采集间隔（秒）">
-                        <InputNumber min={1} max={3600} precision={0} />
-                    </Form.Item>
-                    <Form.Item
-                        name={['config', 'commandFastReadDuration']}
-                        label="写入后快读时长（秒，0 关闭）"
-                    >
-                        <InputNumber min={0} max={3600} precision={0} />
-                    </Form.Item>
-                    <Form.Item name={['config', 'commandFastReadInterval']} label="快读间隔（秒）">
-                        <InputNumber min={1} max={3600} precision={0} />
-                    </Form.Item>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        采集与存储
+                    </Divider>
+                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                        <Form.Item name={['config', 'storagePolicy']} label="历史存储策略">
+                            <Select options={STORAGE_POLICY_OPTIONS} />
+                        </Form.Item>
+                        <Form.Item name={['config', 'readInterval']} label="采集间隔（秒）">
+                            <InputNumber className="w-full" min={1} max={3600} precision={0} />
+                        </Form.Item>
+                    </div>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        下发快读
+                    </Divider>
+                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                        <Form.Item
+                            name={['config', 'commandFastReadDuration']}
+                            label="写入后快读时长（秒，0 关闭）"
+                        >
+                            <InputNumber className="w-full" min={0} max={3600} precision={0} />
+                        </Form.Item>
+                        <Form.Item
+                            name={['config', 'commandFastReadInterval']}
+                            label="快读间隔（秒）"
+                        >
+                            <InputNumber className="w-full" min={1} max={3600} precision={0} />
+                        </Form.Item>
+                    </div>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        备注
+                    </Divider>
                     <Form.Item name="remark" label="备注">
-                        <Input.TextArea />
+                        <Input.TextArea rows={3} placeholder="选填，说明设备类型的用途" />
                     </Form.Item>
                 </Form>
             </FormModal>
@@ -5703,120 +5845,153 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
                 }}
             >
                 <Form name={`industrial-point-${protocol}`} form={pointForm} layout="vertical">
-                    <Form.Item name="id" label="点位标识" rules={[{ required: true, max: 64 }]}>
-                        <Input disabled={Boolean(editingPoint)} />
-                    </Form.Item>
-                    <Form.Item name="name" label="名称" rules={[{ required: true, max: 128 }]}>
-                        <Input />
-                    </Form.Item>
-                    <Form.Item name="dataType" label="数据类型" rules={[{ required: true }]}>
-                        <Select
-                            onChange={() => pointForm.setFieldValue('bit', 0)}
-                            options={(protocol === 'DLT645'
-                                ? ['BCD', 'BCD_SIGNED', 'HEX']
-                                : [
-                                      'BOOL',
-                                      'INT16',
-                                      'UINT16',
-                                      'INT32',
-                                      'UINT32',
-                                      'FLOAT32',
-                                      'INT64',
-                                      'UINT64',
-                                      'DOUBLE',
-                                  ]
-                            ).map((value) => ({ value, label: value }))}
-                        />
-                    </Form.Item>
-                    {protocol === 'DLT645' ? (
-                        <>
-                            <Form.Item
-                                name="identifier"
-                                label="数据标识 DI（高字节在前）"
-                                rules={[{ required: true }]}
-                            >
-                                <Input maxLength={config?.connection.version === '1997' ? 4 : 8} />
-                            </Form.Item>
-                            <Form.Item
-                                name="length"
-                                label="数据长度（字节，不包含 DI）"
-                                rules={[{ required: true }]}
-                            >
-                                <InputNumber
-                                    min={1}
-                                    max={pointType === 'HEX' ? 200 : 8}
-                                    precision={0}
-                                />
-                            </Form.Item>
-                            <Form.Item name="digits" label="小数位数">
-                                <InputNumber min={0} max={8} precision={0} />
-                            </Form.Item>
-                        </>
-                    ) : (
-                        <>
-                            <Form.Item name="area" label="存储区域" rules={[{ required: true }]}>
-                                <Select
-                                    options={(protocol === 'MC'
-                                        ? [
-                                              'D',
-                                              'W',
-                                              'R',
-                                              'ZR',
-                                              'M',
-                                              'X',
-                                              'Y',
-                                              'B',
-                                              'L',
-                                              'F',
-                                              'V',
-                                              'S',
-                                              'TN',
-                                              'CN',
-                                              'TS',
-                                              'CS',
-                                          ]
-                                        : ['D', 'CIO', 'W', 'H', 'A']
-                                    ).map((value) => ({ value, label: value }))}
-                                />
-                            </Form.Item>
-                            <Form.Item
-                                name="address"
-                                label="地址（十进制）"
-                                extra={
-                                    protocol === 'MC'
-                                        ? 'X、Y、B、W 等十六进制地址先换算为十进制，例如 X10 填 16。'
-                                        : undefined
-                                }
-                                rules={[{ required: true }]}
-                            >
-                                <InputNumber
-                                    min={0}
-                                    max={protocol === 'MC' ? 16777215 : 65535}
-                                    precision={0}
-                                />
-                            </Form.Item>
-                            {protocol === 'FINS' && pointType === 'BOOL' && (
-                                <Form.Item name="bit" label="位号">
-                                    <InputNumber min={0} max={15} precision={0} />
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        基础信息
+                    </Divider>
+                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                        <Form.Item name="id" label="点位标识" rules={[{ required: true, max: 64 }]}>
+                            <Input disabled={Boolean(editingPoint)} />
+                        </Form.Item>
+                        <Form.Item name="name" label="名称" rules={[{ required: true, max: 128 }]}>
+                            <Input />
+                        </Form.Item>
+                    </div>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        地址与数据解析
+                    </Divider>
+                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                        <Form.Item name="dataType" label="数据类型" rules={[{ required: true }]}>
+                            <Select
+                                onChange={() => pointForm.setFieldValue('bit', 0)}
+                                options={(protocol === 'DLT645'
+                                    ? ['BCD', 'BCD_SIGNED', 'HEX']
+                                    : [
+                                          'BOOL',
+                                          'INT16',
+                                          'UINT16',
+                                          'INT32',
+                                          'UINT32',
+                                          'FLOAT32',
+                                          'INT64',
+                                          'UINT64',
+                                          'DOUBLE',
+                                      ]
+                                ).map((value) => ({ value, label: value }))}
+                            />
+                        </Form.Item>
+                        {protocol === 'DLT645' ? (
+                            <>
+                                <Form.Item
+                                    name="identifier"
+                                    label="数据标识 DI（高字节在前）"
+                                    rules={[{ required: true }]}
+                                >
+                                    <Input
+                                        maxLength={config?.connection.version === '1997' ? 4 : 8}
+                                    />
                                 </Form.Item>
-                            )}
-                            <Form.Item name="byteOrder" label="字节序">
-                                <Select options={ByteOrderOptions} />
-                            </Form.Item>
-                            <Form.Item name="scale" label="采集值缩放系数">
-                                <InputNumber />
-                            </Form.Item>
-                            <Form.Item name="decimals" label="采集值小数位（-1 保留原精度）">
-                                <InputNumber min={-1} max={8} precision={0} />
-                            </Form.Item>
-                        </>
-                    )}
-                    <Form.Item name="unit" label="单位">
-                        <Input />
-                    </Form.Item>
-                    <Form.Item name="writable" label="允许写入" valuePropName="checked">
-                        <Switch />
-                    </Form.Item>
+                                <Form.Item
+                                    name="length"
+                                    label="数据长度（字节，不包含 DI）"
+                                    rules={[{ required: true }]}
+                                >
+                                    <InputNumber
+                                        className="w-full"
+                                        min={1}
+                                        max={pointType === 'HEX' ? 200 : 8}
+                                        precision={0}
+                                    />
+                                </Form.Item>
+                                <Form.Item name="digits" label="小数位数">
+                                    <InputNumber className="w-full" min={0} max={8} precision={0} />
+                                </Form.Item>
+                            </>
+                        ) : (
+                            <>
+                                <Form.Item
+                                    name="area"
+                                    label="存储区域"
+                                    rules={[{ required: true }]}
+                                >
+                                    <Select
+                                        options={(protocol === 'MC'
+                                            ? [
+                                                  'D',
+                                                  'W',
+                                                  'R',
+                                                  'ZR',
+                                                  'M',
+                                                  'X',
+                                                  'Y',
+                                                  'B',
+                                                  'L',
+                                                  'F',
+                                                  'V',
+                                                  'S',
+                                                  'TN',
+                                                  'CN',
+                                                  'TS',
+                                                  'CS',
+                                              ]
+                                            : ['D', 'CIO', 'W', 'H', 'A']
+                                        ).map((value) => ({ value, label: value }))}
+                                    />
+                                </Form.Item>
+                                <Form.Item
+                                    name="address"
+                                    label="地址（十进制）"
+                                    extra={
+                                        protocol === 'MC'
+                                            ? 'X、Y、B、W 等十六进制地址先换算为十进制，例如 X10 填 16。'
+                                            : undefined
+                                    }
+                                    rules={[{ required: true }]}
+                                >
+                                    <InputNumber
+                                        className="w-full"
+                                        min={0}
+                                        max={protocol === 'MC' ? 16777215 : 65535}
+                                        precision={0}
+                                    />
+                                </Form.Item>
+                                {protocol === 'FINS' && pointType === 'BOOL' && (
+                                    <Form.Item name="bit" label="位号">
+                                        <InputNumber
+                                            className="w-full"
+                                            min={0}
+                                            max={15}
+                                            precision={0}
+                                        />
+                                    </Form.Item>
+                                )}
+                                <Form.Item name="byteOrder" label="字节序">
+                                    <Select options={ByteOrderOptions} />
+                                </Form.Item>
+                                <Form.Item name="scale" label="采集值缩放系数">
+                                    <InputNumber className="w-full" />
+                                </Form.Item>
+                                <Form.Item name="decimals" label="采集值小数位（-1 保留原精度）">
+                                    <InputNumber
+                                        className="w-full"
+                                        min={-1}
+                                        max={8}
+                                        precision={0}
+                                    />
+                                </Form.Item>
+                            </>
+                        )}
+                    </div>
+                    <Divider titlePlacement="start" plain className="!my-4">
+                        显示与控制
+                    </Divider>
+                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                        <Form.Item name="unit" label="单位">
+                            <Input />
+                        </Form.Item>
+                        <Form.Item name="writable" label="允许写入" valuePropName="checked">
+                            <Switch />
+                        </Form.Item>
+                    </div>
                 </Form>
             </FormModal>
         </PageContainer>
