@@ -27,7 +27,7 @@ WinUI NuGet 依赖版本和 SHA256 固定在 winui/packages.lock.json；WireGuar
 
 `build/windows-client-downloads/` 包含固定下载名 `iot-egine-Setup-x64.exe`、SHA256 校验文件和 `windows-client.json`（版本、源码提交、大小和哈希）。Linux 和 Windows 部署制品都将同一提交的客户端放入 `web/downloads/`，边缘节点页通过源站 `/downloads/iot-egine-Setup-x64.exe` 下载。
 
-部署时必须保留完整 `web/downloads/`；仅更新前端时也需带上已发布的客户端文件。静态文件由后端提供，替换后重启服务刷新静态缓存，并核对安装包下载内容与 SHA256，避免将 SPA 页面误当作安装包。
+部署时必须保留完整 `web/downloads/`；仅更新前端时也需带上已发布的客户端文件。在源站 HTTPS 的 Nginx `server` 块中引入 `ports/nginx/windows-client-downloads.conf`，由 Nginx 直接提供下载、支持范围请求并让缺失文件返回 404。后端默认静态类型不包含 EXE，不应将下载请求转发给 SPA。部署后核对下载内容与 SHA256。前端页面仍由后端提供，替换页面后需重启服务刷新静态缓存。
 
 WiX 安装事务保存服务配置，失败时恢复；不包含旧 Inno 或旧服务名的迁移路径。旧版本须先卸载。代码自测不等同于多显示器实机验收。
 
