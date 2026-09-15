@@ -25,7 +25,7 @@ WinUI NuGet 依赖版本和 SHA256 固定在 winui/packages.lock.json；WireGuar
 
 `.github/workflows/build.yml` 的 `Windows client installer` 任务通过 CMake 构建 `windows-installer`，执行原生测试和打包自测后上传独立客户端制品。依赖下载与校验仍由 CMake 入口完成。
 
-`build/windows-client-downloads/` 包含固定下载名 `iot-egine-Setup-x64.exe`、SHA256 校验文件和 `windows-client.json`（版本、源码提交、大小和哈希）。Linux 部署制品将同一提交的客户端放入 `web/downloads/`，边缘节点页通过源站 `/downloads/iot-egine-Setup-x64.exe` 下载。
+`build/windows-client-downloads/` 包含固定下载名 `iot-egine-Setup-x64.exe`、SHA256 校验文件和 `windows-client.json`（版本、源码提交、大小和哈希）。Linux 和 Windows 部署制品都将同一提交的客户端放入 `web/downloads/`，边缘节点页通过源站 `/downloads/iot-egine-Setup-x64.exe` 下载。
 
 部署时必须保留完整 `web/downloads/`；仅更新前端时也需带上已发布的客户端文件。静态文件由后端提供，替换后重启服务刷新静态缓存，并核对安装包下载内容与 SHA256，避免将 SPA 页面误当作安装包。
 

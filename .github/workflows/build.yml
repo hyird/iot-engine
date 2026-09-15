@@ -207,6 +207,7 @@ jobs:
 
   windows_build:
     name: Windows MSVC build
+    needs: windows_client
     runs-on: windows-2025
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
@@ -301,9 +302,19 @@ jobs:
               throw "UPX verification failed with exit code $LASTEXITCODE"
           }
 
+      - name: Download Windows client for source-site distribution
+        uses: actions/download-artifact@v8
+        with:
+          name: iot-engine-Windows-client-X64-${{ github.sha }}
+          path: build/artifact/web/downloads
+
       - name: Package artifact
         shell: pwsh
-        run: Compress-Archive -Path build/artifact/* -DestinationPath "build/iot-engine-$env:RUNNER_OS-$env:RUNNER_ARCH.zip"
+        run: |
+          $manifest = Get-Content build/artifact/web/downloads/windows-client.json -Raw | ConvertFrom-Json
+          $actualHash = (Get-FileHash build/artifact/web/downloads/iot-egine-Setup-x64.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $manifest.sha256) { throw 'Windows installer checksum mismatch' }
+          Compress-Archive -Path build/artifact/* -DestinationPath "build/iot-engine-$env:RUNNER_OS-$env:RUNNER_ARCH.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
