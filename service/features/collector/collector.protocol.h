@@ -14,98 +14,6 @@
 
 namespace service::collector {
 
-enum class ProtocolCapability : std::uint32_t {
-    TcpServer = 1U << 0U,
-    TcpClient = 1U << 1U,
-    Registration = 1U << 2U,
-    Heartbeat = 1U << 3U,
-    Polling = 1U << 4U,
-    Discovery = 1U << 5U,
-    Commands = 1U << 6U,
-    UnsolicitedReports = 1U << 7U,
-};
-
-class ProtocolCapabilities final {
-  public:
-    constexpr ProtocolCapabilities() = default;
-    constexpr explicit ProtocolCapabilities(std::uint32_t bits) : bits_(bits) {}
-
-    [[nodiscard]] constexpr bool has(ProtocolCapability capability) const noexcept {
-        return (bits_ & static_cast<std::uint32_t>(capability)) != 0;
-    }
-
-    [[nodiscard]] constexpr std::uint32_t bits() const noexcept { return bits_; }
-
-  private:
-    std::uint32_t bits_ = 0;
-};
-
-[[nodiscard]] constexpr ProtocolCapabilities operator|(ProtocolCapability left,
-                                                       ProtocolCapability right) noexcept {
-    return ProtocolCapabilities(static_cast<std::uint32_t>(left) |
-                                static_cast<std::uint32_t>(right));
-}
-
-[[nodiscard]] constexpr ProtocolCapabilities operator|(ProtocolCapabilities left,
-                                                       ProtocolCapability right) noexcept {
-    return ProtocolCapabilities(left.bits() | static_cast<std::uint32_t>(right));
-}
-
-enum class ProtocolActionKind {
-    Send,
-    Close,
-    BindDevice,
-    PublishParsed,
-    CompleteCommand,
-    FailCommand,
-    ScheduleDeadline,
-    CancelDeadline,
-};
-
-struct ProtocolAction {
-    ProtocolActionKind kind = ProtocolActionKind::PublishParsed;
-    std::string connectionId;
-    std::string deviceId;
-    std::string deviceCode;
-    std::string commandId;
-    std::string reason;
-    std::uint64_t deadlineToken = 0;
-    std::chrono::milliseconds deadlineAfter{0};
-    std::vector<std::uint8_t> bytes;
-    message::ParsedDeviceMessage parsed;
-};
-
-struct ProtocolInput {
-    std::string_view messageId;
-    std::string_view linkId;
-    std::string_view connectionId;
-    std::string_view remoteAddress;
-    std::int64_t receivedAtMs = 0;
-    std::span<const std::uint8_t> bytes;
-};
-
-struct CommandElementValue {
-    std::string elementId;
-    std::string value;
-};
-
-struct ProtocolCommand {
-    std::string id;
-    std::string deviceId;
-    std::string deviceCode;
-    std::string transport;
-    std::string kind;
-    std::string protocol;
-    std::vector<std::uint8_t> payload;
-    std::vector<std::uint8_t> readbackPayload;
-    std::vector<std::uint8_t> expectedReadbackData;
-    std::string expectedValue;
-    std::vector<CommandElementValue> elements;
-    bool highPriority = true;
-    bool expectsResponse = true;
-    std::chrono::milliseconds timeout{3000};
-};
-
 class ProtocolSession {
   public:
     virtual ~ProtocolSession() = default;
@@ -113,6 +21,8 @@ class ProtocolSession {
     virtual void inheritTransportState(const ProtocolSession&) {}
     [[nodiscard]] virtual std::vector<ProtocolAction> connected() { return {}; }
     [[nodiscard]] virtual std::vector<ProtocolAction> consume(const ProtocolInput& input) = 0;
+    // 持久化消息接入成功后，协议才能确认接收或结束查询。
+    [[nodiscard]] virtual std::vector<ProtocolAction> parsedPublished(std::uint64_t) { return {}; }
     [[nodiscard]] virtual std::vector<ProtocolAction> disconnected(std::string_view reason) = 0;
 };
 
@@ -128,9 +38,9 @@ class DeadlineCapabilitySession {
     [[nodiscard]] virtual std::vector<ProtocolAction> deadline(std::uint64_t token) = 0;
 };
 
-class ProtocolRuntime {
+class ProtocolSessionFactory {
   public:
-    virtual ~ProtocolRuntime() = default;
+    virtual ~ProtocolSessionFactory() = default;
 
     [[nodiscard]] virtual std::string_view protocol() const noexcept = 0;
     [[nodiscard]] virtual ProtocolCapabilities capabilities() const noexcept = 0;
@@ -140,13 +50,13 @@ class ProtocolRuntime {
                   const std::shared_ptr<const RuntimeSnapshot>& snapshot) const = 0;
 };
 
-inline void validateProtocolLink(const ProtocolRuntime& runtime, const LinkDefinition& link) {
-    const auto capabilities = runtime.capabilities();
+inline void validateProtocolLink(const ProtocolSessionFactory& factory, const LinkDefinition& link) {
+    const auto capabilities = factory.capabilities();
     if (link.mode == "TCP Server" && !capabilities.has(ProtocolCapability::TcpServer))
-        throw std::invalid_argument(std::string(runtime.protocol()) +
+        throw std::invalid_argument(std::string(factory.protocol()) +
                                     " does not support TCP Server links");
     if (link.mode == "TCP Client" && !capabilities.has(ProtocolCapability::TcpClient))
-        throw std::invalid_argument(std::string(runtime.protocol()) +
+        throw std::invalid_argument(std::string(factory.protocol()) +
                                     " does not support TCP Client links");
 }
 
@@ -163,16 +73,6 @@ inline void validateProtocolLink(const ProtocolRuntime& runtime, const LinkDefin
 
 
 namespace service::collector::command {
-
-struct ResolvedElement {
-    const ElementDefinition* definition = nullptr;
-    std::string value;
-};
-
-struct ResolvedCommand {
-    std::string functionCode;
-    std::vector<ResolvedElement> elements;
-};
 
 inline std::string_view trim(std::string_view value) {
     while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())))
@@ -275,13 +175,11 @@ inline void validateValue(const ElementDefinition& element, std::string_view val
     }
     if (element.encoding == "BCD") {
         const auto parsed = decimal(value, name);
-        if (parsed < 0)
-            throw std::invalid_argument("command_invalid: " + name +
-                                        " BCD must not be negative");
-        const auto digits = std::clamp<std::int64_t>(element.digits, 0, 8);
-        const auto length = std::max<std::int64_t>(1, element.length);
-        const auto scaled = std::round(parsed * std::pow(10.0, digits));
-        if (scaled >= std::pow(10.0, length * 2))
+        if (element.digits < 0 || element.digits > 7 || element.length < 1 || element.length > 31)
+            throw std::invalid_argument("command_invalid: " + name + " BCD definition is invalid");
+        const auto length = element.length - (parsed < 0 ? 1 : 0);
+        const auto scaled = std::round(std::abs(parsed) * std::pow(10.0, element.digits));
+        if (length == 0 || !std::isfinite(scaled) || scaled >= std::pow(10.0, length * 2))
             throw std::invalid_argument("command_invalid: " + name + " BCD is too long");
         return;
     }

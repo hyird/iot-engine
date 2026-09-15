@@ -1,5 +1,6 @@
 #pragma once
 
+#include "service/utils/number.h"
 #include <chrono>
 #include <cstddef>
 #include <exception>
@@ -74,7 +75,7 @@ class RpcRequestClient final {
             reply.remove_prefix(4);
             const auto statusEnd = reply.find('\n');
             if (statusEnd != std::string_view::npos) {
-                const auto status = service::common::parseInt64(reply.substr(0, statusEnd));
+                const auto status = service::utils::parseInt64(reply.substr(0, statusEnd));
                 reply.remove_prefix(statusEnd + 1);
                 const auto codeEnd = reply.find('\n');
                 if (status && *status >= 400 && *status <= 599 && codeEnd != std::string_view::npos) {

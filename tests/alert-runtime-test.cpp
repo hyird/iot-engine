@@ -4,7 +4,7 @@
 #include <stdexcept>
 #include <string>
 
-#include "service/modules/alert/alert.service.h"
+#include "service/modules/alert/alert.schema.h"
 #include "service/features/alert/alert.runtime.h"
 
 void require(bool condition, const char* message) {
@@ -26,7 +26,7 @@ std::string readSource(const char* relative) {
 void expectInvalidConditions(std::string_view raw, const char* message) {
     bool rejected = false;
     try {
-        service::alert::AlertService::validateConditionsForTest(raw);
+        service::alert::AlertPayloadValidator::validateConditions(raw);
     } catch (const std::exception&) {
         rejected = true;
     }
@@ -49,7 +49,7 @@ int main() {
         const auto runtimeSource = readSource("service/features/alert/alert.runtime.h");
         requireAbsent(runtimeSource, "std::stoull(",
                       "alert runtime uses unsafe/partial stoull parsing");
-        const auto serviceSource = readSource("service/modules/alert/alert.service.h");
+        const auto serviceSource = readSource("service/modules/alert/alert.schema.h");
         require(serviceSource.find("std::string(field) + \" 必须是字符串\"") !=
                     std::string::npos,
                 "alert service treats present non-string optional fields as absent");
@@ -57,11 +57,11 @@ int main() {
                     std::string::npos,
                 "alert service treats present non-integer fields as default values");
 
-        service::alert::AlertService::validateConditionsForTest(
+        service::alert::AlertPayloadValidator::validateConditions(
             R"([{"type":"threshold","elementKey":"temperature","operator":">","value":"12.5"}])");
-        service::alert::AlertService::validateConditionsForTest(
+        service::alert::AlertPayloadValidator::validateConditions(
             R"([{"type":"offline","duration":300}])");
-        service::alert::AlertService::validateConditionsForTest(
+        service::alert::AlertPayloadValidator::validateConditions(
             R"([{"type":"rate_of_change","elementKey":"flow","changeRate":"15","changeDirection":"rise"}])");
         expectInvalidConditions(
             R"([{"type":"threshold","elementKey":"temperature","operator":">","value":"abc"}])",

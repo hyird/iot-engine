@@ -39,3 +39,29 @@ RUVIA_RESPONSE_MODEL(WebRtcResponseModel,
     RUVIA_OPTIONAL_FIELD(type, ruvia::String),
     RUVIA_OPTIONAL_FIELD(sdp, ruvia::String),
     RUVIA_OPTIONAL_FIELD(msg, ruvia::String));
+
+struct MediaServerPorts {
+    std::uint16_t http{ 0 };
+    std::uint16_t https{ 0 };
+    std::uint16_t rtsp{ 0 };
+    std::uint16_t rtsps{ 0 };
+    std::uint16_t rtmp{ 0 };
+    std::uint16_t rtmps{ 0 };
+    std::uint16_t rtc{ 0 };
+    std::uint16_t srt{ 0 };
+};
+
+struct MediaCapabilities {
+    bool faac{ true };
+    bool ffmpeg{ true };
+    bool hls{ true };
+    bool mp4{ true };
+    bool rtpProxy{ true };
+    bool srt{ true };
+    bool sctp{ true };
+    bool webRtc{ true };
+    bool x264{ true };
+    bool videoStack{ true };
+    bool tls{ false };
+    bool recording{ false };
+};

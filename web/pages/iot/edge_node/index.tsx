@@ -86,6 +86,7 @@ import {
     buildEdgeNodeGroupView,
     getEdgeDetail,
     getTerminalTicket,
+    openTerminalSocket,
     normalizeReportedNetwork,
     physicalNetworkInterfaces,
     useAssignEdgeNodeGroup,
@@ -1103,11 +1104,7 @@ function TerminalModal({
         getTerminalTicket(nodeId)
             .then(({ ticket }) => {
                 if (disposed) return;
-                const transport = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                const socket = new WebSocket(
-                    `${transport}//${window.location.host}/edge/v1/terminal?ticket=${encodeURIComponent(ticket)}`
-                );
-                socket.binaryType = 'arraybuffer';
+                const socket = openTerminalSocket(ticket);
                 socketRef.current = socket;
                 socket.onopen = () => {
                     if (disposed) return;

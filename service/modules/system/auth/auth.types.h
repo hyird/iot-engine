@@ -1,10 +1,16 @@
 #pragma once
 
+#include <string>
 #include <ruvia/web/Model.h>
 
 #include "service/modules/system/role/role.types.h"
 
 namespace service::auth {
+
+struct JwtPayload {
+    std::string userId;
+    std::string username;
+};
 
 RUVIA_REQUEST_MODEL(LoginBody,
     RUVIA_OPTIONAL_FIELD(username, ruvia::String),

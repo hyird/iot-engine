@@ -1,6 +1,6 @@
 #pragma once
 
-#include "service/features/edge/session/session.protocol.h"
+#include "service/features/edge/session/session.entity.h"
 
 #include <charconv>
 #include <chrono>
@@ -20,7 +20,6 @@
 
 namespace service::edge::session_state {
 
-inline constexpr std::string_view kDeadlines = "iot:edge:session-deadlines";
 inline constexpr std::string_view kChanges = "iot:live:changes";
 inline constexpr std::string_view kClaimScript = R"lua(
 local now=redis.call('TIME')
@@ -65,6 +64,12 @@ if changed > 0 then redis.call('XADD',KEYS[2],'MAXLEN','~',100000,'*','topic','e
 return changed
 )lua";
 template <typename Redis>
+ruvia::Task<void> expireSessions(const Redis& redis) {
+    const std::string_view keys[]{kDeadlines, service::message::live::kChanges};
+    (void)co_await redis.eval(kExpireScript, keys, std::span<const std::string_view>{});
+}
+
+template <typename Redis>
 ruvia::Task<bool> mutate(const Redis& redis, std::string_view script,
     std::string_view nodeId, std::uint64_t epoch, std::uint32_t protocolVersion,
     std::size_t workerIndex) {
@@ -94,3 +99,42 @@ ruvia::Task<bool> release(const Redis& redis, std::string_view nodeId, std::uint
 }
 
 } // namespace service::edge::session_state
+
+namespace service::edge::dispatch {
+
+template <typename Redis>
+ruvia::Task<void> notifyNode(const Redis& redis, std::string_view nodeId) {
+    if (nodeId.empty()) {
+        co_return;
+    }
+    const auto session = co_await redis.get(session_state::key(nodeId));
+    if (!session) {
+        co_return;
+    }
+    const auto owner = session_state::parse(
+        std::string_view(session->data(), session->size())
+    );
+    if (!owner) {
+        co_return;
+    }
+    (void)co_await service::message::redis::publish(
+        redis,
+        stream(owner->workerIndex, owner->instanceId),
+        { { "kind", std::string(kNodeKind) }, { "node_id", std::string(nodeId) } },
+        10000
+    );
+    (void)co_await service::message::redis::publish(redis, service::message::workerWakeStream(owner->workerIndex, owner->instanceId), { { "task", "edge-dispatcher" } }, 10000);
+}
+
+template <typename Redis>
+ruvia::Task<void> enqueue(const Redis& redis, std::string_view nodeId, std::string_view wire) {
+    if (nodeId.empty() || wire.empty()) {
+        co_return;
+    }
+    const auto key = "iot:edge:egress:" + std::string(nodeId);
+    (void)co_await redis.rpush(key, wire);
+    (void)co_await redis.ltrim(key, -100, -1);
+    co_await notifyNode(redis, nodeId);
+}
+
+} // namespace service::edge::dispatch

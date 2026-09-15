@@ -48,6 +48,8 @@ import type { CSSProperties, ReactNode, RefObject } from 'react';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { DeviceCardItem } from '@/components/DeviceCard';
 import DeviceCard from '@/components/DeviceCard';
+import { PacketDebugPanel } from '@/components/PacketDebugPanel';
+import { useDeviceDebug } from './device.service';
 import { FormModal } from '@/components/FormModal';
 import { PageContainer } from '@/components/PageContainer';
 import { usePermissions } from '@/hooks/usePermission';
@@ -1584,6 +1586,27 @@ const DeviceHistoryModal = ({
         </Modal>
     );
 };
+
+function DeviceDebug({ item }: { item: Device.Overview }) {
+    const [open, setOpen] = useState(false);
+    const { packets, toggle } = useDeviceDebug(item.id, open);
+    return (
+        <PacketDebugPanel
+            title={`设备调试 · ${item.name}`}
+            enabled={item.debug_enabled === true}
+            inherited={item.link_debug_enabled === true}
+            open={open}
+            pending={toggle.isPending}
+            loading={packets.isLoading}
+            error={packets.error}
+            packets={packets.data}
+            onToggle={() => toggle.mutate(!item.debug_enabled)}
+            onOpen={() => setOpen(true)}
+            onClose={() => setOpen(false)}
+        />
+    );
+}
+
 interface DeviceGridItemProps {
     device: Device.Overview;
     online: boolean;
@@ -1778,6 +1801,7 @@ const DeviceGridItem = memo(
                                     />
                                 </Tooltip>
                             </Popover>
+                            {device.can_edit && <DeviceDebug item={device} />}
                             <Tooltip title="历史数据">
                                 <Button
                                     type="text"

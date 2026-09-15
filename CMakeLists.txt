@@ -56,7 +56,7 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(ruvia
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    GIT_TAG 6357a680e527c9776eadd1ee4e6674b9012d4808)
+    GIT_TAG 13eba75f3b8317a9fe4b5e27ca70554a3e887cab)
 FetchContent_MakeAvailable(ruvia)
 
 FetchContent_Declare(nanopb
@@ -295,7 +295,7 @@ find_package(spdlog CONFIG REQUIRED)
 add_executable(iot-engine
     service/server.cpp
     service/features/messaging/postgres_notifier/postgres_notifier.transport.cpp
-    service/common/log.cpp
+    service/features/packet_log/packet_log.transport.cpp
     service/features/gb28181/device/device.runtime.cpp
     service/features/gb28181/media/media.runtime.cpp
     service/features/gb28181/media/media.transport.cpp
@@ -331,7 +331,7 @@ iot_engine_add_test(context-operation-memory LARGE
 iot_engine_add_test(collector-protocol LARGE
     SOURCES
         tests/collector-protocol-test.cpp
-        service/common/log.cpp
+        service/features/packet_log/packet_log.transport.cpp
     LIBRARIES ruvia::web spdlog::spdlog edgenode-protocol OpenSSL::Crypto)
 
 iot_engine_add_test(access LARGE
@@ -362,9 +362,13 @@ iot_engine_add_test(edge-config LARGE
     SOURCES tests/edge-config-test.cpp
     LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
 
-iot_engine_add_test(edge-metadata LARGE
+iot_engine_add_test(edge-metadata
     SOURCES tests/edge-metadata-test.cpp
-    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
+    LIBRARIES ruvia::web)
+
+iot_engine_add_test(collector-state
+    SOURCES tests/collector-state-test.cpp
+    LIBRARIES ruvia::web)
 
 iot_engine_add_test(edge-service LARGE
     SOURCES tests/edge-service-test.cpp
@@ -378,9 +382,9 @@ iot_engine_add_test(architecture
     SOURCES tests/architecture-test.cpp
     LIBRARIES ruvia::web)
 
-iot_engine_add_test(worker-isolation
+iot_engine_add_test(worker-isolation LARGE
     SOURCES tests/worker-isolation-test.cpp
-    LIBRARIES ruvia::web)
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
 
 iot_engine_add_test(alert-runtime LARGE
     SOURCES tests/alert-runtime-test.cpp
@@ -399,6 +403,10 @@ foreach(test_name
         SOURCES "tests/${test_name}-test.cpp")
 endforeach()
 
+iot_engine_add_test(link-public-ip LARGE
+    SOURCES tests/link-public-ip-test.cpp
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
+
 iot_engine_add_test(device-service LARGE
     SOURCES tests/device-service-test.cpp
     LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
@@ -410,7 +418,7 @@ iot_engine_add_test(system-service
 iot_engine_add_test(gb28181-media
     SOURCES
         tests/gb28181-media-test.cpp
-        service/common/log.cpp
+        service/features/packet_log/packet_log.transport.cpp
         service/features/gb28181/media/media.transport.cpp
     LIBRARIES
         ruvia::web
@@ -431,7 +439,7 @@ iot_engine_add_test(gb28181-schema LARGE
 iot_engine_add_test(gb28181-media-proxy
     SOURCES
         tests/gb28181-media-proxy-test.cpp
-        service/common/log.cpp
+        service/features/packet_log/packet_log.transport.cpp
         service/features/gb28181/media/media.transport.cpp
     LIBRARIES ruvia::web spdlog::spdlog mk_api OpenSSL::Crypto
     MSVC_DEFINITIONS NOMINMAX WIN32_LEAN_AND_MEAN MediaKitApi_STATIC)
@@ -439,9 +447,11 @@ iot_engine_add_test(gb28181-media-proxy
 iot_engine_add_test(gb28181-projector LARGE
     SOURCES
         tests/gb28181-projector-test.cpp
+        service/features/packet_log/packet_log.transport.cpp
+        service/features/gb28181/media/media.transport.cpp
         service/features/gb28181/device/device.runtime.cpp
         service/features/gb28181/media/media.runtime.cpp
-    LIBRARIES ruvia::web
+    LIBRARIES ruvia::web spdlog::spdlog mk_api OpenSSL::Crypto
     INCLUDE_DIRECTORIES
         "${CMAKE_CURRENT_SOURCE_DIR}/service/features/gb28181"
     DEFINITIONS IOT_ENGINE_TESTING)

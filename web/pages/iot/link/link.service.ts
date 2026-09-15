@@ -1,7 +1,8 @@
 import type { UseQueryOptions } from '@tanstack/react-query';
+import { setDebug as saveDebugSwitch, getDebugPackets } from './link.api';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
-import type { PaginatedResult } from '@/utils/pagination';
+import type { PaginatedResult } from '@/types/pagination';
 import { create, getEnums, getList, getPublicIp, remove, update } from './link.api';
 import type { Link } from './link.types';
 import { linkQueryKeys } from './link.types';
@@ -64,4 +65,18 @@ export function useLinkDelete() {
         successMessage: '删除成功',
         invalidateKeys: [linkQueryKeys.all],
     });
+}
+
+export function useLinkDebug(id: string, open: boolean) {
+    const packets = useSnapshotQuery({
+        queryKey: ['link-debug-packets', id],
+        queryFn: () => getDebugPackets(id),
+        enabled: open,
+    });
+    const toggle = useMutationWithMessage({
+        mutationFn: (enabled: boolean) => saveDebugSwitch(id, enabled),
+        successMessage: '调试设置已保存',
+        invalidateKeys: [linkQueryKeys.all],
+    });
+    return { packets, toggle };
 }

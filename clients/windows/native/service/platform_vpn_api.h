@@ -38,6 +38,5 @@ public:
     bool feed(std::string_view bytes, const std::function<bool(std::string_view, std::string_view)>& callback);
 private: std::string line_, data_, event_ = "message";
 };
-bool isPlatformOrigin(std::string_view url);
 std::string canonicalId(std::string_view id);
 }

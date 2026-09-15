@@ -1243,18 +1243,17 @@ int main() {
                 "[::1]:" + std::to_string(ipv6Client.local_endpoint().port())
             );
             require(ipv6Server->queryCatalog("ipv6-device"), "GB28181 IPv6 UDP route was not resolved");
-            const auto ipv6Catalog =
-                receiveSipMatching(
-                    [&ipv6Client, &ipv6Remote](auto& buffer, std::error_code& error) {
-                        return ipv6Client.receive_from(asio::buffer(buffer), ipv6Remote, 0, error);
-                    },
-                    [](const SipMessage& message) {
-                        return message.method == "MESSAGE" &&
-                            xmlValue(message.body, "CmdType") == "Catalog";
-                    },
-                    std::chrono::seconds(3)
-                );
-            require(ipv6Catalog.has_value(), "GB28181 IPv6 UDP catalog query was not delivered");
+            const auto ipv6Packet = receiveUntil(
+                [&ipv6Client, &ipv6Remote](auto& buffer, std::error_code& error) {
+                    return ipv6Client.receive_from(asio::buffer(buffer), ipv6Remote, 0, error);
+                },
+                std::chrono::seconds(3)
+            );
+            require(!ipv6Packet.empty(), "GB28181 IPv6 UDP catalog datagram was not delivered");
+            const auto ipv6Catalog = SipMessage::parse(ipv6Packet);
+            require(ipv6Catalog.has_value(), "GB28181 IPv6 UDP catalog datagram could not be parsed");
+            require(ipv6Catalog->method == "MESSAGE" && xmlValue(ipv6Catalog->body, "CmdType") == "Catalog",
+                    "GB28181 IPv6 UDP datagram is not a catalog query");
             ipv6Server->stop();
         }
 

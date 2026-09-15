@@ -12,16 +12,63 @@
 #include <ruvia/web/db/DbQuery.h>
 
 #include "service/common/http.h"
+#include "service/features/edge/gateway/gateway.types.h"
+#include "service/features/edge/edge.protocol.h"
+#include "service/features/live/live.service.h"
 
 namespace service::edge::gateway {
 
-struct FirmwareSource final {
-    std::string storagePath;
-    std::uint64_t sizeBytes{};
-};
-
 class GatewayService final {
   public:
+    static ruvia::Task<EnrollmentRecord> loadEnrollment(ruvia::Context& c,
+        std::string_view imei, std::string_view pendingNodeId = {}) {
+        const auto value = co_await c.redis().get(service::message::edge::authKey(imei));
+        if (value) {
+            const auto record = EnrollmentRecord::decode(std::string_view(value->data(), value->size()));
+            if (record) co_return *record;
+        }
+        co_return EnrollmentRecord{pendingNodeId.empty() ? service::common::nextUuidV7() :
+                                   std::string(pendingNodeId), "pending"};
+    }
+
+    static ruvia::Task<void> saveLogResult(ruvia::Context& c, std::string_view nodeId, const pb::LogResult& result) {
+        if (result.request_id().size() != 16) {
+            co_return;
+        }
+        LogResultRecord record;
+        if (!result.SerializeToString(&record.protobufBytes)) {
+            co_return;
+        }
+        const auto id = protocol::uuidText(result.request_id());
+        ruvia::RedisSetOptions options;
+        options.expiration =
+            ruvia::RedisSetExpiration::expiresAfter(std::chrono::seconds(60));
+        const auto key = LogResultRecord::responseKey(id);
+        co_await c.redis().set(key, record.protobufBytes, std::move(options));
+        co_await service::live::publish(c.redis(), key);
+        if (result.success()) {
+            const auto snapshotKey = LogResultRecord::snapshotKey(nodeId);
+            co_await c.redis().set(snapshotKey, record.protobufBytes);
+            co_await service::live::publish(c.redis(), snapshotKey);
+        }
+    }
+
+    static ruvia::Task<void> saveLogLevelResult(ruvia::Context& c, const pb::LogLevelResult& result) {
+        if (result.request_id().size() != 16) {
+            co_return;
+        }
+        LogResultRecord record;
+        if (!result.SerializeToString(&record.protobufBytes)) {
+            co_return;
+        }
+        const auto id = protocol::uuidText(result.request_id());
+        ruvia::RedisSetOptions options;
+        options.expiration =
+            ruvia::RedisSetExpiration::expiresAfter(std::chrono::seconds(60));
+        co_await c.redis().set(LogResultRecord::levelKey(id), record.protobufBytes, std::move(options));
+    }
+
+
     template <typename Context>
     static ruvia::Task<bool> claimCommand(Context& context,
                                           std::string_view operationId,

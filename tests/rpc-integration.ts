@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { Agent, request as httpRequest } from 'node:http';
 import { createConnection, type Socket } from 'node:net';
-import { consumeServerSentEvents, type ServerSentEvent } from '../web/utils/sse';
+import { consumeServerSentEvents } from '../web/lib/sse';
+import type { ServerSentEvent } from '../web/utils/sse';
 
 const db = new Bun.SQL(databaseUrl);
 const redis = new Bun.RedisClient(redisUrl);

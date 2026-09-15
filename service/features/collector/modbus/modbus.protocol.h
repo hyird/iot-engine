@@ -1130,7 +1130,6 @@ class Session final : public ProtocolSession,
                                               const RequestDescriptor& request,
                                               std::string_view causationId) const {
         message::ParsedDeviceMessage message;
-        message.messageId = message::nextMessageId();
         message.causationId =
             causationId.empty() ? std::string(input.messageId) : std::string(causationId);
         message.linkId = link_.id;
@@ -1224,7 +1223,7 @@ class Session final : public ProtocolSession,
     std::uint16_t nextTransactionId_ = 1;
 };
 
-class Runtime final : public ProtocolRuntime {
+class SessionFactory final : public ProtocolSessionFactory {
   public:
     [[nodiscard]] std::string_view protocol() const noexcept override { return "Modbus"; }
 

@@ -1,7 +1,7 @@
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
-import type { PaginatedResult } from '@/utils/pagination';
+import type { PaginatedResult } from '@/types/pagination';
 import { create, getList, getOptions, getRoleOptions, remove, update } from './user.api';
 import type { User } from './user.types';
 import { roleOptionQueryKey, userQueryKeys } from './user.types';

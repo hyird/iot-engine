@@ -1,5 +1,6 @@
 #pragma once
 
+#include "service/utils/number.h"
 #include "service/features/messaging/messaging.service.h"
 #include "service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h"
 
@@ -75,6 +76,7 @@ class OutboxRuntime final : private OutboxService {
             ready->set_value();
             auto nextMetrics = std::chrono::steady_clock::now();
             auto nextReceiptCleanup = std::chrono::steady_clock::now();
+            auto nextCounterCleanup = std::chrono::steady_clock::now();
             std::optional<Clock::time_point> nextDispatch = Clock::now();
             while (!stop.stopRequested()) {
                 if (policy_.receiptRetentionDays > 0 &&
@@ -99,6 +101,15 @@ class OutboxRuntime final : private OutboxService {
                     }
                     nextMetrics = std::chrono::steady_clock::now() + std::chrono::seconds(5);
                 }
+                if (Clock::now() >= nextCounterCleanup) {
+                    try {
+                        co_await cleanupReplayCounters(context);
+                    } catch (const std::exception& error) {
+                        observability_.incrementCounter("iot_engine_replay_counter_cleanup_failures_total");
+                        std::cerr << "replay counter cleanup failed: " << error.what() << '\n';
+                    }
+                    nextCounterCleanup = Clock::now() + std::chrono::hours(1);
+                }
                 if (nextDispatch && Clock::now() >= *nextDispatch) {
                     try {
                         observability_.incrementCounter("iot_engine_outbox_dispatch_checks_total");
@@ -114,6 +125,7 @@ class OutboxRuntime final : private OutboxService {
                     }
                 }
                 auto deadline = nextMetrics;
+                deadline = std::min(deadline, nextCounterCleanup);
                 if (policy_.receiptRetentionDays > 0)
                     deadline = std::min(deadline, nextReceiptCleanup);
                 if (nextDispatch) deadline = std::min(deadline, *nextDispatch);
@@ -201,14 +213,6 @@ class RpcConsumerRuntime final {
         std::string requestId;
     };
 
-    static constexpr std::string_view kReplyScript = R"lua(
-redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
-redis.call('XADD', KEYS[2], 'MAXLEN', '~', 100000, '*', 'topic', KEYS[1], 'schema_version', '1')
-redis.call('XACK', KEYS[3], ARGV[3], ARGV[4])
-redis.call('XDEL', KEYS[3], ARGV[4])
-return 1
-)lua";
-
     ruvia::Task<void> process(ruvia::WebWorkerContext& context,
                               service::message::StreamMessage message,
                               std::shared_ptr<Pending> pending) {
@@ -220,25 +224,10 @@ return 1
                 service::common::fail(10002, "Invalid background request", 400);
             if (pending->deadline <= Contract::now())
                 service::common::fail(10004, "Background operation timed out", 504);
-            const auto previous = co_await service::message::redis::command(context.redis(),
-                {"GET", Contract::reply(id)});
-            if (previous.kind() == ruvia::RedisValue::Kind::kString) {
-                result = std::string(previous.string());
+            const auto previous = co_await RpcReceiptService::beginRequest(context.redis(), id);
+            if (previous) {
+                result = previous->payload;
             } else {
-                if (previous.kind() == ruvia::RedisValue::Kind::kError)
-                    service::message::redis::throwValue("RPC receipt", previous);
-                const auto claimed = co_await service::message::redis::command(context.redis(),
-                    {"SET", Contract::claim(id), "1", "NX", "EX", "86400"});
-                if (claimed.kind() == ruvia::RedisValue::Kind::kError)
-                    service::message::redis::throwValue("RPC claim", claimed);
-                if (claimed.kind() != ruvia::RedisValue::Kind::kString)
-                    service::common::fail(10004, "Background operation was interrupted; inspect its state", 503);
-                const auto cancelled = co_await service::message::redis::command(context.redis(),
-                    {"EXISTS", Contract::cancelled(id)});
-                if (cancelled.kind() == ruvia::RedisValue::Kind::kError)
-                    service::message::redis::throwValue("RPC cancellation", cancelled);
-                if (cancelled.kind() == ruvia::RedisValue::Kind::kInteger && cancelled.integer() != 0)
-                    service::common::fail(10004, "Background operation cancelled", 503);
                 const auto handler = handlers_.find(std::string(message.get("component")));
                 if (handler == handlers_.end())
                     service::common::fail(10004, "Background component is unavailable", 503);
@@ -258,12 +247,9 @@ return 1
         while (true) {
             bool failed = false;
             try {
-                const auto replyKey = Contract::reply(id);
-                const std::string_view keys[]{replyKey, service::message::live::kChanges, stream_};
-                const std::string_view args[]{result, Contract::replyLifetime, kGroup, message.id};
-                const auto reply = co_await context.redis().eval(kReplyScript, keys, args);
-                if (reply.kind() == ruvia::RedisValue::Kind::kError)
-                    service::message::redis::throwValue("RPC persist reply", reply);
+                const RpcReplyRecord record{result};
+                co_await RpcReceiptService::saveAndAcknowledge(
+                    context.redis(), id, stream_, kGroup, message.id, record);
             } catch (const std::exception& error) {
                 failed = true;
                 if (!stop_->token().stopRequested())
@@ -353,7 +339,7 @@ return 1
                     for (auto& message : messages) {
                         if (pending_.contains(message.id)) continue;
                         auto pending = std::make_shared<Pending>();
-                        pending->deadline = service::common::parseInt64(message.get("deadline")).value_or(0);
+                        pending->deadline = service::utils::parseInt64(message.get("deadline")).value_or(0);
                         pending->requestId = std::string(message.get("id"));
                         const auto entry = message.id;
                         pending_[entry] = pending;

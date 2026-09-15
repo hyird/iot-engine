@@ -1,6 +1,7 @@
 // Uses only the disposable architecture Redis fixture.
 import assert from 'node:assert/strict';
-const redis = new Bun.RedisClient('redis://127.0.0.1:56439');
+import { redisUrl } from './architecture-fixture';
+const redis = new Bun.RedisClient(redisUrl);
 const source = await Bun.file('service/features/edge/session/session.service.h').text();
 const script = (name: string) => {
     const position = source.indexOf(`${name} =`);

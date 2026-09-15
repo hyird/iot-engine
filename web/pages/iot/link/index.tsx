@@ -13,6 +13,8 @@ import {
 } from 'antd';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import { useState } from 'react';
+import { PacketDebugPanel } from '@/components/PacketDebugPanel';
+import { useLinkDebug } from './link.service';
 import { FormModal } from '@/components/FormModal';
 import { PageContainer } from '@/components/PageContainer';
 import { StatusTag } from '@/components/StatusTag';
@@ -24,6 +26,25 @@ import { useEdgeInventory } from '../edge_node/edge_node.service';
 import { saveLinkSchema } from './link.schema';
 import { useLinkDelete, useLinkEnums, useLinkList, useLinkSave, usePublicIp } from './link.service';
 import type { Link } from './link.types';
+
+function LinkDebug({ item }: { item: Link.Item }) {
+    const [open, setOpen] = useState(false);
+    const { packets, toggle } = useLinkDebug(item.id, open);
+    return (
+        <PacketDebugPanel
+            title={`链路调试 · ${item.name}`}
+            enabled={item.debug_enabled === true}
+            open={open}
+            pending={toggle.isPending}
+            loading={packets.isLoading}
+            error={packets.error}
+            packets={packets.data}
+            onToggle={() => toggle.mutate(!item.debug_enabled)}
+            onOpen={() => setOpen(true)}
+            onClose={() => setOpen(false)}
+        />
+    );
+}
 
 const { Search } = Input;
 const tooltipStyles = {
@@ -315,10 +336,11 @@ export function IotLinkPage() {
         {
             title: '操作',
             key: 'actions',
-            width: 150,
+            width: 310,
             fixed: 'right',
             render: (_, record) => (
                 <Space>
+                    {canEdit && <LinkDebug item={record} />}
                     {canEdit && (
                         <Button type="link" onClick={() => openEditModal(record)}>
                             编辑

@@ -20,24 +20,9 @@
 #include "service/common/message.h"
 #include "service/common/uuid.h"
 #include "service/features/access/access.service.h"
-#include "service/features/access/access.transport.h"
 #include "service/features/alert/alert.service.h"
 
 namespace service::alert {
-
-class AlertRefreshHandler final {
-public:
-  static ruvia::Task<std::string> handle(ruvia::WebWorkerContext &context,
-                                        std::string_view operation, std::string_view,
-                                        ruvia::StopToken stop) {
-    if (stop.stopRequested())
-      service::common::fail(10004, "Alert operation cancelled", 503);
-    if (operation != "refresh")
-      service::common::fail(10002, "Unknown alert operation", 400);
-    co_await metadata::refresh(context);
-    co_return "{}";
-  }
-};
 
 class AlertBootstrap final {
 public:

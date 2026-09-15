@@ -35,7 +35,6 @@ Json sessionFromLogin(const Json& data) {
     return result;
 }
 bool flag(const Json& state, const char* name) { return state.contains(name) && state[name].is_boolean() && state[name].get<bool>(); }
-}
 
 bool isPlatformOrigin(std::string_view url) {
     std::string normalized(url);
@@ -43,6 +42,8 @@ bool isPlatformOrigin(std::string_view url) {
     return normalized == PlatformUrl || normalized == std::string(PlatformUrl) + "/" ||
         normalized == std::string(PlatformUrl) + ":443" || normalized == std::string(PlatformUrl) + ":443/";
 }
+}
+
 Json VpnServiceStatus::toJson() const {
     return {{"state", state}, {"serverUrl", PlatformUrl}, {"username", username}, {"peerId", peerId},
         {"assignedIpv4", assignedIpv4}, {"edgeNodeIds", edgeNodeIds}, {"allowedRoutes", allowedRoutes},
@@ -402,7 +403,7 @@ Json VpnConnectionService::logoutLocked(std::stop_token stop) {
     store_->save(state_); setStatus("LoggedOut", warning);
     auto result = success(); if (!warning.empty()) result["message"] = warning; return result;
 }
-Json VpnConnectionService::handle(const Json& request, std::stop_token stop) {
+Json VpnConnectionService::executeCommand(const Json& request, std::stop_token stop) {
     const auto command = value(request, "command");
     if (command == "status") return success();
     std::lock_guard lock(gate_);

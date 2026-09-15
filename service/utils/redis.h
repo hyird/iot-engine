@@ -434,47 +434,6 @@ ruvia::Task<std::string> add(const Redis& redis, std::string_view stream, const 
 }
 
 template <typename Redis>
-ruvia::Task<std::optional<std::string>>
-addGroupedBounded(const Redis& redis, std::string_view stream, const std::vector<StreamField>& fields, std::size_t streamCapacity, std::string_view depthKey, std::size_t groupCapacity) {
-    if (fields.empty() || depthKey.empty()) {
-        throw std::invalid_argument("Redis grouped Stream message is incomplete");
-    }
-    static constexpr std::string_view script = R"lua(
-if redis.call('XLEN', KEYS[1]) >= tonumber(ARGV[1]) then
-  return false
-end
-local depth = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
-if depth >= tonumber(ARGV[2]) then
-  return false
-end
-local args = {'*'}
-for index = 3, #ARGV do
-  args[#args + 1] = ARGV[index]
-end
-local id = redis.call('XADD', KEYS[1], unpack(args))
-redis.call('INCR', KEYS[2])
-return id
-)lua";
-    std::vector<std::string> keyStore{ std::string(stream), std::string(depthKey) };
-    std::vector<std::string> argStore{ std::to_string(streamCapacity),
-                                       std::to_string(groupCapacity) };
-    for (const auto& field : fields) {
-        argStore.push_back(field.name);
-        argStore.push_back(field.value);
-    }
-    std::vector<std::string_view> keys(keyStore.begin(), keyStore.end());
-    std::vector<std::string_view> argv(argStore.begin(), argStore.end());
-    const auto reply = co_await redis.eval(script, std::span<const std::string_view>(keys), std::span<const std::string_view>(argv));
-    if (reply.null()) {
-        co_return std::nullopt;
-    }
-    if (reply.kind() != RedisValue::Kind::kString) {
-        throwValue("grouped bounded XADD", reply);
-    }
-    co_return std::optional<std::string>(std::string(reply.string()));
-}
-
-template <typename Redis>
 ruvia::Task<void> acknowledgeAndDelete(const Redis& redis, std::string_view stream, std::string_view group, std::string_view id) {
     static constexpr std::string_view script = R"lua(
 local acknowledged = redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
@@ -521,33 +480,6 @@ return acknowledged
     const auto reply = co_await redis.eval(script, keys, arguments);
     if (reply.kind() != RedisValue::Kind::kInteger) {
         throwValue("batch XACK/XDEL", reply);
-    }
-}
-
-template <typename Redis>
-ruvia::Task<void> acknowledgeGroupedAndDelete(const Redis& redis, std::string_view stream, std::string_view consumerGroup, std::string_view id, std::string_view depthKey) {
-    static constexpr std::string_view script = R"lua(
-	local acknowledged = redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
-	local removed = redis.call('XDEL', KEYS[1], ARGV[2])
-	if removed > 0 then
-	  local depth = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
-	  if depth <= 1 then
-	    redis.call('DEL', KEYS[2])
-	  else
-	    redis.call('DECR', KEYS[2])
-	  end
-	end
-	return acknowledged
-	)lua";
-    const std::string streamStr(stream);
-    const std::string depthStr(depthKey);
-    const std::string groupStr(consumerGroup);
-    const std::string idStr(id);
-    const std::string_view keys[]{ streamStr, depthStr };
-    const std::string_view argv[]{ groupStr, idStr };
-    const auto reply = co_await redis.eval(script, std::span<const std::string_view>(keys), std::span<const std::string_view>(argv));
-    if (reply.kind() != RedisValue::Kind::kInteger) {
-        throwValue("grouped XACK/XDEL", reply);
     }
 }
 
@@ -598,86 +530,6 @@ ruvia::Task<std::vector<StreamField>> hashEntries(const Redis& redis, std::strin
     co_return result;
 }
 
-template <typename Redis>
-ruvia::Task<bool> claimHash(const Redis& redis, std::string_view key, const std::vector<StreamField>& fields, std::chrono::milliseconds ttl) {
-    if (fields.empty()) {
-        throw std::invalid_argument("Redis state Hash fields are empty");
-    }
-    static constexpr std::string_view script = R"lua(
-if redis.call('EXISTS', KEYS[1]) ~= 0 then return 0 end
-local args = {}
-for index = 2, #ARGV do args[#args + 1] = ARGV[index] end
-redis.call('HSET', KEYS[1], unpack(args))
-redis.call('PEXPIRE', KEYS[1], ARGV[1])
-return 1
-)lua";
-    const std::string keyStr(key);
-    std::vector<std::string> argStore{ std::to_string(ttl.count()) };
-    for (const auto& field : fields) {
-        argStore.push_back(field.name);
-        argStore.push_back(field.value);
-    }
-    const std::string_view keys[]{ keyStr };
-    std::vector<std::string_view> argv(argStore.begin(), argStore.end());
-    const auto reply = co_await redis.eval(script, std::span<const std::string_view>(keys), std::span<const std::string_view>(argv));
-    if (reply.kind() != RedisValue::Kind::kInteger) {
-        throwValue("claim state Hash", reply);
-    }
-    co_return reply.integer() == 1;
-}
-
-template <typename Redis>
-ruvia::Task<bool> eraseHashIfFieldValue(const Redis& redis, std::string_view key, std::string_view field, std::string_view expected) {
-    static constexpr std::string_view script = R"lua(
-if redis.call('HGET', KEYS[1], ARGV[1]) ~= ARGV[2] then return 0 end
-return redis.call('DEL', KEYS[1])
-)lua";
-    const std::string keyStr(key);
-    const std::string fieldStr(field);
-    const std::string expectedStr(expected);
-    const std::string_view keys[]{ keyStr };
-    const std::string_view argv[]{ fieldStr, expectedStr };
-    const auto reply = co_await redis.eval(script, std::span<const std::string_view>(keys), std::span<const std::string_view>(argv));
-    if (reply.kind() != RedisValue::Kind::kInteger) {
-        throwValue("conditional state DEL", reply);
-    }
-    co_return reply.integer() == 1;
-}
-
-template <typename Redis>
-ruvia::Task<bool> completeInflightTask(const Redis& redis, std::string_view stream, std::string_view consumerGroup, std::string_view id, std::string_view depthKey, std::string_view inflightKey, std::string_view expectedToken) {
-    static constexpr std::string_view script = R"lua(
-if redis.call('HGET', KEYS[3], 'token') ~= ARGV[3] then
-  return 0
-	end
-	redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
-	local removed = redis.call('XDEL', KEYS[1], ARGV[2])
-	redis.call('DEL', KEYS[3])
-	if removed > 0 then
-	  local depth = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
-	  if depth <= 1 then
-	    redis.call('DEL', KEYS[2])
-	  else
-	    redis.call('DECR', KEYS[2])
-	  end
-	end
-	return 1
-	)lua";
-    const std::string streamStr(stream);
-    const std::string depthStr(depthKey);
-    const std::string inflightStr(inflightKey);
-    const std::string groupStr(consumerGroup);
-    const std::string idStr(id);
-    const std::string tokenStr(expectedToken);
-    const std::string_view keys[]{ streamStr, depthStr, inflightStr };
-    const std::string_view argv[]{ groupStr, idStr, tokenStr };
-    const auto reply = co_await redis.eval(script, std::span<const std::string_view>(keys), std::span<const std::string_view>(argv));
-    if (reply.kind() != RedisValue::Kind::kInteger) {
-        throwValue("complete inflight task", reply);
-    }
-    co_return reply.integer() == 1;
-}
-
 // ---- SCAN ----
 
 template <typename Redis>
@@ -712,28 +564,7 @@ ruvia::Task<void> eraseMatching(const Redis& redis, std::string_view pattern) {
     }
 }
 
-template <typename Redis>
-ruvia::Task<void> eraseMatchingIfFieldValue(const Redis& redis, std::string_view pattern, std::string_view field, std::string_view expected) {
-    for (const auto& key : co_await keysMatching(redis, pattern)) {
-        (void)co_await eraseHashIfFieldValue(redis, key, field, expected);
-    }
-}
-
-// ---- 计数 / 删除 ----
-
-template <typename Redis>
-ruvia::Task<std::int64_t> incrementWithExpiry(const Redis& redis, std::string_view key, std::chrono::milliseconds expiry) {
-    const auto incrementReply = co_await command(redis, { "INCR", std::string(key) });
-    if (incrementReply.kind() != RedisValue::Kind::kInteger) {
-        throwValue("INCR", incrementReply);
-    }
-    const auto reply =
-        co_await command(redis, { "PEXPIRE", std::string(key), std::to_string(expiry.count()) });
-    if (reply.kind() != RedisValue::Kind::kInteger) {
-        throwValue("PEXPIRE", reply);
-    }
-    co_return incrementReply.integer();
-}
+// ---- 删除 ----
 
 template <typename Redis>
 ruvia::Task<void> erase(const Redis& redis, std::string_view key) {

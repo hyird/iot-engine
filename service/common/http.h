@@ -1,19 +1,17 @@
 #pragma once
 
 #include <algorithm>
-#include <charconv>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include <ruvia/web/Context.h>
 #include <ruvia/web/ConnInfo.h>
 #include "service/utils/text.h"
+#include "service/utils/number.h"
 #include <ruvia/web/Error.h>
-#include <ruvia/web/db/DbTypes.h>
 
 #include <ruvia/web/Model.h>
 #include "service/common/uuid.h"
@@ -43,15 +41,6 @@ RUVIA_RESPONSE_MODEL(ErrorResponse,
     RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(message, ruvia::String));
 
-inline std::optional<std::int64_t> parseInt64(std::optional<std::string_view> input) {
-    if (!input || input->empty())
-        return std::nullopt;
-    std::int64_t value{};
-    const auto [ptr, ec] = std::from_chars(input->data(), input->data() + input->size(), value);
-    if (ec != std::errc{} || ptr != input->data() + input->size())
-        return std::nullopt;
-    return value;
-}
 
 struct Page final {
     std::int64_t page{1};
@@ -61,7 +50,7 @@ struct Page final {
 
 inline Page page(const ruvia::ContextRequest& request) {
     const auto integer = [&request](std::string_view name, std::int64_t fallback) {
-        return parseInt64(request.query(name)).value_or(fallback);
+        return service::utils::parseInt64(request.query(name)).value_or(fallback);
     };
     Page result;
     result.page = std::max<std::int64_t>(1, integer("page", 1));
@@ -70,12 +59,6 @@ inline Page page(const ruvia::ContextRequest& request) {
     return result;
 }
 
-template <typename... Ts> std::vector<ruvia::DbValue> dbParams(Ts&&... values) {
-    std::vector<ruvia::DbValue> params;
-    params.reserve(sizeof...(Ts));
-    (params.emplace_back(std::forward<Ts>(values)), ...);
-    return params;
-}
 
 [[noreturn]] inline void fail(std::int64_t code, std::string message, std::uint16_t status) {
     const auto codeText = std::to_string(code);

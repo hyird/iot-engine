@@ -6,33 +6,6 @@
 #include "service/features/telemetry/telemetry.service.h"
 
 namespace service::telemetry {
-class TelemetryProjectionHandler final {
-  public:
-    static ruvia::Task<std::string> handle(ruvia::WebWorkerContext& context, std::string_view operation, std::string_view payload, ruvia::StopToken stop) {
-        if (stop.stopRequested()) {
-            service::common::fail(10004, "Telemetry operation cancelled", 503);
-        }
-        const auto separator = payload.find('\n');
-        const auto id = payload.substr(0, separator);
-        if (!service::common::isUuid(id)) {
-            service::common::fail(10002, "Invalid telemetry object identifier", 400);
-        }
-        if (operation == "initialize" && separator != std::string_view::npos) {
-            co_await latest::initializeDevice(context.redis(), id, payload.substr(separator + 1));
-            co_await latest::projectDevice(context, id);
-        } else if (operation == "project-device") {
-            co_await latest::projectDevice(context, id);
-        } else if (operation == "project-protocol") {
-            co_await latest::projectProtocol(context, id);
-        } else if (operation == "erase-device") {
-            co_await latest::eraseDevice(context.redis(), id);
-        } else {
-            service::common::fail(10002, "Unknown telemetry operation", 400);
-        }
-        co_return "{}";
-    }
-};
-
 class PersistenceRuntime final : public TelemetryService {
   public:
     PersistenceRuntime() = default;

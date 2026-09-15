@@ -1,5 +1,5 @@
 import { afterAll, afterEach, expect, test } from 'bun:test';
-import request from '../web/utils/http';
+import request from '../web/lib/http';
 import { refreshAccessToken } from '../web/pages/login/login.service';
 import { useAuthStore } from '../web/store/authStore';
 

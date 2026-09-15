@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include "service/modules/edge_node/edge_node.service.h"
+#include "service/features/edge/gateway/gateway.entity.h"
 
 namespace {
 
@@ -47,6 +48,14 @@ std::string edgeSource(const char* relativePath) {
 
 int main() {
     try {
+        const auto approved = service::edge::gateway::EnrollmentRecord::decode("node-1|approved");
+        if (!approved || approved->nodeId != "node-1" || approved->status != "approved")
+            throw std::runtime_error("gateway enrollment record lost node or approval status");
+        if (service::edge::gateway::EnrollmentRecord::decode("node-1").has_value())
+            throw std::runtime_error("gateway accepted an incomplete enrollment record");
+        const auto pending = service::edge::gateway::EnrollmentRecord::decode("node-1|pending");
+        if (!pending || pending->status != "pending")
+            throw std::runtime_error("gateway enrollment record changed pending status");
         const auto serviceSource = edgeSource("service/modules/edge_node/edge_node.service.h");
         requireMissing(serviceSource, "R\"sql", "edge service still embeds raw SQL");
         requireMissing(serviceSource, "c.db().query(\"", "edge service still calls raw query overload");
@@ -73,7 +82,7 @@ int main() {
                         "edge task request does not use typed JSON construction");
         const auto controllerSource = edgeSource("service/modules/edge_node/edge_node.controller.h");
         const auto gatewaySource = edgeSource("service/features/edge/gateway/gateway.runtime.h");
-        const auto dispatchSource = edgeSource("service/features/edge/edge.transport.h");
+        const auto dispatchSource = edgeSource("service/features/edge/session/session.service.h");
         const auto dispatcherSource = edgeSource("service/features/edge/edge.runtime.h");
         const auto multiplexerSource =
             edgeSource("service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h");
@@ -82,7 +91,7 @@ int main() {
         const auto projectorServiceSource =
             edgeSource("service/features/edge/edge.service.h");
         const auto projectorStreamSource =
-            edgeSource("service/features/edge/edge.transport.h");
+            edgeSource("service/common/message.h");
         const auto metadataSource = edgeSource("service/features/edge/edge.service.h");
         const auto vpnEdgeConfigSource =
             edgeSource("service/features/vpn/vpn.service.h");
@@ -193,7 +202,7 @@ int main() {
                         "Service Worker wake bus has no blocking Stream consumer");
         requireContains(dispatcherSource, "context.workerState<SessionDispatcher>().run(",
                         "edge dispatcher does not start the same local state on every worker");
-        requireContains(dispatchSource, "iot:v2:edge:dispatch:",
+        requireContains(edgeSource("service/common/message.h"), "iot:v2:edge:dispatch:",
                         "edge dispatch notifications do not use worker-isolated Redis keys");
         requireContains(dispatchSource, "session_state::parse(",
                         "edge dispatch notifications are not routed by session ownership");
@@ -255,21 +264,22 @@ int main() {
         requireContains(gatewaySource,
                         ".reason = \"edge egress failed\"",
                         "edge gateway leaves a half-open session online after its flush fails");
-        requireContains(gatewaySource, "session.protocolVersion < 5",
+        const auto terminalSource = edgeSource("service/features/edge/terminal/terminal.service.h");
+        requireContains(terminalSource, "session.protocolVersion < 5",
                         "edge gateway does not isolate legacy terminal data handling");
-        requireContains(gatewaySource,
-                        "terminalSessionKey(nodeId, terminalId), nodeSession",
+        requireContains(terminalSource,
+                        "terminalSessionKey(nodeId, terminalId), record.nodeSession",
                         "edge gateway does not register terminal ownership before opening");
-        requireContains(gatewaySource,
+        requireContains(edgeSource("service/common/message.h"),
                         "return \"iot:edge:terminal:out:\" + std::string(nodeId)",
                         "edge terminal output keys are not isolated by node");
-        requireContains(gatewaySource,
+        requireContains(terminalSource,
                         "if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end",
                         "edge gateway does not atomically verify terminal ownership");
         requireContains(gatewaySource,
-                        "co_await saveTerminalData(c, session, input.terminal_data())",
+                        "co_await terminal_state::TerminalService::saveTerminalData(c, terminalIdentity(session), input.terminal_data())",
                         "edge gateway does not bind terminal output to the authenticated session");
-        requireContains(gatewaySource,
+        requireContains(terminalSource,
                         "redis.call('DEL', KEYS[1], KEYS[2], KEYS[3], KEYS[4])",
                         "edge gateway does not atomically release terminal state");
         requireMissing(gatewaySource, "\"iot:edge:terminal:out:\" + terminalId",

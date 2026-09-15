@@ -22,6 +22,7 @@
 #include "service/features/gb28181/gb28181.config.h"
 #include "service/features/gb28181/media/media.transport.h"
 #include "service/features/gb28181/sip/sip.protocol.h"
+#include "service/features/gb28181/sip/sip.types.h"
 
 #ifdef GetMessage
 #undef GetMessage
@@ -31,24 +32,6 @@ class SipServer : public std::enable_shared_from_this<SipServer> {
   public:
     using ViewerCountObserver =
         std::function<void(const std::string& streamId, unsigned int viewerCount)>;
-
-    struct PreviewStartResult {
-        std::string sessionId;
-        std::string deviceId;
-        std::string channelId;
-        std::string streamId;
-        std::string ssrc;
-        uint16_t rtpPort{ 0 };
-        PlayUrls playUrls;
-        unsigned int leaseTimeoutSeconds{ 0 };
-    };
-
-    struct PreviewStopResult {
-        std::string sessionId;
-        std::string streamId;
-        bool byeSent{ false };
-        bool rtpServerClosed{ false };
-    };
 
     SipServer(SipConfig sipConfig, MediaConfig mediaConfig, DeviceRegistry& deviceRegistry, ZlmSdk& zlmSdk, ruvia::EventLoop ioLoop, ViewerCountObserver viewerCountObserver = {}, ZlmSdk::OwnerIndex owner = ZlmSdk::kUnassignedOwner);
     ~SipServer();
@@ -89,12 +72,12 @@ class SipServer : public std::enable_shared_from_this<SipServer> {
     bool queryRecords(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime);
     bool sendPtzControl(const std::string& deviceId, const std::string& channelId, const std::string& action, uint8_t speed);
     bool sendPtzPreciseControl(const std::string& deviceId, const std::string& channelId, double pan, double tilt, double zoom);
-    std::optional<PreviewStartResult> startPreview(const std::string& deviceId, const std::string& channelId);
-    std::optional<PreviewStartResult>
+    std::optional<SipPreviewStartResult> startPreview(const std::string& deviceId, const std::string& channelId);
+    std::optional<SipPreviewStartResult>
     startPlayback(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime);
-    std::optional<PreviewStopResult> stopPreview(const std::string& sessionId);
+    std::optional<SipPreviewStopResult> stopPreview(const std::string& sessionId);
     bool renewPreview(const std::string& sessionId);
-    std::optional<PreviewStopResult> stopPreviewByStream(const std::string& streamId);
+    std::optional<SipPreviewStopResult> stopPreviewByStream(const std::string& streamId);
     void markStreamOnline(const std::string& streamId, bool online);
 
     enum class SipTransport {

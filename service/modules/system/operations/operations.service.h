@@ -16,19 +16,15 @@
 #include "service/modules/system/operations/operations.entity.h"
 
 #include "service/common/message.h"
-#include "service/common/observability.h"
+#include "service/common/worker.h"
+#include "service/modules/system/operations/operations.types.h"
 
 namespace service::system {
 
 class OperationsService final {
   public:
-    struct Readiness {
-        bool ready;
-        std::string json;
-    };
-
-    static ruvia::Task<Readiness> readiness(ruvia::Context& context) {
-        const auto expectedWorkers = workerCount();
+    static ruvia::Task<OperationsReadiness> readiness(ruvia::Context& context) {
+        const auto expectedWorkers = workerCount(context);
         bool databaseReady = false;
         bool redisReady = false;
         try {
@@ -42,7 +38,7 @@ class OperationsService final {
         } catch (...) {
         }
 
-        std::vector<WorkerSnapshot> snapshots;
+        std::vector<WorkerDiagnosticSnapshot> snapshots;
         bool snapshotsAvailable = expectedWorkers != 0;
         if (snapshotsAvailable) {
             try {
@@ -68,11 +64,11 @@ class OperationsService final {
         const auto status = !ready ? std::string_view{ "not_ready" }
             : degraded             ? std::string_view{ "degraded" }
                                    : std::string_view{ "ready" };
-        co_return Readiness{ ready, aggregateHealthJson(snapshots, status) };
+        co_return OperationsReadiness{ ready, aggregateHealthJson(snapshots, status) };
     }
 
     static ruvia::Task<std::string> metrics(ruvia::Context& context) {
-        const auto expectedWorkers = workerCount();
+        const auto expectedWorkers = workerCount(context);
         if (expectedWorkers == 0) {
             co_return fallbackMetrics();
         }
@@ -100,23 +96,18 @@ class OperationsService final {
     }
 
   private:
-    struct WorkerSnapshot final {
-        bool metricsPresent{ false };
-        bool readinessPresent{ false };
-        bool ready{ false };
-        std::string metrics;
-        std::string healthJson;
-    };
-
-    static std::size_t workerCount() noexcept {
-        const auto* diagnostics = observability::currentWorkerDiagnostics();
-        return diagnostics ? diagnostics->workerCount() : 0;
+    static std::size_t workerCount(const ruvia::Context& context) noexcept {
+        try {
+            return context.workerState<service::ServiceWorkerTopology>().count;
+        } catch (const std::logic_error&) {
+            return 0;
+        }
     }
 
-    static ruvia::Task<std::vector<WorkerSnapshot>>
+    static ruvia::Task<std::vector<WorkerDiagnosticSnapshot>>
     loadSnapshots(ruvia::Context& context, std::size_t count) {
         auto snapshots = context.redis().getRepository<WorkerSnapshotEntity>();
-        std::vector<WorkerSnapshot> result(count);
+        std::vector<WorkerDiagnosticSnapshot> result(count);
         for (std::size_t index = 0; index < count; ++index) {
             const ruvia::DbFindOptions options{
                 .where = WorkerSnapshotEntity::column<"id">() ==
@@ -133,7 +124,7 @@ class OperationsService final {
         co_return result;
     }
 
-    static std::string aggregateHealthJson(const std::vector<WorkerSnapshot>& snapshots, std::string_view status) {
+    static std::string aggregateHealthJson(const std::vector<WorkerDiagnosticSnapshot>& snapshots, std::string_view status) {
         std::string result;
         for (const auto& snapshot : snapshots) {
             if (!snapshot.healthJson.empty()) {

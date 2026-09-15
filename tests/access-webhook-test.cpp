@@ -47,10 +47,10 @@ void requireCanonicalBooleanPointValues(std::string_view source) {
 int main() {
     try {
         const auto serviceSource = webhookSource("service/features/access/access.service.h");
-        const auto runtimeSource = webhookSource("service/features/access/access.runtime.h");
+        const auto entitySource = webhookSource("service/features/access/access.entity.h");
         requireNoUnsafeStoll(serviceSource);
         requireUnambiguousTlsVerificationFlag(serviceSource);
-        requireCanonicalBooleanPointValues(runtimeSource);
+        requireCanonicalBooleanPointValues(entitySource);
         std::cout << "access webhook tests passed\n";
         return 0;
     } catch (const std::exception& error) {

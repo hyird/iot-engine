@@ -20,6 +20,7 @@ extern char** environ;
 
 #include "service/common/message.h"
 #include "service/utils/network.h"
+#include "service/features/vpn/firewall/firewall.types.h"
 
 namespace service::vpn::firewall {
 
@@ -27,18 +28,6 @@ using service::message::vpn::kOverlayPool;
 using service::message::vpn::kVirtualLanPool;
 using service::utils::network::parseIpv4;
 using service::utils::network::parseCidr;
-
-struct ClientAccess final {
-    std::string assignedIpv4;
-    std::vector<std::string> sourceRoutes;
-    std::vector<std::string> allowedRoutes;
-    std::vector<std::string> edgeAddresses;
-};
-
-struct Result final {
-    bool configured{};
-    std::string message;
-};
 
 inline bool validInterface(std::string_view value) noexcept {
     if (value.empty() || value.size() > 15)

@@ -11,7 +11,7 @@
 
 #include "service/common/database.h"
 #include "service/common/http.h"
-#include "service/common/observability.h"
+#include "service/common/worker.h"
 #include "service/common/uuid.h"
 #include "service/modules/system/outbox/outbox.entity.h"
 #include "service/modules/system/outbox/outbox.types.h"
@@ -90,12 +90,22 @@ public:
                                 ruvia::DbBinaryOperator::kAnd, deadLettered))
             .returning({query.cast(query.column("id"), ruvia::DbDataType::kText)});
 
-        const auto rows = co_await context.db().query(query);
+        auto transaction = co_await context.db().beginTransaction();
+        const auto rows = co_await transaction.query(query);
         if (rows.empty())
             service::common::fail(service::common::kNotFoundErrorCode,
                                   "死信事件不存在或已重放", 404);
-        if (auto *diagnostics = service::observability::currentWorkerDiagnostics())
-            diagnostics->incrementCounter("iot_engine_outbox_dead_letter_replays_total");
+        const auto workerIndex = context.workerState<service::ServiceWorkerTopology>().index.value();
+        const auto counterId = service::runtime::instanceId() + ":" + std::to_string(workerIndex);
+        ruvia::DbQuery counter(context.pool());
+        counter.insertInto(OutboxReplayCounterEntity::tableName(), {"id", "replays"})
+            .values({counter.value(counterId), counter.value(std::int64_t{1})})
+            .onConflict({.columns = {"id"}, .update = {
+                {"replays", counter.binary(counter.column(OutboxReplayCounterEntity::columnName<"replays">(),
+                    OutboxReplayCounterEntity::tableName()), ruvia::DbBinaryOperator::kAdd, counter.value(std::int64_t{1}))},
+                {"updated_at", counter.call("now")}}});
+        (void)co_await transaction.execute(counter);
+        co_await transaction.commit();
     }
 
 private:

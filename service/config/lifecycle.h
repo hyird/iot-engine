@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-#include "service/common/observability.h"
+#include "service/features/observability/observability.service.h"
 
 namespace service::application {
 

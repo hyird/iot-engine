@@ -5,6 +5,8 @@ import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
 
 const db = new Bun.SQL(databaseUrl);
 const redis = new Bun.RedisClient(redisUrl);
+const sipPort = Number(process.env.GB_TEST_SIP_PORT);
+assert(Number.isInteger(sipPort) && sipPort > 0 && sipPort <= 65535, 'Run with Run-RpcIntegration.ps1 -Gb28181');
 const socket = createSocket('udp4');
 const device = '34020000001320000091';
 const realm = '3402000000';
@@ -34,7 +36,7 @@ async function exchange(method: string, body = '', authorization = '') {
         `Call-ID: gb-worker-fixture-${cseq}\r\nCSeq: ${cseq} ${method}\r\nExpires: 180\r\n` +
         authorization + (body ? 'Content-Type: Application/MANSCDP+xml\r\n' : '') +
         `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
-    socket.send(request, 55133, '127.0.0.1');
+    socket.send(request, sipPort, '127.0.0.1');
     return until(async () => {
         const index = inbox.findIndex(value => value.startsWith('SIP/2.0 ') && value.includes(`CSeq: ${cseq} ${method}\r\n`));
         return index < 0 ? undefined : inbox.splice(index, 1)[0];
@@ -153,8 +155,8 @@ try {
     // and deleted. Redelivery gets a new transport ID but keeps its DB order.
     const receiptKey = `iot:gb28181:projection:done:${projectionId}`;
     await redis.del(receiptKey);
-    const runtimeSource = await Bun.file('service/features/gb28181/gb28181.runtime.cpp').text();
-    const publishLua = runtimeSource.slice(runtimeSource.indexOf('CollectorRuntime::persistProjection('))
+    const serviceSource = await Bun.file('service/features/gb28181/gb28181.service.h').text();
+    const publishLua = serviceSource.slice(serviceSource.indexOf('publishProjection('))
         .match(/R"lua\(([\s\S]*?)\)lua"/)?.[1];
     assert(publishLua, 'production projection publication Lua must be available');
     const replayFields = [

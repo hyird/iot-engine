@@ -14,7 +14,8 @@
 
 #include <ruvia/core/EventLoopPool.h>
 
-#include "service/common/log.h"
+#include "service/middleware/log.h"
+#include "service/features/packet_log/packet_log.transport.h"
 #include "service/features/gb28181/media/media.transport.h"
 
 namespace {
@@ -109,7 +110,7 @@ void verifySdkCallbackOwners(const MediaConfig& config) {
 
 int main() {
     try {
-        namespace packetLog = service::common::packet_log;
+        namespace packetLog = service::packet_log;
         packetLog::Config packetConfig;
         packetConfig.directory =
             std::filesystem::temp_directory_path() / "iot-engine-gb-packet-log";

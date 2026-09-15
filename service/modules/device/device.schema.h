@@ -7,6 +7,11 @@
 
 namespace service::device {
 
+class DeviceDebugValidator final : public ruvia::Middleware<DeviceDebugValidator> {
+  public:
+    RUVIA_VALIDATE_JSON(DeviceDebugBody, RUVIA_RULE(enabled, RUVIA_REQUIRED("必须指定调试开关")))
+};
+
 class DeviceIdParamsValidator final : public ruvia::Middleware<DeviceIdParamsValidator> {
   public:
     RUVIA_VALIDATE_PARAM(DeviceIdParams,

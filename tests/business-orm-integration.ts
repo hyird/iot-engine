@@ -271,6 +271,39 @@ try {
     assert.equal(updatedLink.endpoint.port, linkPort);
     console.log('PASS link ORM create, list, detail, update and numeric endpoint JSON');
 
+    const missingNodeId = crypto.randomUUID();
+    const serialEndpoint = { transport: 'serial', interface: '/dev/ttyS0' };
+    const tcpEndpoint = {
+        transport: 'tcp', interface: 'eth0', mode: 'TCP Client', ip: '127.0.0.1', port: 502,
+    };
+    const channelCases = [
+        { endpoint: { ...serialEndpoint, baud_rate: 299 }, message: '串口参数无效' },
+        { endpoint: { ...serialEndpoint, data_bits: 9 }, message: '串口参数无效' },
+        { endpoint: { ...serialEndpoint, stop_bits: 3 }, message: '串口参数无效' },
+        { endpoint: { ...serialEndpoint, parity: 'mark' }, message: '串口参数无效' },
+        { endpoint: serialEndpoint, protocol: 'S7', message: 'S7 不支持串口' },
+        { endpoint: { ...serialEndpoint, interface: 'x'.repeat(97) }, message: '接口名称过长' },
+        { endpoint: { ...tcpEndpoint, ip: '127.0.0.999' }, message: 'TCP 参数无效' },
+        { endpoint: { ...tcpEndpoint, port: 65536 }, message: 'TCP 参数无效' },
+        { endpoint: { ...tcpEndpoint, mode: 'UDP' }, message: 'TCP 参数无效' },
+        { endpoint: { ...tcpEndpoint, transport: 'udp' }, message: '传输类型无效' },
+        { endpoint: serialEndpoint, message: '节点未批准或不支持采集配置' },
+        { endpoint: tcpEndpoint, message: '节点未批准或不支持采集配置' },
+    ];
+    for (const [index, test] of channelCases.entries()) {
+        const result = await jsonRequest('POST', '/v1/link', {
+            execution: 'edge', name: `${tag}-edge-validation-${index}`,
+            protocol: test.protocol ?? 'Modbus', edge_node_id: missingNodeId,
+            endpoint: test.endpoint, status: 'disabled',
+        }, 400);
+        assert.equal(result.code, 15002);
+        assert.equal(result.message, test.message);
+    }
+    const rejectedChannels = await db`SELECT count(*) AS count FROM link WHERE edge_node_id=${missingNodeId}`;
+    assert.equal(Number(rejectedChannels[0].count), 0);
+    console.log('PASS Edge channel serial/TCP validation precedes node lookup and rejects without writes');
+
+
     const createDevice = async (name: string, code: string, registrationContent: string) => {
         await jsonRequest('POST', '/v1/device', {
             name,
@@ -381,6 +414,58 @@ try {
     const webhookOne = webhookOneResult.data as { id: string };
     const webhookTwo = webhookTwoResult.data as { id: string };
     webhooks.push(webhookOne.id, webhookTwo.id);
+
+    for (const patch of [
+        { name: 42 }, { timeoutSeconds: '5' }, { timeoutSeconds: 31 },
+        { skipTlsVerify: 'false' }, { eventTypes: [] }, { eventTypes: ['unsupported'] },
+        { url: 'ftp://example.test/webhook' }, { headers: [] }, { accessKeyId: 'invalid' },
+    ]) {
+        const rejected = await jsonRequest('PUT', `/api/open-webhook/${webhookOne.id}`, patch, 400);
+        assert.equal(rejected.code, 19002);
+    }
+    console.log('PASS webhook schema rejects invalid partial updates before persistence');
+
+    const reservedHeaders = ['host', 'content-length', 'connection', 'x-iot-event',
+        'x-iot-timestamp', 'x-iot-delivery', 'x-iot-signature', 'content-type', 'user-agent',
+        'transfer-encoding', 'trailer', 'te', 'upgrade', 'expect', 'proxy-connection'];
+    const headerCases = [
+        '{}', '{"X-Test":"ok"}', '{"X-Test":42}', '{"X-Test":null}',
+        '{"X-Test":false}', '{"X-Test":[]}', '{"X-Test":{}}',
+        '{"":"ok"}', '{"X Test":"ok"}', '{"X:Test":"ok"}',
+        '{"X-Test":"ok\\r\\nInjected"}',
+        String.raw`{"X-Test":"ok\r\nInjected"}`,
+        String.raw`{"X-Test":"ok\u000aInjected"}`,
+        String.raw`{"\u0048ost":"example.test"}`,
+        String.raw`{"X-Test":42,"X-\u0054est":"ok"}`,
+        '{"X-Test":"ok","X-Test":42}', '{"X-Test":42,"X-Test":"ok"}',
+        '{"X-Test":"ok","x-test":"also ok"}',
+        String.raw`{"X-Test":"中文\tvalue"}`,
+        ...reservedHeaders.map((name) => JSON.stringify({ [name.toUpperCase()]: 'blocked' })),
+    ];
+    for (const headersJson of headerCases) {
+        const tokenPattern = "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$";
+        const newlinePattern = '[\\r\\n]';
+        const oracle = await db`SELECT NOT EXISTS (
+            SELECT 1 FROM jsonb_each(${headersJson}::text::jsonb) AS header(key,value)
+            WHERE key !~ ${tokenPattern} OR jsonb_typeof(value) <> 'string'
+               OR (value #>> '{}') ~ ${newlinePattern}
+               OR lower(key) IN (SELECT jsonb_array_elements_text(${JSON.stringify(reservedHeaders)}::text::jsonb))
+        ) AS valid`;
+        const before = (await db`SELECT headers FROM open_webhook WHERE id=${webhookOne.id}`)[0].headers;
+        const response = await fetch(`${apiBase}/api/open-webhook/${webhookOne.id}`, {
+            method: 'PUT', headers: adminHeaders, body: `{"headers":${headersJson}}`,
+            signal: AbortSignal.timeout(15000),
+        });
+        const result = await response.json();
+        assert.equal(response.status, oracle[0].valid ? 200 : 400, headersJson);
+        assert.equal(result.code, oracle[0].valid ? 0 : 19002, headersJson);
+        const stored = (await db`SELECT headers FROM open_webhook WHERE id=${webhookOne.id}`)[0].headers;
+        assert.deepEqual(stored, oracle[0].valid ? JSON.parse(headersJson) : before, headersJson);
+    }
+    await jsonRequest('PUT', `/api/open-webhook/${webhookOne.id}`, { headers: { 'X-Trace-Id': tag } });
+    console.log('PASS webhook Header validation matches PostgreSQL semantics and preserves rejected updates');
+
+
 
     await jsonRequest('POST', '/api/open-webhook', {
         accessKeyId: keyOne.id,

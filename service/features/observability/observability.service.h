@@ -9,30 +9,16 @@
 #include <string>
 #include <string_view>
 
+#include "service/features/observability/observability.types.h"
+
 namespace service::observability {
-
-enum class ComponentState { Stopped, Starting, Ready, Failed };
-
-struct ComponentStatus {
-    ComponentState state{ComponentState::Stopped};
-    std::string detail;
-    std::int64_t changedAtMs{};
-};
-
-struct AlertStatus {
-    bool active{false};
-    std::string detail;
-    std::int64_t changedAtMs{};
-};
 
 class RuntimeDiagnostics final {
   public:
-    void identifyWorker(std::size_t index, std::size_t count) {
+    void identifyWorker(std::size_t index) {
         workerIndex_ = std::to_string(index);
-        workerCount_ = count;
     }
     [[nodiscard]] std::string_view workerIndex() const noexcept { return workerIndex_; }
-    [[nodiscard]] std::size_t workerCount() const noexcept { return workerCount_; }
     void setComponentStatus(std::string name, ComponentState state, std::string detail = {}) {
         std::lock_guard lock(mutex_);
         components_.insert_or_assign(
@@ -47,6 +33,11 @@ class RuntimeDiagnostics final {
     void setGauge(std::string_view name, std::int64_t value) {
         std::lock_guard lock(mutex_);
         gauges_.insert_or_assign(std::string(name), value);
+    }
+
+    void setCounter(std::string_view name, std::uint64_t value) {
+        std::lock_guard lock(mutex_);
+        counters_.insert_or_assign(std::string(name), value);
     }
 
     bool setAlertState(std::string name, bool active, std::string detail = {}) {
@@ -144,7 +135,6 @@ class RuntimeDiagnostics final {
 
   private:
     std::string workerIndex_;
-    std::size_t workerCount_{};
     static std::int64_t nowMilliseconds() {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
                    std::chrono::system_clock::now().time_since_epoch())
@@ -209,15 +199,5 @@ class RuntimeDiagnostics final {
     std::map<std::string, std::int64_t, std::less<>> gauges_;
     std::map<std::string, AlertStatus, std::less<>> alerts_;
 };
-
-inline thread_local RuntimeDiagnostics* currentWorkerDiagnosticsInstance = nullptr;
-
-inline void setCurrentWorkerDiagnostics(RuntimeDiagnostics& diagnostics) noexcept {
-    currentWorkerDiagnosticsInstance = &diagnostics;
-}
-
-inline RuntimeDiagnostics* currentWorkerDiagnostics() noexcept {
-    return currentWorkerDiagnosticsInstance;
-}
 
 } // namespace service::observability

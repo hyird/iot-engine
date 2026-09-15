@@ -1,5 +1,9 @@
 #pragma once
 
+#include <ruvia/core/StopToken.h>
+#include <ruvia/web/WebWorker.h>
+
+#include "service/utils/number.h"
 #include "service/features/alert/alert.entity.h"
 #include <ruvia/web/db/DbQuery.h>
 
@@ -110,7 +114,7 @@ ruvia::Task<std::optional<std::int64_t>> nextOfflineDeadline(
         reply.array()[1].kind() != ruvia::RedisValue::Kind::kString) {
         service::message::redis::throwValue("parse next offline-alert deadline", reply);
     }
-    const auto score = service::common::parseInt64(
+    const auto score = service::utils::parseInt64(
         std::optional<std::string_view>{ reply.array()[1].string() }
     );
     if (!score) {
@@ -287,12 +291,12 @@ ruvia::Task<void> refresh(Context& context) {
             continue;
         }
         const auto durationSeconds =
-            service::common::parseInt64(std::optional<std::string_view>{ row[2].value().value_or(std::string_view{}) });
+            service::utils::parseInt64(std::optional<std::string_view>{ row[2].value().value_or(std::string_view{}) });
         if (!durationSeconds || *durationSeconds <= 0) {
             continue;
         }
         const auto observedAtMs =
-            service::common::parseInt64(std::optional<std::string_view>{ row[3].value().value_or(std::string_view{}) })
+            service::utils::parseInt64(std::optional<std::string_view>{ row[3].value().value_or(std::string_view{}) })
                 .value_or(0);
         const auto durationMs = *durationSeconds * 1000;
         offlineEntries.push_back(
@@ -389,7 +393,7 @@ return offline_count
 #include <ruvia/web/WebWorker.h>
 
 #include "service/common/uuid.h"
-#include "service/features/access/access.transport.h"
+#include "service/features/access/access.service.h"
 
 namespace service::alert {
 
@@ -432,7 +436,7 @@ class AlertEvaluationService final {
         std::vector<std::vector<Evaluation>> evaluations(relevant.size());
         for (const auto& row : rules) {
             const auto parsedSequence =
-                service::common::parseInt64(std::optional<std::string_view>{ row[0].value().value_or(std::string_view{}) });
+                service::utils::parseInt64(std::optional<std::string_view>{ row[0].value().value_or(std::string_view{}) });
             if (!parsedSequence || *parsedSequence < 0) {
                 continue;
             }
@@ -880,7 +884,7 @@ class AlertEvaluationService final {
         );
         auto pipeline = context.redis().pipeline();
         for (const auto& event : events) {
-            const auto occurredAt = service::common::parseInt64(
+            const auto occurredAt = service::utils::parseInt64(
                 std::optional<std::string_view>(event[4].value().value_or(std::string_view{}))
             );
             if (!occurredAt) {
@@ -1092,3 +1096,18 @@ class AlertEvaluationService final {
 };
 
 } // namespace service::alert
+
+namespace service::alert::metadata {
+
+inline ruvia::Task<std::string> executeRefreshOperation(ruvia::WebWorkerContext &context,
+                                        std::string_view operation, std::string_view,
+                                        ruvia::StopToken stop) {
+    if (stop.stopRequested())
+      service::common::fail(10004, "Alert operation cancelled", 503);
+    if (operation != "refresh")
+      service::common::fail(10002, "Unknown alert operation", 400);
+    co_await refresh(context);
+    co_return "{}";
+  }
+
+} // namespace service::alert::metadata

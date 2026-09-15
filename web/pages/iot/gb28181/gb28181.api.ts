@@ -1,6 +1,6 @@
-import request from '@/utils/http';
+import request from '@/lib/http';
 import { appendQueryParams } from '@/utils/query';
-import { createSnapshotStream } from '@/utils/snapshot-request';
+import { createSnapshotStream } from '@/lib/snapshot-request';
 import type { GB28181 } from './gb28181.types';
 
 const BASE = '/v1/gb28181';

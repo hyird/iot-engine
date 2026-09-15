@@ -1,5 +1,6 @@
 #pragma once
 
+#include "service/utils/number.h"
 #include "service/features/telemetry/latest/latest.entity.h"
 
 #include <algorithm>
@@ -401,7 +402,7 @@ ruvia::Task<std::optional<std::int64_t>> nextDeadlineForKey(
         reply.array()[1].kind() != ruvia::RedisValue::Kind::kString) {
         service::message::redis::throwValue("parse next device online deadline", reply);
     }
-    const auto score = service::common::parseInt64(
+    const auto score = service::utils::parseInt64(
         std::optional<std::string_view>{ reply.array()[1].string() }
     );
     if (!score) {
@@ -497,7 +498,7 @@ ruvia::Task<void> project(Context& context, ProjectionScope scope, const std::ve
                 recoveryDeviceIds.emplace(row[0].value().value_or(std::string_view{}));
             } else if (replies[runtimeIndex].array()[1].kind() ==
                        ruvia::RedisValue::Kind::kString) {
-                const auto deadline = service::common::parseInt64(
+                const auto deadline = service::utils::parseInt64(
                     std::optional<std::string_view>{ replies[runtimeIndex].array()[1].string() }
                 );
                 if (deadline) {
@@ -523,7 +524,7 @@ ruvia::Task<void> project(Context& context, ProjectionScope scope, const std::ve
         const std::string deviceCode(row[1].value().value_or(std::string_view{}));
         onlineWindows.insert_or_assign(
             deviceId,
-            service::common::parseInt64(std::optional<std::string_view>{ row[2].value().value_or(std::string_view{}) })
+            service::utils::parseInt64(std::optional<std::string_view>{ row[2].value().value_or(std::string_view{}) })
                 .value_or(300000)
         );
         elementIds.insert_or_assign(deviceId, std::vector<std::string>{});
@@ -701,7 +702,7 @@ return 1
         }
         pipeline.command(views);
         if (!row[7].value().value_or(std::string_view{}).empty()) {
-            const auto parsed = service::common::parseInt64(
+            const auto parsed = service::utils::parseInt64(
                 std::optional<std::string_view>{ row[7].value().value_or(std::string_view{}) }
             );
             if (parsed) {

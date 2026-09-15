@@ -54,7 +54,6 @@ import { FormModal } from '@/components/FormModal';
 import { PageContainer } from '@/components/PageContainer';
 import { usePermissions } from '@/hooks/usePermission';
 import {
-    AREA_CARD_GRID_STYLE,
     areaAddressHintMap,
     ByteOrderOptions,
     bitOnlyAreaTypes,
@@ -97,11 +96,7 @@ import {
     normalizePacketConfig,
     normalizeS7DataType,
     numberOrDefault,
-    numericInputClassName,
-    numericUnitClassName,
-    pairedFormItemClassName,
     plcModelOptions,
-    REGISTER_CARD_GRID_STYLE,
     REGISTER_TYPE_META,
     REGISTER_TYPE_ORDER,
     RegisterTypeOptions,
@@ -110,11 +105,11 @@ import {
     sortSectionsByOrder,
     supportsBitAddress,
     supportsS7Decimals,
-    useFilterableGroupOptions,
     useProtocolConfigDelete,
     useProtocolConfigList,
     useProtocolConfigSave,
-    useProtocolImportExport,
+    useProtocolConfigImport,
+    loadProtocolExportData,
     validateTsapValue,
     writableAreaTypes,
 } from './protocol.service';
@@ -131,6 +126,155 @@ import type {
     SL651,
 } from './protocol.types';
 import { STORAGE_POLICY_OPTIONS } from './protocol.types';
+import { parseProtocolImport } from './protocol.schema';
+
+function useProtocolImportExport(protocol: Protocol.Type) {
+    const { message } = App.useApp();
+    const importConfigs = useProtocolConfigImport(protocol);
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
+    const [exporting, setExporting] = useState(false);
+    const [importing, setImporting] = useState(false);
+    /** 导出当前协议的所有配置 */
+    const exportConfigs = useCallback(async () => {
+        setExporting(true);
+        try {
+            const exportData = await loadProtocolExportData(protocol);
+            if (!exportData.length) {
+                message.warning('没有可导出的配置');
+                return;
+            }
+            const json = JSON.stringify(exportData, null, 2);
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${protocol}_configs_${date}.json`;
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+            message.success(`已导出 ${exportData.length} 条配置`);
+        } catch (error) {
+            const reason = error instanceof Error ? error.message : '未知错误';
+            message.error(`导出失败：${reason}`);
+        } finally {
+            setExporting(false);
+        }
+    }, [protocol, message]);
+    /** 处理导入文件 */
+    const processImport = useCallback(
+        async (file: File) => {
+            setImporting(true);
+            try {
+                const text = await file.text();
+                let items: Protocol.CreateDto[];
+                try {
+                    items = parseProtocolImport(text, protocol);
+                } catch (error) {
+                    message.error(error instanceof Error ? error.message : '未知错误');
+                    return;
+                }
+                const result = await importConfigs(items);
+                // 显示结果
+                if (result.success === result.total) {
+                    const renameInfo =
+                        result.renamed.length > 0 ? `\n重命名：${result.renamed.join('、')}` : '';
+                    message.success(`成功导入 ${result.success} 条配置${renameInfo}`);
+                } else {
+                    const failInfo = result.failed.map((f) => `${f.name}(${f.reason})`).join('、');
+                    message.warning(
+                        `导入完成：${result.success}/${result.total} 成功${failInfo ? `，失败：${failInfo}` : ''}`
+                    );
+                }
+            } catch (error) {
+                const reason = error instanceof Error ? error.message : '未知错误';
+                message.error(`导入失败：${reason}`);
+            } finally {
+                setImporting(false);
+                // 重置文件输入，允许再次选择同一文件
+                if (fileInputRef.current) fileInputRef.current.value = '';
+            }
+        },
+        [protocol, message, importConfigs]
+    );
+    /** 触发文件选择 */
+    const triggerImport = useCallback(() => {
+        if (!fileInputRef.current) {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.json';
+            input.style.display = 'none';
+            document.body.appendChild(input);
+            fileInputRef.current = input;
+        }
+        fileInputRef.current.onchange = (event) => {
+            const file = (event.target as HTMLInputElement).files?.[0];
+            if (file) processImport(file);
+        };
+        fileInputRef.current.click();
+    }, [processImport]);
+    // 组件卸载时清理动态创建的 input 元素
+    useEffect(() => {
+        return () => {
+            if (fileInputRef.current) {
+                fileInputRef.current.remove();
+                fileInputRef.current = null;
+            }
+        };
+    }, []);
+    return { exportConfigs, triggerImport, exporting, importing };
+}
+
+const useFilterableGroupOptions = (groups: string[]) => {
+    const [searchText, setSearchText] = useState('');
+    const [showAllOnOpen, setShowAllOnOpen] = useState(false);
+    const options = useMemo(
+        () =>
+            groups
+                .map((value) => value.trim())
+                .filter(Boolean)
+                .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'))
+                .map((value) => ({ value })),
+        [groups]
+    );
+    const filteredOptions = useMemo(() => {
+        if (showAllOnOpen || !searchText.trim()) {
+            return options;
+        }
+        const keyword = searchText.trim().toLowerCase();
+        return options.filter((option) => option.value.toLowerCase().includes(keyword));
+    }, [options, searchText, showAllOnOpen]);
+    return {
+        options: filteredOptions,
+        onDropdownVisibleChange: (open: boolean) => {
+            setShowAllOnOpen(open);
+            if (!open) {
+                setSearchText('');
+            }
+        },
+        onSearch: (value: string) => {
+            setSearchText(value);
+            setShowAllOnOpen(false);
+        },
+    };
+};
+
+const pairedFormItemClassName = 'min-w-0 flex-1';
+
+const numericInputClassName = 'min-w-0 flex-1';
+
+const numericUnitClassName = 'pointer-events-none !w-20 text-center';
+
+const REGISTER_CARD_GRID_STYLE = {
+    gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
+};
+
+const AREA_CARD_GRID_STYLE: CSSProperties = {
+    gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+};
+
 /**
  * Modbus 设备类型编辑弹窗（从 ModbusConfig 抽离）
  */
@@ -3165,10 +3309,10 @@ const Sl651DeviceTypeModalDeviceTypeModal = forwardRef<
                 >
                     <Select
                         options={[
-                            { value: 'M1', label: 'M1 - 自报' },
-                            { value: 'M2', label: 'M2 - 自报/查询应答兼容' },
-                            { value: 'M3', label: 'M3 - 查询应答' },
-                            { value: 'M4', label: 'M4 - 调试/召测' },
+                            { value: 'M1', label: 'M1 - 发送/无回答' },
+                            { value: 'M2', label: 'M2 - 发送/确认' },
+                            { value: 'M3', label: 'M3 - 多包发送/确认' },
+                            { value: 'M4', label: 'M4 - 查询/响应' },
                         ]}
                     />
                 </Form.Item>
@@ -3777,7 +3921,9 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
             const elementFields = {
                 name: values.name,
                 group: normalizeGroupName(values.group) || undefined,
-                guideHex: values.guideHex.replace(/\s/g, ''),
+                guideHex: (values.guideHex ?? '').replace(/\s/g, ''),
+                positionMode: values.positionMode ?? 'GUIDE',
+                byteOffset: values.byteOffset ?? 0,
                 encode: values.encode,
                 length: values.length,
                 digits: values.digits,
@@ -3840,13 +3986,36 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
                             onSearch={groupOptions.onSearch}
                         />
                     </Form.Item>
+                    <Form.Item label="定位方式" name="positionMode" initialValue="GUIDE">
+                        <Select
+                            options={[
+                                { value: 'GUIDE', label: '按引导符' },
+                                { value: 'OFFSET', label: '固定位置' },
+                            ]}
+                        />
+                    </Form.Item>
                     <Form.Item
-                        label="引导符（HEX）"
+                        label="正文偏移（字节）"
+                        name="byteOffset"
+                        initialValue={0}
+                        extra="固定位置使用：从流水号首字节计 0，分包先重组；偏移 8 跳过流水号和发报时间。"
+                    >
+                        <InputNumber min={0} max={8388607} precision={0} className="!w-full" />
+                    </Form.Item>
+                    <Form.Item
+                        label="引导符（HEX，仅按引导符时使用）"
                         name="guideHex"
                         normalize={(value: string) => value.replace(/\s/g, '')}
-                        rules={[{ required: true, message: '请输入引导符' }]}
+                        rules={[
+                            ({ getFieldValue }) => ({
+                                validator: (_, value) =>
+                                    getFieldValue('positionMode') === 'OFFSET' || value
+                                        ? Promise.resolve()
+                                        : Promise.reject(new Error('请输入引导符')),
+                            }),
+                        ]}
                     >
-                        <Input placeholder="例如：01 或 F3F3" />
+                        <Input placeholder="例如：3912、FFB028 或 F3F3" />
                     </Form.Item>
                     <Form.Item
                         label="编码"
@@ -3856,11 +4025,11 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
                         <Select options={EncodeList.map((e) => ({ value: e, label: e }))} />
                     </Form.Item>
                     <Form.Item
-                        label="长度"
+                        label="长度（变长要素填 0）"
                         name="length"
                         rules={[{ required: true, message: '请输入长度' }]}
                     >
-                        <InputNumber min={1} className="!w-full" />
+                        <InputNumber min={0} className="!w-full" />
                     </Form.Item>
                     <Form.Item label="单位" name="unit">
                         <Input placeholder="例如 V、℃、m³/s" />
@@ -3870,7 +4039,7 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
                         name="digits"
                         rules={[{ required: true, message: '请输入小数位数' }]}
                     >
-                        <InputNumber min={0} max={8} className="!w-full" />
+                        <InputNumber min={0} max={7} className="!w-full" />
                     </Form.Item>
                     <Form.Item label="备注" name="remark">
                         <Input.TextArea rows={2} />
@@ -4151,7 +4320,7 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                 .filter(
                     (ele: Partial<SL651.Element>) =>
                         ele.name?.trim() &&
-                        ele.guideHex?.replace(/\s/g, '') &&
+                        (ele.positionMode === 'OFFSET' || ele.guideHex?.replace(/\s/g, '')) &&
                         ele.encode &&
                         ele.length !== undefined
                 )
@@ -4159,7 +4328,9 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                     id: ele.id || generateId(),
                     name: ele.name?.trim(),
                     group: normalizeGroupName(ele.group) || undefined,
-                    guideHex: ele.guideHex?.replace(/\s/g, ''),
+                    guideHex: ele.guideHex?.replace(/\s/g, '') ?? '',
+                    positionMode: ele.positionMode ?? 'GUIDE',
+                    byteOffset: ele.byteOffset ?? 0,
                     encode: ele.encode,
                     length: ele.length,
                     digits: Number.isFinite(ele.digits) ? ele.digits : 0,
@@ -4227,7 +4398,7 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                                                             应答要素 {index + 1}
                                                         </div>
                                                         <div className="mt-0.5 text-[12px] text-slate-400">
-                                                            配置名称、引导符、编码、长度、单位和小数位数
+                                                            配置名称、定位方式、编码、长度、单位和小数位数
                                                         </div>
                                                     </div>
                                                     <Button
@@ -4270,12 +4441,41 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                                                         normalize={(value: string) =>
                                                             value.replace(/\s/g, '')
                                                         }
-                                                        rules={[
-                                                            { required: true, message: '必填' },
-                                                        ]}
                                                         className="!mb-0"
                                                     >
-                                                        <Input placeholder="如: 01" />
+                                                        <Input placeholder="引导符，例如 3912；固定位置可留空" />
+                                                    </Form.Item>
+                                                    <Form.Item
+                                                        name={[field.name, 'positionMode']}
+                                                        label="定位方式"
+                                                        initialValue="GUIDE"
+                                                        className="!mb-0"
+                                                    >
+                                                        <Select
+                                                            options={[
+                                                                {
+                                                                    value: 'GUIDE',
+                                                                    label: '按引导符',
+                                                                },
+                                                                {
+                                                                    value: 'OFFSET',
+                                                                    label: '固定位置',
+                                                                },
+                                                            ]}
+                                                        />
+                                                    </Form.Item>
+                                                    <Form.Item
+                                                        name={[field.name, 'byteOffset']}
+                                                        label="正文偏移（从流水号计 0）"
+                                                        initialValue={0}
+                                                        className="!mb-0"
+                                                    >
+                                                        <InputNumber
+                                                            min={0}
+                                                            max={8388607}
+                                                            precision={0}
+                                                            className="!w-full"
+                                                        />
                                                     </Form.Item>
                                                     <Form.Item
                                                         name={[field.name, 'encode']}
@@ -4313,7 +4513,7 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                                                     >
                                                         <InputNumber
                                                             min={0}
-                                                            max={8}
+                                                            max={7}
                                                             className="!w-full"
                                                         />
                                                     </Form.Item>
@@ -4566,7 +4766,9 @@ const SL651ConfigPage = () => {
                             {element.name}
                         </div>
                         <div className="mt-0.5 text-[12px] text-slate-400">
-                            引导符 {element.guideHex}
+                            {element.positionMode === 'OFFSET'
+                                ? `正文偏移 ${element.byteOffset ?? 0} 字节`
+                                : `引导符 ${element.guideHex}`}
                         </div>
                     </div>
                     <Space size={4} className="shrink-0">

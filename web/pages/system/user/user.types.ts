@@ -1,4 +1,4 @@
-import type { PageParams } from '@/utils/pagination';
+import type { PageParams } from '@/types/pagination';
 import { createQueryKeys } from '@/utils/query';
 
 /**

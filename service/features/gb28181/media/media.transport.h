@@ -55,32 +55,6 @@ class ZlmSdk final {
             onStreamOwner;
     };
 
-    struct Ports {
-        std::uint16_t http{ 0 };
-        std::uint16_t https{ 0 };
-        std::uint16_t rtsp{ 0 };
-        std::uint16_t rtsps{ 0 };
-        std::uint16_t rtmp{ 0 };
-        std::uint16_t rtmps{ 0 };
-        std::uint16_t rtc{ 0 };
-        std::uint16_t srt{ 0 };
-    };
-
-    struct Capabilities {
-        bool faac{ true };
-        bool ffmpeg{ true };
-        bool hls{ true };
-        bool mp4{ true };
-        bool rtpProxy{ true };
-        bool srt{ true };
-        bool sctp{ true };
-        bool webRtc{ true };
-        bool x264{ true };
-        bool videoStack{ true };
-        bool tls{ false };
-        bool recording{ false };
-    };
-
     explicit ZlmSdk(MediaConfig config, Callbacks callbacks = {});
     ~ZlmSdk();
 
@@ -92,9 +66,9 @@ class ZlmSdk final {
 
     [[nodiscard]] bool started() const noexcept { return started_.load(); }
 
-    [[nodiscard]] Ports ports() const noexcept { return ports_; }
+    [[nodiscard]] MediaServerPorts ports() const noexcept { return ports_; }
 
-    [[nodiscard]] Capabilities capabilities() const noexcept;
+    [[nodiscard]] MediaCapabilities capabilities() const noexcept;
 
     [[nodiscard]] std::optional<OpenRtpServerResult>
     openRtpServer(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& mode = "preview");
@@ -129,7 +103,7 @@ class ZlmSdk final {
         std::unique_ptr<std::remove_pointer_t<mk_rtp_server>, RtpServerDeleter>;
 
     MediaConfig config_;
-    Ports ports_;
+    MediaServerPorts ports_;
     std::shared_ptr<CallbackState> callbacks_;
     std::atomic_bool started_{ false };
     std::atomic_uint nextRtpPort_{ 0 };
@@ -191,8 +165,8 @@ class SdkSupervisor final {
     void registerCollector(OwnerIndex owner, ruvia::EventLoop loop, CollectorCallbacks callbacks);
     void unregisterCollector(OwnerIndex owner) noexcept;
 
-    [[nodiscard]] ZlmSdk::Ports ports() const noexcept;
-    [[nodiscard]] ZlmSdk::Capabilities capabilities() const noexcept;
+    [[nodiscard]] MediaServerPorts ports() const noexcept;
+    [[nodiscard]] MediaCapabilities capabilities() const noexcept;
 
   private:
     struct Route;

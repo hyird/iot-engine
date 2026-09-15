@@ -13,7 +13,7 @@
 #include "service/features/messaging/messaging.service.h"
 #include "service/utils/crypto.h"
 #include "service/utils/json.h"
-#include "service/utils/jwt.h"
+#include "service/modules/system/auth/auth.service.h"
 
 void require(bool condition, const char* message) {
     if (!condition)
@@ -22,6 +22,19 @@ void require(bool condition, const char* message) {
 
 int main() {
     try {
+        using WebhookDelivery = service::access::webhook::DeliveryService;
+        require(WebhookDelivery::mergeEventData(R"({"id":"trusted"})",
+                    R"({"device":{"id":"spoofed"},"status":"online"})") ==
+                    R"({"device":{"id":"trusted"},"status":"online"})",
+                "webhook event data must preserve the catalog device identity");
+        require(WebhookDelivery::imageEventData(R"({"id":"device-1"})",
+                    R"({"values":{"camera":{"type":"JPEG","name":"Camera","value":"data:image/jpeg;base64,AQ=="}}})",
+                    "1970-01-01T00:00:00Z") ==
+                    R"({"device":{"id":"device-1"},"image":{"id":"camera","name":"Camera","data":"data:image/jpeg;base64,AQ==","time":"1970-01-01T00:00:00Z"}})",
+                "webhook image payload contract changed");
+        require(WebhookDelivery::imageEventData(R"({"id":"device-1"})", "invalid", "unused") ==
+                    R"({"device":{"id":"device-1"}})",
+                "malformed image event fallback changed");
         require(service::utils::sha256("abc") ==
                     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
                 "SHA-256 contract changed");
@@ -39,10 +52,10 @@ int main() {
                 "UTC timestamp must use seconds precision");
         require(service::common::utcTimestampFromMilliseconds(-1) == "1969-12-31T23:59:59Z",
                 "UTC timestamp must floor negative milliseconds");
-        require(service::utils::jwt_detail::duration("15m", std::chrono::seconds(1)) ==
+        require(service::auth::AuthTokenService::duration("15m", std::chrono::seconds(1)) ==
                     std::chrono::minutes(15),
                 "JWT duration suffix parsing changed");
-        require(service::utils::jwt_detail::duration("1x", std::chrono::hours(1)) ==
+        require(service::auth::AuthTokenService::duration("1x", std::chrono::hours(1)) ==
                     std::chrono::hours(1),
                 "JWT duration accepted trailing non-duration bytes");
         const auto now = service::common::utcTimestampNow();

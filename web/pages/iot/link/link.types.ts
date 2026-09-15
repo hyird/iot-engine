@@ -1,4 +1,4 @@
-import type { PageParams } from '@/utils/pagination';
+import type { PageParams } from '@/types/pagination';
 import { createQueryKeys } from '@/utils/query';
 
 const keys = createQueryKeys('links');
@@ -47,6 +47,7 @@ interface LinkEndpoint {
     targets: LinkTarget[];
 }
 interface LinkItem {
+    debug_enabled?: boolean;
     execution?: 'collector' | 'edge';
     edge_node_id?: string;
     id: string;

@@ -36,7 +36,7 @@ void WINAPI serviceMain(DWORD, LPWSTR*) {
             catch (...) { serviceError = ERROR_SERVICE_SPECIFIC_ERROR; stopSource.request_stop(); }
         });
         report(SERVICE_RUNNING);
-        try { runPipeServer(stopSource.get_token(), [&](const Json& request) { return vpnService.handle(request, stopSource.get_token()); }); }
+        try { runPipeServer(stopSource.get_token(), [&](const Json& request) { return vpnService.executeCommand(request, stopSource.get_token()); }); }
         catch (...) { serviceError = ERROR_SERVICE_SPECIFIC_ERROR; }
         stopSource.request_stop();
         try { vpnService.stop(); } catch (...) { serviceError = ERROR_SERVICE_SPECIFIC_ERROR; }

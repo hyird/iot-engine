@@ -11,11 +11,11 @@ void require(bool condition, const char* message) {
         throw std::runtime_error(message);
 }
 
-std::string linkSource() {
+std::string linkSource(std::string_view file) {
     auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
-                "service/modules/link/link.service.h";
+                "service/modules/link" / file;
     std::ifstream input(path, std::ios::binary);
-    require(input.good(), "cannot open link service source");
+    require(input.good(), "cannot open link source");
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
@@ -59,9 +59,16 @@ void requireInputValidation(std::string_view source) {
 
 int main() {
     try {
-        const auto source = linkSource();
+        const auto source = linkSource("link.service.h");
+        const auto schema = linkSource("link.schema.h");
         requireNoUnsafeParsing(source);
-        requireInputValidation(source);
+        requireInputValidation(source + schema);
+        require(source.find("static void validateConfiguration") == std::string::npos,
+                "link service still defines request configuration validation");
+        require(source.find("LinkPayloadValidator::validateConfiguration(") != std::string::npos,
+                "link service does not call schema configuration validation");
+        require(schema.find("class LinkPayloadValidator final") != std::string::npos,
+                "link schema does not own payload validation");
         std::cout << "link service tests passed\n";
         return 0;
     } catch (const std::exception& error) {

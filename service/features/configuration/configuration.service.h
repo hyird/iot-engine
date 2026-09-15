@@ -154,7 +154,7 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
             endpointText("mode"), linkQuery.column(service::configuration::persistence::LinkEntity::columnName<"protocol">()),
             linkQuery.coalesce({ endpointText("ip"), linkQuery.value("") }),
             linkQuery.coalesce({ linkQuery.nullIf(endpointText("port"), linkQuery.value("")), linkQuery.value("0") }),
-            linkQuery.column(service::configuration::persistence::LinkEntity::columnName<"status">()) })
+            linkQuery.column(service::configuration::persistence::LinkEntity::columnName<"status">()), linkQuery.column(service::configuration::persistence::LinkEntity::columnName<"debug_enabled">()) })
         .from(service::configuration::persistence::LinkEntity::tableName())
         .andWhere(linkQuery.unary(ruvia::DbUnaryOperator::kIsNull, linkQuery.column(service::configuration::persistence::LinkEntity::columnName<"deleted_at">())))
         .andWhere(linkQuery.binary(linkQuery.column(service::configuration::persistence::LinkEntity::columnName<"execution">()), Op::kEqual, linkQuery.value("collector")))
@@ -169,6 +169,7 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
         link.ip = cell(row, 4);
         link.port = detail::cellPort(row, 5);
         link.status = cell(row, 6);
+        link.debugEnabled = cellBool(row, 7);
         snapshot.links.push_back(std::move(link));
     }
     std::unordered_map<std::string_view, std::size_t> linkIndexes;
@@ -241,7 +242,8 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
             deviceQuery.coalesce({ deviceQuery.nullIf(jsonText(config, "readInterval"), deviceQuery.value("")), deviceQuery.value("1") }),
             defaultText(config, "storagePolicy", "report"), defaultText(config, "commandFastReadDuration", "60"),
             defaultText(config, "commandFastReadInterval", "1"), defaultText(packet, "mergeGap", "100"),
-            defaultText(packet, "maxQuantity", "125"), deviceQuery.cast(deviceQuery.column(service::configuration::persistence::DeviceModelEntity::columnName<"id">(), "p"), Type::kText) })
+            defaultText(packet, "maxQuantity", "125"), deviceQuery.cast(deviceQuery.column(service::configuration::persistence::DeviceModelEntity::columnName<"id">(), "p"), Type::kText),
+            defaultText(config, "responseMode", "M1"), deviceQuery.column(service::configuration::persistence::DeviceEntity::columnName<"debug_enabled">(), "d") })
         .from(service::configuration::persistence::DeviceEntity::tableName(), "d")
         .join(ruvia::DbJoinType::kInner, service::configuration::persistence::LinkEntity::tableName(),
             deviceQuery.binary(deviceQuery.column(service::configuration::persistence::LinkEntity::columnName<"id">(), "l"), Op::kEqual, deviceQuery.column(service::configuration::persistence::DeviceEntity::columnName<"link_id">(), "d")), "l")
@@ -295,6 +297,8 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
         device.modbusMergeGap = cellInt(row, 28);
         device.modbusMaxQuantity = cellInt(row, 29);
         device.modelId = cell(row, 30);
+        device.sl651ResponseMode = cell(row, 31);
+        device.debugEnabled = cellBool(row, 32);
         snapshot.devices.push_back(std::move(device));
     }
     std::unordered_map<std::string_view, std::size_t> deviceIndexes;
@@ -474,7 +478,9 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
             sl651Query.coalesce({ sl651Text("unit"), sl651Query.value("") }), functionCode,
             sl651Query.binary(sl651Query.column("func"), Op::kJsonGetText, sl651Query.value("dir")),
             sl651Text("guideHex"), sl651Text("encode"), sl651Text("length"),
-            sl651Query.coalesce({ sl651Text("digits"), sl651Query.value("0") }), sl651Query.column("response_element", "configured") })
+            sl651Query.coalesce({ sl651Text("digits"), sl651Query.value("0") }), sl651Query.column("response_element", "configured"),
+            sl651Query.coalesce({ sl651Text("positionMode"), sl651Query.value("GUIDE") }),
+            sl651Query.coalesce({ sl651Text("byteOffset"), sl651Query.value("0") }) })
         .addOrderBy(sl651Query.column("id", "d")).addOrderBy(functionCode)
         .addOrderBy(sl651Query.column("response_element", "configured")).addOrderBy(sl651Text("id"));
     const auto sl651Elements = co_await db.query(sl651Query);
@@ -494,6 +500,8 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
         element.length = cellInt(row, 8);
         element.digits = cellInt(row, 9);
         element.responseElement = cellBool(row, 10);
+        element.positionMode = cell(row, 11);
+        element.byteOffset = cellInt(row, 12);
         device->elements.push_back(std::move(element));
     }
 

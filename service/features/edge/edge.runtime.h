@@ -1,6 +1,6 @@
 #pragma once
 
-#include "service/common/observability.h"
+#include "service/features/observability/observability.service.h"
 
 #include <algorithm>
 #include <atomic>
@@ -29,7 +29,8 @@
 #include <ruvia/core/Timer.h>
 #include <ruvia/web/WebWorker.h>
 
-#include "service/features/edge/edge.transport.h"
+#include "service/features/edge/edge.service.h"
+#include "service/features/edge/session/session.service.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h"
 
@@ -331,88 +332,13 @@ class DispatcherRuntime final {
 
 } // namespace service::edge
 
-#include "service/features/edge/edge.service.h"
 
 namespace service::edge {
 
-class EdgeControlHandler final {
-  public:
-    static ruvia::Task<std::string> handle(ruvia::WebWorkerContext& context, std::string_view operation, std::string_view payload, ruvia::StopToken stop) {
-        if (stop.stopRequested()) {
-            service::common::fail(10004, "Edge operation cancelled", 503);
-        }
-        if (operation == "queue-snapshot") {
-            const auto separator = payload.find('\n');
-            if (separator == std::string_view::npos) {
-                service::common::fail(10002, "Invalid edge snapshot payload", 400);
-            }
-            const auto nodeId = payload.substr(0, separator);
-            const auto actorId = payload.substr(separator + 1);
-            if (!service::common::isUuid(nodeId) || !service::common::isUuid(actorId)) {
-                service::common::fail(10002, "Invalid edge snapshot identifiers", 400);
-            }
-            const auto revision = co_await configService().queueSnapshot(
-                context,
-                nodeId,
-                actorId
-            );
-            co_return std::to_string(revision);
-        }
-
-        const auto separator = payload.find('\n');
-        if (separator == std::string_view::npos || !service::common::isUuid(payload.substr(0, separator))) {
-            service::common::fail(10002, "Invalid edge control payload", 400);
-        }
-        const auto nodeId = payload.substr(0, separator);
-        const auto requestPayload = payload.substr(separator + 1);
-        if (requestPayload.empty()) {
-            service::common::fail(10002, "Empty edge control request", 400);
-        }
-
-        pb::Envelope envelope = protocol::outbound(nodeId);
-        bool parsed = false;
-        if (operation == "queue-network") {
-            pb::NetworkConfigRequest request;
-            parsed = request.ParseFromArray(requestPayload.data(), static_cast<int>(requestPayload.size()));
-            if (parsed) {
-                *envelope.mutable_network_config_request() = std::move(request);
-            }
-        } else if (operation == "queue-firmware") {
-            pb::FirmwareUpdateRequest request;
-            parsed = request.ParseFromArray(requestPayload.data(), static_cast<int>(requestPayload.size()));
-            if (parsed) {
-                *envelope.mutable_firmware_update_request() = std::move(request);
-            }
-        } else if (operation == "request-logs") {
-            pb::LogRequest request;
-            parsed = request.ParseFromArray(requestPayload.data(), static_cast<int>(requestPayload.size()));
-            if (parsed) {
-                *envelope.mutable_log_request() = std::move(request);
-            }
-        } else if (operation == "set-log-level") {
-            pb::LogLevelRequest request;
-            parsed = request.ParseFromArray(requestPayload.data(), static_cast<int>(requestPayload.size()));
-            if (parsed) {
-                *envelope.mutable_log_level_request() = std::move(request);
-            }
-        } else {
-            service::common::fail(10002, "Unknown edge operation", 400);
-        }
-        if (!parsed) {
-            service::common::fail(10002, "Invalid edge control request", 400);
-        }
-        const auto wire = protocol::encode(envelope);
-        if (wire.empty()) {
-            service::common::fail(10002, "Invalid edge control request", 400);
-        }
-        co_await dispatch::enqueue(context.redis(), nodeId, wire);
-        co_return "{}";
-    }
-};
-
 class EdgeProjectionRuntime final : private EdgeProjectionService {
   public:
-    EdgeProjectionRuntime() = default;
+    explicit EdgeProjectionRuntime(observability::RuntimeDiagnostics& diagnostics)
+        : diagnostics_(diagnostics) {}
     EdgeProjectionRuntime(const EdgeProjectionRuntime&) = delete;
     EdgeProjectionRuntime& operator=(const EdgeProjectionRuntime&) = delete;
 
@@ -501,9 +427,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
             return;
         }
         try {
-            if (auto* diagnostics = service::observability::currentWorkerDiagnostics()) {
-                diagnostics->setComponentStatus("edge-projector", service::observability::ComponentState::Failed, "worker lease lost");
-            }
+            diagnostics_.setComponentStatus("edge-projector", observability::ComponentState::Failed, "worker lease lost");
         } catch (...) {
         }
         try {
@@ -522,279 +446,6 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
             );
         } catch (...) {
         }
-    }
-
-    struct DeadStream final {
-        std::string stream;
-        std::string lease;
-        std::string token;
-    };
-
-    template <typename Redis>
-    static ruvia::Task<bool> acquireLease(const Redis& redis, std::size_t index) {
-        static constexpr std::string_view script = R"lua(
-if redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') then return 1 end
-return 0
-)lua";
-        const auto key = projector_stream::leaseKey(index);
-        const auto token = projector_stream::ownerToken(index);
-        const auto ttl = std::to_string(projector_stream::kLeaseTtl.count());
-        const std::string_view keys[]{ key };
-        const std::string_view arguments[]{ token, ttl };
-        const auto reply = co_await redis.eval(script, keys, arguments);
-        if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
-            service::message::redis::throwValue("acquire edge projector lease", reply);
-        }
-        co_return reply.integer() == 1;
-    }
-
-    template <typename Redis>
-    static ruvia::Task<bool> renewLeaseKey(const Redis& redis, std::string_view key, std::string_view token) {
-        static constexpr std::string_view script = R"lua(
-if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
-redis.call('PEXPIRE', KEYS[1], ARGV[2])
-return 1
-)lua";
-        const auto ttl = std::to_string(projector_stream::kLeaseTtl.count());
-        const std::string_view keys[]{ key };
-        const std::string_view arguments[]{ token, ttl };
-        const auto reply = co_await redis.eval(script, keys, arguments);
-        if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
-            service::message::redis::throwValue("renew edge projector lease", reply);
-        }
-        co_return reply.integer() == 1;
-    }
-
-    template <typename Redis>
-    static ruvia::Task<bool> leaseOwned(const Redis& redis, std::string_view key, std::string_view token) {
-        static constexpr std::string_view script = R"lua(
-if redis.call('GET', KEYS[1]) == ARGV[1] then return 1 end
-return 0
-)lua";
-        const std::string_view keys[]{ key };
-        const std::string_view arguments[]{ token };
-        const auto reply = co_await redis.eval(script, keys, arguments);
-        if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
-            service::message::redis::throwValue("check edge projector lease", reply);
-        }
-        co_return reply.integer() == 1;
-    }
-
-    template <typename Redis>
-    static ruvia::Task<bool> renewLease(const Redis& redis, std::size_t index) {
-        const auto key = projector_stream::leaseKey(index);
-        const auto token = projector_stream::ownerToken(index);
-        co_return co_await renewLeaseKey(redis, key, token);
-    }
-
-    template <typename Redis>
-    static ruvia::Task<bool> releaseLeaseKey(const Redis& redis, std::string_view key, std::string_view token) {
-        static constexpr std::string_view script = R"lua(
-if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
-return redis.call('DEL', KEYS[1])
-)lua";
-        const std::string_view keys[]{ key };
-        const std::string_view arguments[]{ token };
-        const auto reply = co_await redis.eval(script, keys, arguments);
-        if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
-            service::message::redis::throwValue("release edge projector lease", reply);
-        }
-        co_return reply.integer() == 1;
-    }
-
-    template <typename Redis>
-    static ruvia::Task<bool> releaseLease(const Redis& redis, std::size_t index) {
-        const auto key = projector_stream::leaseKey(index);
-        const auto token = projector_stream::ownerToken(index);
-        co_return co_await releaseLeaseKey(redis, key, token);
-    }
-
-    template <typename Redis>
-    static ruvia::Task<void> registerStream(const Redis& redis, std::string_view streamName) {
-        const auto reply = co_await service::message::redis::command(
-            redis,
-            { "SADD", std::string(projector_stream::kStreamRegistry), std::string(streamName) }
-        );
-        if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
-            service::message::redis::throwValue("register edge projector stream", reply);
-        }
-    }
-
-    static std::optional<std::pair<std::string, std::size_t>> ownerFromStream(
-        std::string_view streamName
-    ) {
-        if (!streamName.starts_with(projector_stream::kStreamPrefix)) {
-            return std::nullopt;
-        }
-        const auto suffix = streamName.substr(projector_stream::kStreamPrefix.size());
-        const auto separator = suffix.rfind(':');
-        if (separator == std::string_view::npos || separator == 0 ||
-            separator + 1 >= suffix.size()) {
-            return std::nullopt;
-        }
-        const auto instance = suffix.substr(0, separator);
-        if (instance.find(':') != std::string_view::npos) {
-            return std::nullopt;
-        }
-        std::uint64_t parsedIndex = 0;
-        const auto indexText = suffix.substr(separator + 1);
-        const auto [end, error] = std::from_chars(
-            indexText.data(),
-            indexText.data() + indexText.size(),
-            parsedIndex
-        );
-        if (error != std::errc{} || end != indexText.data() + indexText.size() ||
-            parsedIndex > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
-            return std::nullopt;
-        }
-        return std::pair{ std::string(instance), static_cast<std::size_t>(parsedIndex) };
-    }
-
-    static std::string recoveryToken(std::size_t workerIndex, const std::pair<std::string, std::size_t>& owner) {
-        return std::string(service::runtime::instanceId()) + ":recovery:" +
-            std::to_string(workerIndex) + ":" + owner.first + ":" +
-            std::to_string(owner.second);
-    }
-
-    template <typename Redis>
-    static ruvia::Task<bool> claimRecoveryLease(const Redis& redis, std::string_view key, std::string_view token) {
-        static constexpr std::string_view script = R"lua(
-if redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') then return 1 end
-return 0
-)lua";
-        const auto ttl = std::to_string(projector_stream::kLeaseTtl.count());
-        const std::string_view keys[]{ key };
-        const std::string_view arguments[]{ token, ttl };
-        const auto reply = co_await redis.eval(script, keys, arguments);
-        if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
-            service::message::redis::throwValue("claim dead edge projector lease", reply);
-        }
-        co_return reply.integer() == 1;
-    }
-
-    template <typename Redis>
-    static ruvia::Task<std::vector<DeadStream>> discoverDeadStreams(
-        const Redis& redis,
-        std::string_view currentStream,
-        std::size_t workerIndex
-    ) {
-        std::map<std::string, DeadStream, std::less<>> dead;
-        const auto candidates = co_await service::message::redis::keysMatching(
-            redis,
-            std::string(projector_stream::kStreamPrefix) + "*"
-        );
-        for (const auto& candidate : candidates) {
-            if (candidate == currentStream) {
-                continue;
-            }
-            const auto owner = ownerFromStream(candidate);
-            if (!owner) {
-                continue;
-            }
-            const auto lease = projector_stream::leaseKey(owner->second, owner->first);
-            const auto token = recoveryToken(workerIndex, *owner);
-            const auto current = co_await redis.get(lease);
-            if (current) {
-                if (std::string_view(current->data(), current->size()) != token) {
-                    // A non-expired owner or another recovery worker still owns
-                    // this stream.  Neither case is safe to steal.
-                    continue;
-                }
-                // Seeing our recovery token is not enough to keep reading: the
-                // lease may expire between discovery and the first XREADGROUP.
-                // Renewal is token-checked and never creates a missing lease.
-                if (!co_await renewLeaseKey(redis, lease, token)) {
-                    continue;
-                }
-            } else if (!co_await claimRecoveryLease(redis, lease, token)) {
-                continue;
-            }
-            dead.emplace(candidate, DeadStream{ candidate, lease, token });
-        }
-        std::vector<DeadStream> result;
-        result.reserve(dead.size());
-        for (auto& [streamName, deadStream] : dead) {
-            (void)streamName;
-            result.push_back(std::move(deadStream));
-        }
-        co_return result;
-    }
-
-    template <typename Redis>
-    static ruvia::Task<bool> eraseDeadStream(const Redis& redis, const DeadStream& deadStream) {
-        static constexpr std::string_view script = R"lua(
-if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
-if redis.call('EXISTS', KEYS[2]) ~= 0 then
-  if redis.call('XLEN', KEYS[2]) ~= 0 then return 0 end
-  local groups = redis.call('XINFO', 'GROUPS', KEYS[2])
-  for _, group in ipairs(groups) do
-    for index = 1, #group, 2 do
-      if group[index] == 'pending' and tonumber(group[index + 1]) > 0 then
-        return 0
-      end
-    end
-  end
-  redis.call('DEL', KEYS[2])
-end
-redis.call('DEL', KEYS[1])
-redis.call('SREM', KEYS[3], KEYS[2])
-return 1
-)lua";
-        const std::string registry(projector_stream::kStreamRegistry);
-        const std::string_view keys[]{ deadStream.lease, deadStream.stream, registry };
-        const std::string_view arguments[]{ deadStream.token };
-        const auto reply = co_await redis.eval(script, keys, arguments);
-        if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
-            service::message::redis::throwValue("erase dead edge projector stream", reply);
-        }
-        co_return reply.integer() == 1;
-    }
-
-    template <typename Redis>
-    static ruvia::Task<bool> acknowledgeAndDeleteFenced(
-        const Redis& redis,
-        std::string_view lease,
-        std::string_view token,
-        std::string_view stream,
-        std::string_view group,
-        const std::vector<service::message::StreamMessage>& messages
-    ) {
-        if (messages.empty()) {
-            co_return true;
-        }
-        static constexpr std::string_view script = R"lua(
-if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
-local group = ARGV[2]
-for index = 3, #ARGV do
-  redis.call('XACK', KEYS[2], group, ARGV[index])
-  redis.call('XDEL', KEYS[2], ARGV[index])
-end
-return 1
-)lua";
-        const std::string leaseKey(lease);
-        const std::string streamKey(stream);
-        const std::string_view keys[]{ leaseKey, streamKey };
-        std::vector<std::string> scriptArguments;
-        scriptArguments.reserve(messages.size() + 2);
-        scriptArguments.emplace_back(token);
-        scriptArguments.push_back(std::string(group));
-        for (const auto& message : messages) {
-            scriptArguments.push_back(message.id);
-        }
-        std::vector<std::string_view> scriptViews;
-        scriptViews.reserve(scriptArguments.size());
-        for (const auto& argument : scriptArguments) {
-            scriptViews.emplace_back(argument);
-        }
-        const auto reply = co_await redis.eval(
-            script,
-            keys,
-            std::span<const std::string_view>(scriptViews)
-        );
-        if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
-            service::message::redis::throwValue("fenced edge projector acknowledgement", reply);
-        }
-        co_return reply.integer() == 1;
     }
 
     std::vector<std::pair<std::string, std::string>> recoveryLeaseSnapshot() const {
@@ -846,47 +497,6 @@ return 1
         }
     }
 
-    template <typename Redis>
-    static ruvia::Task<void> cleanupRegistry(const Redis& redis) {
-        static constexpr std::string_view script = R"lua(
-if redis.call('EXISTS', KEYS[2]) == 0 then
-  return redis.call('SREM', KEYS[1], KEYS[2])
-end
-return 0
-)lua";
-        const auto reply = co_await service::message::redis::command(
-            redis,
-            { "SMEMBERS", std::string(projector_stream::kStreamRegistry) }
-        );
-        if (reply.kind() == ruvia::RedisValue::Kind::kError &&
-            reply.error().starts_with("WRONGTYPE")) {
-            service::message::redis::throwValue("list edge projector streams", reply);
-        }
-        if (reply.kind() != ruvia::RedisValue::Kind::kArray) {
-            if (reply.kind() == ruvia::RedisValue::Kind::kNull) {
-                co_return;
-            }
-            service::message::redis::throwValue("list edge projector streams", reply);
-        }
-        for (const auto& value : reply.array()) {
-            if (value.kind() != ruvia::RedisValue::Kind::kString) {
-                continue;
-            }
-            const auto streamName = std::string(value.string());
-            const std::string registry(projector_stream::kStreamRegistry);
-            const std::string_view keys[]{ registry, streamName };
-            const std::span<const std::string_view> arguments;
-            const auto removed = co_await redis.eval(
-                script,
-                keys,
-                arguments
-            );
-            if (removed.kind() != ruvia::RedisValue::Kind::kInteger) {
-                service::message::redis::throwValue("clean edge projector registry", removed);
-            }
-        }
-    }
-
     ruvia::Task<void> run(ruvia::WebWorkerContext& context, std::size_t index, std::shared_ptr<std::promise<void>> ready, std::shared_ptr<std::promise<void>> stopped) {
         bool readySet = false;
         bool leaseAcquired = false;
@@ -926,7 +536,7 @@ return 0
             co_await registerStream(redis, currentStream);
 
             std::vector<std::string> streams{ currentStream };
-            std::map<std::string, DeadStream, std::less<>> deadStreams;
+            std::map<std::string, ProjectorRecoveryStream, std::less<>> deadStreams;
 
             // A dead v3 owner is recovered only after its lease has expired,
             // and the recovery lease is acquired before its consumer group is
@@ -1209,8 +819,8 @@ return 0
                         if (leaseLost_.load()) {
                             break;
                         }
-                        const DeadStream* owner = nullptr;
-                        DeadStream currentOwner{
+                        const ProjectorRecoveryStream* owner = nullptr;
+                        ProjectorRecoveryStream currentOwner{
                             currentStream,
                             currentLease,
                             currentToken
@@ -1237,6 +847,7 @@ return 0
                         }
 
                         std::vector<service::message::StreamMessage> telemetry;
+                        std::vector<persistence::TelemetryUploadRecord> completedUploads;
                         telemetry.reserve(batch.messages.size());
                         for (const auto& message : batch.messages) {
                             if (leaseLost_.load()) {
@@ -1269,7 +880,8 @@ return 0
                                     catalog,
                                     message.get("wire"),
                                     message.get("received_at_ms"),
-                                    telemetry
+                                    telemetry,
+                                    completedUploads
                                 );
                             }
                         }
@@ -1280,6 +892,7 @@ return 0
                             context,
                             telemetry
                         );
+                        co_await finishTelemetryUploads(redis, completedUploads);
                         service::message::workerStreamMultiplexer().signalTelemetryConsumers();
                         if (leaseLost_.load()) {
                             break;
@@ -1365,6 +978,7 @@ return 0
     std::atomic_bool running_{ false };
     std::atomic_bool leaseLost_{ false };
     std::atomic_bool failed_{ false };
+    observability::RuntimeDiagnostics& diagnostics_;
     std::map<std::string, std::string, std::less<>> recoveryLeases_;
     std::set<std::string, std::less<>> lostRecoveryLeases_;
 };

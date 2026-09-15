@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
-import { SnapshotStream } from '@/utils/snapshot-stream';
+import { SnapshotStream } from '@/lib/snapshot-stream';
 import {
     captureLogs,
     configureNetwork,
@@ -32,6 +32,17 @@ import {
 } from './edge_node.api';
 import type { Edge, EdgeVpn } from './edge_node.types';
 import { edgeQueryKeys, edgeVpnQueryKeys } from './edge_node.types';
+const buildGroupTree = (items: Edge.GroupItem[]) => {
+    const index = new Map<string, Edge.GroupTreeItem>();
+    const roots: Edge.GroupTreeItem[] = [];
+    for (const item of items) index.set(item.id, { ...item, children: [] });
+    for (const item of index.values()) {
+        const parent = item.parentId ? index.get(item.parentId) : undefined;
+        if (parent) parent.children?.push(item);
+        else roots.push(item);
+    }
+    return roots;
+};
 export function buildEdgeNodeGroupView(
     groups: Edge.GroupTreeItem[],
     nodes: Edge.Node[],
@@ -181,7 +192,7 @@ export const useEdgeDetail = (id?: string) =>
 export const useEdgeGroupTree = () =>
     useSnapshotQuery({
         queryKey: edgeQueryKeys.groups(),
-        queryFn: getEdgeGroups,
+        queryFn: () => getEdgeGroups().map(buildGroupTree),
     });
 export const useEdgeLogs = (id?: string, query?: Edge.LogsQuery, enabled = true) => {
     const result = useSnapshotQuery({
@@ -345,4 +356,4 @@ export const useEdgeVpnRouteDelete = () =>
         invalidateKeys: vpnInvalidations,
     });
 
-export { getEdgeDetail, getTerminalTicket } from './edge_node.api';
+export { getEdgeDetail, getTerminalTicket, openTerminalSocket } from './edge_node.api';

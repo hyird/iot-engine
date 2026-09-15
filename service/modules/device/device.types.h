@@ -8,6 +8,21 @@
 #include <ruvia/web/Model.h>
 
 namespace service::device {
+RUVIA_RESPONSE_MODEL(DeviceDebugPacketDto,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(direction, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(source, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(address, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("payload_hex", payloadHex, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("time_ms", timeMs, ruvia::String));
+RUVIA_RESPONSE_MODEL(DeviceDebugPacketsResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<DeviceDebugPacketDto>));
+
+
+RUVIA_REQUEST_MODEL(DeviceDebugBody, RUVIA_OPTIONAL_FIELD(enabled, ruvia::Bool));
 
 enum class DeviceAccessLevel : std::int64_t {
     none = 0,
@@ -205,6 +220,8 @@ RUVIA_RESPONSE_MODEL(EdgeStatusDto,
     RUVIA_OPTIONAL_FIELD_NAME("lastActivityAt", lastActivityAt, ruvia::String));
 
 RUVIA_RESPONSE_MODEL(DeviceItemDto,
+    RUVIA_OPTIONAL_FIELD_NAME("debug_enabled", debugEnabled, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD_NAME("link_debug_enabled", linkDebugEnabled, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(id, ruvia::String),
     RUVIA_OPTIONAL_FIELD(name, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("device_code", deviceCode, ruvia::String),

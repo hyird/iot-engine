@@ -9,7 +9,7 @@
 #include <stdexcept>
 
 #include "service/common/http.h"
-#include "service/common/log.h"
+#include "service/middleware/log.h"
 #include "service/common/timestamp.h"
 #include "service/common/uuid.h"
 #include "service/features/gb28181/gb28181.protocol.h"
@@ -17,959 +17,7 @@
 
 namespace service::gb28181 {
 
-namespace {
 
-using control_protocol::ActionJson;
-using control_protocol::ChannelJson;
-using control_protocol::DeviceJson;
-using control_protocol::DeviceListJson;
-using control_protocol::HealthJson;
-using control_protocol::MediaCapabilitiesJson;
-using control_protocol::MediaPortsJson;
-using control_protocol::PlayUrlsJson;
-using control_protocol::PreviewStartJson;
-using control_protocol::PreviewStopJson;
-using control_protocol::RecordJson;
-using control_protocol::SipConfigJson;
-using control_protocol::StreamJson;
-using control_protocol::StreamListJson;
-
-std::string requiredText(const std::optional<ruvia::String>& value, std::string_view message) {
-    if (!value || value->empty()) {
-        service::common::fail(10001, std::string(message), 400);
-    }
-    return std::string(value->view());
-}
-
-std::int64_t requiredInteger(const std::optional<ruvia::Int64>& value, std::string_view message) {
-    if (!value) {
-        service::common::fail(10001, std::string(message), 400);
-    }
-    return static_cast<std::int64_t>(*value);
-}
-
-double requiredFinite(const std::optional<ruvia::Double>& value, std::string_view name, double minimum, double maximum) {
-    if (!value || !std::isfinite(static_cast<double>(*value)) ||
-        static_cast<double>(*value) < minimum ||
-        static_cast<double>(*value) > maximum) {
-        service::common::fail(10001, std::string(name) + " 超出允许范围", 400);
-    }
-    return static_cast<double>(*value);
-}
-
-void requireEnabled(bool enabled) {
-    if (!enabled) {
-        service::common::fail(10004, "GB28181 功能未启用", 404);
-    }
-}
-
-void requireAction(std::string_view action) {
-    static const std::set<std::string_view> actions{
-        "left",
-        "right",
-        "up",
-        "down",
-        "zoomin",
-        "zoomout",
-        "stop"
-    };
-    if (!actions.contains(action)) {
-        service::common::fail(10001, "不支持的云台动作", 400);
-    }
-}
-
-std::pair<std::string, std::string> splitRemoteAddress(std::string_view address) {
-    if (address.starts_with('[')) {
-        const auto end = address.find(']');
-        if (end != std::string_view::npos) {
-            auto port = end + 1 < address.size() && address[end + 1] == ':'
-                ? std::string(address.substr(end + 2))
-                : std::string{};
-            return { std::string(address.substr(1, end - 1)), std::move(port) };
-        }
-    }
-    const auto colon = address.rfind(':');
-    if (colon == std::string_view::npos || address.find(':') != colon) {
-        return { std::string(address), {} };
-    }
-    return { std::string(address.substr(0, colon)),
-             std::string(address.substr(colon + 1)) };
-}
-
-MediaPortsJson mediaPortsJson(ruvia::WebWorkerContext& context, const ZlmSdk::Ports& ports) {
-    MediaPortsJson result(context);
-    result.set<"http">(ports.http)
-        .set<"https">(ports.https)
-        .set<"rtsp">(ports.rtsp)
-        .set<"rtsps">(ports.rtsps)
-        .set<"rtmp">(ports.rtmp)
-        .set<"rtmps">(ports.rtmps)
-        .set<"rtc">(ports.rtc)
-        .set<"srt">(ports.srt);
-    return result;
-}
-
-MediaCapabilitiesJson mediaCapabilitiesJson(
-    ruvia::WebWorkerContext& context,
-    const ZlmSdk::Capabilities& capabilities
-) {
-    MediaCapabilitiesJson result(context);
-    result.set<"faac">(capabilities.faac)
-        .set<"ffmpeg">(capabilities.ffmpeg)
-        .set<"hls">(capabilities.hls)
-        .set<"mp4">(capabilities.mp4)
-        .set<"rtpProxy">(capabilities.rtpProxy)
-        .set<"srt">(capabilities.srt)
-        .set<"sctp">(capabilities.sctp)
-        .set<"webRtc">(capabilities.webRtc)
-        .set<"x264">(capabilities.x264)
-        .set<"videoStack">(capabilities.videoStack)
-        .set<"tls">(capabilities.tls)
-        .set<"recording">(capabilities.recording);
-    return result;
-}
-
-HealthJson healthJson(ruvia::WebWorkerContext& context, bool enabled, std::string_view error = {}) {
-    const auto started = sdkSupervisor().started();
-    HealthJson result(context);
-    result.set<"status">(started ? "ok" : (enabled ? "error" : "disabled"))
-        .set<"service">("iot-engine-gb28181")
-        .set<"enabled">(enabled)
-        .set<"started">(started)
-        .set<"error">(error)
-        .set<"mediaPorts">(mediaPortsJson(context, sdkSupervisor().ports()))
-        .set<"mediaCapabilities">(
-            mediaCapabilitiesJson(context, sdkSupervisor().capabilities())
-        );
-    return result;
-}
-
-SipConfigJson sipConfigJson(ruvia::WebWorkerContext& context, std::string_view domain, std::string_view id, std::string_view host, std::string_view publicIp, std::int64_t port, std::string_view transport) {
-    SipConfigJson result(context);
-    result.set<"domain">(domain)
-        .set<"id">(id)
-        .set<"host">(host)
-        .set<"publicIp">(publicIp)
-        .set<"port">(port)
-        .set<"transport">(transport);
-    return result;
-}
-
-ChannelJson channelJson(ruvia::WebWorkerContext& context, const Channel& channel) {
-    ChannelJson result(context);
-    result.set<"id">(channel.id)
-        .set<"name">(channel.displayName())
-        .set<"reportedName">(channel.name)
-        .set<"customName">(channel.customName)
-        .set<"manufacturer">(channel.manufacturer)
-        .set<"online">(channel.online)
-        .set<"ptzType">(channel.ptzType)
-        .set<"ptzCapable">(channel.ptzType > 0);
-    return result;
-}
-
-RecordJson recordJson(ruvia::WebWorkerContext& context, const RecordItem& record) {
-    RecordJson result(context);
-    result.set<"deviceId">(record.deviceId)
-        .set<"name">(record.name)
-        .set<"filePath">(record.filePath)
-        .set<"address">(record.address)
-        .set<"startTime">(record.startTime)
-        .set<"endTime">(record.endTime)
-        .set<"type">(record.type)
-        .set<"recorderId">(record.recorderId);
-    return result;
-}
-
-DeviceJson deviceJson(ruvia::WebWorkerContext& context, const Device& device) {
-    const auto [remoteIp, remotePort] = splitRemoteAddress(device.remoteAddress);
-    ruvia::BoxedArray<ChannelJson> channels(
-        ruvia::ModelOptions{ .resource = context.resource() }
-    );
-    for (const auto& channel : device.channels) {
-        channels.emplace(channelJson(context, channel));
-    }
-    ruvia::BoxedArray<RecordJson> records(
-        ruvia::ModelOptions{ .resource = context.resource() }
-    );
-    for (const auto& record : device.records) {
-        records.emplace(recordJson(context, record));
-    }
-
-    DeviceJson result(context);
-    result.set<"id">(device.id)
-        .set<"name">(device.displayName())
-        .set<"reportedName">(device.name)
-        .set<"customName">(device.customName)
-        .set<"manufacturer">(device.manufacturer)
-        .set<"remoteAddress">(device.remoteAddress)
-        .set<"remoteIp">(remoteIp)
-        .set<"remotePort">(remotePort)
-        .set<"registrationSource">(device.registrationSource)
-        .set<"mappedDeviceId">(device.mappedDeviceId)
-        .set<"lastSeenAt">(service::common::utcTimestamp(device.lastSeen))
-        .set<"online">(device.online)
-        .set<"channels">(std::move(channels))
-        .set<"records">(std::move(records));
-    return result;
-}
-
-StreamJson streamJson(ruvia::WebWorkerContext& context, const StreamStatus& stream) {
-    StreamJson result(context);
-    result.set<"id">(
-              StreamStatus::identity(stream.app, stream.stream, stream.schema)
-    )
-        .set<"app">(stream.app)
-        .set<"stream">(stream.stream)
-        .set<"schema">(stream.schema)
-        .set<"online">(stream.online)
-        .set<"readerCount">(stream.readerCount);
-    return result;
-}
-
-PlayUrlsJson playUrlsJson(ruvia::WebWorkerContext& context, const PlayUrls& urls) {
-    PlayUrlsJson result(context);
-    result.set<"httpFlv">(urls.httpFlv)
-        .set<"wsFlv">(urls.wsFlv)
-        .set<"httpTs">(urls.httpTs)
-        .set<"hls">(urls.hls)
-        .set<"webrtc">(urls.webRtc)
-        .set<"rtsp">(urls.rtsp)
-        .set<"rtmp">(urls.rtmp);
-    return result;
-}
-
-PreviewStartJson previewStartJson(
-    ruvia::WebWorkerContext& context,
-    const SipServer::PreviewStartResult& value
-) {
-    PreviewStartJson result(context);
-    result.set<"sent">(true)
-        .set<"sessionId">(value.sessionId)
-        .set<"deviceId">(value.deviceId)
-        .set<"channelId">(value.channelId)
-        .set<"streamId">(value.streamId)
-        .set<"ssrc">(value.ssrc)
-        .set<"rtpPort">(value.rtpPort)
-        .set<"leaseTimeoutSeconds">(value.leaseTimeoutSeconds)
-        .set<"playUrls">(playUrlsJson(context, value.playUrls));
-    return result;
-}
-
-PreviewStopJson previewStopJson(
-    ruvia::WebWorkerContext& context,
-    const SipServer::PreviewStopResult& value
-) {
-    PreviewStopJson result(context);
-    result.set<"stopped">(true)
-        .set<"sessionId">(value.sessionId)
-        .set<"streamId">(value.streamId)
-        .set<"byeSent">(value.byeSent)
-        .set<"rtpServerClosed">(value.rtpServerClosed);
-    return result;
-}
-
-ActionJson actionJson(ruvia::WebWorkerContext& context) {
-    return ActionJson(context);
-}
-
-std::string projectionChangeName(DeviceChange change) {
-    switch (change) {
-        case DeviceChange::Status:
-            return "status";
-        case DeviceChange::Catalog:
-            return "catalog";
-        case DeviceChange::Records:
-            return "records";
-        case DeviceChange::Mapping:
-            return "mapping";
-        case DeviceChange::DeviceName:
-            return "device_name";
-        case DeviceChange::ChannelName:
-            return "channel_name";
-    }
-    return "status";
-}
-
-std::vector<service::message::StreamField>
-deviceProjectionFields(const Device& device, DeviceChange change, std::size_t owner, std::string_view ownerToken) {
-    using service::message::StreamField;
-    std::vector<StreamField> fields{
-        { "event_type", "gb28181.device" },
-        { "schema_version", "1" },
-        { "change", projectionChangeName(change) },
-        { "aggregate_id", device.id },
-        { "device_id", device.id },
-        { "name", device.name },
-        { "custom_name", device.customName },
-        { "manufacturer", device.manufacturer },
-        { "remote_address", device.remoteAddress },
-        { "registration_source", device.registrationSource },
-        { "mapped_device_id", device.mappedDeviceId },
-        { "online", device.online ? "1" : "0" },
-        { "last_seen_at", service::common::utcTimestamp(device.lastSeen) },
-        { "session_generation", std::to_string(device.sessionGeneration) },
-        { "owner_index", std::to_string(owner) },
-        { "owner_token", std::string(ownerToken) },
-        { "channel_count", std::to_string(device.channels.size()) },
-        { "record_count", std::to_string(device.records.size()) },
-    };
-    fields.reserve(fields.size() + device.channels.size() * 6U + device.records.size() * 8U);
-    for (std::size_t index = 0; index < device.channels.size(); ++index) {
-        const auto& channel = device.channels[index];
-        const auto prefix = "channel." + std::to_string(index) + ".";
-        fields.emplace_back(prefix + "id", channel.id);
-        fields.emplace_back(prefix + "name", channel.name);
-        fields.emplace_back(prefix + "custom_name", channel.customName);
-        fields.emplace_back(prefix + "manufacturer", channel.manufacturer);
-        fields.emplace_back(prefix + "online", channel.online ? "1" : "0");
-        fields.emplace_back(prefix + "ptz_type", std::to_string(channel.ptzType));
-    }
-    for (std::size_t index = 0; index < device.records.size(); ++index) {
-        const auto& record = device.records[index];
-        const auto prefix = "record." + std::to_string(index) + ".";
-        fields.emplace_back(prefix + "device_id", record.deviceId);
-        fields.emplace_back(prefix + "name", record.name);
-        fields.emplace_back(prefix + "file_path", record.filePath);
-        fields.emplace_back(prefix + "address", record.address);
-        fields.emplace_back(prefix + "start_time", record.startTime);
-        fields.emplace_back(prefix + "end_time", record.endTime);
-        fields.emplace_back(prefix + "type", record.type);
-        fields.emplace_back(prefix + "recorder_id", record.recorderId);
-    }
-    return fields;
-}
-
-std::vector<service::message::StreamField>
-streamProjectionFields(const StreamStatus& stream, std::size_t owner, std::string_view ownerToken) {
-    using service::message::StreamField;
-    return {
-        { "event_type", "gb28181.stream" },
-        { "schema_version", "1" },
-        { "aggregate_id", StreamStatus::identity(stream.app, stream.stream, stream.schema) },
-        { "app", stream.app },
-        { "stream", stream.stream },
-        { "schema", stream.schema },
-        { "online", stream.online ? "1" : "0" },
-        { "reader_count", std::to_string(stream.readerCount) },
-        { "owner_index", std::to_string(owner) },
-        { "owner_token", std::string(ownerToken) },
-    };
-}
-
-std::string jsonData(std::string value) {
-    return "{\"code\":0,\"message\":\"ok\",\"data\":" +
-        std::move(value) + "}";
-}
-
-std::string jsonAction(bool sent, std::string_view deviceId = {}, std::string_view channelId = {}) {
-    std::string result = "{\"sent\":";
-    result += sent ? "true" : "false";
-    if (!deviceId.empty()) {
-        result += ",\"device_id\":" + service::utils::jsonQuoted(deviceId);
-    }
-    if (!channelId.empty()) {
-        result += ",\"channel_id\":" + service::utils::jsonQuoted(channelId);
-    }
-    result.push_back('}');
-    return jsonData(std::move(result));
-}
-
-std::string jsonPreviewStart(const SipServer::PreviewStartResult& value) {
-    std::string result = "{\"sent\":true,\"session_id\":" +
-        service::utils::jsonQuoted(value.sessionId) +
-        ",\"device_id\":" +
-        service::utils::jsonQuoted(value.deviceId) +
-        ",\"channel_id\":" +
-        service::utils::jsonQuoted(value.channelId) +
-        ",\"stream_id\":" +
-        service::utils::jsonQuoted(value.streamId) +
-        ",\"ssrc\":" +
-        service::utils::jsonQuoted(value.ssrc) +
-        ",\"rtp_port\":" + std::to_string(value.rtpPort) +
-        ",\"lease_timeout_seconds\":" +
-        std::to_string(value.leaseTimeoutSeconds) +
-        ",\"play_urls\":{\"http_flv\":" +
-        service::utils::jsonQuoted(value.playUrls.httpFlv) +
-        ",\"ws_flv\":" +
-        service::utils::jsonQuoted(value.playUrls.wsFlv) +
-        ",\"http_ts\":" +
-        service::utils::jsonQuoted(value.playUrls.httpTs) +
-        ",\"hls\":" +
-        service::utils::jsonQuoted(value.playUrls.hls) +
-        ",\"webrtc\":" +
-        service::utils::jsonQuoted(value.playUrls.webRtc) +
-        ",\"rtsp\":" +
-        service::utils::jsonQuoted(value.playUrls.rtsp) +
-        ",\"rtmp\":" +
-        service::utils::jsonQuoted(value.playUrls.rtmp) +
-        "}}";
-    return jsonData(std::move(result));
-}
-
-std::string jsonPreviewStop(const SipServer::PreviewStopResult& value) {
-    return jsonData(
-        "{\"stopped\":true,\"session_id\":" +
-        service::utils::jsonQuoted(value.sessionId) + ",\"stream_id\":" +
-        service::utils::jsonQuoted(value.streamId) + ",\"bye_sent\":" +
-        (value.byeSent ? "true" : "false") +
-        ",\"rtp_server_closed\":" +
-        (value.rtpServerClosed ? "true" : "false") + "}"
-    );
-}
-
-ruvia::Task<void> deleteOwnerIfMatches(const ruvia::RedisHandle& redis, std::string_view key, std::string_view owner) {
-    static constexpr std::string_view script = R"lua(
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-  return redis.call('DEL', KEYS[1])
-end
-return 0
-)lua";
-    const std::string keyValue(key);
-    const std::string ownerValue(owner);
-    const std::string_view keys[]{ keyValue };
-    const std::string_view arguments[]{ ownerValue };
-    const auto reply = co_await redis.eval(script, keys, arguments);
-    if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
-        service::message::redis::throwValue("GB28181 owner CAS delete", reply);
-    }
-    co_return;
-}
-
-ruvia::Task<void> publishReplyAndAcknowledge(
-    const ruvia::RedisHandle& redis,
-    std::string_view replyStream,
-    std::string_view controlStream,
-    std::string_view group,
-    std::string_view messageId,
-    std::string_view requestId,
-    std::string_view operation,
-    std::string_view status,
-    std::string_view payload,
-    std::string_view resultKey,
-    std::string_view resultValue,
-    std::string_view claimKey,
-    std::string_view claimOwner
-) {
-    // Reply publication and PEL removal are one Redis transaction.  A worker
-    // crash between the two cannot acknowledge a command whose response was
-    // never made visible to the Service Worker.
-    static constexpr std::string_view script = R"lua(
- if ARGV[7] ~= '' and redis.call('EXISTS', KEYS[3]) == 0 then
-   redis.call('SET', KEYS[3], ARGV[7], 'EX', ARGV[8])
- end
- local reply = redis.call('XADD', KEYS[1], '*',
-   'request_id', ARGV[1], 'operation', ARGV[2], 'status', ARGV[3],
-   'payload', ARGV[4])
- redis.call('EXPIRE', KEYS[1], ARGV[9])
- redis.call('EXPIRE', KEYS[2], ARGV[10])
- local acknowledged = redis.call('XACK', KEYS[2], ARGV[5], ARGV[6])
- redis.call('XDEL', KEYS[2], ARGV[6])
- if ARGV[11] ~= '' and redis.call('GET', KEYS[4]) == ARGV[11] then
-   redis.call('DEL', KEYS[4])
- end
-return acknowledged
-)lua";
-    const std::string replyKey(replyStream);
-    const std::string controlKey(controlStream);
-    const std::string resultKeyValue(resultKey);
-    const std::string claimKeyValue(claimKey);
-    const std::string request(requestId);
-    const std::string op(operation);
-    const std::string state(status);
-    const std::string body(payload);
-    const std::string groupValue(group);
-    const std::string id(messageId);
-    const std::string result(resultValue);
-    const std::string claim(claimOwner);
-    const std::string resultTtl{ "600" };
-    const std::string replyTtl{ "600" };
-    const std::string controlTtl{ "600" };
-    const std::string_view keys[]{ replyKey, controlKey, resultKeyValue, claimKeyValue };
-    const std::string_view arguments[]{ request, op, state, body, groupValue, id, result, resultTtl, replyTtl, controlTtl, claim };
-    const auto reply = co_await redis.eval(script, keys, arguments);
-    if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
-        service::message::redis::throwValue("GB28181 reply/ack", reply);
-    }
-    co_return;
-}
-
-std::optional<std::int64_t> projectionInteger(std::string_view value) {
-    std::int64_t parsed{};
-    const auto [end, error] =
-        std::from_chars(value.data(), value.data() + value.size(), parsed);
-    if (error != std::errc{} || end != value.data() + value.size()) {
-        return std::nullopt;
-    }
-    return parsed;
-}
-
-bool validProjectionStreamId(std::string_view value) {
-    const auto separator = value.find('-');
-    if (separator == std::string_view::npos || separator == 0 ||
-        separator + 1 == value.size() ||
-        value.find('-', separator + 1) != std::string_view::npos) {
-        return false;
-    }
-    const auto unsignedInteger = [](std::string_view part) {
-        std::uint64_t parsed{};
-        const auto [end, error] = std::from_chars(
-            part.data(),
-            part.data() + part.size(),
-            parsed
-        );
-        return error == std::errc{} && end == part.data() + part.size();
-    };
-    return unsignedInteger(value.substr(0, separator)) &&
-        unsignedInteger(value.substr(separator + 1)) && value != "0-0";
-}
-
-struct ProjectionPublishResult final {
-    std::string order;
-    std::string current;
-};
-
-ProjectionPublishResult parseProjectionPublishResult(
-    const ruvia::RedisValue& reply
-) {
-    if (reply.kind() != ruvia::RedisValue::Kind::kArray ||
-        reply.array().size() != 2 ||
-        reply.array()[0].kind() != ruvia::RedisValue::Kind::kString ||
-        reply.array()[1].kind() != ruvia::RedisValue::Kind::kString) {
-        service::message::redis::throwValue(
-            "GB28181 projection publish result",
-            reply
-        );
-    }
-    ProjectionPublishResult result{
-        std::string(reply.array()[0].string()),
-        std::string(reply.array()[1].string())
-    };
-    if (!validProjectionStreamId(result.order) ||
-        !validProjectionStreamId(result.current)) {
-        throw std::runtime_error("GB28181 projection publish returned invalid stream ID");
-    }
-    return result;
-}
-
-bool projectionBoolean(std::string_view value) {
-    return value == "t" || value == "true" || value == "1";
-}
-
-std::optional<DeviceChange> projectionDeviceChange(std::string_view value) {
-    if (value == "status") {
-        return DeviceChange::Status;
-    }
-    if (value == "catalog") {
-        return DeviceChange::Catalog;
-    }
-    if (value == "records") {
-        return DeviceChange::Records;
-    }
-    if (value == "mapping") {
-        return DeviceChange::Mapping;
-    }
-    if (value == "device_name") {
-        return DeviceChange::DeviceName;
-    }
-    if (value == "channel_name") {
-        return DeviceChange::ChannelName;
-    }
-    return std::nullopt;
-}
-
-std::size_t projectionCount(std::string_view value, std::string_view field) {
-    const auto parsed = projectionInteger(value);
-    if (!parsed || *parsed < 0 || *parsed > 100000) {
-        throw std::runtime_error("invalid GB28181 projection " + std::string(field));
-    }
-    return static_cast<std::size_t>(*parsed);
-}
-
-Device deviceFromProjection(const service::message::StreamMessage& message) {
-    if (message.get("schema_version") != "1" ||
-        message.get("event_type") != "gb28181.device") {
-        throw std::runtime_error("unsupported GB28181 device projection");
-    }
-    Device device;
-    device.id = std::string(message.get("device_id"));
-    if (device.id.empty()) {
-        throw std::runtime_error("GB28181 device projection has no id");
-    }
-    device.name = std::string(message.get("name"));
-    device.customName = std::string(message.get("custom_name"));
-    device.manufacturer = std::string(message.get("manufacturer"));
-    device.remoteAddress = std::string(message.get("remote_address"));
-    device.registrationSource = std::string(message.get("registration_source"));
-    device.mappedDeviceId = std::string(message.get("mapped_device_id"));
-    device.online = projectionBoolean(message.get("online"));
-    if (const auto lastSeen = service::common::parseUtcTimestamp(
-            message.get("last_seen_at")
-        )) {
-        device.lastSeen = *lastSeen;
-    }
-    if (const auto generation = projectionInteger(message.get("session_generation"))) {
-        device.sessionGeneration = static_cast<std::uint64_t>(
-            std::max<std::int64_t>(0, *generation)
-        );
-    }
-
-    const auto channelCount = projectionCount(message.get("channel_count"), "channel_count");
-    device.channels.reserve(channelCount);
-    for (std::size_t index = 0; index < channelCount; ++index) {
-        const auto prefix = "channel." + std::to_string(index) + ".";
-        Channel channel;
-        channel.id = std::string(message.get(prefix + "id"));
-        channel.name = std::string(message.get(prefix + "name"));
-        channel.customName = std::string(message.get(prefix + "custom_name"));
-        channel.manufacturer =
-            std::string(message.get(prefix + "manufacturer"));
-        channel.online = projectionBoolean(message.get(prefix + "online"));
-        channel.ptzType = static_cast<int>(projectionInteger(
-                                               message.get(prefix + "ptz_type")
-        )
-                                               .value_or(-1));
-        if (channel.id.empty()) {
-            throw std::runtime_error("GB28181 projection channel has no id");
-        }
-        device.channels.push_back(std::move(channel));
-    }
-
-    const auto recordCount =
-        projectionCount(message.get("record_count"), "record_count");
-    device.records.reserve(recordCount);
-    for (std::size_t index = 0; index < recordCount; ++index) {
-        const auto prefix = "record." + std::to_string(index) + ".";
-        RecordItem record;
-        record.deviceId = std::string(message.get(prefix + "device_id"));
-        record.name = std::string(message.get(prefix + "name"));
-        record.filePath = std::string(message.get(prefix + "file_path"));
-        record.address = std::string(message.get(prefix + "address"));
-        record.startTime = std::string(message.get(prefix + "start_time"));
-        record.endTime = std::string(message.get(prefix + "end_time"));
-        record.type = std::string(message.get(prefix + "type"));
-        record.recorderId = std::string(message.get(prefix + "recorder_id"));
-        device.records.push_back(std::move(record));
-    }
-    return device;
-}
-
-StreamStatus streamFromProjection(const service::message::StreamMessage& message) {
-    if (message.get("schema_version") != "1" ||
-        message.get("event_type") != "gb28181.stream") {
-        throw std::runtime_error("unsupported GB28181 stream projection");
-    }
-    StreamStatus stream;
-    stream.app = std::string(message.get("app"));
-    stream.stream = std::string(message.get("stream"));
-    stream.schema = std::string(message.get("schema"));
-    if (stream.app.empty() || stream.stream.empty() || stream.schema.empty()) {
-        throw std::runtime_error("GB28181 stream projection is incomplete");
-    }
-    stream.online = projectionBoolean(message.get("online"));
-    stream.readerCount = static_cast<int>(projectionInteger(
-                                              message.get("reader_count")
-    )
-                                              .value_or(0));
-    stream.readerCount = std::max(0, stream.readerCount);
-    return stream;
-}
-
-ruvia::Task<bool> projectionOwnerMatches(const ruvia::RedisHandle& redis, std::string_view aggregateId, bool online, std::string_view ownerToken) {
-    if (ownerToken.empty()) {
-        co_return false;
-    }
-    const auto current = co_await redis.get(
-        control_protocol::stream::owner(aggregateId)
-    );
-    if (online) {
-        co_return current&& std::string_view(*current) == ownerToken;
-    }
-    // A legitimate offline event removes its owner key.  An old offline event
-    // must not overwrite a newer online owner.
-    co_return !current || std::string_view(*current) == ownerToken;
-}
-
-ruvia::Task<std::optional<service::message::StreamMessage>> readControlReply(
-    const ruvia::WorkerHandle& worker,
-    const ruvia::RedisHandle& redis,
-    std::string_view stream,
-    std::string_view requestId,
-    ruvia::StopToken stop,
-    std::chrono::system_clock::time_point deadline
-) {
-    const auto boundedRedis = redis.withOptions({ .stopToken = stop });
-    while (!stop.stopRequested() &&
-           std::chrono::system_clock::now() < deadline) {
-        const auto reply = co_await service::message::redis::command(
-            boundedRedis,
-            { "XREAD", "COUNT", "1", "STREAMS", std::string(stream), "0-0" }
-        );
-        if (reply.null()) {
-            (void)co_await ruvia::sleepFor(worker, std::chrono::milliseconds(100), stop);
-            continue;
-        }
-        if (reply.kind() != ruvia::RedisValue::Kind::kArray) {
-            service::message::redis::throwValue("XREAD GB28181 reply", reply);
-        }
-        for (const auto& streamReply : reply.array()) {
-            if (streamReply.kind() != ruvia::RedisValue::Kind::kArray ||
-                streamReply.array().size() != 2) {
-                continue;
-            }
-            const auto& entries = streamReply.array()[1];
-            if (entries.kind() != ruvia::RedisValue::Kind::kArray) {
-                continue;
-            }
-            for (const auto& entry : entries.array()) {
-                if (entry.kind() != ruvia::RedisValue::Kind::kArray ||
-                    entry.array().size() != 2) {
-                    continue;
-                }
-                const auto& id = entry.array()[0];
-                const auto& fields = entry.array()[1];
-                if (id.kind() != ruvia::RedisValue::Kind::kString ||
-                    fields.kind() != ruvia::RedisValue::Kind::kArray) {
-                    continue;
-                }
-                service::message::StreamMessage message;
-                message.id = std::string(id.string());
-                for (std::size_t index = 0; index + 1 < fields.array().size();
-                     index += 2) {
-                    const auto& name = fields.array()[index];
-                    const auto& value = fields.array()[index + 1];
-                    if (name.kind() != ruvia::RedisValue::Kind::kString ||
-                        value.kind() != ruvia::RedisValue::Kind::kString) {
-                        continue;
-                    }
-                    message.fields.push_back(
-                        { std::string(name.string()), std::string(value.string()) }
-                    );
-                }
-                if (message.get("request_id") == requestId) {
-                    co_return message;
-                }
-            }
-        }
-    }
-    if (stop.stopRequested()) {
-        throw std::runtime_error("GB28181 operation was cancelled");
-    }
-    co_return std::nullopt;
-}
-
-ruvia::Task<void> markControlCancelled(const ruvia::RedisHandle& redis, std::string_view cancelKey) {
-    ruvia::RedisSetOptions options;
-    options.expiration =
-        ruvia::RedisSetExpiration::expiresAfter(std::chrono::minutes(10));
-    co_await redis.set(std::string(cancelKey), "1", std::move(options));
-    co_return;
-}
-
-ruvia::Task<std::string> dispatchToCollector(
-    ruvia::WebWorkerContext& context,
-    std::string_view operation,
-    std::string_view payload,
-    std::string ownerKey,
-    std::string_view ownerToken,
-    ruvia::StopToken stop
-) {
-    const auto owner = control_protocol::stream::ownerIndex(ownerToken);
-    const auto instance = control_protocol::stream::ownerInstance(ownerToken);
-    if (!owner || !instance || !control_protocol::stream::completeOwnerToken(ownerToken)) {
-        throw std::runtime_error("GB28181 owner token is invalid");
-    }
-    if (stop.stopRequested()) {
-        throw std::runtime_error("GB28181 operation was cancelled");
-    }
-    const auto currentOwner = co_await context.redis().get(ownerKey);
-    if (!currentOwner || std::string_view(*currentOwner) != ownerToken) {
-        service::common::fail(10003, "GB28181 连接归属已变更或已过期", 404);
-    }
-
-    const auto requestId = service::common::nextUuidV7();
-    const auto replyStream = control_protocol::stream::reply(requestId);
-    const auto resultKey = control_protocol::stream::result(requestId);
-    const auto cancelKey = control_protocol::stream::cancel(requestId);
-    const auto now = std::chrono::system_clock::now();
-    const auto deadline = now + std::chrono::seconds(15);
-    const auto deadlineMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                deadline.time_since_epoch()
-    )
-                                .count();
-    std::exception_ptr publishFailure;
-    try {
-        const auto controlKey = control_protocol::stream::control(*owner, *instance);
-        std::vector<service::message::StreamField> fields{
-            { "request_id", requestId },
-            { "owner_key", std::string(ownerKey) },
-            { "owner_token", std::string(ownerToken) },
-            { "operation", std::string(operation) },
-            { "payload", std::string(payload) },
-            { "reply_stream", replyStream },
-            { "result_key", resultKey },
-            { "cancel_key", cancelKey },
-            { "deadline_ms", std::to_string(deadlineMs) }
-        };
-        std::vector<std::string_view> args{ ownerToken };
-        for (const auto& field : fields) {
-            args.push_back(field.name);
-            args.push_back(field.value);
-        }
-        const std::string_view keys[]{ controlKey, ownerKey };
-        static constexpr std::string_view publishScript = R"lua(
-if redis.call('GET',KEYS[2])~=ARGV[1] then return 0 end
-redis.call('XADD',KEYS[1],'*',unpack(ARGV,2))
-redis.call('EXPIRE',KEYS[1],600)
-return 1
-)lua";
-        const auto published = co_await context.redis().eval(publishScript, keys, args);
-        if (published.kind() != ruvia::RedisValue::Kind::kInteger) {
-            service::message::redis::throwValue("GB28181 command publish", published);
-        }
-        if (published.integer() != 1) {
-            service::common::fail(10003, "GB28181 connection owner expired", 409);
-        }
-    } catch (...) {
-        publishFailure = std::current_exception();
-    }
-    if (publishFailure) {
-        // XADD may have reached Redis before the client observed a transport
-        // error.  Mark the request cancelled so an uncertain delivery cannot
-        // execute a device side effect after the Service has failed it.
-        try {
-            co_await markControlCancelled(context.redis(), cancelKey);
-        } catch (...) {
-        }
-        std::rethrow_exception(publishFailure);
-    }
-
-    std::optional<service::message::StreamMessage> response;
-    std::exception_ptr failure;
-    try {
-        response = co_await readControlReply(context.worker(), context.redis(), replyStream, requestId, stop, deadline);
-    } catch (...) {
-        failure = std::current_exception();
-    }
-    if (failure) {
-        // The Collector may have claimed the command before this wait was
-        // cancelled.  Leave a short lived fence for it to check before any
-        // device side effect.
-        try {
-            co_await markControlCancelled(context.redis(), cancelKey);
-        } catch (...) {
-        }
-        try {
-            (void)co_await context.redis().del(replyStream);
-        } catch (...) {
-        }
-        std::rethrow_exception(failure);
-    }
-    if (!response) {
-        try {
-            co_await markControlCancelled(context.redis(), cancelKey);
-        } catch (...) {
-        }
-        try {
-            (void)co_await context.redis().del(replyStream);
-        } catch (...) {
-        }
-        throw std::runtime_error(
-            "GB28181 Collector did not reply before deadline"
-        );
-    }
-    (void)co_await context.redis().del(replyStream);
-    const auto status = response->get("status");
-    const auto result = response->get("payload");
-    if (status != "ok") {
-        throw std::runtime_error(result.empty() ? "GB28181 Collector operation failed" : std::string(result));
-    }
-    co_return std::string(result);
-}
-
-ruvia::Task<std::optional<std::string>> ownerTokenFor(
-    const ruvia::RedisHandle& redis,
-    std::string_view key
-) {
-    const auto value = co_await redis.get(key);
-    if (!value) {
-        co_return std::nullopt;
-    }
-    co_return std::optional<std::string>(std::string(*value));
-}
-
-ruvia::Task<std::string> dispatchByOwnerKey(
-    ruvia::WebWorkerContext& context,
-    std::string_view operation,
-    std::string_view payload,
-    std::string ownerKey,
-    ruvia::StopToken stop
-) {
-    const auto token = co_await ownerTokenFor(context.redis(), ownerKey);
-    if (!token) {
-        service::common::fail(10003, "GB28181 连接归属不存在或已过期", 404);
-    }
-    try {
-        co_return co_await dispatchToCollector(context, operation, payload, ownerKey, *token, stop);
-    } catch (const ruvia::HttpError&) {
-        throw;
-    } catch (const std::exception& error) {
-        service::common::fail(10004, error.what(), 502);
-    }
-}
-
-ruvia::Task<void> markProjectionDoneAndAcknowledge(
-    const ruvia::RedisHandle& redis,
-    std::string_view stream,
-    std::string_view group,
-    std::string_view messageId,
-    std::string_view projectionId,
-    bool applied
-) {
-    if (projectionId.empty()) {
-        throw std::runtime_error("GB28181 projection has no projection_id");
-    }
-    static constexpr std::string_view script = R"lua(
- redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
- local acknowledged = redis.call('XACK', KEYS[2], ARGV[3], ARGV[4])
- redis.call('XDEL', KEYS[2], ARGV[4])
-return acknowledged
-)lua";
-    const std::string doneKey(
-        control_protocol::stream::projectionDone(projectionId)
-    );
-    const std::string streamKey(stream);
-    const std::string appliedValue(applied ? "1" : "0");
-    const std::string ttl{ "600" };
-    const std::string groupValue(group);
-    const std::string idValue(messageId);
-    const std::string_view keys[]{ doneKey, streamKey };
-    const std::string_view arguments[]{ appliedValue, ttl, groupValue, idValue };
-    const auto reply = co_await redis.eval(script, keys, arguments);
-    if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
-        service::message::redis::throwValue("GB28181 projection done", reply);
-    }
-    co_return;
-}
-
-ruvia::Task<bool> configuredEnabled(const ruvia::RedisHandle& redis) {
-    const auto value = co_await redis.hget(
-        control_protocol::stream::kConfigKey,
-        "enabled"
-    );
-    co_return value&& projectionBoolean(std::string_view(*value));
-}
-
-std::string configField(const std::pmr::vector<ruvia::RedisKeyValue>& fields, std::string_view name) {
-    for (const auto& field : fields) {
-        if (field.key() == name) {
-            return std::string(field.value());
-        }
-    }
-    return {};
-}
-
-} // namespace
 
 void GbProjectionRuntime::start(ruvia::WebWorkerHandle worker, OwnerIndex workerIndex, OwnerIndex serviceWorkerCount) {
     {
@@ -1135,10 +183,10 @@ GbProjectionRuntime::consume(ruvia::WebWorkerContext& context, const std::shared
                     const auto projectionOrder = message.get("projection_order");
                     std::string cursorId(message.id);
                     if (!projectionOrder.empty()) {
-                        if (!validProjectionStreamId(projectionOrder)) {
+                        if (!control_protocol::validProjectionStreamId(projectionOrder)) {
                             LOG_WARN << "[GB28181] invalid projection order: "
                                      << message.id;
-                            co_await markProjectionDoneAndAcknowledge(
+                            co_await GbControlService::markProjectionDoneAndAcknowledge(
                                 redis,
                                 batch.stream,
                                 group,
@@ -1149,7 +197,7 @@ GbProjectionRuntime::consume(ruvia::WebWorkerContext& context, const std::shared
                             continue;
                         }
                         cursorId = std::string(projectionOrder);
-                    } else if (!validProjectionStreamId(cursorId)) {
+                    } else if (!control_protocol::validProjectionStreamId(cursorId)) {
                         LOG_WARN << "[GB28181] invalid projection stream ID: "
                                  << message.id;
                         co_await service::message::redis::acknowledgeAndDelete(
@@ -1168,15 +216,15 @@ GbProjectionRuntime::consume(ruvia::WebWorkerContext& context, const std::shared
                     try {
                         if (eventType == "gb28181.device") {
                             deviceChange =
-                                projectionDeviceChange(message.get("change"));
+                                projection_protocol::projectionDeviceChange(message.get("change"));
                             if (!deviceChange) {
                                 throw std::runtime_error(
                                     "GB28181 device projection has no valid change"
                                 );
                             }
-                            device = deviceFromProjection(message);
+                            device = projection_protocol::deviceFromProjection(message);
                         } else if (eventType == "gb28181.stream") {
-                            streamStatus = streamFromProjection(message);
+                            streamStatus = projection_protocol::streamFromProjection(message);
                         } else {
                             throw std::runtime_error(
                                 "unsupported GB28181 projection event type"
@@ -1188,7 +236,7 @@ GbProjectionRuntime::consume(ruvia::WebWorkerContext& context, const std::shared
                     if (!parseError.empty()) {
                         LOG_WARN << "[GB28181][GbProjectionRuntime] dropping malformed projection: "
                                  << parseError;
-                        co_await markProjectionDoneAndAcknowledge(
+                        co_await GbControlService::markProjectionDoneAndAcknowledge(
                             redis,
                             batch.stream,
                             group,
@@ -1200,7 +248,7 @@ GbProjectionRuntime::consume(ruvia::WebWorkerContext& context, const std::shared
                     }
                     bool applied = false;
                     if (device) {
-                        if (co_await projectionOwnerMatches(
+                        if (co_await GbProjectionService::projectionOwnerMatches(
                                 redis,
                                 device->id,
                                 device->online,
@@ -1221,7 +269,7 @@ GbProjectionRuntime::consume(ruvia::WebWorkerContext& context, const std::shared
                             streamStatus->stream,
                             streamStatus->schema
                         );
-                        if (co_await projectionOwnerMatches(
+                        if (co_await GbProjectionService::projectionOwnerMatches(
                                 redis,
                                 identity,
                                 streamStatus->online,
@@ -1236,7 +284,7 @@ GbProjectionRuntime::consume(ruvia::WebWorkerContext& context, const std::shared
                             );
                         }
                     }
-                    co_await markProjectionDoneAndAcknowledge(
+                    co_await GbControlService::markProjectionDoneAndAcknowledge(
                         redis,
                         batch.stream,
                         group,
@@ -1560,98 +608,16 @@ ruvia::Task<bool> CollectorRuntime::persistProjection(
 ) {
     fields.push_back({ "projection_id", projectionId });
     const auto redis = redis_.withOptions({ .timeout = std::chrono::seconds(3), .stopToken = projectionScope_.stopToken() });
-    // The first stream ID is the actor's ordering cursor.  A later repair may
-    // need a new Redis entry after the old one has been acknowledged/deleted,
-    // but it must carry this original order so a retry cannot move the DB
-    // cursor backwards or reapply an older event over a newer one.
-    static constexpr std::string_view script = R"lua(
-local function valid_id(id)
-  return id ~= nil and string.match(id, '^%d+%-%d+$') ~= nil
-end
-
-local marker = redis.call('GET', KEYS[2])
-local order = ARGV[1]
-local current = ARGV[2]
-if order ~= '' and not valid_id(order) then
-  return redis.error_reply('invalid local GB28181 projection order')
-end
-if current ~= '' and not valid_id(current) then
-  return redis.error_reply('invalid local GB28181 projection entry')
-end
-
-if marker then
-  local separator = string.find(marker, '|', 1, true)
-  if not separator or string.find(marker, '|', separator + 1, true) then
-    return redis.error_reply('invalid GB28181 projection sent marker')
-  end
-  local marker_order = string.sub(marker, 1, separator - 1)
-  local marker_current = string.sub(marker, separator + 1)
-  if not valid_id(marker_order) or not valid_id(marker_current) then
-    return redis.error_reply('invalid GB28181 projection sent marker IDs')
-  end
-  if order ~= '' and order ~= marker_order then
-    return redis.error_reply('GB28181 projection order changed')
-  end
-  order = marker_order
-  -- If the previous XADD succeeded but its reply was lost, the marker's
-  -- current ID is authoritative and avoids a duplicate repair entry.
-  current = marker_current
-end
-
-if current ~= '' then
-  local existing = redis.call('XRANGE', KEYS[1], current, current)
-  if #existing > 0 then
-    -- A marker may have expired while this coroutine was waiting.  Restore
-    -- it once, without refreshing an existing marker on every poll.
-    if not marker then
-      redis.call('SET', KEYS[2], order .. '|' .. current, 'EX', 86400)
-    end
-    return { order, current }
-  end
-end
-
-local values = {}
-for index = 3, #ARGV do
-  values[#values + 1] = ARGV[index]
-end
-if order ~= '' then
-  values[#values + 1] = 'projection_order'
-  values[#values + 1] = order
-end
-local id = redis.call('XADD', KEYS[1], '*', unpack(values))
-if order == '' then
-  order = id
-end
-redis.call('SET', KEYS[2], order .. '|' .. id, 'EX', 86400)
-return { order, id }
-)lua";
-    const auto sentKey = "iot:gb28181:projection:sent:" + projectionId;
-    const std::string_view keys[]{ control_protocol::stream::kProjection, sentKey };
-    const auto doneKey = control_protocol::stream::projectionDone(projectionId);
     std::string projectionOrder;
     std::string currentEntryId;
     while (!projectionScope_.stopRequested()) {
         bool retry = false;
         std::string failure;
         try {
-            const auto done = co_await redis.get(doneKey);
-            if (done) {
-                if (*done != "0" && *done != "1") {
-                    throw std::runtime_error("invalid GB28181 projection receipt");
-                }
-                co_return std::string_view(*done) == "1";
-            }
-
-            std::vector<std::string_view> args;
-            args.reserve(2 + fields.size() * 2);
-            args.push_back(projectionOrder);
-            args.push_back(currentEntryId);
-            for (const auto& field : fields) {
-                args.push_back(field.name);
-                args.push_back(field.value);
-            }
-            const auto published = co_await redis.eval(script, keys, args);
-            const auto result = parseProjectionPublishResult(published);
+            const auto done = co_await GbControlService::projectionReceipt(redis, projectionId);
+            if (done) co_return *done;
+            const auto result = co_await GbControlService::publishProjection(
+                redis, projectionId, projectionOrder, currentEntryId, fields);
             if (!projectionOrder.empty() &&
                 projectionOrder != result.order) {
                 throw std::runtime_error(
@@ -1704,7 +670,7 @@ ruvia::Task<void> CollectorRuntime::publishDevice(const Device& device, DeviceCh
         co_return;
     }
     const auto persisted = co_await persistProjection(
-        deviceProjectionFields(device, change, index_, ownerToken),
+        projection_protocol::deviceProjectionFields(device, change, index_, ownerToken),
         std::string(projectionId)
     );
     currentProjectionSucceeded_ = currentProjectionSucceeded_ && persisted;
@@ -1721,7 +687,7 @@ ruvia::Task<void> CollectorRuntime::publishStream(const StreamStatus& stream, st
         co_return;
     }
     const auto persisted = co_await persistProjection(
-        streamProjectionFields(stream, index_, ownerToken),
+        projection_protocol::streamProjectionFields(stream, index_, ownerToken),
         std::string(projectionId)
     );
     currentProjectionSucceeded_ = currentProjectionSucceeded_ && persisted;
@@ -1817,7 +783,6 @@ ruvia::Task<bool> CollectorRuntime::retainOwner(
         retired != retiredOwnerTokens_.end() && retired->second == token) {
         co_return false;
     }
-    constexpr auto kRedisLease = std::chrono::milliseconds(15000);
     constexpr auto kLocalLease = std::chrono::seconds(12);
     const auto operationStarted = std::chrono::steady_clock::now();
     const auto localDeadline = operationStarted + kLocalLease;
@@ -1830,54 +795,11 @@ ruvia::Task<bool> CollectorRuntime::retainOwner(
         hasLocal ? local->second.expiresAt
                  : std::chrono::steady_clock::time_point::max();
 
-    static constexpr std::string_view renewScript = R"lua(
-if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
-return redis.call('PEXPIRE', KEYS[1], ARGV[2])
-)lua";
-    static constexpr std::string_view claimScript = R"lua(
-local current=redis.call('GET',KEYS[1])
-if current==ARGV[1] then
-  redis.call('PEXPIRE',KEYS[1],ARGV[3])
-  return 1
-end
-if ARGV[2]~='' then
-  if current~=ARGV[2] then return 0 end
-  redis.call('SET',KEYS[1],ARGV[1],'PX',ARGV[3])
-  return 1
-end
-if current then return 0 end
-local claimed=redis.call('SET',KEYS[1],ARGV[1],'PX',ARGV[3],'NX')
-return claimed and 1 or 0
-)lua";
-
     bool retained = false;
     try {
-        const auto redis = redis_.withOptions(
-            { .timeout = std::chrono::seconds(3) }
-        );
-        const std::string leaseTtl = std::to_string(kRedisLease.count());
-        const std::string_view keys[]{ key };
-        if (hasLocal && previousToken == token) {
-            const std::string_view args[]{ token, leaseTtl };
-            const auto reply = co_await redis.eval(renewScript, keys, args);
-            if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
-                service::message::redis::throwValue(
-                    "renew GB28181 owner lease",
-                    reply
-                );
-            }
-            retained = reply.integer() == 1;
-        } else {
-            const std::string_view args[]{ token, previousToken, leaseTtl };
-            const auto reply = co_await redis.eval(claimScript, keys, args);
-            if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
-                service::message::redis::throwValue(
-                    "claim GB28181 owner lease",
-                    reply
-                );
-            }
-            retained = reply.integer() == 1;
-        }
+        retained = hasLocal && previousToken == token
+            ? co_await GbControlService::renewOwnerLease(redis_, key, token)
+            : co_await GbControlService::claimOwnerLease(redis_, key, token, previousToken);
     } catch (const std::exception& error) {
         LOG_WARN << "[GB28181][Collector] owner lease claim failed: "
                  << error.what();
@@ -1983,22 +905,7 @@ ruvia::Task<void> CollectorRuntime::releaseOwner(std::string key, std::string to
         ownerLeases_.erase(found);
     }
 
-    static constexpr std::string_view script = R"lua(
-if redis.call('GET',KEYS[1])==ARGV[1] then
-  return redis.call('DEL',KEYS[1])
-end
-return 0
-)lua";
-    const auto redis = redis_.withOptions({ .timeout = std::chrono::seconds(3) });
-    const std::string_view keys[]{ key };
-    const std::string_view args[]{ token };
-    const auto reply = co_await redis.eval(script, keys, args);
-    if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
-        service::message::redis::throwValue(
-            "release GB28181 owner lease",
-            reply
-        );
-    }
+    co_await GbControlService::releaseOwnerLease(redis_, key, token);
     co_return;
 }
 
@@ -2016,25 +923,8 @@ ruvia::Task<void> CollectorRuntime::renewOwnerLease(std::string key, std::string
     }
 
     bool renewed = false;
-    static constexpr std::string_view script = R"lua(
-if redis.call('GET',KEYS[1])~=ARGV[1] then return 0 end
-return redis.call('PEXPIRE',KEYS[1],ARGV[2])
-)lua";
     try {
-        const auto redis = redis_.withOptions(
-            { .timeout = std::chrono::seconds(3) }
-        );
-        const std::string leaseTtl = "15000";
-        const std::string_view keys[]{ key };
-        const std::string_view args[]{ token, leaseTtl };
-        const auto reply = co_await redis.eval(script, keys, args);
-        if (reply.kind() != ruvia::RedisValue::Kind::kInteger) {
-            service::message::redis::throwValue(
-                "renew GB28181 owner lease",
-                reply
-            );
-        }
-        renewed = reply.integer() == 1;
+        renewed = co_await GbControlService::renewOwnerLease(redis_, key, token);
     } catch (const std::exception& error) {
         LOG_WARN << "[GB28181][Collector] owner lease renewal failed: "
                  << error.what();
@@ -2294,12 +1184,10 @@ ruvia::Task<void> CollectorRuntime::handleControl(
             service::utils::jsonQuoted(reason) + "}";
     };
     const auto redis = redis_.withOptions({ .timeout = std::chrono::seconds(3), .stopToken = scope_.stopToken() });
-    const auto cached = co_await redis.get(resultKey);
+    const auto cached = co_await GbControlService::loadControlResult(redis, resultKey);
     if (cached) {
-        const std::string encoded(*cached);
-        const auto delimiter = encoded.find('\n');
-        status = delimiter == std::string::npos ? "ok" : encoded.substr(0, delimiter);
-        result = delimiter == std::string::npos ? encoded : encoded.substr(delimiter + 1);
+        status = cached->status;
+        result = cached->payload;
     } else if (!validDeadline || deadlineMs > nowMs() + 60000) {
         fail(400, "invalid command deadline");
     } else if (deadlineMs <= nowMs()) {
@@ -2307,28 +1195,13 @@ ruvia::Task<void> CollectorRuntime::handleControl(
     } else if (!ownsLocal(key, token)) {
         fail(409, "stale GB28181 connection owner");
     } else {
-        // Claim and owner/cancel/deadline checks are atomic in Redis.  The
-        // claim lives longer than the mandatory maximum command lifetime.
-        static constexpr std::string_view script = R"lua(
-if redis.call('GET', KEYS[1]) ~= ARGV[1] then return -1 end
-if redis.call('EXISTS', KEYS[3]) == 1 then return -2 end
-local t = redis.call('TIME')
-if tonumber(t[1])*1000 + math.floor(tonumber(t[2])/1000) >= tonumber(ARGV[2]) then return -3 end
-if redis.call('SET', KEYS[2], ARGV[1], 'NX', 'EX', 600) then return 1 end
-return 0
-)lua";
-        const std::string deadlineValue(deadlineText);
-        const std::string_view keys[]{ key, claimKey, cancelKey };
-        const std::string_view args[]{ token, deadlineValue };
-        const auto claimed = co_await redis.eval(script, keys, args);
-        if (claimed.kind() != ruvia::RedisValue::Kind::kInteger) {
-            service::message::redis::throwValue("GB28181 command claim", claimed);
-        }
-        if (claimed.integer() != 1) {
-            fail(409, claimed.integer() == 0 ? "previous execution outcome is unknown; command will not be replayed" : "GB28181 command expired, cancelled or lost its owner");
+        const auto claimed = co_await GbControlService::claimControlExecution(
+            redis, key, claimKey, cancelKey, token, deadlineText);
+        if (claimed != ControlClaimResult::kClaimed) {
+            fail(409, claimed == ControlClaimResult::kAlreadyClaimed ? "previous execution outcome is unknown; command will not be replayed" : "GB28181 command expired, cancelled or lost its owner");
         } else {
             claimOwner = token;
-            const auto cancelled = co_await redis.get(cancelKey);
+            const auto cancelled = co_await GbControlService::controlCancelled(redis, cancelKey);
             if (cancelled || scope_.stopRequested() || deadlineMs <= nowMs() || !ownsLocal(key, token)) {
                 fail(408, "GB28181 command cancelled or ownership expired while claiming");
             } else {
@@ -2354,7 +1227,7 @@ return 0
     while (!scope_.stopRequested()) {
         bool saved = false;
         try {
-            co_await publishReplyAndAcknowledge(redis, replyStream, control_protocol::stream::control(index_), control_protocol::stream::kControlGroup, message.id, requestId, operation, status, result, resultKey, status + "\n" + result, claimKey, claimOwner);
+            co_await GbControlService::publishReplyAndAcknowledge(redis, replyStream, control_protocol::stream::control(index_), control_protocol::stream::kControlGroup, message.id, requestId, operation, status, result, resultKey, claimKey, claimOwner);
             saved = true;
         } catch (const std::exception& error) {
             if (!scope_.stopRequested()) {
@@ -2368,7 +1241,7 @@ return 0
     }
 }
 
-ruvia::Task<void> CollectorRuntime::retainPreview(const SipServer::PreviewStartResult& preview) {
+ruvia::Task<void> CollectorRuntime::retainPreview(const SipPreviewStartResult& preview) {
     const auto device = devices_.findDevice(preview.deviceId);
     if (!device || !device->online) {
         (void)sip_->stopPreview(preview.sessionId);
@@ -2430,21 +1303,21 @@ CollectorRuntime::execute(std::string operation, std::string payload, ruvia::Sto
     const auto& input = *request;
 
     if (operation == control_protocol::kCatalogOperation) {
-        const auto id = requiredText(input.get<"deviceId">(), "设备编号不能为空");
-        co_return jsonAction(sip_->queryCatalog(id), id);
+        const auto id = control_protocol::requiredText(input.get<"deviceId">(), "设备编号不能为空");
+        co_return control_protocol::jsonAction(sip_->queryCatalog(id), id);
     }
     if (operation == control_protocol::kRenameDeviceOperation) {
-        const auto id = requiredText(input.get<"deviceId">(), "设备编号不能为空");
-        const auto name = requiredText(input.get<"name">(), "名称不能为空");
+        const auto id = control_protocol::requiredText(input.get<"deviceId">(), "设备编号不能为空");
+        const auto name = control_protocol::requiredText(input.get<"name">(), "名称不能为空");
         if (!devices_.updateDeviceName(id, name)) {
             throw std::runtime_error("GB28181 device does not exist");
         }
         co_return control_protocol::operationJson("摄像头名称已更新");
     }
     if (operation == control_protocol::kRenameChannelOperation) {
-        const auto id = requiredText(input.get<"deviceId">(), "设备编号不能为空");
-        const auto channel = requiredText(input.get<"channelId">(), "通道编号不能为空");
-        const auto name = requiredText(input.get<"name">(), "名称不能为空");
+        const auto id = control_protocol::requiredText(input.get<"deviceId">(), "设备编号不能为空");
+        const auto channel = control_protocol::requiredText(input.get<"channelId">(), "通道编号不能为空");
+        const auto name = control_protocol::requiredText(input.get<"name">(), "名称不能为空");
         if (!devices_.updateChannelName(id, channel, name)) {
             throw std::runtime_error("GB28181 device or channel does not exist");
         }
@@ -2452,100 +1325,100 @@ CollectorRuntime::execute(std::string operation, std::string payload, ruvia::Sto
     }
     if (operation == control_protocol::kMapOperation ||
         operation == control_protocol::kUnmapOperation) {
-        const auto id = requiredText(input.get<"deviceId">(), "设备编号不能为空");
+        const auto id = control_protocol::requiredText(input.get<"deviceId">(), "设备编号不能为空");
         const auto mapped = operation == control_protocol::kUnmapOperation
             ? std::string{}
-            : requiredText(input.get<"mappedDeviceId">(), "映射设备编号不能为空");
+            : control_protocol::requiredText(input.get<"mappedDeviceId">(), "映射设备编号不能为空");
         if (!devices_.updateMapping(id, mapped)) {
             throw std::runtime_error("GB28181 device does not exist");
         }
-        co_return jsonAction(true, id);
+        co_return control_protocol::jsonAction(true, id);
     }
     if (operation == control_protocol::kPreviewStartOperation) {
-        const auto id = requiredText(input.get<"deviceId">(), "设备编号不能为空");
-        const auto channel = requiredText(input.get<"channelId">(), "通道编号不能为空");
+        const auto id = control_protocol::requiredText(input.get<"deviceId">(), "设备编号不能为空");
+        const auto channel = control_protocol::requiredText(input.get<"channelId">(), "通道编号不能为空");
         const auto result = sip_->startPreview(id, channel);
         if (!result) {
             throw std::runtime_error("GB28181 device or channel unavailable");
         }
         co_await retainPreview(*result);
-        co_return jsonPreviewStart(*result);
+        co_return control_protocol::jsonPreviewStart(*result);
     }
     if (operation == control_protocol::kPreviewStopOperation) {
-        const auto session = requiredText(input.get<"sessionId">(), "会话编号不能为空");
+        const auto session = control_protocol::requiredText(input.get<"sessionId">(), "会话编号不能为空");
         const auto result = sip_->stopPreview(session);
         if (!result) {
             throw std::runtime_error("GB28181 preview session does not exist");
         }
-        co_return jsonPreviewStop(*result);
+        co_return control_protocol::jsonPreviewStop(*result);
     }
     if (operation == control_protocol::kPreviewHeartbeatOperation) {
-        const auto session = requiredText(input.get<"sessionId">(), "会话编号不能为空");
-        co_return jsonAction(sip_->renewPreview(session));
+        const auto session = control_protocol::requiredText(input.get<"sessionId">(), "会话编号不能为空");
+        co_return control_protocol::jsonAction(sip_->renewPreview(session));
     }
     if (operation == control_protocol::kPtzOperation) {
-        const auto id = requiredText(input.get<"deviceId">(), "设备编号不能为空");
-        const auto channel = requiredText(input.get<"channelId">(), "通道编号不能为空");
-        const auto action = requiredText(input.get<"action">(), "云台动作不能为空");
-        requireAction(action);
+        const auto id = control_protocol::requiredText(input.get<"deviceId">(), "设备编号不能为空");
+        const auto channel = control_protocol::requiredText(input.get<"channelId">(), "通道编号不能为空");
+        const auto action = control_protocol::requiredText(input.get<"action">(), "云台动作不能为空");
+        control_protocol::requireAction(action);
         const auto speedValue = input.get<"speed">();
-        const auto speed = speedValue ? requiredInteger(speedValue, "speed 无效")
+        const auto speed = speedValue ? control_protocol::requiredInteger(speedValue, "speed 无效")
                                       : 80;
         if (speed < 0 || speed > 255) {
             throw std::invalid_argument("speed must be between 0 and 255");
         }
-        co_return jsonAction(
+        co_return control_protocol::jsonAction(
             sip_->sendPtzControl(id, channel, action, static_cast<std::uint8_t>(speed)),
             id,
             channel
         );
     }
     if (operation == control_protocol::kPtzPositionOperation) {
-        const auto id = requiredText(input.get<"deviceId">(), "设备编号不能为空");
-        const auto channel = requiredText(input.get<"channelId">(), "通道编号不能为空");
-        const auto pan = requiredFinite(input.get<"pan">(), "pan", 0.0, 360.0);
+        const auto id = control_protocol::requiredText(input.get<"deviceId">(), "设备编号不能为空");
+        const auto channel = control_protocol::requiredText(input.get<"channelId">(), "通道编号不能为空");
+        const auto pan = control_protocol::requiredFinite(input.get<"pan">(), "pan", 0.0, 360.0);
         const auto tilt =
-            requiredFinite(input.get<"tilt">(), "tilt", -30.0, 90.0);
+            control_protocol::requiredFinite(input.get<"tilt">(), "tilt", -30.0, 90.0);
         const auto zoom =
-            requiredFinite(input.get<"zoom">(), "zoom", 1.0, 1000.0);
-        co_return jsonAction(
+            control_protocol::requiredFinite(input.get<"zoom">(), "zoom", 1.0, 1000.0);
+        co_return control_protocol::jsonAction(
             sip_->sendPtzPreciseControl(id, channel, pan, tilt, zoom),
             id,
             channel
         );
     }
     if (operation == control_protocol::kRecordsOperation) {
-        const auto id = requiredText(input.get<"deviceId">(), "设备编号不能为空");
-        const auto channel = requiredText(input.get<"channelId">(), "通道编号不能为空");
-        const auto start = requiredText(input.get<"startTime">(), "开始时间不能为空");
-        const auto end = requiredText(input.get<"endTime">(), "结束时间不能为空");
-        co_return jsonAction(sip_->queryRecords(id, channel, start, end), id, channel);
+        const auto id = control_protocol::requiredText(input.get<"deviceId">(), "设备编号不能为空");
+        const auto channel = control_protocol::requiredText(input.get<"channelId">(), "通道编号不能为空");
+        const auto start = control_protocol::requiredText(input.get<"startTime">(), "开始时间不能为空");
+        const auto end = control_protocol::requiredText(input.get<"endTime">(), "结束时间不能为空");
+        co_return control_protocol::jsonAction(sip_->queryRecords(id, channel, start, end), id, channel);
     }
     if (operation == control_protocol::kPlaybackStartOperation) {
-        const auto id = requiredText(input.get<"deviceId">(), "设备编号不能为空");
-        const auto channel = requiredText(input.get<"channelId">(), "通道编号不能为空");
-        const auto start = requiredText(input.get<"startTime">(), "开始时间不能为空");
-        const auto end = requiredText(input.get<"endTime">(), "结束时间不能为空");
+        const auto id = control_protocol::requiredText(input.get<"deviceId">(), "设备编号不能为空");
+        const auto channel = control_protocol::requiredText(input.get<"channelId">(), "通道编号不能为空");
+        const auto start = control_protocol::requiredText(input.get<"startTime">(), "开始时间不能为空");
+        const auto end = control_protocol::requiredText(input.get<"endTime">(), "结束时间不能为空");
         const auto result = sip_->startPlayback(id, channel, start, end);
         if (!result) {
             throw std::runtime_error("GB28181 device or channel unavailable");
         }
         co_await retainPreview(*result);
-        co_return jsonPreviewStart(*result);
+        co_return control_protocol::jsonPreviewStart(*result);
     }
     if (operation == control_protocol::kRecordingOperation ||
         operation == control_protocol::kRecordingStartOperation ||
         operation == control_protocol::kRecordingStopOperation) {
-        const auto streamId = requiredText(input.get<"streamId">(), "流编号不能为空");
+        const auto streamId = control_protocol::requiredText(input.get<"streamId">(), "流编号不能为空");
         ZlmSdk::OwnerScope owner(index_);
         auto& sdk = sdkSupervisor().sdk();
         if (operation == control_protocol::kRecordingOperation) {
-            co_return jsonAction(sdk.isMp4Recording(streamId));
+            co_return control_protocol::jsonAction(sdk.isMp4Recording(streamId));
         }
         const auto changed = operation == control_protocol::kRecordingStartOperation
             ? sdk.startMp4Recording(streamId)
             : sdk.stopMp4Recording(streamId);
-        co_return jsonAction(changed);
+        co_return control_protocol::jsonAction(changed);
     }
     if (operation == control_protocol::kHealthOperation ||
         operation == control_protocol::kSipConfigOperation ||
@@ -2560,192 +1433,4 @@ CollectorRuntime::execute(std::string operation, std::string payload, ruvia::Sto
     throw std::invalid_argument("unsupported GB28181 operation");
 }
 
-ruvia::Task<std::string> GbControlHandler::handle(
-    ruvia::WebWorkerContext& context,
-    std::string_view operation,
-    std::string_view payload,
-    ruvia::StopToken stop
-) {
-    if (stop.stopRequested()) {
-        service::common::fail(10004, "GB28181 operation cancelled", 503);
-    }
-
-    std::pmr::monotonic_buffer_resource resource;
-    auto request = control_protocol::parseRequest(
-        payload.empty() ? std::string_view{ "{}" } : payload,
-        &resource
-    );
-    if (!request) {
-        service::common::fail(10001, "GB28181 RPC 请求体无效", 400);
-    }
-    const auto& input = *request;
-    const auto enabled = co_await configuredEnabled(context.redis());
-
-    if (operation == control_protocol::kHealthOperation) {
-        co_return control_protocol::successJson(
-            healthJson(context, enabled),
-            context.resource()
-        );
-    }
-    if (operation == control_protocol::kSipConfigOperation) {
-        requireEnabled(enabled);
-        const auto fields = co_await context.redis().hgetAll(
-            control_protocol::stream::kConfigKey
-        );
-        if (fields.empty()) {
-            service::common::fail(10004, "GB28181 配置投影不可用", 503);
-        }
-        const auto port = projectionInteger(configField(fields, "port"));
-        co_return control_protocol::successJson(
-            sipConfigJson(context, configField(fields, "domain"), configField(fields, "id"), configField(fields, "host"), configField(fields, "public_ip"), port.value_or(0), configField(fields, "transport")),
-            context.resource()
-        );
-    }
-
-    if (operation == control_protocol::kDevicesOperation) {
-        requireEnabled(enabled);
-        const auto snapshot = co_await GbProjectionService::loadSnapshot(context);
-        ruvia::BoxedArray<DeviceJson> items(
-            ruvia::ModelOptions{ .resource = context.resource() }
-        );
-        for (const auto& device : snapshot.devices) {
-            items.emplace(deviceJson(context, device));
-        }
-        DeviceListJson result(context);
-        result.set<"items">(std::move(items));
-        co_return control_protocol::successJson(result, context.resource());
-    }
-    if (operation == control_protocol::kDeviceOperation) {
-        requireEnabled(enabled);
-        const auto id = requiredText(input.get<"deviceId">(), "设备编号不能为空");
-        const auto snapshot = co_await GbProjectionService::loadSnapshot(context);
-        const auto value = std::find_if(
-            snapshot.devices.begin(),
-            snapshot.devices.end(),
-            [&id](const Device& device) {
-                return device.id == id;
-            }
-        );
-        if (value == snapshot.devices.end()) {
-            service::common::fail(10003, "设备不存在", 404);
-        }
-        co_return control_protocol::successJson(deviceJson(context, *value), context.resource());
-    }
-    if (operation == control_protocol::kStreamsOperation) {
-        requireEnabled(enabled);
-        const auto snapshot = co_await GbProjectionService::loadSnapshot(context);
-        ruvia::BoxedArray<StreamJson> items(
-            ruvia::ModelOptions{ .resource = context.resource() }
-        );
-        for (const auto& stream : snapshot.streams) {
-            items.emplace(streamJson(context, stream));
-        }
-        StreamListJson result(context);
-        result.set<"items">(std::move(items));
-        co_return control_protocol::successJson(result, context.resource());
-    }
-    if (operation == control_protocol::kStreamOperation) {
-        requireEnabled(enabled);
-        const auto id = requiredText(input.get<"streamId">(), "流编号不能为空");
-        const auto snapshot = co_await GbProjectionService::loadSnapshot(context);
-        const auto value = std::find_if(
-            snapshot.streams.begin(),
-            snapshot.streams.end(),
-            [&id](const StreamStatus& stream) {
-                return StreamStatus::identity(stream.app, stream.stream, stream.schema) == id;
-            }
-        );
-        if (value == snapshot.streams.end()) {
-            service::common::fail(10003, "流不存在", 404);
-        }
-        co_return control_protocol::successJson(streamJson(context, *value), context.resource());
-    }
-
-    if (operation == control_protocol::kCatalogOperation ||
-        operation == control_protocol::kRenameDeviceOperation ||
-        operation == control_protocol::kRenameChannelOperation ||
-        operation == control_protocol::kMapOperation ||
-        operation == control_protocol::kUnmapOperation ||
-        operation == control_protocol::kPreviewStartOperation ||
-        operation == control_protocol::kPtzOperation ||
-        operation == control_protocol::kPtzPositionOperation ||
-        operation == control_protocol::kRecordsOperation ||
-        operation == control_protocol::kPlaybackStartOperation) {
-        requireEnabled(enabled);
-        const auto deviceId = requiredText(input.get<"deviceId">(), "设备编号不能为空");
-        if (operation == control_protocol::kRenameDeviceOperation) {
-            (void)requiredText(input.get<"name">(), "名称不能为空");
-        }
-        if (operation == control_protocol::kRenameChannelOperation) {
-            (void)requiredText(input.get<"channelId">(), "通道编号不能为空");
-            (void)requiredText(input.get<"name">(), "名称不能为空");
-        }
-        if (operation == control_protocol::kPreviewStartOperation ||
-            operation == control_protocol::kPtzOperation ||
-            operation == control_protocol::kPtzPositionOperation ||
-            operation == control_protocol::kRecordsOperation ||
-            operation == control_protocol::kPlaybackStartOperation) {
-            (void)requiredText(input.get<"channelId">(), "通道编号不能为空");
-        }
-        if (operation == control_protocol::kPtzOperation) {
-            const auto action = requiredText(input.get<"action">(), "云台动作不能为空");
-            requireAction(action);
-            const auto speedValue = input.get<"speed">();
-            const auto speed = speedValue ? requiredInteger(speedValue, "speed 无效")
-                                          : 80;
-            if (speed < 0 || speed > 255) {
-                service::common::fail(10001, "speed 必须是 0 - 255 的整数", 400);
-            }
-        }
-        if (operation == control_protocol::kPtzPositionOperation) {
-            (void)requiredFinite(input.get<"pan">(), "pan", 0.0, 360.0);
-            (void)requiredFinite(input.get<"tilt">(), "tilt", -30.0, 90.0);
-            (void)requiredFinite(input.get<"zoom">(), "zoom", 1.0, 1000.0);
-        }
-        if (operation == control_protocol::kRecordsOperation ||
-            operation == control_protocol::kPlaybackStartOperation) {
-            (void)requiredText(input.get<"startTime">(), "开始时间不能为空");
-            (void)requiredText(input.get<"endTime">(), "结束时间不能为空");
-        }
-        if (operation == control_protocol::kMapOperation) {
-            (void)requiredText(input.get<"mappedDeviceId">(), "映射设备编号不能为空");
-        }
-        co_return co_await dispatchByOwnerKey(
-            context,
-            operation,
-            payload,
-            control_protocol::stream::owner(deviceId),
-            stop
-        );
-    }
-
-    if (operation == control_protocol::kPreviewStopOperation ||
-        operation == control_protocol::kPreviewHeartbeatOperation) {
-        requireEnabled(enabled);
-        const auto sessionId = requiredText(input.get<"sessionId">(), "会话编号不能为空");
-        co_return co_await dispatchByOwnerKey(
-            context,
-            operation,
-            payload,
-            control_protocol::stream::sessionOwner(sessionId),
-            stop
-        );
-    }
-
-    if (operation == control_protocol::kRecordingOperation ||
-        operation == control_protocol::kRecordingStartOperation ||
-        operation == control_protocol::kRecordingStopOperation) {
-        requireEnabled(enabled);
-        const auto streamId = requiredText(input.get<"streamId">(), "流编号不能为空");
-        co_return co_await dispatchByOwnerKey(
-            context,
-            operation,
-            payload,
-            control_protocol::stream::owner(streamId),
-            stop
-        );
-    }
-
-    service::common::fail(10002, "不支持的 GB28181 操作", 400);
-}
 } // namespace service::gb28181

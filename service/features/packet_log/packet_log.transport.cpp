@@ -1,4 +1,4 @@
-#include "service/common/log.h"
+#include "service/features/packet_log/packet_log.transport.h"
 
 #include <algorithm>
 #include <atomic>
@@ -16,7 +16,7 @@
 #include <utility>
 #include <version>
 
-namespace service::common::packet_log {
+namespace service::packet_log {
 namespace {
 
 struct State final {
@@ -44,14 +44,6 @@ thread_local std::unique_ptr<State> state;
 inline constexpr std::size_t kQueueSize = 65536;
 inline constexpr std::size_t kHexLimitBytes = 64U * 1024U;
 inline constexpr std::uint16_t kRetentionDays = 14;
-
-[[nodiscard]] std::string lower(std::string_view value) {
-    std::string result(value);
-    std::ranges::transform(result, result.begin(), [](unsigned char character) {
-        return static_cast<char>(std::tolower(character));
-    });
-    return result;
-}
 
 [[nodiscard]] spdlog::level::level_enum spdLevel(Level level) noexcept {
     switch (level) {
@@ -131,29 +123,6 @@ void appendInteger(std::string& output, std::string_view name, std::uint64_t val
 }
 
 } // namespace
-
-Level parseLevel(std::string_view value, Level fallback) noexcept {
-    const auto normalized = lower(value);
-    if (normalized == "trace") {
-        return Level::Trace;
-    }
-    if (normalized == "debug") {
-        return Level::Debug;
-    }
-    if (normalized == "info") {
-        return Level::Info;
-    }
-    if (normalized == "warn" || normalized == "warning") {
-        return Level::Warn;
-    }
-    if (normalized == "error") {
-        return Level::Error;
-    }
-    if (normalized == "off") {
-        return Level::Off;
-    }
-    return fallback;
-}
 
 void initialize(Config config) {
     shutdown();
@@ -252,4 +221,4 @@ void write(Level level, std::string_view event, const Context& context, std::spa
     }
 }
 
-} // namespace service::common::packet_log
+} // namespace service::packet_log

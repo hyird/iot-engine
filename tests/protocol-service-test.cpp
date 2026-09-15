@@ -11,9 +11,9 @@ void require(bool condition, const char* message) {
         throw std::runtime_error(message);
 }
 
-std::string protocolSource() {
+std::string protocolSource(std::string_view file) {
     auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
-                "service/modules/protocol/protocol.service.h";
+                "service/modules/protocol" / file;
     std::ifstream input(path, std::ios::binary);
     require(input.good(), "cannot open protocol service source");
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
@@ -152,15 +152,23 @@ void requireEdgeSyncDoesNotLeakAsUpdateFailure(std::string_view source) {
 
 int main() {
     try {
-        const auto source = protocolSource();
+        const auto service = protocolSource("protocol.service.h");
+        const auto schema = protocolSource("protocol.schema.h");
+        const auto source = service + schema;
+        require(service.find("static void validateConfig") == std::string::npos,
+                "protocol request validation remains in service");
+        require(schema.find("class ProtocolPayloadValidator final") != std::string::npos,
+                "protocol schema has no payload validator");
+        require(service.find("ProtocolPayloadValidator::validateConfig") != std::string::npos,
+                "protocol service does not call its payload validator");
         requireNoUnsafeParsing(source);
-        requirePartialModbusUpdateValidation(source);
+        requirePartialModbusUpdateValidation(schema);
         requireStrictUpdateFieldTypes(source);
-        requireModbusRuntimeFieldValidation(source);
-        requireUnifiedReadIntervalValidation(source);
-        requireUnifiedStoragePolicyValidation(source);
-        requireQualifiedJsonArrayValidation(source);
-        requireEdgeSyncDoesNotLeakAsUpdateFailure(source);
+        requireModbusRuntimeFieldValidation(schema);
+        requireUnifiedReadIntervalValidation(schema);
+        requireUnifiedStoragePolicyValidation(schema);
+        requireQualifiedJsonArrayValidation(schema);
+        requireEdgeSyncDoesNotLeakAsUpdateFailure(service);
         std::cout << "protocol service tests passed\n";
         return 0;
     } catch (const std::exception& error) {

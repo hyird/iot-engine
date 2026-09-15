@@ -147,7 +147,7 @@ class CollectorRuntime final {
     );
     void enqueueBarrier(ProjectionCompletion completion, std::uint64_t after);
     [[nodiscard]] ruvia::Task<bool> waitForProjection(ruvia::StopToken stop, std::uint64_t after);
-    [[nodiscard]] ruvia::Task<void> retainPreview(const SipServer::PreviewStartResult& preview);
+    [[nodiscard]] ruvia::Task<void> retainPreview(const SipPreviewStartResult& preview);
     [[nodiscard]] ruvia::Task<void> releasePreview(std::string sessionId);
     [[nodiscard]] ruvia::Task<void> drainProjection();
     [[nodiscard]] ruvia::Task<void> controlLoop();
@@ -232,13 +232,6 @@ class GbProjectionRuntime final : public GbProjectionService {
     OwnerIndex serviceWorkerCount_{ 0 };
     std::shared_ptr<State> state_;
     std::shared_future<void> stopped_;
-};
-
-// Registered by the process-level Redis RPC consumer. The handler is the
-// only feature entry point for northbound GB28181 management operations.
-class GbControlHandler final {
-  public:
-    static ruvia::Task<std::string> handle(ruvia::WebWorkerContext& context, std::string_view operation, std::string_view payload, ruvia::StopToken stop);
 };
 
 } // namespace service::gb28181

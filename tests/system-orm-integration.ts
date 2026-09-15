@@ -24,11 +24,11 @@ async function write(method: string, path: string, body?: unknown, status = 200)
     return JSON.parse(text);
 }
 
-async function snapshot(path: string) {
+async function snapshot(path: string, accessToken = token) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
     try {
-        const response = await fetch(apiBase + path, { headers: { ...headers, Accept: 'text/event-stream' }, signal: controller.signal });
+        const response = await fetch(apiBase + path, { headers: { ...headers, Authorization: `Bearer ${accessToken}`, Accept: 'text/event-stream' }, signal: controller.signal });
         assert.equal(response.status, 200, `${path}: ${response.status === 200 ? '' : await response.text()}`);
         assert(response.body);
         const reader = response.body.getReader();
@@ -69,6 +69,12 @@ try {
     assert.equal((await snapshot(`/v1/roles?keyword=${encodeURIComponent("' OR TRUE --")}`)).total, 0);
     await write('PUT', `/v1/roles/${roles[0]}`, { permissions: [], description: '' });
     assert.deepEqual((await snapshot(`/v1/roles/${roles[0]}`)).permissions, []);
+    const escapedPermissions = ['scope:"\\权限', 'scope:"\\权限'];
+    await write('PUT', `/v1/roles/${roles[0]}`, { permissions: escapedPermissions });
+    const [escapedRole] = await sql`SELECT permissions FROM sys_role WHERE id=${roles[0]}`;
+    assert.deepEqual(escapedRole.permissions, escapedPermissions);
+    assert.deepEqual((await snapshot(`/v1/roles/${roles[0]}`)).permissions, escapedPermissions);
+    await write('PUT', `/v1/roles/${roles[0]}`, { permissions: [] });
     await write('PUT', `/v1/roles/${roles[0]}`, { permissions: ['bad,permission'] }, 400);
     assert.deepEqual((await snapshot(`/v1/roles/${roles[0]}`)).permissions, []);
     assert((await snapshot('/v1/roles/options')).some((row: { id: string }) => row.id === roles[0]));
@@ -87,6 +93,12 @@ try {
     assert.equal((await snapshot(`/v1/departments?parent_id=${root.id}&keyword=${tag.toUpperCase()}`)).total, 1);
     assert.equal((await snapshot(`/v1/departments?parent_id=&keyword=${tag}`)).total, 1);
     await write('PUT', `/v1/departments/${root.id}`, { parent_id: child.id }, 400);
+    await write('POST', '/v1/departments', { name: `${tag}_grandchild`, code: `${tag}_grandchild`, parent_id: child.id });
+    const [grandchild] = await sql`SELECT id FROM sys_department WHERE code=${`${tag}_grandchild`}`;
+    departments.push(grandchild.id);
+    await write('PUT', `/v1/departments/${root.id}`, { parent_id: grandchild.id }, 400);
+    await write('PUT', `/v1/departments/${grandchild.id}`, { parent_id: root.id });
+    await write('DELETE', `/v1/departments/${grandchild.id}`);
     await write('DELETE', `/v1/departments/${root.id}`, undefined, 409);
     await write('PUT', `/v1/departments/${child.id}`, { parent_id: '', leader_id: '', code: '', status: 'disabled' });
     const [cleared] = await sql`SELECT parent_id, leader_id, code FROM sys_department WHERE id=${child.id}`;
@@ -101,6 +113,15 @@ try {
     assert.equal((await snapshot(`/v1/users/${user.id}`)).roles.length, 2);
     assert.equal((await snapshot(`/v1/users?keyword=${tag.toUpperCase()}&status=enabled`)).total, 1);
     assert.equal((await snapshot(`/v1/users/options?keyword=${tag}`)).length, 1);
+    await write('POST', '/v1/auth/login', { username: tag, password: 'wrong-password' }, 401);
+    const login = (await write('POST', '/v1/auth/login', { username: tag, password: 'orm-test-only-password' })).data;
+    assert.equal(login.user.id, user.id);
+    assert.equal(login.user.nickname ?? '', '');
+    assert.equal((await snapshot('/v1/auth/me', login.token)).id, user.id);
+    const refreshed = (await write('POST', '/v1/auth/refresh', { refresh_token: login.refresh_token })).data;
+    assert.equal(refreshed.user.id, user.id);
+    assert.equal(refreshed.user.username, tag);
+    assert.equal((await snapshot('/v1/auth/me', refreshed.token)).nickname ?? '', '');
     await write('DELETE', `/v1/roles/${roles[0]}`, undefined, 409);
     await write('PUT', `/v1/users/${user.id}`, { role_ids: [roles[0], roles[0]] }, 400);
     assert.equal((await snapshot(`/v1/users/${user.id}`)).roles.length, 2);
@@ -109,12 +130,17 @@ try {
     assert.equal(updated.department_id, null); assert.equal(updated.nickname, '');
     assert.equal((await snapshot(`/v1/users/${user.id}`)).roles.length, 1);
     assert.equal((await snapshot(`/v1/users/options?keyword=${tag}`)).length, 0);
+    await write('POST', '/v1/auth/login', { username: tag, password: 'orm-test-only-password' }, 403);
+    await write('POST', '/v1/auth/refresh', { refresh_token: login.refresh_token }, 403);
 
     // Force a database failure after the user update / membership deletion to
     // verify that all three writes share the original transaction.
     await sql.unsafe(`CREATE FUNCTION orm_test_reject_binding() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected binding failure'; END $$`);
     await sql.unsafe('CREATE TRIGGER orm_test_reject_binding BEFORE INSERT ON sys_user_role FOR EACH ROW EXECUTE FUNCTION orm_test_reject_binding()');
     try {
+        await write('POST', '/v1/users', { username: `${tag}_rollback`, password: 'orm-test-only-password', role_ids: [roles[0]] }, 500);
+        const [failedCreate] = await sql`SELECT count(*)::int AS count FROM sys_user WHERE username=${`${tag}_rollback`}`;
+        assert.equal(failedCreate.count, 0, 'failed membership insert must roll back the ORM user insert');
         await write('PUT', `/v1/users/${user.id}`, { nickname: 'must roll back', role_ids: [roles[0]] }, 500);
         const [retained] = await sql`SELECT nickname FROM sys_user WHERE id=${user.id}`;
         assert.equal(retained.nickname, '');
@@ -125,6 +151,8 @@ try {
         await sql.unsafe('DROP FUNCTION orm_test_reject_binding()');
     }
     await write('DELETE', `/v1/users/${user.id}`);
+    await write('POST', '/v1/auth/login', { username: tag, password: 'orm-test-only-password' }, 401);
+    await write('POST', '/v1/auth/refresh', { refresh_token: login.refresh_token }, 404);
     assert.equal((await snapshot(`/v1/users?keyword=${tag}`)).total, 0);
     await write('DELETE', `/v1/roles/${roles[1]}`);
     await write('POST', '/v1/roles', { name: 'duplicate deleted code', code: `${tag}_b` }, 409);

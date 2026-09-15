@@ -76,3 +76,11 @@ test('public page data types are defined in the owning types file', () => {
     const violations = sources.filter(file => repoPath(file).startsWith('web/pages/') && file.endsWith('.service.ts') && /^export\s+(?:interface|type)\s/m.test(readFileSync(file, 'utf8'))).map(repoPath);
     expect(violations).toEqual([]);
 });
+
+test('page views obtain network connections through their services', () => {
+    const violations = sources.filter(file =>
+        repoPath(file).startsWith('web/pages/') && file.endsWith('.tsx') &&
+        /(?:\bnew\s+(?:WebSocket|EventSource)\s*\(|\bfetch\s*\()/.test(readFileSync(file, 'utf8'))
+    ).map(repoPath);
+    expect(violations).toEqual([]);
+});

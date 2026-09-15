@@ -9,7 +9,7 @@
 #include <thread>
 
 namespace iotvpn {
-std::filesystem::path stateDirectory() {
+std::filesystem::path productDataDirectory() {
     PWSTR value = nullptr;
     if (FAILED(SHGetKnownFolderPath(FOLDERID_ProgramData, 0, nullptr, &value))) throw std::runtime_error("Cannot locate Windows state directory");
     std::filesystem::path result(value); CoTaskMemFree(value);

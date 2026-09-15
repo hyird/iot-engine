@@ -23,29 +23,11 @@
 #endif
 #include "service/common/message.h"
 #include "service/features/collector/collector.types.h"
+#include "service/features/collector/tcp/tcp.types.h"
 #include "service/features/collector/engine/engine.types.h"
 #include "service/features/collector/scheduling/scheduling.runtime.h"
 
 namespace service::collector {
-
-struct LinkState {
-    struct Target {
-        std::string id;
-        std::string state;
-        std::string reason;
-        std::string error;
-        std::int64_t lastActivityAtMs = 0;
-    };
-
-    std::string linkId;
-    std::size_t workerIndex = 0;
-    std::string state;
-    std::string reason;
-    std::string error;
-    std::vector<std::string> remoteEndpoints;
-    std::vector<Target> targets;
-    std::int64_t lastActivityAtMs = 0;
-};
 
 class TcpTransport final {
   public:

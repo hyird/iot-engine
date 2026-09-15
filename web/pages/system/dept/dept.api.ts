@@ -1,7 +1,7 @@
-import request from '@/utils/http';
-import type { PaginatedResult } from '@/utils/pagination';
+import request from '@/lib/http';
+import type { PaginatedResult } from '@/types/pagination';
 import { appendQueryParams } from '@/utils/query';
-import { createSnapshotStream } from '@/utils/snapshot-request';
+import { createSnapshotStream } from '@/lib/snapshot-request';
 import {
     createDeptSchema,
     deptIdSchema,

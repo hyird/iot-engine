@@ -32,6 +32,7 @@ $oldDatabaseUrl = $env:ARCHITECTURE_DATABASE_URL
 $oldRedisUrl = $env:ARCHITECTURE_REDIS_URL
 $oldApiBase = $env:TEST_BASE_URL
 $oldRpcTestWorkers = $env:RPC_TEST_WORKERS
+$oldGbTestSipPort = $env:GB_TEST_SIP_PORT
 function Stop-OwnedProcess($Process, [string]$ExpectedPath) {
     if (!$Process) { return }
     try {
@@ -86,6 +87,25 @@ EDGE_PUBLIC_BASE_URL=http://127.0.0.1:55132
 EDGE_PLATFORM_ID=00000000-0000-7000-8000-000000000001
 '@ | Set-Content -LiteralPath (Join-Path $fixture '.env') -Encoding ascii
     if ($Gb28181) {
+        $sipPort = 0
+        for ($attempt = 0; $attempt -lt 20 -and $sipPort -eq 0; $attempt++) {
+            $udpProbe = [Net.Sockets.UdpClient]::new([Net.Sockets.AddressFamily]::InterNetwork)
+            $tcpProbe = $null
+            try {
+                $udpProbe.Client.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Loopback, 0))
+                $candidate = $udpProbe.Client.LocalEndPoint.Port
+                $tcpProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $candidate)
+                $tcpProbe.Start()
+                $sipPort = $candidate
+            } catch [Net.Sockets.SocketException] {
+                # A UDP-assigned port may already be occupied for TCP.
+            } finally {
+                if ($tcpProbe) { $tcpProbe.Stop() }
+                $udpProbe.Dispose()
+            }
+        }
+        if ($sipPort -eq 0) { throw 'No local TCP/UDP port available for the SIP fixture.' }
+        $env:GB_TEST_SIP_PORT = [string]$sipPort
         $configuration = Get-Content -LiteralPath (Join-Path $fixture '.env') -Raw
         $configuration = $configuration.Replace('COLLECTOR_WORKERS=1', 'COLLECTOR_WORKERS=2').Replace('GB28181_ENABLED=false', 'GB28181_ENABLED=true')
         $configuration += @'
@@ -94,7 +114,7 @@ GB28181_SIP_DOMAIN=3402000000
 GB28181_SIP_ID=34020000002000000001
 GB28181_SIP_HOST=127.0.0.1
 GB28181_SIP_PUBLIC_IP=127.0.0.1
-GB28181_SIP_PORT=55133
+GB28181_SIP_PORT=__GB_TEST_SIP_PORT__
 GB28181_SIP_PASSWORD=test
 GB28181_SIP_TRANSPORT=both
 GB28181_RTP_PUBLIC_IP=127.0.0.1
@@ -107,6 +127,7 @@ ZLM_RTMP_PORT=0
 ZLM_RTC_PORT=0
 ZLM_SRT_PORT=0
 '@
+        $configuration = $configuration.Replace('__GB_TEST_SIP_PORT__', [string]$sipPort)
         Set-Content -LiteralPath (Join-Path $fixture '.env') -Value $configuration -Encoding ascii
     }
     $env:Path = (Join-Path $build 'Release') + ';' + $oldPath
@@ -161,5 +182,6 @@ ZLM_SRT_PORT=0
     $env:ARCHITECTURE_REDIS_URL = $oldRedisUrl
     $env:TEST_BASE_URL = $oldApiBase
     $env:RPC_TEST_WORKERS = $oldRpcTestWorkers
+    $env:GB_TEST_SIP_PORT = $oldGbTestSipPort
     Write-Output "Disposable fixture logs: $fixture"
 }

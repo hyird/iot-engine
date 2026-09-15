@@ -1,5 +1,6 @@
 #pragma once
 
+#include "service/utils/number.h"
 #include "service/modules/vpn/vpn.entity.h"
 
 #include <algorithm>
@@ -312,7 +313,7 @@ inline std::string renderClientConfig(std::string_view privateKey, std::string_v
 namespace route_sync_detail {
 
 inline std::int64_t integer(std::string_view value, std::int64_t fallback = 0) {
-    return service::common::parseInt64(
+    return service::utils::parseInt64(
                value.empty() ? std::nullopt : std::optional<std::string_view>(value))
         .value_or(fallback);
 }

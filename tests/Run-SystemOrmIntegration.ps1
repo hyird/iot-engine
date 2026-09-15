@@ -3,7 +3,9 @@ param(
     [string]$PostgresBin = 'C:/Program Files/PostgreSQL/18/bin',
     [string]$RedisExe = 'C:/Redis/redis-server.exe',
     [string]$Bun = 'bun',
-    [string[]]$TestFiles = @('system-orm-integration.ts', 'live-query-integration.ts')
+    [string[]]$TestFiles = @('system-orm-integration.ts', 'live-query-integration.ts', 'protocol-offset-integration.ts'),
+    [switch]$ReplayCounterMigration,
+    [switch]$PacketDebugMigration
 )
 $ErrorActionPreference = 'Stop'
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -25,6 +27,7 @@ $oldPath = $env:Path
 $oldDatabaseUrl = $env:ARCHITECTURE_DATABASE_URL
 $oldApiBase = $env:TEST_BASE_URL
 $oldRedisUrl = $env:ARCHITECTURE_REDIS_URL
+$oldMigrationState = $env:ARCHITECTURE_MIGRATION_STATE
 function Stop-OwnedProcess($Process, [string]$ExpectedPath) {
     if (!$Process) { return }
     $current = Get-Process -Id $Process.Id -ErrorAction SilentlyContinue
@@ -33,6 +36,36 @@ function Stop-OwnedProcess($Process, [string]$ExpectedPath) {
         Stop-Process -Id $Process.Id -Force
         $current.WaitForExit(10000) | Out-Null
     }
+}
+function Start-FixtureApi([string]$Label, [string]$ExpectedFailure = '') {
+    $executable = Join-Path $fixture 'iot-engine.exe'
+    $stdout = Join-Path $fixture ("api-$Label.out")
+    $stderr = Join-Path $fixture ("api-$Label.err")
+    $process = Start-Process -FilePath $executable -WorkingDirectory $fixture -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    try {
+        for ($attempt = 0; $attempt -lt 80; $attempt++) {
+            $process.Refresh()
+            if ($process.HasExited) {
+                $failureText = [IO.File]::ReadAllText($stdout) + [IO.File]::ReadAllText($stderr)
+                if ($ExpectedFailure -and $process.ExitCode -ne 0 -and $failureText -match $ExpectedFailure) { return $process }
+                throw "Test API exited unexpectedly in $Label; inspect $fixture"
+            }
+            if (!$ExpectedFailure) {
+                $probe = [Net.Sockets.TcpClient]::new()
+                try { $probe.Connect('127.0.0.1',55122); return $process } catch { } finally { $probe.Dispose() }
+            }
+            Start-Sleep -Milliseconds 250
+        }
+        throw "Test API did not reach expected state in $Label; inspect $fixture"
+    } catch {
+        Stop-OwnedProcess $process $executable
+        throw
+    }
+}
+function Invoke-CounterMigrationPhase([string]$Phase) {
+    $migrationTest = if ($PacketDebugMigration) { 'tests/packet-debug-migration-integration.ts' } else { 'tests/replay-counter-migration-integration.ts' }
+    & $Bun run (Join-Path $repository $migrationTest) $Phase
+    if ($LASTEXITCODE -ne 0) { throw "Migration phase $Phase failed; inspect $fixture" }
 }
 try {
     & (Join-Path $PostgresBin 'initdb.exe') -D $data -U architecture_test --auth=trust -E UTF8 | Out-Null
@@ -89,6 +122,29 @@ EDGE_PLATFORM_ID=00000000-0000-7000-8000-000000000001
         & $Bun run (Join-Path $repository ('tests/' + $test))
         if ($LASTEXITCODE -ne 0) { throw "$test failed; logs retained at $fixture" }
     }
+    if ($ReplayCounterMigration -or $PacketDebugMigration) {
+        $env:ARCHITECTURE_MIGRATION_STATE = Join-Path $fixture 'migration-state.json'
+        Invoke-CounterMigrationPhase 'initial'
+        Stop-OwnedProcess $apiProcess (Join-Path $fixture 'iot-engine.exe')
+        $apiProcess = Start-FixtureApi 'restart'
+        Invoke-CounterMigrationPhase 'restart'
+        Stop-OwnedProcess $apiProcess (Join-Path $fixture 'iot-engine.exe')
+        Invoke-CounterMigrationPhase 'prepare-upgrade'
+        $apiProcess = Start-FixtureApi 'upgrade'
+        Invoke-CounterMigrationPhase 'upgraded'
+        Stop-OwnedProcess $apiProcess (Join-Path $fixture 'iot-engine.exe')
+        Invoke-CounterMigrationPhase 'prepare-drift'
+        $apiProcess = Start-FixtureApi 'drift' 'checksum|migration'
+        Invoke-CounterMigrationPhase 'check-drift'
+        Invoke-CounterMigrationPhase 'prepare-failure'
+        $apiProcess = Start-FixtureApi 'failure' 'outbox_replay_counter|debug_enabled|already exists'
+        Invoke-CounterMigrationPhase 'check-failure'
+        $apiProcess = Start-FixtureApi 'recovered'
+        Invoke-CounterMigrationPhase 'upgraded'
+        Stop-OwnedProcess $apiProcess (Join-Path $fixture 'iot-engine.exe')
+        $apiProcess = Start-FixtureApi 'repeat'
+        Invoke-CounterMigrationPhase 'repeated'
+    }
 } finally {
     Stop-OwnedProcess $apiProcess (Join-Path $fixture 'iot-engine.exe')
     Stop-OwnedProcess $redisProcess $RedisExe
@@ -99,5 +155,6 @@ EDGE_PLATFORM_ID=00000000-0000-7000-8000-000000000001
     $env:ARCHITECTURE_DATABASE_URL = $oldDatabaseUrl
     $env:TEST_BASE_URL = $oldApiBase
     $env:ARCHITECTURE_REDIS_URL = $oldRedisUrl
+    $env:ARCHITECTURE_MIGRATION_STATE = $oldMigrationState
     Write-Output "Disposable fixture logs: $fixture"
 }

@@ -22,6 +22,7 @@ struct LinkTargetDefinition {
 };
 
 struct LinkDefinition {
+    bool debugEnabled = false;
     std::string id;
     std::string name;
     std::string mode;
@@ -58,10 +59,13 @@ struct ElementDefinition {
     std::int64_t digits = 0;
     bool writable = false;
     bool responseElement = false;
+    std::string positionMode = "GUIDE";
+    std::int64_t byteOffset = 0;
     bool operator==(const ElementDefinition&) const = default;
 };
 
 struct DeviceDefinition {
+    bool debugEnabled = false;
     std::string id;
     std::string modelId;
     std::string code;
@@ -71,6 +75,7 @@ struct DeviceDefinition {
     std::string targetId;
     std::string protocol;
     std::string timezone = "+08:00";
+    std::string sl651ResponseMode = "M1";
     std::int64_t onlineTimeout = 300;
     std::string heartbeatMode = "OFF";
     std::vector<std::uint8_t> heartbeatBytes;
@@ -101,18 +106,42 @@ struct DeviceDefinition {
 
 namespace service::collector {
 
-// 与在线状态、路由及版本化配置共享的 Redis 键。动态字段和带所有者校验的
-// 原子更新不能由 Redis ORM 的固定 Hash 实体替代。
-struct CollectorStateRecord final {
-    static std::string workerKey(std::size_t index) {
+// 现有 Hash 使用原始键，Redis ORM 的固定键前缀不能直接映射。
+struct CollectorWorkerRecord final {
+    std::size_t workerIndex{};
+    std::string version;
+    std::string state;
+    std::int64_t appliedAtMs{};
+
+    [[nodiscard]] std::vector<message::StreamField> fields() const {
+        return {{"worker_id", std::to_string(workerIndex)}, {"version", version},
+                {"state", state}, {"applied_at_ms", std::to_string(appliedAtMs)}};
+    }
+
+    static std::string key(std::size_t index) {
         return "iot:runtime:collector:" + service::runtime::instanceId() + ":" + std::to_string(index);
     }
-    static std::string linkKey(std::string_view id, std::size_t index) {
+};
+
+// 链路快照保留事件携带的动态字段；消息 ID 和创建时间不属于存储快照。
+struct CollectorLinkRecord final {
+    std::vector<message::StreamField> fields;
+
+    static CollectorLinkRecord fromEvent(const message::StreamMessage& event,
+                                        std::int64_t updatedAtMs) {
+        CollectorLinkRecord record;
+        record.fields.reserve(event.fields.size() + 1);
+        for (const auto& field : event.fields) {
+            if (field.name != "message_id" && field.name != "created_at_ms")
+                record.fields.push_back(field);
+        }
+        record.fields.push_back({"updated_at_ms", std::to_string(updatedAtMs)});
+        return record;
+    }
+
+    static std::string key(std::string_view id, std::size_t index) {
         return "iot:runtime:link:" + std::string(id) + ":worker:" +
             service::runtime::instanceId() + ":" + std::to_string(index);
-    }
-    static std::string connectionKey(std::string_view id) {
-        return "iot:runtime:connection:" + std::string(id);
     }
 };
 

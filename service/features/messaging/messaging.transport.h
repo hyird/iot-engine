@@ -1,6 +1,7 @@
 #pragma once
 
 #include "service/common/message.h"
+#include "service/features/messaging/messaging.types.h"
 #include "service/utils/redis.h"
 
 namespace service::message::redis {
@@ -93,18 +94,6 @@ ruvia::Task<std::string> publishAndWake(
     }
     co_return co_await addAndWake(redis, stream, fields, workerIndex, task, maxLength, instance);
 }
-
-struct StreamWake final {
-    std::optional<std::size_t> workerIndex{};
-    WorkerStreamTask task{};
-};
-
-struct StreamPublication {
-    std::string_view stream;
-    std::span<const StreamField> fields;
-    std::size_t maxLength = 0;
-    std::optional<StreamWake> wake;
-};
 
 template <typename Redis>
 ruvia::Task<bool> publishAllAndAcknowledge(

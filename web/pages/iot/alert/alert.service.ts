@@ -1,7 +1,7 @@
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
-import type { PaginatedResult } from '@/utils/pagination';
+import type { PaginatedResult } from '@/types/pagination';
 import { createQueryKeys } from '@/utils/query';
 import * as alertApi from './alert.api';
 import type { Alert } from './alert.types';

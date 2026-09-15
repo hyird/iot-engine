@@ -25,9 +25,11 @@
 #include <ruvia/core/detail/io/AsioAwait.h>
 #include <ruvia/web/detail/redis/RedisTypesAccess.h>
 
-#include "service/common/log.h"
+#include "service/middleware/log.h"
+#include "service/features/packet_log/packet_log.transport.h"
 #include "service/features/alert/alert.service.h"
 #include "service/features/collector/collector.protocol.h"
+#include "service/features/edge/edge.service.h"
 #include "service/features/collector/collector.service.h"
 #include "service/features/collector/engine/engine.runtime.h"
 #include "service/features/collector/modbus/modbus.protocol.h"
@@ -147,9 +149,9 @@ struct RuntimeRepositoryScaleDb {
         FakeDbResult result;
         if (sql.find("FROM \"link\" WHERE") !=
             std::string_view::npos) {
-            result.values.emplace_back(FakeDbRow{ "link-1", "collector link", "TCP Client", "Modbus", "127.0.0.1", "1502", "enabled" });
+            result.values.emplace_back(FakeDbRow{ "link-1", "collector link", "TCP Client", "Modbus", "127.0.0.1", "1502", "enabled", "f" });
         } else if (sql.find("ORDER BY \"d\".\"link_id\"") != std::string_view::npos) {
-            result.values.emplace_back(FakeDbRow{ "device-1", "MODBUS001", "modbus device", "link-1", "TCP Client", "", "Modbus", "+08:00", "300", "OFF", "", "OFF", "", "TCP", "1", "RACK_SLOT", "PG", "0", "1", "0100", "0101", "5000", "5000", "STANDARD", "5", "1", "60", "1", "100", "125", "model-1", "1" });
+            result.values.emplace_back(FakeDbRow{ "device-1", "MODBUS001", "modbus device", "link-1", "TCP Client", "", "Modbus", "+08:00", "300", "OFF", "", "OFF", "", "TCP", "1", "RACK_SLOT", "PG", "0", "1", "0100", "0101", "5000", "5000", "STANDARD", "5", "1", "60", "1", "100", "125", "model-1", "1", "f" });
         } else if (sql.find("\"p\".\"protocol\" = E'Modbus'") != std::string_view::npos &&
                    sql.find("'registerType'") != std::string_view::npos) {
             result.values.emplace_back(FakeDbRow{ "device-1", "temperature", "Temperature", "℃", "UINT16", "BIG_ENDIAN", "HOLDING_REGISTER", "0", "1", "1x", "-1", "f" });
@@ -217,46 +219,6 @@ struct AlertScheduleRedis {
     }
 
     [[nodiscard]] Pipeline pipeline() const { return Pipeline{ state }; }
-};
-
-struct GroupedBoundedRedis {
-    mutable std::string script;
-    bool invalidDepth = true;
-
-    ruvia::Task<ruvia::RedisValue>
-    eval(std::string_view value, std::span<const std::string_view>, std::span<const std::string_view>) const {
-        script = std::string(value);
-        if (invalidDepth &&
-            script.find("local depth = tonumber(redis.call('GET', KEYS[2]) or '0')\n"
-                        "if depth >=") != std::string::npos) {
-            co_return ruvia::detail::RedisTypesAccess::errorValue(
-                "attempt to compare nil with number",
-                std::pmr::get_default_resource()
-            );
-        }
-        co_return ruvia::detail::RedisTypesAccess::stringValue(
-            "1-0",
-            std::pmr::get_default_resource()
-        );
-    }
-};
-
-struct GroupedAckRedis {
-    mutable std::string script;
-    mutable int depth = 5;
-
-    ruvia::Task<ruvia::RedisValue>
-    eval(std::string_view value, std::span<const std::string_view>, std::span<const std::string_view>) const {
-        script = std::string(value);
-        const bool removed = false;
-        if (script.find("if removed > 0 then") == std::string::npos || removed) {
-            --depth;
-        }
-        co_return ruvia::detail::RedisTypesAccess::integerValue(
-            0,
-            std::pmr::get_default_resource()
-        );
-    }
 };
 
 struct FailingLatestPipeline {
@@ -491,7 +453,7 @@ std::uint16_t crc16(std::span<const std::uint8_t> bytes) {
     return crc;
 }
 
-std::vector<std::uint8_t> slFrame(std::uint8_t functionCode, std::vector<std::uint8_t> body = { 0x39, 0x00, 0x12, 0x34 }) {
+std::vector<std::uint8_t> slFrame(std::uint8_t functionCode, std::vector<std::uint8_t> body = { 0x00, 0x01, 0x24, 0x01, 0x02, 0x03, 0x04, 0x05, 0x39, 0x12, 0x12, 0x34 }) {
     std::vector<std::uint8_t> frame{ 0x7E,
                                      0x7E,
                                      0x01,
@@ -519,6 +481,7 @@ std::vector<std::uint8_t> slMultiFrame(std::uint8_t functionCode, std::uint16_t 
     body.insert(body.begin(), { static_cast<std::uint8_t>(packed >> 16U), static_cast<std::uint8_t>(packed >> 8U), static_cast<std::uint8_t>(packed) });
     auto frame = slFrame(functionCode, std::move(body));
     frame[13] = 0x16;
+    frame[frame.size() - 3] = sequence == total ? 0x03 : 0x17;
     const auto crc = crc16(std::span<const std::uint8_t>(frame).first(frame.size() - 2));
     frame[frame.size() - 2] = static_cast<std::uint8_t>(crc >> 8U);
     frame.back() = static_cast<std::uint8_t>(crc);
@@ -887,17 +850,17 @@ std::vector<std::uint8_t> s7ReadResponseForRequest(std::span<const std::uint8_t>
     return response;
 }
 
-collector::ProtocolRuntimeRegistry runtimes() {
-    collector::ProtocolRuntimeRegistry result;
-    result.add(std::make_unique<collector::modbus::Runtime>());
-    result.add(std::make_unique<collector::s7::Runtime>());
-    result.add(std::make_unique<collector::sl651::Runtime>());
+collector::ProtocolSessionFactoryRegistry sessionFactories() {
+    collector::ProtocolSessionFactoryRegistry result;
+    result.add(std::make_unique<collector::modbus::SessionFactory>());
+    result.add(std::make_unique<collector::s7::SessionFactory>());
+    result.add(std::make_unique<collector::sl651::SessionFactory>());
     return result;
 }
 
 void testCapabilities() {
     require(collector::DeviceDefinition{}.timezone == "+08:00", "device timezone must default to UTC+8");
-    auto registry = runtimes();
+    auto registry = sessionFactories();
     require(registry.require("SL651").capabilities().has(collector::ProtocolCapability::TcpServer), "SL651 must support TCP Server");
     require(!registry.require("SL651").capabilities().has(collector::ProtocolCapability::TcpClient), "SL651 must reject TCP Client");
     require(!registry.require("SL651").capabilities().has(collector::ProtocolCapability::Polling), "SL651 must not expose polling");
@@ -915,16 +878,16 @@ void testStationScopeAndInstanceIdentity() {
         device.linkId = link;
         device.code = "0000000001";
         device.protocol = "SL651";
-        device.elements.push_back({ .id = "water", .name = "Water", .functionCode = "32", .guideHex = "3900", .encoding = "BCD", .length = 2, .digits = 2 });
+        device.elements.push_back({ .id = "water", .name = "Water", .functionCode = "32", .guideHex = "3912", .encoding = "BCD", .length = 2, .digits = 2 });
         snapshot.devices.push_back(device);
     }
-    collector::ProtocolEngine engine(runtimes());
+    collector::ProtocolEngine engine(sessionFactories());
     engine.reload(snapshot);
     for (const auto* link : { "station-link-a", "station-link-b" }) {
         const auto connection = std::string(link) + "-connection";
         (void)engine.connected({ .connectionId = connection, .linkId = link, .sessionEpoch = 1 });
         service::message::IngressPacket packet{ .messageId = "frame", .linkId = link, .connectionId = connection, .occurredAtMs = 1000 };
-        packet.payload = slFrame(0x32, { 0x00, 0x01, 0x24, 0x01, 0x02, 0x03, 0x04, 0x05, 0x39, 0x00, 0x12, 0x34 });
+        packet.payload = slFrame(0x32, { 0x00, 0x01, 0x24, 0x01, 0x02, 0x03, 0x04, 0x05, 0x39, 0x12, 0x12, 0x34 });
         const auto actions = engine.consume(packet);
         const auto& parsed = first(actions, collector::ProtocolActionKind::PublishParsed).parsed;
         require(parsed.deviceId == std::string(link) + "-device", "same SL651 station code crossed link identity");
@@ -955,16 +918,17 @@ void testSl651() {
     device.code = "0000000001";
     device.linkId = "sl-link";
     device.protocol = "SL651";
-    device.elements.push_back({ .id = "water", .name = "Water", .unit = "m", .functionCode = "32", .guideHex = "3900", .encoding = "BCD", .length = 2, .digits = 2 });
-    device.elements.push_back({ .id = "request-value", .name = "Request value", .functionCode = "4C", .direction = "DOWN", .guideHex = "3900", .encoding = "BCD", .length = 2, .digits = 2 });
-    device.elements.push_back({ .id = "response-value", .name = "Response value", .functionCode = "4C", .direction = "DOWN", .guideHex = "3900", .encoding = "BCD", .length = 2, .digits = 2, .responseElement = true });
+    device.sl651ResponseMode = "M2";
+    device.elements.push_back({ .id = "water", .name = "Water", .unit = "m", .functionCode = "32", .guideHex = "3912", .encoding = "BCD", .length = 2, .digits = 2 });
+    device.elements.push_back({ .id = "request-value", .name = "Request value", .functionCode = "4C", .direction = "DOWN", .guideHex = "3912", .encoding = "BCD", .length = 2, .digits = 2 });
+    device.elements.push_back({ .id = "response-value", .name = "Response value", .functionCode = "4C", .direction = "DOWN", .guideHex = "3912", .encoding = "BCD", .length = 2, .digits = 2, .responseElement = true });
     snapshot.devices.push_back(device);
 
-    collector::ProtocolEngine engine(runtimes());
+    collector::ProtocolEngine engine(sessionFactories());
     engine.reload(snapshot);
     (void)engine.connected({ .connectionId = "sl-connection", .linkId = "sl-link", .remoteAddress = "127.0.0.1:10001", .sessionEpoch = 1 });
     const auto frame =
-        slFrame(0x32, { 0x00, 0x01, 0x24, 0x01, 0x02, 0x03, 0x04, 0x05, 0x39, 0x00, 0x12, 0x34 });
+        slFrame(0x32, { 0x00, 0x01, 0x24, 0x01, 0x02, 0x03, 0x04, 0x05, 0x39, 0x12, 0x12, 0x34 });
     service::message::IngressPacket packet{ .messageId = "sl-ingress",
                                             .linkId = "sl-link",
                                             .connectionId = "sl-connection",
@@ -986,11 +950,12 @@ void testSl651() {
         first(responseActions, collector::ProtocolActionKind::PublishParsed).parsed;
     require(responseParsed.valuesJson.find("response-value") != std::string::npos && responseParsed.valuesJson.find("request-value") == std::string::npos, "SL651 upstream response did not use responseElements");
 
-    auto commandFrame = slFrame(0x4C, {});
+    auto commandFrame = slFrame(0x4C, {0, 0, 0x24, 1, 2, 3, 4, 5});
     // Downlink direction occupies the high nibble of the length field; refresh the CRC.
     commandFrame[2] = 0x00;
     commandFrame[6] = 0x01;
     commandFrame[11] = 0x80;
+    commandFrame[commandFrame.size() - 3] = 0x05;
     const auto commandCrc =
         crc16(std::span<const std::uint8_t>(commandFrame).first(commandFrame.size() - 2));
     commandFrame[commandFrame.size() - 2] = static_cast<std::uint8_t>(commandCrc >> 8U);
@@ -1000,8 +965,9 @@ void testSl651() {
     packet.payload = slFrame(0x32);
     commandActions = engine.consume(packet);
     require(!has(commandActions, collector::ProtocolActionKind::CompleteCommand), "SL651 unsolicited report completed a command");
-    packet.payload = slFrame(0xE1, {});
+    packet.payload = slFrame(0x4C, {0, 2, 0x24, 1, 2, 3, 4, 6});
     commandActions = engine.consume(packet);
+    commandActions = engine.parsedPublished("sl-connection", first(commandActions, collector::ProtocolActionKind::PublishParsed).publicationToken);
     require(has(commandActions, collector::ProtocolActionKind::CompleteCommand), "SL651 ACK did not complete command");
 
     commandActions = engine.execute(
@@ -1014,17 +980,21 @@ void testSl651() {
     );
     const auto& generatedSl651 = first(commandActions, collector::ProtocolActionKind::Send).bytes;
     require(generatedSl651[2] == 0x00 && generatedSl651[6] == 0x01 && generatedSl651[7] == 0x01 && generatedSl651[10] == 0x4C, "SL651 element command did not use the iot-manager default address header");
-    const std::array<std::uint8_t, 4> encodedSl651Value{ 0x39, 0x00, 0x12, 0x34 };
+    const std::array<std::uint8_t, 4> encodedSl651Value{ 0x39, 0x12, 0x12, 0x34 };
     require(std::search(generatedSl651.begin(), generatedSl651.end(), encodedSl651Value.begin(), encodedSl651Value.end()) != generatedSl651.end(), "SL651 element command did not encode its guide and BCD value");
-    packet.payload = slFrame(0xE1, {});
+    packet.payload = slFrame(0x4C, {0, 3, 0x24, 1, 2, 3, 4, 7});
     commandActions = engine.consume(packet);
+    commandActions = engine.parsedPublished("sl-connection", first(commandActions, collector::ProtocolActionKind::PublishParsed).publicationToken);
     require(has(commandActions, collector::ProtocolActionKind::CompleteCommand), "generated SL651 command did not complete on ACK");
 
     commandActions = engine.execute("sl-connection", { .id = "sl-negative-command", .deviceId = "sl-device", .deviceCode = "0000000001", .kind = "control", .payload = commandFrame });
     require(has(commandActions, collector::ProtocolActionKind::Send), "SL651 negative-ack test command was not sent");
-    packet.payload = slFrame(0xE2, {});
+    packet.payload = slFrame(0xE2);
     commandActions = engine.consume(packet);
-    require(first(commandActions, collector::ProtocolActionKind::FailCommand).reason == "sl651_negative_ack", "SL651 negative ACK did not fail with a precise reason");
+    commandActions = engine.parsedPublished("sl-connection", first(commandActions, collector::ProtocolActionKind::PublishParsed).publicationToken);
+    require(!has(commandActions, collector::ProtocolActionKind::FailCommand) &&
+            !has(commandActions, collector::ProtocolActionKind::CompleteCommand),
+            "SL651 user extension E2 was treated as a universal negative acknowledgement");
 }
 
 void testSl651ElementOrder() {
@@ -1047,7 +1017,7 @@ void testSl651ElementOrder() {
     std::sort(device.elements.begin(), device.elements.end(), [](const auto& left, const auto& right) { return left.id < right.id; });
     do {
         snapshot.devices = { device };
-        collector::ProtocolEngine engine(runtimes());
+        collector::ProtocolEngine engine(sessionFactories());
         engine.reload(snapshot);
         (void)engine.connected({ .connectionId = "sl-connection", .linkId = "sl-link", .sessionEpoch = 1 });
         const auto actions = engine.consume({ .messageId = "sl-ingress", .linkId = "sl-link", .connectionId = "sl-connection", .occurredAtMs = 1000, .payload = frame });
@@ -1063,7 +1033,7 @@ void testSl651ElementOrder() {
     require(collector::sl651::detail::hexBytes("39 23").empty(), "SL651 noncanonical HEX guide was accepted");
     require(collector::sl651::detail::hexBytes("39 X3").empty(), "SL651 invalid HEX guide was accepted");
     require(collector::sl651::detail::hexBytes("39 2").empty(), "SL651 odd-length HEX guide was accepted");
-    collector::ProtocolEngine heartbeatEngine(runtimes());
+    collector::ProtocolEngine heartbeatEngine(sessionFactories());
     heartbeatEngine.reload(snapshot);
     (void)heartbeatEngine.connected({ .connectionId = "heartbeat-connection", .linkId = "sl-link", .sessionEpoch = 1 });
     const auto heartbeat = service::message::fromHex("7E7E010001000102FFFA2F000802001D26091413461003A0BA");
@@ -1102,11 +1072,11 @@ void testSl651AllEncodingsAndFunctionCodes() {
     device.protocol = "SL651";
     for (std::uint16_t function = 0; function <= 0xFF; ++function) {
         const auto code = collector::sl651::detail::hexByte(static_cast<std::uint8_t>(function));
-        device.elements.push_back({ .id = "fc-" + code, .name = "Function " + code, .functionCode = code, .guideHex = "3900", .encoding = "HEX", .length = 1 });
+        device.elements.push_back({ .id = "fc-" + code, .name = "Function " + code, .functionCode = code, .guideHex = "3908", .encoding = "HEX", .length = 1 });
     }
     snapshot.devices.push_back(std::move(device));
 
-    collector::ProtocolEngine engine(runtimes());
+    collector::ProtocolEngine engine(sessionFactories());
     engine.reload(snapshot);
     (void)engine.connected({ .connectionId = "sl-function-connection", .linkId = "sl-function-link", .sessionEpoch = 1 });
     service::message::IngressPacket packet{ .messageId = "sl-function-frame",
@@ -1115,7 +1085,7 @@ void testSl651AllEncodingsAndFunctionCodes() {
                                             .occurredAtMs = 7000 };
     for (std::uint16_t function = 0; function <= 0xFF; ++function) {
         const auto code = collector::sl651::detail::hexByte(static_cast<std::uint8_t>(function));
-        packet.payload = slFrame(static_cast<std::uint8_t>(function), { 0x39, 0x00, static_cast<std::uint8_t>(function) });
+        packet.payload = slFrame(static_cast<std::uint8_t>(function), { 0, 1, 0x24, 1, 2, 3, 4, 5, 0x39, 0x08, static_cast<std::uint8_t>(function) });
         const auto actions = engine.consume(packet);
         const auto& parsed = first(actions, collector::ProtocolActionKind::PublishParsed).parsed;
         require(parsed.valuesJson.find("fc-" + code) != std::string::npos, "SL651 configured function code was not routed");
@@ -1130,10 +1100,11 @@ void testSl651MultiPacketImages() {
     device.code = "0000000001";
     device.linkId = "sl-image-link";
     device.protocol = "SL651";
-    device.elements.push_back({ .id = "image", .name = "Image", .functionCode = "36", .guideHex = "3900", .encoding = "JPEG", .length = 0 });
+    device.sl651ResponseMode = "M3";
+    device.elements.push_back({ .id = "image", .name = "Image", .functionCode = "36", .guideHex = "F3F3", .encoding = "JPEG", .length = 0 });
     snapshot.devices.push_back(std::move(device));
 
-    collector::ProtocolEngine engine(runtimes());
+    collector::ProtocolEngine engine(sessionFactories());
     engine.reload(snapshot);
     (void)engine.connected(
         { .connectionId = "sl-image-connection", .linkId = "sl-image-link", .sessionEpoch = 1 }
@@ -1144,7 +1115,7 @@ void testSl651MultiPacketImages() {
                                             .occurredAtMs = 8000 };
 
     const auto firstFrame = slMultiFrame(0x36, 3, 1, { 0x00, 0x01, 0x24, 0x01, 0x02 });
-    const auto secondFrame = slMultiFrame(0x36, 3, 2, { 0x03, 0x04, 0x05, 0x39, 0x00, 0xFF });
+    const auto secondFrame = slMultiFrame(0x36, 3, 2, { 0x03, 0x04, 0x05, 0xF3, 0xF3, 0xFF });
     packet.payload = secondFrame;
     auto actions = engine.consume(packet);
     require(!has(actions, collector::ProtocolActionKind::PublishParsed), "SL651 published an incomplete image");
@@ -1166,7 +1137,9 @@ void testSl651MultiPacketImages() {
     require(parsed.valuesJson.find("\"is_multi_packet\":true") != std::string::npos && parsed.valuesJson.find("\"total_packets\":3") != std::string::npos, "SL651 image storage omitted multi-packet metadata");
     const std::vector<std::vector<std::uint8_t>> expectedRaw{ firstFrame, secondFrame, thirdFrame };
     require(parsed.rawPayloads == expectedRaw, "SL651 multi-packet raw frames were not stored in sequence order");
-    const auto streamFields = service::message::parsedFields(parsed);
+    auto published = parsed;
+    published.messageId = "019f91c9-4087-7e6c-88c0-c431b0dc15d8";
+    const auto streamFields = service::message::parsedFields(published);
     service::message::StreamMessage streamMessage{ .id = "1-0", .fields = streamFields };
     const auto roundTrip = service::message::parsedFrom(streamMessage);
     require(roundTrip.rawPayloads == expectedRaw && streamMessage.get("raw_payload_hex") == service::message::rawPayloadsJson(expectedRaw), "parsed Redis message did not preserve the ordered HEX payload array");
@@ -1179,7 +1152,7 @@ void testSl651MultiPacketImages() {
         0x36,
         2,
         1,
-        { 0x00, 0x01, 0x24, 0x01, 0x02, 0x03, 0x04, 0x05, 0x39, 0x00, 0xFF, 0xD8 }
+        { 0x00, 0x01, 0x24, 0x01, 0x02, 0x03, 0x04, 0x05, 0xF3, 0xF3, 0xFF, 0xD8 }
     );
     packet.payload = newFirst;
     actions = engine.consume(packet);
@@ -1191,6 +1164,201 @@ void testSl651MultiPacketImages() {
     const auto& replacement = first(actions, collector::ProtocolActionKind::PublishParsed).parsed;
     const std::vector<std::vector<std::uint8_t>> replacementRaw{ newFirst, newLast };
     require(replacement.rawPayloads == replacementRaw, "the replaced SL651 image leaked old raw packets into storage");
+}
+
+void testSl651CommunicationModes() {
+    collector::RuntimeSnapshot previous;
+    previous.devices.push_back({.id = "mode-version", .protocol = "SL651"});
+    auto next = previous;
+    next.devices.front().sl651ResponseMode = "M4";
+    require(collector::config::signature(previous) != collector::config::signature(next),
+        "SL651 mode change did not invalidate runtime snapshot");
+    const auto restored = collector::config::detail::device({{"protocol", "SL651"}, {"storage_policy", "report"}, {"sl651_response_mode", "M3"}});
+    require(restored.sl651ResponseMode == "M3", "SL651 mode was lost when loading Redis snapshot");
+    const auto refreshCrc = [](std::vector<std::uint8_t> frame, std::uint8_t ending) {
+        frame[frame.size() - 3] = ending;
+        const auto checksum = crc16(std::span<const std::uint8_t>(frame).first(frame.size() - 2));
+        frame[frame.size() - 2] = static_cast<std::uint8_t>(checksum >> 8U);
+        frame.back() = static_cast<std::uint8_t>(checksum);
+        return frame;
+    };
+    for (const auto mode : {"M1", "M2", "M3", "M4"}) {
+        collector::RuntimeSnapshot snapshot;
+        snapshot.links.push_back({.id = "modes", .mode = "TCP Server", .protocol = "SL651", .status = "enabled"});
+        collector::DeviceDefinition device;
+        device.id = "station"; device.code = "0000000001"; device.linkId = "modes";
+        device.protocol = "SL651"; device.sl651ResponseMode = mode;
+        device.elements.push_back({.id = "custom", .name = "Custom", .functionCode = "E0", .guideHex = "AB12", .encoding = "BCD", .length = 2, .digits = 2});
+        snapshot.devices.push_back(device);
+        collector::ProtocolEngine engine(sessionFactories());
+        engine.reload(snapshot);
+        (void)engine.connected({.connectionId = "modes", .linkId = "modes", .sessionEpoch = 1});
+        service::message::IngressPacket packet{.messageId = "mode-report", .linkId = "modes", .connectionId = "modes", .occurredAtMs = 1000};
+        packet.payload = slFrame(0x32);
+        auto actions = engine.consume(packet);
+        require(!has(actions, collector::ProtocolActionKind::Send), "SL651 acknowledged before durable publication");
+        const auto publicationToken = first(actions, collector::ProtocolActionKind::PublishParsed).publicationToken;
+        require(publicationToken != 0, "SL651 report has no publication token");
+        require(first(actions, collector::ProtocolActionKind::PublishParsed).parsed.messageId.empty(),
+                "protocol parsing still allocates a runtime message UUID");
+        require(engine.parsedPublished("modes", 0).empty(), "unknown publication token acknowledged a report");
+        actions = engine.parsedPublished("modes", publicationToken);
+        require(engine.parsedPublished("modes", publicationToken).empty(),
+                "duplicate publication completion acknowledged a report twice");
+        require(has(actions, collector::ProtocolActionKind::Send) == (std::string_view(mode) == "M2"), "SL651 mode did not control unsolicited confirmation");
+        if (!actions.empty()) {
+            const auto& ack = first(actions, collector::ProtocolActionKind::Send).bytes;
+            require(ack[11] == 0x80 && ack[14] == 0 && ack[15] == 1 && ack[ack.size()-3] == 4, "M2 final confirmation header or serial is wrong");
+        }
+        packet.payload = slFrame(0xE0, {0, 1, 0x24, 1, 2, 3, 4, 5, 0x50, 0x18, 0xAB, 0x12, 0xFF, 0xAB, 0x12, 0x12, 0x34});
+        auto nextReport = slFrame(0xE0, {0, 2, 0x24, 1, 2, 3, 4, 5, 0xAB, 0x12, 0x56, 0x78});
+        packet.payload.insert(packet.payload.end(), nextReport.begin(), nextReport.end());
+        actions = engine.consume(packet);
+        std::size_t published = 0;
+        for (const auto& action : actions) {
+            if (action.kind != collector::ProtocolActionKind::PublishParsed) continue;
+            require(action.parsed.valuesJson.find(published == 0 ? "12.34" : "56.78") != std::string::npos,
+                "custom guide matched bytes inside another element");
+            const auto confirmations = engine.parsedPublished("modes", action.publicationToken);
+            require(has(confirmations, collector::ProtocolActionKind::Send) == (std::string_view(mode) == "M2"),
+                "concatenated reports lost an independent publication confirmation");
+            ++published;
+        }
+        require(published == 2, "concatenated SL651 reports were lost");
+        packet.payload = slFrame(0x32);
+        packet.payload.back() ^= 1;
+        require(engine.consume(packet).empty(), "bad SL651 CRC emitted protocol actions");
+        packet.payload = refreshCrc(slFrame(0x32), 5);
+        require(engine.consume(packet).empty(), "upstream ENQ was accepted");
+        auto request = slFrame(0x37, {0, 0, 0x24, 1, 2, 3, 4, 5});
+        request[2] = 0; request[6] = 1; request[11] = 0x80;
+        if (std::string_view(mode) == "M3") {
+            request[13] = 0x16; request[12] += 3;
+            request.insert(request.begin() + 14, {0x00, 0x10, 0x01});
+        }
+        request = refreshCrc(request, 5);
+        const auto execute = [&](std::string id) {
+            return engine.execute("modes", {.id = std::move(id), .deviceId = "station", .deviceCode = "0000000001", .kind = "control", .payload = request});
+        };
+        actions = execute("query");
+        if (std::string_view(mode) == "M1") {
+            require(has(actions, collector::ProtocolActionKind::FailCommand) && !has(actions, collector::ProtocolActionKind::Send), "M1 sent a downlink");
+            packet.payload = slMultiFrame(0x36, 2, 1, {0, 2, 0x24, 1, 2, 3, 4, 5});
+            require(engine.consume(packet).empty(), "M1 accepted SYN packets");
+            continue;
+        }
+        const auto queryToken = first(actions, collector::ProtocolActionKind::ScheduleDeadline).deadlineToken;
+        packet.payload = refreshCrc(slFrame(0x37, {0, 2, 0x24, 1, 2, 3, 4, 6}), 0x17);
+        actions = engine.consume(packet);
+        actions = engine.parsedPublished("modes", first(actions, collector::ProtocolActionKind::PublishParsed).publicationToken);
+        require(!has(actions, collector::ProtocolActionKind::CompleteCommand), "intermediate ETB completed query");
+        const auto& ack = first(actions, collector::ProtocolActionKind::Send).bytes;
+        require(ack[ack.size()-3] == 6 && ack[15] == 2, "intermediate query response did not receive ACK");
+        require(engine.deadline("modes", queryToken).empty(), "stale query timer retransmitted");
+        packet.payload = slFrame(0x37, {0, 3, 0x24, 1, 2, 3, 4, 7});
+        actions = engine.consume(packet);
+        actions = engine.parsedPublished("modes", first(actions, collector::ProtocolActionKind::PublishParsed).publicationToken);
+        require(first(actions, collector::ProtocolActionKind::CompleteCommand).commandId == "query", "final query response did not complete original command");
+        actions = execute("next-query");
+        const auto initialToken = first(actions, collector::ProtocolActionKind::ScheduleDeadline).deadlineToken;
+        actions = engine.consume(packet);
+        actions = engine.parsedPublished("modes", first(actions, collector::ProtocolActionKind::PublishParsed).publicationToken);
+        require(first(actions, collector::ProtocolActionKind::CompleteCommand).commandId == "query", "duplicate final response completed a newer query");
+        auto token = initialToken;
+        for (int retry = 0; retry < 2; ++retry) {
+            actions = engine.deadline("modes", token);
+            require(first(actions, collector::ProtocolActionKind::Send).bytes == request, "query retry changed original bytes");
+            token = first(actions, collector::ProtocolActionKind::ScheduleDeadline).deadlineToken;
+        }
+        actions = engine.deadline("modes", token);
+        require(first(actions, collector::ProtocolActionKind::FailCommand).commandId == "next-query", "query did not fail after two retries");
+        require(has(execute("ambiguous-query"), collector::ProtocolActionKind::FailCommand), "timed-out station accepted an ambiguous query");
+
+        packet.payload = slMultiFrame(0x36, 3, 1, {0, 4, 0x24, 1, 2, 3, 4, 8, 0xF3, 0xF3, 0xFF});
+        (void)engine.consume(packet);
+        (void)engine.consume(packet); // 相同首包不得清除后续包。
+        packet.payload = slMultiFrame(0x36, 3, 3, {0xD9});
+        actions = engine.consume(packet);
+        const auto& nak = first(actions, collector::ProtocolActionKind::Send).bytes;
+        require(nak[13] == 0x16 && nak[nak.size()-3] == 0x15 && nak[16] == 2, "M3 did not request the missing sequence");
+        require(!has(actions, collector::ProtocolActionKind::PublishParsed), "M3 published before all packets arrived");
+        packet.payload = refreshCrc(slMultiFrame(0x36, 3, 2, {0xD8, 0xFF}), 3);
+        actions = engine.consume(packet);
+        require(!has(actions, collector::ProtocolActionKind::Send), "M3 confirmed before durable publication");
+        actions = engine.parsedPublished("modes", first(actions, collector::ProtocolActionKind::PublishParsed).publicationToken);
+        const auto& finalAck = first(actions, collector::ProtocolActionKind::Send).bytes;
+        require(finalAck[13] == 0x16 && finalAck[16] == 3 && finalAck[finalAck.size()-3] == 4, "M3 final acknowledgement has wrong sequence or ending");
+        packet.payload = slMultiFrame(0x36, 2, 1, {0, 5, 0x24, 1, 2, 3, 4, 9});
+        actions = engine.consume(packet);
+        auto missingToken = first(actions, collector::ProtocolActionKind::ScheduleDeadline).deadlineToken;
+        for (int retry = 0; retry < 2; ++retry) {
+            actions = engine.deadline("modes", missingToken);
+            const auto& missingAck = first(actions, collector::ProtocolActionKind::Send).bytes;
+            require(missingAck[16] == 2 && missingAck[missingAck.size()-3] == 0x15,
+                "M3 timeout did not request its missing packet");
+            missingToken = first(actions, collector::ProtocolActionKind::ScheduleDeadline).deadlineToken;
+        }
+        require(engine.deadline("modes", missingToken).empty(), "M3 exceeded two missing-packet retries");
+    }
+    collector::ElementDefinition numeric{.name = "signed", .encoding = "BCD", .length = 3, .digits = 2};
+    collector::command::validateValue(numeric, "-12.34");
+    const std::vector<std::uint8_t> signedBcd{0xFF, 0x12, 0x34};
+    require(collector::sl651::detail::encodeValue(numeric, "-12.34") == signedBcd &&
+        collector::sl651::detail::elementValue(signedBcd, numeric) == "-12.34", "SL651 signed BCD did not round trip");
+}
+
+void testSl651FixedPosition() {
+    struct EdgeTelemetryProjection : service::edge::EdgeProjectionService {
+        using EdgeProjectionService::telemetryJson;
+    };
+    service::edge::pb::TelemetryRecord binaryRecord;
+    binaryRecord.set_protocol(service::edge::pb::PROTOCOL_SL651);
+    auto* binaryValue = binaryRecord.add_values();
+    binaryValue->set_element_id("image");
+    binaryValue->set_encoding("JPEG");
+    binaryValue->set_encoded_value(std::string("\xFF\xD8\xFF\xD9", 4));
+    require(EdgeTelemetryProjection::telemetryJson(binaryRecord).find("data:image/jpeg;base64,/9j/2Q==") != std::string::npos,
+            "edge SL651 binary image was not restored");
+    binaryValue->set_encoding("HEX");
+    require(EdgeTelemetryProjection::telemetryJson(binaryRecord).find("FFD8FFD9") != std::string::npos,
+            "edge SL651 binary hex was not restored");
+    binaryValue->set_encoded_value(std::string(8193, 'x'));
+    bool oversizedRejected = false;
+    try { (void)EdgeTelemetryProjection::telemetryJson(binaryRecord); }
+    catch (const std::runtime_error&) { oversizedRejected = true; }
+    require(oversizedRejected, "edge SL651 binary limit was not enforced");
+    collector::RuntimeSnapshot snapshot;
+    snapshot.links.push_back({.id = "fixed", .mode = "TCP Server", .protocol = "SL651", .status = "enabled"});
+    collector::DeviceDefinition device;
+    device.id = "fixed"; device.code = "0000000001"; device.linkId = "fixed"; device.protocol = "SL651"; device.sl651ResponseMode = "M2";
+    device.elements = {
+        {.id = "water", .name = "Fixed water", .functionCode = "32", .encoding = "BCD", .length = 2, .digits = 2, .positionMode = "OFFSET", .byteOffset = 8},
+        {.id = "serial", .name = "Serial", .functionCode = "32", .encoding = "HEX", .length = 2, .positionMode = "OFFSET", .byteOffset = 0},
+        {.id = "outside", .name = "Outside", .functionCode = "32", .encoding = "HEX", .length = 2, .positionMode = "OFFSET", .byteOffset = 10},
+        {.id = "prefix", .name = "Prefix", .functionCode = "33", .encoding = "BCD", .length = 2, .digits = 2, .positionMode = "OFFSET", .byteOffset = 8},
+        {.id = "guided", .name = "Guided", .functionCode = "33", .guideHex = "AB12", .encoding = "BCD", .length = 2, .digits = 2},
+        {.id = "write", .name = "Fixed write", .functionCode = "4C", .direction = "DOWN", .encoding = "BCD", .length = 2, .digits = 2, .positionMode = "OFFSET", .byteOffset = 10}
+    };
+    snapshot.devices.push_back(device);
+    collector::ProtocolEngine engine(sessionFactories()); engine.reload(snapshot);
+    (void)engine.connected({.connectionId = "fixed", .linkId = "fixed", .sessionEpoch = 1});
+    service::message::IngressPacket packet{.messageId = "fixed-report", .linkId = "fixed", .connectionId = "fixed", .occurredAtMs = 1000};
+    packet.payload = slFrame(0x32, {0, 1, 0x24, 1, 2, 3, 4, 5, 0x12, 0x34});
+    auto actions = engine.consume(packet);
+    auto values = first(actions, collector::ProtocolActionKind::PublishParsed).parsed.valuesJson;
+    require(values.find("12.34") != std::string::npos && values.find("0001") != std::string::npos && values.find("Outside") == std::string::npos, "SL651 fixed positions or bounds were not respected");
+    packet.payload = slMultiFrame(0x32, 2, 1, {0, 2, 0x24, 1, 2, 3, 4, 5, 0x56});
+    (void)engine.consume(packet); packet.payload = slMultiFrame(0x32, 2, 2, {0x78});
+    actions = engine.consume(packet); values = first(actions, collector::ProtocolActionKind::PublishParsed).parsed.valuesJson;
+    require(values.find("56.78") != std::string::npos, "SL651 fixed offset was applied before reassembly");
+    packet.payload = slFrame(0x33, {0, 3, 0x24, 1, 2, 3, 4, 5, 0x12, 0x34, 0xAB, 0x12, 0x56, 0x78});
+    actions = engine.consume(packet);
+    values = first(actions, collector::ProtocolActionKind::PublishParsed).parsed.valuesJson;
+    require(values.find("12.34") != std::string::npos && values.find("56.78") != std::string::npos,
+            "SL651 mixed fixed prefix and guided elements were not decoded");
+    actions = engine.execute("fixed", {.id = "fixed-command", .deviceId = "fixed", .deviceCode = "0000000001", .kind = "command", .elements = {{.elementId = "write", .value = "12.34"}}});
+    const auto& bytes = first(actions, collector::ProtocolActionKind::Send).bytes;
+    require(bytes[22] == 0 && bytes[23] == 0 && bytes[24] == 0x12 && bytes[25] == 0x34, "SL651 fixed command did not use body-relative byte offsets");
 }
 
 void testModbus() {
@@ -1215,7 +1383,7 @@ void testModbus() {
     device.elements.push_back({ .id = "holding-2", .name = "Holding 2", .dataType = "UINT16", .byteOrder = "BIG_ENDIAN", .registerType = "HOLDING_REGISTER", .address = 2, .quantity = 1 });
     snapshot.devices.push_back(device);
 
-    collector::ProtocolEngine engine(runtimes());
+    collector::ProtocolEngine engine(sessionFactories());
     engine.reload(snapshot);
     auto connected = engine.connected({ .connectionId = "modbus-connection", .linkId = "modbus-link", .remoteAddress = "127.0.0.1:15002", .targetId = "target-1", .sessionEpoch = 1 });
     require(has(connected, collector::ProtocolActionKind::BindDevice), "Modbus client target was not bound");
@@ -1233,6 +1401,9 @@ void testModbus() {
     packet.payload = modbusReadResponse(1);
     actions = engine.consume(packet);
     require(has(actions, collector::ProtocolActionKind::PublishParsed), "Modbus response was not parsed");
+    require(first(actions, collector::ProtocolActionKind::PublishParsed).parsed.rawPayloads ==
+                std::vector<std::vector<std::uint8_t>>{packet.payload},
+            "Modbus history did not retain its exact response as an array");
     require(has(actions, collector::ProtocolActionKind::CompleteCommand), "Modbus read did not complete");
 
     actions = engine.execute("modbus-connection", { .id = "invalid-write", .deviceId = "modbus-device", .deviceCode = "MODBUS-1", .kind = "write", .payload = modbusWrite(2) });
@@ -1299,7 +1470,7 @@ void testModbusTypesAndPriority() {
     device.elements.push_back({ .id = "coil", .name = "Coil", .dataType = "BOOL", .registerType = "COIL", .address = 0, .quantity = 1 });
     snapshot.devices.push_back(device);
 
-    collector::ProtocolEngine engine(runtimes());
+    collector::ProtocolEngine engine(sessionFactories());
     engine.reload(snapshot);
     auto connected = engine.connected({ .connectionId = "priority-connection", .linkId = link.id, .targetId = "priority-target", .sessionEpoch = 1 });
     service::message::IngressPacket packet{ .messageId = "initial-poll-response",
@@ -1404,7 +1575,7 @@ void testModbusAllFunctionCodes(bool tcp) {
     };
     snapshot.devices.push_back(device);
 
-    collector::ProtocolEngine engine(runtimes());
+    collector::ProtocolEngine engine(sessionFactories());
     engine.reload(snapshot);
     service::message::IngressPacket packet{ .messageId = "modbus-matrix-response",
                                             .linkId = link.id,
@@ -1469,7 +1640,7 @@ void testModbusRtuZeroAddress() {
     device.elements.push_back({ .id = "rtu-holding-0", .name = "Holding", .dataType = "UINT16", .registerType = "HOLDING_REGISTER", .address = 0, .quantity = 1 });
     snapshot.devices.push_back(device);
 
-    collector::ProtocolEngine engine(runtimes());
+    collector::ProtocolEngine engine(sessionFactories());
     engine.reload(snapshot);
     auto connected = engine.connected({ .connectionId = "modbus-rtu-connection", .linkId = link.id, .targetId = "rtu-target", .sessionEpoch = 1 });
     service::message::IngressPacket packet{ .messageId = "rtu-initial-poll-response",
@@ -1512,7 +1683,7 @@ void testModbusDiscoveryAndOffline() {
         device.onlineTimeout = 1;
         snapshot.devices.push_back(std::move(device));
     }
-    collector::ProtocolEngine engine(runtimes());
+    collector::ProtocolEngine engine(sessionFactories());
     engine.reload(snapshot);
     (void)engine.connected(
         { .connectionId = "discovery-connection", .linkId = "modbus-server", .sessionEpoch = 1 }
@@ -1606,7 +1777,7 @@ void testS7() {
     const std::vector<std::uint8_t> expectedSetup{ 0x03, 0x00, 0x00, 0x19, 0x02, 0xF0, 0x80, 0x32, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0xF0, 0x00, 0x00, 0x01, 0x00, 0x01, 0x01, 0xE0 };
     const std::vector<std::uint8_t> expectedDisconnect{ 0x03, 0x00, 0x00, 0x0B, 0x06, 0x80, 0x00, 0x06, 0x00, 0x01, 0x00 };
 
-    collector::ProtocolEngine engine(runtimes());
+    collector::ProtocolEngine engine(sessionFactories());
     engine.reload(snapshot);
     service::message::IngressPacket packet{ .messageId = "s7-ingress",
                                             .linkId = "s7-link",
@@ -1635,6 +1806,9 @@ void testS7() {
     packet.payload = s7ReadResponseForRequest(immediatePoll);
     actions = engine.consume(packet);
     require(has(actions, collector::ProtocolActionKind::PublishParsed), "S7 immediate poll response was not parsed");
+    require(first(actions, collector::ProtocolActionKind::PublishParsed).parsed.rawPayloads ==
+                std::vector<std::vector<std::uint8_t>>{packet.payload},
+            "S7 multi-element history did not retain its exact response as an array");
     require(first(actions, collector::ProtocolActionKind::Send).bytes == expectedDisconnect, "S7 did not send the iot-manager ISO-DR packet after polling");
     const auto pollToken = first(actions, collector::ProtocolActionKind::ScheduleDeadline).deadlineToken;
 
@@ -1645,6 +1819,9 @@ void testS7() {
     packet.payload = s7ReadResponse(1);
     actions = engine.consume(packet);
     require(has(actions, collector::ProtocolActionKind::PublishParsed), "S7 response was not parsed");
+    require(first(actions, collector::ProtocolActionKind::PublishParsed).parsed.rawPayloads ==
+                std::vector<std::vector<std::uint8_t>>{packet.payload},
+            "S7 history retained a response from another acquisition");
     require(has(actions, collector::ProtocolActionKind::CompleteCommand), "S7 read did not complete");
     require(first(actions, collector::ProtocolActionKind::PublishParsed).parsed.valuesJson.find("4660") != std::string::npos, "S7 DB value was not decoded");
     require(first(actions, collector::ProtocolActionKind::Send).bytes == expectedDisconnect, "S7 read did not close only the PLC session");
@@ -1740,7 +1917,7 @@ void testS7() {
     conflictingDevice.registrationBytes.back() = 0x23;
     serverSnapshot.devices.push_back(conflictingDevice);
 
-    collector::ProtocolEngine serverEngine(runtimes());
+    collector::ProtocolEngine serverEngine(sessionFactories());
     serverEngine.reload(serverSnapshot);
     (void)serverEngine.connected({ .connectionId = "s7-server-connection", .linkId = "s7-server", .sessionEpoch = 1 });
     service::message::IngressPacket serverPacket{ .messageId = "s7-registration",
@@ -1926,6 +2103,7 @@ void testRuntimeRepositoryRejectsInvalidScale() {
         (void)runTask(service::configuration::loadRuntimeSnapshot(db));
     } catch (const std::exception& error) {
         rejected = std::string_view(error.what()).find("invalid runtime repository decimal: scale") != std::string_view::npos;
+        if (!rejected) throw std::runtime_error(std::string("unexpected runtime snapshot failure: ") + error.what());
     }
     require(rejected, "runtime repository accepted a Modbus scale with trailing bytes");
 }
@@ -2141,18 +2319,6 @@ void testAlertScheduleSkipsInvalidStoredDuration() {
     require(!redis.state->pipelineCommands.empty(), "alert schedule did not issue a Redis pipeline command");
 }
 
-void testGroupedBoundedStreamSkipsInvalidDepth() {
-    GroupedBoundedRedis redis;
-    const auto id = runTask(service::message::redis::addGroupedBounded(redis, "iot:test:stream", std::vector<service::message::StreamField>{ { "field", "value" } }, 100, "iot:test:depth", 10));
-    require(id.has_value() && *id == "1-0", "grouped bounded stream rejected a write when depth key was nonnumeric");
-}
-
-void testGroupedAckDoesNotDecrementStaleDepth() {
-    GroupedAckRedis redis;
-    runTask(service::message::redis::acknowledgeGroupedAndDelete(redis, "iot:test:stream", "iot-engine:test", "stale-id", "iot:test:depth"));
-    require(redis.depth == 5, "grouped stream stale ACK decremented the queued-depth counter");
-}
-
 void testCommandValueDecimalParsing() {
     namespace command = service::collector::command;
     require(command::decimal("1.5", "value") == 1.5, "command decimal parser rejected a finite value");
@@ -2180,7 +2346,7 @@ void testCommandValueDecimalParsing() {
     } catch (const std::invalid_argument&) {
         rejectedNegativeBcd = true;
     }
-    require(rejectedNegativeBcd, "command validation accepted a negative BCD value that encodes as positive");
+    require(rejectedNegativeBcd, "command validation accepted negative BCD without room for the sign byte");
 
     bool rejectedNegativeBcdEncoding = false;
     try {
@@ -2192,7 +2358,7 @@ void testCommandValueDecimalParsing() {
 }
 
 void testPacketLog() {
-    namespace packetLog = service::common::packet_log;
+    namespace packetLog = service::packet_log;
     const auto directory = std::filesystem::temp_directory_path() / "iot-engine-packet-log-test";
     std::error_code ignored;
     std::filesystem::remove_all(directory, ignored);
@@ -2290,6 +2456,14 @@ collector::RuntimeSnapshot clientReconcileSnapshot() {
 
 void testRuntimeReconcile() {
     const auto previous = clientReconcileSnapshot();
+    auto debugUpdate = previous;
+    debugUpdate.links.front().debugEnabled = true;
+    debugUpdate.devices.front().debugEnabled = true;
+    const auto debugPlan = collector::planRuntimeReconcile(previous, debugUpdate);
+    require(debugPlan.affectedLinks.empty() && debugPlan.refreshClientSessions.empty() &&
+        debugPlan.restartLinks.empty() && debugPlan.restartClientTargets.empty(), "debug switches restarted live protocol sessions");
+    require(collector::config::signature(previous) != collector::config::signature(debugUpdate),
+        "debug switches were omitted from configuration publication");
 
     auto deviceUpdate = previous;
     deviceUpdate.devices.front().readInterval = 10;
@@ -2334,7 +2508,7 @@ void testRuntimeReconcile() {
     const auto serverPlan = collector::planRuntimeReconcile(serverPrevious, serverNext);
     require(serverPlan.restartLinks.contains("client-link"), "TCP Server device update did not restart the server link");
 
-    collector::ProtocolEngine engine(runtimes());
+    collector::ProtocolEngine engine(sessionFactories());
     engine.reload(previous);
     (void)engine.connected({ .connectionId = "preserved-connection", .linkId = "client-link", .remoteAddress = "127.0.0.1:15002", .targetId = "target-b", .sessionEpoch = 1 });
     engine.reload(metadataUpdate, metadataPlan.affectedLinks);
@@ -2353,7 +2527,7 @@ void testRuntimeReconcile() {
     const auto pollingPlan =
         collector::planRuntimeReconcile(pollingPrevious, pollingUpdate);
 
-    collector::ProtocolEngine refreshEngine(runtimes());
+    collector::ProtocolEngine refreshEngine(sessionFactories());
     refreshEngine.reload(pollingPrevious);
     const auto initialActions =
         refreshEngine.connected({ .connectionId = "refreshed-connection", .linkId = "client-link", .remoteAddress = "127.0.0.1:15001", .targetId = "target-a", .sessionEpoch = 2 });
@@ -2867,6 +3041,82 @@ void testEdgeParsedMessageContract() {
     const auto roundTrip = service::message::parsedFrom(streamMessage);
     require(roundTrip.linkId == parsed.linkId, "edge parsed message lost its link identity");
     require(roundTrip.rawPayloads.empty(), "edge parsed message changed empty raw payloads");
+    parsed.rawPayloads = {{0x00, 0x01, 0xFF}, {0x03, 0x00, 0x04, 0x00}};
+    service::message::StreamMessage rawStream{
+        .id = "2-0", .fields = service::message::parsedFields(parsed)};
+    require(service::message::parsedFrom(rawStream).rawPayloads == parsed.rawPayloads,
+            "edge history raw response array lost bytes or ordering in Redis serialization");
+    struct EdgeResponseProjection : service::edge::EdgeProjectionService {
+        using EdgeProjectionService::collectTelemetry;
+        using EdgeProjectionService::assembleTelemetryParts;
+        using EdgeProjectionService::storeTelemetryPart;
+    };
+    service::edge::metadata::Catalog catalog;
+    catalog[parsed.connectionId][parsed.deviceId] = {
+        .linkId = parsed.linkId, .deviceCode = parsed.deviceCode,
+        .protocol = "S7", .storagePolicy = "report", .onlineWindowMs = 60000};
+    service::edge::pb::TelemetryBatch batch;
+    auto* record = batch.add_records();
+    record->set_record_id(std::string(16, '\x01'));
+    std::uint8_t deviceBytes[16]{};
+    require(service::edge::protocol::uuidBytes(parsed.deviceId, deviceBytes), "invalid edge fixture device id");
+    record->set_device_id(service::edge::protocol::bytes(deviceBytes, sizeof(deviceBytes)));
+    record->set_protocol(service::edge::pb::PROTOCOL_S7);
+    record->set_observed_at_ms(parsed.observedAtMs);
+    record->set_raw_payload(std::string("\x03\x00\x00\x04", 4));
+    std::vector<service::message::StreamMessage> projected;
+    EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId,
+                                            parsed.occurredAtMs, batch, projected);
+    require(projected.size() == 1 && service::message::parsedFrom(projected.front()).rawPayloads ==
+                std::vector<std::vector<std::uint8_t>>{{0x03, 0x00, 0x00, 0x04}},
+            "edge wire response did not become a single-item history raw payload array");
+    record->add_raw_payloads(std::string("\x7e\x7e\x00\xff", 4));
+    projected.clear();
+    EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId,
+                                            parsed.occurredAtMs, batch, projected);
+    require(service::message::parsedFrom(projected.front()).rawPayloads ==
+                std::vector<std::vector<std::uint8_t>>{{0x7e, 0x7e, 0x00, 0xff}},
+            "edge array did not take precedence over legacy raw payload without duplication");
+    std::vector<service::edge::pb::TelemetryRecord> parts(3, *record);
+    for (std::size_t index = 0; index < parts.size(); ++index) {
+        parts[index].set_protocol(service::edge::pb::PROTOCOL_SL651);
+        parts[index].set_record_id(std::string(16, static_cast<char>(index + 1)));
+        parts[index].set_report_id(std::string(16, '\x04'));
+        parts[index].set_part_count(3);
+        parts[index].set_part_index(static_cast<std::uint32_t>(index));
+        parts[index].clear_raw_payload();
+        parts[index].clear_raw_payloads();
+    }
+    auto* value = parts[0].add_values();
+    value->set_element_id("temperature");
+    value->mutable_value()->set_double_value(12.5);
+    parts[1].add_raw_payloads(std::string("\x7e\x7e\x01\x00", 4));
+    parts[2].add_raw_payloads(std::string("\x7e\x7e\x02\xff", 4));
+    const auto assembled = EdgeResponseProjection::assembleTelemetryParts(parts);
+    require(assembled.values_size() == 1 && assembled.values(0).element_id() == "temperature" &&
+                assembled.raw_payloads_size() == 2 && assembled.raw_payloads(0) == parts[1].raw_payloads(0) &&
+                assembled.raw_payloads(1) == parts[2].raw_payloads(0) &&
+                assembled.record_id() == parts[0].report_id() && assembled.report_id().empty() &&
+                assembled.part_count() == 0,
+            "SL651 upload did not reconstruct one complete history record with ordered raw frames");
+    auto incomplete = parts;
+    incomplete.pop_back();
+    bool rejectedIncomplete = false;
+    try { (void)EdgeResponseProjection::assembleTelemetryParts(incomplete); }
+    catch (const std::runtime_error&) { rejectedIncomplete = true; }
+    require(rejectedIncomplete, "SL651 incomplete upload was published as a historical record");
+    auto mixed = parts;
+    mixed[2].set_device_id(std::string(16, '\x09'));
+    bool rejectedMixed = false;
+    try { (void)EdgeResponseProjection::assembleTelemetryParts(mixed); }
+    catch (const std::runtime_error&) { rejectedMixed = true; }
+    require(rejectedMixed, "SL651 upload mixed raw frames from different devices");
+    RecordingRedis uploadRedis(0);
+    require(!runTask(EdgeResponseProjection::storeTelemetryPart(uploadRedis, parsed.connectionId, parts[0])),
+            "SL651 incomplete stored upload emitted telemetry");
+    require(uploadRedis.keys.size() == 1 && uploadRedis.keys[0].find(parsed.deviceId) != std::string::npos &&
+                uploadRedis.arguments.size() == 4 && uploadRedis.arguments[1] == "0" && uploadRedis.arguments[2] == "3",
+            "SL651 stored upload lost device isolation or part addressing");
     require(roundTrip.deviceCode == "PCS7" && roundTrip.source == "edge" && roundTrip.storagePolicy == "change", "edge parsed message did not round-trip required fields");
 
     auto invalidPolicy = streamMessage;
@@ -2940,6 +3190,8 @@ int main() {
         run("sl651 element order", testSl651ElementOrder);
         run("sl651 encodings", testSl651AllEncodingsAndFunctionCodes);
         run("sl651 multi-packet images", testSl651MultiPacketImages);
+        run("sl651 communication modes", testSl651CommunicationModes);
+        run("sl651 fixed positions", testSl651FixedPosition);
         run("modbus", testModbus);
         run("modbus types and priority", testModbusTypesAndPriority);
         run("modbus data types", testModbusAllDataTypesAndByteOrders);
@@ -2971,10 +3223,6 @@ int main() {
             testLatestProjectionRejectsInvalidPreservedDeadline);
         run("alert schedule invalid stored duration",
             testAlertScheduleSkipsInvalidStoredDuration);
-        run("grouped bounded stream invalid depth",
-            testGroupedBoundedStreamSkipsInvalidDepth);
-        run("grouped stream stale ACK depth",
-            testGroupedAckDoesNotDecrementStaleDepth);
         run("command value decimal parsing", testCommandValueDecimalParsing);
         run("edge parsed message contract", testEdgeParsedMessageContract);
         run("atomic pending command dispatch", testAtomicPendingCommandDispatch);

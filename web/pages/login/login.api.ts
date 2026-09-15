@@ -1,6 +1,6 @@
-import type { RequestConfig } from '@/utils/http';
-import request from '@/utils/http';
-import { createSnapshotStream } from '@/utils/snapshot-request';
+import type { RequestConfig } from '@/lib/http';
+import request from '@/lib/http';
+import { createSnapshotStream } from '@/lib/snapshot-request';
 import { loginSchema, refreshTokenSchema } from './login.schema';
 import type { Auth } from './login.types';
 

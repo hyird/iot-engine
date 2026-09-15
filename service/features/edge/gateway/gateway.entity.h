@@ -1,5 +1,10 @@
 #pragma once
 
+#include <string>
+#include <string_view>
+#include <optional>
+#include "service/common/message.h"
+
 #include <cstdint>
 #include <memory_resource>
 #include <string>
@@ -19,7 +24,7 @@ RUVIA_DB_ENTITY(CommandAttemptEntity, "command_attempt",
     RUVIA_DB_COLUMN(submitted_by, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kText}),
     RUVIA_DB_COLUMN(node_id, std::pmr::string,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kText}),
+        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kText, .defaultExpression = ruvia::FixedString{"''::text"}}),
     RUVIA_DB_COLUMN(max_length, std::int32_t,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kInteger}),
     RUVIA_DB_COLUMN(claimed_at, std::pmr::string,
@@ -29,7 +34,7 @@ RUVIA_DB_ENTITY(CommandAttemptEntity, "command_attempt",
     RUVIA_DB_COLUMN(sent_at, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz, .nullable = true}),
     RUVIA_DB_COLUMN(deadline, std::pmr::string,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz}))
+        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz, .defaultExpression = ruvia::FixedString{"(now() + '00:01:00'::interval)"}}))
 
 RUVIA_DB_ENTITY(CommandOperationEntity, "command_operation",
     RUVIA_DB_COLUMN(id, std::pmr::string,
@@ -47,13 +52,13 @@ RUVIA_DB_ENTITY(CommandOperationEntity, "command_operation",
     RUVIA_DB_COLUMN(status, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kText}),
     RUVIA_DB_COLUMN(reason, std::pmr::string,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kText}),
+        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kText, .defaultExpression = ruvia::FixedString{"''::text"}}),
     RUVIA_DB_COLUMN(elements, std::pmr::string,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kJsonb}),
+        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kJsonb, .defaultExpression = ruvia::FixedString{"'[]'::jsonb"}}),
     RUVIA_DB_COLUMN(actual_values, std::pmr::string,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kJsonb}),
+        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kJsonb, .defaultExpression = ruvia::FixedString{"'[]'::jsonb"}}),
     RUVIA_DB_COLUMN(created_at, std::pmr::string,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz}),
+        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz, .defaultExpression = ruvia::FixedString{"now()"}}),
     RUVIA_DB_COLUMN(completed_at, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz, .nullable = true}),
     RUVIA_DB_COLUMN(model_id, std::pmr::string,
@@ -77,7 +82,7 @@ RUVIA_DB_ENTITY(EdgeFirmwareEntity, "edge_firmware",
     RUVIA_DB_COLUMN(created_by, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kUuid}),
     RUVIA_DB_COLUMN(created_at, std::pmr::string,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz}))
+        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz, .defaultExpression = ruvia::FixedString{"now()"}}))
 
 RUVIA_DB_ENTITY(EdgeTaskEntity, "edge_task",
     RUVIA_DB_COLUMN(id, std::pmr::string,
@@ -87,18 +92,51 @@ RUVIA_DB_ENTITY(EdgeTaskEntity, "edge_task",
     RUVIA_DB_COLUMN(task_type, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kVarchar, .length = 30}),
     RUVIA_DB_COLUMN(status, std::pmr::string,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kVarchar, .length = 20}),
+        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kVarchar, .length = 20, .defaultExpression = ruvia::FixedString{"'pending'::character varying"}}),
     RUVIA_DB_COLUMN(request, std::pmr::string,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kJsonb}),
+        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kJsonb, .defaultExpression = ruvia::FixedString{"'{}'::jsonb"}}),
     RUVIA_DB_COLUMN(result, std::pmr::string,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kJsonb}),
+        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kJsonb, .defaultExpression = ruvia::FixedString{"'{}'::jsonb"}}),
     RUVIA_DB_COLUMN(created_by, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kUuid}),
     RUVIA_DB_COLUMN(created_at, std::pmr::string,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz}),
+        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz, .defaultExpression = ruvia::FixedString{"now()"}}),
     RUVIA_DB_COLUMN(updated_at, std::pmr::string,
-        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz}),
+        ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz, .defaultExpression = ruvia::FixedString{"now()"}}),
     RUVIA_DB_COLUMN(completed_at, std::pmr::string,
         ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kTimestampTz, .nullable = true}))
 
 } // namespace service::edge::gateway::persistence
+
+namespace service::edge::gateway {
+
+// 认证投影使用 Redis String 存储 nodeId|status；固定 Hash ORM 无法读取此标量格式。
+struct EnrollmentRecord final {
+    std::string nodeId;
+    std::string status;
+
+    static std::optional<EnrollmentRecord> decode(std::string_view value) {
+        const auto separator = value.find('|');
+        if (separator == std::string_view::npos) return std::nullopt;
+        return EnrollmentRecord{std::string(value.substr(0, separator)),
+                                std::string(value.substr(separator + 1))};
+    }
+};
+
+// Redis String 保存设备返回的 Protobuf 字节；固定 Hash ORM 不能映射此标量格式。
+// 请求结果带过期时间，成功快照持续保留，期限和写入顺序由 GatewayService 管理。
+struct LogResultRecord final {
+    std::string protobufBytes;
+
+    static std::string responseKey(std::string_view requestId) {
+        return "iot:edge:logs:" + std::string(requestId);
+    }
+    static std::string snapshotKey(std::string_view nodeId) {
+        return "iot:edge:logs:snapshot:" + std::string(nodeId);
+    }
+    static std::string levelKey(std::string_view requestId) {
+        return "iot:edge:logs:level:" + std::string(requestId);
+    }
+};
+
+} // namespace service::edge::gateway

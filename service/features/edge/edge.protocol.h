@@ -2,10 +2,8 @@
 
 #include <array>
 #include <cctype>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <random>
 #include <string>
 #include <string_view>
 
@@ -171,40 +169,21 @@ inline bool fitsNanopbLimits(const google::protobuf::Message& message) {
     return true;
 }
 
-inline std::int64_t nowMs() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::system_clock::now().time_since_epoch())
-        .count();
-}
-
-inline std::array<std::uint8_t, 16> randomUuidV7Bytes() {
-    static thread_local std::mt19937_64 random(std::random_device{}());
-    std::array<std::uint8_t, 16> value{};
-    auto time = static_cast<std::uint64_t>(nowMs());
-    for (int index = 5; index >= 0; --index) {
-        value[static_cast<std::size_t>(index)] = static_cast<std::uint8_t>(time & 0xffU);
-        time >>= 8U;
-    }
-    for (std::size_t index = 6; index < value.size(); ++index)
-        value[index] = static_cast<std::uint8_t>(random() & 0xffU);
-    value[6] = static_cast<std::uint8_t>(0x70U | (value[6] & 0x0fU));
-    value[8] = static_cast<std::uint8_t>(0x80U | (value[8] & 0x3fU));
-    return value;
-}
-
-inline pb::Envelope outbound(std::string_view nodeId, std::uint64_t epoch = 0,
+inline pb::Envelope outbound(std::string_view messageId, std::int64_t createdAtMs,
+                             std::string_view platformId, std::string_view nodeId, std::uint64_t epoch = 0,
                              std::uint64_t sequence = 0,
                              std::uint32_t protocolVersion = kProtocolVersion) {
     pb::Envelope result;
     result.set_protocol_version(protocolVersion);
     result.set_session_epoch(epoch);
     result.set_sequence(sequence);
-    result.set_created_at_ms(nowMs());
-    const auto messageId = randomUuidV7Bytes();
-    result.set_message_id(bytes(messageId.data(), messageId.size()));
+    result.set_created_at_ms(createdAtMs);
+    std::uint8_t message[16]{};
+    if (uuidBytes(messageId, message))
+        result.set_message_id(bytes(message, 16));
     std::uint8_t platform[16]{};
     std::uint8_t node[16]{};
-    if (uuidBytes(platformId(), platform))
+    if (uuidBytes(platformId, platform))
         result.set_platform_id(bytes(platform, 16));
     if (uuidBytes(nodeId, node))
         result.set_node_id(bytes(node, 16));

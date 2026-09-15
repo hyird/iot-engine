@@ -1,11 +1,20 @@
-import request from '@/utils/http';
-import type { PaginatedResult } from '@/utils/pagination';
+import request from '@/lib/http';
+import type { DebugPacket } from '@/types/packet_debug';
+import type { PaginatedResult } from '@/types/pagination';
 import { appendQueryParams } from '@/utils/query';
-import { createSnapshotStream } from '@/utils/snapshot-request';
-import { linkIdSchema, linkListQuerySchema, saveLinkSchema } from './link.schema';
+import { createSnapshotStream } from '@/lib/snapshot-request';
+import { linkDebugSchema, linkIdSchema, linkListQuerySchema, saveLinkSchema } from './link.schema';
 import type { Link } from './link.types';
 
 const BASE = '/v1/link';
+export const setDebug = (id: string, enabled: boolean) =>
+    request.put<void>(
+        `${BASE}/${linkIdSchema.parse(id)}/debug`,
+        linkDebugSchema.parse({ enabled })
+    );
+export const getDebugPackets = (id: string) =>
+    createSnapshotStream<DebugPacket[]>(`${BASE}/${linkIdSchema.parse(id)}/debug/packets`);
+
 export const getList = (params?: Link.Query) =>
     createSnapshotStream<PaginatedResult<Link.Item>>(
         appendQueryParams(BASE, linkListQuerySchema.parse(params ?? {}))

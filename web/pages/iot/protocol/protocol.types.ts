@@ -1,4 +1,4 @@
-import type { PageParams } from '@/utils/pagination';
+import type { PageParams } from '@/types/pagination';
 /**
  * 协议配置类型定义
  */
@@ -74,6 +74,9 @@ export interface SL651Element {
     /** 分组名称（用于配置页按卡片分组展示） */
     group?: string;
     guideHex: string;
+    positionMode?: 'GUIDE' | 'OFFSET';
+    /** 从重组正文首字节（流水号）起算的零基字节偏移。 */
+    byteOffset?: number;
     encode: SL651EncodeType;
     length: number;
     digits: number;
@@ -403,4 +406,23 @@ export interface FormMapItem {
         operator?: 'AND' | 'OR';
         conditions?: FormCondition[];
     };
+}
+
+/** 导出配置项（不含 id/时间戳） */
+export interface ProtocolExportItem {
+    protocol: Protocol.Type;
+    name: string;
+    enabled: boolean;
+    config: Protocol.Item['config'];
+    remark?: string;
+}
+/** 导入结果 */
+export interface ProtocolImportResult {
+    total: number;
+    success: number;
+    renamed: string[];
+    failed: {
+        name: string;
+        reason: string;
+    }[];
 }

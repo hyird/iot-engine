@@ -1,5 +1,7 @@
 #pragma once
 
+#include <charconv>
+#include <cstdint>
 #include <cmath>
 #include <locale>
 #include <optional>
@@ -8,6 +10,17 @@
 #include <string_view>
 
 namespace service::utils {
+
+inline std::optional<std::int64_t> parseInt64(std::optional<std::string_view> input) {
+    if (!input || input->empty())
+        return std::nullopt;
+    std::int64_t value{};
+    const auto [ptr, ec] = std::from_chars(input->data(), input->data() + input->size(), value);
+    if (ec != std::errc{} || ptr != input->data() + input->size())
+        return std::nullopt;
+    return value;
+}
+
 
 inline bool decimalSyntax(std::string_view value) noexcept {
     if (value.empty())

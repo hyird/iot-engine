@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "service/features/gb28181/gb28181.service.h"
+#include "service/features/gb28181/gb28181.protocol.h"
 #include "service/features/gb28181/device/device.runtime.h"
 #include "service/features/gb28181/media/media.runtime.h"
 
@@ -33,6 +34,39 @@ int main() {
         .name = "Reported channel",
         .customName = "Gate camera",
     });
+    namespace projection = service::gb28181::projection_protocol;
+    service::message::StreamMessage encodedDevice;
+    encodedDevice.fields = projection::deviceProjectionFields(
+        device, DeviceChange::Catalog, 2, "owner-token");
+    require(encodedDevice.get("schema_version") == "1" &&
+                encodedDevice.get("change") == "catalog" &&
+                encodedDevice.get("owner_token") == "owner-token",
+            "device projection envelope changed");
+    const auto decodedDevice = projection::deviceFromProjection(encodedDevice);
+    require(decodedDevice.id == device.id && decodedDevice.customName == device.customName &&
+                decodedDevice.channels.size() == 1 &&
+                decodedDevice.channels[0].customName == "Gate camera",
+            "device projection lost identity or channel custom name");
+    auto invalidDevice = encodedDevice;
+    for (auto& field : invalidDevice.fields) {
+      if (field.name == "channel_count") field.value = "100001";
+    }
+    bool rejectedCount = false;
+    try { (void)projection::deviceFromProjection(invalidDevice); }
+    catch (const std::runtime_error&) { rejectedCount = true; }
+    require(rejectedCount, "projection accepted an excessive channel count");
+    StreamStatus streamProjection;
+    streamProjection.app = "rtp";
+    streamProjection.stream = "preview-stream";
+    streamProjection.schema = "rtsp";
+    streamProjection.online = true;
+    streamProjection.readerCount = 3;
+    service::message::StreamMessage encodedStream;
+    encodedStream.fields = projection::streamProjectionFields(streamProjection, 2, "owner-token");
+    const auto decodedStream = projection::streamFromProjection(encodedStream);
+    require(decodedStream.online && decodedStream.readerCount == 3 &&
+                decodedStream.stream == "preview-stream",
+            "stream projection lost viewer or identity fields");
     DeviceRegistry registry;
     registry.replace({device});
     registry.updateCatalog(

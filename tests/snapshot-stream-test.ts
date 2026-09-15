@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { SnapshotStream, type SnapshotObserver } from '../web/utils/snapshot-stream';
+import { SnapshotStream, type SnapshotObserver } from '../web/lib/snapshot-stream';
 
 describe('SSE query resource ownership', () => {
     test('command completion keeps one subscription until a terminal snapshot', async () => {

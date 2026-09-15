@@ -1,5 +1,6 @@
 #pragma once
 
+#include "service/utils/number.h"
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -70,7 +71,7 @@ class EdgeService {
         const auto revision = co_await service::rpc::call(
             context, "edge", "queue-snapshot",
             std::string(nodeId) + "\n" + principal.userId);
-        const auto parsed = service::common::parseInt64(
+        const auto parsed = service::utils::parseInt64(
             std::optional<std::string_view>(revision));
         if (!parsed || *parsed < 0)
             service::common::fail(17005, "边缘配置生成失败", 502);

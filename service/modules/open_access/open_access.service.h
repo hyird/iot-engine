@@ -1,6 +1,8 @@
 #pragma once
 
+#include "service/utils/number.h"
 #include "service/modules/open_access/open_access.entity.h"
+#include "service/modules/open_access/open_access.schema.h"
 
 #include <algorithm>
 #include <array>
@@ -159,13 +161,13 @@ class AccessService final {
 
     ruvia::Task<std::string> createKey(ruvia::Context& c, const ruvia::JsonValue& payload) {
         const auto principal = service::middleware::requireAuth(c);
-        const auto name = requiredString(payload, "name", "调用配置名称不能为空", 64);
-        const auto status = optionalStatus(payload, "enabled");
-        const auto scopes = requiredScopes(payload);
-        const auto devices = requiredUuids(payload, "deviceIds", "至少选择一个设备", 10000);
+        const auto name = AccessPayloadValidator::requiredString(payload, "name", "调用配置名称不能为空", 64);
+        const auto status = AccessPayloadValidator::optionalStatus(payload, "enabled");
+        const auto scopes = AccessPayloadValidator::requiredScopes(payload);
+        const auto devices = AccessPayloadValidator::requiredUuids(payload, "deviceIds", "至少选择一个设备", 10000);
         co_await ensureDevicesAccessible(c, devices, scopes.contains(std::string(kScopeCommand)));
-        const auto expiresAt = optionalNullableString(payload, "expiresAt", 64);
-        const auto remark = optionalNullableString(payload, "remark", 200);
+        const auto expiresAt = AccessPayloadValidator::optionalNullableString(payload, "expiresAt", 64);
+        const auto remark = AccessPayloadValidator::optionalNullableString(payload, "remark", 200);
         co_await ensureKeyNameAvailable(c, name, std::nullopt);
 
         const auto id = service::common::nextUuidV7();
@@ -204,24 +206,24 @@ class AccessService final {
                                 const ruvia::JsonValue& payload) {
         service::common::requireUuid(19002, id, "调用配置 ID 无效");
         const auto existing = co_await requireKey(c, id);
-        const auto name = optionalString(payload, "name", 64).value_or(existing.name);
+        const auto name = AccessPayloadValidator::optionalString(payload, "name", 64).value_or(existing.name);
         if (name.empty())
             service::common::fail(19002, "调用配置名称不能为空", 400);
-        const auto status = optionalStatus(payload, existing.status);
-        const auto scopes = service::utils::jsonField(payload, "scopes") ? requiredScopes(payload)
+        const auto status = AccessPayloadValidator::optionalStatus(payload, existing.status);
+        const auto scopes = service::utils::jsonField(payload, "scopes") ? AccessPayloadValidator::requiredScopes(payload)
                                                          : existing.scopes;
         const auto deviceField = service::utils::jsonField(payload, "deviceIds");
         const auto devices = deviceField
-                                 ? requiredUuids(payload, "deviceIds", "至少选择一个设备", 10000)
+                                 ? AccessPayloadValidator::requiredUuids(payload, "deviceIds", "至少选择一个设备", 10000)
                                  : existing.deviceIds;
         co_await ensureDevicesAccessible(c, devices, scopes.contains(std::string(kScopeCommand)));
         co_await ensureKeyNameAvailable(c, name, std::string(id));
 
         const auto expiresAt = service::utils::jsonField(payload, "expiresAt")
-                                   ? optionalNullableString(payload, "expiresAt", 64)
+                                   ? AccessPayloadValidator::optionalNullableString(payload, "expiresAt", 64)
                                    : existing.expiresAt;
         const auto remark = service::utils::jsonField(payload, "remark")
-                                ? optionalNullableString(payload, "remark", 200)
+                                ? AccessPayloadValidator::optionalNullableString(payload, "remark", 200)
                                 : existing.remark;
         const auto scopeJson = stringArrayJson(scopes);
         const auto expiresAtValue = expiresAt.value_or("");
@@ -381,18 +383,18 @@ class AccessService final {
     }
 
     ruvia::Task<std::string> createWebhook(ruvia::Context& c, const ruvia::JsonValue& payload) {
-        const auto accessKeyId = requiredUuid(payload, "accessKeyId", "请选择调用配置");
+        const auto accessKeyId = AccessPayloadValidator::requiredUuid(payload, "accessKeyId", "请选择调用配置");
         (void)co_await requireKey(c, accessKeyId);
-        const auto name = requiredString(payload, "name", "Webhook 名称不能为空", 64);
-        const auto url = requiredString(payload, "url", "Webhook 地址不能为空", 2048);
-        validateWebhookUrl(url);
-        const auto status = optionalStatus(payload, "enabled");
-        const auto timeout = optionalInteger(payload, "timeoutSeconds", 5, 1, 30);
-        const auto skipTlsVerify = optionalBoolean(payload, "skipTlsVerify", false);
-        const auto headers = objectJson(payload, "headers", "{}");
-        co_await validateHeaders(c, headers);
-        const auto events = eventTypes(payload);
-        const auto secret = optionalNullableString(payload, "secret", 255);
+        const auto name = AccessPayloadValidator::requiredString(payload, "name", "Webhook 名称不能为空", 64);
+        const auto url = AccessPayloadValidator::requiredString(payload, "url", "Webhook 地址不能为空", 2048);
+        AccessPayloadValidator::validateWebhookUrl(url);
+        const auto status = AccessPayloadValidator::optionalStatus(payload, "enabled");
+        const auto timeout = AccessPayloadValidator::optionalInteger(payload, "timeoutSeconds", 5, 1, 30);
+        const auto skipTlsVerify = AccessPayloadValidator::optionalBoolean(payload, "skipTlsVerify", false);
+        const auto headers = AccessPayloadValidator::objectJson(payload, "headers", "{}");
+        AccessPayloadValidator::validateHeaders(headers);
+        const auto events = AccessPayloadValidator::eventTypes(payload);
+        const auto secret = AccessPayloadValidator::optionalNullableString(payload, "secret", 255);
         co_await ensureWebhookNameAvailable(c, accessKeyId, name, std::nullopt);
         const auto id = service::common::nextUuidV7();
         const auto eventJson = stringArrayJson(events);
@@ -424,30 +426,30 @@ class AccessService final {
         service::common::requireUuid(19002, id, "Webhook ID 无效");
         const auto existing = co_await requireWebhook(c, id);
         const auto accessKeyId = service::utils::jsonField(payload, "accessKeyId")
-                                     ? requiredUuid(payload, "accessKeyId", "请选择调用配置")
+                                     ? AccessPayloadValidator::requiredUuid(payload, "accessKeyId", "请选择调用配置")
                                      : existing.accessKeyId;
         (void)co_await requireKey(c, accessKeyId);
-        const auto name = optionalString(payload, "name", 64).value_or(existing.name);
-        const auto url = optionalString(payload, "url", 2048).value_or(existing.url);
+        const auto name = AccessPayloadValidator::optionalString(payload, "name", 64).value_or(existing.name);
+        const auto url = AccessPayloadValidator::optionalString(payload, "url", 2048).value_or(existing.url);
         if (name.empty())
             service::common::fail(19002, "Webhook 名称不能为空", 400);
-        validateWebhookUrl(url);
-        const auto status = optionalStatus(payload, existing.status);
+        AccessPayloadValidator::validateWebhookUrl(url);
+        const auto status = AccessPayloadValidator::optionalStatus(payload, existing.status);
         const auto timeout =
             service::utils::jsonField(payload, "timeoutSeconds")
-                ? optionalInteger(payload, "timeoutSeconds", existing.timeout, 1, 30)
+                ? AccessPayloadValidator::optionalInteger(payload, "timeoutSeconds", existing.timeout, 1, 30)
                 : existing.timeout;
         const auto skipTlsVerify =
             service::utils::jsonField(payload, "skipTlsVerify")
-                ? optionalBoolean(payload, "skipTlsVerify", existing.skipTlsVerify)
+                ? AccessPayloadValidator::optionalBoolean(payload, "skipTlsVerify", existing.skipTlsVerify)
                 : existing.skipTlsVerify;
         const auto headers =
-            service::utils::jsonField(payload, "headers") ? objectJson(payload, "headers", "{}") : existing.headers;
-        co_await validateHeaders(c, headers);
-        const auto events = service::utils::jsonField(payload, "eventTypes") ? eventTypes(payload)
+            service::utils::jsonField(payload, "headers") ? AccessPayloadValidator::objectJson(payload, "headers", "{}") : existing.headers;
+        AccessPayloadValidator::validateHeaders(headers);
+        const auto events = service::utils::jsonField(payload, "eventTypes") ? AccessPayloadValidator::eventTypes(payload)
                                                              : existing.events;
         const auto secret = service::utils::jsonField(payload, "secret")
-                                ? optionalNullableString(payload, "secret", 255)
+                                ? AccessPayloadValidator::optionalNullableString(payload, "secret", 255)
                                 : existing.secret;
         co_await ensureWebhookNameAvailable(c, accessKeyId, name, std::string(id));
         const auto eventJson = stringArrayJson(events);
@@ -1090,115 +1092,6 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
         return std::string(rows.front()[0].value().value_or(std::string_view{}));
     }
 
-    static std::string requiredString(const ruvia::JsonValue& payload, std::string_view field,
-                                      std::string_view message, std::size_t maximum) {
-        const auto value = payload.get<ruvia::String>(field);
-        if (!value)
-            service::common::fail(19002, std::string(message), 400);
-        auto result = service::utils::trim(value->view());
-        if (result.empty() || result.size() > maximum)
-            service::common::fail(19002, std::string(message), 400);
-        return result;
-    }
-
-    static std::optional<std::string> optionalString(const ruvia::JsonValue& payload,
-                                                     std::string_view field, std::size_t maximum) {
-        const auto raw = service::utils::jsonField(payload, field);
-        if (!raw)
-            return std::nullopt;
-        const auto value = payload.get<ruvia::String>(field);
-        if (!value)
-            service::common::fail(19002, std::string(field) + " 必须是字符串", 400);
-        auto result = service::utils::trim(value->view());
-        if (result.size() > maximum)
-            service::common::fail(19002, std::string(field) + " 长度超出限制", 400);
-        return result;
-    }
-
-    static std::optional<std::string> optionalNullableString(const ruvia::JsonValue& payload,
-                                                             std::string_view field,
-                                                             std::size_t maximum) {
-        const auto raw = service::utils::jsonField(payload, field);
-        if (!raw || raw->isNull())
-            return std::nullopt;
-        const auto value = payload.get<ruvia::String>(field);
-        if (!value)
-            service::common::fail(19002, std::string(field) + " 必须是字符串或 null", 400);
-        auto result = service::utils::trim(value->view());
-        if (result.size() > maximum)
-            service::common::fail(19002, std::string(field) + " 长度超出限制", 400);
-        return result.empty() ? std::nullopt : std::optional<std::string>(std::move(result));
-    }
-
-    static std::string optionalStatus(const ruvia::JsonValue& payload, std::string_view fallback) {
-        const auto status = optionalString(payload, "status", 16).value_or(std::string(fallback));
-        if (status != "enabled" && status != "disabled")
-            service::common::fail(19002, "status 只能为 enabled 或 disabled", 400);
-        return status;
-    }
-
-    static std::int64_t optionalInteger(const ruvia::JsonValue& payload, std::string_view field,
-                                        std::int64_t fallback, std::int64_t minimum,
-                                        std::int64_t maximum) {
-        const auto raw = service::utils::jsonField(payload, field);
-        if (!raw)
-            return fallback;
-        const auto value = payload.get<ruvia::Int64>(field);
-        if (!value)
-            service::common::fail(19002, std::string(field) + " 必须是整数", 400);
-        const auto result = static_cast<std::int64_t>(*value);
-        if (result < minimum || result > maximum)
-            service::common::fail(19002, std::string(field) + " 超出允许范围", 400);
-        return result;
-    }
-
-    static bool optionalBoolean(const ruvia::JsonValue& payload, std::string_view field,
-                                bool fallback) {
-        const auto raw = service::utils::jsonField(payload, field);
-        if (!raw)
-            return fallback;
-        const auto value = payload.get<ruvia::Bool>(field);
-        if (!value)
-            service::common::fail(19002, std::string(field) + " 必须是布尔值", 400);
-        return static_cast<bool>(*value);
-    }
-
-    static std::set<std::string, std::less<>> requiredScopes(const ruvia::JsonValue& payload) {
-        const auto values = payload.get<ruvia::Array<ruvia::String>>("scopes");
-        if (!values || values->empty())
-            service::common::fail(19002, "至少选择一个开放权限", 400);
-        std::set<std::string, std::less<>> result;
-        for (const auto& value : *values) {
-            if (!supportedScope(value.view()))
-                service::common::fail(19002, "包含不支持的开放权限", 400);
-            result.emplace(value.view());
-        }
-        return result;
-    }
-
-    static std::vector<std::string> requiredUuids(const ruvia::JsonValue& payload,
-                                                  std::string_view field, std::string_view message,
-                                                  std::size_t maximum) {
-        const auto values = payload.get<ruvia::Array<ruvia::String>>(field);
-        if (!values || values->empty() || values->size() > maximum)
-            service::common::fail(19002, std::string(message), 400);
-        std::set<std::string, std::less<>> unique;
-        for (const auto& value : *values) {
-            service::common::requireUuid(19002, value.view(), std::string(field) + " 包含无效 UUID");
-            unique.emplace(value.view());
-        }
-        return {unique.begin(), unique.end()};
-    }
-
-    static std::string requiredUuid(const ruvia::JsonValue& payload, std::string_view field,
-                                    std::string_view message) {
-        const auto value = payload.get<ruvia::String>(field);
-        if (!value)
-            service::common::fail(19002, std::string(message), 400);
-        service::common::requireUuid(19002, value->view(), message);
-        return std::string(value->view());
-    }
-
     template <typename Range> static std::string stringArrayJson(const Range& values) {
         std::string result{"["};
         bool first = true;
@@ -1227,94 +1120,6 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
         return result;
     }
 
-    static std::string objectJson(const ruvia::JsonValue& payload, std::string_view field,
-                                  std::string_view fallback) {
-        const auto value = service::utils::jsonField(payload, field);
-        if (!value)
-            return std::string(fallback);
-        if (!value->isObject())
-            service::common::fail(19002, std::string(field) + " 必须是对象", 400);
-        return std::string(value->view());
-    }
-
-    static std::set<std::string, std::less<>> eventTypes(const ruvia::JsonValue& payload) {
-        const auto raw = service::utils::jsonField(payload, "eventTypes");
-        if (!raw)
-            return {"device.data.reported"};
-        const auto values = payload.get<ruvia::Array<ruvia::String>>("eventTypes");
-        if (!values || values->empty())
-            service::common::fail(19002, "eventTypes 必须是非空字符串数组", 400);
-        std::set<std::string, std::less<>> result;
-        for (const auto& value : *values) {
-            if (!service::message::supportedEvent(value.view()))
-                service::common::fail(19002, "包含不支持的 Webhook 事件", 400);
-            result.emplace(value.view());
-        }
-        return result;
-    }
-
-    static void validateWebhookUrl(std::string_view url) {
-        if ((!url.starts_with("http://") && !url.starts_with("https://")) ||
-            url.find('\r') != std::string_view::npos || url.find('\n') != std::string_view::npos ||
-            url.find('@') != std::string_view::npos || url.find('#') != std::string_view::npos)
-            service::common::fail(19002, "Webhook 地址必须是有效的 HTTP(S) URL", 400);
-        const auto authority = url.find("://") + 3;
-        if (authority >= url.size() || url[authority] == '/' || url[authority] == '?' ||
-            url[authority] == '#')
-            service::common::fail(19002, "Webhook 地址主机无效", 400);
-    }
-
-    static ruvia::Task<void> validateHeaders(ruvia::Context& c, std::string_view headers) {
-        ruvia::DbQuery invalid(c.pool());
-        const auto key = invalid.column("key", "header");
-        const auto value = invalid.column("value", "header");
-        const auto path = invalid.cast(
-            invalid.value("{}"),
-            ruvia::DbTypeDefinition{.dataType = ruvia::DbDataType::kText, .array = true});
-        auto predicate = invalid.unary(
-            ruvia::DbUnaryOperator::kNot,
-            invalid.binary(key, ruvia::DbBinaryOperator::kRegex,
-                          invalid.value("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")));
-        predicate = invalid.binary(
-            predicate, ruvia::DbBinaryOperator::kOr,
-            invalid.binary(invalid.call("jsonb_typeof", {value}),
-                           ruvia::DbBinaryOperator::kNotEqual,
-                           invalid.value("string")));
-        predicate = invalid.binary(
-            predicate, ruvia::DbBinaryOperator::kOr,
-            invalid.binary(invalid.binary(value, ruvia::DbBinaryOperator::kJsonPathText, path),
-                           ruvia::DbBinaryOperator::kRegex, invalid.value("[\\r\\n]")));
-        const auto reserved = invalid.call(
-            "lower", {key});
-        predicate = invalid.binary(
-            predicate, ruvia::DbBinaryOperator::kOr,
-            invalid.binary(
-                reserved, ruvia::DbBinaryOperator::kIn,
-                invalid.list({textKey(invalid, "host"), textKey(invalid, "content-length"),
-                              textKey(invalid, "connection"), textKey(invalid, "x-iot-event"),
-                              textKey(invalid, "x-iot-timestamp"),
-                              textKey(invalid, "x-iot-delivery"),
-                              textKey(invalid, "x-iot-signature"),
-                              textKey(invalid, "content-type"), textKey(invalid, "user-agent"),
-                              textKey(invalid, "transfer-encoding"), textKey(invalid, "trailer"),
-                              textKey(invalid, "te"), textKey(invalid, "upgrade"),
-                              textKey(invalid, "expect"),
-                              textKey(invalid, "proxy-connection")})));
-        invalid.select(service::device::DeviceAccessService::integer(invalid, 1))
-            .fromFunction(
-                invalid.call("jsonb_each",
-                             {invalid.cast(invalid.value(headers), ruvia::DbDataType::kJsonb)}),
-                "header", {.lateral = true,
-                            .columns = {{.name = "key"}, {.name = "value"}}})
-            .where(predicate)
-            .limit(1);
-        ruvia::DbQuery query(c.pool());
-        query.select(query.unary(ruvia::DbUnaryOperator::kNot, query.exists(invalid)));
-        const auto rows = co_await c.db().query(query);
-        if (rows.front()[0].value().value_or(std::string_view{}) != "t")
-            service::common::fail(19002, "自定义 Header 包含非法或保留字段", 400);
-    }
-
     ruvia::Task<void> ensureDevicesAccessible(ruvia::Context& c,
                                               const std::vector<std::string>& ids,
                                               bool requireOperate) {
@@ -1337,7 +1142,7 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
                                             query, requireOperate ? 2 : 1))));
         const auto rows = co_await c.db().query(query);
         const auto visible =
-            service::common::parseInt64(
+            service::utils::parseInt64(
                 std::optional<std::string_view>{rows.front()[0].value().value_or(std::string_view{})})
                 .value_or(-1);
         if (visible != static_cast<std::int64_t>(ids.size()))
@@ -1478,7 +1283,7 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
         state.url = std::string(row[2].value().value_or(std::string_view{}));
         state.status = std::string(row[3].value().value_or(std::string_view{}));
         state.timeout =
-            service::common::parseInt64(std::optional<std::string_view>{row[4].value().value_or(std::string_view{})})
+            service::utils::parseInt64(std::optional<std::string_view>{row[4].value().value_or(std::string_view{})})
                 .value_or(state.timeout);
         state.skipTlsVerify = row[5].value().value_or(std::string_view{}) == "1";
         state.headers = std::string(row[6].value().value_or(std::string_view{}));

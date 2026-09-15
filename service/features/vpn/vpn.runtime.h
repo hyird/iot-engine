@@ -25,15 +25,6 @@
 
 namespace service::vpn {
 
-inline std::string runtimeStatusJson(const wireguard::RuntimeStatus& result) {
-    return "{\"platformSupported\":" +
-        std::string(result.supported ? "true" : "false") +
-        ",\"configured\":" + std::string(result.configured ? "true" : "false") +
-        ",\"code\":" + service::utils::jsonQuoted(result.code) +
-        ",\"message\":" + service::utils::jsonQuoted(result.message) +
-        ",\"runtimePeerCount\":" + std::to_string(result.peerCount) + "}";
-}
-
 class VpnHubRuntime final {
   public:
     explicit VpnHubRuntime(wireguard::HubConfig config) : hubConfig_(std::move(config)) {}
@@ -106,60 +97,6 @@ class VpnHubRuntime final {
     wireguard::HubConfig hubConfig_;
     ruvia::WebWorkerHandle worker_;
     std::shared_future<void> stopped_;
-};
-
-class VpnControlHandler final {
-  public:
-    explicit VpnControlHandler(
-        wireguard::HubConfig fallback,
-        std::string platformId =
-            std::string(service::edge::protocol::kDefaultPlatformId)
-    )
-        : fallback_(std::move(fallback)), platformId_(std::move(platformId)) {}
-
-    ruvia::Task<std::string> handle(ruvia::WebWorkerContext& context, std::string_view operation, std::string_view payload, ruvia::StopToken stop) {
-        if (stop.stopRequested()) {
-            service::common::fail(10004, "VPN background operation cancelled", 503);
-        }
-
-        if (operation == "queue-edge-config") {
-            const auto separator = payload.find('\n');
-            if (separator == std::string_view::npos || separator == 0 ||
-                separator + 1 >= payload.size() ||
-                !service::common::isUuid(payload.substr(0, separator)) ||
-                !service::common::isUuid(payload.substr(separator + 1))) {
-                service::common::fail(10002, "VPN Edge 配置请求无效", 400);
-            }
-            co_await queueEdgeConfig(context, payload.substr(0, separator), payload.substr(separator + 1), platformId_);
-            co_return "{}";
-        }
-
-        if (operation == "reconcile" || operation == "wireguard-reconcile" ||
-            operation == "firewall-reconcile") {
-            const auto result = co_await VpnHubService::reconcile(context, fallback_);
-            if (operation == "reconcile" && result.supported && !result.configured &&
-                result.code != "hub_config_missing") {
-                service::common::fail(21005, "VPN Hub reconciliation failed: " + result.message, 503);
-            }
-            co_return runtimeStatusJson(result);
-        }
-
-        if (operation == "wireguard-status") {
-            const auto result = co_await VpnHubService::status(context, fallback_);
-            co_return runtimeStatusJson(result);
-        }
-
-        if (operation == "wireguard-remove-peer") {
-            co_await VpnHubService::removePeer(context, fallback_, payload);
-            co_return "{}";
-        }
-
-        service::common::fail(10002, "Unknown VPN background operation", 400);
-    }
-
-  private:
-    wireguard::HubConfig fallback_;
-    std::string platformId_;
 };
 
 } // namespace service::vpn

@@ -145,6 +145,30 @@ std::vector<std::filesystem::path> featureFiles() {
     return result;
 }
 
+bool declaresPrivateExecutor(const std::string& code) {
+    static const std::regex declaration(
+        R"(^\s*(?:(?:static|inline)\s+)*(?:std::(?:jthread|thread)|asio::io_context|ruvia::EventLoopPool)\s+[A-Za-z_]\w*\s*[;{(=])",
+        std::regex_constants::ECMAScript);
+    for (std::size_t start = 0; start < code.size();) {
+        const auto end = code.find('\n', start);
+        if (std::regex_search(code.substr(start, end - start), declaration)) return true;
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return false;
+}
+
+void testModuleExecutorDetection() {
+    for (const auto* declaration : {
+            "    std::thread outbound_;", "std::jthread worker([] {});",
+            "asio::io_context io;", "ruvia::EventLoopPool pool({.loopCount = 1});"})
+        require(declaresPrivateExecutor(declaration), "module executor declaration was missed");
+    for (const auto* allowed : {
+            "// std::thread example;", "std::thread::id owner;",
+            "auto client = context.httpClient();"})
+        require(!declaresPrivateExecutor(allowed), "non-owning worker usage was rejected");
+}
+
 void testModuleFileLayout() {
     const auto root = repositoryRoot() / "service" / "modules";
     require(std::filesystem::is_directory(root), "service/modules directory is missing");
@@ -158,6 +182,9 @@ void testModuleFileLayout() {
                                "module file name must use its module prefix");
             requireFeatureRule(whitelistedModuleFile(file, moduleName), entry.path(),
                                "module file name or extension is not whitelisted");
+            const auto code = source(entry.path().generic_string());
+            requireFeatureRule(!declaresPrivateExecutor(code), entry.path(),
+                               "module must use its accepting Worker instead of owning a thread or event loop");
         }
     };
 
@@ -407,7 +434,11 @@ void testIncludeGraphBoundaries() {
 
     for (const auto& path : graph.files) {
         const auto start = pathKey(path);
-        if ((!isFeaturePath(start) && !isModulePath(start)) || !start.ends_with(".service.h"))
+        const bool pureDefinition = start.ends_with(".entity.h") ||
+            start.ends_with(".types.h") || start.ends_with(".schema.h") ||
+            start.ends_with(".config.h") || start.ends_with(".protocol.h");
+        if ((!isFeaturePath(start) && !isModulePath(start)) ||
+            (!start.ends_with(".service.h") && !pureDefinition))
             continue;
         std::unordered_set<std::string> visited{start};
         std::vector<std::string> pending{start};
@@ -418,6 +449,11 @@ void testIncludeGraphBoundaries() {
             if (edge == graph.includes.end())
                 continue;
             for (const auto& target : edge->second) {
+                if (pureDefinition && (target.ends_with(".service.h") ||
+                    target.ends_with(".runtime.h") || target.ends_with(".controller.h") ||
+                    target.ends_with(".transport.h")))
+                    throw std::runtime_error("pure definition transitively includes I/O implementation: " +
+                                             start + " -> " + target);
                 if (target != start && isRuntimePath(target))
                     throw std::runtime_error("feature service transitively includes runtime: " +
                                              start + " -> " + target);
@@ -450,24 +486,46 @@ void testIncludeGraphBoundaries() {
 }
 
 void testStorageOwnership() {
-    const std::regex databaseAccess(R"(\.\s*db\s*\(|\bDbQuery\b|\bgetRepository\s*<)");
-    const std::regex entityDeclaration(R"(\bRUVIA_DB_ENTITY\s*\(\s*([A-Za-z_][A-Za-z_0-9]*))");
+    const std::regex databaseAccess(R"((?:\.|->)\s*db\s*\(|\bDbQuery\b|\bgetRepository\s*<)");
+    const std::regex hashAccess(R"((?:\.|->)\s*(?:hget|hgetAll|hset|hdel|hkeys|hexists)\s*\(|::\s*(?:setHash|getHash|eraseHash)\s*\()");
+    const std::regex rawHashAccess(
+        R"re(["'](?:HGET|HGETALL|HMGET|HSET|HSETNX|HMSET|HDEL|HKEYS|HVALS|HEXISTS|HLEN|HSCAN|HINCRBY|HINCRBYFLOAT)["'])re",
+        std::regex::icase);
+    require(std::regex_search(std::string{"redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])"}, rawHashAccess),
+            "storage ownership check misses Lua Hash writes");
+    require(std::regex_search(std::string{"command(redis, {\"hgetall\", key})"}, rawHashAccess),
+            "storage ownership check misses raw Hash reads");
+    require(!std::regex_search(std::string{"redis.call('GET', KEYS[1]); redis.call('XACK', KEYS[2], ARGV[1])"}, rawHashAccess),
+            "storage ownership check mistakes lock and queue commands for Hash records");
+    const std::regex implicitIdentityGeneration(R"(\b(?:nextUuidV7|nextMessageId)\s*\(|\bUuidV7Generator\s*::)");
+    require(std::regex_search(std::string{"message::nextMessageId ()"}, implicitIdentityGeneration),
+            "identity boundary check misses a message UUID call");
+    require(std::regex_search(std::string{"service::common::nextUuidV7()"}, implicitIdentityGeneration),
+            "identity boundary check misses a direct UUID call");
+    require(!std::regex_search(std::string{"uuidBytes(messageId, bytes)"}, implicitIdentityGeneration),
+            "identity boundary check rejects pure UUID conversion");
+    const std::regex entityDeclaration(R"(\bRUVIA_(?:DB|REDIS)_ENTITY\s*\(\s*([A-Za-z_][A-Za-z_0-9]*))");
     for (const auto& path : serviceSourceFiles()) {
         const auto key = pathKey(path);
         if (!isModulePath(key) && !isFeaturePath(key))
             continue;
         const auto content = source(key);
         const bool isEntity = key.ends_with(".entity.h");
+        const bool isPureDefinition = isEntity || key.ends_with(".types.h") ||
+            key.ends_with(".schema.h") || key.ends_with(".config.h") ||
+            key.ends_with(".protocol.h") || key.ends_with(".protocol.cpp");
+        if (isPureDefinition) {
+            requireFeatureRule(!std::regex_search(content, implicitIdentityGeneration), path,
+                               "pure definition implicitly generates a runtime identity");
+            requireFeatureRule(content.find("co_await") == std::string::npos, path,
+                               "pure definition or protocol performs asynchronous I/O");
+        }
         requireFeatureRule(isEntity || !std::regex_search(content, entityDeclaration), path,
                            "storage entity declared outside its entity file");
-        if (isRuntimePath(key)) {
-            for (const auto operation : {"::setHash(", "::eraseHash(", "::getHash("})
-                requireFeatureRule(content.find(operation) == std::string::npos, path,
-                                   "runtime directly accesses persistent Redis records");
-        }
-        if (std::regex_search(content, databaseAccess)) {
+        if (std::regex_search(content, databaseAccess) || std::regex_search(content, hashAccess) ||
+            std::regex_search(content, rawHashAccess)) {
             requireFeatureRule(key.ends_with(".service.h"), path,
-                               "database operation outside business service");
+                               "database or persistent Redis Hash operation outside business service");
             const auto entityPath = path.parent_path() /
                 (path.parent_path().filename().string() + ".entity.h");
             requireFeatureRule(std::filesystem::is_regular_file(entityPath), path,
@@ -747,6 +805,7 @@ void testWorkerStreamMultiplexing() {
 int main() {
     try {
         testServiceTopLevelLayout();
+        testModuleExecutorDetection();
         testModuleFileLayout();
         testFeatureFileLayout();
         testCommonFileLayout();

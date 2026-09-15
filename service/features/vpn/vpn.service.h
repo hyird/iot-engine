@@ -1,5 +1,8 @@
 #pragma once
 
+#include <ruvia/core/StopToken.h>
+
+#include "service/utils/number.h"
 #include <chrono>
 #include <limits>
 #include <sstream>
@@ -21,7 +24,7 @@
 
 #include "service/common/message.h"
 #include "service/features/edge/edge.protocol.h"
-#include "service/features/edge/edge.transport.h"
+#include "service/features/edge/session/session.service.h"
 #include "service/utils/network.h"
 
 namespace service::vpn::client_config {
@@ -186,7 +189,7 @@ inline std::string rowValue(const auto& row, std::size_t index) {
 }
 
 inline std::int64_t integer(std::string_view value, std::int64_t fallback = 0) {
-    return service::common::parseInt64(
+    return service::utils::parseInt64(
                value.empty() ? std::nullopt : std::optional<std::string_view>(value))
         .value_or(fallback);
 }
@@ -424,7 +427,7 @@ ruvia::Task<void> queueEdgeConfig(Context& c, std::string_view peerId,
     std::uint8_t requestBytes[16]{};
     if (!service::edge::protocol::uuidBytes(requestId, requestBytes))
         co_return;
-    auto envelope = service::edge::protocol::outbound(nodeId);
+    auto envelope = service::edge::protocol::outbound(service::common::nextUuidV7(), service::message::utcNowMilliseconds(), service::edge::protocol::platformId(), nodeId);
     if (!platformId.empty()) {
         std::uint8_t platformBytes[16]{};
         if (service::edge::protocol::uuidBytes(platformId, platformBytes))
@@ -434,7 +437,7 @@ ruvia::Task<void> queueEdgeConfig(Context& c, std::string_view peerId,
     auto* request = envelope.mutable_vpn_config_request();
     request->set_request_id(service::edge::protocol::bytes(requestBytes, sizeof(requestBytes)));
     const auto revisionText = detail::edgeConfigRowValue(rows.front(), 4);
-    const auto nextVersion = service::common::parseInt64(
+    const auto nextVersion = service::utils::parseInt64(
                                  std::optional<std::string_view>(revisionText))
                                  .value_or(0) +
                              1;
@@ -446,7 +449,7 @@ ruvia::Task<void> queueEdgeConfig(Context& c, std::string_view peerId,
     request->set_hub_endpoint(detail::edgeConfigRowValue(rows.front(), 7));
     const auto portText = detail::edgeConfigRowValue(rows.front(), 8);
     request->set_hub_listen_port(static_cast<std::uint32_t>(
-        service::common::parseInt64(std::optional<std::string_view>(portText))
+        service::utils::parseInt64(std::optional<std::string_view>(portText))
             .value_or(51820)));
     request->set_edge_address(detail::edgeConfigRowValue(rows.front(), 3) + "/32");
     if (request->enabled()) {
@@ -633,7 +636,7 @@ ruvia::Task<std::optional<wireguard::HubConfig>> loadOrInitialize(
     const auto storedPublicKey = rowValue(rows.front(), 1);
     const auto storedEndpoint = rowValue(rows.front(), 2);
     const auto storedPortText = rowValue(rows.front(), 3);
-    const auto storedPort = service::common::parseInt64(
+    const auto storedPort = service::utils::parseInt64(
         std::optional<std::string_view>(storedPortText));
     config.endpoint = storedEndpoint.empty() ? fallback.endpoint : storedEndpoint;
     config.listenPort = storedPort && *storedPort > 0 && *storedPort <= 65535
@@ -903,6 +906,73 @@ class VpnHubService final {
         co_return result;
     }
 
+};
+
+} // namespace service::vpn
+
+namespace service::vpn {
+
+class VpnControlService final {
+  public:
+    explicit VpnControlService(
+        wireguard::HubConfig fallback,
+        std::string platformId =
+            std::string(service::edge::protocol::kDefaultPlatformId)
+    )
+        : fallback_(std::move(fallback)), platformId_(std::move(platformId)) {}
+
+    ruvia::Task<std::string> executeOperation(ruvia::WebWorkerContext& context, std::string_view operation, std::string_view payload, ruvia::StopToken stop) const {
+        if (stop.stopRequested()) {
+            service::common::fail(10004, "VPN background operation cancelled", 503);
+        }
+
+        if (operation == "queue-edge-config") {
+            const auto separator = payload.find('\n');
+            if (separator == std::string_view::npos || separator == 0 ||
+                separator + 1 >= payload.size() ||
+                !service::common::isUuid(payload.substr(0, separator)) ||
+                !service::common::isUuid(payload.substr(separator + 1))) {
+                service::common::fail(10002, "VPN Edge 配置请求无效", 400);
+            }
+            co_await queueEdgeConfig(context, payload.substr(0, separator), payload.substr(separator + 1), platformId_);
+            co_return "{}";
+        }
+
+        if (operation == "reconcile" || operation == "wireguard-reconcile" ||
+            operation == "firewall-reconcile") {
+            const auto result = co_await VpnHubService::reconcile(context, fallback_);
+            if (operation == "reconcile" && result.supported && !result.configured &&
+                result.code != "hub_config_missing") {
+                service::common::fail(21005, "VPN Hub reconciliation failed: " + result.message, 503);
+            }
+            co_return runtimeStatusJson(result);
+        }
+
+        if (operation == "wireguard-status") {
+            const auto result = co_await VpnHubService::status(context, fallback_);
+            co_return runtimeStatusJson(result);
+        }
+
+        if (operation == "wireguard-remove-peer") {
+            co_await VpnHubService::removePeer(context, fallback_, payload);
+            co_return "{}";
+        }
+
+        service::common::fail(10002, "Unknown VPN background operation", 400);
+    }
+
+  private:
+    static std::string runtimeStatusJson(const wireguard::RuntimeStatus& result) {
+    return "{\"platformSupported\":" +
+        std::string(result.supported ? "true" : "false") +
+        ",\"configured\":" + std::string(result.configured ? "true" : "false") +
+        ",\"code\":" + service::utils::jsonQuoted(result.code) +
+        ",\"message\":" + service::utils::jsonQuoted(result.message) +
+        ",\"runtimePeerCount\":" + std::to_string(result.peerCount) + "}";
+}
+
+    const wireguard::HubConfig fallback_;
+    const std::string platformId_;
 };
 
 } // namespace service::vpn

@@ -7,17 +7,17 @@
 
 #include "service/common/http.h"
 #include "service/common/uuid.h"
-#include "service/utils/jwt.h"
+#include "service/modules/system/auth/auth.service.h"
 
 namespace service::middleware {
 
-inline service::core::JwtPayload requireAuth(ruvia::Context& c) {
+inline service::auth::JwtPayload requireAuth(ruvia::Context& c) {
     const auto token = ruvia::jwtBearerToken(c.req().header("Authorization").value_or(""));
     if (!token)
         service::common::fail(service::common::kUnauthorizedErrorCode, "未登录", 401);
     try {
-        return service::utils::verifyAccessToken(c, *token);
-    } catch (const service::utils::JwtExpiredError&) {
+        return service::auth::AuthTokenService::verifyAccessToken(c, *token);
+    } catch (const service::auth::JwtExpiredError&) {
         service::common::fail(service::common::kTokenExpiredErrorCode, "Token 已过期", 401);
     } catch (...) {
         service::common::fail(service::common::kTokenInvalidErrorCode, "Token 无效", 401);

@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
-#include "service/features/collector/collector.protocol.h"
+#include "service/features/collector/collector.types.h"
 
 namespace service::collector {
 

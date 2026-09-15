@@ -1,7 +1,7 @@
-import request from '@/utils/http';
-import type { PaginatedResult } from '@/utils/pagination';
+import request from '@/lib/http';
+import type { PaginatedResult } from '@/types/pagination';
 import { appendQueryParams } from '@/utils/query';
-import { createSnapshotStream } from '@/utils/snapshot-request';
+import { createSnapshotStream } from '@/lib/snapshot-request';
 import type { Device } from '../device/device.types';
 import type { Alert } from './alert.types';
 

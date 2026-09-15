@@ -19,7 +19,7 @@
 #include <utility>
 #include <vector>
 
-#include "service/common/log.h"
+#include "service/middleware/log.h"
 #include "service/common/timestamp.h"
 #include "service/features/gb28181/sip/sip.protocol.h"
 
@@ -1768,7 +1768,7 @@ bool SipServer::sendPtzPreciseControl(
     return true;
 }
 
-std::optional<SipServer::PreviewStartResult>
+std::optional<SipPreviewStartResult>
 SipServer::startPreview(const std::string& deviceId, const std::string& channelId) {
     // Every SDK call made by this SIP actor is attributed to the Collector
     // that owns its listening socket.  The marker is thread-local and the
@@ -1833,7 +1833,7 @@ SipServer::startPreview(const std::string& deviceId, const std::string& channelI
                       << ", stream_session=" << session.sessionId
                       << ", stream_id=" << session.streamId
                       << ", viewers=" << session.viewerCount;
-            return PreviewStartResult{
+            return SipPreviewStartResult{
                 viewerId,
                 session.deviceId,
                 session.channelId,
@@ -1951,7 +1951,7 @@ SipServer::startPreview(const std::string& deviceId, const std::string& channelI
               << ", remote=" << transportName(remote->transport) << " " << peerToString(*remote)
               << ", sdp=\"" << compactForLog(bodyText, 700) << "\"";
 
-    return PreviewStartResult{
+    return SipPreviewStartResult{
         viewerId,
         session.deviceId,
         session.channelId,
@@ -1984,7 +1984,7 @@ void SipServer::markStreamOnline(const std::string& streamId, bool online) {
     }
 }
 
-std::optional<SipServer::PreviewStartResult>
+std::optional<SipPreviewStartResult>
 SipServer::startPlayback(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime) {
     ZlmSdk::OwnerScope sdkOwner(owner_);
     LOG_DEBUG << "[GB28181][Playback] Start requested, device=" << deviceId
@@ -2124,7 +2124,7 @@ SipServer::startPlayback(const std::string& deviceId, const std::string& channel
               << ", remote=" << transportName(remote->transport) << " " << peerToString(*remote)
               << ", sdp=\"" << compactForLog(bodyText, 700) << "\"";
 
-    return PreviewStartResult{
+    return SipPreviewStartResult{
         viewerId,
         session.deviceId,
         session.channelId,
@@ -2136,7 +2136,7 @@ SipServer::startPlayback(const std::string& deviceId, const std::string& channel
     };
 }
 
-std::optional<SipServer::PreviewStopResult>
+std::optional<SipPreviewStopResult>
 SipServer::stopPreview(const std::string& sessionId) {
     ZlmSdk::OwnerScope sdkOwner(owner_);
     LOG_DEBUG << "[GB28181][Preview] Stop requested, session=" << sessionId;
@@ -2175,7 +2175,7 @@ SipServer::stopPreview(const std::string& sessionId) {
             for (const auto& closedSessionId : closedSessionIds) {
                 notifyPreviewClosed(closedSessionId);
             }
-            return PreviewStopResult{
+            return SipPreviewStopResult{
                 sessionId,
                 iter->second.streamId,
                 false,
@@ -2278,7 +2278,7 @@ SipServer::stopPreview(const std::string& sessionId) {
               << ", closed=" << rtpServerClosed
               << ", bye_sent=" << byeSent;
 
-    return PreviewStopResult{
+    return SipPreviewStopResult{
         sessionId,
         session.streamId,
         byeSent,
@@ -2310,7 +2310,7 @@ bool SipServer::renewPreview(const std::string& sessionId) {
     return true;
 }
 
-std::optional<SipServer::PreviewStopResult>
+std::optional<SipPreviewStopResult>
 SipServer::stopPreviewByStream(const std::string& streamId) {
     LOG_DEBUG << "[GB28181][Preview] Stop by stream requested, stream_id=" << streamId;
 

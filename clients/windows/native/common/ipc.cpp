@@ -91,7 +91,7 @@ Json pipeRequest(const Json& request, std::uint32_t timeoutMs, std::stop_token s
 }
 
 void runPipeServer(std::stop_token stop, const std::function<Json(const Json&)>& handler) {
-    const auto ownerData = readFile(stateDirectory() / L"owner.sid", 512);
+    const auto ownerData = readFile(productDataDirectory() / L"owner.sid", 512);
     std::string owner(ownerData.begin(), ownerData.end());
     while (!owner.empty() && (owner.back() == '\r' || owner.back() == '\n' || owner.back() == ' ')) owner.pop_back();
     PSID ownerSid = nullptr;

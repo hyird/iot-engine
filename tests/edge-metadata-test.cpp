@@ -2,7 +2,7 @@
 #include <stdexcept>
 #include <string>
 
-#include "service/features/edge/edge.service.h"
+#include "service/features/edge/edge.entity.h"
 
 namespace metadata = service::edge::metadata;
 

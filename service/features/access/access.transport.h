@@ -1,5 +1,8 @@
 #pragma once
 
+#include "service/utils/number.h"
+#include "service/features/access/access.types.h"
+
 #include <algorithm>
 #include <array>
 #include <asio.hpp>
@@ -17,202 +20,12 @@
 #include <string_view>
 #include <thread>
 
-namespace service::access::stream {
-
-inline constexpr std::string_view kEventBase{ "iot:channel:open-access:event" };
-inline constexpr std::string_view kAuditBase{ "iot:channel:open-access:audit" };
-inline constexpr std::string_view kDeliveryResultBase{
-    "iot:channel:open-access:delivery-result"
-};
-inline constexpr std::string_view kCatalogChangesBase{
-    "iot:channel:open-access:config-change"
-};
-inline constexpr std::string_view kSessionChangesBase{
-    "iot:channel:open-access:session-change"
-};
-
-inline std::string event() {
-    return std::string(kEventBase);
-}
-
-inline std::string audit() {
-    return std::string(kAuditBase);
-}
-
-inline std::string deliveryResult() {
-    return std::string(kDeliveryResultBase);
-}
-
-inline std::string catalogChanges(std::size_t workerIndex) {
-    return std::string(kCatalogChangesBase) + ":" + std::to_string(workerIndex);
-}
-
-inline std::string sessionChanges() {
-    return std::string(kSessionChangesBase);
-}
-
-} // namespace service::access::stream
-
-#include <array>
 #include <vector>
 
 #include <ruvia/core/Task.h>
 
-#include "service/common/message.h"
-#include "service/features/messaging/messaging.transport.h"
-
-namespace service::access::event {
-
-inline constexpr std::int64_t kPublicationTtlSeconds = 7 * 24 * 60 * 60;
-
-inline std::string publicationKey(std::string_view eventId, std::string_view eventType) {
-    return "iot:open-access:event:published:" + std::string(eventType) + ":" +
-        std::string(eventId);
-}
-
-inline constexpr std::string_view kPublishScript = R"lua(
-if redis.call('EXISTS', KEYS[2]) ~= 0 then return false end
-local arguments = {'MAXLEN', '~', ARGV[1], '*'}
-for index = 5, #ARGV do arguments[#arguments + 1] = ARGV[index] end
-local id = redis.call('XADD', KEYS[1], unpack(arguments))
-redis.call('SET', KEYS[2], '1', 'EX', ARGV[2])
-redis.call('XADD', KEYS[3], 'MAXLEN', '~', ARGV[3], '*', 'task', ARGV[4])
-return id
-)lua";
-
-template <typename Pipeline>
-void queue(Pipeline& pipeline, std::string_view scriptSha, std::string_view eventId, std::string_view eventType, std::string_view deviceId, std::string_view deviceCode, std::int64_t occurredAtMs, std::string_view dataJson) {
-    const auto publishedKey = publicationKey(eventId, eventType);
-    const auto occurredAt = std::to_string(occurredAtMs);
-    const auto outputStream = stream::event();
-    const auto wakeStream = service::message::workerWakeStream(std::nullopt);
-    const std::array<std::string_view, 3> keys{ outputStream, publishedKey, wakeStream };
-    const std::array<std::string_view, 16> arguments{
-        "100000",
-        "604800",
-        "100000",
-        "webhook",
-        "event_id",
-        eventId,
-        "event_type",
-        eventType,
-        "device_id",
-        deviceId,
-        "device_code",
-        deviceCode,
-        "occurred_at_ms",
-        occurredAt,
-        "data_json",
-        dataJson,
-    };
-    message::redis::queueEvalSha(pipeline, scriptSha, keys, arguments);
-}
-
-template <typename Redis>
-ruvia::Task<void> publish(const Redis& redis, std::string_view eventId, std::string_view eventType, std::string_view deviceId, std::string_view deviceCode, std::int64_t occurredAtMs, std::string_view dataJson) {
-    const std::vector<std::string> keyStore{
-        stream::event(),
-        publicationKey(eventId, eventType),
-        service::message::workerWakeStream(std::nullopt)
-    };
-    const std::vector<std::string> argumentStore{
-        "100000",
-        std::to_string(kPublicationTtlSeconds),
-        std::to_string(service::message::kWorkerWakeCapacity),
-        std::string(service::message::workerStreamTaskName(service::message::WorkerStreamTask::Webhook)),
-        "event_id",
-        std::string(eventId),
-        "event_type",
-        std::string(eventType),
-        "device_id",
-        std::string(deviceId),
-        "device_code",
-        std::string(deviceCode),
-        "occurred_at_ms",
-        std::to_string(occurredAtMs),
-        "data_json",
-        std::string(dataJson),
-    };
-    const std::vector<std::string_view> keys(keyStore.begin(), keyStore.end());
-    const std::vector<std::string_view> arguments(argumentStore.begin(), argumentStore.end());
-    const auto reply = co_await redis.eval(kPublishScript, keys, arguments);
-    if (!reply.null() && reply.kind() != ruvia::RedisValue::Kind::kString) {
-        message::redis::throwValue("publish open-access event", reply);
-    }
-}
-
-template <typename Redis>
-ruvia::Task<void> publishMany(
-    const Redis& redis,
-    const std::vector<message::ParsedDeviceMessage>& messages
-) {
-    if (messages.empty()) {
-        co_return;
-    }
-    const auto scriptSha = co_await redis.scriptLoad(kPublishScript);
-    auto pipeline = redis.pipeline();
-    for (const auto& parsed : messages) {
-        const auto eventType =
-            parsed.eventKind == "image"
-            ? "device.image.reported"
-            : "device.data.reported";
-        queue(pipeline, scriptSha, parsed.messageId, eventType, parsed.deviceId, parsed.deviceCode, parsed.observedAtMs, parsed.valuesJson);
-    }
-    const auto replies = co_await std::move(pipeline).exec();
-    message::redis::requirePipelineSuccess("publish open-access events", replies);
-}
-
-} // namespace service::access::event
-
-#include <cstdint>
-
-#include "service/common/uuid.h"
-
-namespace service::access::audit {
-
-inline constexpr std::size_t kCapacity = 100000;
-
-template <typename Redis>
-ruvia::Task<void> publish(const Redis& redis, std::string_view action, std::string_view accessKeyId, std::string_view method, std::string_view target, std::string_view requestIp, std::int64_t httpStatus, std::string_view deviceId = {}, std::string_view requestPayload = "{}", std::string_view responsePayload = "{}") {
-    const std::vector<service::message::StreamField> fields{
-        { "log_id", service::common::nextUuidV7() },
-        { "access_key_id", std::string(accessKeyId) },
-        { "action", std::string(action) },
-        { "http_method", std::string(method) },
-        { "target", std::string(target) },
-        { "request_ip", std::string(requestIp) },
-        { "http_status", std::to_string(httpStatus) },
-        { "device_id", std::string(deviceId) },
-        { "request_payload", std::string(requestPayload) },
-        { "response_payload", std::string(responsePayload) },
-        { "used_at_ms", std::to_string(service::message::utcNowMilliseconds()) },
-    };
-    (void)co_await service::message::redis::addAndWake(
-        redis,
-        stream::audit(),
-        fields,
-        std::nullopt,
-        service::message::WorkerStreamTask::Webhook,
-        kCapacity
-    );
-}
-
-} // namespace service::access::audit
 
 namespace service::access {
-
-struct WebhookHttpResponse final {
-    std::int64_t status{ 0 };
-    std::string body;
-    std::string error;
-};
-
-struct WebhookUrl final {
-    bool tls{ false };
-    std::string host;
-    std::string port;
-    std::string target;
-};
 
 inline bool webhookHeaderNameEquals(std::string_view left, std::string_view right) {
     return left.size() == right.size() &&
@@ -428,7 +241,7 @@ class WebhookHttpClient final {
                 })) {
                 throw std::runtime_error("Webhook returned an invalid HTTP status");
             }
-            const auto status = service::common::parseInt64(
+            const auto status = service::utils::parseInt64(
                 std::optional<std::string_view>(statusText)
             );
             if (!status || *status < 100 || *status > 599) {

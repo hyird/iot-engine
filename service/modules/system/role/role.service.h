@@ -14,6 +14,7 @@
 #include "service/common/http.h"
 #include "service/modules/system/role/role.types.h"
 #include "service/common/uuid.h"
+#include "service/utils/json.h"
 
 namespace service::role {
 
@@ -43,12 +44,12 @@ class RoleService {
         countOptions.where = std::move(where);
         const auto total = static_cast<std::int64_t>(
             co_await c.db().getRepository<RoleEntity>().count(countOptions));
-        auto query = roleSelect(c.pool());
-        query.where(countOptions.where.expression(query))
-            .orderBy(query.column("id"), ruvia::DbOrderDirection::kDesc)
-            .limit(pageSize)
-            .offset((page - 1) * pageSize);
-        const auto rows = co_await c.db().query(query);
+        auto query = roleSelect(c);
+        query.where(countOptions.where)
+            .orderBy("id", ruvia::DbOrderDirection::kDesc)
+            .take(pageSize)
+            .skip((page - 1) * pageSize);
+        const auto rows = co_await query.getMany();
 
         ruvia::BoxedArray<RoleItemDto> roles(ruvia::ModelOptions{.resource = c.arena()});
         for (const auto &row : rows) {
@@ -66,13 +67,13 @@ class RoleService {
     }
 
     ruvia::Task<RoleItemDto> detail(ruvia::Context &c, std::string_view id) {
-        auto query = roleSelect(c.pool());
-        query.where(db::activeId<RoleEntity>(id).expression(query)).limit(1);
-        const auto rows = co_await c.db().query(query);
+        auto query = roleSelect(c);
+        query.where(db::activeId<RoleEntity>(id)).take(1);
+        const auto rows = co_await query.getMany();
         if (rows.empty())
             service::common::fail(13001, "角色不存在", 404);
         RoleItemDto role(ruvia::ModelOptions{.resource = c.arena()});
-        fillBase(role, rows.front());
+        fillBase(role, rows[0]);
         role.set<"permissions">(co_await loadPermissions(c, id));
         co_return role;
     }
@@ -102,16 +103,19 @@ class RoleService {
             body.get<"description">() ? std::string(body.get<"description">()->view()) : "";
         const std::string status =
             body.get<"status">() ? std::string(body.get<"status">()->view()) : "enabled";
-        const std::string permissions = permissionsText(body.get<"permissions">());
+        const std::string permissions = permissionsJson(body.get<"permissions">());
         const auto id = service::common::nextUuidV7();
-        ruvia::DbQuery query(c.pool());
-        query
-            .insertInto(RoleEntity::tableName(),
-                        {"id", "name", "code", "description", "status", "permissions"})
-            .values({query.value(id), query.value(name), query.value(code),
-                     query.nullIf(query.value(description), query.value("")), query.value(status),
-                     permissionArray(query, permissions)});
-        (void)co_await c.db().execute(query);
+        RoleEntity role(c.pool());
+        role.set<"id">(id);
+        role.set<"name">(name);
+        role.set<"code">(code);
+        role.set<"status">(status);
+        role.set<"permissions">(permissions);
+        if (description.empty())
+            role.setNull<"description">();
+        else
+            role.set<"description">(description);
+        (void)co_await c.db().getRepository<RoleEntity>().insert(role);
     }
 
     ruvia::Task<void> update(ruvia::Context &c, std::string_view id, const UpdateRoleBody &body) {
@@ -127,11 +131,11 @@ class RoleService {
             co_await ensureCodeAvailable(c, std::string(body.get<"code">()->view()),
                                          std::string(id));
 
-        ruvia::DbQuery query(c.pool());
-        query.update(RoleEntity::tableName());
+        ruvia::DbExpressions query(c.pool());
+        std::vector<ruvia::DbAssignment> changes;
         bool changed = false;
         auto append = [&](std::string_view column, std::string_view value) {
-            query.set(column, query.value(value));
+            changes.push_back({std::string(column), query.value(value)});
             changed = true;
         };
         if (body.get<"name">())
@@ -143,15 +147,13 @@ class RoleService {
         if (body.get<"status">())
             append("status", body.get<"status">()->view());
         if (body.get<"permissions">()) {
-            query.set("permissions",
-                      permissionArray(query, permissionsText(body.get<"permissions">())));
+            changes.push_back({"permissions", query.cast(query.value(permissionsJson(body.get<"permissions">())), ruvia::DbDataType::kJsonb)});
             changed = true;
         }
         if (!changed)
             co_return;
-        query.set("updated_at", query.call("now"))
-            .where((RoleEntity::column<"id">() == id).expression(query));
-        (void)co_await c.db().execute(query);
+        changes.push_back({"updated_at", query.call("now")});
+        (void)co_await c.db().getRepository<RoleEntity>().update(RoleEntity::column<"id">() == id, changes);
     }
 
     ruvia::Task<void> remove(ruvia::Context &c, std::string_view id) {
@@ -163,99 +165,74 @@ class RoleService {
             service::common::fail(13001, "角色不存在", 404);
         if (role->get<"code">() == service::role::kSuperAdminRoleCode)
             service::common::fail(13003, "内置超级管理员角色不能删除", 400);
-        ruvia::DbQuery assigned(c.pool());
-        assigned.select(assigned.value(1))
-            .from(service::user::UserRoleEntity::tableName(), "ur")
-            .join(ruvia::DbJoinType::kInner, service::user::UserEntity::tableName(),
-                  assigned.binary(assigned.column("id", "u"), ruvia::DbBinaryOperator::kEqual,
-                                  assigned.column("user_id", "ur")),
-                  "u")
-            .where(assigned.binary(assigned.column("role_id", "ur"),
-                                   ruvia::DbBinaryOperator::kEqual, assigned.value(id)))
-            .andWhere(
-                assigned.unary(ruvia::DbUnaryOperator::kIsNull, assigned.column("deleted_at", "u")))
-            .limit(1);
-        if (!(co_await c.db().query(assigned)).empty())
+        ruvia::DbExpressions expressions(c.pool());
+        auto assigned = c.db().getRepository<service::user::UserRoleEntity>().createQueryBuilder("ur");
+        assigned.join<service::user::UserEntity>(ruvia::DbJoinType::kInner, "u",
+            expressions.binary(expressions.column("id", "u"), ruvia::DbBinaryOperator::kEqual,
+                               expressions.column("user_id", "ur")))
+            .where(service::user::UserRoleEntity::column<"role_id">() == id)
+            .andWhere(expressions.unary(ruvia::DbUnaryOperator::kIsNull, expressions.column("deleted_at", "u")));
+        if (co_await assigned.getExists())
             service::common::fail(13004, "角色仍有用户使用，不能删除", 409);
-        ruvia::DbQuery removal(c.pool());
-        removal.update(RoleEntity::tableName())
-            .set("deleted_at", removal.call("now"))
-            .set("updated_at", removal.call("now"))
-            .where((RoleEntity::column<"id">() == id).expression(removal));
-        (void)co_await c.db().execute(removal);
+        (void)co_await c.db().getRepository<RoleEntity>().update(
+            RoleEntity::column<"id">() == id,
+            {{"deleted_at", expressions.call("now")}, {"updated_at", expressions.call("now")}});
     }
 
   private:
-    static ruvia::DbExpression permissionArray(ruvia::DbQuery &query,
-                                               std::string_view permissions) {
-        using namespace ruvia;
-        DbQuery aggregate(query.resource());
-        aggregate.select(aggregate.aggregate("jsonb_agg", {aggregate.column("permission")}))
-            .fromFunction(
-                aggregate.call("unnest",
-                               {aggregate.call("string_to_array",
-                                               {aggregate.nullIf(aggregate.value(permissions),
-                                                                 aggregate.value("")),
-                                                aggregate.value(",")})}),
-                "values", {.columns = {{.name = "permission"}}});
-        return query.coalesce(
-            {query.subquery(aggregate), query.cast(query.value("[]"), DbDataType::kJsonb)});
+    static ruvia::DbQueryBuilder<RoleEntity, ruvia::DbHandle> roleSelect(ruvia::Context& c) {
+        ruvia::DbExpressions expressions(c.pool());
+        auto roles = c.db().getRepository<RoleEntity>().createQueryBuilder("role");
+        roles.select({{"id"}, {"name"}, {"code"},
+            {"description", expressions.coalesce({expressions.column("description", "role"), expressions.value("")})},
+            {"status"},
+            {"created_at", expressions.call("iot_utc_timestamp", {expressions.column("created_at", "role")})},
+            {"updated_at", expressions.call("iot_utc_timestamp", {expressions.column("updated_at", "role")})}});
+        return roles;
     }
 
-    static ruvia::DbQuery roleSelect(std::pmr::memory_resource *resource) {
-        using namespace ruvia;
-        DbQuery query(resource);
-        query
-            .select({query.column("id"), query.column("name"), query.column("code"),
-                     db::emptyText(query, "description"), query.column("status"),
-                     query.call("iot_utc_timestamp", {query.column("created_at")}),
-                     query.call("iot_utc_timestamp", {query.column("updated_at")})})
-            .from(RoleEntity::tableName());
-        return query;
-    }
-
-    template <typename Row> static void fillBase(RoleItemDto &item, const Row &row) {
-        item.set<"id">(row[0].value().value_or(std::string_view{}));
-        item.set<"name">(row[1].value().value_or(std::string_view{}));
-        item.set<"code">(row[2].value().value_or(std::string_view{}));
-        item.set<"description">(row[3].value().value_or(std::string_view{}));
-        item.set<"status">(row[4].value().value_or(std::string_view{}));
-        item.set<"createdAt">(row[5].value().value_or(std::string_view{}));
-        item.set<"updatedAt">(row[6].value().value_or(std::string_view{}));
+    static void fillBase(RoleItemDto &item, const RoleEntity &row) {
+        item.set<"id">(row.get<"id">());
+        item.set<"name">(row.get<"name">());
+        item.set<"code">(row.get<"code">());
+        item.set<"description">(row.get<"description">());
+        item.set<"status">(row.get<"status">());
+        item.set<"createdAt">(row.get<"created_at">());
+        item.set<"updatedAt">(row.get<"updated_at">());
     }
 
     static std::string
-    permissionsText(const std::optional<ruvia::Array<ruvia::String>> &permissions) {
+    permissionsJson(const std::optional<ruvia::Array<ruvia::String>> &permissions) {
         if (!permissions)
-            return {};
-        std::string result;
+            return "[]";
+        std::string result{"["};
         for (const auto &permission : *permissions) {
             const auto value = permission.view();
             if (value.empty() || value.size() > 128)
                 service::common::fail(13005, "权限编码不能为空且不能超过 128 个字符", 400);
             if (value.find(',') != std::string_view::npos)
                 service::common::fail(13005, "权限编码不能包含逗号", 400);
-            if (!result.empty())
+            if (result.size() > 1)
                 result += ',';
-            result.append(value);
+            result += service::utils::jsonQuoted(value);
         }
-        return result;
+        return result + "]";
     }
 
     ruvia::Task<ruvia::Array<ruvia::String>> loadPermissions(ruvia::Context &c,
                                                              std::string_view id) {
-        ruvia::DbQuery query(c.pool());
-        query.select(query.column("permission"))
-            .from(RoleEntity::tableName())
+        ruvia::DbExpressions expressions(c.pool());
+        auto query = c.db().getRepository<RoleEntity>().createQueryBuilder("role");
+        query.select({{"permission", expressions.column("permission", "values")}})
             .joinFunction(ruvia::DbJoinType::kCross,
-                          query.call("jsonb_array_elements_text", {query.column("permissions")}),
-                          {}, "values", {.lateral = true, .columns = {{.name = "permission"}}})
-            .where((RoleEntity::column<"id">() == id).expression(query))
-            .orderBy(query.column("permission"));
-        const auto rows = co_await c.db().query(query);
+                expressions.call("jsonb_array_elements_text", {expressions.column("permissions", "role")}),
+                "values", {}, {.lateral = true, .columns = {{.name = "permission"}}})
+            .where(RoleEntity::column<"id">() == id)
+            .orderBy(expressions.column("permission", "values"));
+        const auto rows = co_await query.getMany<RolePermission>();
         ruvia::Array<ruvia::String> result(c.arena());
         for (const auto &row : rows)
-            result.emplace_back(row[0].value().value_or(std::string_view{}),
+            result.emplace_back(row.get<"permission">(),
                                 ruvia::ModelOptions{.resource = c.arena()});
         co_return result;
     }

@@ -1797,6 +1797,25 @@ END $schema$;
         return std::move(result.front());
     }(),
     ruvia::DbMigration({.id="0046_current_device_model", .sql=std::string(kCurrentDeviceModelMigration)}),
+    [] {
+        ruvia::DbSchema schema({.driver=ruvia::DbDriver::kPostgreSql});
+        ruvia::DbQuery q;
+        schema.createTable({.name="outbox_replay_counter", .columns={
+            {.name="id", .type={.dataType=Type::kText}},
+            {.name="replays", .type={.dataType=Type::kBigInt}, .defaultValue=q.value(0)},
+            {.name="updated_at", .type={.dataType=Type::kTimestampTz}, .defaultValue=q.call("now")}},
+            .constraints={{.name="outbox_replay_counter_pkey", .kind=ruvia::DbConstraintKind::kPrimaryKey, .columns={"id"}}}});
+        auto result = schema.compile("0047_outbox_replay_counter");
+        return std::move(result.front());
+    }(),
+    [] {
+        ruvia::DbSchema schema({.driver=ruvia::DbDriver::kPostgreSql});
+        ruvia::DbQuery q;
+        for (const auto table : {"device", "link"})
+            schema.addColumn(table, {.name="debug_enabled", .type={.dataType=Type::kBoolean}, .defaultValue=q.value(false)});
+        auto result = schema.compile("0048_packet_debug_switches");
+        return std::move(result.front());
+    }(),
     };
     // Only audited original digests may transition to their equivalent ORM definitions.
     // This transaction runs before normal checksum validation; all other drift still fails.

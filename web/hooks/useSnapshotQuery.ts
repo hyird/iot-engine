@@ -1,7 +1,7 @@
 import { hashKey, useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { useAuthStore } from '@/store/authStore';
-import type { SnapshotStream } from '@/utils/snapshot-stream';
+import type { SnapshotStream } from '@/lib/snapshot-stream';
 
 type Options<T, Selected> = Omit<UseQueryOptions<T, Error, Selected>, 'queryFn'> & {
     queryFn: () => SnapshotStream<T>;

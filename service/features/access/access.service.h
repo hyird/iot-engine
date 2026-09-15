@@ -1,5 +1,6 @@
 #pragma once
 
+#include "service/utils/number.h"
 #include "service/features/access/access.entity.h"
 #include "service/common/http.h"
 
@@ -8,6 +9,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -18,6 +20,9 @@
 #include <ruvia/web/db/DbQuery.h>
 
 #include "service/common/uuid.h"
+#include "service/common/timestamp.h"
+#include "service/utils/text.h"
+#include "service/utils/json.h"
 #include "service/features/messaging/messaging.transport.h"
 
 namespace service::access::session {
@@ -249,10 +254,10 @@ inline ruvia::Task<Catalog> loadCatalog(ruvia::WebWorkerContext& context) {
             device.name.assign(row[1].value().value_or(std::string_view{}));
             device.code.assign(row[2].value().value_or(std::string_view{}));
             const auto timeout =
-                service::common::parseInt64(std::optional<std::string_view>{row[8].value().value_or(std::string_view{})})
+                service::utils::parseInt64(std::optional<std::string_view>{row[8].value().value_or(std::string_view{})})
                     .value_or(5);
             const auto expiresAtMs =
-                service::common::parseInt64(std::optional<std::string_view>{row[10].value().value_or(std::string_view{})})
+                service::utils::parseInt64(std::optional<std::string_view>{row[10].value().value_or(std::string_view{})})
                     .value_or(0);
             device.targets[std::string(row[11].value().value_or(std::string_view{}))].push_back(
                 {std::string(row[3].value().value_or(std::string_view{})), std::string(row[4].value().value_or(std::string_view{})),
@@ -270,9 +275,9 @@ inline ruvia::Task<void> persistResults(
             co_return;
         ruvia::DbQuery incoming(context.resource());
         for (std::size_t index = 0; index < messages.size(); ++index) {
-            const auto httpStatus = service::common::parseInt64(
+            const auto httpStatus = service::utils::parseInt64(
                 std::optional<std::string_view>(messages[index].get("http_status")));
-            const auto completedAt = service::common::parseInt64(
+            const auto completedAt = service::utils::parseInt64(
                 std::optional<std::string_view>(messages[index].get("completed_at_ms")));
             incoming.values({
                 incoming.cast(incoming.value(static_cast<std::int64_t>(index)),
@@ -462,9 +467,9 @@ inline ruvia::Task<void> persistAudits(
             co_return;
         ruvia::DbQuery incoming(context.resource());
         for (std::size_t index = 0; index < messages.size(); ++index) {
-            const auto httpStatus = service::common::parseInt64(
+            const auto httpStatus = service::utils::parseInt64(
                 std::optional<std::string_view>(messages[index].get("http_status")));
-            const auto usedAt = service::common::parseInt64(
+            const auto usedAt = service::utils::parseInt64(
                 std::optional<std::string_view>(messages[index].get("used_at_ms")));
             incoming.values({
                 incoming.cast(incoming.value(static_cast<std::int64_t>(index)),
@@ -586,3 +591,423 @@ inline ruvia::Task<void> persistAudits(
     }
 
 } // namespace service::access::webhook
+
+namespace service::access::webhook {
+
+class DeliveryService final {
+  public:
+    static std::string deviceReference(std::string_view id, std::string_view code, std::string_view name) {
+        return "{\"id\":" + service::utils::jsonQuoted(id) + ",\"code\":" + service::utils::jsonQuoted(code) +
+            ",\"name\":" + service::utils::jsonQuoted(name) + "}";
+    }
+
+    static std::string jsonFieldOr(const ruvia::JsonValue& object, std::string_view field, std::string_view fallback) {
+        const auto value = service::utils::jsonField(object, field);
+        return value ? std::string(value->view()) : std::string(fallback);
+    }
+
+    static std::string mergeEventData(std::string_view deviceJson, std::string_view rawData) {
+        std::string result = "{\"device\":" + std::string(deviceJson);
+        if (const auto parsed = ruvia::JsonValue::parse(rawData); parsed && parsed->isObject()) {
+            (void)ruvia::detail::visitJsonObjectFields(
+                ruvia::detail::ResolvedPmrResourceTag{},
+                parsed->view(),
+                std::pmr::get_default_resource(),
+                [&](std::string_view name, std::string_view value) {
+                    if (name != "device") {
+                        result += "," + service::utils::jsonQuoted(name) + ":" + std::string(value);
+                    }
+                    return true;
+                }
+            );
+        }
+        result.push_back('}');
+        return result;
+    }
+
+    static std::string imageEventData(std::string_view deviceJson, std::string_view rawData, std::string_view occurredAt) {
+        const auto parsed = ruvia::JsonValue::parse(rawData);
+        if (!parsed || !parsed->isObject()) {
+            return mergeEventData(deviceJson, rawData);
+        }
+        const auto values = service::utils::jsonField(*parsed, "values");
+        if (!values || !values->isObject()) {
+            return mergeEventData(deviceJson, rawData);
+        }
+
+        std::string image;
+        (void)ruvia::detail::visitJsonObjectFields(
+            ruvia::detail::ResolvedPmrResourceTag{},
+            values->view(),
+            std::pmr::get_default_resource(),
+            [&](std::string_view id, std::string_view raw) {
+                if (!image.empty()) {
+                    return true;
+                }
+                const auto item = ruvia::JsonValue::parse(raw);
+                if (!item || !item->isObject()) {
+                    return true;
+                }
+                const auto type = item->get<ruvia::String>("type");
+                const auto value = service::utils::jsonField(*item, "value");
+                const auto text = item->get<ruvia::String>("value");
+                const bool jpeg = type && type->view() == "JPEG";
+                const bool dataUrl = text && text->view().starts_with("data:image/");
+                if (!value || (!jpeg && !dataUrl)) {
+                    return true;
+                }
+                const auto name = item->get<ruvia::String>("name");
+                image = "{\"id\":" + service::utils::jsonQuoted(id) + ",\"name\":" +
+                    service::utils::jsonQuoted(name ? name->view() : std::string_view("image")) +
+                    ",\"data\":" + std::string(value->view()) +
+                    ",\"time\":" + service::utils::jsonQuoted(occurredAt) + "}";
+                return true;
+            }
+        );
+        if (image.empty()) {
+            return mergeEventData(deviceJson, rawData);
+        }
+        return "{\"device\":" + std::string(deviceJson) + ",\"image\":" + image + "}";
+    }
+
+    static std::string commandEventData(std::string_view deviceJson, const ruvia::JsonValue& payload, bool dispatched) {
+        (void)dispatched;
+        return "{\"device\":" + std::string(deviceJson) + ",\"command\":{\"id\":" +
+            jsonFieldOr(payload, "commandId", "null") + ",\"status\":" +
+            jsonFieldOr(payload, "status", "null") + ",\"reason\":" +
+            jsonFieldOr(payload, "reason", "null") + ",\"elements\":" +
+            jsonFieldOr(payload, "elements", "[]") + ",\"actual_values\":" +
+            jsonFieldOr(payload, "actualValues", "[]") + "}}";
+    }
+
+    static ruvia::Task<std::string> realtimeData(ruvia::WebWorkerContext& context, std::string_view deviceId, const DeviceCatalog& device) {
+        const auto reply = co_await message::redis::command(
+            context.redis(),
+            std::vector<std::string>{ "HGETALL", telemetry::latest::latestKey(deviceId) }
+        );
+        auto record = LatestValuesRecord::decode(reply);
+        std::vector<LatestValuesRecord::Point> points;
+        points.reserve(record.latest.size());
+        for (auto& [id, point] : record.latest) {
+            if ((!record.hasConfigured || record.configured.contains(id)) && point.encode != "JPEG") {
+                points.push_back(std::move(point));
+            }
+        }
+        std::ranges::sort(points, [](const LatestValuesRecord::Point& left, const LatestValuesRecord::Point& right) {
+            return left.sort == right.sort ? left.id < right.id : left.sort < right.sort;
+        });
+        std::string body = "{\"device\":" + deviceReference(deviceId, device.code, device.name) +
+            ",\"points\":[";
+        for (std::size_t index = 0; index < points.size(); ++index) {
+            if (index != 0) {
+                body.push_back(',');
+            }
+            const auto time = points[index].observedAt > 0
+                ? service::utils::jsonQuoted(service::common::utcTimestampFromMilliseconds(points[index].observedAt))
+                : std::string("null");
+            body += "{\"id\":" + service::utils::jsonQuoted(points[index].id) +
+                ",\"name\":" + service::utils::jsonQuoted(points[index].name) +
+                ",\"value\":" + points[index].value +
+                ",\"unit\":" + service::utils::jsonQuoted(points[index].unit) +
+                ",\"time\":" + time + "}";
+        }
+        body += "]}";
+        co_return body;
+    }
+
+    static ruvia::Task<Delivery> buildDelivery(ruvia::WebWorkerContext& context, const message::StreamMessage& message, const DeviceCatalog& catalog) {
+        Delivery delivery;
+        delivery.id = message.get("event_id").empty() ? service::common::nextUuidV7()
+                                                      : std::string(message.get("event_id"));
+        delivery.eventType = std::string(message.get("event_type"));
+        delivery.deviceId = std::string(message.get("device_id"));
+        delivery.deviceCode = std::string(message.get("device_code"));
+        const auto occurredAt = service::utils::parseInt64(
+            std::optional<std::string_view>(message.get("occurred_at_ms"))
+        );
+        delivery.occurredAt = occurredAt ? service::common::utcTimestampFromMilliseconds(*occurredAt) : service::common::utcTimestampNow();
+
+        const auto device =
+            deviceReference(delivery.deviceId, delivery.deviceCode, catalog.name);
+        const auto rawData = message.get("data_json");
+        std::string data;
+        if (delivery.eventType == "device.data.reported") {
+            data = co_await realtimeData(context, delivery.deviceId, catalog);
+        } else if (delivery.eventType == "device.image.reported") {
+            data = imageEventData(device, rawData, delivery.occurredAt);
+        } else if (delivery.eventType == "device.command.accepted" ||
+                   delivery.eventType == "device.command.updated") {
+            const auto payload = ruvia::JsonValue::parse(rawData);
+            data = payload && payload->isObject()
+                ? commandEventData(device, *payload, delivery.eventType == "device.command.accepted")
+                : mergeEventData(device, rawData);
+        } else {
+            data = mergeEventData(device, rawData);
+        }
+        delivery.body =
+            service::message::webhookEnvelope(delivery.eventType, delivery.occurredAt, delivery.id, data);
+        co_return delivery;
+    }
+
+    static constexpr std::int64_t kDeliveryProgressTtlSeconds = 7 * 24 * 60 * 60;
+
+    template <typename Redis>
+    static ruvia::Task<std::set<std::string, std::less<>>>
+    completedTargets(const Redis& redis, const Delivery& delivery) {
+        const auto reply = co_await message::redis::command(
+            redis,
+            { "HKEYS", DeliveryProgressRecord::key(delivery.eventType, delivery.id) }
+        );
+        if (reply.kind() != ruvia::RedisValue::Kind::kArray) {
+            message::redis::throwValue("read webhook delivery progress", reply);
+        }
+        co_return DeliveryProgressRecord::decode(reply).completedTargets;
+    }
+
+    static ruvia::Task<void> enqueueResult(ruvia::WebWorkerContext& context, const Target& target, const Delivery& delivery, const WebhookHttpResponse& response, bool success) {
+        const auto error = service::utils::sanitize(response.error, 1000);
+        const auto status = success ? "success" : "failed";
+        const auto logId = service::common::nextUuidV7();
+        const auto responseJson = "{\"httpStatus\":" + std::to_string(response.status) +
+            ",\"body\":" + service::utils::jsonQuoted(service::utils::sanitize(response.body, 2000)) +
+            (error.empty() ? "" : ",\"error\":" + service::utils::jsonQuoted(error)) + "}";
+        static constexpr std::string_view script = R"lua(
+if redis.call('HEXISTS', KEYS[2], ARGV[1]) ~= 0 then return false end
+local arguments = {'MAXLEN', '~', ARGV[2], '*'}
+for index = 6, #ARGV do arguments[#arguments + 1] = ARGV[index] end
+local id = redis.call('XADD', KEYS[1], unpack(arguments))
+redis.call('HSET', KEYS[2], ARGV[1], '1')
+redis.call('EXPIRE', KEYS[2], ARGV[3])
+redis.call('XADD', KEYS[3], 'MAXLEN', '~', ARGV[4], '*', 'task', ARGV[5])
+return id
+)lua";
+        const std::vector<std::string> keyStore{
+            stream::deliveryResult(),
+            DeliveryProgressRecord::key(delivery.eventType, delivery.id),
+            service::message::workerWakeStream(std::nullopt)
+        };
+        const std::vector<std::string> argumentStore{
+            target.id,
+            "100000",
+            std::to_string(kDeliveryProgressTtlSeconds),
+            std::to_string(service::message::kWorkerWakeCapacity),
+            std::string(service::message::workerStreamTaskName(service::message::WorkerStreamTask::Webhook)),
+            "log_id",
+            logId,
+            "access_key_id",
+            target.accessKeyId,
+            "webhook_id",
+            target.id,
+            "event_type",
+            delivery.eventType,
+            "status",
+            status,
+            "target",
+            target.url,
+            "http_status",
+            std::to_string(response.status),
+            "device_id",
+            delivery.deviceId,
+            "device_code",
+            delivery.deviceCode,
+            "message",
+            error,
+            "request_payload",
+            delivery.body,
+            "response_payload",
+            responseJson,
+            "completed_at_ms",
+            std::to_string(service::message::utcNowMilliseconds()),
+        };
+        const std::vector<std::string_view> keys(keyStore.begin(), keyStore.end());
+        const std::vector<std::string_view> arguments(argumentStore.begin(), argumentStore.end());
+        const auto reply = co_await context.redis().eval(script, keys, arguments);
+        if (!reply.null() && reply.kind() != ruvia::RedisValue::Kind::kString) {
+            message::redis::throwValue("enqueue webhook result", reply);
+        }
+    }
+
+};
+
+} // namespace service::access::webhook
+
+namespace service::access::event {
+
+inline constexpr std::int64_t kPublicationTtlSeconds = 7 * 24 * 60 * 60;
+
+inline std::string publicationKey(std::string_view eventId, std::string_view eventType) {
+    return "iot:open-access:event:published:" + std::string(eventType) + ":" +
+        std::string(eventId);
+}
+
+inline constexpr std::string_view kPublishScript = R"lua(
+if redis.call('EXISTS', KEYS[2]) ~= 0 then return false end
+local arguments = {'MAXLEN', '~', ARGV[1], '*'}
+for index = 5, #ARGV do arguments[#arguments + 1] = ARGV[index] end
+local id = redis.call('XADD', KEYS[1], unpack(arguments))
+redis.call('SET', KEYS[2], '1', 'EX', ARGV[2])
+redis.call('XADD', KEYS[3], 'MAXLEN', '~', ARGV[3], '*', 'task', ARGV[4])
+return id
+)lua";
+
+template <typename Pipeline>
+void queue(Pipeline& pipeline, std::string_view scriptSha, std::string_view eventId, std::string_view eventType, std::string_view deviceId, std::string_view deviceCode, std::int64_t occurredAtMs, std::string_view dataJson) {
+    const auto publishedKey = publicationKey(eventId, eventType);
+    const auto occurredAt = std::to_string(occurredAtMs);
+    const auto outputStream = stream::event();
+    const auto wakeStream = service::message::workerWakeStream(std::nullopt);
+    const std::array<std::string_view, 3> keys{ outputStream, publishedKey, wakeStream };
+    const std::array<std::string_view, 16> arguments{
+        "100000",
+        "604800",
+        "100000",
+        "webhook",
+        "event_id",
+        eventId,
+        "event_type",
+        eventType,
+        "device_id",
+        deviceId,
+        "device_code",
+        deviceCode,
+        "occurred_at_ms",
+        occurredAt,
+        "data_json",
+        dataJson,
+    };
+    message::redis::queueEvalSha(pipeline, scriptSha, keys, arguments);
+}
+
+template <typename Redis>
+ruvia::Task<void> publish(const Redis& redis, std::string_view eventId, std::string_view eventType, std::string_view deviceId, std::string_view deviceCode, std::int64_t occurredAtMs, std::string_view dataJson) {
+    const std::vector<std::string> keyStore{
+        stream::event(),
+        publicationKey(eventId, eventType),
+        service::message::workerWakeStream(std::nullopt)
+    };
+    const std::vector<std::string> argumentStore{
+        "100000",
+        std::to_string(kPublicationTtlSeconds),
+        std::to_string(service::message::kWorkerWakeCapacity),
+        std::string(service::message::workerStreamTaskName(service::message::WorkerStreamTask::Webhook)),
+        "event_id",
+        std::string(eventId),
+        "event_type",
+        std::string(eventType),
+        "device_id",
+        std::string(deviceId),
+        "device_code",
+        std::string(deviceCode),
+        "occurred_at_ms",
+        std::to_string(occurredAtMs),
+        "data_json",
+        std::string(dataJson),
+    };
+    const std::vector<std::string_view> keys(keyStore.begin(), keyStore.end());
+    const std::vector<std::string_view> arguments(argumentStore.begin(), argumentStore.end());
+    const auto reply = co_await redis.eval(kPublishScript, keys, arguments);
+    if (!reply.null() && reply.kind() != ruvia::RedisValue::Kind::kString) {
+        message::redis::throwValue("publish open-access event", reply);
+    }
+}
+
+template <typename Redis>
+ruvia::Task<void> publishMany(
+    const Redis& redis,
+    const std::vector<message::ParsedDeviceMessage>& messages
+) {
+    if (messages.empty()) {
+        co_return;
+    }
+    const auto scriptSha = co_await redis.scriptLoad(kPublishScript);
+    auto pipeline = redis.pipeline();
+    for (const auto& parsed : messages) {
+        const auto eventType =
+            parsed.eventKind == "image"
+            ? "device.image.reported"
+            : "device.data.reported";
+        queue(pipeline, scriptSha, parsed.messageId, eventType, parsed.deviceId, parsed.deviceCode, parsed.observedAtMs, parsed.valuesJson);
+    }
+    const auto replies = co_await std::move(pipeline).exec();
+    message::redis::requirePipelineSuccess("publish open-access events", replies);
+}
+
+} // namespace service::access::event
+
+namespace service::access::audit {
+
+inline constexpr std::size_t kCapacity = 100000;
+
+template <typename Redis>
+ruvia::Task<void> publish(const Redis& redis, std::string_view action, std::string_view accessKeyId, std::string_view method, std::string_view target, std::string_view requestIp, std::int64_t httpStatus, std::string_view deviceId = {}, std::string_view requestPayload = "{}", std::string_view responsePayload = "{}") {
+    const std::vector<service::message::StreamField> fields{
+        { "log_id", service::common::nextUuidV7() },
+        { "access_key_id", std::string(accessKeyId) },
+        { "action", std::string(action) },
+        { "http_method", std::string(method) },
+        { "target", std::string(target) },
+        { "request_ip", std::string(requestIp) },
+        { "http_status", std::to_string(httpStatus) },
+        { "device_id", std::string(deviceId) },
+        { "request_payload", std::string(requestPayload) },
+        { "response_payload", std::string(responsePayload) },
+        { "used_at_ms", std::to_string(service::message::utcNowMilliseconds()) },
+    };
+    (void)co_await service::message::redis::addAndWake(
+        redis,
+        stream::audit(),
+        fields,
+        std::nullopt,
+        service::message::WorkerStreamTask::Webhook,
+        kCapacity
+    );
+}
+
+} // namespace service::access::audit
+
+
+namespace service::access {
+
+class AccessOperationService final {
+  public:
+    static ruvia::Task<std::string> executeOperation(ruvia::WebWorkerContext& context, std::string_view operation, std::string_view payload, ruvia::StopToken stop) {
+        if (stop.stopRequested()) {
+            service::common::fail(10004, "Access projection cancelled", 503);
+        }
+        if (operation == "refresh") {
+            co_await session::refresh(context);
+            co_return "{}";
+        }
+        if (operation == "audit") {
+            const auto request = ruvia::JsonValue::parse(payload);
+            if (!request || !request->isObject()) {
+                service::common::fail(10002, "Invalid access audit payload", 400);
+            }
+            const auto text = [&request](std::string_view field) {
+                const auto value = request->get<ruvia::String>(field);
+                return value ? std::string(value->view()) : std::string{};
+            };
+            const auto json = [&request](std::string_view field) {
+                const auto value = service::utils::jsonField(*request, field);
+                return value ? std::string(value->view()) : std::string("{}");
+            };
+            std::int64_t status = 200;
+            if (const auto value = request->get<ruvia::Int64>("httpStatus")) {
+                status = static_cast<std::int64_t>(*value);
+            }
+            const auto action = text("action");
+            const auto accessKeyId = text("accessKeyId");
+            const auto method = text("method");
+            const auto target = text("target");
+            const auto requestIp = text("requestIp");
+            const auto deviceId = text("deviceId");
+            const auto requestPayload = json("requestPayload");
+            const auto responsePayload = json("responsePayload");
+            co_await audit::publish(context.redis(), action, accessKeyId, method, target, requestIp, status, deviceId, requestPayload, responsePayload);
+            co_return "{}";
+        }
+        service::common::fail(10002, "Unknown access operation", 400);
+    }
+};
+
+} // namespace service::access

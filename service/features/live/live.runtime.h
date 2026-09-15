@@ -112,11 +112,9 @@ class LiveChangeRuntime final {
 
     ruvia::Task<void> expireSessions(ruvia::WebWorkerContext& context, std::shared_ptr<std::promise<void>> done) {
         const auto stop = ruvia::combineStopTokens(context.stopToken(), stop_->token());
-        const std::string_view keys[]{ service::edge::session_state::kDeadlines,
-                                       service::message::live::kChanges };
         while (!stop.stopRequested()) {
             try {
-                (void)co_await context.redis().eval(service::edge::session_state::kExpireScript, keys, std::span<const std::string_view>{});
+                co_await service::edge::session_state::expireSessions(context.redis());
             } catch (const std::exception& error) {
                 if (!stop.stopRequested()) {
                     std::cerr << "edge session deadline: " << error.what() << '\n';

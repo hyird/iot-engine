@@ -20,7 +20,9 @@
 #include <ruvia/web/redis/Redis.h>
 
 #include "service/common/http.h"
-#include "service/common/log.h"
+#include "service/common/worker.h"
+#include "service/middleware/log.h"
+#include "service/features/packet_log/packet_log.transport.h"
 #include "service/config/lifecycle.h"
 #include "service/config/schema.h"
 #include "service/config/storage.h"
@@ -116,10 +118,10 @@ std::filesystem::path runtimeDirectory(const char* executable) {
     return path.parent_path();
 }
 
-service::common::packet_log::Config packetLogConfig(const ruvia::Env& env, const std::filesystem::path& runtime) {
-    service::common::packet_log::Config config;
+service::packet_log::Config packetLogConfig(const ruvia::Env& env, const std::filesystem::path& runtime) {
+    service::packet_log::Config config;
     config.directory = std::filesystem::path(env.get("PACKET_LOG_DIRECTORY").value_or((runtime / "logs").string()));
-    config.level = service::common::packet_log::parseLevel(env.get("PACKET_LOG_LEVEL").value_or("DEBUG"));
+    config.level = service::packet_log::parseLevel(env.get("PACKET_LOG_LEVEL").value_or("DEBUG"));
     return config;
 }
 
@@ -278,9 +280,11 @@ service::message::outbox::Policy outboxPolicy(const ruvia::Env& env) {
     policy.oldestAgeAlertMs = env.get<std::int64_t>("OUTBOX_OLDEST_AGE_ALERT_MS").value_or(300000);
     policy.deadLetterAlertThreshold = env.get<std::int64_t>("OUTBOX_DEAD_LETTER_ALERT_THRESHOLD").value_or(1);
     policy.receiptRetentionDays = env.get<std::int64_t>("OUTBOX_RECEIPT_RETENTION_DAYS").value_or(30);
+    policy.replayCounterRetentionDays = env.get<std::int64_t>("OUTBOX_REPLAY_COUNTER_RETENTION_DAYS").value_or(30);
     if (policy.pendingAlertThreshold < 0 || policy.oldestAgeAlertMs < 0 ||
         policy.deadLetterAlertThreshold < 0 || policy.receiptRetentionDays < 0 ||
-        policy.receiptRetentionDays > 3650) {
+        policy.receiptRetentionDays > 3650 || policy.replayCounterRetentionDays < 1 ||
+        policy.replayCounterRetentionDays > 3650) {
         throw std::runtime_error("OUTBOX policy values are invalid");
     }
     return policy;
@@ -320,20 +324,20 @@ void registerRpcHandlers(
     const std::shared_ptr<service::rpc::RpcConsumerRuntime>& rpcConsumer,
     const ruvia::Env& env
 ) {
-    rpcConsumer->add("telemetry", service::telemetry::TelemetryProjectionHandler::handle);
-    rpcConsumer->add("alert", service::alert::AlertRefreshHandler::handle);
-    rpcConsumer->add("access", service::access::AccessOperationHandler::handle);
-    rpcConsumer->add("command", service::command::CommandPreparationHandler::handle);
-    rpcConsumer->add("gb28181", service::gb28181::GbControlHandler::handle);
-    rpcConsumer->add("edge", service::edge::EdgeControlHandler::handle);
-    auto vpnControl = std::make_shared<service::vpn::VpnControlHandler>(
+    rpcConsumer->add("telemetry", service::telemetry::TelemetryService::executeProjection);
+    rpcConsumer->add("alert", service::alert::metadata::executeRefreshOperation);
+    rpcConsumer->add("access", service::access::AccessOperationService::executeOperation);
+    rpcConsumer->add("command", service::command::PreparationService::executeOperation);
+    rpcConsumer->add("gb28181", service::gb28181::GbControlService::executeOperation);
+    rpcConsumer->add("edge", service::edge::EdgeControlService::executeOperation);
+    auto vpnControl = std::make_shared<service::vpn::VpnControlService>(
         vpnHubConfig(env),
         std::string(env.get("EDGE_PLATFORM_ID").value_or(service::edge::protocol::kDefaultPlatformId))
     );
     rpcConsumer->add(
         "vpn",
         [vpnControl](ruvia::WebWorkerContext& context, std::string_view operation, std::string_view payload, ruvia::StopToken stop) {
-            return vpnControl->handle(context, operation, payload, stop);
+            return vpnControl->executeOperation(context, operation, payload, stop);
         }
     );
 }
@@ -360,7 +364,7 @@ ApplicationComponents createComponents(
         auto owner = std::make_shared<ServiceWorkerComponents>();
         auto& workerComponents = *owner;
         workerComponents.observability = std::make_shared<service::observability::RuntimeDiagnostics>();
-        workerComponents.observability->identifyWorker(index, budget.service);
+        workerComponents.observability->identifyWorker(index);
         workerComponents.observability->setGauge("iot_engine_service_workers", budget.service);
         workerComponents.observability->setGauge("iot_engine_collector_workers", budget.collector);
         workerComponents.componentLifecycle = std::make_shared<service::application::ComponentLifecycle>(*workerComponents.observability);
@@ -374,7 +378,8 @@ ApplicationComponents createComponents(
         workerComponents.commandProcessing = std::make_shared<service::command::CommandProcessingRuntime>();
         workerComponents.openWebhooks = std::make_shared<service::access::WebhookRuntime>();
         workerComponents.configReconciler = std::make_shared<service::runtime::Reconciler>();
-        workerComponents.edgeProjection = std::make_shared<service::edge::EdgeProjectionRuntime>();
+        workerComponents.edgeProjection = std::make_shared<service::edge::EdgeProjectionRuntime>(
+            *workerComponents.observability);
         const auto enableVpnHub = env.get<bool>("VPN_HUB_ENABLED").value_or(true);
         workerComponents.vpnHubRuntime = enableVpnHub
             ? std::make_shared<service::vpn::VpnHubRuntime>(vpnHubConfig(env))
@@ -545,8 +550,8 @@ auto makeApplicationStart(ruvia::App& app, ApplicationComponents& components, st
             preparation.push_back(name);
             supervisor.add({ .name = name, .start = [owner, worker, index] {
                                 owner->multiplexer->configure(worker, index);
-                                initializeServiceWorker(worker, [owner](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
-                                    service::observability::setCurrentWorkerDiagnostics(*owner->observability);
+                                initializeServiceWorker(worker, [owner, index](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
+                                    context.workerState<service::ServiceWorkerTopology>().index = index;
                                     (void)co_await service::configuration::ConfigurationService::project(context);
                                 });
                             },
@@ -614,13 +619,24 @@ void configureServer(
         .alias = "vpn-coordination",
         .config = components.database,
     });
-    app.useWorkerState<service::edge::SessionDispatcher>()
+    app.useWorkerState<service::ServiceWorkerTopology>([count = components.workers.size()] {
+            return service::ServiceWorkerTopology{count};
+        })
+        .useWorkerState<service::edge::SessionDispatcher>()
         .database(ruvia::DbRegistrationConfig{
             .config = std::move(components.database),
         })
         .redis(ruvia::RedisRegistrationConfig{
             .config = std::move(components.serviceRedis),
         })
+        .httpClient({.alias = "link-public-ip", .config = {
+            .scheme = ruvia::HttpScheme::kHttp,
+            .host = "ip.sb",
+            .port = 80,
+            .maxResponseBytes = 64U * 1024U,
+            .protocol = ruvia::HttpClientProtocol::kHttp1Only,
+            .userAgent = "curl/8.0",
+        }})
         .onStart(std::move(applicationStart))
         .onStop([applicationLifecycle, observability] {
             // Keep runtime diagnostics alive until every component has stopped.
@@ -649,7 +665,7 @@ int main(int argc, char* argv[]) {
         app.loadDotenv();
         configureEdge(app.env());
         const auto runtime = runtimeDirectory(argc > 0 ? argv[0] : nullptr);
-        service::common::packet_log::initialize(packetLogConfig(app.env(), runtime));
+        service::packet_log::initialize(packetLogConfig(app.env(), runtime));
         auto gb28181 = gb28181Config(app.env());
 
         auto db = migrateDatabase(app.env());
@@ -688,11 +704,11 @@ int main(int argc, char* argv[]) {
         );
         configureServer(app, components, budget);
         sdkSupervisor().stop();
-        service::common::packet_log::shutdown();
+        service::packet_log::shutdown();
         return 0;
     } catch (const std::exception& error) {
         sdkSupervisor().stop();
-        service::common::packet_log::shutdown();
+        service::packet_log::shutdown();
         std::cerr << "server failed: " << error.what() << '\n';
         return 1;
     }

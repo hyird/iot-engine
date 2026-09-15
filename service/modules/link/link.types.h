@@ -3,6 +3,21 @@
 #include <ruvia/web/Model.h>
 
 namespace service::link {
+RUVIA_RESPONSE_MODEL(LinkDebugPacketDto,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(direction, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(source, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(address, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("payload_hex", payloadHex, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("time_ms", timeMs, ruvia::String));
+RUVIA_RESPONSE_MODEL(LinkDebugPacketsResponse,
+    RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(message, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<LinkDebugPacketDto>));
+
+
+RUVIA_REQUEST_MODEL(LinkDebugBody, RUVIA_OPTIONAL_FIELD(enabled, ruvia::Bool));
 
 RUVIA_REQUEST_MODEL(LinkTargetBody,
     RUVIA_OPTIONAL_FIELD(id, ruvia::String),
@@ -75,6 +90,7 @@ RUVIA_RESPONSE_MODEL(LinkEndpointDto,
     RUVIA_OPTIONAL_FIELD(targets, ruvia::BoxedArray<LinkTargetDto>));
 
 RUVIA_RESPONSE_MODEL(LinkItemDto,
+    RUVIA_OPTIONAL_FIELD_NAME("debug_enabled", debugEnabled, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(execution, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("edge_node_id", edgeNodeId, ruvia::String),
     RUVIA_OPTIONAL_FIELD(id, ruvia::String),

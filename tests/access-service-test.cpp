@@ -11,9 +11,9 @@ void require(bool condition, const char* message) {
         throw std::runtime_error(message);
 }
 
-std::string accessSource() {
+std::string accessSource(std::string_view file) {
     auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
-                "service/modules/open_access/open_access.service.h";
+                "service/modules/open_access" / file;
     std::ifstream input(path, std::ios::binary);
     require(input.good(), "cannot open access service source");
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
@@ -110,10 +110,15 @@ void requireAccessQueriesUseOrm(std::string_view source) {
 
 int main() {
     try {
-        const auto source = accessSource();
+        const auto source = accessSource("open_access.service.h");
+        const auto schema = accessSource("open_access.schema.h");
         const auto featureSource = accessFeatureSource();
         requireNoUnsafeParsers(source);
-        requireStrictPresentFieldTypes(source);
+        requireStrictPresentFieldTypes(source + schema);
+        require(source.find("static void validateWebhookUrl") == std::string::npos,
+                "access service still defines URL structure validation");
+        require(source.find("AccessPayloadValidator::validateWebhookUrl(") != std::string::npos,
+                "access service does not call schema URL validation");
         requireCanonicalBooleanPointValues(source);
         requireAccessQueriesUseOrm(featureSource);
         std::cout << "access service tests passed\n";

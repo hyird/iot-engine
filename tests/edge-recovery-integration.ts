@@ -41,14 +41,14 @@ async function waitForExpired(key: string) {
 }
 
 try {
+    const servicePath = 'service/features/edge/edge.service.h';
     const runtimePath = 'service/features/edge/edge.runtime.h';
-    const transportPath = 'service/features/edge/edge.transport.h';
     const redisPath = 'service/utils/redis.h';
     const runtimeSource = await Bun.file(runtimePath).text();
-    const claimRecovery = await sourceScript(runtimePath, 'claimRecoveryLease');
-    const fencedAck = await sourceScript(runtimePath, 'acknowledgeAndDeleteFenced');
-    const eraseDead = await sourceScript(runtimePath, 'eraseDeadStream');
-    const fencedPublish = await sourceScript(transportPath, 'kFencedPublishScript');
+    const claimRecovery = await sourceScript(servicePath, 'claimRecoveryLease');
+    const fencedAck = await sourceScript(servicePath, 'acknowledgeAndDeleteFenced');
+    const eraseDead = await sourceScript(servicePath, 'eraseDeadStream');
+    const fencedPublish = await sourceScript(servicePath, 'kFencedPublishScript');
 
     // The integration path must pass an immediate pending sweep only for
     // streams covered by an acquired recovery lease.  This guards the

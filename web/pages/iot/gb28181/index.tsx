@@ -43,8 +43,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Endpoint, Events } from 'zlmrtc-client';
 import { PageContainer } from '@/components/PageContainer';
 import { usePermission } from '@/hooks/usePermission';
-import type { AdaptiveFlvPlayer } from '@/lib/gb28181/adaptiveFlvPlayer';
-import { createAdaptiveFlvPlayer } from '@/lib/gb28181/adaptiveFlvPlayer';
+import type { AdaptiveFlvPlayer } from '@/lib/flv_player/adaptiveFlvPlayer';
+import { createAdaptiveFlvPlayer } from '@/lib/flv_player/adaptiveFlvPlayer';
 import { useAuthStore } from '@/store/authStore';
 import {
     buildPlaybackCandidates,

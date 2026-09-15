@@ -1,4 +1,5 @@
 #pragma once
+#include "service/utils/redis.h"
 
 #include "service/modules/device/device.entity.h"
 
@@ -264,7 +265,13 @@ class DeviceAccessService {
         const auto inherited = scoped.greatest(
             {scoped.coalesce({scoped.column("access_rank", "device_access"), integer(scoped, 0)}),
              scoped.coalesce({scoped.column("access_rank", "group_access"), integer(scoped, 0)})});
-            scoped.select({scoped.star("source"),
+            scoped.select({scoped.column("id", "source"), scoped.column("name", "source"),
+                       scoped.column("link_id", "source"), scoped.column("protocol_config_id", "source"),
+                       scoped.column("group_id", "source"), scoped.column("status", "source"),
+                       scoped.column("protocol_params", "source"), scoped.column("remark", "source"),
+                       scoped.column("created_by", "source"), scoped.column("created_at", "source"),
+                       scoped.column("updated_at", "source"), scoped.column("deleted_at", "source"),
+                       scoped.column("protocol_address", "source"), scoped.column("debug_enabled", "source"),
                        scoped.caseWhen({{owned, integer(scoped, 4)}}, inherited)})
             .from(service::device::entities::DeviceEntity::tableName(), "source")
             .join(ruvia::DbJoinType::kLeft, "device_access",
@@ -285,6 +292,7 @@ class DeviceAccessService {
                                                                     "created_by", "created_at", "updated_at",
                                                             "deleted_at",
                                                             "protocol_address",
+                                                            "debug_enabled",
                                                             "access_rank"}});
     }
 
@@ -453,7 +461,7 @@ class DeviceAccessService {
 
     static DeviceAccessLevel rank(std::string_view value) {
         const auto parsed =
-            service::common::parseInt64(std::optional<std::string_view>{value}).value_or(0);
+            service::utils::parseInt64(std::optional<std::string_view>{value}).value_or(0);
         if (parsed >= rankValueOf(DeviceAccessLevel::owner))
             return DeviceAccessLevel::owner;
         if (parsed == rankValueOf(DeviceAccessLevel::operate))
@@ -637,9 +645,9 @@ class DeviceService {
         if (start.empty() || end.empty())
             service::common::fail(18002, "startTime 和 endTime 不能为空", 400);
 
-        const auto requestedPage = service::common::parseInt64(c.req().query("page")).value_or(1);
+        const auto requestedPage = service::utils::parseInt64(c.req().query("page")).value_or(1);
         const auto requestedPageSize =
-            service::common::parseInt64(c.req().query("pageSize")).value_or(20);
+            service::utils::parseInt64(c.req().query("pageSize")).value_or(20);
         const auto page = requestedPage > 0 ? requestedPage : std::int64_t{1};
         const auto pageSize =
             requestedPageSize < 1 ? std::int64_t{20}
@@ -801,6 +809,45 @@ class DeviceService {
         }
         if (!edgeNodeId.empty())
             (void)co_await service::edge::EdgeService::queueSnapshot(c, edgeNodeId);
+    }
+
+    ruvia::Task<ruvia::BoxedArray<DeviceDebugPacketDto>> debugPackets(ruvia::Context& c, std::string_view id) {
+        (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner);
+        const auto key = service::device::entities::DeviceDebugStream::key(id);
+        const auto reply = co_await service::message::redis::command(c.redis(), {"XREVRANGE", key, "+", "-", "COUNT", "500"});
+        if (reply.kind() != ruvia::RedisValue::Kind::kArray)
+            service::message::redis::throwValue("read debug packets", reply);
+        ruvia::BoxedArray<DeviceDebugPacketDto> result(ruvia::ModelOptions{.resource=c.arena()});
+        for (const auto& row : reply.array()) {
+            if (row.kind() != ruvia::RedisValue::Kind::kArray || row.array().size() != 2) continue;
+            auto& packet = result.emplace(ruvia::ModelOptions{.resource=c.arena()});
+            packet.set<"id">(row.array()[0].string());
+            const auto fields = row.array()[1].array();
+            for (std::size_t index = 0; index + 1 < fields.size(); index += 2) {
+                const auto name = fields[index].string();
+                const auto value = fields[index + 1].string();
+                if (name == "device_id") packet.set<"deviceId">(value);
+                else if (name == "direction") packet.set<"direction">(value);
+                else if (name == "source") packet.set<"source">(value);
+                else if (name == "address") packet.set<"address">(value);
+                else if (name == "payload_hex") packet.set<"payloadHex">(value);
+                else if (name == "time_ms") packet.set<"timeMs">(value);
+            }
+        }
+        co_return result;
+    }
+
+    ruvia::Task<void> setDebug(ruvia::Context& c, std::string_view id, bool enabled) {
+        (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner);
+        auto transaction = co_await c.db().beginTransaction();
+        ruvia::DbQuery query(c.pool());
+        query.update(service::device::entities::DeviceEntity::tableName())
+            .set(service::device::entities::DeviceEntity::columnName<"debug_enabled">(), query.value(enabled))
+            .set("updated_at", query.call("now"))
+            .where((service::device::entities::DeviceEntity::column<"id">() == id && service::device::entities::DeviceEntity::column<"deleted_at">().isNull()).expression(query));
+        (void)co_await transaction.execute(query);
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "updated", id);
+        co_await transaction.commit();
     }
 
     ruvia::Task<void> update(ruvia::Context& c, std::string_view id, const SaveDeviceBody& body) {
@@ -1259,7 +1306,7 @@ class DeviceService {
 
   private:
     static std::int64_t toInt(std::string_view value, std::int64_t fallback = 0) {
-        return service::common::parseInt64(std::optional<std::string_view>{value})
+        return service::utils::parseInt64(std::optional<std::string_view>{value})
             .value_or(fallback);
     }
 
@@ -1603,7 +1650,8 @@ class DeviceService {
                                       query.nullIf(DeviceAccessService::jsonText(
                                                        query, endpoint, "parity"),
                                                    query.value(""))}}),
-                      query.caseWhen({{edgeExecution, rs485Enabled}})});
+                      query.caseWhen({{edgeExecution, rs485Enabled}}),
+                      query.column("debug_enabled", "d"), query.column("debug_enabled", "l")});
     }
 
     template <typename Row>
@@ -1611,6 +1659,8 @@ class DeviceService {
                          const DeviceActor& actor) {
         item.set<"id">(row[0].value().value_or(std::string_view{}));
         item.set<"name">(row[1].value().value_or(std::string_view{}));
+        item.set<"debugEnabled">(row[43].value().value_or("") == "t");
+        item.set<"linkDebugEnabled">(row[44].value().value_or("") == "t");
         item.set<"deviceCode">(row[2].value().value_or(std::string_view{}));
         if (row[3].value().has_value())
             item.set<"linkId">(row[3].value().value_or(std::string_view{}));
@@ -2192,7 +2242,7 @@ class DeviceService {
         const auto raw = jsonField(object, field);
         if (!raw)
             return fallback;
-        return service::common::parseInt64(std::optional<std::string_view>{raw->view()})
+        return service::utils::parseInt64(std::optional<std::string_view>{raw->view()})
             .value_or(fallback);
     }
 

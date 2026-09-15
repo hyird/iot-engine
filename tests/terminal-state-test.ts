@@ -2,8 +2,14 @@ import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 
-const gateway = readFileSync(new URL('../service/features/edge/gateway/gateway.runtime.h', import.meta.url), 'utf8');
-const state = readFileSync(new URL('../service/features/edge/terminal/terminal.service.h', import.meta.url), 'utf8');
+const gateway = readFileSync(
+    new URL('../service/features/edge/terminal/terminal.service.h', import.meta.url),
+    'utf8'
+);
+const state = readFileSync(
+    new URL('../service/features/edge/terminal/terminal.service.h', import.meta.url),
+    'utf8'
+);
 function lua(source: string, marker: string) {
     const match = source.slice(source.indexOf(marker)).match(/R"lua\(([\s\S]*?)\)lua"/);
     if (!match) throw new Error(`Missing production Lua: ${marker}`);
@@ -13,19 +19,33 @@ const refresh = lua(state, 'kRefreshScript');
 const failTerminal = lua(state, 'kFailScript');
 const inputAck = lua(gateway, 'static ruvia::Task<void> saveTerminalDataAck(');
 const output = lua(gateway, 'static ruvia::Task<void> saveTerminalData(');
+const enqueueInput = lua(state, 'static ruvia::Task<void> enqueueInput(');
 let server: ReturnType<typeof Bun.spawn> | undefined;
 let redis: InstanceType<typeof Bun.RedisClient>;
 
 beforeAll(async () => {
     const executable = Bun.which('redis-server');
-    if (!executable) throw new Error('redis-server is required for the isolated terminal state test');
+    if (!executable)
+        throw new Error('redis-server is required for the isolated terminal state test');
     const listener = createServer();
     await new Promise<void>((resolve) => listener.listen(0, '127.0.0.1', resolve));
     const address = listener.address();
     if (!address || typeof address === 'string') throw new Error('No test port');
     await new Promise<void>((resolve) => listener.close(() => resolve()));
-    server = Bun.spawn([executable, '--bind', '127.0.0.1', '--port', String(address.port),
-        '--save', '', '--appendonly', 'no'], { stdout: 'ignore', stderr: 'pipe' });
+    server = Bun.spawn(
+        [
+            executable,
+            '--bind',
+            '127.0.0.1',
+            '--port',
+            String(address.port),
+            '--save',
+            '',
+            '--appendonly',
+            'no',
+        ],
+        { stdout: 'ignore', stderr: 'pipe' }
+    );
     for (let attempt = 0; attempt < 50; attempt++) {
         redis = new Bun.RedisClient(`redis://127.0.0.1:${address.port}`, { autoReconnect: false });
         try {
@@ -58,6 +78,16 @@ async function seed(k: string[]) {
     expect(await evalLua(inputAck, [k[1], k[3]], ['epoch', '1', '2'])).toBe(1);
     expect(await evalLua(output, [k[1], k[2], k[4]], ['epoch', 'first', '1', '2'])).toBe(1);
 }
+
+test('terminal input overflow preserves the accepted prefix and its original expiry', async () => {
+    const input = keys()[2];
+    expect(await evalLua(enqueueInput, [input], ['open', '2', '120'])).toBe(1);
+    await redis.send('EXPIRE', [input, '30']);
+    expect(await evalLua(enqueueInput, [input], ['data', '2', '120'])).toBe(2);
+    expect(await evalLua(enqueueInput, [input], ['overflow', '2', '120'])).toBe(0);
+    expect(await redis.send('LRANGE', [input, '0', '-1'])).toEqual(['open', 'data']);
+    expect(Number(await redis.send('TTL', [input]))).toBeLessThanOrEqual(30);
+});
 
 test('idle keepalive preserves ACK and output sequence beyond their original expiry', async () => {
     const k = keys();
@@ -103,7 +133,8 @@ test('keepalive does not create absent sequence state for unused or legacy termi
 });
 
 test('terminal failure preserves node and other terminals and publishes one close', async () => {
-    const broken = keys(), other = keys();
+    const broken = keys(),
+        other = keys();
     await seed(broken);
     await seed(other);
     const failureKeys = [broken[1], broken[2], broken[3], broken[4]];

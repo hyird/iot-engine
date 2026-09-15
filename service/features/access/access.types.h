@@ -5,7 +5,27 @@
 #include <string>
 #include <vector>
 
+namespace service::access {
+
+struct WebhookUrl final {
+    bool tls{ false };
+    std::string host;
+    std::string port;
+    std::string target;
+};
+
+} // namespace service::access
+
 namespace service::access::webhook {
+
+    struct Delivery final {
+        std::string id;
+        std::string eventType;
+        std::string deviceId;
+        std::string deviceCode;
+        std::string occurredAt;
+        std::string body;
+    };
 
     struct Target final {
         std::string id;
@@ -27,3 +47,13 @@ namespace service::access::webhook {
     using Catalog = std::map<std::string, DeviceCatalog, std::less<>>;
 
 } // namespace service::access::webhook
+
+namespace service::access {
+
+struct WebhookHttpResponse final {
+    std::int64_t status{ 0 };
+    std::string body;
+    std::string error;
+};
+
+} // namespace service::access

@@ -6,6 +6,13 @@
 #include <string_view>
 #include <vector>
 
+struct DeviceRouteSnapshot {
+    bool online{ false };
+    std::string remoteAddress;
+    bool hasChannels{ false };
+    bool channelExists{ false };
+};
+
 enum class DeviceChange {
     Status,
     Catalog,

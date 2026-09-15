@@ -1,4 +1,5 @@
 #pragma once
+#include "service/features/packet_log/packet_log.service.h"
 
 #include <algorithm>
 #include <array>
@@ -25,7 +26,8 @@
 #include <ruvia/core/Task.h>
 #include <ruvia/core/TaskScope.h>
 
-#include "service/common/log.h"
+#include "service/middleware/log.h"
+#include "service/features/packet_log/packet_log.transport.h"
 #include "service/common/message.h"
 #include "service/features/collector/collector.service.h"
 #include "service/features/collector/engine/engine.runtime.h"
@@ -183,11 +185,11 @@ class CollectorWorker final {
         std::string connectionId;
     };
 
-    static ProtocolRuntimeRegistry protocols() {
-        ProtocolRuntimeRegistry result;
-        result.add(std::make_unique<modbus::Runtime>());
-        result.add(std::make_unique<s7::Runtime>());
-        result.add(std::make_unique<sl651::Runtime>());
+    static ProtocolSessionFactoryRegistry protocols() {
+        ProtocolSessionFactoryRegistry result;
+        result.add(std::make_unique<modbus::SessionFactory>());
+        result.add(std::make_unique<s7::SessionFactory>());
+        result.add(std::make_unique<sl651::SessionFactory>());
         return result;
     }
 
@@ -267,9 +269,9 @@ class CollectorWorker final {
         return current == pendingCommands_.end() ? nullptr : &current->second.task;
     }
 
-    [[nodiscard]] service::common::packet_log::Context
+    [[nodiscard]] service::packet_log::Context
     ingressLogContext(const message::IngressPacket& packet, std::string_view deviceCodes = {}) const noexcept {
-        service::common::packet_log::Context context;
+        service::packet_log::Context context;
         context.workerIndex = workerIndex_;
         context.direction = "RX";
         context.operation = "transport";
@@ -283,9 +285,9 @@ class CollectorWorker final {
         return context;
     }
 
-    [[nodiscard]] service::common::packet_log::Context
+    [[nodiscard]] service::packet_log::Context
     connectionLogContext(const message::ConnectionEvent& event) const noexcept {
-        service::common::packet_log::Context context;
+        service::packet_log::Context context;
         context.workerIndex = workerIndex_;
         context.operation = "connection";
         context.protocol = protocolForLink(event.linkId);
@@ -297,9 +299,9 @@ class CollectorWorker final {
         return context;
     }
 
-    [[nodiscard]] service::common::packet_log::Context
+    [[nodiscard]] service::packet_log::Context
     taskLogContext(const message::ProtocolTask& task, std::string_view connectionId = {}) const noexcept {
-        service::common::packet_log::Context context;
+        service::packet_log::Context context;
         context.workerIndex = workerIndex_;
         context.operation = task.kind;
         context.protocol = task.protocol;
@@ -317,9 +319,9 @@ class CollectorWorker final {
         return context;
     }
 
-    [[nodiscard]] service::common::packet_log::Context
+    [[nodiscard]] service::packet_log::Context
     actionLogContext(const ProtocolAction& action, std::string_view operation = {}) const noexcept {
-        service::common::packet_log::Context context;
+        service::packet_log::Context context;
         context.workerIndex = workerIndex_;
         context.operation = operation;
         context.deviceId = action.deviceId;
@@ -336,9 +338,9 @@ class CollectorWorker final {
         return context;
     }
 
-    [[nodiscard]] service::common::packet_log::Context
+    [[nodiscard]] service::packet_log::Context
     parsedLogContext(const message::ParsedDeviceMessage& parsed) const noexcept {
-        service::common::packet_log::Context context;
+        service::packet_log::Context context;
         context.workerIndex = workerIndex_;
         context.direction = "RX";
         context.operation = "parse";
@@ -357,9 +359,9 @@ class CollectorWorker final {
         return context;
     }
 
-    [[nodiscard]] service::common::packet_log::Context
+    [[nodiscard]] service::packet_log::Context
     egressLogContext(const EgressLogContext& egress) const noexcept {
-        service::common::packet_log::Context context;
+        service::packet_log::Context context;
         context.workerIndex = workerIndex_;
         context.direction = "TX";
         context.operation = egress.operation;
@@ -710,8 +712,8 @@ class CollectorWorker final {
             };
             if (task.kind == "discovery") {
                 const auto payload = message::fromHex(task.payload);
-                service::common::packet_log::write(
-                    service::common::packet_log::Level::Info,
+                service::packet_log::write(
+                    service::packet_log::Level::Info,
                     "DISCOVERY_REQUEST",
                     taskLogContext(task),
                     payload
@@ -720,8 +722,8 @@ class CollectorWorker final {
             if (task.kind == "discovery" && task.connectionId.empty()) {
                 const auto connections = tcp_.connectionIds(task.linkId);
                 if (connections.empty()) {
-                    service::common::packet_log::write(
-                        service::common::packet_log::Level::Warn,
+                    service::packet_log::write(
+                        service::packet_log::Level::Warn,
                         "DISCOVERY_FAILED",
                         taskLogContext(task),
                         {},
@@ -733,8 +735,8 @@ class CollectorWorker final {
                 pendingCommands_.insert_or_assign(task.messageId, PendingCommand{ stream, message.id, task });
                 broadcasts_[task.messageId] = BroadcastCommand{ .remaining = connections.size() };
                 const auto targetCount = "targets=" + std::to_string(connections.size());
-                service::common::packet_log::write(
-                    service::common::packet_log::Level::Info,
+                service::packet_log::write(
+                    service::packet_log::Level::Info,
                     "BROADCAST_START",
                     taskLogContext(task),
                     {},
@@ -746,8 +748,8 @@ class CollectorWorker final {
                     auto context = taskLogContext(task, connectionId);
                     context.causationId = task.messageId;
                     context.messageId = childId;
-                    service::common::packet_log::write(
-                        service::common::packet_log::Level::Debug,
+                    service::packet_log::write(
+                        service::packet_log::Level::Debug,
                         "BROADCAST_TARGET",
                         context
                     );
@@ -766,25 +768,22 @@ class CollectorWorker final {
                 continue;
             }
             if (task.kind == "command") {
-                if (message::utcNowMilliseconds() - task.createdAtMs >= 60000) {
+                const auto reservation = co_await CollectorCommandService::reserveTransmission(
+                    redis_, task, message::utcNowMilliseconds());
+                if (reservation == TransmissionReservation::Expired) {
                     co_await failUndeliverable(stream, message.id, task.messageId, task, "dispatch_deadline_expired");
                     continue;
                 }
-                const auto receipt = "iot:v2:command:sent:" + task.messageId;
-                const auto claimed = co_await message::redis::command(redis_, { "SET", receipt, "1", "NX", "EX", "86400" });
-                if (claimed.kind() == ruvia::RedisValue::Kind::kNull) {
+                if (reservation == TransmissionReservation::Duplicate) {
                     co_await message::redis::acknowledgeAndDelete(redis_, stream, commandGroup(), message.id);
                     continue;
-                }
-                if (claimed.kind() == ruvia::RedisValue::Kind::kError) {
-                    message::redis::throwValue("claim command transmission", claimed);
                 }
             }
             pendingCommands_.insert_or_assign(task.messageId, PendingCommand{ stream, message.id, task });
             auto command = makeCommand(task.messageId);
             if (task.kind == "discovery") {
-                service::common::packet_log::write(
-                    service::common::packet_log::Level::Info,
+                service::packet_log::write(
+                    service::packet_log::Level::Info,
                     "DISCOVERY_START",
                     taskLogContext(task, task.connectionId)
                 );
@@ -808,6 +807,53 @@ class CollectorWorker final {
         co_return !messages.empty();
     }
 
+    ruvia::Task<void> captureDebug(std::string_view linkId, std::string_view connectionId,
+        std::string_view address, std::string_view direction, std::span<const std::uint8_t> bytes,
+        std::int64_t timestamp, std::string_view knownDevice = {}, bool deviceOnly = false) {
+        const auto link = std::find_if(loadedSnapshot_.links.begin(), loadedSnapshot_.links.end(),
+            [&](const auto& value) { return value.id == linkId; });
+        if (link == loadedSnapshot_.links.end()) co_return;
+        const DeviceDefinition* selected = nullptr;
+        bool ambiguous = false;
+        const auto connection = networkConnections_.find(connectionId);
+        const auto routes = routes_.find(connectionId);
+        for (const auto& device : loadedSnapshot_.devices) {
+            if (device.linkId != linkId) continue;
+            if (!knownDevice.empty() && device.id != knownDevice) continue;
+            if (connection != networkConnections_.end() && !connection->second.targetId.empty() &&
+                device.targetId != connection->second.targetId) continue;
+            if (device.protocol != "SL651" && knownDevice.empty() && routes != routes_.end() && !routes->second.empty() &&
+                !routes->second.contains(device.id)) continue;
+            if (device.protocol == "SL651" && bytes.size() >= 8 && bytes[0] == 0x7e && bytes[1] == 0x7e) {
+                const auto offset = direction == "RX" ? 3U : 2U;
+                std::uint64_t station = 0;
+                for (std::size_t i = 0; i < 5; ++i) station = station * 100 + (bytes[offset+i] >> 4) * 10 + (bytes[offset+i] & 15);
+                const auto nonzero = device.code.find_first_not_of('0');
+                const auto normalized = nonzero == std::string::npos ? std::string("0") : device.code.substr(nonzero);
+                if (std::to_string(station) != normalized) continue;
+            }
+            if (device.protocol == "Modbus" && !bytes.empty()) {
+                if (device.modbusMode == "RTU") {
+                    if (bytes[0] != device.slaveId) continue;
+                } else if (bytes.size() >= 7 && bytes[2] == 0 && bytes[3] == 0) {
+                    if (bytes[6] != device.slaveId) continue;
+                }
+            }
+            if (selected) ambiguous = true;
+            selected = &device;
+        }
+        if (ambiguous) selected = nullptr;
+        if (link->protocol == "SL651" && direction == "RX" && !deviceOnly) selected = nullptr;
+        if (!link->debugEnabled && !(selected && selected->debugEnabled)) co_return;
+        try {
+            co_await packet_log::DebugPacketService::append(redis_, linkId,
+                selected ? std::string_view(selected->id) : std::string_view{}, direction,
+                "collector", address, bytes, timestamp, deviceOnly);
+        } catch (const std::exception& error) {
+            lastCoordinatorError_ = std::string("debug_packet_failed: ") + error.what();
+        }
+    }
+
     void enqueueIngress(message::IngressPacket packet) {
         if (stopping_) {
             return;
@@ -815,9 +861,9 @@ class CollectorWorker final {
         packet.workerInstanceId = workerInstanceId_;
         const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
         const auto logContext = ingressLogContext(packet, deviceCodes);
-        service::common::packet_log::write(service::common::packet_log::Level::Debug, "RX_BYTES", logContext, packet.payload);
+        service::packet_log::write(service::packet_log::Level::Debug, "RX_BYTES", logContext, packet.payload);
         if (ingressWork_.size() >= kRawIngressCapacity) {
-            service::common::packet_log::write(service::common::packet_log::Level::Error, "RX_DROPPED", logContext, packet.payload, "raw_ingress_backpressure");
+            service::packet_log::write(service::packet_log::Level::Error, "RX_DROPPED", logContext, packet.payload, "raw_ingress_backpressure");
             tcp_.close(packet.connectionId, "raw_ingress_backpressure");
             return;
         }
@@ -842,7 +888,7 @@ class CollectorWorker final {
                                         .reason = {},
                                         .sessionEpoch = info.sessionEpoch,
                                         .occurredAtMs = message::utcNowMilliseconds() };
-        service::common::packet_log::write(service::common::packet_log::Level::Info, "CONNECTED", connectionLogContext(event));
+        service::packet_log::write(service::packet_log::Level::Info, "CONNECTED", connectionLogContext(event));
         ingressWork_.push_back({ .packet = std::nullopt, .connectionEvent = std::move(event), .connectionId = connectionId });
         startIngressDrain();
     }
@@ -870,7 +916,7 @@ class CollectorWorker final {
                                         .reason = std::move(reason),
                                         .sessionEpoch = info.sessionEpoch,
                                         .occurredAtMs = message::utcNowMilliseconds() };
-        service::common::packet_log::write(service::common::packet_log::Level::Warn, "DISCONNECTED", connectionLogContext(event), {}, event.reason);
+        service::packet_log::write(service::packet_log::Level::Warn, "DISCONNECTED", connectionLogContext(event), {}, event.reason);
         ingressWork_.push_back({ .packet = std::nullopt, .connectionEvent = std::move(event), .connectionId = std::move(connectionId) });
         startIngressDrain();
     }
@@ -896,8 +942,8 @@ class CollectorWorker final {
                 lastCoordinatorError_ = std::string("raw_ingress_publish_failed: ") + error.what();
                 if (work.packet) {
                     const auto deviceCodes = deviceCodesForConnection(work.packet->connectionId);
-                    service::common::packet_log::write(
-                        service::common::packet_log::Level::Error,
+                    service::packet_log::write(
+                        service::packet_log::Level::Error,
                         "RX_PUBLISH_FAILED",
                         ingressLogContext(*work.packet, deviceCodes),
                         work.packet->payload,
@@ -992,7 +1038,7 @@ class CollectorWorker final {
                     parseError = error.what();
                 }
                 if (!parseError.empty()) {
-                    service::common::packet_log::Context logContext;
+                    service::packet_log::Context logContext;
                     logContext.workerIndex = workerIndex_;
                     logContext.direction = "RX";
                     logContext.operation = "decode_ingress";
@@ -1002,8 +1048,8 @@ class CollectorWorker final {
                     logContext.remoteAddress = message.get("remote_address");
                     logContext.messageId = message.get("message_id");
                     const auto raw = message::fromHex(message.get("payload_hex"));
-                    service::common::packet_log::write(
-                        service::common::packet_log::Level::Error,
+                    service::packet_log::write(
+                        service::packet_log::Level::Error,
                         "PARSE_ERROR",
                         logContext,
                         raw,
@@ -1014,8 +1060,8 @@ class CollectorWorker final {
                 }
                 if (packet.workerInstanceId != workerInstanceId_) {
                     const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
-                    service::common::packet_log::write(
-                        service::common::packet_log::Level::Warn,
+                    service::packet_log::write(
+                        service::packet_log::Level::Warn,
                         "RX_REJECTED",
                         ingressLogContext(packet, deviceCodes),
                         packet.payload,
@@ -1034,8 +1080,8 @@ class CollectorWorker final {
                 if (epoch == connectionEpochs_.end() || epoch->second != packet.sessionEpoch ||
                     !engine_.contains(packet.connectionId)) {
                     const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
-                    service::common::packet_log::write(
-                        service::common::packet_log::Level::Warn,
+                    service::packet_log::write(
+                        service::packet_log::Level::Warn,
                         "RX_REJECTED",
                         ingressLogContext(packet, deviceCodes),
                         packet.payload,
@@ -1050,13 +1096,15 @@ class CollectorWorker final {
                     );
                     continue;
                 }
+                co_await captureDebug(packet.linkId, packet.connectionId, packet.remoteAddress,
+                    "RX", packet.payload, packet.occurredAtMs);
                 try {
                     auto actions = engine_.consume(packet);
                     co_await applyActions(packet.connectionId, std::move(actions));
                 } catch (const std::exception& error) {
                     const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
-                    service::common::packet_log::write(
-                        service::common::packet_log::Level::Error,
+                    service::packet_log::write(
+                        service::packet_log::Level::Error,
                         "PARSE_ERROR",
                         ingressLogContext(packet, deviceCodes),
                         packet.payload,
@@ -1066,8 +1114,8 @@ class CollectorWorker final {
                     throw;
                 } catch (...) {
                     const auto deviceCodes = deviceCodesForConnection(packet.connectionId);
-                    service::common::packet_log::write(
-                        service::common::packet_log::Level::Error,
+                    service::packet_log::write(
+                        service::packet_log::Level::Error,
                         "PARSE_ERROR",
                         ingressLogContext(packet, deviceCodes),
                         packet.payload,
@@ -1106,7 +1154,7 @@ class CollectorWorker final {
             parseError = error.what();
         }
         if (!parseError.empty()) {
-            service::common::packet_log::Context logContext;
+            service::packet_log::Context logContext;
             logContext.workerIndex = workerIndex_;
             logContext.direction = "TX";
             logContext.operation = "decode_egress";
@@ -1114,8 +1162,8 @@ class CollectorWorker final {
             logContext.messageId = message.get("message_id");
             logContext.causationId = message.get("causation_id");
             const auto raw = message::fromHex(message.get("payload_hex"));
-            service::common::packet_log::write(
-                service::common::packet_log::Level::Error,
+            service::packet_log::write(
+                service::packet_log::Level::Error,
                 "TX_REJECTED",
                 logContext,
                 raw,
@@ -1125,7 +1173,7 @@ class CollectorWorker final {
             co_return true;
         }
         if (packet.workerInstanceId != workerInstanceId_) {
-            service::common::packet_log::Context logContext;
+            service::packet_log::Context logContext;
             logContext.workerIndex = workerIndex_;
             logContext.direction = "TX";
             logContext.operation = "transport";
@@ -1133,8 +1181,8 @@ class CollectorWorker final {
             logContext.messageId = packet.messageId;
             logContext.causationId = packet.causationId;
             logContext.sessionEpoch = packet.sessionEpoch;
-            service::common::packet_log::write(
-                service::common::packet_log::Level::Warn,
+            service::packet_log::write(
+                service::packet_log::Level::Warn,
                 "TX_REJECTED",
                 logContext,
                 packet.payload,
@@ -1144,15 +1192,16 @@ class CollectorWorker final {
             co_return true;
         }
         const auto connection = networkConnections_.find(packet.connectionId);
-        const auto owner = co_await message::redis::command(redis_, { "GET", ownership::key(connection == networkConnections_.end() ? std::string_view{} : connection->second.linkId) });
-        if (owner.kind() != ruvia::RedisValue::Kind::kString || owner.string() != service::runtime::instanceId()) {
+        const auto linkId = connection == networkConnections_.end()
+            ? std::string_view{} : std::string_view(connection->second.linkId);
+        if (!co_await ownership::isLinkOwner(redis_, linkId, service::runtime::instanceId())) {
             tcp_.close(packet.connectionId, "link_ownership_lost");
             co_await message::redis::acknowledgeAndDelete(redis_, stream, group, message.id);
             co_return true;
         }
         const auto epoch = connectionEpochs_.find(packet.connectionId);
         if (epoch == connectionEpochs_.end() || epoch->second != packet.sessionEpoch) {
-            service::common::packet_log::Context logContext;
+            service::packet_log::Context logContext;
             logContext.workerIndex = workerIndex_;
             logContext.direction = "TX";
             logContext.operation = "transport";
@@ -1160,8 +1209,8 @@ class CollectorWorker final {
             logContext.messageId = packet.messageId;
             logContext.causationId = packet.causationId;
             logContext.sessionEpoch = packet.sessionEpoch;
-            service::common::packet_log::write(
-                service::common::packet_log::Level::Warn,
+            service::packet_log::write(
+                service::packet_log::Level::Warn,
                 "TX_REJECTED",
                 logContext,
                 packet.payload,
@@ -1197,7 +1246,9 @@ class CollectorWorker final {
             }
             egressLog.remoteAddress = network->second.remoteAddress;
         }
-        service::common::packet_log::write(service::common::packet_log::Level::Debug, "TX_BYTES", egressLogContext(egressLog), packet.payload);
+        service::packet_log::write(service::packet_log::Level::Debug, "TX_BYTES", egressLogContext(egressLog), packet.payload);
+        co_await captureDebug(egressLog.linkId, packet.connectionId, egressLog.remoteAddress,
+            "TX_ATTEMPT", packet.payload, message::utcNowMilliseconds(), egressLog.deviceId);
         tcp_.send(packet.connectionId, std::move(packet.payload), [this, entryId, egressLog = std::move(egressLog)](bool success) mutable {
             if (!stopping_) {
                 scope_.spawn(
@@ -1209,9 +1260,9 @@ class CollectorWorker final {
     }
 
     ruvia::Task<void> completeEgress(std::string entryId, bool success, EgressLogContext egressLog) {
-        service::common::packet_log::write(
-            success ? service::common::packet_log::Level::Debug
-                    : service::common::packet_log::Level::Error,
+        service::packet_log::write(
+            success ? service::packet_log::Level::Debug
+                    : service::packet_log::Level::Error,
             success ? "TX_SUCCESS" : "TX_FAILED",
             egressLogContext(egressLog),
             {},
@@ -1271,8 +1322,8 @@ class CollectorWorker final {
                 case ProtocolActionKind::Close: {
                     const auto event = hasMarker(action.reason, "timeout") ? "TIMEOUT"
                                                                            : "PROTOCOL_CLOSE";
-                    service::common::packet_log::write(
-                        service::common::packet_log::Level::Warn,
+                    service::packet_log::write(
+                        service::packet_log::Level::Warn,
                         event,
                         actionLogContext(action, "protocol"),
                         {},
@@ -1282,16 +1333,22 @@ class CollectorWorker final {
                     break;
                 }
                 case ProtocolActionKind::BindDevice:
-                    service::common::packet_log::write(
-                        service::common::packet_log::Level::Info,
+                    service::packet_log::write(
+                        service::packet_log::Level::Info,
                         "DEVICE_BOUND",
                         actionLogContext(action, "bind")
                     );
                     co_await bindRouteIfConnected(action);
                     break;
                 case ProtocolActionKind::PublishParsed:
-                    service::common::packet_log::write(
-                        service::common::packet_log::Level::Debug,
+                    action.parsed.messageId = message::nextMessageId();
+                    if (action.parsed.protocol == "SL651") {
+                        for (const auto& raw : action.parsed.rawPayloads)
+                            co_await captureDebug(action.parsed.linkId, action.connectionId, "", "RX", raw,
+                                message::utcNowMilliseconds(), action.parsed.deviceId, true);
+                    }
+                    service::packet_log::write(
+                        service::packet_log::Level::Debug,
                         "PARSE_SUCCESS",
                         parsedLogContext(action.parsed),
                         {},
@@ -1304,14 +1361,16 @@ class CollectorWorker final {
                         std::nullopt,
                         message::WorkerStreamTask::Telemetry
                     );
+                    co_await applyActions(action.connectionId,
+                        engine_.parsedPublished(action.connectionId, action.publicationToken));
                     break;
                 case ProtocolActionKind::CompleteCommand: {
                     const auto* task = taskForCausation(action.commandId);
                     auto context = task ? taskLogContext(*task, action.connectionId)
                                         : actionLogContext(action, "command");
                     context.causationId = action.commandId;
-                    service::common::packet_log::write(
-                        service::common::packet_log::Level::Info,
+                    service::packet_log::write(
+                        service::packet_log::Level::Info,
                         task && task->kind == "discovery" ? "DISCOVERY_COMPLETED"
                                                           : "COMMAND_COMPLETED",
                         context,
@@ -1330,8 +1389,8 @@ class CollectorWorker final {
                         ? "TIMEOUT"
                         : (task && task->kind == "discovery" ? "DISCOVERY_FAILED"
                                                              : "COMMAND_FAILED");
-                    service::common::packet_log::write(
-                        service::common::packet_log::Level::Warn,
+                    service::packet_log::write(
+                        service::packet_log::Level::Warn,
                         event,
                         context,
                         {},
@@ -1367,8 +1426,8 @@ class CollectorWorker final {
                 diagnostic.connectionId = connectionId;
                 const auto context = actionLogContext(diagnostic, "deadline");
                 const auto token = std::to_string(protocolToken);
-                service::common::packet_log::write(
-                    service::common::packet_log::Level::Debug,
+                service::packet_log::write(
+                    service::packet_log::Level::Debug,
                     "DEADLINE_FIRED",
                     context,
                     {},
@@ -1376,8 +1435,8 @@ class CollectorWorker final {
                 );
                 auto actions = engine_.deadline(connectionId, protocolToken);
                 if (actions.empty()) {
-                    service::common::packet_log::write(
-                        service::common::packet_log::Level::Warn,
+                    service::packet_log::write(
+                        service::packet_log::Level::Warn,
                         "TIMEOUT",
                         context,
                         {},
@@ -1507,7 +1566,6 @@ class CollectorWorker final {
             }
             routes_.erase(bound);
         }
-        co_await CollectorStateService::eraseConnection(redis_, connectionId);
         connectionEpochs_.erase(std::string(connectionId));
         (void)reason;
     }
@@ -1584,14 +1642,14 @@ class CollectorWorker final {
             if (broadcast == broadcasts_.end()) {
                 co_return;
             }
-            service::common::packet_log::Context childContext;
+            service::packet_log::Context childContext;
             childContext.workerIndex = workerIndex_;
             childContext.operation = "broadcast";
             childContext.messageId = commandId;
             childContext.causationId = parentId;
-            service::common::packet_log::write(
-                success ? service::common::packet_log::Level::Debug
-                        : service::common::packet_log::Level::Warn,
+            service::packet_log::write(
+                success ? service::packet_log::Level::Debug
+                        : service::packet_log::Level::Warn,
                 success ? "BROADCAST_TARGET_SUCCESS" : "BROADCAST_TARGET_FAILED",
                 childContext,
                 {},
@@ -1609,13 +1667,13 @@ class CollectorWorker final {
                 ? std::string("discovery_window_closed")
                 : broadcast->second.reason;
             broadcasts_.erase(broadcast);
-            service::common::packet_log::Context aggregateContext;
+            service::packet_log::Context aggregateContext;
             aggregateContext.workerIndex = workerIndex_;
             aggregateContext.operation = "broadcast";
             aggregateContext.messageId = parentId;
-            service::common::packet_log::write(
-                aggregateSuccess ? service::common::packet_log::Level::Info
-                                 : service::common::packet_log::Level::Warn,
+            service::packet_log::write(
+                aggregateSuccess ? service::packet_log::Level::Info
+                                 : service::packet_log::Level::Warn,
                 aggregateSuccess ? "BROADCAST_COMPLETED" : "BROADCAST_FAILED",
                 aggregateContext,
                 {},
@@ -1628,15 +1686,15 @@ class CollectorWorker final {
         if (current == pendingCommands_.end()) {
             co_return;
         }
-        auto pending = std::move(current->second);
-        pendingCommands_.erase(current);
+        const auto pending = current->second;
         if (!success &&
             co_await retryCommand(pending.stream, pending.entryId, pending.task, reason)) {
+            pendingCommands_.erase(std::string(commandId));
             co_return;
         }
-        service::common::packet_log::write(
-            success ? service::common::packet_log::Level::Info
-                    : service::common::packet_log::Level::Warn,
+        service::packet_log::write(
+            success ? service::packet_log::Level::Info
+                    : service::packet_log::Level::Warn,
             pending.task.kind == "discovery"
                 ? (success ? "DISCOVERY_RESULT" : "DISCOVERY_FAILED")
                 : (success ? "COMMAND_RESULT" : "COMMAND_FAILED"),
@@ -1645,6 +1703,7 @@ class CollectorWorker final {
             reason
         );
         co_await finalizeCommand(pending.stream, pending.entryId, commandId, pending.task, success, reason);
+        pendingCommands_.erase(std::string(commandId));
     }
 
     [[nodiscard]] static bool retryableFailure(std::string_view reason) {
@@ -1674,8 +1733,8 @@ class CollectorWorker final {
             ++task.attempt;
             const auto retryReason = "attempt=" + std::to_string(task.attempt) + " reason=" +
                 std::string(reason);
-            service::common::packet_log::write(
-                service::common::packet_log::Level::Warn,
+            service::packet_log::write(
+                service::packet_log::Level::Warn,
                 task.kind == "discovery" ? "DISCOVERY_RETRY" : "COMMAND_RETRY",
                 taskLogContext(task),
                 {},
@@ -1832,8 +1891,8 @@ class CollectorWorker final {
             co_return;
         }
 
-        service::common::packet_log::write(
-            service::common::packet_log::Level::Error,
+        service::packet_log::write(
+            service::packet_log::Level::Error,
             "DEAD_LETTER",
             taskLogContext(task),
             {},

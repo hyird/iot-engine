@@ -4,7 +4,7 @@
 #include "../common/win32.h"
 namespace iotvpn::service {
 Json DpapiClientStateStore::load() {
-    const auto path = stateDirectory() / L"state.dpapi";
+    const auto path = productDataDirectory() / L"state.dpapi";
     if (!std::filesystem::exists(path)) return Json::object();
     auto plaintext = unprotectData(readFile(path), "IotEngineVpn.Agent.v1");
     try {
@@ -18,7 +18,7 @@ void DpapiClientStateStore::save(const Json& state) {
     auto plaintext = state.dump();
     try {
         const auto encrypted = protectData({reinterpret_cast<const std::uint8_t*>(plaintext.data()), plaintext.size()}, "IotEngineVpn.Agent.v1");
-        SecureZeroMemory(plaintext.data(), plaintext.size()); atomicWrite(stateDirectory() / L"state.dpapi", encrypted);
+        SecureZeroMemory(plaintext.data(), plaintext.size()); atomicWrite(productDataDirectory() / L"state.dpapi", encrypted);
     } catch (...) { SecureZeroMemory(plaintext.data(), plaintext.size()); throw; }
 }
 

@@ -93,3 +93,5 @@ export const linkListQuerySchema = pageParamsSchema.extend({
     status: statusSchema.optional(),
 });
 export const linkIdSchema = z.uuid({ error: 'id 必须是 UUID' });
+
+export const linkDebugSchema = z.object({ enabled: z.boolean() });

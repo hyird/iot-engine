@@ -11,34 +11,14 @@
 #include <vector>
 
 #include "service/utils/network.h"
+#include "service/features/vpn/wireguard/wireguard.config.h"
+#include "service/features/vpn/wireguard/wireguard.types.h"
 
 namespace service::vpn::wireguard {
 
 using service::utils::network::Ipv4Cidr;
 using service::utils::network::parseCidr;
 using service::utils::network::parseIpv4;
-
-struct Peer final {
-    std::string publicKey;
-    std::vector<std::string> allowedIps;
-};
-
-struct HubConfig final {
-    std::string interfaceName{"wg"};
-    std::string privateKey;
-    std::string publicKey;
-    std::string endpoint;
-    std::uint16_t listenPort{51820};
-    std::string address{"100.96.0.1/32"};
-};
-
-struct RuntimeStatus final {
-    bool supported{};
-    bool configured{};
-    std::string code;
-    std::string message;
-    std::size_t peerCount{};
-};
 
 inline bool validKey(std::string_view value) noexcept {
     if (value.size() != 44 || value.back() != '=')

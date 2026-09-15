@@ -1,9 +1,10 @@
 import type { UseQueryOptions } from '@tanstack/react-query';
+import { setDebug as saveDebugSwitch, getDebugPackets } from './device.api';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import { parseDateTime } from '@/utils/dateTime';
 import { createQueryKeys } from '@/utils/query';
-import { SnapshotStream } from '@/utils/snapshot-stream';
+import { SnapshotStream } from '@/lib/snapshot-stream';
 import * as api from './device.api';
 import type { Device, DeviceGroup } from './device.types';
 export const isDeviceOnline = (device: Device.Overview, now = Date.now()) => {
@@ -41,6 +42,17 @@ interface AgentEndpoint {
     ip?: string;
     port?: number;
 }
+const buildDeviceGroupTree = (items: DeviceGroup.TreeItem[]) => {
+    const map = new Map<string, DeviceGroup.TreeItem>();
+    const roots: DeviceGroup.TreeItem[] = [];
+    for (const item of items) map.set(item.id, { ...item, children: [] });
+    for (const item of map.values()) {
+        const parent = item.parent_id ? map.get(item.parent_id) : undefined;
+        if (parent) parent.children?.push(item);
+        else roots.push(item);
+    }
+    return roots;
+};
 export function useDeviceList(options?: { enabled?: boolean }) {
     return useSnapshotQuery({
         queryKey: deviceKeys.lists(),
@@ -197,7 +209,7 @@ export function useDeviceGroupTree(
 ) {
     return useSnapshotQuery({
         queryKey: [...groupKeys.all, 'tree'],
-        queryFn: () => api.getDeviceGroupTree(false),
+        queryFn: () => api.getDeviceGroups(false).map(buildDeviceGroupTree),
         ...options,
     });
 }
@@ -206,7 +218,7 @@ export function useDeviceGroupTreeWithCount(
 ) {
     return useSnapshotQuery({
         queryKey: [...groupKeys.all, 'tree-count'],
-        queryFn: () => api.getDeviceGroupTree(true),
+        queryFn: () => api.getDeviceGroups(true).map(buildDeviceGroupTree),
         ...options,
     });
 }
@@ -254,3 +266,17 @@ export function useAgentEndpoints(
 }
 
 export { getDeviceDetail } from './device.api';
+
+export function useDeviceDebug(id: string, open: boolean) {
+    const packets = useSnapshotQuery({
+        queryKey: ['device-debug-packets', id],
+        queryFn: () => getDebugPackets(id),
+        enabled: open,
+    });
+    const toggle = useMutationWithMessage({
+        mutationFn: (enabled: boolean) => saveDebugSwitch(id, enabled),
+        successMessage: '调试设置已保存',
+        invalidateKeys: [deviceKeys.all],
+    });
+    return { packets, toggle };
+}

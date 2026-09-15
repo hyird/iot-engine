@@ -1,6 +1,6 @@
-import request from '@/utils/http';
+import request from '@/lib/http';
 import { appendQueryParams } from '@/utils/query';
-import { createSnapshotStream } from '@/utils/snapshot-request';
+import { createSnapshotStream } from '@/lib/snapshot-request';
 import {
     accessIdSchema,
     deviceOptionSchema,

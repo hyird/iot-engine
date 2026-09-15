@@ -18,6 +18,8 @@ class LinkController final : public ruvia::Controller<LinkController> {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/link", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
+    RUVIA_GET_SSE("/:id/debug/packets", debugPackets, LinkIdParamsValidator);
+    RUVIA_PUT("/:id/debug", setDebug, LinkIdParamsValidator, LinkDebugValidator);
     RUVIA_GET_SSE("/", list, LinkListQueryValidator);
     RUVIA_GET_SSE("/options", options);
     RUVIA_GET_SSE("/enums", enums);
@@ -29,6 +31,19 @@ class LinkController final : public ruvia::Controller<LinkController> {
     RUVIA_ROUTES_END
 
   private:
+    ruvia::Task<void> debugPackets(ruvia::Context& c) {
+        co_await service::live::serve(c, "packet-debug", [this, &c]() { return debugPacketsSnapshot(c); }, {}, std::chrono::seconds(2));
+    }
+    ruvia::Task<std::string> debugPacketsSnapshot(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:link:edit");
+        co_return service::live::json(service::common::ok<LinkDebugPacketsResponse>(c, co_await linkService().debugPackets(c, id(c))));
+    }
+    ruvia::Task<ruvia::HttpResponse> setDebug(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:link:edit");
+        co_await linkService().setDebug(c, id(c), *c.req().validated<LinkDebugBody>().get<"enabled">());
+        co_return c.json(service::common::operation(c, "调试设置已保存"));
+    }
+
     static std::string id(ruvia::Context& c) {
         return std::string(c.req().validated<LinkIdParams>().get<"id">()->view());
     }

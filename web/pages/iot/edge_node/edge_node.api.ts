@@ -1,7 +1,7 @@
-import request from '@/utils/http';
-import type { PaginatedResult } from '@/utils/pagination';
+import request from '@/lib/http';
+import type { PaginatedResult } from '@/types/pagination';
 import { appendQueryParams } from '@/utils/query';
-import { createSnapshotStream } from '@/utils/snapshot-request';
+import { createSnapshotStream } from '@/lib/snapshot-request';
 import {
     edgeGroupSchema,
     edgeIdSchema,
@@ -22,19 +22,7 @@ export const getEdgeList = (query?: Edge.Query) =>
     );
 export const getEdgeDetail = (id: string) =>
     createSnapshotStream<Edge.Node>(`${BASE}/${edgeIdSchema.parse(id)}`);
-const buildGroupTree = (items: Edge.GroupItem[]) => {
-    const index = new Map<string, Edge.GroupTreeItem>();
-    const roots: Edge.GroupTreeItem[] = [];
-    for (const item of items) index.set(item.id, { ...item, children: [] });
-    for (const item of index.values()) {
-        const parent = item.parentId ? index.get(item.parentId) : undefined;
-        if (parent) parent.children?.push(item);
-        else roots.push(item);
-    }
-    return roots;
-};
-export const getEdgeGroups = () =>
-    createSnapshotStream<Edge.GroupItem[]>(`${BASE}/groups`).map(buildGroupTree);
+export const getEdgeGroups = () => createSnapshotStream<Edge.GroupItem[]>(`${BASE}/groups`);
 export const createEdgeGroup = (data: Edge.GroupSaveDto) =>
     request.post<void>(`${BASE}/groups`, edgeGroupSchema.parse(data));
 export const updateEdgeGroup = (id: string, data: Edge.GroupSaveDto) =>
@@ -132,3 +120,12 @@ export const updateEdgeVpnRoute = (routeId: string, data: Partial<EdgeVpn.RouteD
     request.patch<void>(`${EdgeNodeBASE}/routes/${edgeIdSchema.parse(routeId)}`, data);
 export const deleteEdgeVpnRoute = (routeId: string) =>
     request.delete<void>(`${EdgeNodeBASE}/routes/${edgeIdSchema.parse(routeId)}`);
+
+export function openTerminalSocket(ticket: string): WebSocket {
+    const transport = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const socket = new WebSocket(
+        `${transport}//${window.location.host}/edge/v1/terminal?ticket=${encodeURIComponent(ticket)}`
+    );
+    socket.binaryType = 'arraybuffer';
+    return socket;
+}

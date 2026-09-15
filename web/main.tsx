@@ -8,7 +8,7 @@ import { refreshAccessToken } from './pages/login/login.service';
 import { MessageContextBridge } from './providers/MessageContextBridge';
 import { TanStackQueryProvider } from './providers/TanStackQueryProvider';
 import { AppRoutes } from './routes';
-import { configureSessionRefresh } from './utils/http';
+import { configureSessionRefresh } from './lib/http';
 import './styles/index.css';
 
 configureSessionRefresh(refreshAccessToken);

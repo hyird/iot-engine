@@ -1,10 +1,12 @@
-import request from '@/utils/http';
-import type { PaginatedResult } from '@/utils/pagination';
+import request from '@/lib/http';
+import type { DebugPacket } from '@/types/packet_debug';
+import type { PaginatedResult } from '@/types/pagination';
 import { appendQueryParams } from '@/utils/query';
-import { createSnapshotStream } from '@/utils/snapshot-request';
-import { SnapshotStream } from '@/utils/snapshot-stream';
+import { createSnapshotStream } from '@/lib/snapshot-request';
+import { SnapshotStream } from '@/lib/snapshot-stream';
 import {
     deviceCommandSchema,
+    deviceDebugSchema,
     deviceIdSchema,
     replaceDeviceSharesSchema,
     saveDeviceGroupSchema,
@@ -14,17 +16,14 @@ import type { Device, DeviceGroup } from './device.types';
 
 const DEVICE_BASE = '/v1/device';
 const GROUP_BASE = '/v1/device/groups';
-const buildTree = (items: DeviceGroup.TreeItem[]) => {
-    const map = new Map<string, DeviceGroup.TreeItem>();
-    const roots: DeviceGroup.TreeItem[] = [];
-    for (const item of items) map.set(item.id, { ...item, children: [] });
-    for (const item of map.values()) {
-        const parent = item.parent_id ? map.get(item.parent_id) : undefined;
-        if (parent) parent.children?.push(item);
-        else roots.push(item);
-    }
-    return roots;
-};
+export const setDebug = (id: string, enabled: boolean) =>
+    request.put<void>(
+        `${DEVICE_BASE}/${deviceIdSchema.parse(id)}/debug`,
+        deviceDebugSchema.parse({ enabled })
+    );
+export const getDebugPackets = (id: string) =>
+    createSnapshotStream<DebugPacket[]>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}/debug/packets`);
+
 export const getDeviceList = () =>
     createSnapshotStream<PaginatedResult<Device.Overview>>(DEVICE_BASE);
 export const getDeviceRealtimeSnapshot = () =>
@@ -88,10 +87,10 @@ export const replaceDeviceShares = (id: string, data: Device.ReplaceSharesDto) =
         `${DEVICE_BASE}/${deviceIdSchema.parse(id)}/shares`,
         replaceDeviceSharesSchema.parse(data)
     );
-export const getDeviceGroupTree = (withCount = false) =>
+export const getDeviceGroups = (withCount = false) =>
     createSnapshotStream<DeviceGroup.TreeItem[]>(
         `${GROUP_BASE}/${withCount ? 'tree-count' : 'tree'}`
-    ).map(buildTree);
+    );
 export const createDeviceGroup = (data: DeviceGroup.CreateDto) =>
     request.post<void>(GROUP_BASE, saveDeviceGroupSchema.parse(data));
 export const updateDeviceGroup = (id: string, data: DeviceGroup.UpdateDto) =>

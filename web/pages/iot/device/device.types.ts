@@ -1,4 +1,4 @@
-import type { PageParams, PaginatedResult } from '@/utils/pagination';
+import type { PageParams, PaginatedResult } from '@/types/pagination';
 import type { Link } from '../link/link.types';
 import type { Protocol, StoragePolicy } from '../protocol/protocol.types';
 /**
@@ -222,6 +222,8 @@ export interface UpdateDeviceDto {
 // ========== 设备静态数据类型（支持 ETag 缓存）==========
 /** 设备静态数据（不包含实时数据，用于 ETag 缓存） */
 export interface DeviceStaticData extends EdgeConnection {
+    debug_enabled?: boolean;
+    link_debug_enabled?: boolean;
     // 基本信息
     id: string;
     name: string;

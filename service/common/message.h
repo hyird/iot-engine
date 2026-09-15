@@ -79,16 +79,11 @@ inline constexpr std::string_view kMessageSchemaVersion{"2"};
 
 inline constexpr std::string_view kConfigStreamPrefix = "iot:channel:config:worker:";
 inline constexpr std::string_view kIngressStreamPrefix = "iot:channel:packet:raw:worker:";
-inline constexpr std::string_view kParsedStreamPrefix = "iot:channel:packet:parsed:worker:";
 inline constexpr std::string_view kEgressStreamPrefix = "iot:channel:socket:egress:worker:";
 inline constexpr std::string_view kCommandStreamPrefix = "iot:channel:command:worker:";
-inline constexpr std::string_view kCommandResultStreamPrefix = "iot:channel:command:result:worker:";
 inline constexpr std::string_view kLinkEventStreamPrefix = "iot:channel:link:event:worker:";
 inline constexpr std::string_view kControlStreamPrefix = "iot:channel:control:worker:";
 inline constexpr std::string_view kDeadLetterStreamPrefix = "iot:channel:dead-letter:worker:";
-inline constexpr std::string_view kProtocolTaskDepthPrefix = "iot:state:protocol:queue-depth:";
-inline constexpr std::string_view kProtocolInflightPrefix = "iot:state:protocol:inflight:";
-inline constexpr std::string_view kSessionStatePrefix = "iot:state:session:";
 
 inline std::string workerStream(std::string_view prefix, std::size_t workerIndex,
                                 std::string_view suffix = {},
@@ -242,18 +237,6 @@ inline std::int64_t effectiveObservedAt(std::int64_t observedAtMs,
     if (observedAtMs <= 0 || observedAtMs > occurredAtMs)
         return occurredAtMs;
     return observedAtMs;
-}
-
-inline std::string protocolTaskDepthKey(std::string_view groupKey) {
-    return std::string(kProtocolTaskDepthPrefix) + std::string(groupKey);
-}
-
-inline std::string protocolInflightKey(std::string_view groupKey) {
-    return std::string(kProtocolInflightPrefix) + std::string(groupKey);
-}
-
-inline std::string sessionStateKey(std::string_view connectionId) {
-    return std::string(kSessionStatePrefix) + std::string(connectionId);
 }
 
 inline std::string toHex(const std::vector<std::uint8_t>& bytes) {
@@ -758,8 +741,6 @@ inline std::string encode(std::string_view id, std::string_view name,
     return result;
 }
 
-
-
 struct Entry final {
     std::string id;
     std::string name;
@@ -934,3 +915,96 @@ inline std::optional<WorkerStreamTask> workerStreamTask(std::string_view name) {
 }
 
 } // namespace service::message
+
+namespace service::edge::dispatch {
+
+inline constexpr std::string_view kGroup{ "iot-engine:edge-dispatch" };
+inline constexpr std::string_view kNodeKind{ "node" };
+
+inline std::string stream(std::size_t workerIndex, std::string_view instance = service::runtime::instanceId()) {
+    return "iot:v2:edge:dispatch:" + std::string(instance) + ":" + std::to_string(workerIndex);
+}
+
+struct Event final {
+    std::string kind;
+    std::string nodeId;
+};
+
+inline Event eventFrom(const service::message::StreamMessage& message) {
+    return {
+        .kind = std::string(message.get("kind")),
+        .nodeId = std::string(message.get("node_id")),
+    };
+}
+
+} // namespace service::edge::dispatch
+
+namespace service::edge::terminal_state {
+
+inline std::string terminalInputKey(std::string_view nodeId) {
+        return "iot:edge:terminal:in:" + std::string(nodeId);
+    }
+inline std::string terminalOutputKey(std::string_view nodeId, std::string_view terminalId) {
+        return "iot:edge:terminal:out:" + std::string(nodeId) + ":" +
+            std::string(terminalId);
+    }
+} // namespace service::edge::terminal_state
+
+namespace service::access::stream {
+
+inline constexpr std::string_view kEventBase{ "iot:channel:open-access:event" };
+inline constexpr std::string_view kAuditBase{ "iot:channel:open-access:audit" };
+inline constexpr std::string_view kDeliveryResultBase{
+    "iot:channel:open-access:delivery-result"
+};
+inline constexpr std::string_view kCatalogChangesBase{
+    "iot:channel:open-access:config-change"
+};
+inline constexpr std::string_view kSessionChangesBase{
+    "iot:channel:open-access:session-change"
+};
+
+inline std::string event() {
+    return std::string(kEventBase);
+}
+
+inline std::string audit() {
+    return std::string(kAuditBase);
+}
+
+inline std::string deliveryResult() {
+    return std::string(kDeliveryResultBase);
+}
+
+inline std::string catalogChanges(std::size_t workerIndex) {
+    return std::string(kCatalogChangesBase) + ":" + std::to_string(workerIndex);
+}
+
+inline std::string sessionChanges() {
+    return std::string(kSessionChangesBase);
+}
+
+} // namespace service::access::stream
+
+namespace service::edge::projector_stream {
+
+inline constexpr std::string_view kIngressKind{ "ingress" };
+inline constexpr std::string_view kMetadataKind{ "metadata" };
+inline constexpr std::string_view kStreamPrefix{ "iot:v3:edge:projector:" };
+inline constexpr std::string_view kLeasePrefix{ "iot:v3:edge:projector:lease:" };
+inline constexpr std::string_view kStreamRegistry{ "iot:v3:edge:projector:streams" };
+
+inline std::string stream(std::size_t workerIndex, std::string_view instance = service::runtime::instanceId()) {
+    return std::string(kStreamPrefix) + std::string(instance) + ":" + std::to_string(workerIndex);
+}
+
+inline std::string leaseKey(std::size_t workerIndex, std::string_view instance = service::runtime::instanceId()) {
+    return std::string(kLeasePrefix) + std::string(instance) + ":" +
+        std::to_string(workerIndex);
+}
+
+inline std::string ownerToken(std::size_t workerIndex, std::string_view instance = service::runtime::instanceId()) {
+    return std::string(instance) + ":" + std::to_string(workerIndex);
+}
+
+} // namespace service::edge::projector_stream

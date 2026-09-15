@@ -13,34 +13,34 @@
 namespace service::collector {
 
 // The registry is owned and accessed by one Collector Worker. It deliberately has no mutex and no
-// process-wide singleton; every Worker gets isolated protocol runtime objects.
-class ProtocolRuntimeRegistry final {
+// process-wide singleton; every Worker gets isolated protocol factory objects.
+class ProtocolSessionFactoryRegistry final {
   public:
-    void add(std::unique_ptr<ProtocolRuntime> runtime) {
-        if (!runtime)
-            throw std::invalid_argument("protocol runtime is null");
-        const std::string name(runtime->protocol());
+    void add(std::unique_ptr<ProtocolSessionFactory> factory) {
+        if (!factory)
+            throw std::invalid_argument("protocol factory is null");
+        const std::string name(factory->protocol());
         if (name.empty())
-            throw std::invalid_argument("protocol runtime name is empty");
-        if (!runtimes_.emplace(name, std::move(runtime)).second)
-            throw std::invalid_argument("duplicate protocol runtime: " + name);
+            throw std::invalid_argument("protocol factory name is empty");
+        if (!factories_.emplace(name, std::move(factory)).second)
+            throw std::invalid_argument("duplicate protocol factory: " + name);
     }
 
-    [[nodiscard]] const ProtocolRuntime* find(std::string_view protocol) const noexcept {
-        const auto current = runtimes_.find(protocol);
-        return current == runtimes_.end() ? nullptr : current->second.get();
+    [[nodiscard]] const ProtocolSessionFactory* find(std::string_view protocol) const noexcept {
+        const auto current = factories_.find(protocol);
+        return current == factories_.end() ? nullptr : current->second.get();
     }
 
-    [[nodiscard]] const ProtocolRuntime& require(std::string_view protocol) const {
-        const auto* runtime = find(protocol);
-        if (!runtime)
-            throw std::runtime_error("protocol runtime is not registered: " +
+    [[nodiscard]] const ProtocolSessionFactory& require(std::string_view protocol) const {
+        const auto* factory = find(protocol);
+        if (!factory)
+            throw std::runtime_error("protocol factory is not registered: " +
                                      std::string(protocol));
-        return *runtime;
+        return *factory;
     }
 
   private:
-    std::map<std::string, std::unique_ptr<ProtocolRuntime>, std::less<>> runtimes_;
+    std::map<std::string, std::unique_ptr<ProtocolSessionFactory>, std::less<>> factories_;
 };
 
 } // namespace service::collector
@@ -105,12 +105,16 @@ planRuntimeReconcile(const RuntimeSnapshot& previous, const RuntimeSnapshot& nex
 
     for (const auto& link : previous.links)
         previousLinks.insert_or_assign(link.id, link);
+    for (auto& [id, link] : previousLinks) link.debugEnabled = false;
     for (const auto& link : next.links)
         nextLinks.insert_or_assign(link.id, link);
+    for (auto& [id, link] : nextLinks) link.debugEnabled = false;
     for (const auto& device : previous.devices)
         previousDevices.insert_or_assign(device.id, device);
+    for (auto& [id, device] : previousDevices) device.debugEnabled = false;
     for (const auto& device : next.devices)
         nextDevices.insert_or_assign(device.id, device);
+    for (auto& [id, device] : nextDevices) device.debugEnabled = false;
 
     RuntimeReconcilePlan plan;
     for (const auto& [id, link] : previousLinks) {
@@ -153,12 +157,12 @@ planRuntimeReconcile(const RuntimeSnapshot& previous, const RuntimeSnapshot& nex
 // shared by Modbus, S7 and SL651. Scheduling semantics remain inside each concrete session.
 class ProtocolEngine final {
   public:
-    explicit ProtocolEngine(ProtocolRuntimeRegistry registry) : registry_(std::move(registry)) {}
+    explicit ProtocolEngine(ProtocolSessionFactoryRegistry registry) : registry_(std::move(registry)) {}
 
     void reload(RuntimeSnapshot snapshot) {
         for (const auto& link : snapshot.links) {
-            const auto& runtime = registry_.require(link.protocol);
-            validateProtocolLink(runtime, link);
+            const auto& factory = registry_.require(link.protocol);
+            validateProtocolLink(factory, link);
         }
         snapshot_ = std::make_shared<RuntimeSnapshot>(std::move(snapshot));
         links_.clear();
@@ -166,15 +170,15 @@ class ProtocolEngine final {
             links_.emplace(link.id, &link);
 
         // Configuration generations are immutable for an established connection. Close/recreate
-        // is handled by the link runtime; retaining a session across incompatible config would
+        // is handled by the link factory; retaining a session across incompatible config would
         // allow stale device routes and command responses.
         sessions_.clear();
     }
 
     void reload(RuntimeSnapshot snapshot, const std::set<std::string, std::less<>>& affectedLinks) {
         for (const auto& link : snapshot.links) {
-            const auto& runtime = registry_.require(link.protocol);
-            validateProtocolLink(runtime, link);
+            const auto& factory = registry_.require(link.protocol);
+            validateProtocolLink(factory, link);
         }
         (void)affectedLinks;
         snapshot_ = std::make_shared<RuntimeSnapshot>(std::move(snapshot));
@@ -209,11 +213,11 @@ class ProtocolEngine final {
             if (target == link->second->targets.end())
                 continue;
 
-            const auto& runtime = registry_.require(link->second->protocol);
-            auto nextSession = runtime.createSession(*link->second, connectionId,
+            const auto& factory = registry_.require(link->second->protocol);
+            auto nextSession = factory.createSession(*link->second, connectionId,
                                                      entry.info.targetId, snapshot_);
             if (!nextSession)
-                throw std::runtime_error("protocol runtime returned a null session");
+                throw std::runtime_error("protocol factory returned a null session");
             nextSession->inheritTransportState(*entry.session);
             auto startedActions = nextSession->connected();
             auto retiredActions = entry.session->disconnected("configuration_reloaded");
@@ -231,11 +235,11 @@ class ProtocolEngine final {
             return {{.kind = ProtocolActionKind::Close,
                      .connectionId = info.connectionId,
                      .reason = "link_config_not_found"}};
-        const auto& runtime = registry_.require(link->second->protocol);
+        const auto& factory = registry_.require(link->second->protocol);
         auto session =
-            runtime.createSession(*link->second, info.connectionId, info.targetId, snapshot_);
+            factory.createSession(*link->second, info.connectionId, info.targetId, snapshot_);
         if (!session)
-            throw std::runtime_error("protocol runtime returned a null session");
+            throw std::runtime_error("protocol factory returned a null session");
         auto actions = session->connected();
         auto connectionId = info.connectionId;
         sessions_.insert_or_assign(std::move(connectionId),
@@ -303,6 +307,13 @@ class ProtocolEngine final {
         return capability ? capability->deadline(token) : std::vector<ProtocolAction>{};
     }
 
+    [[nodiscard]] std::vector<ProtocolAction> parsedPublished(std::string_view connectionId,
+                                                            std::uint64_t publicationToken) {
+        const auto current = sessions_.find(connectionId);
+        return current == sessions_.end() ? std::vector<ProtocolAction>{}
+                                         : current->second.session->parsedPublished(publicationToken);
+    }
+
     [[nodiscard]] bool contains(std::string_view connectionId) const noexcept {
         return sessions_.contains(connectionId);
     }
@@ -313,7 +324,7 @@ class ProtocolEngine final {
         std::unique_ptr<ProtocolSession> session;
     };
 
-    ProtocolRuntimeRegistry registry_;
+    ProtocolSessionFactoryRegistry registry_;
     std::shared_ptr<const RuntimeSnapshot> snapshot_ = std::make_shared<RuntimeSnapshot>();
     std::map<std::string, const LinkDefinition*, std::less<>> links_;
     std::map<std::string, SessionEntry, std::less<>> sessions_;

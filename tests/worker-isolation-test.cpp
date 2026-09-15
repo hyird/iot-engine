@@ -3,15 +3,20 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
 #include <ruvia/core/EventLoopPool.h>
 #include <ruvia/web/detail/redis/RedisTypesAccess.h>
 
-#include "service/common/observability.h"
-#include "service/features/edge/edge.transport.h"
+#include "service/features/observability/observability.service.h"
+#include "service/features/edge/edge.runtime.h"
 #include "service/middleware/live.h"
 
 namespace {
+static_assert(!std::is_default_constructible_v<service::edge::EdgeProjectionRuntime>);
+static_assert(std::is_constructible_v<service::edge::EdgeProjectionRuntime,
+              service::observability::RuntimeDiagnostics&>);
+
 struct RecordingRedis {
     mutable std::vector<std::string> keys;
     mutable std::vector<std::string> arguments;
@@ -42,7 +47,8 @@ ruvia::Task<Observation> observe(ruvia::EventLoop loop, ruvia::WorkerHandle fore
     auto& bus = service::live::bus();
     bus.setWorkerIndex(index);
     service::observability::RuntimeDiagnostics diagnostics;
-    service::observability::setCurrentWorkerDiagnostics(diagnostics);
+    diagnostics.identifyWorker(index);
+    service::edge::EdgeProjectionRuntime projector(diagnostics);
     bool rejected = false;
     try {
         (void)bus.subscribe(foreign, "device");
@@ -55,7 +61,7 @@ ruvia::Task<Observation> observe(ruvia::EventLoop loop, ruvia::WorkerHandle fore
     auto subscription = bus.subscribe(loop.handle(), "device");
     ready->set_value();
     const auto message = co_await subscription->receiver.receiveFor(std::chrono::milliseconds(500));
-    if (bus.workerIndex() != index || service::observability::currentWorkerDiagnostics() != &diagnostics) {
+    if (bus.workerIndex() != index || diagnostics.workerIndex() != std::to_string(index)) {
         throw std::runtime_error("another worker replaced local state");
     }
     co_return Observation{ &bus, service::rpc::Contract::requests("test", bus.workerIndex()), message.hasValue() };

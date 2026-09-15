@@ -10,13 +10,6 @@
 
 #include "service/features/gb28181/device/device.types.h"
 
-struct DeviceRouteSnapshot {
-    bool online{ false };
-    std::string remoteAddress;
-    bool hasChannels{ false };
-    bool channelExists{ false };
-};
-
 class DeviceRegistry {
   public:
     using Observer = std::function<void(const Device&, DeviceChange)>;

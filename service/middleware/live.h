@@ -260,7 +260,7 @@ inline std::string data(ruvia::Context&, std::string_view value) {
 // opening the stream and before every snapshot; the bus carries invalidations,
 // never response data.
 template <typename Query>
-ruvia::Task<void> serve(ruvia::Context& context, std::string_view topic, Query query, std::function<ruvia::Task<void>()> authorize = {}) {
+ruvia::Task<void> serve(ruvia::Context& context, std::string_view topic, Query query, std::function<ruvia::Task<void>()> authorize = {}, std::chrono::milliseconds coalesceDelay = {}) {
     using namespace std::chrono_literals;
     if (context.req().header("Accept").value_or("").find("text/event-stream") ==
         std::string_view::npos) {
@@ -276,12 +276,16 @@ ruvia::Task<void> serve(ruvia::Context& context, std::string_view topic, Query q
     co_await stream.write({ .data = snapshot, .event = "snapshot", .id = id, .retry = 1s });
     // Bound request-arena retention. Reconnection creates a new authorized
     // snapshot; event IDs are connection-local, never misleading replay cursors.
-    const auto expires = std::chrono::steady_clock::now() + 5min;
+    const auto expires = std::chrono::steady_clock::now() + (coalesceDelay.count() > 0 ? 1min : 5min);
     while (!stream.aborted() && std::chrono::steady_clock::now() < expires) {
         const auto notification =
             co_await subscription->receiver.receiveFor(15s, context.stopToken());
         if (stream.aborted() || context.stopToken().stopRequested()) {
             co_return;
+        }
+        if (notification.hasValue() && coalesceDelay.count() > 0) {
+            (void)co_await ruvia::sleepFor(context.worker(), coalesceDelay, context.stopToken());
+            if (stream.aborted() || context.stopToken().stopRequested()) co_return;
         }
         std::string error;
         std::string next;

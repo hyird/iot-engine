@@ -16,7 +16,7 @@ struct VpnServiceStatus {
 class VpnConnectionService {
 public:
     VpnConnectionService(std::shared_ptr<IClientStateStore>, std::shared_ptr<IPlatformVpnApi>, std::unique_ptr<WireGuardTunnel>);
-    Json handle(const Json& request, std::stop_token stop = {});
+    Json executeCommand(const Json& request, std::stop_token stop = {});
     void run(std::stop_token stop);
     void stop();
     VpnServiceStatus status() const;

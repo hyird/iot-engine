@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <charconv>
 #include <stdexcept>
 #include <string>
@@ -13,7 +14,7 @@
 
 #include "service/common/http.h"
 #include "service/common/message.h"
-#include "service/features/access/access.transport.h"
+#include "service/features/access/access.service.h"
 #include "service/features/messaging/messaging.transport.h"
 
 namespace service::message {
@@ -189,18 +190,12 @@ markProcessed(ruvia::WebWorkerContext& context, std::string_view consumer, const
 #include <ruvia/core/StopToken.h>
 #include <ruvia/core/Timer.h>
 
-#include "service/common/observability.h"
+#include "service/features/observability/observability.service.h"
 #include "service/features/messaging/postgres_notifier/postgres_notifier.transport.h"
 #include "service/features/live/live.service.h"
+#include "service/features/messaging/messaging.config.h"
 
 namespace service::message::outbox {
-
-struct Policy final {
-    std::int64_t pendingAlertThreshold{ 1000 };
-    std::int64_t oldestAgeAlertMs{ 300000 };
-    std::int64_t deadLetterAlertThreshold{ 1 };
-    std::int64_t receiptRetentionDays{ 30 };
-};
 
 class OutboxService {
   protected:
@@ -342,6 +337,28 @@ class OutboxService {
     }
 
     ruvia::Task<void> collectMetrics(ruvia::WebWorkerContext& context) {
+        const auto workerText = observability_.workerIndex();
+        if (workerText.empty())
+            co_return;
+        std::size_t workerIndex{};
+        const auto parsed = std::from_chars(
+            workerText.data(), workerText.data() + workerText.size(), workerIndex);
+        if (parsed.ec != std::errc{} ||
+            parsed.ptr != workerText.data() + workerText.size()) {
+            co_return;
+        }
+        using service::messaging::persistence::OutboxReplayCounterEntity;
+        const auto counterId = service::runtime::instanceId() + ":" + std::to_string(workerIndex);
+        ruvia::DbQuery heartbeat(context.resource());
+        heartbeat.update(OutboxReplayCounterEntity::tableName())
+            .set(OutboxReplayCounterEntity::columnName<"updated_at">(), heartbeat.call("now"))
+            .andWhere(heartbeat.binary(heartbeat.column(OutboxReplayCounterEntity::columnName<"id">()),
+                ruvia::DbBinaryOperator::kEqual, heartbeat.value(counterId)))
+            .returning({heartbeat.cast(heartbeat.column(OutboxReplayCounterEntity::columnName<"replays">()), ruvia::DbDataType::kText)});
+        const auto replayCounters = co_await context.db().query(heartbeat);
+        if (!replayCounters.empty())
+            observability_.setCounter("iot_engine_outbox_dead_letter_replays_total",
+                static_cast<std::uint64_t>(integer(replayCounters.front()[0].value().value_or("0"))));
         ruvia::DbQuery metrics(context.resource());
         const auto pending = metrics.unary(ruvia::DbUnaryOperator::kIsNull, metrics.column(service::messaging::persistence::OutboxEventEntity::columnName<"dead_lettered_at">()));
         const auto count = metrics.aggregate("count", { metrics.star() });
@@ -390,16 +407,6 @@ class OutboxService {
         // The operations endpoints run on any Service Worker. Publish this
         // worker's complete snapshot so those endpoints can aggregate every
         // worker without reading another worker's in-memory runtime diagnostics.
-        const auto workerText = observability_.workerIndex();
-        if (workerText.empty())
-            co_return;
-        std::size_t workerIndex{};
-        const auto parsed = std::from_chars(
-            workerText.data(), workerText.data() + workerText.size(), workerIndex);
-        if (parsed.ec != std::errc{} ||
-            parsed.ptr != workerText.data() + workerText.size()) {
-            co_return;
-        }
         WorkerSnapshotEntity snapshot(context.resource());
         snapshot.set<"id">(service::message::worker_metrics::snapshotId(workerIndex));
         snapshot.set<"metrics">(observability_.prometheus());
@@ -439,6 +446,21 @@ class OutboxService {
         return error == std::errc{} && end == value.data() + value.size() ? result : 0;
     }
 
+    ruvia::Task<void> cleanupReplayCounters(ruvia::WebWorkerContext& context) {
+        using service::messaging::persistence::OutboxReplayCounterEntity;
+        ruvia::DbQuery expired(context.resource());
+        const std::vector<ruvia::DbNamedArgument> intervalArgs{
+            {"days", expired.cast(expired.value(policy_.replayCounterRetentionDays), ruvia::DbDataType::kInteger)}};
+        expired.deleteFrom(OutboxReplayCounterEntity::tableName())
+            .andWhere(expired.binary(expired.column(OutboxReplayCounterEntity::columnName<"updated_at">()),
+                ruvia::DbBinaryOperator::kLess, expired.binary(expired.call("now"),
+                    ruvia::DbBinaryOperator::kSubtract, expired.call("make_interval", {}, intervalArgs))))
+            .andWhere(expired.binary(expired.call("split_part", {
+                expired.column(OutboxReplayCounterEntity::columnName<"id">()), expired.value(":"), expired.value(1)}),
+                ruvia::DbBinaryOperator::kNotEqual, expired.value(service::runtime::instanceId())));
+        (void)co_await context.db().execute(expired);
+    }
+
     ruvia::Task<void> cleanupReceipts(ruvia::WebWorkerContext& context) {
         ruvia::DbQuery expired(context.resource());
         const std::vector<ruvia::DbNamedArgument> intervalArgs{
@@ -468,3 +490,51 @@ class OutboxService {
 };
 
 } // namespace service::message::outbox
+
+namespace service::rpc {
+
+class RpcReceiptService final {
+  public:
+    static ruvia::Task<std::optional<RpcReplyRecord>> beginRequest(
+        const ruvia::RedisHandle& redis, const std::string& id) {
+        const auto previous = co_await service::message::redis::command(redis, {"GET", Contract::reply(id)});
+        if (previous.kind() == ruvia::RedisValue::Kind::kString)
+            co_return RpcReplyRecord{std::string(previous.string())};
+        if (previous.kind() == ruvia::RedisValue::Kind::kError)
+            service::message::redis::throwValue("RPC receipt", previous);
+        const auto claimed = co_await service::message::redis::command(redis,
+            {"SET", Contract::claim(id), "1", "NX", "EX", "86400"});
+        if (claimed.kind() == ruvia::RedisValue::Kind::kError)
+            service::message::redis::throwValue("RPC claim", claimed);
+        if (claimed.kind() != ruvia::RedisValue::Kind::kString)
+            service::common::fail(10004, "Background operation was interrupted; inspect its state", 503);
+        const auto cancelled = co_await service::message::redis::command(redis,
+            {"EXISTS", Contract::cancelled(id)});
+        if (cancelled.kind() == ruvia::RedisValue::Kind::kError)
+            service::message::redis::throwValue("RPC cancellation", cancelled);
+        if (cancelled.kind() == ruvia::RedisValue::Kind::kInteger && cancelled.integer() != 0)
+            service::common::fail(10004, "Background operation cancelled", 503);
+        co_return std::nullopt;
+    }
+
+    static ruvia::Task<void> saveAndAcknowledge(const ruvia::RedisHandle& redis,
+        const std::string& id, const std::string& stream, std::string_view group,
+        const std::string& messageId, const RpcReplyRecord& record) {
+    static constexpr std::string_view kReplyScript = R"lua(
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+redis.call('XADD', KEYS[2], 'MAXLEN', '~', 100000, '*', 'topic', KEYS[1], 'schema_version', '1')
+redis.call('XACK', KEYS[3], ARGV[3], ARGV[4])
+redis.call('XDEL', KEYS[3], ARGV[4])
+return 1
+)lua";
+
+                const auto replyKey = Contract::reply(id);
+                const std::string_view keys[]{replyKey, service::message::live::kChanges, stream};
+                const std::string_view args[]{record.payload, Contract::replyLifetime, group, messageId};
+                const auto reply = co_await redis.eval(kReplyScript, keys, args);
+                if (reply.kind() == ruvia::RedisValue::Kind::kError)
+                    service::message::redis::throwValue("RPC persist reply", reply);
+    }
+};
+
+} // namespace service::rpc

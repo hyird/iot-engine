@@ -18,7 +18,7 @@
 #include <ruvia/web/ModelJson.h>
 
 #include "service/common/http.h"
-#include "service/common/log.h"
+#include "service/middleware/log.h"
 #include "service/common/uuid.h"
 
 namespace {
@@ -469,17 +469,17 @@ SdkSupervisor::routeFor(OwnerIndex owner) const {
     return found == routes_.end() ? std::shared_ptr<Route>{} : found->second;
 }
 
-ZlmSdk::Ports SdkSupervisor::ports() const noexcept {
+MediaServerPorts SdkSupervisor::ports() const noexcept {
     std::lock_guard lock(mutex_);
-    return sdk_ ? sdk_->ports() : ZlmSdk::Ports{};
+    return sdk_ ? sdk_->ports() : MediaServerPorts{};
 }
 
-ZlmSdk::Capabilities SdkSupervisor::capabilities() const noexcept {
+MediaCapabilities SdkSupervisor::capabilities() const noexcept {
     std::lock_guard lock(mutex_);
     if (sdk_) {
         return sdk_->capabilities();
     }
-    ZlmSdk::Capabilities result;
+    MediaCapabilities result;
     result.tls = config_.tlsEnabled;
     result.recording = config_.recordingEnabled;
     return result;
@@ -798,8 +798,8 @@ PlayUrls ZlmSdk::buildPlayUrls(const std::string& streamId) const {
     };
 }
 
-ZlmSdk::Capabilities ZlmSdk::capabilities() const noexcept {
-    auto result = Capabilities{};
+MediaCapabilities ZlmSdk::capabilities() const noexcept {
+    auto result = MediaCapabilities{};
     result.tls = config_.tlsEnabled;
     result.recording = config_.recordingEnabled;
     return result;

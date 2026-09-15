@@ -1,6 +1,6 @@
 import { useAuthStore } from '@/store/authStore';
 import { refreshSession } from './http';
-import { type SnapshotObserver, SnapshotStream } from './snapshot-stream';
+import { type SnapshotObserver, SnapshotStream } from '@/lib/snapshot-stream';
 import { consumeServerSentEvents } from './sse';
 
 class SubscriptionError extends Error {

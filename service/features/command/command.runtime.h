@@ -25,19 +25,6 @@
 
 namespace service::command {
 
-class CommandPreparationHandler final {
-  public:
-    static ruvia::Task<std::string> handle(ruvia::WebWorkerContext& context, std::string_view operation, std::string_view payload, ruvia::StopToken stop) {
-        if (stop.stopRequested()) {
-            common::fail(10004, "Command preparation cancelled", 503);
-        }
-        if (operation != "prepare") {
-            common::fail(18010, "Unknown command operation", 400);
-        }
-        co_return co_await PreparationService::prepare(context, payload);
-    }
-};
-
 class CommandProcessingRuntime final {
   public:
     CommandProcessingRuntime() = default;

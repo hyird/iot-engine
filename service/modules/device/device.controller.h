@@ -22,6 +22,8 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/device", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
+    RUVIA_GET_SSE("/:id/debug/packets", debugPackets, DeviceIdParamsValidator);
+    RUVIA_PUT("/:id/debug", setDebug, DeviceIdParamsValidator, DeviceDebugValidator);
     // 设备
     RUVIA_GET_SSE("/options", options);
     RUVIA_GET_SSE("/realtime", realtime);
@@ -52,6 +54,19 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
     RUVIA_ROUTES_END
 
   private:
+    ruvia::Task<void> debugPackets(ruvia::Context& c) {
+        co_await service::live::serve(c, "packet-debug", [this, &c]() { return debugPacketsSnapshot(c); }, {}, std::chrono::seconds(2));
+    }
+    ruvia::Task<std::string> debugPacketsSnapshot(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:device:edit");
+        co_return service::live::json(service::common::ok<DeviceDebugPacketsResponse>(c, co_await deviceService().debugPackets(c, id(c))));
+    }
+    ruvia::Task<ruvia::HttpResponse> setDebug(ruvia::Context& c) {
+        co_await service::middleware::requirePermission(c, "iot:device:edit");
+        co_await deviceService().setDebug(c, id(c), *c.req().validated<DeviceDebugBody>().get<"enabled">());
+        co_return c.json(service::common::operation(c, "调试设置已保存"));
+    }
+
     static std::string id(ruvia::Context& c) {
         return std::string(c.req().validated<DeviceIdParams>().get<"id">()->view());
     }

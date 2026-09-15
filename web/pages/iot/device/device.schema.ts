@@ -121,3 +121,5 @@ export const replaceDeviceSharesSchema = z
             });
         });
     });
+
+export const deviceDebugSchema = z.object({ enabled: z.boolean() });

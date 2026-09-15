@@ -2,7 +2,8 @@ import { databaseUrl, apiBase } from './architecture-fixture';
 // Only the disposable architecture fixture is used. No production defaults.
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { consumeServerSentEvents, type ServerSentEvent } from '../web/utils/sse';
+import { consumeServerSentEvents } from '../web/lib/sse';
+import type { ServerSentEvent } from '../web/utils/sse';
 
 const db = new Bun.SQL(databaseUrl);
 const base = apiBase;

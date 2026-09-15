@@ -92,6 +92,7 @@ inline std::string signature(const RuntimeSnapshot& snapshot) {
         text(link.ip);
         number(link.port);
         text(link.status);
+        number(link.debugEnabled);
         number(link.targets.size());
         for (const auto& target : link.targets) {
             text(target.id);
@@ -112,6 +113,8 @@ inline std::string signature(const RuntimeSnapshot& snapshot) {
         text(device.targetId);
         text(device.protocol);
         text(device.timezone);
+        text(device.sl651ResponseMode);
+        number(device.debugEnabled);
         integer(device.onlineTimeout);
         text(device.heartbeatMode);
         bytes(device.heartbeatBytes);
@@ -156,6 +159,8 @@ inline std::string signature(const RuntimeSnapshot& snapshot) {
             text(element.functionCode);
             text(element.direction);
             text(element.guideHex);
+            text(element.positionMode);
+            integer(element.byteOffset);
             text(element.encoding);
             integer(element.length);
             integer(element.digits);
@@ -418,6 +423,9 @@ inline DeviceDefinition device(const std::vector<message::StreamField>& fields) 
     result.targetId = field(fields, "target_id");
     result.protocol = field(fields, "protocol");
     result.timezone = field(fields, "timezone");
+    result.debugEnabled = field(fields, "debug_enabled") == "1";
+    result.sl651ResponseMode = field(fields, "sl651_response_mode");
+    if (result.sl651ResponseMode.empty()) result.sl651ResponseMode = "M1";
     result.onlineTimeout = integer(fields, "online_timeout", 300);
     result.heartbeatMode = field(fields, "heartbeat_mode");
     result.heartbeatBytes = hexBytes(fields, "heartbeat_hex");
@@ -471,6 +479,9 @@ inline ElementDefinition element(const std::vector<message::StreamField>& fields
     result.functionCode = field(fields, "function_code");
     result.direction = field(fields, "direction");
     result.guideHex = field(fields, "guide_hex");
+    result.positionMode = field(fields, "position_mode");
+    if (result.positionMode.empty()) result.positionMode = "GUIDE";
+    result.byteOffset = integer(fields, "byte_offset", 0);
     result.encoding = field(fields, "encoding");
     result.length = integer(fields, "length");
     result.digits = integer(fields, "digits");
@@ -574,7 +585,7 @@ ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
 
     for (const auto& link : snapshot.links) {
         detail::appendId(commands, version, linksKey, link.id);
-        detail::appendHash(commands, version, linkKey(version, link.id), { { "id", link.id }, { "name", link.name }, { "mode", link.mode }, { "protocol", link.protocol }, { "ip", link.ip }, { "port", std::to_string(link.port) }, { "status", link.status } });
+        detail::appendHash(commands, version, linkKey(version, link.id), { { "id", link.id }, { "name", link.name }, { "mode", link.mode }, { "protocol", link.protocol }, { "ip", link.ip }, { "port", std::to_string(link.port) }, { "status", link.status }, { "debug_enabled", link.debugEnabled ? "1" : "0" } });
         const auto targetsKey = linkKey(version, link.id) + ":targets";
         for (const auto& target : link.targets) {
             detail::appendId(commands, version, targetsKey, target.id);
@@ -606,6 +617,8 @@ ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
               { "registration_mode", device.registrationMode },
               { "registration_hex", message::toHex(device.registrationBytes) },
               { "modbus_mode", device.modbusMode },
+              { "sl651_response_mode", device.sl651ResponseMode },
+              { "debug_enabled", device.debugEnabled ? "1" : "0" },
               { "slave_id", std::to_string(device.slaveId) },
               { "modbus_merge_gap", std::to_string(device.modbusMergeGap) },
               { "modbus_max_quantity", std::to_string(device.modbusMaxQuantity) },
@@ -627,7 +640,7 @@ ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
         for (const auto& element : device.elements) {
             const auto& configKey = element.configKey.empty() ? element.id : element.configKey;
             detail::appendId(commands, version, elementsKey, configKey);
-            detail::appendHash(commands, version, elementKey(version, device.id, configKey), { { "config_key", configKey }, { "id", element.id }, { "name", element.name }, { "unit", element.unit }, { "data_type", element.dataType }, { "byte_order", element.byteOrder }, { "register_type", element.registerType }, { "address", std::to_string(element.address) }, { "quantity", std::to_string(element.quantity) }, { "scale", std::to_string(element.scale) }, { "decimals", std::to_string(element.decimals) }, { "writable", element.writable ? "1" : "0" }, { "area", element.area }, { "db_number", std::to_string(element.dbNumber) }, { "start", std::to_string(element.start) }, { "start_bit", std::to_string(element.startBit) }, { "size", std::to_string(element.size) }, { "function_code", element.functionCode }, { "direction", element.direction }, { "guide_hex", element.guideHex }, { "encoding", element.encoding }, { "length", std::to_string(element.length) }, { "digits", std::to_string(element.digits) }, { "response_element", element.responseElement ? "1" : "0" } });
+            detail::appendHash(commands, version, elementKey(version, device.id, configKey), { { "config_key", configKey }, { "id", element.id }, { "name", element.name }, { "unit", element.unit }, { "data_type", element.dataType }, { "byte_order", element.byteOrder }, { "register_type", element.registerType }, { "address", std::to_string(element.address) }, { "quantity", std::to_string(element.quantity) }, { "scale", std::to_string(element.scale) }, { "decimals", std::to_string(element.decimals) }, { "writable", element.writable ? "1" : "0" }, { "area", element.area }, { "db_number", std::to_string(element.dbNumber) }, { "start", std::to_string(element.start) }, { "start_bit", std::to_string(element.startBit) }, { "size", std::to_string(element.size) }, { "function_code", element.functionCode }, { "direction", element.direction }, { "guide_hex", element.guideHex }, { "position_mode", element.positionMode }, { "byte_offset", std::to_string(element.byteOffset) }, { "encoding", element.encoding }, { "length", std::to_string(element.length) }, { "digits", std::to_string(element.digits) }, { "response_element", element.responseElement ? "1" : "0" } });
             if (commands.size() >= pipelineSize) {
                 co_await detail::flush(redis, commands);
             }
@@ -692,6 +705,7 @@ ruvia::Task<RuntimeSnapshot> load(const Redis& redis, std::string version) {
         link.ip = detail::field(fields, "ip");
         link.port = static_cast<std::uint16_t>(detail::integer(fields, "port"));
         link.status = detail::field(fields, "status");
+        link.debugEnabled = detail::field(fields, "debug_enabled") == "1";
         for (const auto& targetId :
              co_await detail::members(redis, linkKey(version, linkId) + ":targets")) {
             const auto targetFields =
@@ -772,6 +786,14 @@ inline std::string key(std::string_view linkId) {
 
 inline std::string targetKey(std::string_view linkId, std::string_view targetId) {
     return "iot:v2:owner:target:" + std::string(linkId) + ":" + std::string(targetId);
+}
+
+template <typename Redis>
+ruvia::Task<bool> isLinkOwner(const Redis& redis, std::string_view linkId,
+                            std::string_view expectedOwner) {
+    const auto owner = co_await message::redis::command(redis, {"GET", key(linkId)});
+    co_return owner.kind() == ruvia::RedisValue::Kind::kString &&
+        owner.string() == expectedOwner;
 }
 
 template <typename Redis>
@@ -860,6 +882,25 @@ return 1
 
 namespace service::collector {
 
+class CollectorCommandService final {
+  public:
+    template <typename Redis>
+    static ruvia::Task<TransmissionReservation> reserveTransmission(
+        const Redis& redis, const message::ProtocolTask& task, std::int64_t nowMs) {
+        if (nowMs - task.createdAtMs >= 60000)
+            co_return TransmissionReservation::Expired;
+        // 发送前的幂等认领锁：保留一天，避免同一命令被重复发送。
+        const auto key = "iot:v2:command:sent:" + task.messageId;
+        const auto claimed = co_await message::redis::command(
+            redis, {"SET", key, "1", "NX", "EX", "86400"});
+        if (claimed.kind() == ruvia::RedisValue::Kind::kNull)
+            co_return TransmissionReservation::Duplicate;
+        if (claimed.kind() == ruvia::RedisValue::Kind::kError)
+            message::redis::throwValue("claim command transmission", claimed);
+        co_return TransmissionReservation::Reserved;
+    }
+};
+
 class CollectorStateService final {
   public:
     template <typename Redis>
@@ -937,48 +978,32 @@ return 1
     template <typename Redis>
     static ruvia::Task<void> storeLinkEvent(const Redis& redis,
         const message::StreamMessage& event, std::size_t workerIndex) {
-        std::vector<message::StreamField> fields;
-        fields.reserve(event.fields.size());
-        for (const auto& field : event.fields) {
-            if (field.name == "message_id" || field.name == "created_at_ms") {
-                continue;
-            }
-            fields.push_back(field);
-        }
-        fields.push_back({ "updated_at_ms", std::to_string(message::utcNowMilliseconds()) });
+        const auto record = CollectorLinkRecord::fromEvent(event, message::utcNowMilliseconds());
         const auto key =
-            CollectorStateRecord::linkKey(event.get("link_id"), workerIndex);
+            CollectorLinkRecord::key(event.get("link_id"), workerIndex);
         co_await message::redis::eraseHash(redis, key);
-        co_await message::redis::setHash(redis, key, fields);
+        co_await message::redis::setHash(redis, key, record.fields);
     }
 
     template <typename Redis>
     static ruvia::Task<void> publishWorker(const Redis& redis, std::size_t workerIndex, std::string_view version) {
-        const auto now = std::to_string(message::utcNowMilliseconds());
+        const CollectorWorkerRecord record{
+            workerIndex, std::string(version), "applied", message::utcNowMilliseconds()};
         co_await message::redis::setHash(
             redis,
-            CollectorStateRecord::workerKey(workerIndex),
-            { { "worker_id", std::to_string(workerIndex) },
-              { "version", std::string(version) },
-              { "state", "applied" },
-              { "applied_at_ms", now } }
+            CollectorWorkerRecord::key(workerIndex), record.fields()
         );
     }
 
     template <typename Redis>
     static ruvia::Task<void> eraseWorker(const Redis& redis, std::size_t index) {
-        co_await message::redis::eraseMatching(redis, CollectorStateRecord::linkKey("*", index));
-        co_await message::redis::eraseHash(redis, CollectorStateRecord::workerKey(index));
+        co_await message::redis::eraseMatching(redis, CollectorLinkRecord::key("*", index));
+        co_await message::redis::eraseHash(redis, CollectorWorkerRecord::key(index));
     }
 
     template <typename Redis>
     static ruvia::Task<void> eraseLink(const Redis& redis, std::string_view id, std::size_t index) {
-        co_await message::redis::eraseHash(redis, CollectorStateRecord::linkKey(id, index));
-    }
-
-    template <typename Redis>
-    static ruvia::Task<void> eraseConnection(const Redis& redis, std::string_view id) {
-        co_await message::redis::eraseHash(redis, CollectorStateRecord::connectionKey(id));
+        co_await message::redis::eraseHash(redis, CollectorLinkRecord::key(id, index));
     }
 };
 

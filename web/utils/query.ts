@@ -1,24 +1,3 @@
-/**
- * React Query 工具
- */
-
-import { QueryClient } from '@tanstack/react-query';
-
-export const queryClient = new QueryClient({
-    defaultOptions: {
-        queries: {
-            staleTime: 5 * 60 * 1000,
-            gcTime: 10 * 60 * 1000,
-            refetchOnWindowFocus: false,
-            refetchOnReconnect: true,
-            retry: 1,
-        },
-        mutations: {
-            retry: 0,
-        },
-    },
-});
-
 export function createQueryKeys<T extends string>(module: T) {
     return {
         all: [module] as const,

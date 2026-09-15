@@ -1,5 +1,8 @@
 #pragma once
 
+#include <ruvia/core/StopToken.h>
+
+#include "service/utils/number.h"
 #include "service/features/command/command.entity.h"
 
 #include <algorithm>
@@ -143,7 +146,7 @@ ruvia::Task<DeviceRoute> deviceRoute(const Redis& redis, std::string_view device
 #include "service/features/command/command.types.h"
 #include "service/common/http.h"
 #include "service/common/uuid.h"
-#include "service/features/edge/edge.transport.h"
+#include "service/features/edge/session/session.service.h"
 #include "service/utils/json.h"
 
 #include <optional>
@@ -217,7 +220,7 @@ ruvia::Task<void> dispatch(Context& context) {
             PendingDispatch item;
             item.task.messageId = cell(0); item.task.deviceId = cell(6);
             item.task.deviceCode = cell(7); item.task.protocol = cell(8);
-            item.task.createdAtMs = common::parseInt64(cell(9)).value_or(0);
+            item.task.createdAtMs = utils::parseInt64(cell(9)).value_or(0);
             const bool list = cell(2) == "list";
             if (list) {
                 const auto bytes = message::fromHex(values.front()[0].value().value_or(std::string_view{}));
@@ -230,7 +233,7 @@ ruvia::Task<void> dispatch(Context& context) {
             published = co_await dispatchPendingBatch(context.redis(), cell(1),
                 list ? PendingQueueKind::List : PendingQueueKind::Stream,
                 std::vector<PendingDispatch>{std::move(item)}, cell(3),
-                static_cast<std::size_t>(common::parseInt64(cell(5)).value_or(1)));
+                static_cast<std::size_t>(utils::parseInt64(cell(5)).value_or(1)));
             if (!published) failure = "queue_capacity_exceeded";
         } catch (const std::exception& error) { failure = error.what(); }
         // A known capacity rejection is safe to report as rejected. Other failures can
@@ -299,7 +302,7 @@ nextDispatchDelay(Context& context) {
     const auto value = rows.front()[0].value();
     if (!value)
         co_return std::nullopt;
-    const auto delay = common::parseInt64(std::optional<std::string_view>{*value});
+    const auto delay = utils::parseInt64(std::optional<std::string_view>{*value});
     if (!delay)
         throw std::runtime_error("invalid command dispatch deadline delay");
     co_return std::chrono::milliseconds(*delay);
@@ -400,6 +403,16 @@ class PreparationService final {
     };
 
 public:
+    static ruvia::Task<std::string> executeOperation(ruvia::WebWorkerContext& context, std::string_view operation, std::string_view payload, ruvia::StopToken stop) {
+        if (stop.stopRequested()) {
+            common::fail(10004, "Command preparation cancelled", 503);
+        }
+        if (operation != "prepare") {
+            common::fail(18010, "Unknown command operation", 400);
+        }
+        co_return co_await PreparationService::prepare(context, payload);
+    }
+
     static ruvia::Task<std::string> prepare(ruvia::WebWorkerContext& context,
                                            std::string_view payload) {
         const auto request = ruvia::JsonValue::parse(payload);
@@ -637,7 +650,7 @@ private:
             for (const auto& element : elements)
                 task.elements.emplace_back(element.elementId, element.value);
 
-            auto envelope = service::edge::protocol::outbound(nodeId);
+            auto envelope = service::edge::protocol::outbound(service::common::nextUuidV7(), service::message::utcNowMilliseconds(), service::edge::protocol::platformId(), nodeId);
             auto* command = envelope.mutable_command_request();
             if (!setUuid(command->mutable_command_id(), task.messageId) ||
                 !setUuid(command->mutable_device_id(), task.deviceId))
