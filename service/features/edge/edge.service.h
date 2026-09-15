@@ -1095,7 +1095,9 @@ class ConfigService final {
         co_await packet_log::DebugPacketService::append(c.redis(), linkId, deviceId,
             packet.direction(), "edge", packet.client_address(),
             std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(packet.payload().data()), packet.payload().size()),
-            packet.observed_at_ms(), packet.device_only());
+            packet.observed_at_ms(), packet.device_only(),
+            packet.packet_id().size() == 16 ? protocol::uuidText(packet.packet_id()) : std::string{},
+            packet.status(), packet.reason());
     }
 
     static ConfigService& instance() {

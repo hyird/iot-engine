@@ -327,6 +327,10 @@ class Session final : public ProtocolSession,
         }
         for (auto& frame : extractFrames()) {
             auto next = consumeFrame(input, std::move(frame));
+            if (!next.empty())
+                next.front().responseSuccess = std::none_of(next.begin(), next.end(), [](const auto& action) {
+                    return action.kind == ProtocolActionKind::FailCommand || action.kind == ProtocolActionKind::Close;
+                });
             actions.insert(actions.end(), std::make_move_iterator(next.begin()),
                            std::make_move_iterator(next.end()));
         }

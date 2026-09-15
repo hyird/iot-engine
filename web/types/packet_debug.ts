@@ -6,4 +6,8 @@ export interface DebugPacket {
     address?: string;
     payload_hex: string;
     time_ms: string;
+    status?: string;
+    reason?: string;
+    history_id?: string;
+    parsed_json?: string;
 }

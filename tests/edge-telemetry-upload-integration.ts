@@ -160,7 +160,7 @@ try {
             const linkView = await firstSnapshot(`/v1/link/${link}`);
             assert.equal(linkView.debug_enabled,linkOn);
             const packetId = uuid();
-            const trace = Buffer.concat([field(1,bytes(packetId)),field(2,bytes(link)),field(3,bytes(device)),field(5,Date.now()),field(6,Buffer.from('AABBCC','hex')),field(7,1),field(8,'RX')]);
+            const trace = Buffer.concat([field(1,bytes(packetId)),field(2,bytes(link)),field(3,bytes(device)),field(5,Date.now()),field(6,Buffer.from('AABBCC','hex')),field(7,1),field(8,'RX'),field(10,'received')]);
             const key = `iot:debug:packets:device:${device}`;
             const before = Number(await redis.send('XLEN',[key]));
             socket!.send(envelope(42,trace));
@@ -168,7 +168,7 @@ try {
             else { await Bun.sleep(150); assert.equal(Number(await redis.send('XLEN',[key])),before); }
             const packets = await firstSnapshot(`/v1/device/${device}/debug/packets`);
             assert.equal(packets.length, linkOn||deviceOn ? before+1 : before);
-            if(packets.length) assert.equal(packets[0].payload_hex,'AABBCC');
+            if(packets.length) { assert.equal(packets[0].payload_hex,'AABBCC'); assert.equal(packets[0].status,'received'); }
         }
         assert.equal((await db`SELECT debug_enabled FROM device WHERE id=${device}`)[0].debug_enabled,false);
         console.log(`PASS ${protocol}: independent link/device debug switches, capture gating and separate authorized views`);

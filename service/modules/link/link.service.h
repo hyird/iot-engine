@@ -1,4 +1,5 @@
 #pragma once
+#include <set>
 #include "service/utils/redis.h"
 
 #include "service/utils/number.h"
@@ -198,11 +199,17 @@ class LinkService {
         if (reply.kind() != ruvia::RedisValue::Kind::kArray)
             service::message::redis::throwValue("read debug packets", reply);
         ruvia::BoxedArray<LinkDebugPacketDto> result(ruvia::ModelOptions{.resource=c.arena()});
+        std::set<std::string> seen;
         for (const auto& row : reply.array()) {
             if (row.kind() != ruvia::RedisValue::Kind::kArray || row.array().size() != 2) continue;
-            auto& packet = result.emplace(ruvia::ModelOptions{.resource=c.arena()});
-            packet.set<"id">(row.array()[0].string());
             const auto fields = row.array()[1].array();
+            std::string eventId(row.array()[0].string());
+            for (std::size_t index = 0; index + 1 < fields.size(); index += 2)
+                if (fields[index].string() == "event_id" && !fields[index+1].string().empty())
+                    eventId = fields[index+1].string();
+            if (!seen.insert(eventId).second) continue;
+            auto& packet = result.emplace(ruvia::ModelOptions{.resource=c.arena()});
+            packet.set<"id">(eventId);
             for (std::size_t index = 0; index + 1 < fields.size(); index += 2) {
                 const auto name = fields[index].string();
                 const auto value = fields[index + 1].string();
@@ -212,6 +219,10 @@ class LinkService {
                 else if (name == "address") packet.set<"address">(value);
                 else if (name == "payload_hex") packet.set<"payloadHex">(value);
                 else if (name == "time_ms") packet.set<"timeMs">(value);
+                else if (name == "status") packet.set<"status">(value);
+                else if (name == "reason") packet.set<"reason">(value);
+                else if (name == "history_id") packet.set<"historyId">(value);
+                else if (name == "parsed_json") packet.set<"parsedJson">(value);
             }
         }
         co_return result;

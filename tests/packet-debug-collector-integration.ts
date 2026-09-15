@@ -15,7 +15,28 @@ async function toggle(scope:string,id:string,enabled:boolean) {
 async function until(condition:()=>Promise<boolean>,reason:string) {
     const deadline=Date.now()+20000;while(Date.now()<deadline){if(await condition())return;await Bun.sleep(50);}throw Error(reason);
 }
+async function snapshot(path: string) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+        const response = await fetch(apiBase+path,{headers:{Authorization:`Bearer ${token}`,Accept:'text/event-stream'},signal:controller.signal});
+        assert.equal(response.status,200);
+        assert(response.headers.get('content-type')?.includes('text/event-stream'));
+        const reader=response.body!.getReader(), decoder=new TextDecoder(); let pending='';
+        for (;;) {
+            const part=await reader.read(); assert(!part.done);
+            pending+=decoder.decode(part.value,{stream:true});
+            let end;
+            while((end=pending.indexOf('\n\n'))>=0) {
+                const data=pending.slice(0,end).split('\n').find(line=>line.startsWith('data:'));
+                pending=pending.slice(end+2);
+                if(data) return JSON.parse(data.slice(5)).data;
+            }
+        }
+    } finally {clearTimeout(timeout);controller.abort();}
+}
 let connections=0,requests=0;
+let responseMode: 'normal' | 'exception' | 'silent' = 'normal';
 const server=Bun.listen<{buffer:Buffer}>({hostname:'127.0.0.1',port:0,socket:{
     open(socket){++connections;socket.data={buffer:Buffer.alloc(0)};},
     data(socket,input){
@@ -23,6 +44,8 @@ const server=Bun.listen<{buffer:Buffer}>({hostname:'127.0.0.1',port:0,socket:{
         while(socket.data.buffer.length>=12){
             const request=socket.data.buffer.subarray(0,12);socket.data.buffer=socket.data.buffer.subarray(12);
             assert.equal(request[7],3);++requests;
+            if (responseMode === 'silent') continue;
+            if (responseMode === 'exception') { socket.write(Buffer.from([request[0],request[1],0,0,0,3,request[6],0x83,2])); continue; }
             const reply=Buffer.from([request[0],request[1],0,0,0,5,request[6],3,2,0,request[6]*10]);socket.write(reply);
         }
     },error(_socket,error){throw error;},close(){}
@@ -43,8 +66,24 @@ try {
     assert.equal(await length('device',device2),0,'device debug leaked sibling traffic');
     const rows=await redis.send('XRANGE',[`iot:debug:packets:device:${device1}`,'-','+']) as [string,string[]][];
     assert(rows.some(([,fields])=>fields.includes('RX')));
-    assert(rows.some(([,fields])=>fields.includes('TX_ATTEMPT')));
+    assert(rows.some(([,fields])=>fields.includes('TX')));
     for(const [,fields] of rows){const index=fields.indexOf('payload_hex');assert.equal(fields[index+1].slice(12,14),'01');}
+    const events = async () => (await redis.send('XRANGE',[`iot:debug:packets:device:${device1}`,'-','+']) as [string,string[]][])
+        .map(([,fields]) => Object.fromEntries(Array.from({length: fields.length/2},(_,i)=>[fields[i*2],fields[i*2+1]])));
+    await until(async()=>(await events()).some(row=>row.status==='success'), 'matched response did not finalize TX');
+    await until(async()=>(await events()).some(row=>row.history_id && row.parsed_json), 'persisted history was not shown in debug');
+    const stored=(await events()).find(row=>row.history_id)!;
+    const history=await db`SELECT data FROM device_data WHERE id=${stored.history_id}`;
+    assert.deepEqual(JSON.parse(stored.parsed_json),history[0].data, 'debug history must be the actual stored record');
+    const packets=await snapshot(`/v1/device/${device1}/debug/packets`);
+    assert.equal(new Set(packets.map((packet: {id:string})=>packet.id)).size,packets.length,'status updates created duplicate display rows');
+    assert(packets.some((packet: {history_id:string})=>packet.history_id===stored.history_id));
+    const range=new URLSearchParams({page:'1',pageSize:'20',startTime:new Date(Date.now()-3600000).toISOString(),endTime:new Date(Date.now()+60000).toISOString()});
+    const historyPage=await snapshot(`/v1/device/${device1}/history?${range}`);
+    assert(historyPage.list.length && historyPage.list.every((record: {rawPayloadHex:unknown})=>Array.isArray(record.rawPayloadHex)), 'history API omitted raw payload arrays');
+    responseMode='exception';
+    await until(async()=>(await events()).some(row=>row.status==='failed' && row.reason==='modbus_exception_response'), 'exception response was not failure');
+    responseMode='normal';
     const opened=connections;
     await toggle('link',link,true);
     await until(async()=>await length('device',device2)>=2,'link debug did not cover sibling');
@@ -52,6 +91,9 @@ try {
     const before=await length('device',device1);
     await until(async()=>await length('device',device1)>before,'closing device suppressed active link debug');
     assert.equal(connections,opened,'debug toggle reopened TCP connection');
+    responseMode='silent';
+    await until(async()=>(await events()).some(row=>row.status==='failed' && /timeout/.test(row.reason)), 'response timeout did not become failure');
+    responseMode='normal';
     await toggle('link',link,false);
     const requestBarrier=requests+8;
     await until(async()=>requests>=requestBarrier,'collection stopped after debug was disabled');

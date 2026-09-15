@@ -517,6 +517,7 @@ export interface HistoryRecord {
     source: string;
     functionCode?: string;
     values: Record<string, HistoryPointValue>;
+    rawPayloadHex: string[];
 }
 /** 管理端历史记录查询参数 */
 export interface DeviceHistoryQuery {

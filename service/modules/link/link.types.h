@@ -10,7 +10,11 @@ RUVIA_RESPONSE_MODEL(LinkDebugPacketDto,
     RUVIA_OPTIONAL_FIELD(source, ruvia::String),
     RUVIA_OPTIONAL_FIELD(address, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("payload_hex", payloadHex, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("time_ms", timeMs, ruvia::String));
+    RUVIA_OPTIONAL_FIELD_NAME("time_ms", timeMs, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(reason, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("history_id", historyId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("parsed_json", parsedJson, ruvia::String));
 RUVIA_RESPONSE_MODEL(LinkDebugPacketsResponse,
     RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(message, ruvia::String),

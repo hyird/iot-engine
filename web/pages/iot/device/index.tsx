@@ -1,5 +1,6 @@
 import {
     ApartmentOutlined,
+    CopyOutlined,
     DeleteOutlined,
     DownOutlined,
     EditOutlined,
@@ -1502,6 +1503,14 @@ const DeviceHistoryModal = ({
                 fixed: 'left',
                 render: (value) => formatDateTime(value),
             },
+            {
+                title: '原始报文',
+                key: 'rawPayloadHex',
+                width: 100,
+                render: (_, record) => (
+                    <HistoryRawPayloadButton payloads={record.rawPayloadHex ?? []} />
+                ),
+            },
             ...pointColumns.map((column) => ({
                 title: column.label,
                 key: column.key,
@@ -1520,7 +1529,7 @@ const DeviceHistoryModal = ({
         ];
         return tableColumns;
     }, [pointColumns]);
-    const tableWidth = Math.max(760, 180 + pointColumns.length * 150);
+    const tableWidth = Math.max(760, 280 + pointColumns.length * 150);
     return (
         <Modal
             open
@@ -1587,11 +1596,43 @@ const DeviceHistoryModal = ({
     );
 };
 
+function HistoryRawPayloadButton({ payloads }: { payloads: string[] }) {
+    const { message } = App.useApp();
+    if (!payloads.length) return <Typography.Text type="secondary">—</Typography.Text>;
+    const text = JSON.stringify(payloads, null, 2);
+    return (
+        <Popover
+            title={`原始报文（${payloads.length} 条，点击按钮复制全部）`}
+            content={
+                <pre className="m-0 max-h-[60dvh] max-w-[min(680px,80vw)] overflow-auto whitespace-pre-wrap break-all font-mono text-xs">
+                    {text}
+                </pre>
+            }
+        >
+            <Button
+                type="text"
+                size="small"
+                icon={<CopyOutlined />}
+                aria-label="复制原始报文"
+                onClick={async () => {
+                    try {
+                        await navigator.clipboard.writeText(text);
+                        message.success('原始报文已复制');
+                    } catch {
+                        message.error('复制失败，请在悬浮内容中手动复制');
+                    }
+                }}
+            />
+        </Popover>
+    );
+}
+
 function DeviceDebug({ item }: { item: Device.Overview }) {
     const [open, setOpen] = useState(false);
     const { packets, toggle } = useDeviceDebug(item.id, open);
     return (
         <PacketDebugPanel
+            buttonClassName={DEVICE_CARD_ACTION_BUTTON_CLASS}
             title={`设备调试 · ${item.name}`}
             enabled={item.debug_enabled === true}
             inherited={item.link_debug_enabled === true}

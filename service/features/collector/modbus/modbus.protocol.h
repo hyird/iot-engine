@@ -304,6 +304,10 @@ class Session final : public ProtocolSession,
             if (!device)
                 continue;
             auto frameActions = consumeResponse(input, *device, std::move(frame));
+            if (!frameActions.empty())
+                frameActions.front().responseSuccess = std::none_of(frameActions.begin(), frameActions.end(), [](const auto& action) {
+                    return action.kind == ProtocolActionKind::FailCommand || action.kind == ProtocolActionKind::Close;
+                });
             actions.insert(actions.end(), std::make_move_iterator(frameActions.begin()),
                            std::make_move_iterator(frameActions.end()));
         }

@@ -6,6 +6,8 @@
 #include "service/features/telemetry/telemetry.entity.h"
 #include <ruvia/web/db/DbQuery.h>
 #include <utility>
+#include <spdlog/spdlog.h>
+#include "service/features/packet_log/packet_log.service.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/common/message.h"
 #include "service/features/telemetry/latest/latest.service.h"
@@ -476,6 +478,9 @@ class TelemetryService {
         (void)co_await transaction.execute(seed);
         const auto rows = co_await transaction.query(persisted);
         co_await transaction.commit();
+        // Debug display is best effort and never changes the durable history ACK.
+        try { co_await packet_log::DebugPacketService::publishStoredHistory(context, messages); }
+        catch (const std::exception& error) { spdlog::warn("History debug display failed: {}", error.what()); }
         std::vector<std::string> previous(messages.size(), "{}");
         for (const auto& row : rows) {
             const auto parsedSequence =

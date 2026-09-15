@@ -74,6 +74,7 @@ struct ProtocolAction {
     std::vector<std::uint8_t> bytes;
     std::uint64_t publicationToken = 0;
     message::ParsedDeviceMessage parsed;
+    std::optional<bool> responseSuccess;
 };
 
 struct ProtocolInput {

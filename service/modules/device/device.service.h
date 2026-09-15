@@ -818,11 +818,17 @@ class DeviceService {
         if (reply.kind() != ruvia::RedisValue::Kind::kArray)
             service::message::redis::throwValue("read debug packets", reply);
         ruvia::BoxedArray<DeviceDebugPacketDto> result(ruvia::ModelOptions{.resource=c.arena()});
+        std::set<std::string> seen;
         for (const auto& row : reply.array()) {
             if (row.kind() != ruvia::RedisValue::Kind::kArray || row.array().size() != 2) continue;
-            auto& packet = result.emplace(ruvia::ModelOptions{.resource=c.arena()});
-            packet.set<"id">(row.array()[0].string());
             const auto fields = row.array()[1].array();
+            std::string eventId(row.array()[0].string());
+            for (std::size_t index = 0; index + 1 < fields.size(); index += 2)
+                if (fields[index].string() == "event_id" && !fields[index+1].string().empty())
+                    eventId = fields[index+1].string();
+            if (!seen.insert(eventId).second) continue;
+            auto& packet = result.emplace(ruvia::ModelOptions{.resource=c.arena()});
+            packet.set<"id">(eventId);
             for (std::size_t index = 0; index + 1 < fields.size(); index += 2) {
                 const auto name = fields[index].string();
                 const auto value = fields[index + 1].string();
@@ -832,6 +838,10 @@ class DeviceService {
                 else if (name == "address") packet.set<"address">(value);
                 else if (name == "payload_hex") packet.set<"payloadHex">(value);
                 else if (name == "time_ms") packet.set<"timeMs">(value);
+                else if (name == "status") packet.set<"status">(value);
+                else if (name == "reason") packet.set<"reason">(value);
+                else if (name == "history_id") packet.set<"historyId">(value);
+                else if (name == "parsed_json") packet.set<"parsedJson">(value);
             }
         }
         co_return result;
@@ -1362,7 +1372,8 @@ class DeviceService {
             .select({filtered.column(service::device::entities::DeviceDataEntity::columnName<"id">(), "record"),
                      filtered.column(service::device::entities::DeviceDataEntity::columnName<"protocol">(), "record"),
                      filtered.column(service::device::entities::DeviceDataEntity::columnName<"report_time">(), "record"),
-                     filtered.column(service::device::entities::DeviceDataEntity::columnName<"source">(), "record"), filteredData})
+                     filtered.column(service::device::entities::DeviceDataEntity::columnName<"source">(), "record"),
+                     filtered.column(service::device::entities::DeviceDataEntity::columnName<"raw_payload_hex">(), "record"), filteredData})
             .from(service::device::entities::DeviceDataEntity::tableName(), "record")
             .where(andAll(filtered,
                           filtered.binary(filtered.column(service::device::entities::DeviceDataEntity::columnName<"device_id">(), "record"),
@@ -1455,8 +1466,11 @@ class DeviceService {
              DeviceAccessService::textKey(query, "functionCode"),
              DeviceAccessService::jsonText(query, query.column("data", "normalized"),
                                            "function_code"),
-             DeviceAccessService::textKey(query, "values"),
-             query.column("normalized_values", "normalized")});
+               DeviceAccessService::textKey(query, "values"),
+               query.column("normalized_values", "normalized"),
+               DeviceAccessService::textKey(query, "rawPayloadHex"),
+               query.coalesce({query.column("raw_payload_hex", "normalized"),
+                               query.cast(query.value("[]"), ruvia::DbDataType::kJsonb)})});
         const std::array<ruvia::DbOrderTerm, 2> historyOrder{{
             ruvia::DbOrderTerm{query.column("report_time", "normalized"),
                                ruvia::DbOrderDirection::kDesc, ruvia::DbNullsOrder::kDefault},
