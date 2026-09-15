@@ -458,6 +458,7 @@ class GbProjectionService {
             co_return;
         }
 
+        // CTE 参数使用 TEXT，目标列仍按实体和数据库约束验证长度，避免 VARCHAR(n) 转换静默截断。
         ruvia::DbQuery rawIncoming;
         std::size_t ordinal = 0;
         for (const auto& channel : device.channels) {
@@ -466,13 +467,13 @@ class GbProjectionService {
                     rawIncoming.value(static_cast<std::int64_t>(ordinal)),
                     ruvia::DbDataType::kBigInt),
                 rawIncoming.cast(rawIncoming.value(channel.id),
-                                 ruvia::DbDataType::kVarchar),
+                                 ruvia::DbDataType::kText),
                 rawIncoming.cast(rawIncoming.value(channel.name),
-                                 ruvia::DbDataType::kVarchar),
+                                 ruvia::DbDataType::kText),
                 rawIncoming.cast(rawIncoming.value(channel.customName),
-                                 ruvia::DbDataType::kVarchar),
+                                 ruvia::DbDataType::kText),
                 rawIncoming.cast(rawIncoming.value(channel.manufacturer),
-                                 ruvia::DbDataType::kVarchar),
+                                 ruvia::DbDataType::kText),
                 rawIncoming.cast(rawIncoming.value(channel.online),
                                  ruvia::DbDataType::kBoolean),
                 rawIncoming.cast(rawIncoming.value(channel.ptzType),
@@ -586,6 +587,7 @@ class GbProjectionService {
             co_return;
         }
 
+        // CTE 参数使用 TEXT，目标列仍按实体和数据库约束验证长度，避免 VARCHAR(n) 转换静默截断。
         ruvia::DbQuery rawIncoming;
         std::size_t ordinal = 0;
         for (const auto& record : device.records) {
@@ -594,9 +596,9 @@ class GbProjectionService {
                     rawIncoming.value(static_cast<std::int64_t>(ordinal)),
                     ruvia::DbDataType::kBigInt),
                 rawIncoming.cast(rawIncoming.value(record.deviceId),
-                                 ruvia::DbDataType::kVarchar),
+                                 ruvia::DbDataType::kText),
                 rawIncoming.cast(rawIncoming.value(record.name),
-                                 ruvia::DbDataType::kVarchar),
+                                 ruvia::DbDataType::kText),
                 rawIncoming.cast(rawIncoming.value(record.filePath),
                                  ruvia::DbDataType::kText),
                 rawIncoming.cast(rawIncoming.value(record.address),
@@ -606,9 +608,9 @@ class GbProjectionService {
                 rawIncoming.cast(rawIncoming.value(record.endTime),
                                  ruvia::DbDataType::kTimestampTz),
                 rawIncoming.cast(rawIncoming.value(record.type),
-                                 ruvia::DbDataType::kVarchar),
+                                 ruvia::DbDataType::kText),
                 rawIncoming.cast(rawIncoming.value(record.recorderId),
-                                 ruvia::DbDataType::kVarchar),
+                                 ruvia::DbDataType::kText),
             });
             ++ordinal;
         }

@@ -83,6 +83,39 @@ try {
     assert.equal(await redis.get(ownerKey), owner);
     console.log('PASS HTTP rename routes to connection owner and returns after persistence');
 
+    // Exercise the actual nonempty batch SQL and retry acknowledgement path.
+    async function projectList(change: string, fields: string[]) {
+        const projection = randomUUID();
+        await redis.send('XADD',['iot:gb28181:projection','*',
+            'projection_id',projection,'owner_token',owner!, 'schema_version','1',
+            'event_type','gb28181.device','change',change,'device_id',device,
+            'name','Camera','online','1','last_seen_at',new Date().toISOString(),...fields]);
+        assert.equal(await until(async () =>
+            (await redis.get(`iot:gb28181:projection:done:${projection}`)) ?? undefined,
+            `${change} projection must commit and acknowledge`), '1');
+    }
+    await projectList('catalog', ['channel_count','2','record_count','0',
+        'channel.0.id','channel-1','channel.0.name',"Camera's entrance",'channel.0.online','1',
+        'channel.0.manufacturer','测试厂商','channel.0.ptz_type','1',
+        'channel.1.id','channel-2','channel.1.name','Second channel','channel.1.online','0','channel.1.ptz_type','0']);
+    assert.equal((await db`SELECT count(*)::int AS count FROM gb28181_channel WHERE device_id=${device}`)[0].count,2);
+    await db`UPDATE gb28181_channel SET custom_name='Operator name' WHERE device_id=${device} AND id='channel-1'`;
+    await projectList('catalog', ['channel_count','1','record_count','0',
+        'channel.0.id','channel-1','channel.0.name','Updated channel','channel.0.online','1','channel.0.ptz_type','1']);
+    const channels = await db`SELECT name,custom_name FROM gb28181_channel WHERE device_id=${device}`;
+    assert.equal(channels.length,1);
+    assert.equal(channels[0].name,'Updated channel');
+    assert.equal(channels[0].custom_name,'Operator name');
+    await projectList('records', ['channel_count','0','record_count','1',
+        'record.0.device_id','channel-1','record.0.name',"Camera's recording",'record.0.file_path','record.mp4',
+        'record.0.address','Gate','record.0.start_time','2026-09-15T00:00:00Z',
+        'record.0.end_time','2026-09-15T01:00:00Z','record.0.type','all','record.0.recorder_id','recorder-1']);
+    const records = await db`SELECT name,recorder_id FROM gb28181_record WHERE device_id=${device}`;
+    assert.equal(records.length,1);
+    assert.equal(records[0].name,"Camera's recording");
+    assert.equal(records[0].recorder_id,'recorder-1');
+    console.log('PASS nonempty catalog and recording projections commit, remove stale channels and preserve operator names');
+
     const ownerMatch = /^(.*):collector:(\d+):session:/.exec(owner!);
     assert(ownerMatch);
     const wrongStream = controls.find(key => key !== `iot:gb28181:control:worker:${ownerMatch[1]}:${ownerMatch[2]}`);
