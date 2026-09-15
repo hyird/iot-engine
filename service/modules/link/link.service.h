@@ -249,6 +249,9 @@ return result
         (void)co_await transaction.execute(query);
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "link", "updated", id);
         co_await transaction.commit();
+        const auto link = co_await detail(c, id);
+        if (link.get<"edgeNodeId">() && !link.get<"edgeNodeId">()->view().empty())
+            (void)co_await service::edge::EdgeService::queueSnapshot(c, link.get<"edgeNodeId">()->view());
     }
 
     ruvia::Task<void> update(ruvia::Context& c, std::string_view id, const SaveLinkBody& body) {

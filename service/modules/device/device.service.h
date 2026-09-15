@@ -868,6 +868,9 @@ return result
         (void)co_await transaction.execute(query);
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "updated", id);
         co_await transaction.commit();
+        const auto device = co_await detail(c, id);
+        if (device.get<"edgeNodeId">() && !device.get<"edgeNodeId">()->view().empty())
+            (void)co_await service::edge::EdgeService::queueSnapshot(c, device.get<"edgeNodeId">()->view());
     }
 
     ruvia::Task<void> update(ruvia::Context& c, std::string_view id, const SaveDeviceBody& body) {

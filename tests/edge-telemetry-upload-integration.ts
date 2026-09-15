@@ -64,10 +64,14 @@ const now = Math.floor(Date.now()/1000);
 const unsigned = `${encode({alg:'HS256',typ:'JWT'})}.${encode({iss:'iot-engine',aud:'iot-engine-web',sub:admin,user_id:admin,username:'debug-test',token_type:'access',iat:now,exp:now+3600})}`;
 const token = `${unsigned}.${createHmac('sha256','architecture-test-only-access-secret-000000000').update(unsigned).digest('base64url')}`;
 async function debugSwitch(scope: string, id: string, enabled: boolean) {
+    const [before] = await db`SELECT status->'config'->>'desiredVersion' AS revision FROM edge_node WHERE id=${node}`;
     const response = await fetch(`${apiBase}/v1/${scope}/${id}/debug`, { method:'PUT', headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'}, body:JSON.stringify({enabled}) });
     const body = await response.text();
     assert.equal(response.status,200,body);
     assert.equal(JSON.parse(body).code,0,body);
+    const [after] = await db`SELECT status->'config'->>'desiredVersion' AS revision FROM edge_node WHERE id=${node}`;
+    assert(BigInt(after.revision ?? 0) > BigInt(before.revision ?? 0),
+        `${scope} debug switch must queue a new edge configuration, including when disabled`);
 }
 async function firstSnapshot(path: string) {
     const controller = new AbortController();
@@ -126,7 +130,7 @@ try {
         socket.binaryType = 'arraybuffer';
         await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => reject(Error('Hello timeout')), 10000);
-        socket!.onopen = () => socket!.send(envelope(20, Buffer.concat([field(1, imei), field(2, 'fixture'), field(3, '0.3.44')])));
+        socket!.onopen = () => socket!.send(envelope(20, Buffer.concat([field(1, imei), field(2, 'fixture'), field(3, '0.3.44'), field(23, 1)])));
         socket!.onerror = () => { clearTimeout(timeout); reject(Error('WebSocket failed')); };
         socket!.onmessage = event => {
             const message = decode(Buffer.from(event.data as ArrayBuffer));
@@ -140,6 +144,10 @@ try {
         });
     };
     await connect();
+    await until(async () => {
+        const [row] = await db`SELECT capability->>'deviceConfig' AS supported FROM edge_node WHERE id=${node}`;
+        return row.supported === 'true';
+    }, 'edge device configuration capability was not projected');
     for (const [protocol, protocolNumber] of [['SL651', 1], ['Modbus', 2], ['S7', 3]] as const) {
         const device = uuid(), link = uuid(), model = uuid(), report = uuid(), point = uuid();
         devices.push(device);
