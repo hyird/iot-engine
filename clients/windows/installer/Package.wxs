@@ -5,6 +5,7 @@
   <Property Id="ARPPRODUCTICON" Value="ProductIcon"/><Icon Id="ProductIcon" SourceFile="$(var.SourceRoot)\native\assets\product.ico"/>
   <Property Id="OWNER" Secure="yes"/>
   <Property Id="MSIFASTINSTALL" Value="1"/>
+  <SetProperty Id="REINSTALLMODE" Value="amus" Before="CostInitialize" Sequence="both" Condition="NOT REMOVE"/>
   <SetProperty Id="OWNER" Value="[UserSID]" Before="InstallInitialize" Sequence="execute" Condition="NOT OWNER"/>
   <Launch Condition="VersionNT64 AND Privileged" Message="请在 Windows 10/11 x64 上以管理员权限安装。"/>
   <StandardDirectory Id="ProgramFiles64Folder"><Directory Id="INSTALLFOLDER" Name="iot-egine"/></StandardDirectory>
