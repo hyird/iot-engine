@@ -5,6 +5,7 @@ import {
     CodeOutlined,
     DeleteOutlined,
     DownOutlined,
+    DownloadOutlined,
     EditOutlined,
     EyeOutlined,
     GlobalOutlined,
@@ -53,6 +54,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { FormModal } from '@/components/FormModal';
 import { usePermissions } from '@/hooks/usePermission';
 import {
+    getWindowsClientDownloadUrl,
     useEdgeGroupDelete,
     useEdgeGroupSave,
     useEdgeGroupTree,
@@ -1814,6 +1816,13 @@ export function EdgeNodePage() {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                     <h3 className="m-0 text-base font-medium">边缘节点</h3>
                     <Space wrap>
+                        <Button
+                            icon={<DownloadOutlined />}
+                            href={getWindowsClientDownloadUrl()}
+                            download
+                        >
+                            下载 Windows 客户端
+                        </Button>
                         <EdgeNodeGroupPanel
                             selectedGroupId={selectedGroupId}
                             canManageGroup={canEdit}

@@ -23,6 +23,31 @@ env:
   UPX_WINDOWS_SHA256: fa5380bca4c2718547aaa0134bc0d8a7fa27e102f0ac6371573d60d1c21d64de
 
 jobs:
+  windows_client:
+    name: Windows client installer
+    runs-on: windows-2025
+    steps:
+      - name: Checkout iot-engine
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Configure Windows client
+        run: cmake -S clients/windows -B build/ci/windows-client -A x64
+
+      # This target runs native CTest and packaged GUI/service self-tests before WiX.
+      # Dependency preparation and checksum verification remain in CMake.
+      - name: Build, test and package Windows client
+        run: cmake --build build/ci/windows-client --config Release --target windows-installer --parallel 4
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: iot-engine-Windows-client-X64-${{ github.sha }}
+          path: build/windows-client-downloads/*
+          if-no-files-found: error
+          retention-days: 30
+
   web_quality:
     name: Web quality and contract tests
     runs-on: ubuntu-24.04
@@ -66,6 +91,7 @@ jobs:
 
   ubuntu_build:
     name: Ubuntu build
+    needs: windows_client
     runs-on: ubuntu-24.04
     env:
       CC: clang-19
@@ -159,6 +185,16 @@ jobs:
             -P ports/cmake/stage-third-party-notices.cmake
           "$UPX_BIN" --best --lzma build/artifact/iot-engine
           "$UPX_BIN" --test build/artifact/iot-engine
+
+      - name: Download Windows client for source-site distribution
+        uses: actions/download-artifact@v8
+        with:
+          name: iot-engine-Windows-client-X64-${{ github.sha }}
+          path: build/artifact/web/downloads
+
+      - name: Include Windows client in deployment archive
+        run: |
+          (cd build/artifact/web/downloads && sha256sum --check iot-egine-Setup-x64.exe.sha256)
           tar -C build/artifact -czf "build/iot-engine-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz" .
 
       - name: Upload artifact

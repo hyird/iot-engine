@@ -21,6 +21,14 @@ cmake --build build/windows-client-cmake --config Release --target windows-insta
 
 WinUI NuGet 依赖版本和 SHA256 固定在 winui/packages.lock.json；WireGuard 固定在 wireguard.lock.json。安装时要求管理员权限，日常 GUI 不需要提升权限。安装会绑定发起安装的用户 SID，可通过 MSI OWNER 属性指定用户。
 
+## CI 与源站下载
+
+`.github/workflows/build.yml` 的 `Windows client installer` 任务通过 CMake 构建 `windows-installer`，执行原生测试和打包自测后上传独立客户端制品。依赖下载与校验仍由 CMake 入口完成。
+
+`build/windows-client-downloads/` 包含固定下载名 `iot-egine-Setup-x64.exe`、SHA256 校验文件和 `windows-client.json`（版本、源码提交、大小和哈希）。Linux 部署制品将同一提交的客户端放入 `web/downloads/`，边缘节点页通过源站 `/downloads/iot-egine-Setup-x64.exe` 下载。
+
+部署时必须保留完整 `web/downloads/`；仅更新前端时也需带上已发布的客户端文件。静态文件由后端提供，替换后重启服务刷新静态缓存，并核对安装包下载内容与 SHA256，避免将 SPA 页面误当作安装包。
+
 WiX 安装事务保存服务配置，失败时恢复；不包含旧 Inno 或旧服务名的迁移路径。旧版本须先卸载。代码自测不等同于多显示器实机验收。
 
 同一账号可在多台电脑同时使用：每台电脑生成独立密钥，服务端按客户端公钥创建 Peer 和分配独立 IP；同一公钥重试保留原 IP，退出一台不撤销另一台。同步时间按本机时区显示 yyyy-MM-dd HH:mm:ss。

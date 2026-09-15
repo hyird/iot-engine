@@ -16,6 +16,7 @@ import {
 import type { Edge, EdgeVpn } from './edge_node.types';
 
 const BASE = '/v1/edge';
+export const getWindowsClientDownloadUrl = () => '/downloads/iot-egine-Setup-x64.exe';
 export const getEdgeList = (query?: Edge.Query) =>
     createSnapshotStream<PaginatedResult<Edge.Node>>(
         appendQueryParams(BASE, edgeListQuerySchema.parse(query ?? {}))

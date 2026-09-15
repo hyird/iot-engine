@@ -32,6 +32,7 @@ import {
 } from './edge_node.api';
 import type { Edge, EdgeVpn } from './edge_node.types';
 import { edgeQueryKeys, edgeVpnQueryKeys } from './edge_node.types';
+export { getWindowsClientDownloadUrl } from './edge_node.api';
 const buildGroupTree = (items: Edge.GroupItem[]) => {
     const index = new Map<string, Edge.GroupTreeItem>();
     const roots: Edge.GroupTreeItem[] = [];

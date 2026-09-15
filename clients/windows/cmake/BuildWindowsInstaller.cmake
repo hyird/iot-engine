@@ -200,5 +200,16 @@ if(NOT EXISTS "${_output}")
   message(FATAL_ERROR "WiX did not produce the installer: ${_output}")
 endif()
 file(SHA256 "${_output}" _installer_hash)
+file(SIZE "${_output}" _installer_bytes)
+execute_process(COMMAND git -C "${SOURCE_ROOT}" rev-parse HEAD
+  OUTPUT_VARIABLE _source_commit OUTPUT_STRIP_TRAILING_WHITESPACE
+  COMMAND_ERROR_IS_FATAL ANY)
+set(_downloads "${BUILD_ROOT}/windows-client-downloads")
+file(MAKE_DIRECTORY "${_downloads}")
+file(COPY_FILE "${_output}" "${_downloads}/iot-egine-Setup-x64.exe" ONLY_IF_DIFFERENT)
+file(WRITE "${_downloads}/iot-egine-Setup-x64.exe.sha256"
+  "${_installer_hash}  iot-egine-Setup-x64.exe\n")
+file(WRITE "${_downloads}/windows-client.json"
+  "{\"version\":\"${VERSION}\",\"commit\":\"${_source_commit}\",\"file\":\"iot-egine-Setup-x64.exe\",\"sha256\":\"${_installer_hash}\",\"bytes\":${_installer_bytes}}\n")
 message(STATUS "Installer: ${_output}")
 message(STATUS "Installer SHA256: ${_installer_hash}")

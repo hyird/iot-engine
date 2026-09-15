@@ -133,6 +133,9 @@ add_custom_target(windows-package
 
 add_custom_command(
   OUTPUT "${IOT_EGINE_WINDOWS_INSTALLER_OUTPUT}"
+    "${IOT_EGINE_WINDOWS_BUILD_ROOT}/windows-client-downloads/iot-egine-Setup-x64.exe"
+    "${IOT_EGINE_WINDOWS_BUILD_ROOT}/windows-client-downloads/iot-egine-Setup-x64.exe.sha256"
+    "${IOT_EGINE_WINDOWS_BUILD_ROOT}/windows-client-downloads/windows-client.json"
   COMMAND "${CMAKE_COMMAND}"
     "-DBUILD_ROOT=${IOT_EGINE_WINDOWS_BUILD_ROOT}"
     "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
