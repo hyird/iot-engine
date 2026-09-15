@@ -9,6 +9,7 @@
 
 namespace service::device {
 RUVIA_RESPONSE_MODEL(DeviceDebugPacketDto,
+    RUVIA_REQUIRED_FIELD_NAME("acquisition_id", acquisitionId, ruvia::String),
     RUVIA_OPTIONAL_FIELD(id, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String),
     RUVIA_OPTIONAL_FIELD(direction, ruvia::String),
@@ -25,10 +26,21 @@ RUVIA_RESPONSE_MODEL(DeviceDebugPacketDto,
     RUVIA_OPTIONAL_FIELD(reason, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("history_id", historyId, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("parsed_json", parsedJson, ruvia::String));
+RUVIA_RESPONSE_MODEL(DeviceDebugAcquisitionDto,
+    RUVIA_REQUIRED_FIELD(id, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("started_at_ms", startedAtMs, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("finished_at_ms", finishedAtMs, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("last_packet_at_ms", lastPacketAtMs, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(state, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("storage_status", storageStatus, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("history_id", historyId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("parsed_json", parsedJson, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(packets, ruvia::BoxedArray<DeviceDebugPacketDto>));
 RUVIA_RESPONSE_MODEL(DeviceDebugPacketsResponse,
     RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(message, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<DeviceDebugPacketDto>));
+    RUVIA_OPTIONAL_FIELD(data, ruvia::BoxedArray<DeviceDebugAcquisitionDto>));
 
 
 RUVIA_REQUEST_MODEL(DeviceDebugBody, RUVIA_OPTIONAL_FIELD(enabled, ruvia::Bool));

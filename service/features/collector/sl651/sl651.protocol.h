@@ -353,6 +353,8 @@ class Session final : public ProtocolSession,
         }
         for (const auto& [key, packet] : multiPackets_) {
             (void)key;
+            if (!packet.completed) actions.push_back({.kind = ProtocolActionKind::FinishAcquisition,
+                .reason = "partial", .acquisitionId = packet.header.acquisitionId});
             actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
                                .connectionId = connectionId_,
                                .deadlineToken = packet.deadlineToken});
@@ -363,6 +365,7 @@ class Session final : public ProtocolSession,
         stationHeaders_.clear();
         ambiguousDevices_.clear();
         recentResponses_.clear();
+        reportAcquisitions_.clear();
         completedResponses_.clear();
         confirmedResponses_.clear();
         unpublishedReports_.clear();
@@ -511,7 +514,7 @@ class Session final : public ProtocolSession,
                 const auto ending = frame.totalPackets > 0 || frame.ending == 0x03 ? 0x04 : 0x06;
                 auto response = confirmation(frame, static_cast<std::uint8_t>(ending));
                 actions.push_back({.kind = ProtocolActionKind::Send, .connectionId = connectionId_,
-                                   .bytes = response});
+                                   .bytes = response, .acquisitionId = frame.acquisitionId});
                 if (matchesCommand && ending == 0x06) pending->second.retryFrame = std::move(response);
             }
             auto& recent = recentResponses_[frame.deviceCode];
@@ -549,6 +552,7 @@ class Session final : public ProtocolSession,
 
   private:
     struct ParsedFrame {
+        std::string acquisitionId;
         std::string deviceCode;
         std::uint8_t centerCode = 0;
         std::array<std::uint8_t, 2> password{};
@@ -664,7 +668,7 @@ class Session final : public ProtocolSession,
             ++attempts;
             packet.deadlineToken = nextDeadlineToken_++;
             return {{.kind = ProtocolActionKind::Send, .connectionId = connectionId_,
-                     .bytes = confirmation(packet.header, 0x15, sequence)},
+                     .bytes = confirmation(packet.header, 0x15, sequence), .acquisitionId = packet.header.acquisitionId},
                     {.kind = ProtocolActionKind::ScheduleDeadline, .connectionId = connectionId_,
                      .deadlineToken = packet.deadlineToken, .deadlineAfter = kMultiPacketIdleTimeout}};
         }
@@ -672,6 +676,8 @@ class Session final : public ProtocolSession,
     }
 
     void failAssemblyCommand(std::vector<ProtocolAction>& actions, const ParsedFrame& frame) {
+        actions.push_back({.kind = ProtocolActionKind::FinishAcquisition,
+            .reason = "partial", .acquisitionId = frame.acquisitionId});
         const auto pending = pendingCommands_.find(frame.deviceCode);
         if (pending == pendingCommands_.end() || pending->second.functionCode != frame.functionCode) return;
         actions.push_back({.kind = ProtocolActionKind::CancelDeadline, .connectionId = connectionId_,
@@ -792,32 +798,51 @@ class Session final : public ProtocolSession,
                                .deviceCode = device->second->code});
         }
 
+        parsed->acquisitionId = acquisitionIdentity(input.messageId, nextPacketSequence_);
+        const auto query = pendingCommands_.find(parsed->deviceCode);
+        if (query != pendingCommands_.end() && query->second.functionCode == parsed->functionCode)
+            parsed->acquisitionId = query->second.id;
         parsed->rawPacketIds = {std::string(input.messageId) + ":frame:" + std::to_string(nextPacketSequence_++)};
+        if (parsed->multiPacket) {
+            auto more = consumeMulti(input, *device->second, std::move(*parsed));
+            actions.insert(actions.end(), std::make_move_iterator(more.begin()), std::make_move_iterator(more.end()));
+            return actions;
+        }
+        const auto reportIdentity = detail::hexByte(parsed->functionCode) + ':' +
+            message::toHex(std::vector<std::uint8_t>(parsed->body.begin(), parsed->body.begin() + 8));
+        auto& acquisitions = reportAcquisitions_[parsed->deviceCode];
+        const auto existing = std::find_if(acquisitions.begin(), acquisitions.end(),
+            [&](const auto& entry) { return entry.first == reportIdentity; });
+        if (existing != acquisitions.end()) parsed->acquisitionId = existing->second;
+        else {
+            const auto command = pendingCommands_.find(parsed->deviceCode);
+            if (command != pendingCommands_.end() && command->second.functionCode == parsed->functionCode)
+                parsed->acquisitionId = command->second.id;
+            acquisitions.emplace_back(reportIdentity, parsed->acquisitionId);
+            if (acquisitions.size() > 64) acquisitions.erase(acquisitions.begin());
+        }
         ProtocolAction received{.kind = ProtocolActionKind::ObserveParsed,
             .connectionId = connectionId_, .deviceId = device->second->id,
             .deviceCode = device->second->code};
+        received.parsed.valuesJson.clear();
         received.parsed.linkId = link_.id;
+        received.parsed.acquisitionId = parsed->acquisitionId;
         received.parsed.deviceId = device->second->id;
         received.parsed.occurredAtMs = input.receivedAtMs;
         received.parsed.rawPayloads = parsed->rawFrames;
         received.parsed.rawPacketIds = parsed->rawPacketIds;
         actions.push_back(std::move(received));
 
-        if (parsed->multiPacket) {
-            auto more = consumeMulti(input, *device->second, std::move(*parsed));
-            actions.insert(actions.end(), std::make_move_iterator(more.begin()),
-                           std::make_move_iterator(more.end()));
-        } else {
-            const auto key = parsed->deviceCode + ':' + detail::hexByte(parsed->functionCode);
-            const auto previous = multiPackets_.find(key);
-            if (previous != multiPackets_.end()) {
-                actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
-                                   .connectionId = connectionId_,
-                                   .deadlineToken = previous->second.deadlineToken});
-                multiPackets_.erase(previous);
-            }
-            appendReportActions(actions, input, *device->second, *parsed);
+        const auto key = parsed->deviceCode + ':' + detail::hexByte(parsed->functionCode);
+        const auto previous = multiPackets_.find(key);
+        if (previous != multiPackets_.end()) {
+            actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
+                .connectionId = connectionId_, .deadlineToken = previous->second.deadlineToken});
+            actions.push_back({.kind = ProtocolActionKind::FinishAcquisition,
+                .reason = "partial", .acquisitionId = previous->second.header.acquisitionId});
+            multiPackets_.erase(previous);
         }
+        appendReportActions(actions, input, *device->second, *parsed);
         return actions;
     }
 
@@ -892,6 +917,8 @@ class Session final : public ProtocolSession,
              (current->second.bodies.contains(1) && current->second.bodies.at(1) != frame.body))) {
             actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
                                .connectionId = connectionId_, .deadlineToken = current->second.deadlineToken});
+            actions.push_back({.kind = ProtocolActionKind::FinishAcquisition,
+                .reason = "partial", .acquisitionId = current->second.header.acquisitionId});
             multiPackets_.erase(current);
             current = multiPackets_.end();
         }
@@ -905,6 +932,17 @@ class Session final : public ProtocolSession,
             return actions;
         }
         auto& packet = current->second;
+        frame.acquisitionId = packet.header.acquisitionId;
+        ProtocolAction received{.kind = ProtocolActionKind::ObserveParsed,
+            .connectionId = connectionId_, .deviceId = device.id, .deviceCode = device.code};
+        received.parsed.acquisitionId = frame.acquisitionId;
+        received.parsed.valuesJson.clear();
+        received.parsed.linkId = link_.id;
+        received.parsed.deviceId = device.id;
+        received.parsed.occurredAtMs = input.receivedAtMs;
+        received.parsed.rawPayloads = frame.rawFrames;
+        received.parsed.rawPacketIds = frame.rawPacketIds;
+        actions.push_back(std::move(received));
         const auto existing = packet.bodies.find(frame.sequence);
         if (existing != packet.bodies.end() && existing->second != frame.body) return actions;
         if (existing == packet.bodies.end()) {
@@ -971,6 +1009,7 @@ class Session final : public ProtocolSession,
                                               const DeviceDefinition& device,
                                               const ParsedFrame& frame) const {
         message::ParsedDeviceMessage message;
+        message.acquisitionId = frame.acquisitionId;
         message.causationId = input.messageId;
         message.linkId = link_.id;
         message.deviceId = device.id;
@@ -1116,6 +1155,7 @@ class Session final : public ProtocolSession,
     std::map<std::string, ParsedFrame, std::less<>> stationHeaders_;
     std::map<std::uint64_t, UnpublishedReport> unpublishedReports_;
     std::map<std::string, std::vector<std::string>, std::less<>> recentResponses_;
+    std::map<std::string, std::vector<std::pair<std::string, std::string>>, std::less<>> reportAcquisitions_;
     std::map<std::string, std::map<std::string, std::string>, std::less<>> completedResponses_;
     std::map<std::string, std::set<std::string>, std::less<>> confirmedResponses_;
     std::set<std::string, std::less<>> ambiguousDevices_;

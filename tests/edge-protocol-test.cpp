@@ -272,27 +272,18 @@ void testLegacyEdgenodeContract() {
             "legacy unsequenced terminal data contract changed");
 }
 
-void testLegacyTelemetryWithoutModelRevision() {
-    // Golden wire with only fields present in deployed firmware: record/device
-    // UUIDs, observed time and a raw frame. No new model fields are serialized.
-    std::string wire("\x0a\x10", 2);
-    wire.append(16, '\x01');
-    wire.append("\x12\x10", 2);
-    wire.append(16, '\x02');
-    wire.append("\x40\x7b\x52\x02\x01\x03", 6);
-    service::edge::pb::TelemetryRecord record;
-    require(record.ParseFromString(wire), "deployed telemetry wire was rejected");
-    require(record.record_id() == std::string(16, '\x01') &&
-                record.device_id() == std::string(16, '\x02') &&
-                record.observed_at_ms() == 123 && record.raw_payload().size() == 2,
-            "deployed telemetry fields changed");
-    require(record.model_id().empty(),
-            "legacy telemetry acquired a fabricated model reference");
-    require(record.SerializeAsString() == wire,
-            "new optional model fields changed legacy wire encoding");
-    wire.append("\x68\x07", 2);
-    require(record.ParseFromString(wire) && record.observed_at_ms() == 123,
-            "removed version field broke deployed telemetry decoding");
+void testTelemetryRawFrameArray() {
+    service::edge::pb::TelemetryRecord input;
+    input.set_record_id(std::string(16, '\x01'));
+    input.set_device_id(std::string(16, '\x02'));
+    input.set_observed_at_ms(123);
+    input.add_raw_payloads(std::string("\x01\x03", 2));
+    input.add_raw_packet_ids(std::string(16, '\x03'));
+    service::edge::pb::TelemetryRecord decoded;
+    require(decoded.ParseFromString(input.SerializeAsString()), "telemetry array wire was rejected");
+    require(decoded.record_id() == input.record_id() && decoded.raw_payloads_size() == 1 &&
+        decoded.raw_payloads(0) == input.raw_payloads(0) && decoded.raw_packet_ids(0) == input.raw_packet_ids(0),
+        "telemetry wire lost acquisition or packet identity");
 }
 
 void testPublicBaseUrlConfiguration() {
@@ -513,7 +504,7 @@ int main() {
     testTerminalFlowControlContract();
     testVpnConfigContract();
     testLegacyEdgenodeContract();
-    testLegacyTelemetryWithoutModelRevision();
+    testTelemetryRawFrameArray();
     testPublicBaseUrlConfiguration();
     testPlatformIdConfiguration();
     testSessionPlatformIdentityIsInternal();

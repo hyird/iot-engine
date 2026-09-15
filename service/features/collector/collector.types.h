@@ -57,6 +57,7 @@ enum class ProtocolActionKind {
     BindDevice,
     ObserveParsed,
     DiscardCollection,
+    FinishAcquisition,
     PublishParsed,
     CompleteCommand,
     FailCommand,
@@ -92,6 +93,8 @@ struct ProtocolAction {
     std::uint64_t publicationToken = 0;
     message::ParsedDeviceMessage parsed;
     std::optional<bool> responseSuccess;
+    std::string acquisitionId;
+    std::string replyToPacketId;
 };
 
 struct ProtocolInput {

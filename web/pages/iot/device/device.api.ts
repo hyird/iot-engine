@@ -1,5 +1,5 @@
 import request from '@/lib/http';
-import type { DebugPacket } from '@/types/packet_debug';
+import type { DebugAcquisition } from '@/types/packet_debug';
 import type { PaginatedResult } from '@/types/pagination';
 import { appendQueryParams } from '@/utils/query';
 import { createSnapshotStream } from '@/lib/snapshot-request';
@@ -22,7 +22,9 @@ export const setDebug = (id: string, enabled: boolean) =>
         deviceDebugSchema.parse({ enabled })
     );
 export const getDebugPackets = (id: string) =>
-    createSnapshotStream<DebugPacket[]>(`${DEVICE_BASE}/${deviceIdSchema.parse(id)}/debug/packets`);
+    createSnapshotStream<DebugAcquisition[]>(
+        `${DEVICE_BASE}/${deviceIdSchema.parse(id)}/debug/packets`
+    );
 
 export const getDeviceList = () =>
     createSnapshotStream<PaginatedResult<Device.Overview>>(DEVICE_BASE);

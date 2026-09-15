@@ -1,5 +1,5 @@
 import request from '@/lib/http';
-import type { DebugPacket } from '@/types/packet_debug';
+import type { DebugAcquisition } from '@/types/packet_debug';
 import type { PaginatedResult } from '@/types/pagination';
 import { appendQueryParams } from '@/utils/query';
 import { createSnapshotStream } from '@/lib/snapshot-request';
@@ -13,7 +13,7 @@ export const setDebug = (id: string, enabled: boolean) =>
         linkDebugSchema.parse({ enabled })
     );
 export const getDebugPackets = (id: string) =>
-    createSnapshotStream<DebugPacket[]>(`${BASE}/${linkIdSchema.parse(id)}/debug/packets`);
+    createSnapshotStream<DebugAcquisition[]>(`${BASE}/${linkIdSchema.parse(id)}/debug/packets`);
 
 export const getList = (params?: Link.Query) =>
     createSnapshotStream<PaginatedResult<Link.Item>>(

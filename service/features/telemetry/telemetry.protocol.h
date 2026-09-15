@@ -26,7 +26,7 @@ inline bool isSl651EmptyReport(const message::ParsedDeviceMessage& input) {
     return empty;
 }
 
-// 旧固件仅使用实际提供的字段进行适配。
+// 将采集结果规范化为统一的历史值结构，保留采集端创建的轮次身份。
 inline void normalize(message::ParsedDeviceMessage& input) {
     const auto root=ruvia::JsonValue::parse(input.valuesJson);
     if(!root || !root->isObject()) throw std::runtime_error("Telemetry must be a JSON object");
@@ -75,20 +75,8 @@ inline void normalize(message::ParsedDeviceMessage& input) {
     out+="\"schema_version\":1,\"event_kind\":"+service::utils::jsonQuoted(input.eventKind)+",\"values\":"+points+",\"model\":";
     out+=input.modelId.empty()?"null":"{\"id\":"+service::utils::jsonQuoted(input.modelId)+"}";
     input.valuesJson=out+'}';
-    // 重传有新的接收时间和连接，但设备、采样时间与完整报文身份不变。
-    // 在分发前统一身份，使直连与 EdgeNode 接入共用持久化及消息幂等边界。
-    if (input.protocol == "SL651" && !input.deviceId.empty() &&
-        input.observedAtMs > 0 && !input.rawPayloads.empty() &&
-        std::all_of(input.rawPayloads.begin(), input.rawPayloads.end(),
-                    [](const auto& bytes) { return !bytes.empty(); })) {
-        const auto identity = "sl651-report-v1:" + service::utils::jsonQuoted(input.deviceId) +
-            ':' + std::to_string(input.observedAtMs) + ':' +
-            message::rawPayloadsJson(input.rawPayloads);
-        auto hash = service::utils::sha256(identity);
-        hash[12] = '8';
-        hash[16] = "89ab"[service::common::hexDigit(hash[16]) & 3];
-        input.messageId = hash.substr(0, 8) + '-' + hash.substr(8, 4) + '-' +
-            hash.substr(12, 4) + '-' + hash.substr(16, 4) + '-' + hash.substr(20, 12);
-    }
+    // 历史身份由采集端创建；接收时间和内容不能重写轮次身份。
+    if (input.acquisitionId.empty()) throw std::invalid_argument("telemetry acquisition ID is required");
+    input.messageId = input.acquisitionId;
 }
 }

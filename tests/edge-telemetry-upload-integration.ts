@@ -122,7 +122,7 @@ try {
         field(5, epoch), field(6, Date.now()), field(8, sequence++), field(tag, payload),
     ]);
     const acknowledgements = new Set<string>();
-    const connect = async () => {
+    const connectOnce = async () => {
         socket?.close();
         epoch = 0n;
         sequence = 1n;
@@ -130,8 +130,9 @@ try {
         socket.binaryType = 'arraybuffer';
         await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => reject(Error('Hello timeout')), 10000);
-        socket!.onopen = () => socket!.send(envelope(20, Buffer.concat([field(1, imei), field(2, 'fixture'), field(3, '0.3.44'), field(23, 1)])));
+        socket!.onopen = () => socket!.send(envelope(20, Buffer.concat([field(1, imei), field(2, 'fixture'), field(3, '0.3.46'), field(23, 1)])));
         socket!.onerror = () => { clearTimeout(timeout); reject(Error('WebSocket failed')); };
+        socket!.onclose = () => { clearTimeout(timeout); reject(Error('WebSocket closed before Hello')); };
         socket!.onmessage = event => {
             const message = decode(Buffer.from(event.data as ArrayBuffer));
             if (message.has(21)) { epoch = message.get(5) as bigint; clearTimeout(timeout); resolve(); }
@@ -143,12 +144,23 @@ try {
         };
         });
     };
+    const connect = async () => {
+        const deadline = Date.now() + 20000;
+        for (;;) {
+            try { await connectOnce(); socket!.send(envelope(26,field(7,Buffer.from([1,2,3,4,5,6])))); return; }
+            catch (error) {
+                if (Date.now() >= deadline) throw error;
+                await Bun.sleep(200);
+            }
+        }
+    };
     await connect();
     await until(async () => {
         const [row] = await db`SELECT capability->>'deviceConfig' AS supported FROM edge_node WHERE id=${node}`;
-        return row.supported === 'true';
+        const [capability] = await db`SELECT jsonb_array_length(capability->'protocols') AS count FROM edge_node WHERE id=${node}`;
+        return row.supported === 'true' && Number(capability.count) === 6;
     }, 'edge device configuration capability was not projected');
-    for (const [protocol, protocolNumber] of [['SL651', 1], ['Modbus', 2], ['S7', 3]] as const) {
+    for (const [protocol, protocolNumber] of [['SL651', 1], ['Modbus', 2], ['S7', 3], ['MC', 4], ['FINS', 5], ['DLT645', 6]] as const) {
         const device = uuid(), link = uuid(), model = uuid(), report = uuid(), point = uuid();
         devices.push(device);
         const endpoint = { transport: 'tcp', mode: 'TCP Client', interface: 'eth0',
@@ -168,15 +180,15 @@ try {
             const linkView = await firstSnapshot(`/v1/link/${link}`);
             assert.equal(linkView.debug_enabled,linkOn);
             const packetId = uuid();
-            const trace = Buffer.concat([field(1,bytes(packetId)),field(2,bytes(link)),field(3,bytes(device)),field(5,Date.now()),field(6,Buffer.from('AABBCC','hex')),field(7,1),field(8,'RX'),field(10,'received')]);
-            const key = `iot:debug:v2:device:${device}`;
+            const trace = Buffer.concat([field(1,bytes(packetId)),field(2,bytes(link)),field(3,bytes(device)),field(5,Date.now()),field(6,Buffer.from('AABBCC','hex')),field(7,1),field(8,'RX'),field(10,'received'),field(14,bytes(packetId))]);
+            const key = `iot:debug:v3:device:${device}`;
             const before = Number(await redis.send('ZCARD',[key]));
             socket!.send(envelope(42,trace));
             if(linkOn||deviceOn) await until(async()=>Number(await redis.send('ZCARD',[key]))===before+1,'debug packet was not captured');
             else { await Bun.sleep(150); assert.equal(Number(await redis.send('ZCARD',[key])),before); }
             const packets = await firstSnapshot(`/v1/device/${device}/debug/packets`);
             assert.equal(packets.length, linkOn||deviceOn ? before+1 : before);
-            if(packets.length) { assert.equal(packets[0].payload_hex,'AABBCC'); assert.equal(packets[0].transport_status,'received'); }
+            if(packets.length) { assert.equal(packets[0].packets[0].payload_hex,'AABBCC'); assert.equal(packets[0].packets[0].transport_status,'received'); }
         }
         assert.equal((await db`SELECT debug_enabled FROM device WHERE id=${device}`)[0].debug_enabled,false);
         console.log(`PASS ${protocol}: independent link/device debug switches, capture gating and separate authorized views`);
@@ -188,8 +200,8 @@ try {
         await debugSwitch('device',device,true);
         for (let index=0;index<raw.length;index++) {
             socket!.send(envelope(42,Buffer.concat([field(1,bytes(packetIds[index])),field(2,bytes(link)),
-                field(3,bytes(device)),field(5,observed),field(6,raw[index]),field(7,1),field(8,'RX'),field(10,'received')])));
-            await until(async()=>Number(await redis.send('EXISTS',[`iot:debug:v2:packet:${node}:${packetIds[index]}:0`]))===1,'raw packet missing');
+                field(3,bytes(device)),field(5,observed),field(6,raw[index]),field(7,1),field(8,'RX'),field(10,'received'),field(14,bytes(report))])));
+            await until(async()=>Number(await redis.send('EXISTS',[`iot:debug:v3:packet:${node}:${packetIds[index]}`]))===1,'raw packet missing');
         }
         const record = (id: string, additions: Buffer[], sampledAt = observed) => Buffer.concat([
             field(1, bytes(id)), field(2, bytes(device)), field(3, bytes(link)), field(4, protocolNumber),
@@ -213,7 +225,7 @@ try {
             assert.equal(await redis.send('HLEN', [key]), 1);
         }
         // 后续采样作为处理屏障，确保前面的重复上传已经经过历史消费。
-        send(record(uuid(), [values, ...raw.map(value => field(14, value))], observed + 1));
+        send(record(uuid(), [values, ...raw.map(value => field(14, value)), ...raw.map(() => field(18,bytes(uuid())))], observed + 1));
         await until(async () => (await db`SELECT 1 FROM device_data WHERE device_id=${device}
             AND report_time=to_timestamp(${observed + 1}/1000.0)`).length === 1, 'history replay barrier missing');
         const rows = await db`SELECT raw_payload_hex,data,protocol,source,model_id FROM device_data
@@ -226,12 +238,26 @@ try {
         assert.equal(rows[0].protocol, protocol);
         assert.equal(rows[0].source, 'edge');
         for (const packetId of packetIds) {
-            const key=`iot:debug:v2:packet:${node}:${packetId}:0`;
+            const key=`iot:debug:v3:packet:${node}:${packetId}`;
             await until(async()=>await redis.send('HGET',[key,'storage_status'])==='stored','raw packet was not updated after history commit');
             assert.equal(await redis.send('HGET',[key,'payload_hex']),raw[packetIds.indexOf(packetId)].toString('hex').toUpperCase());
             assert((await redis.send('HGET',[key,'history_id'])));
         }
-        console.log(`PASS ${protocol}: WebSocket → projection → one historical record, raw array and normalized values`);
+        const rounds = await firstSnapshot(`/v1/device/${device}/debug/packets`);
+        const round = rounds.find((entry: any) => entry.id === report);
+        assert(round);
+        assert.equal(round.packets.length, 2, 'history updates must not duplicate packet rows');
+        assert.equal(round.history_id, report);
+        assert.equal(round.storage_status, 'stored');
+        assert.equal(JSON.parse(round.parsed_json).values[point].value, 42);
+        socket!.send(envelope(42,Buffer.concat([field(1,bytes(uuid())),field(2,bytes(link)),field(3,bytes(device)),
+            field(5,Date.now()),field(7,1),field(8,'RX'),field(14,bytes(report)),field(15,'success')])));
+        await until(async()=>await redis.send('HGET',[`iot:debug:v3:acquisition:${report}`,'state'])==='success','round completion missing');
+        socket!.send(envelope(42,Buffer.concat([field(1,bytes(uuid())),field(2,bytes(link)),field(3,bytes(device)),
+            field(5,Date.now()),field(7,1),field(8,'RX'),field(14,bytes(report)),field(15,'failed')])));
+        await Bun.sleep(100);
+        assert.equal(await redis.send('HGET',[`iot:debug:v3:acquisition:${report}`,'state']),'success','late completion regressed round state');
+        console.log(`PASS ${protocol}: WebSocket → projection → one historical record, raw array and normalized values; round state and packet identities`);
     }
 } finally {
     socket?.close();

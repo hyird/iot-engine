@@ -8,13 +8,14 @@ void require(bool value, const char* message) {
 int main() {
     try {
         service::message::ParsedDeviceMessage input;
+        input.acquisitionId = service::message::nextMessageId();
         input.observedAtMs=123;input.occurredAtMs=456;
         input.valuesJson=R"({"values":{"n":{"value":12.5,"unit":"C"},"b":{"value":true},"s":{"value":"0012"},"nil":{"value":null},"text":{"value":"\"type\":\"JPEG\""}}})";
         service::telemetry::contract::normalize(input);
         const auto decoded=ruvia::JsonValue::parse(input.valuesJson);
         require(decoded.has_value(),"normalized telemetry is invalid JSON");
         require(input.eventKind=="sample","text accidentally classified as media");
-        require(input.valuesJson.find("\"model\":null")!=std::string::npos,"legacy model provenance was fabricated");
+        require(input.valuesJson.find("\"model\":null")!=std::string::npos,"absent model provenance was fabricated");
         require(input.valuesJson.find("\"value_type\":\"number\"")!=std::string::npos,"numeric type lost");
         require(input.valuesJson.find("\"value_type\":\"boolean\"")!=std::string::npos,"boolean type lost");
         require(input.valuesJson.find("\"value\":\"0012\"")!=std::string::npos,"string precision changed");
@@ -61,24 +62,16 @@ int main() {
         input.occurredAtMs += 5000;
         service::telemetry::contract::normalize(input);
         require(input.messageId == report.messageId, "reconnected retransmission changed identity");
-        for (int difference = 0; difference < 4; ++difference) {
-            auto changed = report;
-            if (difference == 0) changed.deviceId.back() = '4';
-            if (difference == 1) ++changed.observedAtMs;
-            if (difference == 2) ++changed.rawPayloads.back().back();
-            if (difference == 3) changed.rawPayloads = {{0x7e}, {0x7e, 0x01, 0x02, 0x03}};
-            service::telemetry::contract::normalize(changed);
-            require(changed.messageId != report.messageId, "distinct report identity was collapsed");
-        }
-        for (const auto protocol : {"SL651", "Modbus"}) {
-            auto unsupported = report;
-            unsupported.protocol = protocol;
-            if (unsupported.protocol == "SL651") unsupported.rawPayloads.clear();
-            unsupported.messageId = service::message::nextMessageId();
-            const auto original = unsupported.messageId;
-            service::telemetry::contract::normalize(unsupported);
-            require(unsupported.messageId == original, "report without deduplication evidence changed identity");
-        }
+        auto nextRound = report;
+        nextRound.acquisitionId = service::message::nextMessageId();
+        service::telemetry::contract::normalize(nextRound);
+        require(nextRound.messageId != report.messageId, "identical values collapsed independent scans");
+        auto missingIdentity = report;
+        missingIdentity.acquisitionId.clear();
+        bool missingRejected = false;
+        try { service::telemetry::contract::normalize(missingIdentity); }
+        catch (const std::invalid_argument&) { missingRejected = true; }
+        require(missingRejected, "telemetry without acquisition identity was accepted");
         std::cout<<"telemetry contract tests passed\n";
         return 0;
     } catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}

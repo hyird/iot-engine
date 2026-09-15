@@ -204,7 +204,8 @@ class Session final : public ProtocolSession, public CommandCapabilitySession,
         const auto& device = *devices_[operation.device].device;
         actions.push_back({.kind = ProtocolActionKind::Send, .connectionId = connectionId_,
             .deviceId = device.id, .deviceCode = device.code, .commandId = operation.command.id,
-            .bytes = std::move(bytes)});
+            .bytes = std::move(bytes),
+            .acquisitionId = operation.command.id.empty() ? devices_[operation.device].cycle.id(connectionId_ + devices_[operation.device].device->id) : operation.command.id});
         requestDeadline_ = nextToken_++;
         actions.push_back({.kind = ProtocolActionKind::ScheduleDeadline, .connectionId = connectionId_,
             .deviceId = device.id, .commandId = operation.command.id, .deadlineToken = requestDeadline_,

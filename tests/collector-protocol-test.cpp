@@ -1406,7 +1406,7 @@ void testSl651CommunicationModes() {
                 "M3 timeout did not request its missing packet");
             missingToken = first(actions, collector::ProtocolActionKind::ScheduleDeadline).deadlineToken;
         }
-        require(engine.deadline("modes", missingToken).empty(), "M3 exceeded two missing-packet retries");
+        require(!has(engine.deadline("modes", missingToken), collector::ProtocolActionKind::Send), "M3 exceeded two missing-packet retries");
     }
     collector::ElementDefinition numeric{.name = "signed", .encoding = "BCD", .length = 3, .digits = 2};
     collector::command::validateValue(numeric, "-12.34");
@@ -1552,6 +1552,7 @@ void testAcquisitionCycle() {
     response.parsed.rawPayloads = {{1, 2}};
     response.parsed.rawPacketIds = {"ingress-1:frame:0"};
     response.parsed.valuesJson = R"({"values":{"a":{"value":1}}})";
+    (void)cycle.id("test-connection");
     cycle.observe(response, actions);
     const auto firstId = actions.back().parsed.rawPacketIds.front();
     require(actions.back().kind == collector::ProtocolActionKind::ObserveParsed,
@@ -1559,10 +1560,11 @@ void testAcquisitionCycle() {
     response.parsed.rawPayloads = {{3, 4}};
     response.parsed.rawPacketIds = {"ingress-2:frame:1"};
     response.parsed.valuesJson = R"({"values":{"b":{"value":2}}})";
+    (void)cycle.id("test-connection");
     cycle.observe(response, actions);
     const auto secondId = actions.back().parsed.rawPacketIds.front();
     cycle.finish(actions);
-    const auto& record = actions.back();
+    const auto& record = first(actions, collector::ProtocolActionKind::PublishParsed);
     require(record.kind == collector::ProtocolActionKind::PublishParsed &&
             record.parsed.rawPayloads == std::vector<std::vector<std::uint8_t>>{{1, 2}, {3, 4}} &&
             record.parsed.rawPacketIds == std::vector<std::string>{firstId, secondId} && firstId != secondId,
@@ -1571,17 +1573,27 @@ void testAcquisitionCycle() {
             record.parsed.valuesJson.find("\"b\"") != std::string::npos,
             "cycle did not merge all parsed points");
     actions.clear();
+    (void)cycle.id("test-connection");
     cycle.observe(response, actions);
     cycle.fail();
     cycle.finish(actions);
-    require(actions.back().kind == collector::ProtocolActionKind::DiscardCollection,
+    require(has(actions, collector::ProtocolActionKind::DiscardCollection),
             "failed cycle was persisted as complete history");
     actions.clear();
+    (void)cycle.id("test-connection");
     cycle.observe(response, actions);
     cycle.finish(actions);
-    require(actions.back().kind == collector::ProtocolActionKind::PublishParsed &&
-            actions.back().parsed.rawPayloads.size() == 1,
+    require(has(actions, collector::ProtocolActionKind::PublishParsed) &&
+            first(actions, collector::ProtocolActionKind::PublishParsed).parsed.rawPayloads.size() == 1,
             "failed cycle contaminated the next collection");
+    actions.clear();
+    const auto failedId = cycle.id("test-connection");
+    cycle.fail();
+    cycle.finish(actions);
+    require(actions.size() == 1 && actions[0].kind == collector::ProtocolActionKind::FinishAcquisition &&
+            actions[0].acquisitionId == failedId && actions[0].reason == "failed",
+            "zero-response timeout disappeared instead of completing its round");
+    require(cycle.id("test-connection") != failedId, "new scan reused a completed acquisition identity");
 }
 
 void testModbusTypesAndPriority() {
@@ -3171,6 +3183,7 @@ void testTcpCloseDuringPendingWrite() {
 void testEdgeParsedMessageContract() {
     service::message::ParsedDeviceMessage parsed;
     parsed.messageId = "019f91c9-4087-7e6c-88c0-c431b0dc15d8";
+    parsed.acquisitionId = parsed.messageId;
     parsed.causationId = parsed.messageId;
     parsed.linkId = "019f91bf-6f83-7491-8a53-cd4fde034b73";
     parsed.deviceId = "019f91bf-6f83-7491-8a53-cd4fde034b72";
@@ -3210,20 +3223,21 @@ void testEdgeParsedMessageContract() {
     record->set_device_id(service::edge::protocol::bytes(deviceBytes, sizeof(deviceBytes)));
     record->set_protocol(service::edge::pb::PROTOCOL_S7);
     record->set_observed_at_ms(parsed.observedAtMs);
-    record->set_raw_payload(std::string("\x03\x00\x00\x04", 4));
+    record->add_raw_payloads(std::string("\x03\x00\x00\x04", 4));
+    record->add_raw_packet_ids(std::string(16, '\x05'));
     std::vector<service::message::StreamMessage> projected;
     EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId,
                                             parsed.occurredAtMs, batch, projected);
     require(projected.size() == 1 && service::message::parsedFrom(projected.front()).rawPayloads ==
                 std::vector<std::vector<std::uint8_t>>{{0x03, 0x00, 0x00, 0x04}},
             "edge wire response did not become a single-item history raw payload array");
-    record->add_raw_payloads(std::string("\x7e\x7e\x00\xff", 4));
+    record->set_raw_payloads(0, std::string("\x7e\x7e\x00\xff", 4));
     projected.clear();
     EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId,
                                             parsed.occurredAtMs, batch, projected);
     require(service::message::parsedFrom(projected.front()).rawPayloads ==
                 std::vector<std::vector<std::uint8_t>>{{0x7e, 0x7e, 0x00, 0xff}},
-            "edge array did not take precedence over legacy raw payload without duplication");
+            "edge raw array did not preserve the exact response");
     std::vector<service::edge::pb::TelemetryRecord> parts(3, *record);
     for (std::size_t index = 0; index < parts.size(); ++index) {
         parts[index].set_protocol(service::edge::pb::PROTOCOL_SL651);
@@ -3231,7 +3245,7 @@ void testEdgeParsedMessageContract() {
         parts[index].set_report_id(std::string(16, '\x04'));
         parts[index].set_part_count(3);
         parts[index].set_part_index(static_cast<std::uint32_t>(index));
-        parts[index].clear_raw_payload();
+        parts[index].clear_raw_packet_ids();
         parts[index].clear_raw_payloads();
     }
     auto* value = parts[0].add_values();
@@ -3239,6 +3253,8 @@ void testEdgeParsedMessageContract() {
     value->mutable_value()->set_double_value(12.5);
     parts[1].add_raw_payloads(std::string("\x7e\x7e\x01\x00", 4));
     parts[2].add_raw_payloads(std::string("\x7e\x7e\x02\xff", 4));
+    parts[1].add_raw_packet_ids(std::string(16, '\x06'));
+    parts[2].add_raw_packet_ids(std::string(16, '\x07'));
     const auto assembled = EdgeResponseProjection::assembleTelemetryParts(parts);
     require(assembled.values_size() == 1 && assembled.values(0).element_id() == "temperature" &&
                 assembled.raw_payloads_size() == 2 && assembled.raw_payloads(0) == parts[1].raw_payloads(0) &&

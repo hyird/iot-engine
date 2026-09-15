@@ -1149,7 +1149,10 @@ class ConfigService final {
   public:
     template <typename Context>
     static ruvia::Task<void> storeDebugPacket(Context& c, std::string_view nodeId, const pb::RawPacket& packet) {
-        if (!packet.debug() || packet.endpoint_id().size() != 16 || packet.payload().empty() ||
+        if (packet.acquisition_id().size() != 16)
+            throw std::invalid_argument("debug acquisition ID is required");
+        if (packet.packet_id().size() != 16) throw std::invalid_argument("debug packet ID is required");
+        if (!packet.debug() || packet.endpoint_id().size() != 16 || (packet.payload().empty() && packet.acquisition_state().empty()) ||
             packet.payload().size() > 4096 || (packet.direction() != "RX" &&
             packet.direction() != "TX" && packet.direction() != "TX_ATTEMPT" && packet.direction() != "RX_DROP")) co_return;
         const auto linkId = protocol::uuidText(packet.endpoint_id());
@@ -1175,14 +1178,19 @@ class ConfigService final {
             enabled = enabled || devices.front()[0].value().value_or("") == "t";
         }
         if (!enabled) co_return;
+        if (packet.payload().empty() && packet.acquisition_state() != "running") {
+            co_await packet_log::DebugPacketService::finishAcquisition(c.redis(),
+                protocol::uuidText(packet.acquisition_id()), packet.acquisition_state());
+            co_return;
+        }
         co_await packet_log::DebugPacketService::recordPacket(c.redis(), linkId, deviceId,
             packet.direction(), "edge", packet.client_address(),
             std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(packet.payload().data()), packet.payload().size()),
             packet.observed_at_ms(), packet.device_only(),
             packet.packet_id().size() == 16 ? std::string(nodeId) + ":" + protocol::uuidText(packet.packet_id()) : std::string{},
             packet.status(), packet.reason(), {}, {},
-            packet.reply_to_packet_id().size() == 16 ? std::string(nodeId) + ":" + protocol::uuidText(packet.reply_to_packet_id()) + ":0" : std::string{},
-            false, packet.payload_offset());
+            packet.reply_to_packet_id().size() == 16 ? std::string(nodeId) + ":" + protocol::uuidText(packet.reply_to_packet_id()) : std::string{},
+            false, packet.payload_offset(), protocol::uuidText(packet.acquisition_id()));
     }
 
     static ConfigService& instance() {
@@ -3157,7 +3165,6 @@ return parts
         auto result = parts.front();
         result.set_record_id(result.report_id());
         result.clear_values();
-        result.clear_raw_payload();
         result.clear_raw_payloads();
         result.clear_raw_packet_ids();
         std::set<std::string> elements;
@@ -3206,7 +3213,7 @@ return parts
             record.part_count() > 256 || record.part_index() >= record.part_count() ||
             (record.protocol() != pb::PROTOCOL_SL651 && record.protocol() != pb::PROTOCOL_MODBUS &&
              record.protocol() != pb::PROTOCOL_S7 && record.protocol() != pb::PROTOCOL_MC &&
-             record.protocol() != pb::PROTOCOL_FINS && record.protocol() != pb::PROTOCOL_DLT645) || !record.raw_payload().empty() ||
+             record.protocol() != pb::PROTOCOL_FINS && record.protocol() != pb::PROTOCOL_DLT645) ||
             record.ByteSizeLong() > 14000)
             throw std::runtime_error("invalid telemetry upload part");
         const persistence::TelemetryUploadRecord stored{std::string(nodeId),
@@ -3281,6 +3288,7 @@ return 1
                 throw std::runtime_error("invalid edge telemetry model reference");
             }
             parsed.messageId = protocol::uuidText(record.record_id());
+            parsed.acquisitionId = parsed.messageId;
             parsed.causationId = parsed.messageId;
             parsed.linkId = device->second.linkId;
             parsed.deviceId = deviceId;
@@ -3298,10 +3306,8 @@ return 1
             if (!record.raw_payloads().empty()) {
                 for (const auto& raw : record.raw_payloads())
                     parsed.rawPayloads.emplace_back(raw.begin(), raw.end());
-            } else if (!record.raw_payload().empty())
-                parsed.rawPayloads.emplace_back(record.raw_payload().begin(),
-                                                record.raw_payload().end());
-            if (record.raw_packet_ids_size() != 0 &&
+            }
+            if (
                 static_cast<std::size_t>(record.raw_packet_ids_size()) != parsed.rawPayloads.size())
                 throw std::runtime_error("original packet ID count mismatch");
             for (const auto& id : record.raw_packet_ids()) {

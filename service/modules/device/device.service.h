@@ -811,14 +811,28 @@ class DeviceService {
             (void)co_await service::edge::EdgeService::queueSnapshot(c, edgeNodeId);
     }
 
-    ruvia::Task<ruvia::BoxedArray<DeviceDebugPacketDto>> debugPackets(ruvia::Context& c, std::string_view id) {
+    ruvia::Task<ruvia::BoxedArray<DeviceDebugAcquisitionDto>> debugPackets(ruvia::Context& c, std::string_view id) {
         (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner);
         const auto key = service::device::entities::DeviceDebugIndex::key(id);
         static constexpr std::string_view readPackets = R"lua(
 local result={}
-for _,id in ipairs(redis.call('ZREVRANGE',KEYS[1],0,499)) do
-    local fields=redis.call('HGETALL','iot:debug:v2:packet:'..id)
-    if #fields>0 then result[#result+1]={id,fields} else redis.call('ZREM',KEYS[1],id) end
+local count=0
+for _,acquisition in ipairs(redis.call('ZREVRANGE',KEYS[1],0,99)) do
+    local round='iot:debug:v3:acquisition:'..acquisition
+    local metadata=redis.call('HGETALL',round)
+    if #metadata==0 then
+        redis.call('ZREM',KEYS[1],acquisition)
+    else
+        local ids=redis.call('ZRANGE',round..':packets',0,-1)
+        if count+#ids>4096 then break end
+        local packets={}
+        for _,id in ipairs(ids) do
+            local fields=redis.call('HGETALL','iot:debug:v3:packet:'..id)
+            if #fields>0 then packets[#packets+1]={id,fields} end
+        end
+        result[#result+1]={acquisition,metadata,packets}
+        count=count+#packets
+    end
 end
 return result
 )lua";
@@ -827,17 +841,35 @@ return result
         const auto reply = co_await c.redis().eval(readPackets,keys,args);
         if (reply.kind() != ruvia::RedisValue::Kind::kArray)
             service::message::redis::throwValue("read debug packets", reply);
-        ruvia::BoxedArray<DeviceDebugPacketDto> result(ruvia::ModelOptions{.resource=c.arena()});
+        ruvia::BoxedArray<DeviceDebugAcquisitionDto> result(ruvia::ModelOptions{.resource=c.arena()});
         for (const auto& row : reply.array()) {
-            if (row.kind() != ruvia::RedisValue::Kind::kArray || row.array().size() != 2) continue;
-            const auto fields = row.array()[1].array();
-            std::string eventId(row.array()[0].string());
-            auto& packet = result.emplace(ruvia::ModelOptions{.resource=c.arena()});
+            if (row.kind() != ruvia::RedisValue::Kind::kArray || row.array().size() != 3) continue;
+            auto& acquisition = result.emplace(ruvia::ModelOptions{.resource=c.arena()});
+            acquisition.set<"id">(row.array()[0].string());
+            const auto metadata = row.array()[1].array();
+            for (std::size_t index = 0; index + 1 < metadata.size(); index += 2) {
+                const auto field = metadata[index].string();
+                const auto value = metadata[index + 1].string();
+                if (field == "started_at_ms") acquisition.set<"startedAtMs">(value);
+                if (field == "finished_at_ms") acquisition.set<"finishedAtMs">(value);
+                if (field == "last_packet_at_ms") acquisition.set<"lastPacketAtMs">(value);
+                if (field == "state") acquisition.set<"state">(value);
+                if (field == "device_id") acquisition.set<"deviceId">(value);
+                if (field == "storage_status") acquisition.set<"storageStatus">(value);
+                if (field == "history_id") acquisition.set<"historyId">(value);
+                if (field == "parsed_json") acquisition.set<"parsedJson">(value);
+            }
+            ruvia::BoxedArray<DeviceDebugPacketDto> packets(ruvia::ModelOptions{.resource=c.arena()});
+            for (const auto& packetRow : row.array()[2].array()) {
+            const auto fields = packetRow.array()[1].array();
+            std::string eventId(packetRow.array()[0].string());
+            auto& packet = packets.emplace(ruvia::ModelOptions{.resource=c.arena()});
             packet.set<"id">(eventId);
             for (std::size_t index = 0; index + 1 < fields.size(); index += 2) {
                 const auto name = fields[index].string();
                 const auto value = fields[index + 1].string();
-                if (name == "device_id") packet.set<"deviceId">(value);
+                if (name == "acquisition_id") packet.set<"acquisitionId">(value);
+                else if (name == "device_id") packet.set<"deviceId">(value);
                 else if (name == "direction") packet.set<"direction">(value);
                 else if (name == "source") packet.set<"source">(value);
                 else if (name == "address") packet.set<"address">(value);
@@ -853,6 +885,8 @@ return result
                 else if (name == "history_id") packet.set<"historyId">(value);
                 else if (name == "parsed_json") packet.set<"parsedJson">(value);
             }
+            }
+            acquisition.set<"packets">(std::move(packets));
         }
         co_return result;
     }

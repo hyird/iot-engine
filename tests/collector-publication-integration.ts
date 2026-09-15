@@ -117,10 +117,11 @@ try {
     assert(raw?.[stream]?.length, "raw telemetry publication was not observed");
     const fields = raw[stream][0][1];
     const first = fields[fields.indexOf("message_id") + 1];
-    assert.match(first,/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    assert.match(first,/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
     const debugRows = async (scope: string, id: string) => {
-        const ids = await redis.send('ZRANGE',[`iot:debug:v2:${scope}:${id}`,'0','-1']) as string[];
-        const rows = await Promise.all(ids.map(async id=>[id,await redis.send('HGETALL',['iot:debug:v2:packet:'+id])] as const));
+        const rounds = await redis.send('ZRANGE',[`iot:debug:v3:${scope}:${id}`,'0','-1']) as string[];
+        const ids = (await Promise.all(rounds.map(round=>redis.send('ZRANGE',[`iot:debug:v3:acquisition:${round}:packets`,'0','-1'])))).flat() as string[];
+        const rows = await Promise.all(ids.map(async id=>[id,await redis.send('HGETALL',['iot:debug:v3:packet:'+id])] as const));
         return rows.map(([,values])=>values);
     };
     for (const [scope,id] of [['device',device],['link',link]]) {
@@ -144,7 +145,7 @@ try {
     if(saved) {await redis.send('RENAME',[savedStream,stream]);saved=false;}
     socket!.write(frame(2));
     await until(async()=>received.length>=18,'retransmitted report was not acknowledged after recovery');
-    console.log('PASS live SL651 TCP report publication assigns UUIDv7, withholds ACK on Redis failure and acknowledges retry');
+    console.log('PASS live SL651 TCP report publication preserves acquisition identity, withholds ACK on Redis failure and acknowledges retry');
 } finally {
     socket?.destroy();
     if(fault) await redis.send('DEL',[stream]);

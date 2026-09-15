@@ -38,7 +38,7 @@ function LinkDebug({ item }: { item: Link.Item }) {
             pending={toggle.isPending}
             loading={packets.isLoading}
             error={packets.error}
-            packets={packets.data}
+            acquisitions={packets.data}
             onToggle={() => toggle.mutate(!item.debug_enabled)}
             onOpen={() => setOpen(true)}
             onClose={() => setOpen(false)}

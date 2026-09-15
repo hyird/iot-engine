@@ -176,9 +176,11 @@ struct EgressPacket {
     std::int64_t createdAtMs = 0;
     std::vector<std::uint8_t> payload;
     std::string replyToPacketId;
+    std::string acquisitionId;
 };
 
 struct ParsedDeviceMessage {
+    std::string acquisitionId;
     // 原始帧身份独立于历史幂等 ID，按 rawPayloads 相同顺序排列。
     std::vector<std::string> rawPacketIds;
     std::string eventKind = "sample";
@@ -432,6 +434,7 @@ inline ConnectionEvent connectionEventFrom(const StreamMessage& message) {
 
 inline std::vector<StreamField> egressFields(const EgressPacket& packet) {
     return {{"event_id", packet.messageId},
+            {"acquisition_id", packet.acquisitionId},
             {"reply_to_packet_id", packet.replyToPacketId},
             {"event_type", "packet.egress"},
             {"schema_version", std::string(kMessageSchemaVersion)},
@@ -461,6 +464,7 @@ inline EgressPacket egressFrom(const StreamMessage& message) {
         return result;
     };
     EgressPacket packet;
+    packet.acquisitionId = std::string(require("acquisition_id"));
     packet.replyToPacketId = std::string(message.get("reply_to_packet_id"));
     packet.messageId = std::string(require("message_id"));
     packet.workerInstanceId = std::string(require("worker_instance_id"));
@@ -483,6 +487,7 @@ inline std::vector<StreamField> parsedFields(const ParsedDeviceMessage& message)
     }
     packetIds += ']';
     return {{"event_id", message.messageId},
+            {"acquisition_id", message.acquisitionId},
             {"raw_packet_ids", packetIds},
             {"event_type", "device.data.parsed"},
             {"schema_version", std::string(kMessageSchemaVersion)},
@@ -522,6 +527,7 @@ inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
         return result;
     };
     ParsedDeviceMessage parsed;
+    parsed.acquisitionId = std::string(require("acquisition_id"));
     const auto packetIds = message.get("raw_packet_ids");
     if (!packetIds.empty()) {
         auto remaining = packetIds;

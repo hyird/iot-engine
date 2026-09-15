@@ -735,6 +735,13 @@ class Session final : public ProtocolSession,
         if (!device_ || state_ == State::WaitCotp || state_ == State::WaitSetup ||
             state_ == State::WaitDirectProbe || state_ == State::Ready || state_ == State::Closed)
             return;
+        sessionAcquisitionId_ = pollCycle_.id(connectionId_);
+        const auto& queue = queues_.at(device_->id);
+        for (const auto* commands : {&queue.highWrites, &queue.highReads, &queue.normalWrites, &queue.normalReads}) {
+            if (commands->empty()) continue;
+            if (commands->front().kind != "poll") sessionAcquisitionId_ = commands->front().id;
+            break;
+        }
         nextPduReference_ = 0;
         negotiatedPduLength_ = kDefaultPduRequestLength;
         cotpClientReference_ = 0;
@@ -749,7 +756,7 @@ class Session final : public ProtocolSession,
                            .connectionId = connectionId_,
                            .deviceId = device_->id,
                            .deviceCode = device_->code,
-                           .bytes = buildCotpRequest(*device_)});
+                           .bytes = buildCotpRequest(*device_), .acquisitionId = sessionAcquisitionId_});
         actions.push_back({.kind = ProtocolActionKind::ScheduleDeadline,
                            .connectionId = connectionId_,
                            .deadlineToken = deadlineToken_,
@@ -852,7 +859,7 @@ class Session final : public ProtocolSession,
                            .connectionId = connectionId_,
                            .deviceId = device_->id,
                            .deviceCode = device_->code,
-                           .bytes = std::move(payload)});
+                           .bytes = std::move(payload), .acquisitionId = sessionAcquisitionId_});
         actions.push_back({.kind = ProtocolActionKind::ScheduleDeadline,
                            .connectionId = connectionId_,
                            .deadlineToken = deadlineToken_,
@@ -895,7 +902,7 @@ class Session final : public ProtocolSession,
                                .connectionId = connectionId_,
                                .deviceId = device_->id,
                                .deviceCode = device_->code,
-                               .bytes = buildSetupRequest()});
+                               .bytes = buildSetupRequest(), .acquisitionId = sessionAcquisitionId_});
             return actions;
         }
         if (state_ == State::WaitSetup) {
@@ -1019,7 +1026,7 @@ class Session final : public ProtocolSession,
                                .deviceId = inflight_->device->id,
                                .deviceCode = inflight_->device->code,
                                .commandId = inflight_->command.id,
-                               .bytes = inflight_->command.payload});
+                               .bytes = inflight_->command.payload, .acquisitionId = inflight_->command.kind == "poll" ? pollCycle_.id(connectionId_) : inflight_->command.id});
             actions.push_back({.kind = ProtocolActionKind::ScheduleDeadline,
                                .connectionId = connectionId_,
                                .commandId = inflight_->command.id,
@@ -1167,7 +1174,7 @@ class Session final : public ProtocolSession,
                            static_cast<std::uint8_t>(cotpServerReference_),
                            static_cast<std::uint8_t>(cotpClientReference_ >> 8U),
                            static_cast<std::uint8_t>(cotpClientReference_),
-                           0x00}});
+                           0x00}, .acquisitionId = sessionAcquisitionId_});
         }
         state_ = State::Idle;
         nextPduReference_ = 0;
@@ -1212,6 +1219,10 @@ class Session final : public ProtocolSession,
         cotpClientReference_ = 0;
         cotpServerReference_ = 0;
         std::vector<ProtocolAction> actions;
+        if (!sessionAcquisitionId_.empty()) actions.push_back({.kind = ProtocolActionKind::FinishAcquisition,
+            .reason = "failed", .acquisitionId = sessionAcquisitionId_});
+        pollCycle_.fail();
+        pollCycle_.finish(actions);
         if (expiredToken != 0)
             actions.push_back({.kind = ProtocolActionKind::CancelDeadline,
                                .connectionId = connectionId_,
@@ -1452,7 +1463,7 @@ class Session final : public ProtocolSession,
                  .deviceId = device_->id,
                  .deviceCode = device_->code,
                  .commandId = inflight_->command.id,
-                 .bytes = inflight_->command.payload},
+                 .bytes = inflight_->command.payload, .acquisitionId = inflight_->command.kind == "poll" ? pollCycle_.id(connectionId_) : inflight_->command.id},
                 {.kind = ProtocolActionKind::ScheduleDeadline,
                  .connectionId = connectionId_,
                  .commandId = inflight_->command.id,
@@ -1480,7 +1491,7 @@ class Session final : public ProtocolSession,
                  .deviceId = inflight_->device->id,
                  .deviceCode = inflight_->device->code,
                  .commandId = inflight_->command.id,
-                 .bytes = inflight_->command.readbackPayload},
+                 .bytes = inflight_->command.readbackPayload, .acquisitionId = inflight_->command.kind == "poll" ? pollCycle_.id(connectionId_) : inflight_->command.id},
                 {.kind = ProtocolActionKind::ScheduleDeadline,
                  .connectionId = connectionId_,
                  .commandId = inflight_->command.id,
@@ -1622,6 +1633,7 @@ class Session final : public ProtocolSession,
     std::map<std::string, const DeviceDefinition*, std::less<>> devicesByCode_;
     std::map<std::string, DeviceQueues, std::less<>> queues_;
     AcquisitionCycle pollCycle_;
+    std::string sessionAcquisitionId_;
     mutable std::uint64_t nextPacketSequence_ = 0;
     const DeviceDefinition* device_ = nullptr;
     State state_ = State::AwaitRegistration;

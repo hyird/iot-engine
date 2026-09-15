@@ -1,4 +1,5 @@
 export interface DebugPacket {
+    acquisition_id: string;
     id: string;
     device_id?: string;
     direction: string;
@@ -15,4 +16,17 @@ export interface DebugPacket {
     reason?: string;
     history_id?: string;
     parsed_json?: string;
+}
+
+export interface DebugAcquisition {
+    id: string;
+    started_at_ms: string;
+    finished_at_ms?: string;
+    last_packet_at_ms: string;
+    state: 'running' | 'success' | 'partial' | 'failed';
+    device_id?: string;
+    storage_status?: string;
+    history_id?: string;
+    parsed_json?: string;
+    packets: DebugPacket[];
 }

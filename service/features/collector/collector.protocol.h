@@ -19,12 +19,31 @@
 
 namespace service::collector {
 
+// 连接身份由运行层提供，协议只使用连接内序号确定轮次身份，不生成随机运行身份。
+inline std::string acquisitionIdentity(std::string_view connection, std::uint64_t sequence) {
+    auto hash = service::utils::sha256(std::string(connection) + ":acquisition:" + std::to_string(sequence));
+    hash[12] = '8';
+    hash[16] = "89ab"[service::common::hexDigit(hash[16]) & 3];
+    return hash.substr(0, 8) + '-' + hash.substr(8, 4) + '-' + hash.substr(12, 4) + '-' +
+        hash.substr(16, 4) + '-' + hash.substr(20, 12);
+}
+
 // 一轮采集持有自己的响应，队列结束后仅发布一次；失败轮次不得污染下一轮。
 class AcquisitionCycle final {
   public:
+    [[nodiscard]] const std::string& id(std::string_view connection) {
+        if (id_.empty()) id_ = acquisitionIdentity(connection, generation_);
+        started_ = true;
+        return id_;
+    }
+
     void observe(ProtocolAction response, std::vector<ProtocolAction>& actions) {
         if (response.parsed.rawPacketIds.size() != response.parsed.rawPayloads.size())
             throw std::invalid_argument("acquisition response requires packet identities");
+        if (id_.empty()) throw std::logic_error("acquisition must begin before its first response");
+        response.acquisitionId = id_;
+        response.parsed.acquisitionId = id_;
+        response.parsed.messageId = id_;
         if (!collected_) {
             collected_ = response;
             collected_->parsed.rawPayloads.clear();
@@ -69,13 +88,19 @@ class AcquisitionCycle final {
             result.parsed.valuesJson += "}}";
             actions.push_back(std::move(result));
         }
-        *this = AcquisitionCycle{};
+        if (started_ || collected_) actions.push_back({.kind = ProtocolActionKind::FinishAcquisition,
+            .reason = failed_ ? (collected_ ? "partial" : "failed") : "success", .acquisitionId = id_});
+        id_.clear(); collected_.reset(); values_.clear(); failed_ = false; started_ = false;
+        ++generation_;
     }
 
   private:
+    std::string id_;
+    std::uint64_t generation_ = 0;
     std::optional<ProtocolAction> collected_;
     std::map<std::string, std::string, std::less<>> values_;
     bool failed_ = false;
+    bool started_ = false;
 };
 
 class ProtocolSession {

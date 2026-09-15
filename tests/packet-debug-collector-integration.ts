@@ -51,7 +51,7 @@ const server=Bun.listen<{buffer:Buffer}>({hostname:'127.0.0.1',port:0,socket:{
     },error(_socket,error){throw error;},close(){}
 }});
 const link=uuid(),target=uuid(),model=uuid(),device1=uuid(),device2=uuid(),point=uuid(),secondPoint=uuid();
-const length=(scope:string,id:string)=>redis.send('ZCARD',[`iot:debug:v2:${scope}:${id}`]).then(Number);
+const length=(scope:string,id:string)=>redis.send('ZCARD',[`iot:debug:v3:${scope}:${id}`]).then(Number);
 try {
     const config={storagePolicy:'report',readInterval:1,byteOrder:'BIG_ENDIAN',registers:[{id:point,name:'value',registerType:'HOLDING_REGISTER',dataType:'UINT16',address:0,quantity:1,scale:1},{id:secondPoint,name:'second',registerType:'HOLDING_REGISTER',dataType:'UINT16',address:200,quantity:1,scale:1}]};
     await db`INSERT INTO protocol_config(id,name,protocol,config,created_by) VALUES(${model},${model},'Modbus',${config}::jsonb,${admin})`;
@@ -65,8 +65,9 @@ try {
     await until(async()=>await length('device',device1)>=2,'device debug did not capture direct TX/RX');
     assert.equal(await length('device',device2),0,'device debug leaked sibling traffic');
     const readRows = async () => {
-        const ids = await redis.send('ZRANGE', [`iot:debug:v2:device:${device1}`,'0','-1']) as string[];
-        return await Promise.all(ids.map(async id=>[id,await redis.send('HGETALL',['iot:debug:v2:packet:'+id])] as const));
+        const rounds = await redis.send('ZRANGE', [`iot:debug:v3:device:${device1}`,'0','-1']) as string[];
+        const ids = (await Promise.all(rounds.map(round => redis.send('ZRANGE',[`iot:debug:v3:acquisition:${round}:packets`,'0','-1'])))).flat() as string[];
+        return await Promise.all(ids.map(async id=>[id,await redis.send('HGETALL',['iot:debug:v3:packet:'+id])] as const));
     };
     const rows=await readRows();
     assert(rows.some(([,fields])=>fields.direction==='RX'));
@@ -90,7 +91,11 @@ try {
     assert.deepEqual(JSON.parse(stored.parsed_json),history[0].data, 'debug history must be the actual stored record');
     const packets=await snapshot(`/v1/device/${device1}/debug/packets`);
     assert.equal(new Set(packets.map((packet: {id:string})=>packet.id)).size,packets.length,'status updates created duplicate display rows');
-    assert(packets.some((packet: {history_id:string})=>packet.history_id===stored.history_id));
+    const round = packets.find((entry: {history_id:string})=>entry.history_id===stored.history_id);
+    assert(round);
+    assert.equal(round.id, stored.history_id);
+    assert.equal(round.state, 'success');
+    assert.equal(round.packets.filter((packet: {direction:string})=>packet.direction==='RX').length, 2);
     const range=new URLSearchParams({page:'1',pageSize:'20',startTime:new Date(Date.now()-3600000).toISOString(),endTime:new Date(Date.now()+60000).toISOString()});
     const historyPage=await snapshot(`/v1/device/${device1}/history?${range}`);
     assert(historyPage.list.length && historyPage.list.every((record: {rawPayloadHex:unknown})=>Array.isArray(record.rawPayloadHex)), 'history API omitted raw payload arrays');
