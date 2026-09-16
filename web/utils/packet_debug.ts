@@ -299,10 +299,10 @@ export function formatDebugTerminal(
         return result.filter(Boolean).join(' · ');
     };
     const lines: string[] = [];
-    const writePacket = (packet: DebugPacket, indent: string, link: boolean) => {
+    const writePacket = (packet: DebugPacket, indent: string, link: boolean, detail = '') => {
         const sending = packet.direction === 'TX' || packet.direction === 'TX_ATTEMPT';
         lines.push(
-            `${indent}${time(packet.time_ms)}  ${sending ? '↑ TX' : '↓ RX'}  ${link ? `${clean(packet.address || '对端未知')}  ${clean(packet.device_id || '未识别设备')}  ` : ''}${status(packet, link)}`
+            `${indent}${time(packet.time_ms)}  ${sending ? '↑ TX' : '↓ RX'}  ${link ? `${clean(packet.address || '对端未知')}  ${clean(packet.device_id || '未识别设备')}  ` : ''}${status(packet, link)}${detail ? ` · ${clean(detail)}` : ''}`
         );
         lines.push(`${indent}${clean(packet.payload_hex)}`);
         if (packet.reason) lines.push(`${indent}原因：${clean(packet.reason)}`);
@@ -356,14 +356,22 @@ export function formatDebugTerminal(
                 `${time(round.startedAt)}  ${clean(protocol)}  ${state} · 发送 ${round.sent} / 接收 ${round.received}`
             );
             const writeBranch = (branch: PacketBranch, prefix: string, last: boolean) => {
-                lines.push(
-                    `${prefix}${last ? '└─' : '├─'} ${clean(describeProtocolPacket(protocol, branch.packet))}`
-                );
+                const description = describeProtocolPacket(protocol, branch.packet);
+                lines.push(`${prefix}${last ? '└─' : '├─'} ${clean(description)}`);
                 const indent = `${prefix}${last ? '   ' : '│  '}`;
                 writePacket(branch.packet, indent, false);
-                branch.children.forEach((child, index) => {
-                    writeBranch(child, indent, index === branch.children.length - 1);
-                });
+                const sharedFields = new Set(description.split(' · '));
+                const writeReply = (reply: PacketBranch) => {
+                    const detail = describeProtocolPacket(protocol, reply.packet)
+                        .split(' · ')
+                        .filter((field) => !sharedFields.has(field))
+                        .join(' · ');
+                    writePacket(reply.packet, indent, false, detail);
+                    reply.children.forEach((child) => {
+                        writeReply(child);
+                    });
+                };
+                branch.children.forEach(writeReply);
             };
             const branches = buildPacketTree(responses);
             branches.forEach((branch, index) => {

@@ -101,10 +101,15 @@ test('终端将交错收发按请求关联成组，解析值在同一文本行�
     const rx2 = {...packet('125B000000050102020000','RX','rx2','tx2'),time_ms:'24'};
     const rounds: DebugAcquisition[] = [{id:'round',started_at_ms:'11',last_packet_at_ms:'24',state:'success',packets:[tx1,tx2,rx1,rx2]}];
     const device = formatDebugTerminal('device','Modbus',rounds);
+    expect(device.match(/事务 4698/g)).toHaveLength(1);
+    expect(device.match(/事务 4699/g)).toHaveLength(1);
+    expect(device.match(/站号 1/g)).toHaveLength(2);
+    expect(device).toContain('数据 1 字节');
+    expect(device).toContain('数据 2 字节');
     expect(device.indexOf(tx1.payload_hex)).toBeLessThan(device.indexOf(rx1.payload_hex));
     expect(device.indexOf(rx1.payload_hex)).toBeLessThan(device.indexOf(tx2.payload_hex));
     expect(device.indexOf(tx2.payload_hex)).toBeLessThan(device.indexOf(rx2.payload_hex));
-    expect(device.split('\r\n').filter(line=>line.includes('解析结果：'))).toEqual(['  │     解析结果：A机械下限 = 0  |  A手自动 = 1']);
+    expect(device.split('\r\n').filter(line=>line.includes('解析结果：'))).toEqual(['  │  解析结果：A机械下限 = 0  |  A手自动 = 1']);
     for(const p of [tx1,tx2,rx1,rx2]) expect(device.split(p.payload_hex)).toHaveLength(2);
     // 链路日志依然保留真实时间顺序。
     const link = formatDebugTerminal('link','Modbus',rounds);
