@@ -12,6 +12,7 @@ import axios, {
 } from 'axios';
 import { getMessageInstance } from '@/providers/MessageContextBridge';
 import { useAuthStore } from '@/store/authStore';
+import { trackHttpRequest } from './http-activity';
 
 function normalizePath(path: string) {
     return path.startsWith('/') ? path : `/${path}`;
@@ -97,6 +98,9 @@ const request = axios.create({
     baseURL: '/',
     timeout: 30000,
 }) as RequestInstance;
+
+const transport = axios.getAdapter(request.defaults.adapter);
+request.defaults.adapter = (config) => trackHttpRequest(() => transport(config));
 
 function buildApiError(
     message: string,

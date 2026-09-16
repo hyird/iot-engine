@@ -67,7 +67,6 @@ import {
     useDeviceGroupSave,
     useDeviceGroupShares,
     useDeviceGroupShareTargets,
-    useDeviceGroupTree,
     useDeviceGroupTreeWithCount,
     useDeviceHistory,
     useDeviceList,
@@ -341,6 +340,7 @@ interface Props {
     editing: Device.Overview | null;
     loading: boolean;
     linkOptions: Link.Option[];
+    groups: DeviceGroup.TreeItem[];
     onCancel: () => void;
     onFinish: (values: DeviceFormValues) => void;
 }
@@ -349,6 +349,7 @@ export function DeviceFormModal({
     editing,
     loading,
     linkOptions,
+    groups,
     onCancel,
     onFinish,
 }: Props) {
@@ -359,7 +360,6 @@ export function DeviceFormModal({
     const { data: models } = useProtocolConfigOptions(protocol ?? 'Modbus', {
         enabled: open && !!protocol,
     });
-    const { data: groups = [] } = useDeviceGroupTree();
     const flatten = (
         nodes: DeviceGroup.TreeItem[]
     ): {
@@ -2521,6 +2521,7 @@ const DevicePage = () => {
                 editing={editing}
                 loading={saveMutation.isPending}
                 linkOptions={linkOptions}
+                groups={groupTree}
                 onCancel={closeForm}
                 onFinish={save}
             />

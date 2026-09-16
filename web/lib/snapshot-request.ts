@@ -2,6 +2,7 @@ import { useAuthStore } from '@/store/authStore';
 import { refreshSession } from './http';
 import { type SnapshotObserver, SnapshotStream } from '@/lib/snapshot-stream';
 import { consumeServerSentEvents } from './sse';
+import { subscribeHttpActivity, waitForHttpIdle } from './http-activity';
 
 class SubscriptionError extends Error {
     constructor(
@@ -40,6 +41,14 @@ async function run(url: string, connection: Connection) {
     const { signal } = connection.controller;
     let retry = 1000;
     while (!signal.aborted) {
+        await waitForHttpIdle(signal);
+        if (signal.aborted) return;
+        const attempt = new AbortController();
+        const stop = () => attempt.abort();
+        signal.addEventListener('abort', stop, { once: true });
+        const releaseActivity = subscribeHttpActivity((pending) => {
+            if (pending) attempt.abort();
+        });
         try {
             const token = useAuthStore.getState().token;
             if (!token) throw new SubscriptionError('登录状态已失效', true);
@@ -47,7 +56,7 @@ async function run(url: string, connection: Connection) {
                 headers: { Accept: 'text/event-stream', Authorization: `Bearer ${token}` },
                 cache: 'no-store',
                 credentials: 'same-origin',
-                signal,
+                signal: attempt.signal,
             });
             if (response.status === 401) {
                 refresh ??= refreshSession().finally(() => {
@@ -83,10 +92,13 @@ async function run(url: string, connection: Connection) {
                     connection.received = true;
                     for (const observer of connection.observers) observer.next(payload.data);
                 },
-                signal
+                attempt.signal
             );
         } catch (failure) {
             if (signal.aborted) return;
+            // A foreground request borrows the socket without invalidating cached
+            // snapshots or reporting a transport failure to subscribers.
+            if (attempt.signal.aborted) continue;
             const error = failure instanceof Error ? failure : new Error(String(failure));
             connection.received = false;
             connection.value = undefined;
@@ -94,7 +106,11 @@ async function run(url: string, connection: Connection) {
             if (terminal) connection.terminalError = error;
             for (const observer of connection.observers) observer.error(error);
             if (terminal) return;
+        } finally {
+            releaseActivity();
+            signal.removeEventListener('abort', stop);
         }
+        if (attempt.signal.aborted) continue;
         await delay(retry, signal);
         retry = Math.min(15000, retry * 2);
     }
