@@ -50,8 +50,14 @@ function LinkDebug({ item }: { item: Link.Item }) {
 
 const { Search } = Input;
 const tooltipStyles = {
-    root: { maxWidth: 'none' },
-    container: { maxWidth: 'none', whiteSpace: 'nowrap' },
+    root: { maxWidth: 'min(480px, calc(100vw - 32px))' },
+    container: {
+        maxHeight: 'min(320px, calc(100dvh - 32px))',
+        overflow: 'auto',
+        overscrollBehavior: 'contain',
+        whiteSpace: 'normal',
+        overflowWrap: 'anywhere',
+    },
 } as const;
 type LinkFormValues = Omit<Link.SaveDto, 'endpoint'> &
     Link.Endpoint & {
