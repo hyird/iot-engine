@@ -23,3 +23,45 @@ describe('采集轮次展示', () => {
         expect(JSON.stringify(rounds)).toBe(original);
     });
 });
+import { buildPacketTree, describeProtocolPacket } from '../web/utils/packet_debug';
+import type { DebugPacket } from '../web/types/packet_debug';
+const packet = (hex: string, direction = 'TX', id = 'p', reply?: string): DebugPacket => ({id, acquisition_id:'round', direction, source:'collector', time_ms:'1', payload_hex:hex, reply_to_packet_id:reply});
+
+describe('终端协议说明与采集树', () => {
+    test('乱序响应按明确关联挂接，孤立、重复内容和循环报文都保留', () => {
+        const packets = [packet('0103','RX','rx','tx'), packet('0103','TX','tx'), packet('0103','RX','orphan','missing'), packet('0103','TX','cycle1','cycle2'), packet('0103','RX','cycle2','cycle1')];
+        const roots = buildPacketTree(packets);
+        expect(roots.find(n=>n.packet.id==='tx')?.children.map(n=>n.packet.id)).toEqual(['rx']);
+        expect(roots.map(n=>n.packet.id).sort()).toEqual(['cycle1','cycle2','orphan','tx']);
+        expect(packets[0].id).toBe('rx');
+    });
+    test('状态更新继续使用原报文，不因内容相同合并不同报文', () => {
+        const before = packet('09DE00000006010300000002');
+        const tree = buildPacketTree([{...before,transport_status:'sending'},{...before,transport_status:'sent'},packet(before.payload_hex,'TX','second')]);
+        expect(tree).toHaveLength(2);
+        expect(tree.find(n=>n.packet.id==='p')?.packet.transport_status).toBe('sent');
+    });
+    test('Modbus 请求、响应、异常及 RTU', () => {
+        expect(describeProtocolPacket('Modbus', packet('09DE00000006010300000002'))).toContain('起始地址 0 · 数量 2');
+        expect(describeProtocolPacket('Modbus', packet('09DE0000000701030440400000','RX'))).toContain('数据 4 字节');
+        expect(describeProtocolPacket('Modbus', packet('09DE00000003018302','RX'))).toContain('异常码 0x02');
+        expect(describeProtocolPacket('Modbus', packet('010300000002C40B'))).toContain('RTU · 站号 1');
+    });
+    test('S7 按区域、DB、地址和长度显示', () => {
+        expect(describeProtocolPacket('S7', packet('0300001F02F080320100000001000E00000401120A10020002000184000050'))).toContain('DB1 地址 10.0 · 长度 2 byte');
+    });
+    test('SL651 保留功能码和流水号', () => {
+        expect(describeProtocolPacket('SL651', packet('7E7E010001000102FFFA320031020104260915140000F1F1000100010249F0F02609151400392300001052371B000512272B0000001181FFB028000000001603CEA9','RX'))).toContain('功能码 0x32');
+        expect(describeProtocolPacket('SL651', packet('7E7E010001000102FFFA320031020104260915140000F1F1000100010249F0F02609151400392300001052371B000512272B0000001181FFB028000000001603CEA9','RX'))).toContain('流水号 260');
+    });
+    test('MC、FINS 和 DL/T645 使用各自字段', () => {
+        expect(describeProtocolPacket('MC', packet('500000FFFF03000C00100001040000640000A80200'))).toContain('地址 100 · 数量 2');
+        expect(describeProtocolPacket('FINS', packet('46494E530000001A0000000200000000800002000100000200010101820064000002'))).toContain('地址 100.0 · 数量 2');
+        expect(describeProtocolPacket('DLT645', packet('6812907856341268110433333433AE16'))).toContain('数据标识 00010000');
+    });
+    test('不完整、无效和未知帧不抛异常', () => {
+        for (const protocol of ['Modbus','S7','SL651','MC','FINS','DLT645','未知']) {
+            for (const hex of ['','1','GG','00','7E7E','030000','FEFE']) expect(()=>describeProtocolPacket(protocol,packet(hex))).not.toThrow();
+        }
+    });
+});

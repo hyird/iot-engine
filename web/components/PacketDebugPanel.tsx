@@ -1,26 +1,21 @@
 import { BugOutlined, FileTextOutlined } from '@ant-design/icons';
-import {
-    Alert,
-    Button,
-    Empty,
-    Modal,
-    Segmented,
-    Space,
-    Table,
-    Tag,
-    Tooltip,
-    Typography,
-} from 'antd';
+import { Alert, Button, Empty, Modal, Space, Tag, Tooltip, Typography } from 'antd';
 import dayjs from 'dayjs';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DebugAcquisition, DebugPacket } from '@/types/packet_debug';
 import {
     type AcquisitionSummary,
+    type PacketBranch,
+    buildPacketTree,
+    describeProtocolPacket,
     flattenAcquisitionPackets,
     summarizeAcquisitions,
 } from '@/utils/packet_debug';
 
 interface Props {
+    scope: 'device' | 'link';
+    protocol: string;
     title: string;
     buttonClassName?: string;
     enabled: boolean;
@@ -37,24 +32,6 @@ interface Props {
 export function PacketDebugPanel(props: Props) {
     const active = props.enabled || props.inherited;
     const toggleTitle = props.enabled ? '关闭调试' : '开启调试';
-    const tableHost = useRef<HTMLDivElement>(null);
-    const [tableHeight, setTableHeight] = useState(400);
-    const [modalReady, setModalReady] = useState(false);
-    const [view, setView] = useState('acquisitions');
-    const acquisitions = useMemo(
-        () => summarizeAcquisitions(props.acquisitions ?? []),
-        [props.acquisitions]
-    );
-    const packets = useMemo(() => flattenAcquisitionPackets(acquisitions), [acquisitions]);
-    useEffect(() => {
-        const host = tableHost.current;
-        if (!props.open || !modalReady || !host) return;
-        const measure = () => setTableHeight(Math.max(80, host.clientHeight - 90));
-        const observer = new ResizeObserver(measure);
-        observer.observe(host);
-        measure();
-        return () => observer.disconnect();
-    }, [props.open, modalReady]);
     return (
         <>
             <Space size={2}>
@@ -107,7 +84,7 @@ export function PacketDebugPanel(props: Props) {
                         {modal}
                     </div>
                 )}
-                afterOpenChange={setModalReady}
+                destroyOnHidden
                 styles={{
                     container: {
                         height: '100%',
@@ -149,303 +126,300 @@ export function PacketDebugPanel(props: Props) {
                             description={props.error.message}
                         />
                     )}
-                    <Segmented
-                        value={view}
-                        onChange={setView}
-                        options={[
-                            { label: '按采集轮次', value: 'acquisitions' },
-                            { label: '逐条报文', value: 'packets' },
-                        ]}
-                    />
-                    <div ref={tableHost} className="min-h-0 flex-1">
-                        {view === 'acquisitions' ? (
-                            <AcquisitionTable
-                                acquisitions={acquisitions}
-                                loading={props.loading}
-                                height={tableHeight}
-                            />
-                        ) : (
-                            <Table<DebugPacket>
-                                size="small"
-                                rowKey="id"
-                                loading={props.loading}
-                                dataSource={packets}
-                                pagination={{ pageSize: 20, showSizeChanger: false }}
-                                scroll={{ x: 1200, y: tableHeight }}
-                                locale={{
-                                    emptyText: (
-                                        <Empty description="暂无调试报文；边缘节点需支持调试并连接平台" />
-                                    ),
-                                }}
-                                columns={[
-                                    {
-                                        title: '时间',
-                                        width: 228,
-                                        onCell: () => ({ style: { verticalAlign: 'top' } }),
-                                        render: (_, row) => (
-                                            <div className="whitespace-nowrap tabular-nums">
-                                                {dayjs(Number(row.time_ms)).format(
-                                                    'YYYY-MM-DD HH:mm:ss.SSS'
-                                                )}
-                                            </div>
-                                        ),
-                                    },
-                                    {
-                                        title: '方向',
-                                        width: 80,
-                                        render: (_, row) => (
-                                            <Tag>
-                                                {row.direction === 'TX_ATTEMPT' ||
-                                                row.direction === 'TX'
-                                                    ? '发送'
-                                                    : '接收'}
-                                            </Tag>
-                                        ),
-                                    },
-                                    {
-                                        title: '状态',
-                                        width: 132,
-                                        render: (_, row) => <PacketStatuses packet={row} />,
-                                    },
-                                    {
-                                        title: '原始报文 HEX',
-                                        width: 440,
-                                        render: (_, row) => (
-                                            <>
-                                                <div className="text-xs text-gray-500">
-                                                    {row.device_id || '未识别设备'} {row.address}
-                                                </div>
-                                                {row.reply_to_packet_id && (
-                                                    <Tooltip title={row.reply_to_packet_id}>
-                                                        <Typography.Text type="secondary">
-                                                            关联接收报文
-                                                        </Typography.Text>
-                                                    </Tooltip>
-                                                )}
-                                                <Typography.Paragraph
-                                                    copyable={{ text: row.payload_hex }}
-                                                    ellipsis={{
-                                                        rows: 3,
-                                                        expandable: 'collapsible',
-                                                        symbol: (expanded) =>
-                                                            expanded ? '收起' : '展开',
-                                                    }}
-                                                    className="mb-0 break-all font-mono text-xs"
-                                                >
-                                                    {row.payload_hex}
-                                                </Typography.Paragraph>
-                                            </>
-                                        ),
-                                    },
-                                    {
-                                        title: '对应历史解析数据',
-                                        width: 320,
-                                        render: (_, row) => <ParsedHistory packet={row} />,
-                                    },
-                                ]}
-                            />
-                        )}
-                    </div>
+                    {props.open && (
+                        <PacketTerminal key={`${props.scope}:${props.title}`} {...props} />
+                    )}
                 </div>
             </Modal>
         </>
     );
 }
 
-function AcquisitionTable({
-    acquisitions,
-    loading,
-    height,
-}: {
-    acquisitions: AcquisitionSummary[];
-    loading: boolean;
-    height: number;
-}) {
+function PacketTerminal(props: Props) {
+    const host = useRef<HTMLDivElement>(null);
+    const [following, setFollowing] = useState(true);
+    const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
+    const [expandByDefault, setExpandByDefault] = useState(true);
+    const rounds = useMemo(
+        () => summarizeAcquisitions(props.acquisitions ?? []).reverse(),
+        [props.acquisitions]
+    );
+    const packets = useMemo(() => flattenAcquisitionPackets(rounds).reverse(), [rounds]);
+    const rows = props.scope === 'device' ? rounds : packets;
+    const virtualizer = useVirtualizer({
+        count: rows.length,
+        getScrollElement: () => host.current,
+        getItemKey: (index) => rows[index].id,
+        estimateSize: () => (props.scope === 'device' ? 400 : 110),
+        overscan: 5,
+    });
+    const totalSize = virtualizer.getTotalSize();
+    useEffect(() => {
+        if (!following || !rows.length) return;
+        const frame = requestAnimationFrame(() => {
+            if (host.current) host.current.scrollTop = totalSize;
+        });
+        return () => cancelAnimationFrame(frame);
+    }, [following, totalSize, rows]);
+    const toggleRound = (id: string) => {
+        setFollowing(false);
+        setCollapsed((previous) => {
+            const next = new Set(previous);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    };
     return (
-        <Table<AcquisitionSummary>
-            rowKey="id"
-            size="small"
-            loading={loading}
-            dataSource={acquisitions}
-            pagination={{ pageSize: 10, showSizeChanger: false }}
-            scroll={{ x: 1000, y: height }}
-            locale={{ emptyText: <Empty description="暂无采集轮次" /> }}
-            expandable={{
-                expandedRowRender: (round) => <AcquisitionDetails acquisition={round} />,
-            }}
-            columns={[
-                {
-                    title: '开始时间',
-                    width: 228,
-                    render: (_, round) => (
-                        <span className="whitespace-nowrap tabular-nums">
-                            {dayjs(round.startedAt).format('YYYY-MM-DD HH:mm:ss.SSS')}
-                        </span>
-                    ),
-                },
-                {
-                    title: '轮次耗时',
-                    width: 112,
-                    render: (_, round) => `${Math.max(0, round.updatedAt - round.startedAt)} ms`,
-                },
-                {
-                    title: '收发明细',
-                    width: 164,
-                    render: (_, round) => (
-                        <Space size={4}>
-                            <Tag>发 {round.sent}</Tag>
-                            <Tag>收 {round.received}</Tag>
-                        </Space>
-                    ),
-                },
-                {
-                    title: '采集状态',
-                    width: 110,
-                    render: (_, round) => (
-                        <Tag
-                            color={
-                                round.state === 'success'
-                                    ? 'success'
-                                    : round.state === 'failed'
-                                      ? 'error'
-                                      : round.state === 'partial'
-                                        ? 'warning'
-                                        : round.state === 'unreported'
-                                          ? 'default'
-                                          : 'processing'
-                            }
+        <>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <Space>
+                    <Tag>{props.protocol || '未知协议'}</Tag>
+                    <span>
+                        {props.loading
+                            ? '正在读取…'
+                            : props.scope === 'device'
+                              ? `${rounds.length} 轮采集`
+                              : `${packets.length} 条收发报文`}
+                    </span>
+                </Space>
+                <Space>
+                    {props.scope === 'device' && (
+                        <>
+                            <Button
+                                size="small"
+                                onClick={() => {
+                                    setFollowing(false);
+                                    setExpandByDefault(true);
+                                    setCollapsed(new Set());
+                                }}
+                            >
+                                展开全部
+                            </Button>
+                            <Button
+                                size="small"
+                                onClick={() => {
+                                    setFollowing(false);
+                                    setExpandByDefault(false);
+                                    setCollapsed(new Set());
+                                }}
+                            >
+                                收起全部
+                            </Button>
+                        </>
+                    )}
+                    <Button size="small" onClick={() => setFollowing(!following)}>
+                        {following ? '暂停跟随' : '回到底部并跟随'}
+                    </Button>
+                </Space>
+            </div>
+            <div
+                ref={host}
+                role="log"
+                aria-live="off"
+                // biome-ignore lint/a11y/noNoninteractiveTabindex: 日志滚动区需要键盘聚焦，以便用方向键和 PageUp 浏览。
+                tabIndex={0}
+                aria-label={props.scope === 'device' ? '设备采集日志' : '链路收发日志'}
+                className="min-h-0 flex-1 overflow-auto rounded border border-solid border-gray-200 bg-slate-50 p-3 font-mono text-xs dark:border-gray-700 dark:bg-slate-950"
+                onWheel={(event) => {
+                    if (event.deltaY < 0) setFollowing(false);
+                }}
+                onTouchStart={() => setFollowing(false)}
+                onPointerDown={() => setFollowing(false)}
+                onKeyDown={(event) => {
+                    if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) setFollowing(false);
+                }}
+            >
+                {!rows.length && !props.loading && <Empty description="暂无调试报文" />}
+                <div style={{ height: totalSize, position: 'relative', width: '100%' }}>
+                    {virtualizer.getVirtualItems().map((item) => (
+                        <div
+                            key={item.key}
+                            data-index={item.index}
+                            ref={virtualizer.measureElement}
+                            style={{
+                                position: 'absolute',
+                                top: 0,
+                                left: 0,
+                                width: '100%',
+                                transform: `translateY(${item.start}px)`,
+                            }}
                         >
-                            {
-                                {
-                                    running: '采集中',
-                                    unreported: '未上报轮次',
-                                    success: '成功',
-                                    partial: '部分失败',
-                                    failed: '失败',
-                                }[round.state]
-                            }
-                        </Tag>
-                    ),
-                },
-                {
-                    title: '历史保存',
-                    width: 130,
-                    render: (_, round) => (
-                        <Tag color={round.storage_status === 'stored' ? 'success' : undefined}>
-                            {{
-                                stored: '已入库',
-                                skipped:
-                                    round.state === 'failed' || round.state === 'partial'
-                                        ? '未保存'
-                                        : '按策略不保存',
-                                failed: '入库失败',
-                                pending: '待入库',
-                            }[round.storage_status ?? ''] ?? '暂无历史'}
-                        </Tag>
-                    ),
-                },
-                {
-                    title: '采集轮次',
-                    render: (_, round) => (
-                        <Typography.Text
-                            copyable={{ text: round.id }}
-                            className="font-mono text-xs"
-                        >
-                            {round.id}
-                        </Typography.Text>
-                    ),
-                },
-            ]}
-        />
+                            {props.scope === 'device' ? (
+                                <AcquisitionLog
+                                    acquisition={rounds[item.index]}
+                                    protocol={props.protocol}
+                                    expanded={
+                                        expandByDefault !== collapsed.has(rounds[item.index].id)
+                                    }
+                                    onToggle={() => toggleRound(rounds[item.index].id)}
+                                />
+                            ) : (
+                                <PacketLine packet={packets[item.index]} link />
+                            )}
+                        </div>
+                    ))}
+                </div>
+            </div>
+        </>
     );
 }
 
-function AcquisitionDetails({ acquisition }: { acquisition: AcquisitionSummary }) {
-    const parsed = acquisition.parsed_json ? acquisition : undefined;
-    const positions = new Map(acquisition.packets.map((packet, index) => [packet.id, index + 1]));
+function AcquisitionLog({
+    acquisition,
+    protocol,
+    expanded,
+    onToggle,
+}: {
+    acquisition: AcquisitionSummary;
+    protocol: string;
+    expanded: boolean;
+    onToggle: () => void;
+}) {
+    const branches = useMemo(() => buildPacketTree(acquisition.packets), [acquisition.packets]);
+    const states = {
+        running: '采集中',
+        success: '成功',
+        partial: '部分失败',
+        failed: '失败',
+        unreported: '未上报轮次',
+    };
+    const storage: Record<string, string> = {
+        stored: '已入库',
+        pending: '待入库',
+        failed: '入库失败',
+        skipped: '未保存',
+    };
     return (
-        <div className="grid min-w-[880px] grid-cols-[minmax(560px,2fr)_minmax(280px,1fr)] gap-4 py-2">
-            <div className="min-w-0">
-                <Typography.Title level={5}>
-                    收发明细 · {acquisition.packets.length} 条
-                </Typography.Title>
-                <Table<DebugPacket>
-                    rowKey="id"
-                    size="small"
-                    dataSource={acquisition.packets}
-                    pagination={{ pageSize: 10, showSizeChanger: false }}
-                    scroll={{ x: 760, y: 340 }}
-                    columns={[
-                        { title: '#', width: 42, render: (_, packet) => positions.get(packet.id) },
-                        {
-                            title: '时间',
-                            width: 228,
-                            render: (_, packet) => (
-                                <span className="whitespace-nowrap tabular-nums">
-                                    {dayjs(Number(packet.time_ms)).format(
-                                        'YYYY-MM-DD HH:mm:ss.SSS'
-                                    )}
-                                </span>
-                            ),
-                        },
-                        {
-                            title: '方向',
-                            width: 72,
-                            render: (_, packet) => (
-                                <Tag color={packet.direction === 'TX' ? 'blue' : undefined}>
-                                    {packet.direction === 'TX' || packet.direction === 'TX_ATTEMPT'
-                                        ? '发送'
-                                        : '接收'}
-                                </Tag>
-                            ),
-                        },
-                        {
-                            title: '状态',
-                            width: 120,
-                            render: (_, packet) => <PacketStatuses packet={packet} />,
-                        },
-                        {
-                            title: '原始报文 HEX',
-                            width: 360,
-                            render: (_, packet) => (
-                                <>
-                                    {packet.reply_to_packet_id && (
-                                        <div className="mb-1 text-xs text-gray-500">
-                                            {positions.has(packet.reply_to_packet_id)
-                                                ? `关联第 ${positions.get(packet.reply_to_packet_id)} 条报文`
-                                                : '关联报文不在当前明细中'}
-                                        </div>
-                                    )}
-                                    <Typography.Paragraph
-                                        className="mb-0 break-all font-mono text-xs"
-                                        copyable={{ text: packet.payload_hex }}
-                                    >
-                                        {packet.payload_hex}
-                                    </Typography.Paragraph>
-                                </>
-                            ),
-                        },
-                    ]}
-                />
-            </div>
-            <div className="min-w-0">
-                <Typography.Title level={5}>本轮解析结果</Typography.Title>
-                <div className="max-h-[400px] overflow-auto rounded border border-solid border-gray-200 p-3">
-                    {parsed ? (
-                        <ParsedHistory packet={parsed} />
-                    ) : (
-                        <Empty
-                            description="本轮暂无解析结果"
-                            image={Empty.PRESENTED_IMAGE_SIMPLE}
-                        />
-                    )}
+        <section className="mb-3 border-b border-solid border-gray-200 pb-3 dark:border-gray-700">
+            <button
+                type="button"
+                aria-expanded={expanded}
+                onClick={onToggle}
+                className="flex w-full cursor-pointer flex-wrap items-center gap-2 border-0 bg-transparent p-1 text-left text-inherit"
+            >
+                <span>{expanded ? '▼' : '▶'}</span>
+                <time className="whitespace-nowrap tabular-nums">
+                    {formatTime(acquisition.startedAt)}
+                </time>
+                <strong>{protocol} · 采集轮次</strong>
+                <Tag
+                    color={
+                        acquisition.state === 'success'
+                            ? 'success'
+                            : acquisition.state === 'failed'
+                              ? 'error'
+                              : 'processing'
+                    }
+                >
+                    {states[acquisition.state]}
+                </Tag>
+                <span>
+                    发送 {acquisition.sent} / 接收 {acquisition.received}
+                </span>
+                <span>{Math.max(0, acquisition.updatedAt - acquisition.startedAt)} ms</span>
+                {acquisition.storage_status && (
+                    <span>{storage[acquisition.storage_status] ?? acquisition.storage_status}</span>
+                )}
+                <Tooltip title={acquisition.id}>
+                    <span className="text-gray-500">#{acquisition.id.slice(0, 8)}</span>
+                </Tooltip>
+            </button>
+            {expanded && (
+                <div className="ml-2 border-l border-solid border-gray-300 pl-3 dark:border-gray-600">
+                    {branches.map((branch) => (
+                        <PacketTree key={branch.packet.id} branch={branch} protocol={protocol} />
+                    ))}
+                    {!branches.length && <div className="py-2 text-gray-500">本轮暂无收发报文</div>}
+                    <div className="py-2">
+                        <strong>└ 本轮解析结果</strong>
+                        <div className="mt-2 pl-4">
+                            {acquisition.parsed_json ? (
+                                <ParsedHistory packet={acquisition} />
+                            ) : (
+                                <span className="text-gray-500">暂无解析结果</span>
+                            )}
+                        </div>
+                    </div>
                 </div>
+            )}
+        </section>
+    );
+}
+
+function PacketTree({ branch, protocol }: { branch: PacketBranch; protocol: string }) {
+    return (
+        <div>
+            <div className="pt-2 font-semibold">
+                ├ {describeProtocolPacket(protocol, branch.packet)}
             </div>
+            <div className="pl-3">
+                <PacketLine packet={branch.packet} />
+            </div>
+            {branch.children.length > 0 && (
+                <div className="ml-3 border-l border-solid border-gray-300 pl-3 dark:border-gray-600">
+                    {branch.children.map((child) => (
+                        <PacketTree key={child.packet.id} branch={child} protocol={protocol} />
+                    ))}
+                </div>
+            )}
         </div>
     );
 }
 
-function PacketStatuses({ packet }: { packet: DebugPacket }) {
+function formatTime(time: string | number) {
+    return dayjs(Number(time)).format('YYYY-MM-DD HH:mm:ss.SSS');
+}
+
+function PacketLine({
+    packet,
+    protocol,
+    link = false,
+}: {
+    packet: DebugPacket;
+    protocol?: string;
+    link?: boolean;
+}) {
+    const sending = packet.direction === 'TX' || packet.direction === 'TX_ATTEMPT';
+    return (
+        <article className="min-w-0 py-2">
+            <div className="flex flex-wrap items-center gap-2">
+                <time className="whitespace-nowrap tabular-nums">{formatTime(packet.time_ms)}</time>
+                <span
+                    className={sending ? 'font-bold text-blue-600' : 'font-bold text-emerald-600'}
+                >
+                    {sending ? '↑ 发送' : '↓ 接收'}
+                </span>
+                {link && (
+                    <span className="break-all text-gray-500">
+                        {packet.address || '对端未知'} · {packet.device_id || '未识别设备'}
+                    </span>
+                )}
+                <PacketStatuses packet={packet} transportOnly={link} />
+            </div>
+            {!link && protocol && (
+                <div className="my-1 break-words">
+                    {describeProtocolPacket(protocol ?? '', packet)}
+                </div>
+            )}
+            <Typography.Paragraph
+                copyable={{ text: packet.payload_hex }}
+                className="mb-0 break-all font-mono text-xs"
+            >
+                {packet.payload_hex || '（空报文）'}
+            </Typography.Paragraph>
+            {packet.reason && <div className="break-words text-red-500">{packet.reason}</div>}
+        </article>
+    );
+}
+
+function PacketStatuses({
+    packet,
+    transportOnly = false,
+}: {
+    packet: DebugPacket;
+    transportOnly?: boolean;
+}) {
     const groups: [string | undefined, Record<string, string>][] = [
         [
             packet.transport_status,
@@ -453,29 +427,26 @@ function PacketStatuses({ packet }: { packet: DebugPacket }) {
         ],
         [packet.response_status, { waiting: '等待应答', success: '应答成功', failed: '应答失败' }],
         [packet.parse_status, { pending: '待解析', success: '解析成功', failed: '解析失败' }],
-        [
-            packet.storage_status,
-            { pending: '待入库', stored: '已入库', skipped: '未保存', failed: '入库失败' },
-        ],
     ];
     return (
         <Tooltip title={packet.reason || undefined}>
-            <div className="flex flex-col items-start gap-1">
-                {groups.map(([status, labels]) =>
-                    status && labels[status] ? (
-                        <Tag
-                            key={labels[status]}
-                            color={
-                                status === 'failed'
-                                    ? 'error'
-                                    : status === 'stored' || status === 'success'
-                                      ? 'success'
-                                      : 'default'
-                            }
-                        >
-                            {labels[status]}
-                        </Tag>
-                    ) : null
+            <div className="flex flex-wrap items-center gap-1">
+                {(transportOnly ? groups.slice(0, 1) : groups.slice(0, 3)).map(
+                    ([status, labels]) =>
+                        status && labels[status] ? (
+                            <Tag
+                                key={labels[status]}
+                                color={
+                                    status === 'failed'
+                                        ? 'error'
+                                        : status === 'success'
+                                          ? 'success'
+                                          : 'default'
+                                }
+                            >
+                                {labels[status]}
+                            </Tag>
+                        ) : null
                 )}
             </div>
         </Tooltip>
@@ -487,12 +458,14 @@ function ParsedHistory({ packet }: { packet: { parsed_json?: string; history_id?
     let values: Record<string, unknown>;
     try {
         const parsed = JSON.parse(packet.parsed_json);
-        values = parsed.values ?? parsed;
+        values = parsed?.values ?? parsed;
+        if (!values || typeof values !== 'object' || Array.isArray(values))
+            throw new Error('invalid parsed values');
     } catch {
         return <Typography.Text type="secondary">解析数据格式无效</Typography.Text>;
     }
     return (
-        <div className="space-y-1">
+        <div className="flex flex-wrap gap-x-6 gap-y-1">
             {packet.history_id && (
                 <Tooltip title={packet.history_id}>
                     <Typography.Text type="secondary">

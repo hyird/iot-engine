@@ -1648,6 +1648,8 @@ function DeviceDebug({ item }: { item: Device.Overview }) {
     const { packets, toggle } = useDeviceDebug(item.id, open);
     return (
         <PacketDebugPanel
+            scope="device"
+            protocol={item.protocol_type ?? ''}
             buttonClassName={DEVICE_CARD_ACTION_BUTTON_CLASS}
             title={`设备调试 · ${item.name}`}
             enabled={item.debug_enabled === true}

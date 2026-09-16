@@ -32,6 +32,8 @@ function LinkDebug({ item }: { item: Link.Item }) {
     const { packets, toggle } = useLinkDebug(item.id, open);
     return (
         <PacketDebugPanel
+            scope="link"
+            protocol={item.protocol}
             title={`链路调试 · ${item.name}`}
             enabled={item.debug_enabled === true}
             open={open}
