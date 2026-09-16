@@ -1,3 +1,4 @@
+import dayjs from 'dayjs';
 import type { DebugAcquisition, DebugPacket } from '../types/packet_debug';
 
 export interface AcquisitionSummary extends DebugAcquisition {
@@ -261,4 +262,109 @@ export function describeProtocolPacket(protocol: string, packet: DebugPacket): s
         return parts.join(' · ');
     }
     return `${protocol || '未知协议'} · ${bytes.length} 字节`;
+}
+
+/** 终端只接收纯文本，设备字段中的控制字符不能成为终端指令。 */
+export function formatDebugTerminal(
+    scope: 'device' | 'link',
+    protocol: string,
+    acquisitions: readonly DebugAcquisition[]
+): string {
+    const clean = (value: unknown) =>
+        Array.from(String(value ?? ''))
+            .filter((char) => {
+                const code = char.charCodeAt(0);
+                return code >= 32 && code !== 127 && !(code >= 128 && code <= 159);
+            })
+            .join('');
+    const time = (value: string | number) => dayjs(Number(value)).format('YYYY-MM-DD HH:mm:ss.SSS');
+    const status = (packet: DebugPacket, link: boolean) => {
+        const result = [
+            { sending: '发送中', sent: '已发送', received: '已接收', failed: '发送失败' }[
+                packet.transport_status ?? ''
+            ],
+        ];
+        if (!link) {
+            result.push(
+                { waiting: '等待应答', success: '应答成功', failed: '应答失败' }[
+                    packet.response_status ?? ''
+                ]
+            );
+            result.push(
+                { pending: '待解析', success: '解析成功', failed: '解析失败' }[
+                    packet.parse_status ?? ''
+                ]
+            );
+        }
+        return result.filter(Boolean).join(' · ');
+    };
+    const lines: string[] = [];
+    const writePacket = (packet: DebugPacket, indent: string, link: boolean) => {
+        const sending = packet.direction === 'TX' || packet.direction === 'TX_ATTEMPT';
+        lines.push(
+            `${indent}${time(packet.time_ms)}  ${sending ? '↑ TX' : '↓ RX'}  ${link ? `${clean(packet.address || '对端未知')}  ${clean(packet.device_id || '未识别设备')}  ` : ''}${status(packet, link)}`
+        );
+        lines.push(`${indent}${clean(packet.payload_hex)}`);
+        if (packet.reason) lines.push(`${indent}原因：${clean(packet.reason)}`);
+    };
+    if (scope === 'link') {
+        for (const packet of flattenAcquisitionPackets(acquisitions).reverse()) {
+            writePacket(packet, '', true);
+            lines.push('');
+        }
+    } else {
+        for (const round of summarizeAcquisitions(acquisitions).reverse()) {
+            const state = {
+                running: '采集中',
+                success: '采集完成',
+                partial: '部分失败',
+                failed: '采集失败',
+                unreported: '未上报轮次',
+            }[round.state];
+            const storage = {
+                stored: '已入库',
+                pending: '待入库',
+                failed: '入库失败',
+                skipped: '未保存',
+            }[round.storage_status ?? ''];
+            lines.push(
+                `${time(round.startedAt)}  ${clean(protocol)}  ${state} · ${Math.max(0, round.updatedAt - round.startedAt)} ms${storage ? ` · ${storage}` : ''}  发 ${round.sent} / 收 ${round.received}`
+            );
+            const writeBranch = (branch: PacketBranch, indent: string) => {
+                lines.push(`${indent}├─ ${clean(describeProtocolPacket(protocol, branch.packet))}`);
+                writePacket(branch.packet, `${indent}│  `, false);
+                for (const child of branch.children) writeBranch(child, `${indent}│  `);
+            };
+            for (const branch of buildPacketTree(round.packets)) writeBranch(branch, '  ');
+            lines.push('  └─ 本轮解析结果');
+            if (!round.parsed_json) lines.push('     暂无解析结果');
+            else {
+                try {
+                    const parsed = JSON.parse(round.parsed_json);
+                    const values = parsed?.values ?? parsed;
+                    if (!values || typeof values !== 'object' || Array.isArray(values))
+                        throw new Error('invalid values');
+                    for (const [key, point] of Object.entries(values)) {
+                        const item =
+                            typeof point === 'object' && point !== null
+                                ? (point as Record<string, unknown>)
+                                : { value: point };
+                        const value =
+                            item.value == null
+                                ? '—'
+                                : typeof item.value === 'object'
+                                  ? JSON.stringify(item.value)
+                                  : item.value;
+                        lines.push(
+                            `     ${clean(item.name ?? key)} = ${clean(value)} ${clean(item.unit)}`.trimEnd()
+                        );
+                    }
+                } catch {
+                    lines.push('     解析数据格式无效');
+                }
+            }
+            lines.push('');
+        }
+    }
+    return lines.join('\r\n');
 }

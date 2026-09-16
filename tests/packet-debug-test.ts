@@ -65,3 +65,19 @@ describe('终端协议说明与采集树', () => {
         }
     });
 });
+import {formatDebugTerminal} from '../web/utils/packet_debug';
+test('纯文本终端：设备整轮一段，链路无轮次与解析结果，过滤终端控制字符', () => {
+    const rounds: DebugAcquisition[] = [{id:'round',started_at_ms:'1000',last_packet_at_ms:'1001',state:'success',parsed_json:JSON.stringify({values:{level:{name:'水位',value:3,unit:'m'}}}),packets:[packet('09DE00000006010300000002','TX','tx'),{...packet('09DE0000000701030440400000','RX','rx','tx'),reason:'bad\u001b[2J\u0007'}]}];
+    const device=formatDebugTerminal('device','Modbus',rounds);
+    expect(device).toContain('├─ TCP');
+    expect(device.match(/本轮解析结果/g)).toHaveLength(1);
+    expect(device).toContain('水位 = 3 m');
+    expect(device).not.toContain('\u001b');
+    expect(device).not.toContain('\u0007');
+    const link=formatDebugTerminal('link','Modbus',rounds);
+    expect(link).toContain('↑ TX');
+    expect(link).toContain('↓ RX');
+    expect(link).not.toContain('本轮解析结果');
+    expect(link).not.toContain('采集完成');
+    expect(formatDebugTerminal('device','Modbus',[])).toBe('');
+});
