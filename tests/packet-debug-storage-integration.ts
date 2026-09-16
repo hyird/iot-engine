@@ -6,11 +6,12 @@ const start = source.indexOf('local fields={}');
 const script = source.slice(start,source.indexOf(')lua";',start));
 const tag = crypto.randomUUID();
 const identity=(name:string)=>`${tag}:${name}`;
-const key=(type:string,name:string)=>`iot:debug:v3:${type}:${identity(name)}`;
+const key=(type:string,name:string)=>`iot:debug:v4:${type}:${identity(name)}`;
 const cleanup=new Set<string>([key('link','scope'),key('device','scope')]);
 async function write(round:string,packet:string,changes:Record<string,string>={}) {
     for(const value of [key('packet',packet),key('acquisition',round),key('acquisition',round)+':packets',key('acquisition',round)+':retired'])cleanup.add(value);
-    const fields={acquisition_prefix:'iot:debug:v3:acquisition:',acquisition_id:identity(round),event_id:identity(packet),link_id:identity('scope'),device_id:identity('scope'),direction:'RX',source:'edge',payload_hex:'AABB',offset:'0',time_ms:'1000',transport_status:'received',parse_status:'pending',storage_status:'pending',acquisition_state:'running',...changes};
+    const fields={acquisition_prefix:'iot:debug:v4:acquisition:',acquisition_id:identity(round),event_id:identity(packet),link_id:identity('scope'),device_id:identity('scope'),direction:'RX',source:'edge',payload_hex:'AABB',offset:'0',time_ms:'1000',transport_status:'received',parse_status:'pending',acquisition_state:'running',...changes};
+    if(changes.parsed_json) for(const [id,value] of Object.entries(JSON.parse(changes.parsed_json).values)) (fields as Record<string,string>)[`parsed_value:${id}`] = changes[`parsed_value:${id}`] ?? JSON.stringify(value);
     return redis.send('EVAL',[script,'2',key('link','scope'),key('device','scope'),...Object.entries(fields).flat()]);
 }
 try {
@@ -21,9 +22,15 @@ try {
     assert.equal(await redis.send('HGET',[key('packet','one'),'revision']),revision);
     assert.equal(Number(await redis.send('ZCARD',[key('acquisition','round')+':packets'])),2);
     assert.equal(Number(await redis.send('ZCARD',[key('device','scope')])),1);
-    await write('round','one',{storage_status:'stored',history_id:identity('round'),parsed_json:'{"values":{"level":1}}',acquisition_state:'success'});
+    await write('round','one',{parsed_json:'{"values":{"level":1}}',parse_status:'success',acquisition_state:'success'});
+    await write('round','one',{payload_hex:'',update_only:'1',parsed_json:'{"values":{"flow":2}}',parse_status:'success'});
     await write('round','one',{parsed_json:'{"values":{}}'});
-    assert.equal(await redis.send('HGET',[key('acquisition','round'),'parsed_json']),'{"values":{"level":1}}');
+    assert.deepEqual(JSON.parse(await redis.send('HGET',[key('packet','one'),'parsed_json']) as string).values,{level:1,flow:2});
+    await write('round','one',{payload_hex:'',update_only:'1',parsed_json:'{"values":{"total":18446744073709551615}}','parsed_value:total':'18446744073709551615'});
+    assert.match(await redis.send('HGET',[key('packet','one'),'parsed_json']) as string,/18446744073709551615/);
+    assert.equal(await redis.send('HGET',[key('acquisition','round'),'parsed_json']),null);
+    assert.equal(await redis.send('HGET',[key('packet','one'),'history_id']),null);
+    assert.equal(await redis.send('HGET',[key('packet','one'),'storage_status']),null);
     assert.equal(await redis.send('HGET',[key('acquisition','round'),'state']),'success');
     assert.equal(await redis.send('HGET',[key('acquisition','round'),'created_ms']),created);
     await assert.rejects(write('wrong','one'));
@@ -36,14 +43,13 @@ try {
     assert.equal(Number(await redis.send('EXISTS',[key('acquisition','empty')])),1);
     assert.equal(Number(await redis.send('EXISTS',[key('packet','metadata')])),0);
     const legacyRound=`legacy:${identity('old-packet')}`;
-    for(const suffix of ['',':packets',':retired'])cleanup.add('iot:debug:v3:acquisition:'+legacyRound+suffix);
+    for(const suffix of ['',':packets',':retired'])cleanup.add('iot:debug:v4:acquisition:'+legacyRound+suffix);
     await write('ignored','old-packet',{acquisition_id:legacyRound});
-    assert.equal(await redis.send('HGET',['iot:debug:v3:acquisition:'+legacyRound,'state']),'unreported');
-    await write('history','old-packet',{update_only:'1',storage_status:'stored',history_id:identity('history'),parsed_json:'{"values":{"level":2}}'});
+    assert.equal(await redis.send('HGET',['iot:debug:v4:acquisition:'+legacyRound,'state']),'unreported');
+    await write('ignored','old-packet',{acquisition_id:legacyRound,update_only:'1',payload_hex:'',parsed_json:'{"values":{"level":2}}'});
     assert.equal(await redis.send('HGET',[key('packet','old-packet'),'acquisition_id']),legacyRound);
-    assert.equal(await redis.send('HGET',['iot:debug:v3:acquisition:'+legacyRound,'storage_status']),'stored');
-    assert.equal(await redis.send('EXISTS',[key('acquisition','history')]),0);
-    await assert.rejects(write('history','old-packet',{update_only:'1',device_id:'other-device'}));
+    assert.equal(await redis.send('HGET',['iot:debug:v4:acquisition:'+legacyRound,'parsed_json']),null);
+    await assert.rejects(write('ignored','old-packet',{acquisition_id:legacyRound,update_only:'1',device_id:'other-device'}));
     assert.equal(await write('history','one',{update_only:'1'}),0);
     assert.equal(await redis.send('HGET',[key('packet','one'),'acquisition_id']),identity('round'));
     for(let index=0;index<101;index++)await write(`retained-${index}`,`packet-${index}`);

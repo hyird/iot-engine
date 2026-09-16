@@ -28,6 +28,8 @@ int main() {
     try {
         const auto serviceSource =
             readEdgeProjectionSource("service/features/edge/edge.service.h");
+        const auto protocolSource =
+            readEdgeProjectionSource("service/features/edge/edge.protocol.h");
         const auto runtimeSource =
             readEdgeProjectionSource("service/features/edge/edge.runtime.h");
         require(serviceSource.find("COALESCE((edge_node.capability->>'terminal')::boolean") ==
@@ -60,13 +62,13 @@ int main() {
                     serviceSource.find("actual.has_value()") != std::string::npos &&
                     serviceSource.find("scalarText(actual.value())") != std::string::npos,
                 "edge command projector drops physical readback values");
-        require(serviceSource.find("return value.bool_value() ? \"true\" : \"false\";") ==
+        require(protocolSource.find("return value.bool_value() ? \"true\" : \"false\";") ==
                     std::string::npos &&
-                    serviceSource.find("return value.bool_value() ? \"1\" : \"0\";") !=
+                    protocolSource.find("return value.bool_value() ? \"1\" : \"0\";") !=
                     std::string::npos,
                 "edge BOOL values are not projected as 0/1");
-        require(serviceSource.find(",\\\"dataType\\\":\\\"") != std::string::npos &&
-                    serviceSource.find("scalarKind(item.value())") != std::string::npos,
+        require(protocolSource.find(",\\\"dataType\\\":\\\"") != std::string::npos &&
+                    protocolSource.find("scalarKind(item.value())") != std::string::npos,
                 "edge telemetry does not retain point data types");
         require(runtimeSource.find("projector_stream::stream(index)") !=
                     std::string::npos,

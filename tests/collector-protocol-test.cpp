@@ -1416,9 +1416,7 @@ void testSl651CommunicationModes() {
 }
 
 void testSl651FixedPosition() {
-    struct EdgeTelemetryProjection : service::edge::EdgeProjectionService {
-        using EdgeProjectionService::telemetryJson;
-    };
+    using EdgeTelemetryProjection = service::edge::protocol::TelemetryValues;
     service::edge::pb::TelemetryRecord binaryRecord;
     binaryRecord.set_protocol(service::edge::pb::PROTOCOL_SL651);
     auto* binaryValue = binaryRecord.add_values();

@@ -10,11 +10,9 @@ export interface DebugPacket {
     transport_status?: string;
     response_status?: string;
     parse_status?: string;
-    storage_status?: string;
     revision?: string;
     reply_to_packet_id?: string;
     reason?: string;
-    history_id?: string;
     parsed_json?: string;
 }
 
@@ -25,8 +23,5 @@ export interface DebugAcquisition {
     last_packet_at_ms: string;
     state: 'running' | 'success' | 'partial' | 'failed' | 'unreported';
     device_id?: string;
-    storage_status?: string;
-    history_id?: string;
-    parsed_json?: string;
     packets: DebugPacket[];
 }

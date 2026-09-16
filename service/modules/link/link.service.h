@@ -202,7 +202,7 @@ class LinkService {
 local result={}
 local count=0
 for _,acquisition in ipairs(redis.call('ZREVRANGE',KEYS[1],0,99)) do
-    local round='iot:debug:v3:acquisition:'..acquisition
+    local round='iot:debug:v4:acquisition:'..acquisition
     local metadata=redis.call('HGETALL',round)
     if #metadata==0 then
         redis.call('ZREM',KEYS[1],acquisition)
@@ -211,7 +211,7 @@ for _,acquisition in ipairs(redis.call('ZREVRANGE',KEYS[1],0,99)) do
         if count+#ids>4096 then break end
         local packets={}
         for _,id in ipairs(ids) do
-            local fields=redis.call('HGETALL','iot:debug:v3:packet:'..id)
+            local fields=redis.call('HGETALL','iot:debug:v4:packet:'..id)
             if #fields>0 then packets[#packets+1]={id,fields} end
         end
         result[#result+1]={acquisition,metadata,packets}
@@ -239,9 +239,6 @@ return result
                 if (field == "last_packet_at_ms") acquisition.set<"lastPacketAtMs">(value);
                 if (field == "state") acquisition.set<"state">(value);
                 if (field == "device_id") acquisition.set<"deviceId">(value);
-                if (field == "storage_status") acquisition.set<"storageStatus">(value);
-                if (field == "history_id") acquisition.set<"historyId">(value);
-                if (field == "parsed_json") acquisition.set<"parsedJson">(value);
             }
             ruvia::BoxedArray<LinkDebugPacketDto> packets(ruvia::ModelOptions{.resource=c.arena()});
             for (const auto& packetRow : row.array()[2].array()) {
@@ -262,11 +259,9 @@ return result
                 else if (name == "transport_status") packet.set<"transportStatus">(value);
                 else if (name == "response_status") packet.set<"responseStatus">(value);
                 else if (name == "parse_status") packet.set<"parseStatus">(value);
-                else if (name == "storage_status") packet.set<"storageStatus">(value);
                 else if (name == "revision") packet.set<"revision">(value);
                 else if (name == "reply_to_packet_id") packet.set<"replyToPacketId">(value);
                 else if (name == "reason") packet.set<"reason">(value);
-                else if (name == "history_id") packet.set<"historyId">(value);
                 else if (name == "parsed_json") packet.set<"parsedJson">(value);
             }
             }

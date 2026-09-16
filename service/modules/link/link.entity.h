@@ -8,7 +8,7 @@
 namespace service::link {
 // 有界 ZSET 索引与报文 Hash 的一致性读取需要 Lua，ORM 无原子跨键读取接口。
 struct LinkDebugIndex {
-    static std::string key(std::string_view id) { return "iot:debug:v3:link:" + std::string(id); }
+    static std::string key(std::string_view id) { return "iot:debug:v4:link:" + std::string(id); }
 };
 
 

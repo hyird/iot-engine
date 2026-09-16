@@ -1,8 +1,8 @@
 #pragma once
-#include <ruvia/web/db/DbQuery.h>
 #include "service/common/message.h"
 #include "service/features/packet_log/packet_log.entity.h"
 #include "service/utils/redis.h"
+#include "service/utils/json.h"
 #include "service/features/live/live.service.h"
 
 namespace service::packet_log {
@@ -20,7 +20,6 @@ if previous and previous~='running' then return 0 end
 local clock=redis.call('TIME')
 local now=tonumber(clock[1])*1000+math.floor(tonumber(clock[2])/1000)
 redis.call('HSET',KEYS[1],'state',ARGV[1],'finished_at_ms',now)
-if ARGV[1]~='success' and redis.call('HGET',KEYS[1],'storage_status')~='stored' then redis.call('HSET',KEYS[1],'storage_status','skipped') end
 return 1
 )lua";
         const std::string key = std::string(DebugAcquisitionStorage::prefix) + std::string(acquisitionId);
@@ -30,57 +29,13 @@ return 1
             message::redis::throwValue("finish debug acquisition", result);
         co_await service::live::publish(redis, "packet-debug");
     }
-    template <typename Context>
-    static ruvia::Task<void> publishStoredHistory(Context& context,
-        const std::vector<message::ParsedDeviceMessage>& messages) {
-        if (messages.empty()) co_return;
-        using Op = ruvia::DbBinaryOperator;
-        ruvia::DbQuery q;
-        std::vector<ruvia::DbExpression> ids;
-        for (const auto& message : messages)
-            ids.push_back(q.cast(q.value(message.messageId), ruvia::DbDataType::kUuid));
-        q.select({q.column(DebugHistoryEntity::columnName<"id">(), "h"),
-                  q.column(DebugHistoryEntity::columnName<"device_id">(), "h"),
-                  q.column(DebugHistoryEntity::columnName<"link_id">(), "h"),
-                  q.column(DebugHistoryEntity::columnName<"data">(), "h"),
-                  q.column(DebugHistoryEntity::columnName<"raw_payload_hex">(), "h"),
-                  q.column(DebugHistoryEntity::columnName<"source">(), "h")})
-            .from(DebugHistoryEntity::tableName(), "h")
-            .where(q.binary(q.column(DebugHistoryEntity::columnName<"id">(), "h"), Op::kIn, q.list(ids)));
-        const auto rows = co_await context.db("telemetry-history").query(q);
-        for (const auto& input : messages) {
-            const auto found = std::find_if(rows.begin(), rows.end(),
-                [&](const auto& row) { return row[0].value().value_or("") == input.messageId; });
-            const bool stored = found != rows.end();
-            co_await updateHistoryState(context.redis(), input, stored ? "stored" : "skipped",
-                stored ? std::string_view(input.messageId) : std::string_view{},
-                stored ? (*found)[3].value().value_or("{}") : std::string_view(input.valuesJson));
-        }
-    }
-
-    template <typename Redis>
-    static ruvia::Task<void> updateHistoryState(const Redis& redis, const message::ParsedDeviceMessage& input,
-        std::string_view status, std::string_view historyId = {}, std::string_view parsedJson = {}) {
-        if (input.acquisitionId.empty() || input.rawPacketIds.size() != input.rawPayloads.size())
-            throw std::invalid_argument("acquisition identity and packet identities are required");
-        std::size_t index = 0;
-        for (const auto& bytes : input.rawPayloads) {
-            const auto& identity = input.rawPacketIds[index];
-            ++index;
-            co_await recordPacket(redis, input.linkId, input.deviceId, "RX",
-                input.source == "edge" ? "edge" : "collector", "", bytes, input.occurredAtMs, false,
-                identity, status, {}, historyId,
-                parsedJson.empty() ? std::string_view(input.valuesJson) : parsedJson, {}, true, 0, input.acquisitionId);
-        }
-    }
-
     template <typename Redis>
     static ruvia::Task<void> recordPacket(const Redis& redis, std::string_view linkId,
         std::string_view deviceId, std::string_view direction, std::string_view source,
         std::string_view address, std::span<const std::uint8_t> payload, std::int64_t time,
         bool deviceOnly = false, std::string_view eventId = {},
         std::string_view status = {}, std::string_view reason = {},
-        std::string_view historyId = {}, std::string_view parsedJson = {},
+        std::string_view parsedJson = {},
         std::string_view replyToPacketId = {}, bool updateOnly = false, std::size_t baseOffset = 0,
         std::string_view acquisitionId = {}) {
         if (acquisitionId.empty()) throw std::invalid_argument("debug packet requires acquisition ID");
@@ -89,23 +44,15 @@ return 1
         static constexpr std::string_view script = R"lua(
 local fields={}
 for i=1,#ARGV,2 do fields[ARGV[i]]=ARGV[i+1] end
-local prefix='iot:debug:v3:'
+local prefix='iot:debug:v4:'
 local acquisition=fields.acquisition_id
 if not acquisition or acquisition=='' then return redis.error_reply('missing acquisition ID') end
 local packet=prefix..'packet:'..fields.event_id
--- Only legacy edge packets lack an acquisition ID matching the history record.
--- Preserve their original identity when persistence enriches an existing packet.
-if fields.update_only=='1' and fields.source=='edge' then
-    local previous=redis.call('HGET',packet,'acquisition_id')
-    if previous and string.sub(previous,1,7)=='legacy:' then
-        acquisition=previous
-        fields.acquisition_id=previous
-    end
-end
 local round=fields.acquisition_prefix..acquisition
 fields.acquisition_prefix=nil
 local members=round..':packets'
-local hasPacket=fields.payload_hex and fields.payload_hex~=''
+local hasPayload=fields.payload_hex and fields.payload_hex~=''
+local hasPacket=hasPayload or (fields.parsed_json and fields.parsed_json~='')
 local clock=redis.call('TIME')
 local now=tonumber(clock[1])*1000+math.floor(tonumber(clock[2])/1000)
 if redis.call('EXISTS',round..':retired')==1 then return 0 end
@@ -140,12 +87,34 @@ local expires=created+86400000
 local ranks={
     transport_status={sending=1,sent=2,received=2,failed=3},
     response_status={waiting=1,success=2,failed=2,not_applicable=2},
-    parse_status={pending=1,success=2,failed=2,not_applicable=2},
-    storage_status={pending=1,failed=2,skipped=3,stored=4,not_applicable=4}
+    parse_status={pending=1,success=2,failed=2,not_applicable=2}
 }
 local changed=false
+if fields.parsed_json and fields.parsed_json~='' then
+    local valid,incoming=pcall(cjson.decode,fields.parsed_json)
+    if not valid or type(incoming)~='table' or type(incoming.values)~='table' then
+        return redis.error_reply('invalid debug parsed values')
+    end
+    local parsed={}
+    local stored=redis.call('HGETALL',packet)
+    for i=1,#stored,2 do
+        if string.sub(stored[i],1,13)=='parsed_value:' then parsed[string.sub(stored[i],14)]=stored[i+1] end
+    end
+    for name,value in pairs(fields) do
+        if string.sub(name,1,13)=='parsed_value:' then parsed[string.sub(name,14)]=value end
+    end
+    local names={}
+    for name,_ in pairs(parsed) do names[#names+1]=name end
+    table.sort(names)
+    local values={}
+    for _,name in ipairs(names) do values[#values+1]=cjson.encode(name)..':'..parsed[name] end
+    incoming.values=nil
+    local metadata=cjson.encode(incoming)
+    fields.parsed_json=string.sub(metadata,1,-2)..(metadata=='{}' and '' or ',')..'"values":{'..table.concat(values,',')..'}}'
+
+end
 local fragment='fragment:'..(fields.offset or '0')
-if hasPacket then
+if hasPayload then
     local offset=tonumber(fields.offset)
     if not offset or offset<0 or offset%4096~=0 or offset>1048576 or #fields.payload_hex>8192 then
         return redis.error_reply('invalid packet fragment')
@@ -165,15 +134,12 @@ if hasPacket then
     for _,position in ipairs(offsets) do payload[#payload+1]=fragments[position] end
     fields.payload_hex=table.concat(payload)
 end
-local stored=redis.call('HGET',round,'storage_status')=='stored'
 if hasPacket then
 for name,value in pairs(fields) do
     if value~='' then
         local previous=redis.call('HGET',packet,name)
         local allowed=true
-        if name=='parsed_json' and stored and (not fields.history_id or fields.history_id=='') then
-            allowed=false
-        elseif ranks[name] and previous and previous~=value then
+        if ranks[name] and previous and previous~=value then
             allowed=(ranks[name][value] or 0)>(ranks[name][previous] or 0)
         elseif (name=='time_ms' or name=='direction') and previous then
             allowed=previous==value
@@ -188,22 +154,13 @@ end
 redis.call('HSET',round,'acquisition_id',acquisition,'created_ms',created)
 local state=string.sub(acquisition,1,7)=='legacy:' and 'unreported' or fields.acquisition_state
 local previousState=redis.call('HGET',round,'state')
-local terminal=previousState and previousState~='running'
 if state and state~='' and (not previousState or previousState=='running') then
     redis.call('HSET',round,'state',state)
     if state~='running' then redis.call('HSET',round,'finished_at_ms',now) end
 end
-for _,name in ipairs({'link_id','device_id','source','history_id','parsed_json'}) do
+for _,name in ipairs({'link_id','device_id','source'}) do
     local value=fields[name]
-    if value and value~='' and (name~='parsed_json' or fields.storage_status=='stored' or fields.storage_status=='skipped' or (not stored and (not terminal or fields.acquisition_state~='running'))) then
-        redis.call('HSET',round,name,value)
-    end
-end
-if fields.storage_status=='stored' or fields.storage_status=='skipped' or fields.storage_status=='failed' or fields.storage_status=='pending' then
-    local previous=redis.call('HGET',round,'storage_status')
-    if (ranks.storage_status[fields.storage_status] or 0)>(ranks.storage_status[previous] or 0) then
-        redis.call('HSET',round,'storage_status',fields.storage_status)
-    end
+    if value and value~='' then redis.call('HSET',round,name,value) end
 end
 local timestamp=tonumber(fields.time_ms) or now
 local started=tonumber(redis.call('HGET',round,'started_at_ms')) or timestamp
@@ -248,6 +205,22 @@ return changed and 1 or 0
         if (!deviceId.empty()) storage.push_back(DebugPacketStorage::key("device", deviceId));
         if (storage.empty()) co_return;
         const std::vector<std::string_view> keys(storage.begin(), storage.end());
+        // Preserve decimal and 64-bit numeric text while merging per-response values in Redis.
+        std::vector<std::string> parsedFields;
+        if (!parsedJson.empty()) {
+            const auto decoded = ruvia::JsonValue::parse(parsedJson);
+            if (!decoded) throw std::invalid_argument("invalid debug parsed JSON");
+            const auto values = service::utils::jsonField(*decoded, "values");
+            if (!values || !values->isObject()) throw std::invalid_argument("invalid debug parsed values");
+            const bool valid = ruvia::detail::visitJsonObjectFields(
+                ruvia::detail::ResolvedPmrResourceTag{}, values->view(), std::pmr::get_default_resource(),
+                [&](std::string_view name, std::string_view value) {
+                    parsedFields.push_back("parsed_value:" + std::string(name));
+                    parsedFields.emplace_back(value);
+                    return true;
+                });
+            if (!valid) throw std::invalid_argument("invalid debug parsed fields");
+        }
         const auto identity = eventId.empty() ? message::nextMessageId() : std::string(eventId);
         for (std::size_t offset = 0; offset < std::max<std::size_t>(1, payload.size()); offset += 4096) {
             const auto chunk = payload.subspan(offset, std::min<std::size_t>(4096, payload.size() - offset));
@@ -262,17 +235,16 @@ return changed and 1 or 0
                 status == "failed" && reason != "socket_write_failed" ? std::string_view("failed") : std::string_view{};
             const auto parseStatus = !parsedJson.empty() ? "success" : status == "parse_failed" ? "failed" :
                 status == "transport_only" ? "not_applicable" : direction == "RX" ? "pending" : "not_applicable";
-            const auto storageStatus = !historyId.empty() ? "stored" : status == "storage_failed" ? "failed" :
-                status == "skipped" ? "skipped" : status == "not_applicable" || status == "transport_only" || status == "parse_failed" ? "not_applicable" : direction == "RX" ? "pending" : "not_applicable";
             const auto acquisitionState = status == "acquisition_success" ? "success" :
                 status == "acquisition_partial" ? "partial" : status == "acquisition_failed" ? "failed" : "running";
-            const std::vector<std::string_view> args{"acquisition_prefix", DebugAcquisitionStorage::prefix, DebugAcquisitionHash::columnName<"acquisition_id">(), acquisitionId, DebugPacketHash::columnName<"link_id">(), linkId, DebugPacketHash::columnName<"device_id">(), deviceId,
+            std::vector<std::string_view> args{"acquisition_prefix", DebugAcquisitionStorage::prefix, DebugAcquisitionHash::columnName<"acquisition_id">(), acquisitionId, DebugPacketHash::columnName<"link_id">(), linkId, DebugPacketHash::columnName<"device_id">(), deviceId,
                 DebugPacketHash::columnName<"direction">(), direction, DebugPacketHash::columnName<"source">(), source, DebugPacketHash::columnName<"address">(), address,
                 DebugPacketHash::columnName<"payload_hex">(), hex, DebugPacketHash::columnName<"time_ms">(), timestamp, DebugPacketHash::columnName<"offset">(), offsetText,
                 DebugPacketHash::columnName<"event_id">(), stableId, DebugPacketHash::columnName<"transport_status">(), transportStatus, DebugPacketHash::columnName<"response_status">(), responseStatus,
-                DebugPacketHash::columnName<"parse_status">(), parseStatus, DebugPacketHash::columnName<"storage_status">(), storageStatus, DebugPacketHash::columnName<"reason">(), reason, DebugPacketHash::columnName<"reply_to_packet_id">(), replyToPacketId,
-                DebugPacketHash::columnName<"history_id">(), historyId, DebugPacketHash::columnName<"parsed_json">(), parsedJson,
+                DebugPacketHash::columnName<"parse_status">(), parseStatus, DebugPacketHash::columnName<"reason">(), reason, DebugPacketHash::columnName<"reply_to_packet_id">(), replyToPacketId,
+                DebugPacketHash::columnName<"parsed_json">(), parsedJson,
                 "acquisition_state", acquisitionState, "update_only", updateOnly ? "1" : "0"};
+            for (const auto& field : parsedFields) args.push_back(field);
             const auto result = co_await redis.eval(script, keys, args);
             if (result.kind() == ruvia::RedisValue::Kind::kError)
                 message::redis::throwValue("append debug packet", result);

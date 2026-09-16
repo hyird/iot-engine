@@ -119,18 +119,19 @@ try {
     const first = fields[fields.indexOf("message_id") + 1];
     assert.match(first,/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
     const debugRows = async (scope: string, id: string) => {
-        const rounds = await redis.send('ZRANGE',[`iot:debug:v3:${scope}:${id}`,'0','-1']) as string[];
-        const ids = (await Promise.all(rounds.map(round=>redis.send('ZRANGE',[`iot:debug:v3:acquisition:${round}:packets`,'0','-1'])))).flat() as string[];
-        const rows = await Promise.all(ids.map(async id=>[id,await redis.send('HGETALL',['iot:debug:v3:packet:'+id])] as const));
+        const rounds = await redis.send('ZRANGE',[`iot:debug:v4:${scope}:${id}`,'0','-1']) as string[];
+        const ids = (await Promise.all(rounds.map(round=>redis.send('ZRANGE',[`iot:debug:v4:acquisition:${round}:packets`,'0','-1'])))).flat() as string[];
+        const rows = await Promise.all(ids.map(async id=>[id,await redis.send('HGETALL',['iot:debug:v4:packet:'+id])] as const));
         return rows.map(([,values])=>values);
     };
     for (const [scope,id] of [['device',device],['link',link]]) {
-        await until(async()=>(await debugRows(scope,id)).some(row=>row.storage_status==='stored'),'debug history missing');
+        await until(async()=>(await debugRows(scope,id)).some(row=>row.parsed_json),'debug response parsing missing');
         const rows=await debugRows(scope,id);
         const receivedRows=rows.filter(row=>row.payload_hex===frame(1).toString('hex').toUpperCase());
         assert.equal(receivedRows.length,1,`${scope}: Redis duplicated the SL651 receive during persistence`);
-        assert.equal(receivedRows[0].storage_status,'stored');
-        assert(receivedRows[0].history_id && receivedRows[0].parsed_json);
+        assert.equal(receivedRows[0].storage_status,undefined);
+        assert.equal(receivedRows[0].history_id,undefined);
+        assert(receivedRows[0].parsed_json);
         assert.equal(new Set(rows.map(row=>row.event_id)).size,rows.length,`${scope}: duplicate status events`);
         assert(rows.some(row=>row.direction==='TX' && row.reply_to_packet_id===receivedRows[0].event_id),'ACK must reference the received packet');
     }
@@ -141,6 +142,7 @@ try {
     socket!.write(frame(2));
     await Bun.sleep(700);
     assert.equal(received.length,0,'failed publication acknowledged the station');
+    await until(async()=>(await debugRows('device',device)).some(row=>row.payload_hex===frame(2).toString('hex').toUpperCase() && row.parsed_json),'history publication failure hid the decoded response');
     await redis.send('DEL',[stream]); fault=false;
     if(saved) {await redis.send('RENAME',[savedStream,stream]);saved=false;}
     socket!.write(frame(2));

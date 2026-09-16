@@ -7,7 +7,6 @@
 #include <ruvia/web/db/DbQuery.h>
 #include <utility>
 #include <spdlog/spdlog.h>
-#include "service/features/packet_log/packet_log.service.h"
 #include "service/features/messaging/messaging.transport.h"
 #include "service/common/message.h"
 #include "service/features/telemetry/latest/latest.service.h"
@@ -210,29 +209,13 @@ class TelemetryService {
             parsedMessages.push_back(std::move(parsed));
         }
         const auto redis = context.redis();
-        if (consumer == Consumer::History) {
-            for (const auto& parsed : parsedMessages) {
-                if (!contract::isSl651EmptyReport(parsed)) continue;
-                try { co_await packet_log::DebugPacketService::updateHistoryState(redis, parsed, "skipped"); }
-                catch (const std::exception& error) { spdlog::warn("Empty report debug update failed: {}", error.what()); }
-            }
-        }
         if (consumer == Consumer::History || consumer == Consumer::Delivery) {
             std::erase_if(parsedMessages, contract::isSl651EmptyReport);
             if (parsedMessages.empty()) co_return;
         }
         switch (consumer) {
             case Consumer::History: {
-                std::exception_ptr failure;
-                try { (void)co_await persist(context, parsedMessages, std::vector<bool>(parsedMessages.size(), false)); }
-                catch (...) { failure = std::current_exception(); }
-                if (failure) {
-                    for (const auto& parsed : parsedMessages) {
-                        try { co_await packet_log::DebugPacketService::updateHistoryState(redis, parsed, "storage_failed"); }
-                        catch (const std::exception& error) { spdlog::warn("Failed history debug update failed: {}", error.what()); }
-                    }
-                    std::rethrow_exception(failure);
-                }
+                (void)co_await persist(context, parsedMessages, std::vector<bool>(parsedMessages.size(), false));
                 co_await latest::publishRealtimeChange(redis);
                 break;
             }
@@ -503,9 +486,6 @@ class TelemetryService {
         (void)co_await transaction.execute(seed);
         const auto rows = co_await transaction.query(persisted);
         co_await transaction.commit();
-        // Debug display is best effort and never changes the durable history ACK.
-        try { co_await packet_log::DebugPacketService::publishStoredHistory(context, messages); }
-        catch (const std::exception& error) { spdlog::warn("History debug display failed: {}", error.what()); }
         std::vector<std::string> previous(messages.size(), "{}");
         for (const auto& row : rows) {
             const auto parsedSequence =

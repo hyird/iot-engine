@@ -1149,7 +1149,7 @@ class ConfigService final {
   public:
     template <typename Context>
     static ruvia::Task<void> storeDebugPacket(Context& c, std::string_view nodeId, const pb::RawPacket& packet) {
-        if (!packet.debug() || packet.endpoint_id().size() != 16 || (packet.payload().empty() && packet.acquisition_state().empty()) ||
+        if (!packet.debug() || packet.endpoint_id().size() != 16 || (packet.payload().empty() && packet.acquisition_state().empty() && !packet.has_parsed_value()) ||
             packet.payload().size() > 4096 || (packet.direction() != "RX" &&
             packet.direction() != "TX" && packet.direction() != "TX_ATTEMPT" && packet.direction() != "RX_DROP")) co_return;
         const auto acquisitionId = protocol::debugAcquisitionId(nodeId, packet);
@@ -1176,19 +1176,30 @@ class ConfigService final {
             enabled = enabled || devices.front()[0].value().value_or("") == "t";
         }
         if (!enabled) co_return;
-        if (packet.payload().empty() && packet.acquisition_state() != "running") {
+        if (packet.payload().empty() && !packet.has_parsed_value() && packet.acquisition_state() != "running") {
             co_await packet_log::DebugPacketService::finishAcquisition(c.redis(),
                 acquisitionId, packet.acquisition_state());
             co_return;
+        }
+        std::string parsedJson;
+        if (packet.has_parsed_value()) {
+            if (packet.direction() != "RX" || packet.packet_id().size() != 16 ||
+                packet.parsed_value().ByteSizeLong() > 12288 || deviceId.empty()) co_return;
+            pb::TelemetryRecord decoded;
+            auto* value = decoded.add_values();
+            *value = packet.parsed_value();
+            if (value->element_id().empty()) co_return;
+            decoded.set_protocol(pb::PROTOCOL_SL651); // Allows existing binary-value formatting; no wire decoding.
+            parsedJson = protocol::TelemetryValues::telemetryJson(decoded);
         }
         co_await packet_log::DebugPacketService::recordPacket(c.redis(), linkId, deviceId,
             packet.direction(), "edge", packet.client_address(),
             std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(packet.payload().data()), packet.payload().size()),
             packet.observed_at_ms(), packet.device_only(),
             packet.packet_id().size() == 16 ? std::string(nodeId) + ":" + protocol::uuidText(packet.packet_id()) : std::string{},
-            packet.status(), packet.reason(), {}, {},
+            packet.status(), packet.reason(), parsedJson,
             packet.reply_to_packet_id().size() == 16 ? std::string(nodeId) + ":" + protocol::uuidText(packet.reply_to_packet_id()) : std::string{},
-            false, packet.payload_offset(), acquisitionId);
+            packet.has_parsed_value(), packet.payload_offset(), acquisitionId);
     }
 
     static ConfigService& instance() {
@@ -2987,155 +2998,6 @@ protected:
         (void)co_await context.db().execute(node);
     }
 
-    static std::string protocolName(pb::Protocol value) {
-        if (value == pb::PROTOCOL_MODBUS)
-            return "Modbus";
-        if (value == pb::PROTOCOL_S7)
-            return "S7";
-        if (value == pb::PROTOCOL_SL651)
-            return "SL651";
-        if (value == pb::PROTOCOL_MC) return "MC";
-        if (value == pb::PROTOCOL_FINS) return "FINS";
-        if (value == pb::PROTOCOL_DLT645) return "DLT645";
-        return {};
-    }
-
-    static std::string scalarJson(const pb::ScalarValue& value) {
-        switch (value.value_case()) {
-        case pb::ScalarValue::kBoolValue:
-            return value.bool_value() ? "1" : "0";
-        case pb::ScalarValue::kSignedValue:
-            return std::to_string(value.signed_value());
-        case pb::ScalarValue::kUnsignedValue:
-            return std::to_string(value.unsigned_value());
-        case pb::ScalarValue::kDoubleValue: {
-            std::ostringstream output;
-            output.precision(15);
-            output << value.double_value();
-            return output.str();
-        }
-        case pb::ScalarValue::kStringValue:
-            return "\"" + jsonEscape(value.string_value()) + "\"";
-        case pb::ScalarValue::kDecimalValue: {
-            const auto& text = value.decimal_value();
-            std::size_t index = !text.empty() && text[0] == '-' ? 1 : 0;
-            if (index == text.size() || text.size() > 32) throw std::invalid_argument("invalid decimal telemetry");
-            const auto start = index;
-            while (index < text.size() && text[index] >= '0' && text[index] <= '9') ++index;
-            if (index == start || (index - start > 1 && text[start] == '0')) throw std::invalid_argument("invalid decimal telemetry");
-            if (index < text.size() && text[index] == '.') {
-                const auto fraction = ++index;
-                while (index < text.size() && text[index] >= '0' && text[index] <= '9') ++index;
-                if (fraction == index) throw std::invalid_argument("invalid decimal telemetry");
-            }
-            if (index != text.size()) throw std::invalid_argument("invalid decimal telemetry");
-            return text;
-        }
-        case pb::ScalarValue::kBytesValue:
-            return "\"" + hex(value.bytes_value()) + "\"";
-        default:
-            return "null";
-        }
-    }
-
-    static std::string scalarKind(const pb::ScalarValue& value) {
-        switch (value.kind()) {
-        case pb::VALUE_BOOL:
-            return "BOOL";
-        case pb::VALUE_SIGNED:
-            return "SIGNED";
-        case pb::VALUE_UNSIGNED:
-            return "UNSIGNED";
-        case pb::VALUE_DOUBLE:
-            return "DOUBLE";
-        case pb::VALUE_STRING:
-            return "STRING";
-        case pb::VALUE_DECIMAL:
-            return "DECIMAL";
-        case pb::VALUE_BYTES:
-            return "BYTES";
-        default:
-            return "UNSPECIFIED";
-        }
-    }
-
-    static std::string scalarText(const pb::ScalarValue& value) {
-        switch (value.value_case()) {
-        case pb::ScalarValue::kBoolValue:
-            return value.bool_value() ? "1" : "0";
-        case pb::ScalarValue::kSignedValue:
-            return std::to_string(value.signed_value());
-        case pb::ScalarValue::kUnsignedValue:
-            return std::to_string(value.unsigned_value());
-        case pb::ScalarValue::kDoubleValue: {
-            std::ostringstream output;
-            output.precision(15);
-            output << value.double_value();
-            return output.str();
-        }
-        case pb::ScalarValue::kStringValue:
-            return value.string_value();
-        case pb::ScalarValue::kDecimalValue:
-            return scalarJson(value);
-        case pb::ScalarValue::kBytesValue:
-            return hex(value.bytes_value());
-        default:
-            return {};
-        }
-    }
-
-    static std::string telemetryJson(const pb::TelemetryRecord& record) {
-        std::string output = "{\"function_code\":\"" +
-                             jsonEscape(record.function_code()) +
-                             "\",\"function_name\":\"" +
-                             jsonEscape(record.function_name()) + "\",\"direction\":\"" +
-                             jsonEscape(record.direction()) + "\",\"values\":{";
-        bool first = true;
-        for (const auto& item : record.values()) {
-            std::string valueJson = item.has_value() ? scalarJson(item.value()) : "null";
-            std::string dataType = item.has_value() ? scalarKind(item.value()) : "UNSPECIFIED";
-            if (!item.encoding().empty()) {
-                if (record.protocol() != pb::PROTOCOL_SL651 || item.has_value() ||
-                    item.encoded_value().empty() || item.encoded_value().size() > 8192)
-                    throw std::runtime_error("invalid edge SL651 binary element");
-                const auto& bytes = item.encoded_value();
-                std::string decoded;
-                if (item.encoding() == "HEX" || item.encoding() == "DICT") {
-                    decoded = hex(bytes);
-                    for (char& digit : decoded)
-                        if (digit >= 'a' && digit <= 'f') digit = static_cast<char>(digit - 'a' + 'A');
-                }
-                else if (item.encoding() == "JPEG") {
-                    if (bytes.size() <= 2 || static_cast<unsigned char>(bytes[0]) != 0xFF ||
-                        static_cast<unsigned char>(bytes[1]) != 0xD8) decoded = "INVALID_JPEG";
-                    else {
-                        std::string encoded(4 * ((bytes.size() + 2) / 3) + 1, '\0');
-                        const auto size = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(encoded.data()),
-                            reinterpret_cast<const unsigned char*>(bytes.data()), static_cast<int>(bytes.size()));
-                        if (size < 0) throw std::runtime_error("edge JPEG encoding failed");
-                        encoded.resize(static_cast<std::size_t>(size));
-                        decoded = "data:image/jpeg;base64," + encoded;
-                    }
-                } else throw std::runtime_error("unsupported edge binary encoding");
-                valueJson = "\"" + jsonEscape(decoded) + "\"";
-                dataType = item.encoding();
-            } else if (!item.encoded_value().empty())
-                throw std::runtime_error("edge binary element has no encoding");
-            if (!first)
-                output.push_back(',');
-            output += "\"" + jsonEscape(item.element_id()) + "\":{\"name\":\"" +
-                      jsonEscape(item.name()) + "\",\"value\":" +
-                      valueJson +
-                      ",\"dataType\":\"" +
-                      jsonEscape(dataType) +
-                      "\"" +
-                      ",\"unit\":\"" + jsonEscape(item.unit()) + "\"}";
-            first = false;
-        }
-        output += "}}";
-        return output;
-    }
-
     static constexpr std::string_view kStoreTelemetryPart = R"lua(
 if redis.call('HGET', KEYS[1], 'done') then return 0 end
 local signature = redis.call('HGET', KEYS[1], 'signature')
@@ -3291,7 +3153,7 @@ return 1
             parsed.linkId = device->second.linkId;
             parsed.deviceId = deviceId;
             parsed.deviceCode = device->second.deviceCode;
-            parsed.protocol = protocolName(record.protocol());
+            parsed.protocol = protocol::TelemetryValues::protocolName(record.protocol());
             if (parsed.protocol.empty())
                 parsed.protocol = device->second.protocol;
             parsed.connectionId = std::string(nodeId);
@@ -3300,7 +3162,7 @@ return 1
             parsed.storagePolicy = device->second.storagePolicy;
             parsed.onlineWindowMs = device->second.onlineWindowMs;
             parsed.source = "edge";
-            parsed.valuesJson = telemetryJson(record);
+            parsed.valuesJson = protocol::TelemetryValues::telemetryJson(record);
             if (!record.raw_payloads().empty()) {
                 for (const auto& raw : record.raw_payloads())
                     parsed.rawPayloads.emplace_back(raw.begin(), raw.end());
@@ -3371,9 +3233,9 @@ return 1
             fields.push_back({prefix + "element_id", actual.element_id()});
             fields.push_back({prefix + "name", actual.name()});
             fields.push_back({prefix + "kind",
-                              actual.has_value() ? scalarKind(actual.value()) : "UNSPECIFIED"});
+                              actual.has_value() ? protocol::TelemetryValues::scalarKind(actual.value()) : "UNSPECIFIED"});
             fields.push_back({prefix + "value",
-                              actual.has_value() ? scalarText(actual.value()) : std::string{}});
+                              actual.has_value() ? protocol::TelemetryValues::scalarText(actual.value()) : std::string{}});
             fields.push_back({prefix + "unit", actual.unit()});
         }
         (void)co_await message::redis::publishAndWake(

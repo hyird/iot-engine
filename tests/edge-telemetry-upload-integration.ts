@@ -181,7 +181,7 @@ try {
             assert.equal(linkView.debug_enabled,linkOn);
             const packetId = uuid();
             const trace = Buffer.concat([field(1,bytes(packetId)),field(2,bytes(link)),field(3,bytes(device)),field(5,Date.now()),field(6,Buffer.from('AABBCC','hex')),field(7,1),field(8,'RX'),field(10,'received'),field(14,bytes(packetId))]);
-            const key = `iot:debug:v3:device:${device}`;
+            const key = `iot:debug:v4:device:${device}`;
             const before = Number(await redis.send('ZCARD',[key]));
             socket!.send(envelope(42,trace));
             if(linkOn||deviceOn) await until(async()=>Number(await redis.send('ZCARD',[key]))===before+1,'debug packet was not captured');
@@ -201,8 +201,15 @@ try {
         for (let index=0;index<raw.length;index++) {
             socket!.send(envelope(42,Buffer.concat([field(1,bytes(packetIds[index])),field(2,bytes(link)),
                 field(3,bytes(device)),field(5,observed),field(6,raw[index]),field(7,1),field(8,'RX'),field(10,'received'),field(14,bytes(report))])));
-            await until(async()=>Number(await redis.send('EXISTS',[`iot:debug:v3:packet:${node}:${packetIds[index]}`]))===1,'raw packet missing');
+            await until(async()=>Number(await redis.send('EXISTS',[`iot:debug:v4:packet:${node}:${packetIds[index]}`]))===1,'raw packet missing');
         }
+        // Parse result arrives before any historical upload and carries only this response's value.
+        for(let index=0;index<packetIds.length;index++) {
+            const decoded=Buffer.concat([field(1,point),field(2,'temperature'),field(3,'C'),field(4,Buffer.concat([field(1,3),field(4,42+index)]))]);
+            socket!.send(envelope(42,Buffer.concat([field(1,bytes(packetIds[index])),field(2,bytes(link)),field(3,bytes(device)),field(5,observed),field(7,1),field(8,'RX'),field(14,bytes(report)),field(16,decoded)])));
+            await until(async()=>!!await redis.send('HGET',[`iot:debug:v4:packet:${node}:${packetIds[index]}`,'parsed_json']),'standalone debug parsing missing');
+        }
+        assert.equal(Number((await db`SELECT count(*)::int AS n FROM device_data WHERE device_id=${device}`)[0].n),0,'debug event wrote history');
         const record = (id: string, additions: Buffer[], sampledAt = observed) => Buffer.concat([
             field(1, bytes(id)), field(2, bytes(device)), field(3, bytes(link)), field(4, protocolNumber),
             field(5, '32'), field(7, 'UP'), field(8, sampledAt), field(12, bytes(model)), ...additions,
@@ -238,25 +245,26 @@ try {
         assert.equal(rows[0].protocol, protocol);
         assert.equal(rows[0].source, 'edge');
         for (const packetId of packetIds) {
-            const key=`iot:debug:v3:packet:${node}:${packetId}`;
-            await until(async()=>await redis.send('HGET',[key,'storage_status'])==='stored','raw packet was not updated after history commit');
+            const key=`iot:debug:v4:packet:${node}:${packetId}`;
+            assert.equal(await redis.send('HGET',[key,'storage_status']),null);
+            assert.equal(JSON.parse(await redis.send('HGET',[key,'parsed_json']) as string).values[point].value,42+packetIds.indexOf(packetId),'history overwrote packet result');
             assert.equal(await redis.send('HGET',[key,'payload_hex']),raw[packetIds.indexOf(packetId)].toString('hex').toUpperCase());
-            assert((await redis.send('HGET',[key,'history_id'])));
+            assert.equal(await redis.send('HGET',[key,'history_id']),null);
         }
         const rounds = await firstSnapshot(`/v1/device/${device}/debug/packets`);
         const round = rounds.find((entry: any) => entry.id === report);
         assert(round);
         assert.equal(round.packets.length, 2, 'history updates must not duplicate packet rows');
-        assert.equal(round.history_id, report);
-        assert.equal(round.storage_status, 'stored');
-        assert.equal(JSON.parse(round.parsed_json).values[point].value, 42);
+        assert.equal(round.history_id,undefined);
+        assert.equal(round.storage_status,undefined);
+        assert.equal(round.parsed_json,undefined);
         socket!.send(envelope(42,Buffer.concat([field(1,bytes(uuid())),field(2,bytes(link)),field(3,bytes(device)),
             field(5,Date.now()),field(7,1),field(8,'RX'),field(14,bytes(report)),field(15,'success')])));
-        await until(async()=>await redis.send('HGET',[`iot:debug:v3:acquisition:${report}`,'state'])==='success','round completion missing');
+        await until(async()=>await redis.send('HGET',[`iot:debug:v4:acquisition:${report}`,'state'])==='success','round completion missing');
         socket!.send(envelope(42,Buffer.concat([field(1,bytes(uuid())),field(2,bytes(link)),field(3,bytes(device)),
             field(5,Date.now()),field(7,1),field(8,'RX'),field(14,bytes(report)),field(15,'failed')])));
         await Bun.sleep(100);
-        assert.equal(await redis.send('HGET',[`iot:debug:v3:acquisition:${report}`,'state']),'success','late completion regressed round state');
+        assert.equal(await redis.send('HGET',[`iot:debug:v4:acquisition:${report}`,'state']),'success','late completion regressed round state');
         console.log(`PASS ${protocol}: WebSocket → projection → one historical record, raw array and normalized values; round state and packet identities`);
     }
 } finally {

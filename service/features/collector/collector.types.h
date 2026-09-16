@@ -95,6 +95,7 @@ struct ProtocolAction {
     std::optional<bool> responseSuccess;
     std::string acquisitionId;
     std::string replyToPacketId;
+    bool acquisitionSummary = false;
 };
 
 struct ProtocolInput {

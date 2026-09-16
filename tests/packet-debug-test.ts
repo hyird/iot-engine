@@ -8,7 +8,7 @@ describe('采集轮次展示', () => {
             {id:'a',started_at_ms:'1000',last_packet_at_ms:'1030',state:'running',packets:[
                 {id:'a-rx',acquisition_id:'a',direction:'RX',source:'edge',payload_hex:'0103',time_ms:'1030',reply_to_packet_id:'a-tx'},
                 {id:'a-tx',acquisition_id:'a',direction:'TX',source:'edge',payload_hex:'0103',time_ms:'1000'}]},
-            {id:'b',started_at_ms:'1001',last_packet_at_ms:'1020',finished_at_ms:'1031',state:'success',history_id:'b',packets:[
+            {id:'b',started_at_ms:'1001',last_packet_at_ms:'1020',finished_at_ms:'1031',state:'success',packets:[
                 {id:'b-rx',acquisition_id:'b',direction:'RX',source:'collector',payload_hex:'0103',time_ms:'1020'}]},
             {id:'empty',started_at_ms:'1002',last_packet_at_ms:'1002',finished_at_ms:'1102',state:'failed',packets:[]}
         ];
@@ -67,7 +67,7 @@ describe('终端协议说明与采集树', () => {
 });
 import {formatDebugTerminal} from '../web/utils/packet_debug';
 test('纯文本终端：设备整轮一段，链路无轮次与解析结果，过滤终端控制字符', () => {
-    const rounds: DebugAcquisition[] = [{id:'round',started_at_ms:'1000',last_packet_at_ms:'1001',state:'success',parsed_json:JSON.stringify({values:{level:{name:'水位',value:3,unit:'m'}}}),packets:[packet('09DE00000006010300000002','TX','tx'),{...packet('09DE0000000701030440400000','RX','rx','tx'),parsed_json:JSON.stringify({values:{level:{name:'水位',value:3,unit:'m'}}}),reason:'bad\u001b[2J\u0007'}]}];
+    const rounds: DebugAcquisition[] = [{id:'round',started_at_ms:'1000',last_packet_at_ms:'1001',state:'success',packets:[packet('09DE00000006010300000002','TX','tx'),{...packet('09DE0000000701030440400000','RX','rx','tx'),parsed_json:JSON.stringify({values:{level:{name:'水位',value:3,unit:'m'}}}),reason:'bad\u001b[2J\u0007'}]}];
     const device=formatDebugTerminal('device','Modbus',rounds);
     expect(device).toContain('├─ TCP');
     expect(device.match(/解析结果：/g)).toHaveLength(1);
@@ -84,8 +84,8 @@ test('纯文本终端：设备整轮一段，链路无轮次与解析结果，�
     expect(formatDebugTerminal('device','Modbus',[])).toBe('');
 });
 
-test('应答解析不受入库状态影响，不把轮次结果填到缺失解析的应答', () => {
-    const rounds: DebugAcquisition[] = [{id:'round',started_at_ms:'1',last_packet_at_ms:'2',state:'success',storage_status:'failed',parsed_json:JSON.stringify({values:{wrong:999}}),packets:[{...packet('09DE0000000701030440400000','RX'),storage_status:'skipped',parsed_json:JSON.stringify({values:{level:3}})},packet('09DF0000000701030440400000','RX','missing')]}];
+test('应答逐条展示各自解析结果，不将其他应答结果填到缺失解析的应答', () => {
+    const rounds: DebugAcquisition[] = [{id:'round',started_at_ms:'1',last_packet_at_ms:'2',state:'success',packets:[{...packet('09DE0000000701030440400000','RX'),parsed_json:JSON.stringify({values:{level:3}})},packet('09DF0000000701030440400000','RX','missing')]}];
     const output=formatDebugTerminal('device','Modbus',rounds);
     expect(output).toContain('level = 3');
     expect(output).not.toContain('wrong');

@@ -77,6 +77,7 @@ class AcquisitionCycle final {
         if (collected_) {
             auto result = std::move(*collected_);
             result.kind = failed_ ? ProtocolActionKind::DiscardCollection : ProtocolActionKind::PublishParsed;
+            result.acquisitionSummary = true;
             result.reason = failed_ ? "acquisition_cycle_incomplete" : "";
             result.parsed.valuesJson = "{\"function_code\":\"POLL\",\"values\":{";
             bool first = true;

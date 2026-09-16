@@ -841,7 +841,7 @@ class CollectorWorker final {
         try {
             co_await packet_log::DebugPacketService::recordPacket(redis_, linkId,
                 selected ? std::string_view(selected->id) : std::string_view{}, direction,
-                "collector", address, bytes, timestamp, deviceOnly, eventId, status, reason, {}, parsedJson, replyToPacketId,
+                "collector", address, bytes, timestamp, deviceOnly, eventId, status, reason, parsedJson, replyToPacketId,
                 false, 0, acquisitionId);
         } catch (const std::exception& error) {
             lastCoordinatorError_ = std::string("debug_packet_failed: ") + error.what();
@@ -1404,15 +1404,17 @@ class CollectorWorker final {
                     action.parsed.messageId = action.parsed.acquisitionId;
                     for (std::size_t index = action.parsed.rawPacketIds.size(); index < action.parsed.rawPayloads.size(); ++index)
                         action.parsed.rawPacketIds.push_back(message::nextMessageId());
-                    {
+                    if (!action.acquisitionSummary) {
                         std::size_t rawIndex = 0;
-                        for (const auto& raw : action.parsed.rawPayloads)
+                        for (const auto& raw : action.parsed.rawPayloads) {
+                            const auto& rawId = action.parsed.rawPacketIds[rawIndex++];
                             co_await captureDebug(action.parsed.linkId, action.connectionId, "", "RX", raw,
                                 action.parsed.occurredAtMs, action.parsed.deviceId, false,
-                                action.parsed.rawPacketIds[rawIndex++],
+                                rawId,
                                 action.kind == ProtocolActionKind::DiscardCollection ? "acquisition_partial" :
                                     action.kind == ProtocolActionKind::PublishParsed ? "acquisition_success" : "received",
-                                action.reason, action.parsed.valuesJson, action.replyToPacketId, action.parsed.acquisitionId);
+                                action.reason, (rawIndex != action.parsed.rawPayloads.size()) ? std::string_view{} : std::string_view(action.parsed.valuesJson), action.replyToPacketId, action.parsed.acquisitionId);
+                        }
                     }
                     if (action.kind != ProtocolActionKind::PublishParsed) break;
                     service::packet_log::write(

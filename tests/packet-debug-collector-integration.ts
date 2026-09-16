@@ -51,7 +51,7 @@ const server=Bun.listen<{buffer:Buffer}>({hostname:'127.0.0.1',port:0,socket:{
     },error(_socket,error){throw error;},close(){}
 }});
 const link=uuid(),target=uuid(),model=uuid(),device1=uuid(),device2=uuid(),point=uuid(),secondPoint=uuid();
-const length=(scope:string,id:string)=>redis.send('ZCARD',[`iot:debug:v3:${scope}:${id}`]).then(Number);
+const length=(scope:string,id:string)=>redis.send('ZCARD',[`iot:debug:v4:${scope}:${id}`]).then(Number);
 try {
     const config={storagePolicy:'report',readInterval:1,byteOrder:'BIG_ENDIAN',registers:[{id:point,name:'value',registerType:'HOLDING_REGISTER',dataType:'UINT16',address:0,quantity:1,scale:1},{id:secondPoint,name:'second',registerType:'HOLDING_REGISTER',dataType:'UINT16',address:200,quantity:1,scale:1}]};
     await db`INSERT INTO protocol_config(id,name,protocol,config,created_by) VALUES(${model},${model},'Modbus',${config}::jsonb,${admin})`;
@@ -65,9 +65,9 @@ try {
     await until(async()=>await length('device',device1)>=2,'device debug did not capture direct TX/RX');
     assert.equal(await length('device',device2),0,'device debug leaked sibling traffic');
     const readRows = async () => {
-        const rounds = await redis.send('ZRANGE', [`iot:debug:v3:device:${device1}`,'0','-1']) as string[];
-        const ids = (await Promise.all(rounds.map(round => redis.send('ZRANGE',[`iot:debug:v3:acquisition:${round}:packets`,'0','-1'])))).flat() as string[];
-        return await Promise.all(ids.map(async id=>[id,await redis.send('HGETALL',['iot:debug:v3:packet:'+id])] as const));
+        const rounds = await redis.send('ZRANGE', [`iot:debug:v4:device:${device1}`,'0','-1']) as string[];
+        const ids = (await Promise.all(rounds.map(round => redis.send('ZRANGE',[`iot:debug:v4:acquisition:${round}:packets`,'0','-1'])))).flat() as string[];
+        return await Promise.all(ids.map(async id=>[id,await redis.send('HGETALL',['iot:debug:v4:packet:'+id])] as const));
     };
     const rows=await readRows();
     assert(rows.some(([,fields])=>fields.direction==='RX'));
@@ -76,24 +76,24 @@ try {
     const events = async () => (await readRows())
         .map(([,fields]) => fields);
     await until(async()=>(await events()).some(row=>row.response_status==='success'), 'matched response did not finalize TX');
-    await until(async()=>(await events()).some(row=>row.history_id && row.parsed_json), 'persisted history was not shown in debug');
-    const stored=(await events()).find(row=>row.history_id)!;
-    const storedEvents=await events();
-    assert.equal(storedEvents.filter(row=>row.direction==='RX' && row.payload_hex===stored.payload_hex).length,1,
-        'Redis retained both received and stored copies of one Modbus response');
-    assert.equal(new Set(storedEvents.map(row=>row.event_id)).size,storedEvents.length,
-        'Redis retained multiple states of the same event');
-    const history=await db`SELECT data,raw_payload_hex FROM device_data WHERE id=${stored.history_id}`;
-    assert.equal(history[0].raw_payload_hex.length,2,'one cycle must retain both responses');
-    assert.equal(Object.keys(history[0].data.values).length,2,'one cycle must merge both read ranges');
-    assert.equal(storedEvents.filter(row=>row.direction==='RX' && row.history_id===stored.history_id).length,2,
-        'both response packets must link to the same history record');
-    assert.deepEqual(JSON.parse(stored.parsed_json),history[0].data, 'debug history must be the actual stored record');
+    await until(async()=>(await events()).filter(row=>row.direction==='RX' && row.parsed_json).length>=2, 'response parsing missing');
+    const parsed=(await events()).find(row=>row.direction==='RX' && row.parsed_json)!;
+    const parsedEvents=await events();
+    assert.equal(new Set(parsedEvents.map(row=>row.event_id)).size,parsedEvents.length,'duplicate status events');
+    await until(async()=>(await db`SELECT id FROM device_data WHERE id=${parsed.acquisition_id}`).length===1,'history missing');
+    const history=await db`SELECT data,raw_payload_hex FROM device_data WHERE id=${parsed.acquisition_id}`;
+    assert.equal(history[0].raw_payload_hex.length,2);
+    assert.equal(Object.keys(history[0].data.values).length,2);
+    const responses=parsedEvents.filter(row=>row.direction==='RX' && row.acquisition_id===parsed.acquisition_id);
+    assert.equal(responses.length,2);
+    for(const response of responses) {
+        assert.equal(Object.keys(JSON.parse(response.parsed_json).values).length,1,'round result overwrote response parsing');
+        assert.equal(response.storage_status,undefined);
+        assert.equal(response.history_id,undefined);
+    }
     const packets=await snapshot(`/v1/device/${device1}/debug/packets`);
-    assert.equal(new Set(packets.map((packet: {id:string})=>packet.id)).size,packets.length,'status updates created duplicate display rows');
-    const round = packets.find((entry: {history_id:string})=>entry.history_id===stored.history_id);
+    const round = packets.find((entry: {id:string})=>entry.id===parsed.acquisition_id);
     assert(round);
-    assert.equal(round.id, stored.history_id);
     assert.equal(round.state, 'success');
     assert.equal(round.packets.filter((packet: {direction:string})=>packet.direction==='RX').length, 2);
     const range=new URLSearchParams({page:'1',pageSize:'20',startTime:new Date(Date.now()-3600000).toISOString(),endTime:new Date(Date.now()+60000).toISOString()});
