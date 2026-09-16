@@ -60,12 +60,21 @@ try {
     const rejected = await fetch(`${base}/v1/departments?page=1&pageSize=20`, {
         headers: { Authorization: `Bearer ${token(admin)}`, Accept: 'application/json' },
     });
-    assert.equal(rejected.status, 406, 'JSON query alternative must not survive');
+    assert.equal(rejected.status, 200);
+    assert.equal(rejected.headers.get('x-snapshot-topic'), 'auth');
+    assert.equal((await rejected.json()).code, 0);
+    stream = await open('/v1/auth/events');
+    assert.deepEqual((await stream.next('ready')).topics, ['*']);
+    await db`INSERT INTO sys_department(id,name,code) VALUES(${department},'global event',${department})`;
+    assert((await stream.next('change')).topics.includes('auth'));
+    await db`DELETE FROM sys_department WHERE id=${department}`;
+    await stream.close();
+    stream = undefined;
     const obsolete = await fetch(`${base}/v1/device/realtime/events`, {
         headers: { Authorization: `Bearer ${token(admin)}` },
     });
     assert.equal(obsolete.status, 404, 'old notification-only endpoint must be removed');
-    console.log('PASS old JSON query and notification-only endpoint rejected');
+    console.log('PASS authorized JSON snapshot and global SSE notification; obsolete endpoint rejected');
 
     stream = await open('/v1/departments?page=1&pageSize=20');
     await stream.next();
@@ -95,6 +104,15 @@ try {
     await db`UPDATE sys_role SET permissions='[]'::jsonb WHERE id=${role}`;
     const denied = await stream.next('error');
     assert.equal(denied.code, 11007);
+    const deniedSnapshot = await fetch(`${base}/v1/departments?page=1&pageSize=20`, {
+        headers: { Authorization: `Bearer ${token(user)}`, Accept: 'application/json' },
+    });
+    assert.equal(deniedSnapshot.status, 403);
+    await stream.close();
+    stream = await open('/v1/auth/events', user);
+    await stream.next('ready');
+    await db`UPDATE sys_user SET status='disabled' WHERE id=${user}`;
+    assert.equal((await stream.next('error')).code, 11002);
     console.log('PASS active subscription closes after role permission revocation');
 } finally {
     await stream?.close();

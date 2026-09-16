@@ -3,7 +3,7 @@ export interface SnapshotObserver<T> {
     error: (error: Error) => void;
 }
 
-/** A lazy subscription. Awaiting it reads one SSE snapshot, never a JSON GET. */
+/** A lazy live query. Awaiting it reads its first authorized snapshot. */
 export class SnapshotStream<T> implements PromiseLike<T> {
     constructor(readonly subscribe: (observer: SnapshotObserver<T>) => () => void) {}
 

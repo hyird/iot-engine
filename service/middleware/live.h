@@ -39,6 +39,7 @@ class Bus final {
         std::string topic;
         ruvia::ChannelSender<int> sender;
         ruvia::ChannelReceiver<int> receiver;
+        std::vector<std::string> changes;
     };
 
     void setWorkerIndex(std::size_t workerIndex) noexcept {
@@ -58,7 +59,7 @@ class Bus final {
         }
         auto [sender, receiver] = ruvia::makeChannel<int>(worker, { .capacity = 1 });
         auto subscription = std::make_shared<Subscription>(
-            Subscription{ std::string(topic), std::move(sender), std::move(receiver) }
+            Subscription{ std::string(topic), std::move(sender), std::move(receiver), {} }
         );
         std::lock_guard lock(mutex_);
         std::erase_if(subscriptions_, [](const auto& entry) {
@@ -76,15 +77,16 @@ class Bus final {
                 return true;
             }
             const auto& target = subscription->topic;
-            const bool related =
-                (target == "device" && (topic == "protocol" || topic == "link" || topic == "edge" || topic == "command")) ||
-                (target == "access" &&
-                 (topic == "device" || topic == "protocol" || topic == "alert")) ||
-                (target == "edge" &&
-                 (topic == "device" || topic == "link" || topic == "protocol")) ||
-                (target == "alert" && (topic == "protocol" || topic == "device")) ||
-                (target == "vpn" && topic == "edge");
-            if (topic == "*" || topic == "auth" || target == topic || related) {
+            if (target == "*") {
+                // Only public query families are exposed, never resource IDs or data.
+                for (const std::string_view family : {"auth", "device", "link", "protocol", "edge", "alert", "access", "vpn", "gb28181", "packet-debug", "system"}) {
+                    if (affects(family, topic) && std::ranges::find(subscription->changes, family) == subscription->changes.end())
+                        subscription->changes.emplace_back(family);
+                }
+                if (!subscription->changes.empty()) (void)subscription->sender.send(1);
+                return false;
+            }
+            if (affects(target, topic)) {
                 (void)subscription->sender.send(1);
             }
             return false;
@@ -92,6 +94,14 @@ class Bus final {
     }
 
   private:
+    static bool affects(std::string_view target, std::string_view topic) {
+        return topic == "*" || topic == "auth" || target == topic ||
+            (target == "device" && (topic == "protocol" || topic == "link" || topic == "edge" || topic == "command")) ||
+            (target == "access" && (topic == "device" || topic == "protocol" || topic == "alert")) ||
+            (target == "edge" && (topic == "device" || topic == "link" || topic == "protocol")) ||
+            (target == "alert" && (topic == "protocol" || topic == "device")) ||
+            (target == "vpn" && topic == "edge");
+    }
     std::mutex mutex_;
     std::vector<std::weak_ptr<Subscription>> subscriptions_;
     std::optional<std::size_t> workerIndex_;
@@ -256,12 +266,58 @@ inline std::string data(ruvia::Context&, std::string_view value) {
     return "{\"code\":0,\"message\":\"ok\",\"data\":" + std::string(value) + "}";
 }
 
+// One authenticated notification stream per browser tab. Snapshots stay in their
+// owning controllers so every refresh repeats normal validation and permissions.
+inline ruvia::Task<void> serveChanges(ruvia::Context& context,
+    std::function<ruvia::Task<void>()> authorize) {
+    using namespace std::chrono_literals;
+    auto subscription = bus().subscribe(context.worker(), "*");
+    co_await authorize();
+    context.header("X-Accel-Buffering", "no");
+    context.header("Cache-Control", "no-store");
+    auto stream = context.streamSse();
+    co_await stream.write({.data = "{\"topics\":[\"*\"]}", .event = "ready", .retry = 1s});
+    const auto expires = std::chrono::steady_clock::now() + 5min;
+    while (!stream.aborted() && !context.stopToken().stopRequested() && std::chrono::steady_clock::now() < expires) {
+        const auto notification = co_await subscription->receiver.receiveFor(15s, context.stopToken());
+        if (stream.aborted() || context.stopToken().stopRequested()) co_return;
+        if (notification.hasValue()) (void)co_await ruvia::sleepFor(context.worker(), 100ms, context.stopToken());
+        std::string error;
+        try { co_await authorize(); }
+        catch (const ruvia::HttpError& failure) {
+            const auto info = failure.info();
+            error = json(service::common::error(context, service::common::errorCode(info.code(), info.status().value()), info.message()));
+        } catch (const std::exception&) { error = "{\"code\":10004,\"message\":\"Subscription interrupted\"}"; }
+        if (!error.empty()) { co_await stream.write({.data = error, .event = "error"}); co_return; }
+        auto changes = std::exchange(subscription->changes, {});
+        if (changes.empty()) { co_await stream.write({.data = "{}", .event = "heartbeat"}); continue; }
+        std::string payload = "{\"topics\":[";
+        for (const auto& topic : changes) {
+            if (payload.back() != '[') payload += ',';
+            payload += '\"'; payload += topic; payload += '\"';
+        }
+        payload += "]}";
+        co_await stream.write({.data = payload, .event = "change"});
+    }
+}
+
 // The query callback includes authentication and authorization. It runs before
 // opening the stream and before every snapshot; the bus carries invalidations,
 // never response data.
 template <typename Query>
 ruvia::Task<void> serve(ruvia::Context& context, std::string_view topic, Query query, std::function<ruvia::Task<void>()> authorize = {}, std::chrono::milliseconds coalesceDelay = {}) {
     using namespace std::chrono_literals;
+    if (context.req().header("Accept").value_or("").find("application/json") != std::string_view::npos) {
+        if (authorize) co_await authorize();
+        const auto snapshot = co_await query();
+        context.header("Content-Type", "application/json");
+        context.header("Cache-Control", "no-store");
+        context.header("Vary", "Accept");
+        context.header("X-Snapshot-Topic", topic);
+        context.header("X-Snapshot-Coalesce-Ms", std::to_string(coalesceDelay.count()));
+        context.respond(context.body(std::string_view(snapshot)));
+        co_return;
+    }
     if (context.req().header("Accept").value_or("").find("text/event-stream") ==
         std::string_view::npos) {
         service::common::fail(10002, "This query requires text/event-stream", 406);

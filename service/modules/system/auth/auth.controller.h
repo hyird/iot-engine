@@ -18,9 +18,16 @@ class AuthController final : public ruvia::Controller<AuthController> {
     RUVIA_POST("/refresh", refresh, RefreshValidator);
     RUVIA_POST("/logout", logout);
     RUVIA_GET_SSE("/me", me, service::middleware::AuthMiddleware);
+    RUVIA_GET_SSE("/events", events, service::middleware::AuthMiddleware);
     RUVIA_ROUTES_END
 
   private:
+    ruvia::Task<void> events(ruvia::Context& c) {
+        co_await service::live::serveChanges(c, [&c]() -> ruvia::Task<void> {
+            const auto principal = service::middleware::requireAuth(c);
+            (void)co_await authService().current(c, principal.userId);
+        });
+    }
     ruvia::Task<ruvia::HttpResponse> login(ruvia::Context& c) {
         co_return c.json(service::common::ok<LoginResponse>(
             c, co_await authService().login(c, c.req().validated<LoginBody>())));

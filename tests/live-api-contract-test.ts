@@ -8,7 +8,7 @@ async function files(directory: string): Promise<string[]> {
         ? files(join(directory, entry.name)) : [join(directory, entry.name)]))).flat();
 }
 
-test('business query routes have no JSON GET fallback', async () => {
+test('business query routes retain streaming compatibility', async () => {
     const plain: string[] = [];
     for (const path of await files('service/modules')) {
         if (!path.endsWith('.controller.h')) continue;
@@ -26,7 +26,7 @@ test('business query routes have no JSON GET fallback', async () => {
     ]);
 });
 
-test('business clients cannot use JSON GET or interval refetch', async () => {
+test('business pages use shared live query services without interval refetch', async () => {
     for (const path of await files('web/pages')) {
         if (!/\.[jt]sx?$/.test(path)) continue;
         const source = await readFile(path, 'utf8');

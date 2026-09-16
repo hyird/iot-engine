@@ -97,6 +97,7 @@ jobs:
           ./tests/device-status-test.ts
           ./tests/sse-test.ts
           ./tests/snapshot-stream-test.ts
+          ./tests/snapshot-subscriptions-test.ts
           ./tests/live-api-contract-test.ts
           ./tests/device-card-label-test.tsx
           ./tests/edge-network-view-test.ts
