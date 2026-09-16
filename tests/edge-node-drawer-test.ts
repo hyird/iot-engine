@@ -140,7 +140,7 @@ test('drawer actions render above the detail drawer', () => {
         'const EDGE_ACTION_MODAL_Z_INDEX = EDGE_DETAIL_DRAWER_Z_INDEX + 100;'
     );
     expect(drawer).toContain('zIndex={EDGE_DETAIL_DRAWER_Z_INDEX}');
-    expect(source.match(/zIndex=\{EDGE_ACTION_MODAL_Z_INDEX\}/g)).toHaveLength(5);
+    expect(source.match(/zIndex=\{EDGE_ACTION_MODAL_Z_INDEX\}/g)).toHaveLength(6);
     expect(source.match(/zIndex: EDGE_ACTION_MODAL_Z_INDEX/g)).toHaveLength(2);
 });
 
