@@ -830,6 +830,8 @@ class CollectorWorker final {
             [&](const auto& value) { return value.id == linkId; });
         if (link == loadedSnapshot_.links.end()) co_return;
         const auto connection = networkConnections_.find(connectionId);
+        const std::string peerAddress = !address.empty() ? std::string(address) :
+            connection == networkConnections_.end() ? std::string{} : connection->second.remoteAddress;
         const auto routes = routes_.find(connectionId);
         const auto* selected = engine_.identifyDebugDevice(loadedSnapshot_, {
             .linkId = linkId,
@@ -841,7 +843,7 @@ class CollectorWorker final {
         try {
             co_await packet_log::DebugPacketService::recordPacket(redis_, linkId,
                 selected ? std::string_view(selected->id) : std::string_view{}, direction,
-                "collector", address, bytes, timestamp, deviceOnly, eventId, status, reason, parsedJson, replyToPacketId,
+                "collector", peerAddress, bytes, timestamp, deviceOnly, eventId, status, reason, parsedJson, replyToPacketId,
                 false, 0, acquisitionId);
         } catch (const std::exception& error) {
             lastCoordinatorError_ = std::string("debug_packet_failed: ") + error.what();

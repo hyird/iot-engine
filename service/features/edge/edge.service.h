@@ -1155,8 +1155,12 @@ class ConfigService final {
         const auto acquisitionId = protocol::debugAcquisitionId(nodeId, packet);
         const auto linkId = protocol::uuidText(packet.endpoint_id());
         const auto deviceId = packet.device_id().size() == 16 ? protocol::uuidText(packet.device_id()) : std::string{};
+        ruvia::DbQuery node;
+        node.select(node.column(persistence::EdgeNodeEntity::columnName<"name">()))
+            .from(persistence::EdgeNodeEntity::tableName())
+            .where((persistence::EdgeNodeEntity::column<"id">() == nodeId).expression(node));
         ruvia::DbQuery link;
-        link.select(link.column(persistence::LinkEntity::columnName<"debug_enabled">()))
+        link.select({link.column(persistence::LinkEntity::columnName<"debug_enabled">()), link.subquery(node)})
             .from(persistence::LinkEntity::tableName())
             .where((persistence::LinkEntity::column<"id">() == linkId &&
                 persistence::LinkEntity::column<"edge_node_id">() == nodeId &&
@@ -1199,7 +1203,8 @@ class ConfigService final {
             packet.packet_id().size() == 16 ? std::string(nodeId) + ":" + protocol::uuidText(packet.packet_id()) : std::string{},
             packet.status(), packet.reason(), parsedJson,
             packet.reply_to_packet_id().size() == 16 ? std::string(nodeId) + ":" + protocol::uuidText(packet.reply_to_packet_id()) : std::string{},
-            packet.has_parsed_value(), packet.payload_offset(), acquisitionId);
+            packet.has_parsed_value(), packet.payload_offset(), acquisitionId,
+            nodeId, links.front()[1].value().value_or(""));
     }
 
     static ConfigService& instance() {

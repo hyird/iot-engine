@@ -37,7 +37,8 @@ return 1
         std::string_view status = {}, std::string_view reason = {},
         std::string_view parsedJson = {},
         std::string_view replyToPacketId = {}, bool updateOnly = false, std::size_t baseOffset = 0,
-        std::string_view acquisitionId = {}) {
+        std::string_view acquisitionId = {}, std::string_view edgeNodeId = {},
+        std::string_view edgeNodeName = {}) {
         if (acquisitionId.empty()) throw std::invalid_argument("debug packet requires acquisition ID");
         if (linkId.empty()) co_return;
         // 索引保存轮次 ID；每轮持有独立报文集合，状态更新只修改原记录。
@@ -239,6 +240,7 @@ return changed and 1 or 0
                 status == "acquisition_partial" ? "partial" : status == "acquisition_failed" ? "failed" : "running";
             std::vector<std::string_view> args{"acquisition_prefix", DebugAcquisitionStorage::prefix, DebugAcquisitionHash::columnName<"acquisition_id">(), acquisitionId, DebugPacketHash::columnName<"link_id">(), linkId, DebugPacketHash::columnName<"device_id">(), deviceId,
                 DebugPacketHash::columnName<"direction">(), direction, DebugPacketHash::columnName<"source">(), source, DebugPacketHash::columnName<"address">(), address,
+                DebugPacketHash::columnName<"edge_node_id">(), edgeNodeId, DebugPacketHash::columnName<"edge_node_name">(), edgeNodeName,
                 DebugPacketHash::columnName<"payload_hex">(), hex, DebugPacketHash::columnName<"time_ms">(), timestamp, DebugPacketHash::columnName<"offset">(), offsetText,
                 DebugPacketHash::columnName<"event_id">(), stableId, DebugPacketHash::columnName<"transport_status">(), transportStatus, DebugPacketHash::columnName<"response_status">(), responseStatus,
                 DebugPacketHash::columnName<"parse_status">(), parseStatus, DebugPacketHash::columnName<"reason">(), reason, DebugPacketHash::columnName<"reply_to_packet_id">(), replyToPacketId,

@@ -5,6 +5,8 @@ export interface DebugPacket {
     direction: string;
     source: string;
     address?: string;
+    edge_node_id?: string;
+    edge_node_name?: string;
     payload_hex: string;
     time_ms: string;
     transport_status?: string;

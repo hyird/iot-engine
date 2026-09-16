@@ -87,6 +87,7 @@ try {
     const responses=parsedEvents.filter(row=>row.direction==='RX' && row.acquisition_id===parsed.acquisition_id);
     assert.equal(responses.length,2);
     for(const response of responses) {
+        assert.equal(response.address,`127.0.0.1:${server.port}`,'parsed receive packet lost its actual peer');
         assert.equal(Object.keys(JSON.parse(response.parsed_json).values).length,1,'round result overwrote response parsing');
         assert.equal(response.storage_status,undefined);
         assert.equal(response.history_id,undefined);
@@ -95,6 +96,7 @@ try {
     const round = packets.find((entry: {id:string})=>entry.id===parsed.acquisition_id);
     assert(round);
     assert.equal(round.state, 'success');
+    for (const packet of round.packets) assert.equal(packet.address,`127.0.0.1:${server.port}`);
     assert.equal(round.packets.filter((packet: {direction:string})=>packet.direction==='RX').length, 2);
     const range=new URLSearchParams({page:'1',pageSize:'20',startTime:new Date(Date.now()-3600000).toISOString(),endTime:new Date(Date.now()+60000).toISOString()});
     const historyPage=await snapshot(`/v1/device/${device1}/history?${range}`);

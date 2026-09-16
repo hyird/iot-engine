@@ -66,6 +66,18 @@ describe('终端协议说明与采集树', () => {
     });
 });
 import {formatDebugTerminal} from '../web/utils/packet_debug';
+
+test('链路日志直采显示实际对端，边缘采集显示节点名称与 ID', () => {
+    const direct = {...packet('0102','RX','direct'),source:'collector',address:'192.0.2.8:502',device_id:'device-hidden'};
+    const edge = {...packet('0304','RX','edge'),source:'edge',address:'192.0.2.9:502',edge_node_id:'node-1',edge_node_name:'水闸边缘节点',device_id:'device-hidden'};
+    const rounds: DebugAcquisition[] = [{id:'round',started_at_ms:'1000',last_packet_at_ms:'1000',state:'success',packets:[direct,edge]}];
+    const output = formatDebugTerminal('link','Modbus',rounds);
+    expect(output).toContain('192.0.2.8:502');
+    expect(output).toContain('水闸边缘节点 (node-1)');
+    expect(output).not.toContain('192.0.2.9:502');
+    expect(output).not.toContain('device-hidden');
+    expect(output).not.toContain('对端未知');
+});
 test('纯文本终端：设备整轮一段，链路无轮次与解析结果，过滤终端控制字符', () => {
     const rounds: DebugAcquisition[] = [{id:'round',started_at_ms:'1000',last_packet_at_ms:'1001',state:'success',packets:[packet('09DE00000006010300000002','TX','tx'),{...packet('09DE0000000701030440400000','RX','rx','tx'),parsed_json:JSON.stringify({values:{level:{name:'水位',value:3,unit:'m'}}}),reason:'bad\u001b[2J\u0007'}]}];
     const device=formatDebugTerminal('device','Modbus',rounds);

@@ -299,10 +299,14 @@ export function formatDebugTerminal(
         return result.filter(Boolean).join(' · ');
     };
     const lines: string[] = [];
+    const peer = (packet: DebugPacket) =>
+        packet.source === 'edge'
+            ? `${clean(packet.edge_node_name || '未命名边缘节点')} (${clean(packet.edge_node_id || '节点 ID 未记录')})`
+            : clean(packet.address || '对端地址未记录');
     const writePacket = (packet: DebugPacket, indent: string, link: boolean, detail = '') => {
         const sending = packet.direction === 'TX' || packet.direction === 'TX_ATTEMPT';
         lines.push(
-            `${indent}${time(packet.time_ms)}  ${sending ? '↑ TX' : '↓ RX'}  ${link ? `${clean(packet.address || '对端未知')}  ${clean(packet.device_id || '未识别设备')}  ` : ''}${status(packet, link)}${detail ? ` · ${clean(detail)}` : ''}`
+            `${indent}${time(packet.time_ms)}  ${sending ? '↑ TX' : '↓ RX'}  ${link ? `${peer(packet)}  ` : ''}${status(packet, link)}${detail ? ` · ${clean(detail)}` : ''}`
         );
         lines.push(`${indent}${clean(packet.payload_hex)}`);
         if (packet.reason) lines.push(`${indent}原因：${clean(packet.reason)}`);

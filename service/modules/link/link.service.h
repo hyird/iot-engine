@@ -254,6 +254,8 @@ return result
                 else if (name == "direction") packet.set<"direction">(value);
                 else if (name == "source") packet.set<"source">(value);
                 else if (name == "address") packet.set<"address">(value);
+                else if (name == "edge_node_id") packet.set<"edgeNodeId">(value);
+                else if (name == "edge_node_name") packet.set<"edgeNodeName">(value);
                 else if (name == "payload_hex") packet.set<"payloadHex">(value);
                 else if (name == "time_ms") packet.set<"timeMs">(value);
                 else if (name == "transport_status") packet.set<"transportStatus">(value);

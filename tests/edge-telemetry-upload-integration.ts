@@ -115,6 +115,7 @@ try {
     console.log('PASS Redis out-of-order parts, duplicate retry, conflict rejection and durable partial state');
 
     await db`INSERT INTO edge_node(id,platform_id,imei,enrollment_status) VALUES(${node},${platform},${imei},'approved')`;
+    await db`UPDATE edge_node SET name=${'调试边缘节点'} WHERE id=${node}`;
     await redis.send('SET', [`iot:edge:auth:${imei}`, `${node}|approved`]);
     let epoch = 0n, sequence = 1n;
     const envelope = (tag: number, payload: Buffer) => Buffer.concat([
@@ -255,6 +256,17 @@ try {
         const round = rounds.find((entry: any) => entry.id === report);
         assert(round);
         assert.equal(round.packets.length, 2, 'history updates must not duplicate packet rows');
+        for (const packet of round.packets) {
+            assert.equal(packet.edge_node_id,node);
+            assert.equal(packet.edge_node_name,'调试边缘节点');
+        }
+        const linkRounds = await firstSnapshot(`/v1/link/${link}/debug/packets`);
+        const linkRound = linkRounds.find((entry: any) => entry.id === report);
+        assert(linkRound);
+        for (const packet of linkRound.packets) {
+            assert.equal(packet.edge_node_id,node);
+            assert.equal(packet.edge_node_name,'调试边缘节点');
+        }
         assert.equal(round.history_id,undefined);
         assert.equal(round.storage_status,undefined);
         assert.equal(round.parsed_json,undefined);
