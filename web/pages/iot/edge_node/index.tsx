@@ -83,6 +83,7 @@ import {
     networkInterfaceSchema,
     networkSchema,
     nodeNameSchema,
+    serialSettingsSchema,
 } from './edge_node.schema';
 import {
     buildEdgeNodeGroupView,
@@ -102,6 +103,8 @@ import {
     useFirmwareUpgradeMutation,
     useRenameEdgeNode,
     useSetEdgeLogLevel,
+    useSerialDebug,
+    serialPayloadHex,
 } from './edge_node.service';
 
 interface Props {
@@ -881,6 +884,284 @@ function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
             : []),
     ];
 }
+export function SerialDebugModal({
+    nodeId,
+    path,
+    title,
+    onClose,
+}: {
+    nodeId: string;
+    path: string;
+    title: string;
+    onClose: () => void;
+}) {
+    const debug = useSerialDebug(nodeId, path);
+    const { message } = App.useApp();
+    const [form] = Form.useForm<Edge.SerialSettings>();
+    const values = Form.useWatch([], form) as Edge.SerialSettings | undefined;
+    const [display, setDisplay] = useState<'hex' | 'text'>('hex');
+    const [sendMode, setSendMode] = useState<'hex' | 'text'>('hex');
+    const [input, setInput] = useState('');
+    const [ending, setEnding] = useState('');
+    const [follow, setFollow] = useState(true);
+    const logRef = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        form.setFieldsValue(debug.settings);
+    }, [form, debug.settings]);
+    useEffect(() => {
+        if (follow && debug.frames.length && logRef.current)
+            logRef.current.scrollTop = logRef.current.scrollHeight;
+    }, [debug.frames, follow]);
+    const ready = debug.connection === 'ready';
+    const changed =
+        values &&
+        Object.keys(debug.settings).some(
+            (key) =>
+                values[key as keyof Edge.SerialSettings] !==
+                debug.settings[key as keyof Edge.SerialSettings]
+        );
+    const run = (operation: () => void) => {
+        try {
+            operation();
+        } catch (error) {
+            void message.error(error instanceof Error ? error.message : '操作失败');
+        }
+    };
+    return (
+        <FormModal
+            open
+            title={`串口调试 · ${title} · ${path}`}
+            zIndex={EDGE_ACTION_MODAL_Z_INDEX}
+            onCancel={onClose}
+            styles={{
+                body: { display: 'flex', flexDirection: 'column', gap: 12, overflow: 'hidden' },
+            }}
+            footer={
+                <div className="flex flex-col gap-2 text-left">
+                    <Space wrap>
+                        <Select
+                            aria-label="发送格式"
+                            value={sendMode}
+                            onChange={setSendMode}
+                            options={[
+                                { value: 'hex', label: 'HEX 发送' },
+                                { value: 'text', label: '文本发送（UTF-8）' },
+                            ]}
+                        />
+                        {sendMode === 'text' && (
+                            <Select
+                                aria-label="发送换行"
+                                value={ending}
+                                onChange={setEnding}
+                                options={[
+                                    { value: '', label: '无换行' },
+                                    { value: '\r', label: 'CR' },
+                                    { value: '\n', label: 'LF' },
+                                    { value: '\r\n', label: 'CRLF' },
+                                ]}
+                            />
+                        )}
+                        <span className="text-xs text-slate-500">单次最多 1024 字节</span>
+                    </Space>
+                    <Input.TextArea
+                        aria-label="发送内容"
+                        value={input}
+                        onChange={(event) => setInput(event.target.value)}
+                        autoSize={{ minRows: 2, maxRows: 3 }}
+                        maxLength={8192}
+                        placeholder={
+                            sendMode === 'hex' ? '01 03 00 00 00 02 C4 0B' : '输入要发送的文本'
+                        }
+                    />
+                    <Flex justify="space-between" align="center" gap={8} wrap>
+                        <span className="text-xs text-slate-500">
+                            {debug.manual
+                                ? changed
+                                    ? '参数已修改，请先应用参数'
+                                    : '自动采集已暂停，可以手动发送'
+                                : '先暂停自动采集，再手动发送'}
+                        </span>
+                        <Space>
+                            <Button onClick={onClose}>关闭</Button>
+                            <Button
+                                type="primary"
+                                loading={debug.pending}
+                                disabled={!ready || !debug.manual || !!changed || !input}
+                                onClick={() =>
+                                    run(() =>
+                                        debug.send('write', {
+                                            hex: serialPayloadHex(input, sendMode, ending),
+                                        })
+                                    )
+                                }
+                            >
+                                发送
+                            </Button>
+                        </Space>
+                    </Flex>
+                </div>
+            }
+        >
+            <Flex justify="space-between" align="center" gap={8} wrap>
+                <Tag color={!ready ? 'default' : debug.manual ? 'orange' : 'green'}>
+                    {debug.connection === 'connecting'
+                        ? '正在连接'
+                        : debug.connection === 'closed'
+                          ? '已断开'
+                          : debug.manual
+                            ? '手动调试'
+                            : '监听中'}
+                </Tag>
+                <Space wrap>
+                    {debug.connection === 'closed' ? (
+                        <Button onClick={debug.reconnect}>重新连接</Button>
+                    ) : (
+                        <Button
+                            disabled={!ready}
+                            loading={debug.pending}
+                            onClick={() =>
+                                run(() =>
+                                    debug.manual
+                                        ? debug.send('monitor')
+                                        : debug.send('manual', debug.settings)
+                                )
+                            }
+                        >
+                            {debug.manual ? '恢复自动采集' : '暂停自动采集'}
+                        </Button>
+                    )}
+                </Space>
+            </Flex>
+            {debug.notice && (
+                <Alert
+                    type={debug.connection === 'closed' ? 'warning' : 'info'}
+                    showIcon
+                    title={debug.notice}
+                />
+            )}
+            <Form
+                form={form}
+                layout="vertical"
+                initialValues={debug.settings}
+                disabled={!ready || !debug.manual || debug.pending}
+                className="shrink-0"
+                onFinish={(raw) => {
+                    const parsed = validateForm(form, serialSettingsSchema, raw);
+                    if (parsed) run(() => debug.send('manual', parsed));
+                }}
+            >
+                <div className="grid grid-cols-3 gap-x-3 sm:grid-cols-5">
+                    <Form.Item label="波特率" name="baudRate" className="mb-2">
+                        <Select
+                            options={[
+                                300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200,
+                                230400, 460800,
+                            ].map((value) => ({ value, label: String(value) }))}
+                        />
+                    </Form.Item>
+                    <Form.Item label="数据位" name="dataBits" className="mb-2">
+                        <Select
+                            options={[5, 6, 7, 8].map((value) => ({ value, label: String(value) }))}
+                        />
+                    </Form.Item>
+                    <Form.Item label="停止位" name="stopBits" className="mb-2">
+                        <Select
+                            options={[
+                                { value: 1, label: '1' },
+                                { value: 2, label: '2' },
+                            ]}
+                        />
+                    </Form.Item>
+                    <Form.Item label="校验" name="parity" className="mb-2">
+                        <Select
+                            options={[
+                                { value: 'none', label: '无' },
+                                { value: 'even', label: '偶校验' },
+                                { value: 'odd', label: '奇校验' },
+                            ]}
+                        />
+                    </Form.Item>
+                    <Form.Item label="RS485" name="rs485" valuePropName="checked" className="mb-2">
+                        <Switch />
+                    </Form.Item>
+                </div>
+                {debug.manual && (
+                    <Button
+                        htmlType="submit"
+                        size="small"
+                        disabled={!changed}
+                        loading={debug.pending}
+                    >
+                        应用串口参数
+                    </Button>
+                )}
+            </Form>
+            <Flex justify="space-between" align="center" gap={8} wrap className="shrink-0">
+                <Space wrap>
+                    <Select
+                        aria-label="接收显示格式"
+                        size="small"
+                        value={display}
+                        onChange={setDisplay}
+                        options={[
+                            { value: 'hex', label: 'HEX 显示' },
+                            { value: 'text', label: '文本显示' },
+                        ]}
+                    />
+                    <Switch
+                        size="small"
+                        checked={follow}
+                        onChange={setFollow}
+                        aria-label="自动滚动"
+                    />
+                    <span className="text-xs">自动滚动</span>
+                    <Button size="small" onClick={debug.clear}>
+                        清空记录
+                    </Button>
+                </Space>
+                <span className="text-xs text-slate-500">
+                    TX {debug.counts.tx} B · RX {debug.counts.rx} B
+                    {debug.counts.dropped > 0 ? ` · 丢弃 ${debug.counts.dropped} B` : ''}
+                </span>
+            </Flex>
+            <div
+                ref={logRef}
+                role="log"
+                aria-label="串口收发记录"
+                className="min-h-24 flex-1 overflow-auto rounded-md bg-slate-950 p-3 font-mono text-xs text-slate-100"
+            >
+                {debug.frames.length === 0 ? (
+                    <span className="text-slate-400">等待串口数据…</span>
+                ) : (
+                    debug.frames.map((frame) => (
+                        <div key={frame.id} className="mb-1 grid grid-cols-[auto_auto_1fr] gap-2">
+                            <span className="text-slate-400">
+                                {new Date(frame.timestamp).toLocaleTimeString('zh-CN', {
+                                    hour12: false,
+                                })}
+                                .{String(frame.timestamp % 1000).padStart(3, '0')}
+                            </span>
+                            <span
+                                className={
+                                    frame.direction === 'TX' ? 'text-amber-300' : 'text-emerald-300'
+                                }
+                            >
+                                {frame.direction}
+                            </span>
+                            <span className="whitespace-pre-wrap break-all">
+                                {display === 'hex' ? frame.hex.match(/../g)?.join(' ') : frame.text}
+                            </span>
+                        </div>
+                    ))
+                )}
+            </div>
+            <span className="shrink-0 text-xs text-slate-500">
+                保留最近 200 条记录。关闭调试或会话超时后，节点恢复自动采集。
+            </span>
+        </FormModal>
+    );
+}
+
 function TerminalModal({
     nodeId,
     open,
@@ -1251,6 +1532,11 @@ export function EdgeNodePage() {
     const [editingNetwork, setEditingNetwork] = useState<NetworkDraftItem>();
     const [firmwareNode, setFirmwareNode] = useState<Edge.Node>();
     const [terminalNode, setTerminalNode] = useState<Edge.Node>();
+    const [serialDebug, setSerialDebug] = useState<{
+        nodeId: string;
+        path: string;
+        title: string;
+    }>();
     const [logLevel, setLogLevel] = useState<Edge.LogLevel>();
     const [nodeLogLevel, setNodeLogLevel] = useState<Edge.LogLevel>('info');
     const [networkOpen, setNetworkOpen] = useState(false);
@@ -1624,6 +1910,44 @@ export function EdgeNodePage() {
         { title: '名称', dataIndex: 'displayName' },
         { title: '可读写', dataIndex: 'available', render: (value) => (value ? '是' : '否') },
         { title: 'RS485', dataIndex: 'rs485', render: (value) => (value ? '是' : '未确认') },
+        {
+            title: '操作',
+            width: 100,
+            render: (_, port) =>
+                canTerminal && (
+                    <Tooltip
+                        title={
+                            !detail?.capability.serialDebug
+                                ? '需要支持串口调试的新版固件'
+                                : !detail.status.online
+                                  ? '节点离线'
+                                  : !port.available
+                                    ? '串口不可用'
+                                    : undefined
+                        }
+                    >
+                        <Button
+                            type="link"
+                            size="small"
+                            disabled={
+                                !detail?.capability.serialDebug ||
+                                !detail.status.online ||
+                                !port.available
+                            }
+                            onClick={() =>
+                                detail &&
+                                setSerialDebug({
+                                    nodeId: detail.id,
+                                    path: port.path,
+                                    title: detail.name || detail.imei,
+                                })
+                            }
+                        >
+                            串口调试
+                        </Button>
+                    </Tooltip>
+                ),
+        },
     ];
     const taskColumns: ColumnsType<Edge.Task> = [
         { title: '类型', dataIndex: 'taskType' },
@@ -2777,6 +3101,9 @@ export function EdgeNodePage() {
                     </p>
                 </Form>
             </FormModal>
+            {serialDebug && (
+                <SerialDebugModal {...serialDebug} onClose={() => setSerialDebug(undefined)} />
+            )}
             <TerminalModal
                 nodeId={terminalNode?.id}
                 open={terminalOpen}

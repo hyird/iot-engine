@@ -1997,7 +1997,8 @@ protected:
              jsonKey("networkConfigVersion"), integer(hello.network_config_version()),
              jsonKey("modemControl"), boolean(hello.supports_modem_control()),
              jsonKey("logs"), boolean(hello.supports_logs()),
-             jsonKey("terminal"), boolean(false), jsonKey("vpn"), vpn});
+             jsonKey("terminal"), boolean(false), jsonKey("serialDebug"), boolean(false),
+             jsonKey("vpn"), vpn});
         const auto signal = query.call(
             "jsonb_build_object", {jsonKey("csq"), integer(hello.signal_csq()),
                                     jsonKey("rssiDbm"), integer(hello.signal_rssi_dbm()),
@@ -2471,6 +2472,18 @@ protected:
                                    terminal.cast(terminal.value(nodeId),
                                                  ruvia::DbDataType::kUuid)));
         (void)co_await context.db().execute(terminal);
+        ruvia::DbQuery serialCapability;
+        serialCapability.update(persistence::EdgeNodeEntity::tableName())
+            .set(persistence::EdgeNodeEntity::columnName<"capability">(),
+                serialCapability.call("jsonb_set", {
+                    serialCapability.column(persistence::EdgeNodeEntity::columnName<"capability">()),
+                    config::detail::jsonPath(serialCapability, "{serialDebug}"),
+                    config::detail::toJsonb(serialCapability, serialCapability.cast(
+                        serialCapability.value(report.supports_serial_debug()), ruvia::DbDataType::kBoolean)),
+                    serialCapability.value(true)}))
+            .where(serialCapability.binary(serialCapability.column(persistence::EdgeNodeEntity::columnName<"id">()),
+                ruvia::DbBinaryOperator::kEqual, serialCapability.cast(serialCapability.value(nodeId), ruvia::DbDataType::kUuid)));
+        (void)co_await context.db().execute(serialCapability);
         if (report.has_vpn()) {
             const auto vpnPublicKey = validVpnPublicKey(report.vpn().public_key())
                                           ? std::string(report.vpn().public_key())

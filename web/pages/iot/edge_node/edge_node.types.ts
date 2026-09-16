@@ -1,4 +1,18 @@
 export namespace Edge {
+    export interface SerialSettings {
+        baudRate: number;
+        dataBits: number;
+        stopBits: 1 | 2;
+        parity: 'none' | 'even' | 'odd';
+        rs485: boolean;
+    }
+    export interface SerialFrame {
+        id: number;
+        timestamp: number;
+        direction: 'RX' | 'TX';
+        hex: string;
+        text: string;
+    }
     export type EnrollmentStatus = 'pending' | 'approved';
     export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
     export interface Query {
@@ -68,6 +82,7 @@ export namespace Edge {
         log: LogStatus;
     }
     export interface Capability {
+        serialDebug?: boolean;
         networkConfig: boolean;
         networkConfigVersion: number;
         firmwareUpdate: boolean;

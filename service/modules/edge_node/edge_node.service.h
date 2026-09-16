@@ -685,6 +685,31 @@ class EdgeService {
             std::string(rows.front()[1].value().value_or(std::string_view{}))};
     }
 
+    ruvia::Task<TerminalTicketDto> serialDebugTicket(
+        ruvia::Context& c, std::string_view nodeId, const SerialDebugTicketRequest& body) {
+        co_await requireNodeCapability(c, nodeId, "serialDebug", "串口调试");
+        const std::string path(body.get<"path">()->view());
+        if (!path.starts_with("/dev/") || path.find_first_of("\r\n") != std::string::npos)
+            service::common::fail(17021, "串口路径无效", 400);
+        ruvia::DbQuery port(c.pool());
+        port.select(port.column("available"))
+            .from(EdgeNodeSerialEntity::tableName())
+            .where(port.binary(port.column("node_id"), Op::kEqual, port.cast(port.value(nodeId), Type::kUuid)))
+            .andWhere(port.binary(port.column("path"), Op::kEqual, port.value(path)));
+        const auto rows = co_await c.db().query(port);
+        if (rows.empty() || !rows.front()[0].template as<bool>().value_or(false))
+            service::common::fail(17021, "节点串口不存在或不可用", 409);
+        const auto session = co_await c.redis().get("iot:edge:session:" + std::string(nodeId));
+        if (!session) service::common::fail(17019, "节点当前离线", 409);
+        const SerialDebugTicketRecord record{std::string(nodeId), std::string(*session), path};
+        const auto ticket = service::common::nextUuidV7();
+        co_await c.redis().set(service::message::serial_debug::ticketKey(ticket), record.encode(),
+            {.expiration = ruvia::RedisSetExpiration::expiresAfter(std::chrono::seconds(30))});
+        TerminalTicketDto result(ruvia::ModelOptions{.resource = c.arena()});
+        result.set<"ticket">(ticket);
+        co_return result;
+    }
+
     ruvia::Task<TerminalTicketDto> terminalTicket(ruvia::Context& c,
                                                   std::string_view nodeId) {
         ruvia::DbQuery query(c.pool());
@@ -1157,7 +1182,8 @@ class EdgeService {
                       textDefault(query, jsonText(query, vpnCapability, "publicKey")),
                       textDefault(query, query.cast(query.column("group_id", "node"), Type::kText)),
                       textDefault(query, query.column("name", "group_item")),
-                      textDefault(query, query.subquery(vpn))})
+                      textDefault(query, query.subquery(vpn)),
+                      booleanText(query, jsonText(query, capability, "serialDebug"))})
             .from(EdgeNodeEntity::tableName(), "node")
             .join(ruvia::DbJoinType::kLeft, EdgeNodeGroupEntity::tableName(),
                   query.binary(query.column("group_id", "node"), Op::kEqual,
@@ -1204,6 +1230,7 @@ class EdgeService {
         capability.set<"modemControl">(row[23].value().value_or(std::string_view{}) == "t");
         capability.set<"terminal">(row[24].value().value_or(std::string_view{}) == "t");
         capability.set<"logs">(row[25].value().value_or(std::string_view{}) == "t");
+        capability.set<"serialDebug">(row[50].value().value_or(std::string_view{}) == "t");
         VpnCapabilityDto vpn(ruvia::ModelOptions{.resource = c.arena()});
         vpn.set<"supportsVpn">(row[43].value().value_or(std::string_view{}) == "t");
         vpn.set<"wireguardVersion">(row[44].value().value_or(std::string_view{}));

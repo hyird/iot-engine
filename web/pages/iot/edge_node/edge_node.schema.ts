@@ -1,6 +1,55 @@
 import { z } from 'zod';
 import { pageParamsSchema } from '@/utils/pagination';
 
+export const serialSettingsSchema = z.object({
+    baudRate: z
+        .number()
+        .int()
+        .refine(
+            (value) =>
+                [
+                    300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800,
+                ].includes(value),
+            '请选择支持的波特率'
+        ),
+    dataBits: z.number().int().min(5).max(8),
+    stopBits: z.union([z.literal(1), z.literal(2)]),
+    parity: z.enum(['none', 'even', 'odd']),
+    rs485: z.boolean(),
+});
+export const serialDebugTicketSchema = z.object({
+    path: z
+        .string()
+        .min(1)
+        .max(96)
+        .regex(/^\/dev\/[^\r\n]+$/, '串口路径无效'),
+});
+export const serialDebugEventSchema = z.object({
+    kind: z.enum(['state', 'data', 'sent', 'error', 'closed']),
+    requestId: z.number().int().nonnegative().optional(),
+    manual: z.boolean().optional(),
+    direction: z.enum(['RX', 'TX', '']).optional(),
+    hex: z
+        .string()
+        .max(2048)
+        .regex(/^(?:[0-9a-fA-F]{2})*$/)
+        .optional(),
+    timestamp: z.number().optional(),
+    sequence: z.number().int().nonnegative().optional(),
+    droppedBytes: z.number().int().nonnegative().optional(),
+    message: z.string().optional(),
+    settings: z
+        .object({
+            path: z.string(),
+            baudRate: z.number(),
+            dataBits: z.number(),
+            stopBits: z.number(),
+            parity: z.string(),
+            rs485: z.boolean(),
+        })
+        .optional(),
+});
+
 const enrollmentStatusSchema = z.enum(['pending', 'approved']);
 function parseIpv4(value: string) {
     const parts = value.split('.');

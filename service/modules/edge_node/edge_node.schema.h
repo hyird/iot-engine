@@ -9,6 +9,12 @@
 
 namespace service::edge {
 
+class SerialDebugTicketValidator final : public ruvia::Middleware<SerialDebugTicketValidator> {
+  public:
+    RUVIA_VALIDATE_JSON(SerialDebugTicketRequest,
+        RUVIA_RULE(path, RUVIA_REQUIRED("请选择串口"), RUVIA_MAX(96, "串口路径过长")));
+};
+
 inline bool isUciSectionName(const ruvia::String& value) {
     const auto text = value.view();
     if (text.empty() || text.size() > 15)

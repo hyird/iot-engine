@@ -27,6 +27,7 @@
 #include "service/features/edge/gateway/gateway.types.h"
 #include "service/features/edge/session/session.service.h"
 #include "service/features/edge/terminal/terminal.service.h"
+#include "service/features/edge/serial_debug/serial_debug.runtime.h"
 #include "service/features/live/live.service.h"
 
 namespace service::edge {
@@ -52,6 +53,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         },
     };
     RUVIA_GET_WS_OPTIONS("/connect", connect, webSocketOptions);
+    RUVIA_GET_WS_OPTIONS("/serial", serialDebug, webSocketOptions, GatewayTicketValidator);
     RUVIA_GET_WS_OPTIONS(
         "/terminal",
         terminal,
@@ -333,6 +335,11 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         if (sessionFailure) {
             std::rethrow_exception(sessionFailure);
         }
+    }
+
+    ruvia::Task<void> serialDebug(ruvia::Context& c) {
+        const auto& query = c.req().validated<gateway::TerminalTicketQuery>();
+        co_await serial_debug::Runtime::serve(c, query.get<"ticket">()->view());
     }
 
     ruvia::Task<void> terminal(ruvia::Context& c) {
@@ -686,6 +693,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         auto& socket = *live->socket;
         auto& session = *live->session;
         const std::string terminalKey = terminal_state::terminalInputKey(session.nodeId);
+        const auto serialKey = service::message::serial_debug::inputKey(session.nodeId);
         const std::string configKey = "iot:edge:config:" + session.nodeId;
         const std::string egressKey = "iot:edge:egress:" + session.nodeId;
         const std::string commandKey = "iot:v2:edge:commands:" + session.nodeId;
@@ -709,10 +717,11 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                     }
                     const auto keystrokes =
                         co_await drainKey(c, socket, session, terminalKey, 64);
+                    const auto serialRequests = co_await drainKey(c, socket, session, serialKey, 64);
                     const auto commands =
                         co_await drainKey(c, socket, session, commandKey, 64);
                     const auto tasks = co_await drainKey(c, socket, session, egressKey, 64);
-                    if (replies + configs + keystrokes + commands + tasks == 0) {
+                    if (replies + configs + keystrokes + serialRequests + commands + tasks == 0) {
                         break;
                     }
                 }
@@ -746,6 +755,13 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         if (!protocol::decode(item, envelope)) {
             co_return false;
         }
+        if (envelope.has_serial_debug_request()) {
+            const auto now = service::message::utcNowMilliseconds();
+            if (envelope.session_epoch() != session.epoch ||
+                envelope.protocol_version() != session.protocolVersion ||
+                envelope.created_at_ms() > now || now - envelope.created_at_ms() > 15000)
+                co_return false;
+        }
         if (envelope.has_command_request()) {
             const auto id = protocol::uuidText(envelope.command_request().command_id());
             // Claim physical transmission once, including across reconnects. Other Edge tasks
@@ -772,7 +788,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             // Popping transfers ownership to this session. Put the command back
             // before forcing a reconnect so a transient socket failure cannot
             // leave its database task pending forever.
-            if (!envelope.has_command_request()) {
+            if (!envelope.has_command_request() && !envelope.has_serial_debug_request()) {
                 (void)co_await c.redis().lpush(key, item);
             }
             std::rethrow_exception(failure);
@@ -1029,6 +1045,11 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 enqueue(session, reply);
                 break;
             }
+            case pb::Envelope::kSerialDebugEvent:
+                co_await serial_debug::Service::saveEvent(c, session.nodeId,
+                    session_state::value(session.epoch, session.protocolVersion, session.workerIndex),
+                    input.serial_debug_event());
+                break;
             case pb::Envelope::kTerminalData:
                 co_await terminal_state::TerminalService::saveTerminalData(c, terminalIdentity(session), input.terminal_data());
                 break;

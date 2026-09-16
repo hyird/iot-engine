@@ -353,6 +353,10 @@ iot_engine_add_test(edge-protocol
     SOURCES tests/edge-protocol-test.cpp
     LIBRARIES edgenode-protocol ruvia::web)
 
+iot_engine_add_test(edge-serial-debug
+    SOURCES tests/edge-serial-debug-test.cpp
+    LIBRARIES edgenode-protocol ruvia::web)
+
 iot_engine_add_test(telemetry-contract
     SOURCES tests/telemetry-contract-test.cpp
     LIBRARIES ruvia::web OpenSSL::Crypto)

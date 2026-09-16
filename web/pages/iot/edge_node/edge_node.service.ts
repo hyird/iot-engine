@@ -1,8 +1,10 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import { SnapshotStream } from '@/lib/snapshot-stream';
 import {
+    getSerialDebugTicket,
+    openSerialDebugSocket,
     captureLogs,
     configureNetwork,
     createEdgeGroup,
@@ -31,6 +33,7 @@ import {
     upgradeFirmware,
 } from './edge_node.api';
 import type { Edge, EdgeVpn } from './edge_node.types';
+import { serialDebugEventSchema, serialSettingsSchema } from './edge_node.schema';
 import { edgeQueryKeys, edgeVpnQueryKeys } from './edge_node.types';
 export { getWindowsClientDownloadUrl } from './edge_node.api';
 const buildGroupTree = (items: Edge.GroupItem[]) => {
@@ -44,6 +47,258 @@ const buildGroupTree = (items: Edge.GroupItem[]) => {
     }
     return roots;
 };
+
+export function serialPayloadHex(value: string, mode: 'hex' | 'text', ending = ''): string {
+    if (mode === 'hex') {
+        const hex = value.replace(/\s/g, '');
+        if (!hex || hex.length % 2 || !/^[0-9a-f]+$/i.test(hex))
+            throw new Error('HEX 数据必须是完整字节，例如 01 03 00 00 00 02 C4 0B');
+        if (hex.length > 2048) throw new Error('每次最多发送 1024 字节');
+        return hex.toUpperCase();
+    }
+    const bytes = new TextEncoder().encode(value + ending);
+    if (!bytes.length || bytes.length > 1024) throw new Error('每次发送 1–1024 字节');
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0'))
+        .join('')
+        .toUpperCase();
+}
+
+const defaultSerialSettings: Edge.SerialSettings = {
+    baudRate: 9600,
+    dataBits: 8,
+    stopBits: 1,
+    parity: 'none',
+    rs485: false,
+};
+
+const serialNotices: Record<string, string> = {
+    'platform connection closed': '节点与平台的连接已断开',
+    'device configuration changed; reopen serial debug': '设备配置已更新，请重新打开串口调试',
+    'another serial session is active or this session expired': '已有其他调试会话或当前会话已过期',
+    'acquisition worker unavailable': '节点采集进程暂不可用，请稍后重新连接',
+    'this platform already has a serial debug session': '当前平台已有串口调试会话，请先关闭原窗口',
+    'serial port is not advertised': '该串口未在节点上启用',
+    'serial debug session expired or acquisition restarted':
+        '调试会话已过期或采集进程已重启，请重新连接',
+    'serial debug closed': '串口调试已关闭',
+    'serial write still pending': '上一次发送尚未完成，请稍后操作',
+    'invalid serial settings': '串口参数无效',
+    'another platform controls this serial port': '其他平台正在手动调试此串口',
+    'device transaction pending; retry after it completes': '设备正在执行操作，请完成后再暂停采集',
+    'cannot configure serial port': '无法应用串口参数，已恢复自动采集',
+    'pause automatic acquisition before manual sending': '请先暂停自动采集，再手动发送',
+    'serial debug lease expired': '调试会话超时，已恢复自动采集',
+    'cannot open serial port': '无法打开串口，请检查节点设备',
+    'serial write failed; some bytes may have been sent':
+        '发送失败，部分字节可能已发送，请核实后再操作',
+    'serial device disconnected': '串口设备已断开',
+    'serial read failed': '串口读取失败',
+};
+
+export function useSerialDebug(nodeId: string, path: string) {
+    const [connection, setConnection] = useState<'connecting' | 'ready' | 'closed'>('connecting');
+    const [manual, setManual] = useState(false);
+    const [settings, setSettings] = useState<Edge.SerialSettings>(defaultSerialSettings);
+    const [frames, setFrames] = useState<Edge.SerialFrame[]>([]);
+    const [counts, setCounts] = useState({ tx: 0, rx: 0, dropped: 0 });
+    const [notice, setNotice] = useState('');
+    const [pending, setPending] = useState(false);
+    const [attempt, setAttempt] = useState(0);
+    const socketRef = useRef<WebSocket | null>(null);
+    const sequenceRef = useRef(1);
+    const pendingRef = useRef<{ id: number; timer: ReturnType<typeof setTimeout> } | null>(null);
+    const readyRef = useRef(false);
+
+    useEffect(() => {
+        void attempt;
+        let disposed = false;
+        let lastSequence = 0;
+        let rx = 0;
+        let tx = 0;
+        let dropped = 0;
+        let lastDropped = 0;
+        let rowId = 0;
+        let received = false;
+        let queued: Edge.SerialFrame[] = [];
+        const decoders = { RX: new TextDecoder(), TX: new TextDecoder() };
+        sequenceRef.current = 1;
+        readyRef.current = false;
+        setConnection('connecting');
+        setManual(false);
+        setNotice('');
+        setFrames([]);
+        setCounts({ tx: 0, rx: 0, dropped: 0 });
+        const finishPending = () => {
+            if (pendingRef.current) clearTimeout(pendingRef.current.timer);
+            pendingRef.current = null;
+            setPending(false);
+        };
+        finishPending();
+        const flush = setInterval(() => {
+            if (disposed || !received) return;
+            const batch = queued;
+            queued = [];
+            received = false;
+            if (batch.length) setFrames((previous) => [...previous, ...batch].slice(-200));
+            setCounts({ tx, rx, dropped });
+        }, 80);
+        const heartbeat = setInterval(() => {
+            const socket = socketRef.current;
+            if (
+                readyRef.current &&
+                socket?.readyState === WebSocket.OPEN &&
+                socket.bufferedAmount < 8192
+            ) {
+                socket.send(
+                    JSON.stringify({ action: 'keepalive', requestId: ++sequenceRef.current })
+                );
+            }
+        }, 10000);
+        getSerialDebugTicket(nodeId, path)
+            .then(({ ticket }) => {
+                if (disposed) return;
+                const socket = openSerialDebugSocket(ticket);
+                socketRef.current = socket;
+                socket.onmessage = (message) => {
+                    if (disposed) return;
+                    try {
+                        const event = serialDebugEventSchema.parse(JSON.parse(message.data));
+                        if (event.sequence !== undefined) {
+                            if (lastSequence && event.sequence > lastSequence + 1)
+                                setNotice(
+                                    '部分监听记录因链路拥塞被省略；收发计数仅包含已收到的数据'
+                                );
+                            lastSequence = event.sequence;
+                        }
+                        if (event.droppedBytes !== undefined && event.droppedBytes > lastDropped) {
+                            dropped += event.droppedBytes - lastDropped;
+                            lastDropped = event.droppedBytes;
+                            received = true;
+                        }
+                        if (event.kind === 'state' || event.kind === 'error') {
+                            readyRef.current = true;
+                            setConnection('ready');
+                            setManual(event.manual ?? false);
+                            const parsed = serialSettingsSchema.safeParse(event.settings);
+                            if (parsed.success)
+                                setSettings((previous) =>
+                                    JSON.stringify(previous) === JSON.stringify(parsed.data)
+                                        ? previous
+                                        : parsed.data
+                                );
+                        }
+                        if (
+                            event.kind === 'state' ||
+                            event.kind === 'sent' ||
+                            event.kind === 'error'
+                        ) {
+                            if (pendingRef.current?.id === event.requestId) finishPending();
+                            if (event.kind === 'error')
+                                setNotice(
+                                    serialNotices[event.message ?? ''] ||
+                                        event.message ||
+                                        '节点拒绝了操作'
+                                );
+                            if (event.kind === 'sent') setNotice('数据已写入串口');
+                        }
+                        if (
+                            event.kind === 'data' &&
+                            event.hex &&
+                            (event.direction === 'RX' || event.direction === 'TX')
+                        ) {
+                            const bytes = Uint8Array.from(event.hex.match(/../g) ?? [], (hex) =>
+                                Number.parseInt(hex, 16)
+                            );
+                            if (event.direction === 'RX') rx += bytes.length;
+                            else tx += bytes.length;
+                            queued.push({
+                                id: ++rowId,
+                                timestamp: event.timestamp ?? Date.now(),
+                                direction: event.direction,
+                                hex: event.hex,
+                                text: decoders[event.direction].decode(bytes, { stream: true }),
+                            });
+                            if (queued.length > 200) queued = queued.slice(-200);
+                            received = true;
+                        }
+                        if (event.kind === 'closed') {
+                            setNotice(
+                                serialNotices[event.message ?? ''] ||
+                                    event.message ||
+                                    '串口调试已结束'
+                            );
+                            socket.close();
+                        }
+                    } catch {
+                        setNotice('串口调试数据格式错误，连接已关闭');
+                        socket.close();
+                    }
+                };
+                socket.onerror = () => {
+                    if (!disposed) setNotice('串口调试连接失败');
+                };
+                socket.onclose = () => {
+                    if (disposed) return;
+                    readyRef.current = false;
+                    setConnection('closed');
+                    setManual(false);
+                    if (pendingRef.current)
+                        setNotice('连接中断，最后一次操作结果未知；请勿直接重复发送');
+                    finishPending();
+                };
+            })
+            .catch(() => {
+                if (!disposed) {
+                    setConnection('closed');
+                    setNotice('无法打开串口调试，请检查节点状态和固件能力');
+                }
+            });
+        return () => {
+            disposed = true;
+            readyRef.current = false;
+            clearInterval(flush);
+            clearInterval(heartbeat);
+            if (pendingRef.current) clearTimeout(pendingRef.current.timer);
+            pendingRef.current = null;
+            socketRef.current?.close();
+            socketRef.current = null;
+        };
+    }, [nodeId, path, attempt]);
+
+    const send = (
+        action: 'manual' | 'monitor' | 'write',
+        payload: Partial<Edge.SerialSettings> & { hex?: string } = {}
+    ) => {
+        const socket = socketRef.current;
+        if (!readyRef.current || socket?.readyState !== WebSocket.OPEN || pendingRef.current)
+            throw new Error('串口尚未就绪或正在等待操作结果');
+        if (socket.bufferedAmount > 8192) throw new Error('连接拥塞，请稍后发送');
+        if (action === 'manual') serialSettingsSchema.parse(payload);
+        const requestId = ++sequenceRef.current;
+        const timer = setTimeout(() => {
+            pendingRef.current = null;
+            setPending(false);
+            setNotice('操作确认超时，结果未知；请重新连接核实，避免重复发送');
+            socket.close();
+        }, 20000);
+        pendingRef.current = { id: requestId, timer };
+        setPending(true);
+        setNotice('');
+        socket.send(JSON.stringify({ action, requestId, ...payload }));
+    };
+    return {
+        connection,
+        manual,
+        settings,
+        frames,
+        counts,
+        notice,
+        pending,
+        send,
+        reconnect: () => setAttempt((value) => value + 1),
+        clear: () => setFrames([]),
+    };
+}
 export function buildEdgeNodeGroupView(
     groups: Edge.GroupTreeItem[],
     nodes: Edge.Node[],

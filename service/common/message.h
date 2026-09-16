@@ -19,6 +19,18 @@
 #include "service/utils/json.h"
 #include "service/utils/network.h"
 
+namespace service::message::serial_debug {
+inline std::string ticketKey(std::string_view ticket) {
+    return "iot:edge:serial:ticket:" + std::string(ticket);
+}
+inline std::string inputKey(std::string_view nodeId) {
+    return "iot:edge:serial:input:" + std::string(nodeId);
+}
+inline std::string outputKey(std::string_view nodeId, std::string_view sessionId) {
+    return "iot:edge:serial:output:" + std::string(nodeId) + ":" + std::string(sessionId);
+}
+} // namespace service::message::serial_debug
+
 namespace service::message::vpn {
 
 // Shared VPN address contract. It contains only immutable values and pure mapping logic.

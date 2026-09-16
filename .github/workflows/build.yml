@@ -91,6 +91,7 @@ jobs:
           ./tests/frontend-architecture-test.ts
           ./tests/edge-group-view-test.ts
           ./tests/terminal-protocol-test.ts
+          ./tests/edge-serial-debug-test.ts
           ./tests/command-validation-test.ts
           ./tests/protocol-schema-test.ts
           ./tests/device-status-test.ts

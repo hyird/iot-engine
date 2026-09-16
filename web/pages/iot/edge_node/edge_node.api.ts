@@ -3,6 +3,7 @@ import type { PaginatedResult } from '@/types/pagination';
 import { appendQueryParams } from '@/utils/query';
 import { createSnapshotStream } from '@/lib/snapshot-request';
 import {
+    serialDebugTicketSchema,
     edgeGroupSchema,
     edgeIdSchema,
     edgeListQuerySchema,
@@ -83,6 +84,19 @@ export const upgradeFirmware = (
             : undefined,
     });
 };
+export const getSerialDebugTicket = (id: string, path: string) =>
+    request.post<{ ticket: string }>(
+        `${BASE}/${edgeIdSchema.parse(id)}/serial-ticket`,
+        serialDebugTicketSchema.parse({ path })
+    );
+
+export function openSerialDebugSocket(ticket: string): WebSocket {
+    const transport = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return new WebSocket(
+        `${transport}//${window.location.host}/edge/v1/serial?ticket=${encodeURIComponent(ticket)}`
+    );
+}
+
 export const getTerminalTicket = (id: string) =>
     request.post<{
         ticket: string;
