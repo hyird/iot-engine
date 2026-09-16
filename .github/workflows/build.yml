@@ -104,7 +104,6 @@ jobs:
 
   ubuntu_build:
     name: Ubuntu build
-    needs: windows_client
     runs-on: ubuntu-24.04
     env:
       CC: clang-19
@@ -199,28 +198,19 @@ jobs:
           "$UPX_BIN" --best --lzma build/artifact/iot-engine
           "$UPX_BIN" --test build/artifact/iot-engine
 
-      - name: Download Windows client for source-site distribution
-        uses: actions/download-artifact@v8
-        with:
-          name: iot-engine-Windows-client-X64-${{ github.sha }}
-          path: build/artifact/web/downloads
+      - name: Archive Linux build output
+        run: tar -C build/artifact -czf build/linux-build.tar.gz .
 
-      - name: Include Windows client in deployment archive
-        run: |
-          (cd build/artifact/web/downloads && sha256sum --check iot-egine-Setup-x64.exe.sha256)
-          tar -C build/artifact -czf "build/iot-engine-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz" .
-
-      - name: Upload artifact
+      - name: Upload Linux build output
         uses: actions/upload-artifact@v7
         with:
-          name: iot-engine-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
-          path: build/iot-engine-${{ runner.os }}-${{ runner.arch }}.tar.gz
+          name: linux-build-${{ github.sha }}
+          path: build/linux-build.tar.gz
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
 
   windows_build:
     name: Windows MSVC build
-    needs: windows_client
     runs-on: windows-2025
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
@@ -314,6 +304,71 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
               throw "UPX verification failed with exit code $LASTEXITCODE"
           }
+
+      - name: Archive Windows build output
+        run: Compress-Archive -Path build/artifact/* -DestinationPath build/windows-build.zip
+
+      - name: Upload Windows build output
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-build-${{ github.sha }}
+          path: build/windows-build.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  ubuntu_package:
+    name: Linux deployment package
+    needs: [ubuntu_build, windows_client, web_quality]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download Linux build output
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-build-${{ github.sha }}
+          path: build
+
+      - name: Restore Linux build output
+        run: |
+          mkdir -p build/artifact
+          tar -xzf build/linux-build.tar.gz -C build/artifact
+          test -x build/artifact/iot-engine
+          test -s build/artifact/web/index.html
+
+      - name: Download Windows client for source-site distribution
+        uses: actions/download-artifact@v8
+        with:
+          name: iot-engine-Windows-client-X64-${{ github.sha }}
+          path: build/artifact/web/downloads
+
+      - name: Include Windows client in deployment archive
+        run: |
+          (cd build/artifact/web/downloads && sha256sum --check iot-egine-Setup-x64.exe.sha256)
+          tar -C build/artifact -czf "build/iot-engine-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: iot-engine-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          path: build/iot-engine-${{ runner.os }}-${{ runner.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  windows_package:
+    name: Windows deployment package
+    needs: [windows_build, windows_client, web_quality]
+    runs-on: windows-2025
+    steps:
+      - name: Download Windows build output
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-build-${{ github.sha }}
+          path: build
+
+      - name: Restore Windows build output
+        run: |
+          Expand-Archive -Path build/windows-build.zip -DestinationPath build/artifact
+          if (!(Test-Path build/artifact/iot-engine.exe)) { throw 'Missing server executable' }
+          if (!(Test-Path build/artifact/web/index.html)) { throw 'Missing frontend entry' }
 
       - name: Download Windows client for source-site distribution
         uses: actions/download-artifact@v8
