@@ -318,8 +318,7 @@ export function formatDebugTerminal(
             const values = parsed?.values ?? parsed;
             if (!values || typeof values !== 'object' || Array.isArray(values))
                 throw new Error('invalid values');
-            lines.push(`${indent}解析结果：`);
-            for (const [key, point] of Object.entries(values)) {
+            const results = Object.entries(values).map(([key, point]) => {
                 const item =
                     typeof point === 'object' && point !== null
                         ? (point as Record<string, unknown>)
@@ -330,11 +329,9 @@ export function formatDebugTerminal(
                         : typeof item.value === 'object'
                           ? JSON.stringify(item.value)
                           : item.value;
-                lines.push(
-                    `${indent}  ${clean(item.name ?? key)} = ${clean(value)} ${clean(item.unit)}`.trimEnd()
-                );
-            }
-            if (!Object.keys(values).length) lines.push(`${indent}  本条应答无要素值`);
+                return `${clean(item.name ?? key)} = ${clean(value)} ${clean(item.unit)}`.trimEnd();
+            });
+            lines.push(`${indent}解析结果：${results.join('  |  ') || '本条应答无要素值'}`);
         } catch {
             lines.push(`${indent}解析数据格式无效`);
         }
@@ -358,10 +355,20 @@ export function formatDebugTerminal(
             lines.push(
                 `${time(round.startedAt)}  ${clean(protocol)}  ${state} · 发送 ${round.sent} / 接收 ${round.received}`
             );
-            for (const response of responses) {
-                lines.push(`  ├─ ${clean(describeProtocolPacket(protocol, response))}`);
-                writePacket(response, '  │  ', false);
-            }
+            const writeBranch = (branch: PacketBranch, prefix: string, last: boolean) => {
+                lines.push(
+                    `${prefix}${last ? '└─' : '├─'} ${clean(describeProtocolPacket(protocol, branch.packet))}`
+                );
+                const indent = `${prefix}${last ? '   ' : '│  '}`;
+                writePacket(branch.packet, indent, false);
+                branch.children.forEach((child, index) => {
+                    writeBranch(child, indent, index === branch.children.length - 1);
+                });
+            };
+            const branches = buildPacketTree(responses);
+            branches.forEach((branch, index) => {
+                writeBranch(branch, '  ', index === branches.length - 1);
+            });
             lines.push('');
         }
     }

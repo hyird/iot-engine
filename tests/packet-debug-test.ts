@@ -69,7 +69,7 @@ import {formatDebugTerminal} from '../web/utils/packet_debug';
 test('纯文本终端：设备整轮一段，链路无轮次与解析结果，过滤终端控制字符', () => {
     const rounds: DebugAcquisition[] = [{id:'round',started_at_ms:'1000',last_packet_at_ms:'1001',state:'success',packets:[packet('09DE00000006010300000002','TX','tx'),{...packet('09DE0000000701030440400000','RX','rx','tx'),parsed_json:JSON.stringify({values:{level:{name:'水位',value:3,unit:'m'}}}),reason:'bad\u001b[2J\u0007'}]}];
     const device=formatDebugTerminal('device','Modbus',rounds);
-    expect(device).toContain('├─ TCP');
+    expect(device).toContain('└─ TCP');
     expect(device.match(/解析结果：/g)).toHaveLength(1);
     expect(device).toContain('↑ TX');
     expect(device).not.toContain('本轮解析结果');
@@ -91,4 +91,23 @@ test('应答逐条展示各自解析结果，不将其他应答结果填到缺�
     expect(output).not.toContain('wrong');
     expect(output).not.toContain('入库');
     expect(output).toContain('暂无本条应答的解析结果');
+});
+
+
+test('终端将交错收发按请求关联成组，解析值在同一文本行横向排列', () => {
+    const tx1 = {...packet('125A00000006010200010004','TX','tx1'),time_ms:'11'};
+    const tx2 = {...packet('125B0000000601020401000B','TX','tx2'),time_ms:'22'};
+    const rx1 = {...packet('125A0000000401020104','RX','rx1','tx1'),time_ms:'22',parsed_json:JSON.stringify({values:{a:{name:'A机械下限',value:0},b:{name:'A手自动',value:1}}})};
+    const rx2 = {...packet('125B000000050102020000','RX','rx2','tx2'),time_ms:'24'};
+    const rounds: DebugAcquisition[] = [{id:'round',started_at_ms:'11',last_packet_at_ms:'24',state:'success',packets:[tx1,tx2,rx1,rx2]}];
+    const device = formatDebugTerminal('device','Modbus',rounds);
+    expect(device.indexOf(tx1.payload_hex)).toBeLessThan(device.indexOf(rx1.payload_hex));
+    expect(device.indexOf(rx1.payload_hex)).toBeLessThan(device.indexOf(tx2.payload_hex));
+    expect(device.indexOf(tx2.payload_hex)).toBeLessThan(device.indexOf(rx2.payload_hex));
+    expect(device.split('\r\n').filter(line=>line.includes('解析结果：'))).toEqual(['  │     解析结果：A机械下限 = 0  |  A手自动 = 1']);
+    for(const p of [tx1,tx2,rx1,rx2]) expect(device.split(p.payload_hex)).toHaveLength(2);
+    // 链路日志依然保留真实时间顺序。
+    const link = formatDebugTerminal('link','Modbus',rounds);
+    expect(link.indexOf(tx1.payload_hex)).toBeLessThan(link.indexOf(rx1.payload_hex));
+    expect(link).not.toContain('解析结果：');
 });
