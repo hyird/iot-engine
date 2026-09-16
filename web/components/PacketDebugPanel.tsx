@@ -146,6 +146,9 @@ function PacketTerminal(props: Props) {
             disableStdin: true,
             convertEol: true,
             scrollback: 100000,
+            smoothScrollDuration: window.matchMedia('(prefers-reduced-motion: reduce)').matches
+                ? 0
+                : 180,
             fontSize: 13,
             lineHeight: 1.5,
             fontFamily: 'Consolas, "Cascadia Mono", "Courier New", monospace',

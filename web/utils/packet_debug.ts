@@ -306,6 +306,38 @@ export function formatDebugTerminal(
         );
         lines.push(`${indent}${clean(packet.payload_hex)}`);
         if (packet.reason) lines.push(`${indent}原因：${clean(packet.reason)}`);
+        if (link || sending) return;
+        if (!packet.parsed_json) {
+            lines.push(
+                `${indent}解析：${packet.parse_status === 'failed' ? '解析失败' : '暂无本条应答的解析结果'}`
+            );
+            return;
+        }
+        try {
+            const parsed = JSON.parse(packet.parsed_json);
+            const values = parsed?.values ?? parsed;
+            if (!values || typeof values !== 'object' || Array.isArray(values))
+                throw new Error('invalid values');
+            lines.push(`${indent}解析结果：`);
+            for (const [key, point] of Object.entries(values)) {
+                const item =
+                    typeof point === 'object' && point !== null
+                        ? (point as Record<string, unknown>)
+                        : { value: point };
+                const value =
+                    item.value == null
+                        ? '—'
+                        : typeof item.value === 'object'
+                          ? JSON.stringify(item.value)
+                          : item.value;
+                lines.push(
+                    `${indent}  ${clean(item.name ?? key)} = ${clean(value)} ${clean(item.unit)}`.trimEnd()
+                );
+            }
+            if (!Object.keys(values).length) lines.push(`${indent}  本条应答无要素值`);
+        } catch {
+            lines.push(`${indent}解析数据格式无效`);
+        }
     };
     if (scope === 'link') {
         for (const packet of flattenAcquisitionPackets(acquisitions).reverse()) {
@@ -321,47 +353,14 @@ export function formatDebugTerminal(
                 failed: '采集失败',
                 unreported: '未上报轮次',
             }[round.state];
-            const storage = {
-                stored: '已入库',
-                pending: '待入库',
-                failed: '入库失败',
-                skipped: '未保存',
-            }[round.storage_status ?? ''];
+            const responses = round.packets;
+            if (!responses.length) continue;
             lines.push(
-                `${time(round.startedAt)}  ${clean(protocol)}  ${state} · ${Math.max(0, round.updatedAt - round.startedAt)} ms${storage ? ` · ${storage}` : ''}  发 ${round.sent} / 收 ${round.received}`
+                `${time(round.startedAt)}  ${clean(protocol)}  ${state} · 发送 ${round.sent} / 接收 ${round.received}`
             );
-            const writeBranch = (branch: PacketBranch, indent: string) => {
-                lines.push(`${indent}├─ ${clean(describeProtocolPacket(protocol, branch.packet))}`);
-                writePacket(branch.packet, `${indent}│  `, false);
-                for (const child of branch.children) writeBranch(child, `${indent}│  `);
-            };
-            for (const branch of buildPacketTree(round.packets)) writeBranch(branch, '  ');
-            lines.push('  └─ 本轮解析结果');
-            if (!round.parsed_json) lines.push('     暂无解析结果');
-            else {
-                try {
-                    const parsed = JSON.parse(round.parsed_json);
-                    const values = parsed?.values ?? parsed;
-                    if (!values || typeof values !== 'object' || Array.isArray(values))
-                        throw new Error('invalid values');
-                    for (const [key, point] of Object.entries(values)) {
-                        const item =
-                            typeof point === 'object' && point !== null
-                                ? (point as Record<string, unknown>)
-                                : { value: point };
-                        const value =
-                            item.value == null
-                                ? '—'
-                                : typeof item.value === 'object'
-                                  ? JSON.stringify(item.value)
-                                  : item.value;
-                        lines.push(
-                            `     ${clean(item.name ?? key)} = ${clean(value)} ${clean(item.unit)}`.trimEnd()
-                        );
-                    }
-                } catch {
-                    lines.push('     解析数据格式无效');
-                }
+            for (const response of responses) {
+                lines.push(`  ├─ ${clean(describeProtocolPacket(protocol, response))}`);
+                writePacket(response, '  │  ', false);
             }
             lines.push('');
         }
