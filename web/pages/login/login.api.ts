@@ -1,25 +1,17 @@
-import type { RequestConfig } from '@/lib/http';
-import request from '@/lib/http';
-import { createSnapshotStream } from '@/lib/snapshot-request';
+import request, { type RequestConfig } from '@/lib/http';
+import { createSharedSseSnapshotStream } from '@/lib/snapshot-request';
 import { loginSchema, refreshTokenSchema } from './login.schema';
 import type { Auth } from './login.types';
 
-/** API 端点 */
-const ENDPOINTS = {
-    LOGIN: '/v1/auth/login',
-    REFRESH: '/v1/auth/refresh',
-    ME: '/v1/auth/me',
-    LOGOUT: '/v1/auth/logout',
-} as const;
 /** 登录 */
 export function login(params: Auth.LoginRequest) {
-    return request.post<Auth.LoginResult>(ENDPOINTS.LOGIN, loginSchema.parse(params));
+    return request.post<Auth.LoginResult>('/v1/auth/login', loginSchema.parse(params));
 }
 /** 刷新 Token */
 export function refreshToken(refreshToken: string, config?: RequestConfig) {
     const validatedToken = refreshTokenSchema.parse(refreshToken);
     return request.post<Auth.RefreshResult>(
-        ENDPOINTS.REFRESH,
+        '/v1/auth/refresh',
         {
             refresh_token: validatedToken,
         },
@@ -27,10 +19,14 @@ export function refreshToken(refreshToken: string, config?: RequestConfig) {
     );
 }
 /** 获取当前用户信息 */
-export function fetchCurrentUser(config?: RequestConfig) {
-    return createSnapshotStream<Auth.UserInfo>(ENDPOINTS.ME, config);
+export function fetchCurrentUser(signal?: AbortSignal) {
+    return request.get<Auth.UserInfo>('/v1/auth/me', { signal });
+}
+/** 仅观察已有实时连接，不建立独立订阅。 */
+export function observeCurrentUser() {
+    return createSharedSseSnapshotStream<Auth.UserInfo>('user');
 }
 /** 登出 */
 export function logout(config?: RequestConfig) {
-    return request.post<void>(ENDPOINTS.LOGOUT, undefined, config);
+    return request.post<void>('/v1/auth/logout', undefined, config);
 }

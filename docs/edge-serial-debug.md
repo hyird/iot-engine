@@ -14,12 +14,13 @@
 
 ## 传输与清理
 
-`POST /v1/edge/:id/serial-ticket` 签发绑定节点连接和串口的 30 秒一次性票据。
-浏览器连接 `/edge/v1/serial?ticket=...`。Service Worker 与持有节点连接的 Collector Worker 通过 Redis 指令和回执交互，保持节点连接归属。
+串口使用平台共享的 `/v1/channel` WebSocket，消息采用 JSON，不再创建独立串口连接或签发串口票据。
+通道内 `POST /v1/edge/:id/serial` 打开会话，`GET /v1/edge/:id/serial/:sessionId` 订阅事件，同路径 `POST` 发送指令、`DELETE` 关闭会话；这些地址是通道内的操作标识，不提供 HTTP 回退。
+会话绑定用户、浏览器 WS 连接和节点完整连接身份。Service Worker 与持有节点连接的 Collector Worker 通过 Redis 指令和回执交互，保持两端各自的连接归属。
 
 节点通过新增 `SerialDebugRequest` / `SerialDebugEvent` 收发数据。请求使用会话身份与递增序号，旧会话、旧连接和重复发送不会复用；指令队列最多 64 条，过期 15 秒，事件队列最多 256 条，浏览器保留最近 200 条。监听拥塞允许省略记录并显示提示；收发统计仅反映收到的数据。
 
-浏览器每 10 秒续期，平台在 40 秒无输入后结束连接，固件独立的 60 秒租约兜底恢复采集。节点重启、配置替换和平台连接断开也会清理会话。
+事件写入 Redis 时原子发布通知，共享 WS 按游标推送新增事件，不定时查询串口数据。浏览器每 10 秒发送会话续期指令。关闭窗口显式释放会话，共享 WS 断开时后端发送关闭指令；进程异常等情况由 Redis 与固件的 60 秒租约兜底。节点重启、配置替换和平台连接断开也会清理会话。
 
 ## 固件与兼容性
 
@@ -29,15 +30,15 @@
 
 ## 验证
 
-- `tests/edge-serial-debug-test.cpp`：参数、HEX、序号及票据校验。
+- `tests/edge-serial-debug-test.cpp`：参数、HEX、序号及连接绑定校验。
 - `tests/edge-serial-debug-test.ts`：HEX、UTF-8、换行和参数约束。
-- `tests/edge-serial-debug-integration.ts`：使用 `architecture-fixture.ts` 指定的本机临时数据库、Redis 与 API，验证真实票据、WebSocket、Redis、字节转发、恢复、关闭及旧固件能力限制。
+- `tests/edge-serial-debug-integration.ts`：使用 `architecture-fixture.ts` 指定的本机临时数据库、Redis 与 API，验证共享 WS、连接归属、事件游标、重复指令拦截、字节转发、恢复、断线关闭及旧固件能力限制。
 - 固件 `edge_acquisition_test`：Linux 伪终端验证自动监听、手动收发、重复请求、跨平台互斥、恢复、进程重启及租约过期。
 - 实际 React 弹窗在桌面和 390px 窄屏下验证，页面测试使用模拟节点数据；后端联调与固件伪终端测试分别覆盖真实服务和串口路径。
 
 完整设备固件镜像须按固件仓库 `AGENTS.md` 在指定构建机从已提交源码构建；主机测试不能替代设备刷写后的硬件验证。
 
-### 本次本地验证记录（2026-09-16）
+### 共享 WS 改造前的串口功能验证记录（2026-09-16）
 
 前端类型检查、lint、生产构建、修改文件 Biome 格式检查及 3 个编码测试通过；lint 有一条其他文件的既有提示。Windows 后端 Release 构建通过，CTest 32/33 通过，串口相关测试通过；失败项为 `gb28181-sip` 的 IPv6 UDP 报文投递用例，本次未修改该功能。
 

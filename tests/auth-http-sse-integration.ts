@@ -1,0 +1,101 @@
+import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
+import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
+import { openSnapshotSubscription } from './sse-fixture';
+const subscribe = (bearer: string) => openSnapshotSubscription('/v1/auth/me/events', bearer);
+
+const sql = new Bun.SQL(databaseUrl);
+const redis = new Bun.RedisClient(redisUrl);
+const admin = '00000000-0000-7000-8000-000000000002';
+const tag = `sse_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
+function token(id: string, lifetime = 3600) {
+    const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const now = Math.floor(Date.now() / 1000);
+    const unsigned = `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({
+        iss: 'iot-engine', aud: 'iot-engine-web', sub: id, user_id: id,
+        username: tag, token_type: 'access', iat: now, exp: now + lifetime,
+    })}`;
+    return `${unsigned}.${createHmac('sha256', 'architecture-test-only-access-secret-000000000').update(unsigned).digest('base64url')}`;
+}
+async function request(method: string, path: string, body?: unknown, bearer = token(admin), status = 200) {
+    const response = await fetch(apiBase + path, {
+        method, headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${bearer}` },
+        body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(10000),
+    });
+    const result = await response.json();
+    assert.equal(response.status, status, `${method} ${path}: ${JSON.stringify(result)}`);
+    return result;
+}
+
+let stream: Awaited<ReturnType<typeof subscribe>> | undefined;
+try {
+    await request('POST', '/v1/roles', { name: tag, code: tag, permissions: [] });
+    const [role] = await sql`SELECT id FROM sys_role WHERE code=${tag}`;
+    await request('POST', '/v1/users', { username: tag, password: 'local-sse-password', role_ids: [role.id] });
+    const [user] = await sql`SELECT id FROM sys_user WHERE username=${tag}`;
+    const login = (await request('POST', '/v1/auth/login', { username: tag, password: 'local-sse-password' })).data;
+    assert.equal(login.user.id, user.id);
+    assert.equal((await request('GET', '/v1/auth/me', undefined, login.token)).data.id, user.id);
+    const refreshed = (await request('POST', '/v1/auth/refresh', { refresh_token: login.refresh_token })).data;
+    assert.equal(refreshed.user.id, user.id);
+    stream = await subscribe(refreshed.token);
+    const initial = await stream.next();
+    assert.equal(initial.event, 'snapshot');
+    assert.equal(JSON.parse(initial.data).data.id, user.id);
+    await request('PUT', `/v1/users/${user.id}`, { nickname: 'changed by HTTP' });
+    const change = await stream.next();
+    assert.equal(change.event, 'snapshot');
+    assert.equal(JSON.parse(change.data).data.nickname, 'changed by HTTP');
+    await stream.close();
+    stream = await openSnapshotSubscription('/v1/device/events', refreshed.token, { includeUser: true });
+    const initialChannels = new Map<string, any>();
+    for (let count = 0; count < 4; count++) {
+        const event = await stream.next(); initialChannels.set(event.event, JSON.parse(event.data));
+    }
+    assert.equal(initialChannels.get('user').data.id, user.id);
+    assert.equal(initialChannels.get('user').code, 0);
+    for (const event of ['devices', 'groups', 'realtime']) assert.equal(initialChannels.get(event).code, 11007);
+    await request('PUT', `/v1/users/${user.id}`, { nickname: 'shared user channel' });
+    const userChanged = await stream.next();
+    assert.equal(userChanged.event, 'user');
+    assert.equal(JSON.parse(userChanged.data).data.nickname, 'shared user channel');
+    await request('PUT', `/v1/roles/${role.id}`, { name: tag, code: tag, permissions: ['iot:device:query'] });
+    const grantedChannels = new Map<string, any>();
+    for (let count = 0; count < 3; count++) {
+        const event = await stream.next(); grantedChannels.set(event.event, JSON.parse(event.data));
+    }
+    assert.equal(grantedChannels.get('devices').code, 0);
+    assert.equal(grantedChannels.get('realtime').code, 0);
+    assert(grantedChannels.get('user').data.permissions.includes('iot:device:query'));
+    // If a telemetry notification incorrectly reloads the profile, this
+    // deliberate unannounced fixture change will appear as a user event.
+    // This disposable fixture database normally emits auth notifications from
+    // live_users even for direct SQL. Suppress triggers only in this transaction
+    // so the following telemetry event is the sole reason to execute a query.
+    await sql.begin(async transaction => {
+        await transaction`SET LOCAL session_replication_role = replica`;
+        await transaction`UPDATE sys_user SET nickname='unannounced fixture change' WHERE id=${user.id}`;
+    });
+    await redis.send('XADD', ['iot:live:changes', '*', 'topic', 'device.realtime']);
+    await stream.expectQuiet();
+    await stream.close();
+    console.log('PASS page SSE shares user profile, permission changes and scoped queries without an extra auth connection');
+    stream = await subscribe(token(user.id, 2));
+    assert.equal((await stream.next()).event, 'snapshot');
+    // The 15-second verifier tolerance plus the next 15-second check can
+    // exceed 20 seconds. Comment heartbeats do not dispatch business events.
+    const expired = await stream.next(40000);
+    assert.equal(expired.event, 'error');
+    assert.equal(JSON.parse(expired.data).code, 11005);
+    await stream.close();
+    stream = undefined;
+    await request('POST', '/v1/auth/logout', undefined, refreshed.token);
+    console.log('PASS HTTP login/refresh/me/logout, SSE initial snapshot, change-driven update and token expiry without heartbeat events');
+} finally {
+    await stream?.close();
+    await sql`DELETE FROM sys_user_role WHERE user_id IN (SELECT id FROM sys_user WHERE username=${tag})`;
+    await sql`DELETE FROM sys_user WHERE username=${tag}`;
+    await sql`DELETE FROM sys_role WHERE code=${tag}`;
+    redis.close();
+    await sql.close();
+}

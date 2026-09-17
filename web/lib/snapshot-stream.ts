@@ -3,9 +3,18 @@ export interface SnapshotObserver<T> {
     error: (error: Error) => void;
 }
 
+export interface SnapshotReadOptions {
+    fresh?: boolean;
+}
+
 /** A lazy live query. Awaiting it reads its first authorized snapshot. */
 export class SnapshotStream<T> implements PromiseLike<T> {
-    constructor(readonly subscribe: (observer: SnapshotObserver<T>) => () => void) {}
+    constructor(
+        readonly subscribe: (
+            observer: SnapshotObserver<T>,
+            options?: SnapshotReadOptions
+        ) => () => void
+    ) {}
 
     static value<T>(value: T): SnapshotStream<T> {
         return new SnapshotStream((observer) => {
@@ -17,19 +26,22 @@ export class SnapshotStream<T> implements PromiseLike<T> {
     static combine<T extends readonly unknown[]>(
         sources: { [K in keyof T]: SnapshotStream<T[K]> }
     ): SnapshotStream<T> {
-        return new SnapshotStream((observer) => {
+        return new SnapshotStream((observer, options) => {
             const values: unknown[] = new Array(sources.length);
             const ready = new Set<number>();
             const releases = sources.map((source, index) =>
-                source.subscribe({
-                    next: (value) => {
-                        values[index] = value;
-                        ready.add(index);
-                        if (ready.size === sources.length)
-                            observer.next([...values] as unknown as T);
+                source.subscribe(
+                    {
+                        next: (value) => {
+                            values[index] = value;
+                            ready.add(index);
+                            if (ready.size === sources.length)
+                                observer.next([...values] as unknown as T);
+                        },
+                        error: observer.error,
                     },
-                    error: observer.error,
-                })
+                    options
+                )
             );
             return () => {
                 for (const release of releases) release();
@@ -38,20 +50,25 @@ export class SnapshotStream<T> implements PromiseLike<T> {
     }
 
     switchMap<U>(transform: (value: T) => SnapshotStream<U>): SnapshotStream<U> {
-        return new SnapshotStream((observer) => {
+        return new SnapshotStream((observer, options) => {
             let releaseChild: (() => void) | undefined;
-            const release = this.subscribe({
-                next: (value) => {
-                    releaseChild?.();
-                    releaseChild = undefined;
-                    try {
-                        releaseChild = transform(value).subscribe(observer);
-                    } catch (error) {
-                        observer.error(error instanceof Error ? error : new Error(String(error)));
-                    }
+            const release = this.subscribe(
+                {
+                    next: (value) => {
+                        releaseChild?.();
+                        releaseChild = undefined;
+                        try {
+                            releaseChild = transform(value).subscribe(observer, options);
+                        } catch (error) {
+                            observer.error(
+                                error instanceof Error ? error : new Error(String(error))
+                            );
+                        }
+                    },
+                    error: observer.error,
                 },
-                error: observer.error,
-            });
+                options
+            );
             return () => {
                 release();
                 releaseChild?.();
@@ -60,36 +77,46 @@ export class SnapshotStream<T> implements PromiseLike<T> {
     }
 
     map<U>(transform: (value: T) => U): SnapshotStream<U> {
-        return new SnapshotStream((observer) =>
-            this.subscribe({
-                next: (value) => {
-                    try {
-                        observer.next(transform(value));
-                    } catch (error) {
-                        observer.error(error instanceof Error ? error : new Error(String(error)));
-                    }
+        return new SnapshotStream((observer, options) =>
+            this.subscribe(
+                {
+                    next: (value) => {
+                        try {
+                            observer.next(transform(value));
+                        } catch (error) {
+                            observer.error(
+                                error instanceof Error ? error : new Error(String(error))
+                            );
+                        }
+                    },
+                    error: observer.error,
                 },
-                error: observer.error,
-            })
+                options
+            )
         );
     }
 
     filter(predicate: (value: T) => boolean): SnapshotStream<T> {
-        return new SnapshotStream((observer) =>
-            this.subscribe({
-                next: (value) => {
-                    try {
-                        if (predicate(value)) observer.next(value);
-                    } catch (error) {
-                        observer.error(error instanceof Error ? error : new Error(String(error)));
-                    }
+        return new SnapshotStream((observer, options) =>
+            this.subscribe(
+                {
+                    next: (value) => {
+                        try {
+                            if (predicate(value)) observer.next(value);
+                        } catch (error) {
+                            observer.error(
+                                error instanceof Error ? error : new Error(String(error))
+                            );
+                        }
+                    },
+                    error: observer.error,
                 },
-                error: observer.error,
-            })
+                options
+            )
         );
     }
 
-    first(signal?: AbortSignal): Promise<T> {
+    first(signal?: AbortSignal, options?: SnapshotReadOptions): Promise<T> {
         return new Promise((resolve, reject) => {
             let release: (() => void) | undefined;
             let finished = false;
@@ -107,16 +134,19 @@ export class SnapshotStream<T> implements PromiseLike<T> {
                 return;
             }
             signal?.addEventListener('abort', abort, { once: true });
-            release = this.subscribe({
-                next: (value) => {
-                    cleanup();
-                    resolve(value);
+            release = this.subscribe(
+                {
+                    next: (value) => {
+                        cleanup();
+                        resolve(value);
+                    },
+                    error: (error) => {
+                        cleanup();
+                        reject(error);
+                    },
                 },
-                error: (error) => {
-                    cleanup();
-                    reject(error);
-                },
-            });
+                options
+            );
             if (finished) release();
         });
     }

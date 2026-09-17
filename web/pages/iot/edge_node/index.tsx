@@ -1,11 +1,12 @@
+import { LiveQueryError } from '@/components/LiveQueryError';
 import {
     ApartmentOutlined,
     CheckOutlined,
     CloudServerOutlined,
     CodeOutlined,
     DeleteOutlined,
-    DownOutlined,
     DownloadOutlined,
+    DownOutlined,
     EditOutlined,
     EyeOutlined,
     GlobalOutlined,
@@ -14,7 +15,6 @@ import {
     SyncOutlined,
     UploadOutlined,
 } from '@ant-design/icons';
-import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
@@ -71,11 +71,6 @@ import { useRef } from 'react';
 import type { DeviceCardItem } from '@/components/DeviceCard';
 import DeviceCard from '@/components/DeviceCard';
 import { PageContainer } from '@/components/PageContainer';
-import {
-    WebTerminalDataSchema,
-    WebTerminalFrameSchema,
-    WebTerminalResizeSchema,
-} from '@/generated/edge/terminal-pb';
 import { formatDateTime } from '@/utils/dateTime';
 import { validateForm } from '@/utils/validation';
 import {
@@ -84,14 +79,20 @@ import {
     networkSchema,
     nodeNameSchema,
     serialSettingsSchema,
+    terminalEventsSchema,
 } from './edge_node.schema';
 import {
+    acknowledgeTerminalOutput,
     buildEdgeNodeGroupView,
+    closeTerminal,
     getEdgeDetail,
-    getTerminalTicket,
-    openTerminalSocket,
+    getTerminalEvents,
+    keepTerminalAlive,
     normalizeReportedNetwork,
+    openTerminal,
     physicalNetworkInterfaces,
+    resizeTerminal,
+    serialPayloadHex,
     useAssignEdgeNodeGroup,
     useConfigureEdgeNetwork,
     useDeviceConfigSyncMutation,
@@ -102,9 +103,9 @@ import {
     useEnrollmentMutation,
     useFirmwareUpgradeMutation,
     useRenameEdgeNode,
-    useSetEdgeLogLevel,
     useSerialDebug,
-    serialPayloadHex,
+    useSetEdgeLogLevel,
+    writeTerminal,
 } from './edge_node.service';
 
 interface Props {
@@ -233,6 +234,7 @@ interface EdgeNodeGroupPanelProps {
     onSelect: (groupId: string | null) => void;
     canManageGroup: boolean;
     ungroupedCount: number;
+    nodes: Edge.Node[];
 }
 type TreeKey = string | number;
 export function EdgeNodeGroupPanel({
@@ -240,6 +242,7 @@ export function EdgeNodeGroupPanel({
     onSelect,
     canManageGroup,
     ungroupedCount,
+    nodes,
 }: EdgeNodeGroupPanelProps) {
     const { modal } = App.useApp();
     const [popoverOpen, setPopoverOpen] = useState(false);
@@ -261,10 +264,12 @@ export function EdgeNodeGroupPanel({
         return index;
     }, [groups]);
     const treeData = useMemo<DataNode[]>(() => {
+        const counts = new Map<string, number>();
+        for (const node of nodes) counts.set(node.groupId, (counts.get(node.groupId) ?? 0) + 1);
         const convert = (items: Edge.GroupTreeItem[]): DataNode[] =>
             items.map((item) => ({
                 key: item.id,
-                title: `${item.name} (${item.nodeCount})${item.status === 'disabled' ? ' · 已停用' : ''}`,
+                title: `${item.name} (${counts.get(item.id) ?? 0})${item.status === 'disabled' ? ' · 已停用' : ''}`,
                 children: item.children?.length ? convert(item.children) : undefined,
             }));
         return [
@@ -274,7 +279,7 @@ export function EdgeNodeGroupPanel({
                 : []),
             ...convert(groups),
         ];
-    }, [groups, ungroupedCount]);
+    }, [groups, ungroupedCount, nodes]);
     const selectedLabel = useMemo(() => {
         if (selectedGroupId === null) return '全部节点';
         if (selectedGroupId === 'ungrouped') return '未分组';
@@ -441,13 +446,13 @@ function peerName(node: Edge.Node) {
 }
 type RouteFormValues = Pick<EdgeVpn.RouteDto, 'virtualCidr'>;
 const VPN_MODAL_Z_INDEX = 1100;
-export function EdgeVpnPanel({ node }: { node: Edge.Node }) {
+export function EdgeVpnPanel({ node, scope }: { node: Edge.Node; scope: Edge.EventScope }) {
     const { has } = usePermissions();
     const canQuery = has('iot:vpn:query');
     const canAdd = has('iot:vpn:add');
     const canEdit = has('iot:vpn:edit');
     const canRevoke = has('iot:vpn:revoke');
-    const dataQuery = useEdgeVpn(node.id);
+    const dataQuery = useEdgeVpn(scope, canQuery && Boolean(scope.vpn));
     const data = dataQuery.data;
     const peer = data?.peers.find((item) => item.peerType === 'edge' && item.status !== 'revoked');
     const network = data?.networks[0];
@@ -540,6 +545,11 @@ export function EdgeVpnPanel({ node }: { node: Edge.Node }) {
                     description="请先让 EdgeNode 上报桥接网段，VPN 会根据该网段自动生成等长的虚拟映射。"
                 />
             )}
+            <LiveQueryError
+                error={dataQuery.error}
+                retry={dataQuery.refetch}
+                loading={dataQuery.isFetching}
+            />
             <Flex justify="space-between" align="center" gap={12} wrap>
                 <div>
                     <div className="font-medium text-slate-800">节点 VPN · iot-server</div>
@@ -1174,30 +1184,34 @@ function TerminalModal({
     const [state, setState] = useState('正在连接…');
     const [connectionEnded, setConnectionEnded] = useState(false);
     const [connectionAttempt, setConnectionAttempt] = useState(0);
-    const socketRef = useRef<WebSocket | null>(null);
     const terminalHostRef = useRef<HTMLDivElement | null>(null);
     useEffect(() => {
-        // A manual retry creates a new socket and terminal session.
         void connectionAttempt;
         const host = terminalHostRef.current;
         if (!open || !nodeId || !host) return;
+        const targetNodeId = nodeId;
         setConnectionEnded(false);
+        setState('正在启动终端…');
         let disposed = false;
+        let ended = false;
+        let ready = false;
+        let sessionId: string | undefined;
+        let release: (() => void) | undefined;
+        let heartbeat: ReturnType<typeof setInterval> | undefined;
         let fitFrame: number | undefined;
-        let resizeTimer: number | undefined;
-        let inputTimer: number | undefined;
-        let outputFrame: number | undefined;
-        let lastSentSize = '';
+        let inputTimer: ReturnType<typeof setTimeout> | undefined;
+        let lastSize = '';
+        let resizing = false;
+        let pendingSize: { columns: number; rows: number } | undefined;
+        let lastOutputSequence = 0;
+        let pendingCloseReason: string | undefined;
+        let sending = false;
+        let rendering = false;
+        let inputBytes = 0;
+        let outputBytes = 0;
+        const inputQueue: Uint8Array[] = [];
+        const outputQueue: { bytes: Uint8Array; sequence: number }[] = [];
         const encoder = new TextEncoder();
-        const pendingInput: Uint8Array[] = [];
-        let pendingInputBytes = 0;
-        let terminalReady = false;
-        const pendingOutput: Uint8Array[] = [];
-        const outputLimitNotice = encoder.encode('\r\n[终端输出过快，已省略较早内容]\r\n');
-        let pendingOutputBytes = 0;
-        let outputWriting = false;
-        let outputNoticeQueued = false;
-        let terminalCloseReason = '';
         const terminal = new Terminal({
             cursorBlink: true,
             fontFamily: "'Cascadia Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace",
@@ -1220,252 +1234,199 @@ function TerminalModal({
         terminal.loadAddon(fitAddon);
         terminal.open(host);
         try {
-            const webglAddon = new WebglAddon();
-            webglAddon.onContextLoss(() => webglAddon.dispose());
-            terminal.loadAddon(webglAddon);
+            const webgl = new WebglAddon();
+            webgl.onContextLoss(() => webgl.dispose());
+            terminal.loadAddon(webgl);
         } catch {
-            // Canvas renderer remains available when WebGL is unsupported.
+            // The default renderer remains available without WebGL.
         }
-        const fitTerminal = () => {
-            fitFrame = undefined;
-            if (host.clientWidth === 0 || host.clientHeight === 0) return;
-            fitAddon.fit();
-            const socket = socketRef.current;
-            const sizeKey = `${terminal.cols}:${terminal.rows}`;
-            if (
-                terminalReady &&
-                socket?.readyState === WebSocket.OPEN &&
-                sizeKey !== lastSentSize
-            ) {
-                const resize = create(WebTerminalResizeSchema, {
-                    columns: terminal.cols,
-                    rows: terminal.rows,
-                });
-                socket.send(
-                    toBinary(
-                        WebTerminalFrameSchema,
-                        create(WebTerminalFrameSchema, {
-                            payload: { case: 'resize', value: resize },
-                        })
-                    )
-                );
-                lastSentSize = sizeKey;
+        const openingTimeout = setTimeout(() => finish('终端启动超时'), 15000);
+        function finish(reason: string) {
+            if (ended) return;
+            ended = true;
+            ready = false;
+            release?.();
+            release = undefined;
+            clearTimeout(openingTimeout);
+            if (heartbeat !== undefined) clearInterval(heartbeat);
+            if (inputTimer !== undefined) clearTimeout(inputTimer);
+            inputQueue.length = 0;
+            outputQueue.length = 0;
+            inputBytes = 0;
+            outputBytes = 0;
+            terminal.options.disableStdin = true;
+            if (sessionId) void closeTerminal(targetNodeId, sessionId).catch(() => undefined);
+            if (!disposed) {
+                setState(reason);
+                setConnectionEnded(true);
             }
-        };
-        const scheduleFit = () => {
-            if (fitFrame !== undefined) return;
-            fitFrame = window.requestAnimationFrame(fitTerminal);
-        };
-        const flushInput = () => {
-            inputTimer = undefined;
-            const socket = socketRef.current;
-            if (pendingInput.length === 0) return;
-            if (!terminalReady || socket?.readyState !== WebSocket.OPEN) {
-                // The terminal is focused before the device has confirmed PTY creation.
-                // Hold keystrokes until TerminalOpened reaches the browser as Ready.
-                if (
-                    socket === null ||
-                    socket.readyState === WebSocket.CONNECTING ||
-                    (socket.readyState === WebSocket.OPEN && !terminalReady)
-                ) {
-                    if (inputTimer === undefined) inputTimer = window.setTimeout(flushInput, 50);
-                    return;
+        }
+        function fail(error: unknown) {
+            finish(error instanceof Error ? error.message : '终端通信失败');
+        }
+        async function flushResize() {
+            if (resizing || !ready || !sessionId || ended) return;
+            resizing = true;
+            try {
+                while (!ended && pendingSize) {
+                    const size = pendingSize;
+                    pendingSize = undefined;
+                    await resizeTerminal(targetNodeId, sessionId, size.columns, size.rows);
                 }
-                pendingInput.length = 0;
-                pendingInputBytes = 0;
-                return;
+            } catch (error) {
+                fail(error);
+            } finally {
+                resizing = false;
             }
-            const size = pendingInput.reduce((total, chunk) => total + chunk.byteLength, 0);
-            const payload = new Uint8Array(size);
-            let offset = 0;
-            for (const chunk of pendingInput.splice(0)) {
-                payload.set(chunk, offset);
-                offset += chunk.byteLength;
-            }
-            pendingInputBytes = 0;
-            const data = create(WebTerminalDataSchema, { data: payload });
-            socket.send(
-                toBinary(
-                    WebTerminalFrameSchema,
-                    create(WebTerminalFrameSchema, {
-                        payload: { case: 'data', value: data },
-                    })
-                )
-            );
-        };
-        const takeOutput = (limit: number) => {
-            if (pendingOutput.length === 0) return undefined;
-            const parts: Uint8Array[] = [];
-            let size = 0;
-            while (pendingOutput.length > 0 && size < limit) {
-                const chunk = pendingOutput[0];
-                const remaining = limit - size;
-                if (chunk.byteLength <= remaining) {
-                    parts.push(chunk);
-                    pendingOutput.shift();
-                    pendingOutputBytes -= chunk.byteLength;
-                    size += chunk.byteLength;
-                } else {
-                    parts.push(chunk.slice(0, remaining));
-                    pendingOutput[0] = chunk.slice(remaining);
-                    pendingOutputBytes -= remaining;
-                    size += remaining;
+        }
+        function scheduleFit() {
+            if (disposed || ended || fitFrame !== undefined) return;
+            fitFrame = window.requestAnimationFrame(() => {
+                fitFrame = undefined;
+                if (!host?.clientWidth || !host.clientHeight) return;
+                fitAddon.fit();
+                const size = `${terminal.cols}:${terminal.rows}`;
+                if (ready && sessionId && lastSize !== size) {
+                    lastSize = size;
+                    pendingSize = { columns: terminal.cols, rows: terminal.rows };
+                    void flushResize();
                 }
-            }
-            outputNoticeQueued = pendingOutput.some((chunk) => chunk === outputLimitNotice);
-            if (parts.length === 1) return parts[0];
-            const payload = new Uint8Array(size);
-            let offset = 0;
-            for (const chunk of parts) {
-                payload.set(chunk, offset);
-                offset += chunk.byteLength;
-            }
-            return payload;
-        };
-        const scheduleOutput = () => {
-            if (disposed || outputWriting || outputFrame !== undefined) return;
-            outputFrame = window.requestAnimationFrame(flushOutput);
-        };
-        const trimOutputBacklog = () => {
-            const maxBacklogBytes = 1024 * 1024;
-            while (pendingOutputBytes > maxBacklogBytes && pendingOutput.length > 0) {
-                const chunk = pendingOutput.shift();
-                pendingOutputBytes -= chunk?.byteLength ?? 0;
-            }
-            if (!outputNoticeQueued) {
-                pendingOutput.unshift(outputLimitNotice);
-                pendingOutputBytes += outputLimitNotice.byteLength;
-                outputNoticeQueued = true;
-            }
-        };
-        function flushOutput() {
-            outputFrame = undefined;
-            if (disposed || outputWriting || pendingOutput.length === 0) return;
-            const payload = takeOutput(32 * 1024);
-            if (!payload || payload.byteLength === 0) return;
-            outputWriting = true;
-            terminal.write(payload, () => {
-                outputWriting = false;
-                scheduleOutput();
             });
         }
-        const appendOutput = (payload: Uint8Array) => {
-            if (disposed || payload.byteLength === 0) return;
-            pendingOutput.push(payload);
-            pendingOutputBytes += payload.byteLength;
-            if (pendingOutputBytes > 1024 * 1024) trimOutputBacklog();
-            scheduleOutput();
-        };
-        const resizeObserver = new ResizeObserver(() => {
-            if (resizeTimer !== undefined) window.clearTimeout(resizeTimer);
-            resizeTimer = window.setTimeout(() => {
-                resizeTimer = undefined;
-                scheduleFit();
-            }, 100);
-        });
-        const restoreTerminalFocus = () => {
-            if (disposed || document.visibilityState !== 'visible') return;
+        async function flushInput() {
+            inputTimer = undefined;
+            if (sending || !ready || !sessionId || ended) return;
+            sending = true;
+            try {
+                while (!ended && inputQueue.length > 0) {
+                    const next = inputQueue[0];
+                    const chunk = next.slice(0, 16384);
+                    if (chunk.length === next.length) inputQueue.shift();
+                    else inputQueue[0] = next.slice(chunk.length);
+                    inputBytes -= chunk.length;
+                    await writeTerminal(targetNodeId, sessionId, chunk);
+                }
+            } catch (error) {
+                fail(error);
+            } finally {
+                sending = false;
+            }
+        }
+        function renderOutput() {
+            if (disposed || ended || rendering) return;
+            if (outputQueue.length === 0) {
+                if (pendingCloseReason !== undefined) finish(pendingCloseReason);
+                return;
+            }
+            const item = outputQueue.shift();
+            if (!item || !sessionId) return;
+            rendering = true;
+            terminal.write(item.bytes, () => {
+                if (disposed || ended || !sessionId) {
+                    rendering = false;
+                    return;
+                }
+                outputBytes -= item.bytes.length;
+                const confirmation =
+                    item.sequence > 0
+                        ? acknowledgeTerminalOutput(targetNodeId, sessionId, item.sequence)
+                        : Promise.resolve();
+                void confirmation
+                    .then(() => {
+                        rendering = false;
+                        renderOutput();
+                    })
+                    .catch(fail);
+            });
+        }
+        const resizeObserver = new ResizeObserver(scheduleFit);
+        resizeObserver.observe(host);
+        const focus = () => {
+            if (disposed || ended || document.visibilityState !== 'visible') return;
             scheduleFit();
             terminal.focus();
         };
-        resizeObserver.observe(host);
-        window.addEventListener('focus', restoreTerminalFocus);
-        document.addEventListener('visibilitychange', restoreTerminalFocus);
+        window.addEventListener('focus', focus);
+        document.addEventListener('visibilitychange', focus);
         scheduleFit();
         const input = terminal.onData((data) => {
-            const chunk = encoder.encode(data);
-            pendingInputBytes += chunk.byteLength;
-            // A held buffer must stay bounded: drop the oldest keystrokes rather than
-            // grow without limit if the handshake never completes.
-            while (pendingInputBytes > 256 * 1024 && pendingInput.length > 0) {
-                pendingInputBytes -= pendingInput.shift()?.byteLength ?? 0;
+            if (ended) return;
+            const bytes = encoder.encode(data);
+            if (inputBytes + bytes.length > 256 * 1024) {
+                finish('终端输入队列已满，连接已关闭，请重新连接');
+                return;
             }
-            pendingInput.push(chunk);
-            if (inputTimer === undefined) inputTimer = window.setTimeout(flushInput, 8);
+            inputQueue.push(bytes);
+            inputBytes += bytes.length;
+            if (inputTimer === undefined) inputTimer = setTimeout(() => void flushInput(), 8);
         });
-        setState('正在申请终端票据…');
-        getTerminalTicket(nodeId)
-            .then(({ ticket }) => {
-                if (disposed) return;
-                const socket = openTerminalSocket(ticket);
-                socketRef.current = socket;
-                socket.onopen = () => {
-                    if (disposed) return;
-                    setState('已连接，正在启动终端…');
-                    terminal.focus();
-                };
-                socket.onmessage = (event) => {
-                    if (disposed) return;
-                    if (!(event.data instanceof ArrayBuffer)) {
-                        setState('终端协议错误');
-                        socket.close(1003, 'terminal frames must use protobuf');
-                        return;
-                    }
-                    try {
-                        const frame = fromBinary(
-                            WebTerminalFrameSchema,
-                            new Uint8Array(event.data)
-                        );
-                        if (frame.payload.case === 'ready') {
-                            terminalReady = true;
-                            setState('已连接');
-                            scheduleFit();
-                            terminal.focus();
-                            flushInput();
-                        } else if (frame.payload.case === 'data') {
-                            appendOutput(frame.payload.value.data);
-                        } else if (frame.payload.case === 'close') {
-                            terminalCloseReason = frame.payload.value.reason || '终端已关闭';
-                            setState(terminalCloseReason);
-                            socket.close(1000, 'terminal closed');
-                        } else {
-                            setState('终端协议错误');
-                            socket.close(1002, 'invalid terminal protobuf');
+        void openTerminal(nodeId, terminal.cols, terminal.rows)
+            .then(({ id }) => {
+                if (disposed || ended) {
+                    void closeTerminal(nodeId, id).catch(() => undefined);
+                    return;
+                }
+                sessionId = id;
+                release = getTerminalEvents(nodeId, id).subscribe({
+                    next: (value) => {
+                        if (disposed || ended) return;
+                        try {
+                            for (const event of terminalEventsSchema.parse(value).events) {
+                                if (event.kind === 'ready') {
+                                    ready = true;
+                                    clearTimeout(openingTimeout);
+                                    setState('已连接');
+                                    terminal.focus();
+                                    scheduleFit();
+                                    void flushInput();
+                                } else if (event.kind === 'close') {
+                                    ready = false;
+                                    terminal.options.disableStdin = true;
+                                    inputQueue.length = 0;
+                                    inputBytes = 0;
+                                    pendingCloseReason = event.reason || '终端已关闭';
+                                    renderOutput();
+                                    break;
+                                } else {
+                                    const bytes = Uint8Array.from(
+                                        atob(event.content),
+                                        (character) => character.charCodeAt(0)
+                                    );
+                                    if (
+                                        bytes.length > 16384 ||
+                                        (event.sequence > 0 &&
+                                            event.sequence !== lastOutputSequence + 1)
+                                    )
+                                        throw new Error('终端数据顺序无效，请重新连接');
+                                    if (event.sequence > 0) lastOutputSequence = event.sequence;
+                                    if (outputBytes + bytes.length > 1024 * 1024)
+                                        throw new Error(
+                                            '终端输出超过处理能力，连接已关闭，请重新连接'
+                                        );
+                                    outputQueue.push({ bytes, sequence: event.sequence });
+                                    outputBytes += bytes.length;
+                                    renderOutput();
+                                }
+                            }
+                        } catch (error) {
+                            fail(error);
                         }
-                    } catch {
-                        setState('终端协议错误');
-                        socket.close(1002, 'invalid terminal protobuf');
-                    }
-                };
-                socket.onerror = () => {
-                    if (disposed) return;
-                    terminalCloseReason ||= '终端连接失败';
-                    setState(terminalCloseReason);
-                };
-                socket.onclose = (event) => {
-                    if (disposed) return;
-                    terminalReady = false;
-                    terminal.options.disableStdin = true;
-                    pendingInput.length = 0;
-                    pendingInputBytes = 0;
-                    if (inputTimer !== undefined) window.clearTimeout(inputTimer);
-                    inputTimer = undefined;
-                    setConnectionEnded(true);
-                    setState(terminalCloseReason || event.reason || '终端已关闭');
-                };
+                    },
+                    error: fail,
+                });
+                heartbeat = setInterval(() => {
+                    if (!ended && !resizing) void keepTerminalAlive(nodeId, id).catch(fail);
+                }, 20000);
             })
-            .catch(() => {
-                if (disposed) return;
-                terminal.options.disableStdin = true;
-                pendingInput.length = 0;
-                pendingInputBytes = 0;
-                if (inputTimer !== undefined) window.clearTimeout(inputTimer);
-                inputTimer = undefined;
-                setConnectionEnded(true);
-                setState('无法建立终端连接');
-            });
+            .catch(fail);
         return () => {
             disposed = true;
+            finish('终端已关闭');
             if (fitFrame !== undefined) window.cancelAnimationFrame(fitFrame);
-            if (resizeTimer !== undefined) window.clearTimeout(resizeTimer);
-            if (inputTimer !== undefined) window.clearTimeout(inputTimer);
-            if (outputFrame !== undefined) window.cancelAnimationFrame(outputFrame);
             resizeObserver.disconnect();
-            window.removeEventListener('focus', restoreTerminalFocus);
-            document.removeEventListener('visibilitychange', restoreTerminalFocus);
+            window.removeEventListener('focus', focus);
+            document.removeEventListener('visibilitychange', focus);
             input.dispose();
-            socketRef.current?.close();
-            socketRef.current = null;
             terminal.dispose();
         };
     }, [nodeId, open, connectionAttempt]);
@@ -1552,7 +1513,23 @@ export function EdgeNodePage() {
     const networkBridge = Form.useWatch('bridge', networkForm);
     const firmwareFile = Form.useWatch('file', firmwareForm);
     const { message, modal } = App.useApp();
-    const { data, isLoading, isFetching, refetch } = useEdgeInventory(canQuery);
+    const eventScope: Edge.EventScope = {
+        nodeId: selectedId,
+        logs:
+            selectedId && detailTab === 'events'
+                ? { limit: 48, level: logLevel }
+                : selectedId && detailTab === 'system'
+                  ? { limit: 48, source: 'system' }
+                  : undefined,
+        vpn: Boolean(selectedId && detailTab === 'vpn' && has('iot:vpn:query')),
+    };
+    const {
+        data,
+        isLoading,
+        isFetching,
+        refetch,
+        error: inventoryError,
+    } = useEdgeInventory(canQuery, eventScope);
     const { data: edgeGroups = [] } = useEdgeGroupTree();
     const groupView = useMemo(
         () => buildEdgeNodeGroupView(edgeGroups, data ?? [], selectedGroupId, keyword, status),
@@ -1565,14 +1542,19 @@ export function EdgeNodePage() {
         if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0;
     }, [scrollScope]);
     const edgeGroupOptions = useMemo(() => groupSelectOptions(edgeGroups), [edgeGroups]);
-    const { data: detail, isLoading: detailLoading } = useEdgeDetail(selectedId);
+    const {
+        data: detail,
+        isLoading: detailLoading,
+        error: detailError,
+        refetch: retryDetail,
+    } = useEdgeDetail(eventScope);
     const {
         data: eventLogs,
         isFetching: eventLogsLoading,
         refetch: refreshEventLogs,
+        error: eventLogsError,
     } = useEdgeLogs(
-        selectedId,
-        { limit: 48, level: logLevel },
+        eventScope,
         Boolean(
             selectedId && detailTab === 'events' && detail?.status.online && detail.capability.logs
         )
@@ -1581,9 +1563,9 @@ export function EdgeNodePage() {
         data: systemLogs,
         isFetching: systemLogsLoading,
         refetch: refreshSystemLogs,
+        error: systemLogsError,
     } = useEdgeLogs(
-        selectedId,
-        { limit: 48, source: 'system' },
+        eventScope,
         Boolean(
             selectedId && detailTab === 'system' && detail?.status.online && detail.capability.logs
         )
@@ -2152,6 +2134,7 @@ export function EdgeNodePage() {
                             canManageGroup={canEdit}
                             onSelect={setSelectedGroupId}
                             ungroupedCount={groupView.ungroupedCount}
+                            nodes={data ?? []}
                         />
                         <Input.Search
                             allowClear
@@ -2187,6 +2170,26 @@ export function EdgeNodePage() {
                 </div>
             }
         >
+            <LiveQueryError
+                error={
+                    inventoryError ??
+                    detailError ??
+                    (detailTab === 'events'
+                        ? eventLogsError
+                        : detailTab === 'system'
+                          ? systemLogsError
+                          : null)
+                }
+                retry={() =>
+                    Promise.all([
+                        refetch(),
+                        ...(selectedId ? [retryDetail()] : []),
+                        ...(eventLogsError && detailTab === 'events' ? [refreshEventLogs()] : []),
+                        ...(systemLogsError && detailTab === 'system' ? [refreshSystemLogs()] : []),
+                    ])
+                }
+                loading={isFetching}
+            />
             <div ref={scrollContainerRef} className="h-full overflow-y-auto overflow-x-hidden">
                 {isLoading && nodes.length === 0 ? (
                     <div className={EDGE_CARD_GRID_CLASS}>
@@ -2544,7 +2547,7 @@ export function EdgeNodePage() {
                                 {
                                     key: 'vpn',
                                     label: 'VPN',
-                                    children: <EdgeVpnPanel node={detail} />,
+                                    children: <EdgeVpnPanel node={detail} scope={eventScope} />,
                                 },
                                 {
                                     key: 'tasks',

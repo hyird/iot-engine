@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 #include "service/utils/number.h"
 #include "service/features/access/access.entity.h"
 #include "service/common/http.h"
@@ -95,7 +97,7 @@ ruvia::Task<void> refresh(Context& context, bool onlyIfMissing = false) {
         .orderBy(snapshot.column(service::access::persistence::OpenAccessKeyEntity::columnName<"id">(), "key"));
     const auto rows = co_await transaction.query(snapshot);
 
-    const auto version = service::common::nextUuidV7();
+    const auto version = context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
     const auto versionKey = std::string(kVersionPrefix) + version;
     constexpr std::size_t chunkSize = 128;
     for (std::size_t offset = 0; offset < rows.size(); offset += chunkSize) {
@@ -717,7 +719,7 @@ class DeliveryService final {
 
     static ruvia::Task<Delivery> buildDelivery(ruvia::WebWorkerContext& context, const message::StreamMessage& message, const DeviceCatalog& catalog) {
         Delivery delivery;
-        delivery.id = message.get("event_id").empty() ? service::common::nextUuidV7()
+        delivery.id = message.get("event_id").empty() ? context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next()
                                                       : std::string(message.get("event_id"));
         delivery.eventType = std::string(message.get("event_type"));
         delivery.deviceId = std::string(message.get("device_id"));
@@ -767,7 +769,7 @@ class DeliveryService final {
     static ruvia::Task<void> enqueueResult(ruvia::WebWorkerContext& context, const Target& target, const Delivery& delivery, const WebhookHttpResponse& response, bool success) {
         const auto error = service::utils::sanitize(response.error, 1000);
         const auto status = success ? "success" : "failed";
-        const auto logId = service::common::nextUuidV7();
+        const auto logId = context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
         const auto responseJson = "{\"httpStatus\":" + std::to_string(response.status) +
             ",\"body\":" + service::utils::jsonQuoted(service::utils::sanitize(response.body, 2000)) +
             (error.empty() ? "" : ",\"error\":" + service::utils::jsonQuoted(error)) + "}";
@@ -784,7 +786,7 @@ return id
         const std::vector<std::string> keyStore{
             stream::deliveryResult(),
             DeliveryProgressRecord::key(delivery.eventType, delivery.id),
-            service::message::workerWakeStream(std::nullopt)
+            service::message::workerWakeStream(std::nullopt, service::runtime::instanceId())
         };
         const std::vector<std::string> argumentStore{
             target.id,
@@ -855,7 +857,7 @@ void queue(Pipeline& pipeline, std::string_view scriptSha, std::string_view even
     const auto publishedKey = publicationKey(eventId, eventType);
     const auto occurredAt = std::to_string(occurredAtMs);
     const auto outputStream = stream::event();
-    const auto wakeStream = service::message::workerWakeStream(std::nullopt);
+    const auto wakeStream = service::message::workerWakeStream(std::nullopt, service::runtime::instanceId());
     const std::array<std::string_view, 3> keys{ outputStream, publishedKey, wakeStream };
     const std::array<std::string_view, 16> arguments{
         "100000",
@@ -883,7 +885,7 @@ ruvia::Task<void> publish(const Redis& redis, std::string_view eventId, std::str
     const std::vector<std::string> keyStore{
         stream::event(),
         publicationKey(eventId, eventType),
-        service::message::workerWakeStream(std::nullopt)
+        service::message::workerWakeStream(std::nullopt, service::runtime::instanceId())
     };
     const std::vector<std::string> argumentStore{
         "100000",
@@ -939,9 +941,9 @@ namespace service::access::audit {
 inline constexpr std::size_t kCapacity = 100000;
 
 template <typename Redis>
-ruvia::Task<void> publish(const Redis& redis, std::string_view action, std::string_view accessKeyId, std::string_view method, std::string_view target, std::string_view requestIp, std::int64_t httpStatus, std::string_view deviceId = {}, std::string_view requestPayload = "{}", std::string_view responsePayload = "{}") {
+ruvia::Task<void> publish(const Redis& redis, std::string_view logId, std::string_view action, std::string_view accessKeyId, std::string_view method, std::string_view target, std::string_view requestIp, std::int64_t httpStatus, std::string_view deviceId = {}, std::string_view requestPayload = "{}", std::string_view responsePayload = "{}") {
     const std::vector<service::message::StreamField> fields{
-        { "log_id", service::common::nextUuidV7() },
+        { "log_id", std::string(logId) },
         { "access_key_id", std::string(accessKeyId) },
         { "action", std::string(action) },
         { "http_method", std::string(method) },
@@ -1003,7 +1005,7 @@ class AccessOperationService final {
             const auto deviceId = text("deviceId");
             const auto requestPayload = json("requestPayload");
             const auto responsePayload = json("responsePayload");
-            co_await audit::publish(context.redis(), action, accessKeyId, method, target, requestIp, status, deviceId, requestPayload, responsePayload);
+            co_await audit::publish(context.redis(), context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next(), action, accessKeyId, method, target, requestIp, status, deviceId, requestPayload, responsePayload);
             co_return "{}";
         }
         service::common::fail(10002, "Unknown access operation", 400);

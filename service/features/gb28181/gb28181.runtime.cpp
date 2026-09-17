@@ -321,8 +321,8 @@ GbProjectionRuntime::consume(ruvia::WebWorkerContext& context, const std::shared
     co_return;
 }
 
-CollectorRuntime::CollectorRuntime(AppConfig config, ruvia::EventLoop loop, ruvia::RedisHandle redis, OwnerIndex index, OwnerIndex count)
-    : config_(std::move(config)),
+CollectorRuntime::CollectorRuntime(service::common::UuidV7Generator& uuidGenerator, AppConfig config, ruvia::EventLoop loop, ruvia::RedisHandle redis, OwnerIndex index, OwnerIndex count)
+    : uuidGenerator_(uuidGenerator), config_(std::move(config)),
       loop_(std::move(loop)),
       worker_(loop_.handle()),
       redis_(std::move(redis)),
@@ -561,7 +561,7 @@ void CollectorRuntime::enqueueDeviceProjection(const Device& device, DeviceChang
     if (!acceptingProjection_) {
         return;
     }
-    projectionQueue_.push_back(DeviceProjection{ device, change, deviceOwnerToken(device), service::common::nextUuidV7(), ++projectionSequence_ });
+    projectionQueue_.push_back(DeviceProjection{ device, change, deviceOwnerToken(device), uuidGenerator_.next(), ++projectionSequence_ });
     if (!projectionDrainRunning_) {
         projectionDrainRunning_ = true;
         projectionScope_.spawn(drainProjection());
@@ -572,7 +572,7 @@ void CollectorRuntime::enqueueStreamProjection(const StreamStatus& stream) {
     if (!acceptingProjection_) {
         return;
     }
-    projectionQueue_.push_back(StreamProjection{ stream, streamOwnerToken(stream), service::common::nextUuidV7(), ++projectionSequence_ });
+    projectionQueue_.push_back(StreamProjection{ stream, streamOwnerToken(stream), uuidGenerator_.next(), ++projectionSequence_ });
     if (!projectionDrainRunning_) {
         projectionDrainRunning_ = true;
         projectionScope_.spawn(drainProjection());
@@ -1087,7 +1087,7 @@ ruvia::Task<void> CollectorRuntime::drainProjection() {
 
 ruvia::Task<void> CollectorRuntime::controlLoop() {
     requireCurrentLoop();
-    const auto stream = control_protocol::stream::control(index_);
+    const auto stream = control_protocol::stream::control(index_, service::runtime::instanceId());
     const auto group = control_protocol::stream::kControlGroup;
     const auto consumer = ownerToken_;
     const auto redis = redis_.withOptions({ .stopToken = scope_.stopToken() });
@@ -1155,7 +1155,7 @@ ruvia::Task<void> CollectorRuntime::handleControl(
     const auto requestId = std::string(message.get("request_id"));
     if (!service::common::isUuid(requestId)) {
         const std::string id = message.id;
-        co_await service::message::redis::acknowledgeAndDelete(redis_, control_protocol::stream::control(index_), control_protocol::stream::kControlGroup, id);
+        co_await service::message::redis::acknowledgeAndDelete(redis_, control_protocol::stream::control(index_, service::runtime::instanceId()), control_protocol::stream::kControlGroup, id);
         co_return;
     }
     const auto replyStream = control_protocol::stream::reply(requestId);
@@ -1227,7 +1227,7 @@ ruvia::Task<void> CollectorRuntime::handleControl(
     while (!scope_.stopRequested()) {
         bool saved = false;
         try {
-            co_await GbControlService::publishReplyAndAcknowledge(redis, replyStream, control_protocol::stream::control(index_), control_protocol::stream::kControlGroup, message.id, requestId, operation, status, result, resultKey, claimKey, claimOwner);
+            co_await GbControlService::publishReplyAndAcknowledge(redis, replyStream, control_protocol::stream::control(index_, service::runtime::instanceId()), control_protocol::stream::kControlGroup, message.id, requestId, operation, status, result, resultKey, claimKey, claimOwner);
             saved = true;
         } catch (const std::exception& error) {
             if (!scope_.stopRequested()) {

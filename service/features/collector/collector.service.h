@@ -552,7 +552,7 @@ ruvia::Task<void> cleanupExpiredSnapshots(const Redis& redis, std::int64_t nowMi
 // Service projection. The version pointer is switched only after every readable
 // Hash/Set/List has been written, so readers never observe a partial snapshot.
 template <typename Redis>
-ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snapshot) {
+ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snapshot, service::common::UuidV7Generator& uuidGenerator) {
     const auto snapshotSignature = signature(snapshot);
     const auto activeReply =
         co_await redis::command(redis, { "GET", std::string(kRuntimeActiveVersionKey) });
@@ -567,7 +567,7 @@ ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
         }
     }
 
-    const auto version = message::nextMessageId();
+    const auto version = uuidGenerator.next();
     const auto createdAt = message::utcNowMilliseconds();
     (void)detail::integerReply(
         co_await redis::command(
@@ -983,7 +983,7 @@ return 1
         const message::StreamMessage& event, std::size_t workerIndex) {
         const auto record = CollectorLinkRecord::fromEvent(event, message::utcNowMilliseconds());
         const auto key =
-            CollectorLinkRecord::key(event.get("link_id"), workerIndex);
+            CollectorLinkRecord::key(event.get("link_id"), workerIndex, service::runtime::instanceId());
         co_await message::redis::eraseHash(redis, key);
         co_await message::redis::setHash(redis, key, record.fields);
     }
@@ -994,19 +994,19 @@ return 1
             workerIndex, std::string(version), "applied", message::utcNowMilliseconds()};
         co_await message::redis::setHash(
             redis,
-            CollectorWorkerRecord::key(workerIndex), record.fields()
+            CollectorWorkerRecord::key(workerIndex, service::runtime::instanceId()), record.fields()
         );
     }
 
     template <typename Redis>
     static ruvia::Task<void> eraseWorker(const Redis& redis, std::size_t index) {
-        co_await message::redis::eraseMatching(redis, CollectorLinkRecord::key("*", index));
-        co_await message::redis::eraseHash(redis, CollectorWorkerRecord::key(index));
+        co_await message::redis::eraseMatching(redis, CollectorLinkRecord::key("*", index, service::runtime::instanceId()));
+        co_await message::redis::eraseHash(redis, CollectorWorkerRecord::key(index, service::runtime::instanceId()));
     }
 
     template <typename Redis>
     static ruvia::Task<void> eraseLink(const Redis& redis, std::string_view id, std::size_t index) {
-        co_await message::redis::eraseHash(redis, CollectorLinkRecord::key(id, index));
+        co_await message::redis::eraseHash(redis, CollectorLinkRecord::key(id, index, service::runtime::instanceId()));
     }
 };
 

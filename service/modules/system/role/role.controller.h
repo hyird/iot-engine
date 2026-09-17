@@ -6,7 +6,6 @@
 #include <ruvia/web/Controller.h>
 
 #include "service/common/http.h"
-#include "service/middleware/live.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/permission.h"
 #include "service/modules/system/role/role.schema.h"
@@ -18,9 +17,9 @@ class RoleController final : public ruvia::Controller<RoleController> {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/roles", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
-    RUVIA_GET_SSE("/", list, RoleListQueryValidator);
-    RUVIA_GET_SSE("/options", options);
-    RUVIA_GET_SSE("/:id", detail, RoleIdParamsValidator);
+    RUVIA_GET("/", list, RoleListQueryValidator);
+    RUVIA_GET("/options", options);
+    RUVIA_GET("/:id", detail, RoleIdParamsValidator);
     RUVIA_POST("/", create, CreateRoleValidator);
     RUVIA_PUT("/:id", update, RoleIdParamsValidator, UpdateRoleValidator);
     RUVIA_DELETE("/:id", remove, RoleIdParamsValidator);
@@ -31,11 +30,7 @@ class RoleController final : public ruvia::Controller<RoleController> {
         return std::string(c.req().validated<RoleIdParams>().get<"id">()->view());
     }
 
-    ruvia::Task<void> list(ruvia::Context& c) {
-        co_await service::live::serve(c, "auth", [this, &c]() { return listSnapshot(c); });
-    }
-
-    ruvia::Task<std::string> listSnapshot(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> list(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:role:query");
         const auto& query = c.req().validated<RoleListQuery>();
         const auto keyword = query.get<"keyword">()
@@ -44,29 +39,21 @@ class RoleController final : public ruvia::Controller<RoleController> {
         const auto status = query.get<"status">()
                                 ? std::optional<std::string>(std::string(query.get<"status">()->view()))
                                 : std::nullopt;
-        co_return service::live::json(service::common::ok<RolePageResponse>(
+        co_return c.json(service::common::ok<RolePageResponse>(
             c, co_await roleService().list(c, static_cast<std::int64_t>(*query.get<"page">()),
                                            static_cast<std::int64_t>(*query.get<"pageSize">()), keyword,
                                            status)));
     }
 
-    ruvia::Task<void> options(ruvia::Context& c) {
-        co_await service::live::serve(c, "auth", [this, &c]() { return optionsSnapshot(c); });
-    }
-
-    ruvia::Task<std::string> optionsSnapshot(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> options(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:user:query");
-        co_return service::live::json(
+        co_return c.json(
             service::common::ok<RoleOptionsResponse>(c, co_await roleService().options(c)));
     }
 
-    ruvia::Task<void> detail(ruvia::Context& c) {
-        co_await service::live::serve(c, "auth", [this, &c]() { return detailSnapshot(c); });
-    }
-
-    ruvia::Task<std::string> detailSnapshot(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> detail(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:role:query");
-        co_return service::live::json(
+        co_return c.json(
             service::common::ok<RoleDetailResponse>(c, co_await roleService().detail(c, id(c))));
     }
 

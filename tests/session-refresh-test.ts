@@ -1,5 +1,5 @@
-import { afterAll, afterEach, expect, test } from 'bun:test';
-import request from '../web/lib/http';
+import { afterAll, afterEach, expect, test, spyOn } from 'bun:test';
+import request, { HttpRequestError } from '../web/lib/http';
 import { refreshAccessToken } from '../web/pages/login/login.service';
 import { useAuthStore } from '../web/store/authStore';
 
@@ -10,12 +10,12 @@ Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value:
     setItem: (key: string, value: string) => { storage.set(key, value); },
     removeItem: (key: string) => { storage.delete(key); },
 }});
-const originalAdapter = request.defaults.adapter;
+const send = spyOn(request, 'post');
 const user = { id: 'user', username: 'tester', status: 'enabled', roles: [], permissions: [] };
 
 afterEach(() => {
     useAuthStore.getState().clearAuth();
-    request.defaults.adapter = originalAdapter;
+    send.mockReset();
 });
 
 test('concurrent refresh requests share one request and update the persisted session', async () => {
@@ -23,13 +23,15 @@ test('concurrent refresh requests share one request and update the persisted ses
     let calls = 0;
     let complete!: () => void;
     const gate = new Promise<void>(resolve => { complete = resolve; });
-    request.defaults.adapter = async config => {
+    send.mockImplementation(async (event, data) => {
+        expect(event).toBe('/v1/auth/refresh');
+        expect(data).toEqual({ refresh_token: 'old-refresh' });
         calls++;
         await gate;
-        return { config, status: 200, statusText: 'OK', headers: {}, data: { code: 0, message: 'ok', data: {
+        return {
             token: 'new-access', refresh_token: 'new-refresh', user,
-        } } };
-    };
+        };
+    });
     const first = refreshAccessToken();
     const second = refreshAccessToken();
     expect(first).toBe(second);
@@ -42,7 +44,7 @@ test('concurrent refresh requests share one request and update the persisted ses
 
 test('failed refresh clears the session and no token means no request', async () => {
     let calls = 0;
-    request.defaults.adapter = async () => { calls++; throw new Error('refresh failed'); };
+    send.mockImplementation(async () => { calls++; throw new HttpRequestError('refresh failed', 401, 11006); });
     expect(await refreshAccessToken()).toBeFalse();
     expect(calls).toBe(0);
     useAuthStore.getState().setAuth('access', 'refresh', user);
@@ -54,6 +56,30 @@ test('failed refresh clears the session and no token means no request', async ()
 
 // Restore the host's storage descriptor after all tests in this module.
 afterAll(() => {
+    send.mockRestore();
     if (previousStorage) Object.defineProperty(globalThis, 'sessionStorage', previousStorage);
     else Reflect.deleteProperty(globalThis, 'sessionStorage');
+});
+
+test('network failure preserves credentials for reconnect', async () => {
+    useAuthStore.getState().setAuth('access', 'refresh', user);
+    send.mockImplementation(async () => { throw new Error('network failed'); });
+    expect(await refreshAccessToken()).toBeFalse();
+    expect(useAuthStore.getState().token).toBe('access');
+});
+
+test('a late refresh cannot overwrite a replacement account', async () => {
+    useAuthStore.getState().setAuth('old-access', 'old-refresh', user);
+    let complete!: () => void;
+    const gate = new Promise<void>(resolve => { complete = resolve; });
+    send.mockImplementation(async () => {
+        await gate;
+        return { token: 'stale-access', refresh_token: 'stale-refresh', user };
+    });
+    const pending = refreshAccessToken();
+    useAuthStore.getState().setAuth('other-access', 'other-refresh', { ...user, id: 'other' });
+    complete();
+    expect(await pending).toBeFalse();
+    expect(useAuthStore.getState().token).toBe('other-access');
+    expect(useAuthStore.getState().user?.id).toBe('other');
 });

@@ -28,7 +28,7 @@ struct State final {
 
 inline std::string value(std::uint64_t epoch, std::uint32_t protocolVersion,
                          std::size_t workerIndex,
-                         std::string_view instance = service::runtime::instanceId()) {
+                         std::string_view instance) {
     return std::to_string(epoch) + "|" + std::to_string(protocolVersion) + "|" +
            std::to_string(workerIndex) + "|" + std::string(instance);
 }

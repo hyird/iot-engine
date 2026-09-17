@@ -12,6 +12,8 @@ namespace service::common {
 
 class UuidV7Generator {
   public:
+    UuidV7Generator() : random_(std::random_device{}()) {}
+
     [[nodiscard]] std::string next() {
         std::lock_guard lock(mutex_);
         const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -49,8 +51,6 @@ class UuidV7Generator {
     }
 
   private:
-    UuidV7Generator() : random_(std::random_device{}()) {}
-
     void randomSequence() {
         for (auto& byte : sequence_)
             byte = static_cast<std::uint8_t>(random_() & 0xFFU);

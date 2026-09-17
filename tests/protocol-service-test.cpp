@@ -67,10 +67,10 @@ void requireStrictUpdateFieldTypes(std::string_view source) {
     require(source.find("if (const auto name = payload.get<ruvia::String>(\"name\"))") ==
                 std::string_view::npos,
             "protocol update writes present non-string name fields through SQL");
-    require(source.find("protocol 必须是字符串") != std::string_view::npos,
-            "protocol update does not reject non-string protocol fields");
-    require(source.find("name 必须是字符串") != std::string_view::npos,
-            "protocol update does not reject non-string name fields");
+    require(source.find("ProtocolRequestFields::text(object, \"protocol\", 16)") != std::string_view::npos,
+            "protocol update does not decode a typed protocol field");
+    require(source.find("ProtocolRequestFields::text(object, \"name\", 64)") != std::string_view::npos,
+            "protocol update does not decode a typed name field");
     require(source.find("remark 必须是字符串或 null") != std::string_view::npos,
             "protocol service does not reject non-string remark fields");
 }
@@ -116,10 +116,10 @@ void requireQualifiedJsonArrayValidation(std::string_view source) {
     require(source.find("jsonb_array_elements") ==
                 std::string_view::npos,
             "protocol validation still runs JSON array SQL");
-    require(source.find("visitArray(*areas") !=
+    require(source.find("service::utils::visitJsonArray(*areas") !=
                 std::string_view::npos,
             "S7 validation does not walk arrays through the JSON API");
-    require(source.find("visitArray(*registers") !=
+    require(source.find("service::utils::visitJsonArray(*registers") !=
                 std::string_view::npos,
             "Modbus validation does not walk arrays through the JSON API");
 }
@@ -155,19 +155,21 @@ int main() {
         const auto service = protocolSource("protocol.service.h");
         const auto schema = protocolSource("protocol.schema.h");
         const auto source = service + schema;
-        require(service.find("static void validateConfig") == std::string::npos,
-                "protocol request validation remains in service");
-        require(schema.find("class ProtocolPayloadValidator final") != std::string::npos,
-                "protocol schema has no payload validator");
-        require(service.find("ProtocolPayloadValidator::validateConfig") != std::string::npos,
-                "protocol service does not call its payload validator");
+        require(service.find("protocol.schema.h") == std::string::npos,
+                "protocol service depends on request schema");
+        require(schema.find("class UpdateProtocolValidator final") != std::string::npos,
+                "protocol schema has no typed update validator");
+        require(service.find("ProtocolConfigurationRules::validateConfig") != std::string::npos,
+                "protocol service does not enforce persisted protocol configuration rules");
+        require(source.find("ruvia::detail::") == std::string::npos,
+                "protocol uses private framework APIs");
         requireNoUnsafeParsing(source);
-        requirePartialModbusUpdateValidation(schema);
+        requirePartialModbusUpdateValidation(service);
         requireStrictUpdateFieldTypes(source);
-        requireModbusRuntimeFieldValidation(schema);
-        requireUnifiedReadIntervalValidation(schema);
-        requireUnifiedStoragePolicyValidation(schema);
-        requireQualifiedJsonArrayValidation(schema);
+        requireModbusRuntimeFieldValidation(service);
+        requireUnifiedReadIntervalValidation(service);
+        requireUnifiedStoragePolicyValidation(service);
+        requireQualifiedJsonArrayValidation(service);
         requireEdgeSyncDoesNotLeakAsUpdateFailure(service);
         std::cout << "protocol service tests passed\n";
         return 0;

@@ -45,7 +45,7 @@ inline constexpr std::string_view kConfigKey{ "iot:state:gb28181:config" };
 
 inline std::string control(
     std::size_t workerIndex,
-    std::string_view instance = service::runtime::instanceId()
+    std::string_view instance
 ) {
     return std::string(kControlPrefix) + std::string(instance) + ":" +
         std::to_string(workerIndex);

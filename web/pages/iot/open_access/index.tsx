@@ -675,10 +675,25 @@ function AccessContent() {
     const [editingAccessKey, setEditingAccessKey] = useState<Access.KeyItem | null>(null);
     const [editingWebhook, setEditingWebhook] = useState<Access.WebhookItem | null>(null);
     const [selectedLog, setSelectedLog] = useState<Access.LogItem | null>(null);
-    const { data: accessKeys = [], isLoading: loadingAccessKeys } = useOpenKeys();
-    const { data: webhooks = [], isLoading: loadingWebhooks } = useOpenWebhooks();
+    const {
+        data: accessKeys = [],
+        isLoading: loadingAccessKeys,
+        isFetching: refreshingKeys,
+        refetch: refreshKeys,
+    } = useOpenKeys();
+    const {
+        data: webhooks = [],
+        isLoading: loadingWebhooks,
+        isFetching: refreshingWebhooks,
+        refetch: refreshWebhooks,
+    } = useOpenWebhooks();
     const { data: devices = [], isLoading: loadingDevices } = useOpenDevices();
-    const { data: logPage, isLoading: loadingLogs } = useOpenLogs(logQuery);
+    const {
+        data: logPage,
+        isLoading: loadingLogs,
+        isFetching: refreshingLogs,
+        refetch: refreshLogs,
+    } = useOpenLogs(logQuery);
     const keyCreate = useKeyCreate();
     const keyUpdate = useKeyUpdate();
     const keyRotate = useKeyRotate();
@@ -1257,6 +1272,17 @@ function AccessContent() {
                             }}
                             className="w-full sm:w-[320px]"
                         />
+                        <Button
+                            icon={<ReloadOutlined />}
+                            loading={refreshingKeys || refreshingWebhooks || refreshingLogs}
+                            onClick={() => {
+                                void refreshKeys();
+                                if (activeTab === TAB_WEBHOOK) void refreshWebhooks();
+                                else void refreshLogs();
+                            }}
+                        >
+                            刷新
+                        </Button>
                         <Button
                             icon={<QuestionCircleOutlined />}
                             onClick={() => setUsageModalOpen(true)}

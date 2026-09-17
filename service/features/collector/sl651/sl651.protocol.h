@@ -272,6 +272,18 @@ inline std::optional<std::int64_t> reportTimeMilliseconds(std::span<const std::u
     return (localSeconds - offsetSeconds) * 1000;
 }
 
+// 定时报、加报的标准正文：流水号、发报时间、测站地址/分类、观测时间。
+// 只按结构读取，不能搜索载荷中的 F0F0（图片或自定义数值也可能包含它）。
+inline std::optional<std::int64_t> observationTimeMilliseconds(
+    std::span<const std::uint8_t> body, std::uint8_t functionCode, std::string_view timezone) {
+    if ((functionCode != 0x32 && functionCode != 0x33) || body.size() < 23 ||
+        body[8] != 0xF1 || body[9] != 0xF1 || body[16] != 0xF0 || body[17] != 0xF0)
+        return std::nullopt;
+    std::array<std::uint8_t, 8> timestamp{};
+    std::copy_n(body.begin() + 18, 5, timestamp.begin() + 2);
+    return reportTimeMilliseconds(timestamp, timezone);
+}
+
 } // namespace detail
 
 class Session final : public ProtocolSession,
@@ -808,8 +820,18 @@ class Session final : public ProtocolSession,
             actions.insert(actions.end(), std::make_move_iterator(more.begin()), std::make_move_iterator(more.end()));
             return actions;
         }
-        const auto reportIdentity = detail::hexByte(parsed->functionCode) + ':' +
+        auto reportIdentity = detail::hexByte(parsed->functionCode) + ':' +
             message::toHex(std::vector<std::uint8_t>(parsed->body.begin(), parsed->body.begin() + 8));
+        // 补发保留流水号和观测正文，但可更新发报时间。身份独立于连接与接收时间，
+        // 同一设备重连后也必须落入同一条历史记录；正文变化则保留为不同记录。
+        if ((query == pendingCommands_.end() || query->second.functionCode != parsed->functionCode) && detail::observationTimeMilliseconds(
+                parsed->body, parsed->functionCode, device->second->timezone)) {
+            auto canonical = parsed->body;
+            std::fill(canonical.begin() + 2, canonical.begin() + 8, 0);
+            reportIdentity = "sl651:observation:v1:" + link_.id + ':' + device->second->id + ':' +
+                detail::hexByte(parsed->functionCode) + ':' + message::toHex(canonical);
+            parsed->acquisitionId = acquisitionIdentity(reportIdentity, 0);
+        }
         auto& acquisitions = reportAcquisitions_[parsed->deviceCode];
         const auto existing = std::find_if(acquisitions.begin(), acquisitions.end(),
             [&](const auto& entry) { return entry.first == reportIdentity; });
@@ -1018,8 +1040,8 @@ class Session final : public ProtocolSession,
         message.protocol = "SL651";
         message.connectionId = connectionId_;
         message.occurredAtMs = input.receivedAtMs;
-        message.observedAtMs = detail::reportTimeMilliseconds(frame.body, device.timezone)
-                                   .value_or(input.receivedAtMs);
+        message.observedAtMs = detail::observationTimeMilliseconds(frame.body, frame.functionCode, device.timezone)
+            .value_or(detail::reportTimeMilliseconds(frame.body, device.timezone).value_or(input.receivedAtMs));
         message.storagePolicy = device.storagePolicy;
         message.onlineWindowMs = std::clamp<std::int64_t>(device.onlineTimeout, 1, 86400) * 1000;
         message.source = "push";

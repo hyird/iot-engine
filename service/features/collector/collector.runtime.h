@@ -1,4 +1,6 @@
 #pragma once
+
+#include "service/common/uuid.h"
 #include "service/features/packet_log/packet_log.service.h"
 
 #include <algorithm>
@@ -53,6 +55,7 @@ class CollectorWorker final {
           redis_(loop_.ioContext(), std::move(redisConfig), workerHandle_),
           engine_(protocols()),
           tcp_(
+              uuidGenerator_,
               loop_.ioContext(),
               scheduler_,
               workerIndex,
@@ -82,7 +85,7 @@ class CollectorWorker final {
                   releaseTargetLease(std::move(linkId), std::move(targetId), std::move(connectionId));
               }
           ),
-          gb28181_(std::move(gb28181), loop_, redis_.withOptions({}), workerIndex, workerCount),
+          gb28181_(uuidGenerator_, std::move(gb28181), loop_, redis_.withOptions({}), workerIndex, workerCount),
           workerIndex_(workerIndex), workerCount_(workerCount),
           consumer_("collector-" + std::to_string(workerIndex)) {}
 
@@ -216,30 +219,30 @@ class CollectorWorker final {
 
     [[nodiscard]] std::string linkEventGroup() const { return collectorGroup(); }
 
-    [[nodiscard]] std::string configStream() const { return message::configStream(workerIndex_); }
+    [[nodiscard]] std::string configStream() const { return message::configStream(workerIndex_, service::runtime::instanceId()); }
 
     [[nodiscard]] std::string commandStream(bool high) const {
-        return message::commandStream(workerIndex_, high);
+        return message::commandStream(workerIndex_, high, service::runtime::instanceId());
     }
 
     [[nodiscard]] std::string commandGroup() const { return collectorGroup(); }
 
-    [[nodiscard]] std::string controlStream() const { return message::controlStream(workerIndex_); }
+    [[nodiscard]] std::string controlStream() const { return message::controlStream(workerIndex_, service::runtime::instanceId()); }
 
-    [[nodiscard]] std::string ingressStream() const { return message::ingressStream(workerIndex_); }
+    [[nodiscard]] std::string ingressStream() const { return message::ingressStream(workerIndex_, service::runtime::instanceId()); }
 
     [[nodiscard]] std::string parsedStream() const { return message::parsedStream(); }
 
-    [[nodiscard]] std::string egressStream() const { return message::egressStream(workerIndex_); }
+    [[nodiscard]] std::string egressStream() const { return message::egressStream(workerIndex_, service::runtime::instanceId()); }
 
     [[nodiscard]] std::string linkEventStream() const {
-        return message::linkEventStream(workerIndex_);
+        return message::linkEventStream(workerIndex_, service::runtime::instanceId());
     }
 
     [[nodiscard]] std::string commandResultStream() const { return message::commandResultStream(); }
 
     [[nodiscard]] std::string deadLetterStream() const {
-        return message::deadLetterStream(workerIndex_);
+        return message::deadLetterStream(workerIndex_, service::runtime::instanceId());
     }
 
     [[nodiscard]] std::string_view protocolForLink(std::string_view linkId) const noexcept {
@@ -756,7 +759,7 @@ class CollectorWorker final {
                     targetCount
                 );
                 for (const auto& connectionId : connections) {
-                    const auto childId = message::nextMessageId();
+                    const auto childId = uuidGenerator_.next();
                     broadcastParents_[childId] = task.messageId;
                     auto context = taskLogContext(task, connectionId);
                     context.causationId = task.messageId;
@@ -841,7 +844,7 @@ class CollectorWorker final {
             .boundDevices = routes == routes_.end() ? nullptr : &routes->second});
         if (!link->debugEnabled && !(selected && selected->debugEnabled)) co_return;
         try {
-            co_await packet_log::DebugPacketService::recordPacket(redis_, linkId,
+            co_await packet_log::DebugPacketService::recordPacket(redis_, uuidGenerator_, linkId,
                 selected ? std::string_view(selected->id) : std::string_view{}, direction,
                 "collector", peerAddress, bytes, timestamp, deviceOnly, eventId, status, reason, parsedJson, replyToPacketId,
                 false, 0, acquisitionId);
@@ -874,7 +877,7 @@ class CollectorWorker final {
         }
         const auto connectionId = info.connectionId;
         networkConnections_.insert_or_assign(connectionId, info);
-        message::ConnectionEvent event{ .messageId = message::nextMessageId(),
+        message::ConnectionEvent event{ .messageId = uuidGenerator_.next(),
                                         .workerInstanceId = workerInstanceId_,
                                         .eventType = "connected",
                                         .linkId = info.linkId,
@@ -902,7 +905,7 @@ class CollectorWorker final {
         if (!info.targetId.empty()) {
             releaseTargetLease(info.linkId, info.targetId, connectionId);
         }
-        message::ConnectionEvent event{ .messageId = message::nextMessageId(),
+        message::ConnectionEvent event{ .messageId = uuidGenerator_.next(),
                                         .workerInstanceId = workerInstanceId_,
                                         .eventType = "disconnected",
                                         .linkId = info.linkId,
@@ -1096,7 +1099,7 @@ class CollectorWorker final {
                     auto actions = engine_.consume(packet);
                     const auto pendingDebug = debugPendingSends_.find(packet.connectionId);
                     const auto inputAcquisition = pendingDebug == debugPendingSends_.end()
-                        ? message::nextMessageId() : pendingDebug->second.acquisitionId;
+                        ? uuidGenerator_.next() : pendingDebug->second.acquisitionId;
                     for (auto& action : actions) {
                         if (action.kind == ProtocolActionKind::ObserveParsed || action.kind == ProtocolActionKind::PublishParsed) {
                             if (action.parsed.acquisitionId.empty()) action.parsed.acquisitionId = inputAcquisition;
@@ -1360,7 +1363,7 @@ class CollectorWorker final {
                 case ProtocolActionKind::Send:
                     if (const auto epoch = connectionEpochs_.find(action.connectionId);
                         epoch != connectionEpochs_.end()) {
-                        message::EgressPacket packet{ .messageId = message::nextMessageId(),
+                        message::EgressPacket packet{ .messageId = uuidGenerator_.next(),
                                                       .workerInstanceId = workerInstanceId_,
                                                       .causationId = action.commandId,
                                                       .connectionId = action.connectionId,
@@ -1370,7 +1373,7 @@ class CollectorWorker final {
                         packet.replyToPacketId = replyToPacketId;
                         packet.acquisitionId = !action.acquisitionId.empty() ? action.acquisitionId :
                             !replyAcquisitionId.empty() ? replyAcquisitionId :
-                            !action.commandId.empty() ? action.commandId : message::nextMessageId();
+                            !action.commandId.empty() ? action.commandId : uuidGenerator_.next();
                         (void)co_await message::redis::publish(redis_, egressStream(), message::egressFields(packet), kEgressStreamCapacity);
                     } else if (!action.commandId.empty()) {
                         co_await finishCommand(action.commandId, false, "stale_session_epoch");
@@ -1402,10 +1405,10 @@ class CollectorWorker final {
                 case ProtocolActionKind::DiscardCollection:
                 case ProtocolActionKind::PublishParsed:
                     if (action.parsed.acquisitionId.empty())
-                        action.parsed.acquisitionId = action.commandId.empty() ? message::nextMessageId() : action.commandId;
+                        action.parsed.acquisitionId = action.commandId.empty() ? uuidGenerator_.next() : action.commandId;
                     action.parsed.messageId = action.parsed.acquisitionId;
                     for (std::size_t index = action.parsed.rawPacketIds.size(); index < action.parsed.rawPayloads.size(); ++index)
-                        action.parsed.rawPacketIds.push_back(message::nextMessageId());
+                        action.parsed.rawPacketIds.push_back(uuidGenerator_.next());
                     if (!action.acquisitionSummary) {
                         std::size_t rawIndex = 0;
                         for (const auto& raw : action.parsed.rawPayloads) {
@@ -1699,7 +1702,7 @@ class CollectorWorker final {
         (void)co_await message::redis::publish(
             redis_,
             std::string(message::kControlStreamPrefix) + std::string(oldInstance) + ":" + oldWorker,
-            { { "message_id", message::nextMessageId() },
+            { { "message_id", uuidGenerator_.next() },
               { "connection_id", oldConnection },
               { "device_code", action.deviceCode },
               { "reason", "device_re_registered" },
@@ -1849,7 +1852,7 @@ class CollectorWorker final {
             endpoints += endpoint;
         }
         std::vector<message::StreamField> fields{
-            { "message_id", message::nextMessageId() },
+            { "message_id", uuidGenerator_.next() },
             { "worker_instance_id", workerInstanceId_ },
             { "link_id", state.linkId },
             { "worker_id", std::to_string(state.workerIndex) },
@@ -1913,9 +1916,9 @@ class CollectorWorker final {
     }
 
     [[nodiscard]] std::vector<message::StreamField>
-    commandResultFields(std::string_view commandId, const message::ProtocolTask& task, bool success, std::string_view reason) const {
+    commandResultFields(std::string_view commandId, const message::ProtocolTask& task, bool success, std::string_view reason) {
         const auto completedAt = std::to_string(message::utcNowMilliseconds());
-        return { { "message_id", message::nextMessageId() },
+        return { { "message_id", uuidGenerator_.next() },
                  { "causation_id", std::string(commandId) },
                  { "command_id", std::string(commandId) },
                  { "device_id", task.deviceId },
@@ -2008,6 +2011,7 @@ class CollectorWorker final {
     static constexpr std::size_t kLinkEventStreamCapacity = 1000;
     static constexpr std::size_t kDeadLetterCapacity = 1000;
 
+    service::common::UuidV7Generator uuidGenerator_;
     ruvia::EventLoop loop_;
     ruvia::WorkerHandle workerHandle_;
     std::pmr::unsynchronized_pool_resource resource_;
@@ -2019,7 +2023,7 @@ class CollectorWorker final {
     service::gb28181::CollectorRuntime gb28181_;
     std::size_t workerIndex_ = 0;
     std::size_t workerCount_ = 1;
-    std::string workerInstanceId_ = message::nextMessageId();
+    std::string workerInstanceId_ = uuidGenerator_.next();
     std::string consumer_;
     std::map<std::pair<std::string, std::uint64_t>, DeadlineScheduler::Token> protocolDeadlines_;
     std::map<std::string, std::set<std::string>, std::less<>> routes_;

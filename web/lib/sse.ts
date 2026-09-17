@@ -8,7 +8,9 @@ export async function consumeServerSentEvents(
     const reader = stream.getReader();
     const text = new TextDecoder();
     const decoder = new ServerSentEventDecoder();
-    const abort = () => void reader.cancel().catch(() => undefined);
+    let cancellation: Promise<void> | undefined;
+    const cancel = () => (cancellation ??= reader.cancel().catch(() => undefined));
+    const abort = () => void cancel();
     signal?.addEventListener('abort', abort, { once: true });
     try {
         while (!signal?.aborted) {
@@ -20,7 +22,7 @@ export async function consumeServerSentEvents(
         }
     } finally {
         signal?.removeEventListener('abort', abort);
-        await reader.cancel().catch(() => undefined);
+        await cancel();
         reader.releaseLock();
     }
 }

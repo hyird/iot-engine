@@ -1,4 +1,26 @@
 import { z } from 'zod';
+
+export const terminalSessionSchema = z.object({ id: z.uuid() });
+export const terminalSizeSchema = z.object({
+    columns: z.number().int().min(1).max(1000),
+    rows: z.number().int().min(1).max(1000),
+});
+export const terminalEventsSchema = z.object({
+    events: z
+        .array(
+            z.discriminatedUnion('kind', [
+                z.object({ kind: z.literal('ready') }),
+                z.object({
+                    kind: z.literal('data'),
+                    content: z.string().max(21848),
+                    sequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+                }),
+                z.object({ kind: z.literal('close'), reason: z.string().max(4096) }),
+            ])
+        )
+        .max(256),
+});
+
 import { pageParamsSchema } from '@/utils/pagination';
 
 export const serialSettingsSchema = z.object({
@@ -17,7 +39,7 @@ export const serialSettingsSchema = z.object({
     parity: z.enum(['none', 'even', 'odd']),
     rs485: z.boolean(),
 });
-export const serialDebugTicketSchema = z.object({
+export const serialDebugOpenSchema = z.object({
     path: z
         .string()
         .min(1)

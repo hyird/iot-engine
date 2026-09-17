@@ -400,15 +400,15 @@ class OutboxService {
         }
         for (std::size_t index = 0; index < collectorWorkerCount_; ++index) {
             const auto suffix = std::to_string(index);
-            co_await collectStream(context, "ingress_" + suffix, message::ingressStream(index), "iot-engine:collector");
-            co_await collectStream(context, "dead_letter_" + suffix, message::deadLetterStream(index), {});
+            co_await collectStream(context, "ingress_" + suffix, message::ingressStream(index, service::runtime::instanceId()), "iot-engine:collector");
+            co_await collectStream(context, "dead_letter_" + suffix, message::deadLetterStream(index, service::runtime::instanceId()), {});
         }
 
         // The operations endpoints run on any Service Worker. Publish this
         // worker's complete snapshot so those endpoints can aggregate every
         // worker without reading another worker's in-memory runtime diagnostics.
         WorkerSnapshotEntity snapshot(context.resource());
-        snapshot.set<"id">(service::message::worker_metrics::snapshotId(workerIndex));
+        snapshot.set<"id">(service::message::worker_metrics::snapshotId(workerIndex, service::runtime::instanceId()));
         snapshot.set<"metrics">(observability_.prometheus());
         snapshot.set<"ready">(observability_.areComponentsReady());
         snapshot.set<"health">(observability_.healthJson());

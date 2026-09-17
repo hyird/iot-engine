@@ -1,5 +1,7 @@
 #pragma once
 
+#include "service/common/uuid.h"
+
 #include <algorithm>
 #include <chrono>
 #include <exception>
@@ -1718,7 +1720,7 @@ static ruvia::Task<std::string> dispatchToCollector(
         service::common::fail(10003, "GB28181 连接归属已变更或已过期", 404);
     }
 
-    const auto requestId = service::common::nextUuidV7();
+    const auto requestId = context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
     const auto replyStream = control_protocol::stream::reply(requestId);
     const auto resultKey = control_protocol::stream::result(requestId);
     const auto cancelKey = control_protocol::stream::cancel(requestId);

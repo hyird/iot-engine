@@ -370,6 +370,14 @@ iot_engine_add_test(edge-config LARGE
     SOURCES tests/edge-config-test.cpp
     LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
 
+iot_engine_add_test(api-upload
+    SOURCES tests/api-upload-test.cpp
+    LIBRARIES ruvia::web OpenSSL::Crypto)
+
+iot_engine_add_test(edge-debug-request LARGE
+    SOURCES tests/edge-debug-request-test.cpp
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
+
 iot_engine_add_test(edge-metadata
     SOURCES tests/edge-metadata-test.cpp
     LIBRARIES ruvia::web)

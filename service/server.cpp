@@ -1,3 +1,5 @@
+#include "service/middleware/api_upload.h"
+#include "service/features/edge/edge.config.h"
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -46,6 +48,7 @@
 #include "service/middleware/live.h"
 #include "service/modules/alert/alert.controller.h"
 #include "service/modules/device/device.controller.h"
+#include "service/modules/command/command.controller.h"
 #include "service/modules/edge_node/edge_node.controller.h"
 #include "service/modules/gb28181/gb28181.controller.h"
 #include "service/modules/link/link.controller.h"
@@ -192,13 +195,13 @@ CommandLineOptions parseCommandLine(int argc, char* argv[]) {
     return CommandLineOptions{ .migrateOnly = migrateOnly };
 }
 
-void configureEdge(const ruvia::Env& env) {
+void validateEdgeConfiguration(const ruvia::Env& env) {
     const auto platformId = env.get("EDGE_PLATFORM_ID").value_or(service::edge::protocol::kDefaultPlatformId);
-    if (!service::edge::protocol::configurePlatformId(platformId)) {
+    if (!service::edge::config::validPlatformId(platformId)) {
         throw std::runtime_error("EDGE_PLATFORM_ID is invalid");
     }
-    const auto publicBaseUrl = env.get("EDGE_PUBLIC_BASE_URL").value_or(service::edge::protocol::kDefaultPublicBaseUrl);
-    if (!service::edge::protocol::configurePublicBaseUrl(publicBaseUrl)) {
+    const auto publicBaseUrl = env.get("EDGE_PUBLIC_BASE_URL").value_or(service::message::edge::kDefaultPublicBaseUrl);
+    if (!service::edge::config::validPublicBaseUrl(publicBaseUrl)) {
         throw std::runtime_error("EDGE_PUBLIC_BASE_URL is invalid");
     }
 }
@@ -330,6 +333,8 @@ void registerRpcHandlers(
     rpcConsumer->add("command", service::command::PreparationService::executeOperation);
     rpcConsumer->add("gb28181", service::gb28181::GbControlService::executeOperation);
     rpcConsumer->add("edge", service::edge::EdgeControlService::executeOperation);
+    rpcConsumer->add("edge-serial", service::edge::serial_debug::Service::executeBrowserOperation);
+    rpcConsumer->add("edge-terminal", service::edge::terminal_state::TerminalService::executeBrowserOperation);
     auto vpnControl = std::make_shared<service::vpn::VpnControlService>(
         vpnHubConfig(env),
         std::string(env.get("EDGE_PLATFORM_ID").value_or(service::edge::protocol::kDefaultPlatformId))
@@ -535,7 +540,8 @@ void registerServiceWorkerLifecycle(ServiceWorkerComponents& workerComponents, r
 }
 
 auto makeApplicationStart(ruvia::App& app, ApplicationComponents& components, std::size_t collectors) {
-    return [&app, &components, collectors] {
+    const auto uploadDirectory = std::filesystem::path(app.env().get("EDGE_FIRMWARE_DIR").value_or("firmware"));
+    return [&app, &components, collectors, uploadDirectory] {
         const auto workers = app.workers();
         if (workers.empty() || workers.size() != components.workers.size()) {
             throw std::runtime_error("service worker ownership does not match configuration");
@@ -548,10 +554,11 @@ auto makeApplicationStart(ruvia::App& app, ApplicationComponents& components, st
             const auto owner = components.workers[index];
             const auto name = "prepare-worker-" + std::to_string(index);
             preparation.push_back(name);
-            supervisor.add({ .name = name, .start = [owner, worker, index] {
+            supervisor.add({ .name = name, .start = [owner, worker, index, uploadDirectory] {
                                 owner->multiplexer->configure(worker, index);
-                                initializeServiceWorker(worker, [owner, index](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
+                                initializeServiceWorker(worker, [owner, index, uploadDirectory](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
                                     context.workerState<service::ServiceWorkerTopology>().index = index;
+                                    service::channel::UploadedFile::recoverAbandoned(uploadDirectory);
                                     (void)co_await service::configuration::ConfigurationService::project(context);
                                 });
                             },
@@ -622,6 +629,13 @@ void configureServer(
     app.useWorkerState<service::ServiceWorkerTopology>([count = components.workers.size()] {
             return service::ServiceWorkerTopology{count};
         })
+        .useWorkerState<std::unique_ptr<service::common::UuidV7Generator>>(
+            [] { return std::make_unique<service::common::UuidV7Generator>(); })
+        .useWorkerState<service::edge::config::PlatformIdentity>(
+            [platformId = std::string(app.env().get("EDGE_PLATFORM_ID").value_or(
+                service::message::edge::kDefaultPlatformId))] {
+                return service::edge::config::PlatformIdentity{platformId};
+            })
         .useWorkerState<service::edge::SessionDispatcher>()
         .database(ruvia::DbRegistrationConfig{
             .config = std::move(components.database),
@@ -651,7 +665,9 @@ void configureServer(
         .server(ruvia::ServerConfig{
             .workerCount = budget.service,
             .maxStreamBodyBytes = 129U * 1024U * 1024U,
-            .maxWebSocketMessageBytes = 16U * 1024U,
+            // Ruvia applies this limit to both incoming and outgoing frames.
+            // EventEnvelope still rejects incoming business requests above 64 KiB.
+            .maxWebSocketMessageBytes = 16U * 1024U * 1024U,
         })
         .run();
 }
@@ -663,7 +679,7 @@ int main(int argc, char* argv[]) {
         const auto commandLine = parseCommandLine(argc, argv);
         auto& app = ruvia::app();
         app.loadDotenv();
-        configureEdge(app.env());
+        validateEdgeConfiguration(app.env());
         const auto runtime = runtimeDirectory(argc > 0 ? argv[0] : nullptr);
         service::packet_log::initialize(packetLogConfig(app.env(), runtime));
         auto gb28181 = gb28181Config(app.env());

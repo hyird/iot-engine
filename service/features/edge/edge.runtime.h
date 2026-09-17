@@ -120,7 +120,7 @@ class SessionDispatcher final {
             failed_ = false;
             stopSource_ = std::make_unique<ruvia::StopSource>();
             const auto redis = context.redis();
-            const auto workerStream = dispatch::stream(workerIndex);
+            const auto workerStream = dispatch::stream(workerIndex, service::runtime::instanceId());
             const auto consumer = "service-edge-dispatcher-" +
                 std::to_string(workerIndex);
             co_await service::message::redis::ensureGroup(
@@ -503,9 +503,9 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
         bool heartbeatStarted = false;
         try {
             const auto redis = context.redis();
-            const auto currentStream = projector_stream::stream(index);
-            const auto currentLease = projector_stream::leaseKey(index);
-            const auto currentToken = projector_stream::ownerToken(index);
+            const auto currentStream = projector_stream::stream(index, service::runtime::instanceId());
+            const auto currentLease = projector_stream::leaseKey(index, service::runtime::instanceId());
+            const auto currentToken = projector_stream::ownerToken(index, service::runtime::instanceId());
             recoveryLeases_.clear();
             lostRecoveryLeases_.clear();
             leaseLost_.store(false);

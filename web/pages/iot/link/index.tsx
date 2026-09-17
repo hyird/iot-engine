@@ -1,3 +1,4 @@
+import { LiveQueryError } from '@/components/LiveQueryError';
 import {
     App,
     Button,
@@ -12,7 +13,7 @@ import {
     Tooltip,
 } from 'antd';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { PacketDebugPanel } from '@/components/PacketDebugPanel';
 import { useLinkDebug } from './link.service';
 import { FormModal } from '@/components/FormModal';
@@ -22,14 +23,25 @@ import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermissions } from '@/hooks/usePermission';
 import { formatDateTime } from '@/utils/dateTime';
 import { validateForm } from '@/utils/validation';
-import { useEdgeInventory } from '../edge_node/edge_node.service';
+import { useEdgeSelectionList } from '../edge_node/edge_node.service';
 import { saveLinkSchema } from './link.schema';
 import { useLinkDelete, useLinkEnums, useLinkList, useLinkSave, usePublicIp } from './link.service';
 import type { Link } from './link.types';
 
-function LinkDebug({ item }: { item: Link.Item }) {
-    const [open, setOpen] = useState(false);
-    const { packets, toggle } = useLinkDebug(item.id, open);
+function LinkDebug({
+    item,
+    params,
+    open,
+    onOpen,
+    onClose,
+}: {
+    item: Link.Item;
+    params: Link.Query;
+    open: boolean;
+    onOpen: () => void;
+    onClose: () => void;
+}) {
+    const { packets, toggle } = useLinkDebug(item.id, open, params);
     return (
         <PacketDebugPanel
             scope="link"
@@ -42,8 +54,8 @@ function LinkDebug({ item }: { item: Link.Item }) {
             error={packets.error}
             acquisitions={packets.data}
             onToggle={() => toggle.mutate(!item.debug_enabled)}
-            onOpen={() => setOpen(true)}
-            onClose={() => setOpen(false)}
+            onOpen={onOpen}
+            onClose={onClose}
         />
     );
 }
@@ -54,6 +66,7 @@ const tooltipStyles = {
     container: {
         maxHeight: 'min(320px, calc(100dvh - 32px))',
         overflow: 'auto',
+        scrollbarWidth: 'none',
         overscrollBehavior: 'contain',
         whiteSpace: 'normal',
         overflowWrap: 'anywhere',
@@ -87,13 +100,14 @@ const createTarget = (index = 1): Link.Target => ({
 });
 export function IotLinkPage() {
     const [keyword, setKeyword] = useState('');
+    const [debugLinkId, setDebugLinkId] = useState<string>();
     const [pagination, setPagination] = useState({ page: 1, pageSize: 10 });
     const [modalVisible, setModalVisible] = useState(false);
     const [editing, setEditing] = useState<Link.Item | null>(null);
     const [form] = Form.useForm<LinkFormValues>();
     const selectedExecution = Form.useWatch('execution', form);
     const selectedTransport = Form.useWatch('transport', form);
-    const { data: nodes = [] } = useEdgeInventory(modalVisible);
+    const { data: nodes = [] } = useEdgeSelectionList(modalVisible);
     const selectedMode = Form.useWatch('mode', form) as Link.Mode | undefined;
     const { modal } = App.useApp();
     const { has } = usePermissions();
@@ -108,10 +122,16 @@ export function IotLinkPage() {
     const { run: debouncedSearch } = useDebounceFn(doSearch, 300);
     const { data: linkEnums } = useLinkEnums({ enabled: canQuery });
     const { data: publicIp } = usePublicIp({ enabled: canQuery });
-    const { data, isLoading } = useLinkList(
-        { ...pagination, keyword: keyword || undefined },
-        { enabled: canQuery }
+    const listParams = { ...pagination, keyword: keyword || undefined };
+    const { data, isLoading, error, refetch, isFetching } = useLinkList(
+        listParams,
+        { enabled: canQuery },
+        debugLinkId
     );
+    useEffect(() => {
+        if (data && debugLinkId && !data.list.some((item) => item.id === debugLinkId))
+            setDebugLinkId(undefined);
+    }, [data, debugLinkId]);
     const save = useLinkSave();
     const remove = useLinkDelete();
     const openCreateModal = () => {
@@ -348,7 +368,15 @@ export function IotLinkPage() {
             fixed: 'right',
             render: (_, record) => (
                 <Space>
-                    {canEdit && <LinkDebug item={record} />}
+                    {canEdit && (
+                        <LinkDebug
+                            item={record}
+                            params={listParams}
+                            open={debugLinkId === record.id}
+                            onOpen={() => setDebugLinkId(record.id)}
+                            onClose={() => setDebugLinkId(undefined)}
+                        />
+                    )}
                     {canEdit && (
                         <Button type="link" onClick={() => openEditModal(record)}>
                             编辑
@@ -394,6 +422,7 @@ export function IotLinkPage() {
                 </div>
             }
         >
+            <LiveQueryError error={error} retry={refetch} loading={isFetching} />
             <Table<Link.Item>
                 rowKey="id"
                 columns={columns}

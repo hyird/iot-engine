@@ -201,7 +201,16 @@ if(NOT EXISTS "${_output}")
 endif()
 file(SHA256 "${_output}" _installer_hash)
 file(SIZE "${_output}" _installer_bytes)
-execute_process(COMMAND git -C "${SOURCE_ROOT}" rev-parse HEAD
+if(SOURCE_COMMIT)
+  string(LENGTH "${SOURCE_COMMIT}" _commit_length)
+  if(NOT _commit_length EQUAL 40 OR NOT SOURCE_COMMIT MATCHES "^[0-9a-f]+$")
+    message(FATAL_ERROR "SOURCE_COMMIT must be a complete commit SHA")
+  endif()
+  set(_source_ref "${SOURCE_COMMIT}^{commit}")
+else()
+  set(_source_ref HEAD)
+endif()
+execute_process(COMMAND git -C "${SOURCE_ROOT}" rev-parse --verify "${_source_ref}"
   OUTPUT_VARIABLE _source_commit OUTPUT_STRIP_TRAILING_WHITESPACE
   COMMAND_ERROR_IS_FATAL ANY)
 set(_downloads "${BUILD_ROOT}/windows-client-downloads")

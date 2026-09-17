@@ -68,7 +68,11 @@ async function jsonRequest(
     return result;
 }
 
-async function snapshot(path: string, headers: RequestHeaders = adminHeaders) {
+async function query(path: string) {
+    return (await jsonRequest('GET', path)).data;
+}
+
+async function publicSnapshot(path: string, headers: RequestHeaders = adminHeaders) {
     const controller = new AbortController();
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
@@ -201,9 +205,9 @@ try {
         protocol = await protocolId();
         return protocol !== undefined;
     }, 'protocol create did not become visible');
-    const protocolList = await snapshot('/v1/protocol/configs?page=1&pageSize=20&protocol=Modbus');
+    const protocolList = await query('/v1/protocol/configs?page=1&pageSize=20&protocol=Modbus');
     assert(protocolList.list.some((item: { id: string }) => item.id === protocol));
-    const protocolDetail = await snapshot(`/v1/protocol/configs/${protocol}`);
+    const protocolDetail = await query(`/v1/protocol/configs/${protocol}`);
     assert.equal(protocolDetail.id, protocol);
     assert.equal(protocolDetail.name, protocolName);
     assert.equal(protocolDetail.enabled, true);
@@ -215,7 +219,7 @@ try {
         signal: AbortSignal.timeout(15000),
     });
     assert.equal(scientific.status, 200, await scientific.text());
-    assert.equal((await snapshot(`/v1/protocol/configs/${protocol}`)).config.readInterval, 1000);
+    assert.equal((await query(`/v1/protocol/configs/${protocol}`)).config.readInterval, 1000);
     await jsonRequest('PUT', `/v1/protocol/configs/${protocol}`, {
         config: { registers: [{ ...protocolConfig.registers[0], scale: '1000000000.000000000001' }] },
     }, 400);
@@ -225,7 +229,7 @@ try {
         config: { readInterval: 20, ormBooleanProbe: true },
         remark: `${tag}-updated-remark`,
     });
-    const updatedProtocol = await snapshot(`/v1/protocol/configs/${protocol}`);
+    const updatedProtocol = await query(`/v1/protocol/configs/${protocol}`);
     assert.equal(updatedProtocol.enabled, false);
     assert.equal(updatedProtocol.config.readInterval, 20);
     assert.equal(updatedProtocol.config.ormBooleanProbe, true);
@@ -250,9 +254,9 @@ try {
         link = await linkId();
         return link !== undefined;
     }, 'link create did not become visible');
-    const linkList = await snapshot(`/v1/link?page=1&pageSize=20&keyword=${encodeURIComponent(tag)}`);
+    const linkList = await query(`/v1/link?page=1&pageSize=20&keyword=${encodeURIComponent(tag)}`);
     assert(linkList.list.some((item: { id: string }) => item.id === link));
-    const linkDetail = await snapshot(`/v1/link/${link}`);
+    const linkDetail = await query(`/v1/link/${link}`);
     assert.equal(linkDetail.id, link);
     assert.equal(linkDetail.name, linkName);
     assert.equal(linkDetail.endpoint.mode, 'TCP Server');
@@ -266,7 +270,7 @@ try {
         endpoint: linkEndpoint,
         status: 'disabled',
     });
-    const updatedLink = await snapshot(`/v1/link/${link}`);
+    const updatedLink = await query(`/v1/link/${link}`);
     assert.equal(updatedLink.name, updatedLinkName);
     assert.equal(updatedLink.endpoint.port, linkPort);
     console.log('PASS link ORM create, list, detail, update and numeric endpoint JSON');
@@ -281,7 +285,7 @@ try {
         { endpoint: { ...serialEndpoint, data_bits: 9 }, message: '串口参数无效' },
         { endpoint: { ...serialEndpoint, stop_bits: 3 }, message: '串口参数无效' },
         { endpoint: { ...serialEndpoint, parity: 'mark' }, message: '串口参数无效' },
-        { endpoint: serialEndpoint, protocol: 'S7', message: 'S7 不支持串口' },
+        { endpoint: serialEndpoint, protocol: 'S7', message: '所选 PLC 协议仅支持 TCP' },
         { endpoint: { ...serialEndpoint, interface: 'x'.repeat(97) }, message: '接口名称过长' },
         { endpoint: { ...tcpEndpoint, ip: '127.0.0.999' }, message: 'TCP 参数无效' },
         { endpoint: { ...tcpEndpoint, port: 65536 }, message: 'TCP 参数无效' },
@@ -327,17 +331,17 @@ try {
     };
     const deviceOne = await createDevice(deviceOneName, deviceOneCode, 'A');
     const deviceTwo = await createDevice(deviceTwoName, deviceTwoCode, 'B');
-    const deviceList = await snapshot(`/v1/device?keyword=${encodeURIComponent(tag)}`);
+    const deviceList = await query(`/v1/device?keyword=${encodeURIComponent(tag)}`);
     assert(deviceList.list.some((item: { id: string }) => item.id === deviceOne));
     assert(deviceList.list.some((item: { id: string }) => item.id === deviceTwo));
-    const deviceDetail = await snapshot(`/v1/device/${deviceOne}`);
+    const deviceDetail = await query(`/v1/device/${deviceOne}`);
     assert.equal(deviceDetail.id, deviceOne);
     assert.equal(deviceDetail.device_code, deviceOneCode);
     assert.equal(deviceDetail.protocol_config_id, protocol);
     assert.equal(deviceDetail.online_timeout, 120);
     assert.equal(typeof deviceDetail.remote_control, 'boolean');
     assert.equal(deviceDetail.remote_control, true);
-    const deviceHistory = await snapshot(
+    const deviceHistory = await query(
         `/v1/device/${deviceOne}/history?startTime=2026-01-01T00:00:00Z&endTime=2026-01-02T00:00:00Z&page=1&pageSize=10`,
     );
     assert(Array.isArray(deviceHistory.list));
@@ -349,7 +353,7 @@ try {
         remote_control: false,
         remark: `${tag}-device-updated`,
     });
-    const updatedDevice = await snapshot(`/v1/device/${deviceOne}`);
+    const updatedDevice = await query(`/v1/device/${deviceOne}`);
     assert.equal(updatedDevice.name, updatedDeviceOneName);
     assert.equal(updatedDevice.remote_control, false);
     assert.equal(updatedDevice.status, 'disabled');
@@ -363,13 +367,13 @@ try {
     alternateLink = (await db`SELECT id FROM link WHERE name=${alternateLinkName} AND deleted_at IS NULL`)[0].id;
     const channelsBefore = (await db`SELECT count(*) AS count FROM link WHERE deleted_at IS NULL`)[0].count;
     await jsonRequest('PUT', `/v1/device/${deviceOne}`, { link_id: alternateLink });
-    assert.equal((await snapshot(`/v1/device/${deviceOne}`)).link_id, alternateLink);
-    assert.equal((await snapshot(`/v1/device/${deviceTwo}`)).link_id, link);
-    assert.equal((await snapshot(`/v1/link/${link}`)).id, link);
+    assert.equal((await query(`/v1/device/${deviceOne}`)).link_id, alternateLink);
+    assert.equal((await query(`/v1/device/${deviceTwo}`)).link_id, link);
+    assert.equal((await query(`/v1/link/${link}`)).id, link);
     assert.equal((await db`SELECT count(*) AS count FROM link WHERE deleted_at IS NULL`)[0].count, channelsBefore);
     await jsonRequest('PUT', `/v1/device/${deviceOne}`, { link_id: link });
-    assert.equal((await snapshot(`/v1/device/${deviceOne}`)).link_id, link);
-    assert.equal((await snapshot(`/v1/link/${alternateLink}`)).id, alternateLink);
+    assert.equal((await query(`/v1/device/${deviceOne}`)).link_id, link);
+    assert.equal((await query(`/v1/link/${alternateLink}`)).id, alternateLink);
     console.log('PASS device connection edits preserve both shared physical channels and other devices');
 
 
@@ -475,7 +479,7 @@ try {
         eventTypes: ['device.data.reported'],
     }, 400);
 
-    const keyList = await snapshot('/api/open-access-key');
+    const keyList = await query('/api/open-access-key');
     const listedKeyOne = keyList.find((item: { id: string }) => item.id === keyOne.id);
     const listedKeyTwo = keyList.find((item: { id: string }) => item.id === keyTwo.id);
     assert(listedKeyOne && listedKeyTwo);
@@ -484,7 +488,7 @@ try {
     assert(Array.isArray(listedKeyOne.scopes));
     assert.equal(typeof listedKeyOne.webhookCount, 'number');
 
-    const webhookList = await snapshot('/api/open-webhook');
+    const webhookList = await query('/api/open-webhook');
     const listedWebhookOne = webhookList.find((item: { id: string }) => item.id === webhookOne.id);
     const listedWebhookTwo = webhookList.find((item: { id: string }) => item.id === webhookTwo.id);
     assert(listedWebhookOne && listedWebhookTwo);
@@ -506,7 +510,7 @@ try {
     assert.equal(listedKeyOne.webhookCount, 1);
     assert.equal(listedKeyTwo.webhookCount, 1);
 
-    const filteredWebhooks = await snapshot(`/api/open-webhook?accessKeyId=${keyOne.id}`);
+    const filteredWebhooks = await query(`/api/open-webhook?accessKeyId=${keyOne.id}`);
     assert.equal(filteredWebhooks.length, 1);
     assert.equal(filteredWebhooks[0].id, webhookOne.id);
     console.log('PASS open-access key/webhook JSON projections, header validation and access-key filter');
@@ -514,13 +518,13 @@ try {
     const publicHeaders = { 'X-Access-Key': keyOne.accessKey };
     await until(async () => {
         try {
-            const page = await snapshot('/open-api/device/list?page=1&pageSize=100', publicHeaders);
+            const page = await publicSnapshot('/open-api/device/list?page=1&pageSize=100', publicHeaders);
             return page.total === 1 && page.list.length === 1 && page.list[0].id === deviceOne;
         } catch {
             return false;
         }
     }, 'open-access device projection did not become visible');
-    const publicDevices = await snapshot('/open-api/device/list?page=1&pageSize=100', publicHeaders);
+    const publicDevices = await publicSnapshot('/open-api/device/list?page=1&pageSize=100', publicHeaders);
     assert.equal(publicDevices.total, 1);
     assert.deepEqual(publicDevices.list.map((item: { id: string }) => item.id), [deviceOne]);
     assert.equal(publicDevices.list[0].name, updatedDeviceOneName);
@@ -537,7 +541,7 @@ try {
         VALUES(${crypto.randomUUID()},${deviceTwo},${link},'Modbus',${historicalValue}::jsonb,${sampleTime},${crypto.randomUUID()},'collector',${sampleTime})`;
     const historyStart = new Date(sampleTime.getTime() - 1000).toISOString();
     const historyEnd = new Date(sampleTime.getTime() + 1000).toISOString();
-    const publicHistory = await snapshot(`/open-api/device/history?deviceId=${deviceTwo}&startTime=${historyStart}&endTime=${historyEnd}`,
+    const publicHistory = await publicSnapshot(`/open-api/device/history?deviceId=${deviceTwo}&startTime=${historyStart}&endTime=${historyEnd}`,
         { 'X-Access-Key': keyTwo.accessKey });
     assert.equal(publicHistory.total, 1);
     assert.equal(publicHistory.list[0].points[0].id, pointId);

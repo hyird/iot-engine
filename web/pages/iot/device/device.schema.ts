@@ -48,7 +48,7 @@ export const saveDeviceSchema = z.object({
         .trim()
         .min(1, '设备编码不能为空')
         .max(100, '设备编码最多100个字符')
-        .regex(/^[A-Za-z0-9]+$/, '设备编码只能包含字母和数字'),
+        .regex(/^[A-Za-z0-9_-]+$/, '设备编码只能包含字母、数字、连字符和下划线'),
     link_id: z.uuid({ error: '请选择有效通道' }),
     target_id: z.string().trim().max(100).optional(),
     protocol_config_id: z.uuid({ error: '请选择有效设备类型' }),

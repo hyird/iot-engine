@@ -1,3 +1,4 @@
+#include "service/features/edge/edge.config.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -186,10 +187,20 @@ void testEnrollmentMigrationRemovesRejectedState() {
             "schema still permits rejected registrations");
 }
 
+void testPublicBaseUrlConfiguration() {
+    for (const auto value : {"", "ftp://secondary.example", "https://", "https:///host", "https://host/path with space"})
+        require(!service::edge::config::validPublicBaseUrl(value), "invalid public URL accepted");
+    for (const auto value : {"https://secondary.example/", "http://127.0.0.1:55132", "https://host/base/"})
+        require(service::edge::config::validPublicBaseUrl(value), "valid public URL rejected");
+    require(!service::edge::config::validPublicBaseUrl("https://host/" + std::string(256, 'a')),
+            "oversized public URL accepted");
+}
+
 } // namespace
 
 int main() {
     try {
+        testPublicBaseUrlConfiguration();
         testPacketBytesRejectInvalidHex();
         testPacketBytesRejectUnknownMode();
         testReplaceQueueToleratesCorruptRevisionKey();

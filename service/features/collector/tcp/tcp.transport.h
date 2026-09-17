@@ -1,5 +1,7 @@
 #pragma once
 
+#include "service/common/uuid.h"
+
 #include <array>
 #include <asio.hpp>
 #include <cerrno>
@@ -40,8 +42,8 @@ class TcpTransport final {
         std::function<void(std::string, std::string, std::string, std::function<void(bool)>)>;
     using TargetReleaseHandler = std::function<void(std::string, std::string, std::string)>;
 
-    TcpTransport(asio::io_context& ioContext, DeadlineScheduler& scheduler, std::size_t workerIndex, std::size_t workerCount, ConnectedHandler onConnected, PacketHandler onPacket, DisconnectedHandler onDisconnected, StateHandler onState, TargetClaimHandler onTargetClaim = {}, TargetReleaseHandler onTargetRelease = {})
-        : ioContext_(ioContext), scheduler_(scheduler), workerIndex_(workerIndex),
+    TcpTransport(service::common::UuidV7Generator& uuidGenerator, asio::io_context& ioContext, DeadlineScheduler& scheduler, std::size_t workerIndex, std::size_t workerCount, ConnectedHandler onConnected, PacketHandler onPacket, DisconnectedHandler onDisconnected, StateHandler onState, TargetClaimHandler onTargetClaim = {}, TargetReleaseHandler onTargetRelease = {})
+        : uuidGenerator_(uuidGenerator), ioContext_(ioContext), scheduler_(scheduler), workerIndex_(workerIndex),
           workerCount_(workerCount), onConnected_(std::move(onConnected)),
           onPacket_(std::move(onPacket)), onDisconnected_(std::move(onDisconnected)),
           onState_(std::move(onState)), onTargetClaim_(std::move(onTargetClaim)),
@@ -479,7 +481,7 @@ class TcpTransport final {
             // Workers may race here, but only the lease owner is allowed to
             // reach the device and become its active connection.
             const auto currentAttempt = std::make_shared<Attempt>();
-            currentAttempt->token = message::nextMessageId();
+            currentAttempt->token = owner.uuidGenerator_.next();
             attempt = currentAttempt;
             connectionId = currentAttempt->token;
             claimPending_ = true;
@@ -663,7 +665,7 @@ class TcpTransport final {
                         definition->second.status != "enabled") {
                         return;
                     }
-                    addConnection(definition->second, {}, message::nextMessageId(), std::move(remote), std::move(socket));
+                    addConnection(definition->second, {}, uuidGenerator_.next(), std::move(remote), std::move(socket));
                 }
             );
             listeners_.emplace(link.id, listener);
@@ -804,7 +806,7 @@ class TcpTransport final {
                         client->second->lastActivityAtMs = activity;
                     }
                 }
-                message::IngressPacket packet{ .messageId = message::nextMessageId(),
+                message::IngressPacket packet{ .messageId = uuidGenerator_.next(),
                                                .linkId = linkId,
                                                .connectionId = std::string(currentId),
                                                .remoteAddress = std::string(currentRemote),
@@ -915,6 +917,7 @@ class TcpTransport final {
         connectionTargets_.clear();
     }
 
+    service::common::UuidV7Generator& uuidGenerator_;
     asio::io_context& ioContext_;
     DeadlineScheduler& scheduler_;
     std::size_t workerIndex_ = 0;

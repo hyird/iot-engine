@@ -1,6 +1,6 @@
+import { LiveQueryError } from '@/components/LiveQueryError';
 import { CloseOutlined, PlusOutlined } from '@ant-design/icons';
 import type { UseMutationResult } from '@tanstack/react-query';
-import { useQueryClient } from '@tanstack/react-query';
 import {
     App,
     AutoComplete,
@@ -26,12 +26,11 @@ import { StatusTag } from '@/components/StatusTag';
 import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermission } from '@/hooks/usePermission';
 import { formatDateTime } from '@/utils/dateTime';
-import { useDeviceList } from '../device/device.service';
+import { createUuid } from '@/utils/uuid';
+import { useDeviceConfigurationList } from '../device/device.service';
 import { useProtocolConfigDetail, useProtocolConfigOptions } from '../protocol/protocol.service';
 import type { Modbus, Protocol, S7, SL651 } from '../protocol/protocol.types';
 import {
-    alertApi,
-    alertKeys,
     useAlertAcknowledge,
     useAlertApplyTemplate,
     useAlertBatchAcknowledge,
@@ -43,6 +42,7 @@ import {
     useAlertStats,
     useAlertTemplateDelete,
     useAlertTemplateList,
+    useAlertTemplateLoader,
     useAlertTemplateSave,
     useDeviceOptions,
 } from './alert.service';
@@ -289,7 +289,7 @@ type EditableCondition = Alert.Condition & {
 };
 const editableCondition = (condition: Alert.Condition): EditableCondition => ({
     ...condition,
-    _key: crypto.randomUUID(),
+    _key: createUuid(),
 });
 interface AlertRuleFormModalProps {
     open: boolean;
@@ -313,9 +313,8 @@ export function AlertRuleFormModal({
     const [form] = Form.useForm<AlertRuleFormValues>();
     const [conditions, setConditions] = useState<EditableCondition[]>([]);
     const [protocolType, setProtocolType] = useState<Protocol.Type | ''>('');
-    const queryClient = useQueryClient();
     // 获取带协议类型的设备列表（useMemo 稳定引用，避免 ?? [] 每次创建新数组）
-    const { data: deviceStaticData } = useDeviceList({ enabled: open });
+    const { data: deviceStaticData } = useDeviceConfigurationList({ enabled: open });
     const allDevices = useMemo(() => deviceStaticData?.list ?? [], [deviceStaticData?.list]);
     // 按协议类型过滤设备选项
     const filteredDevices = useMemo(
@@ -418,7 +417,7 @@ export function AlertRuleFormModal({
                     recovery_condition: editing.recovery_condition,
                     recovery_wait_seconds: editing.recovery_wait_seconds,
                     status: editing.status,
-                    remark: editing.remark,
+                    remark: editing.remark ?? '',
                 });
                 setConditions((editing.conditions || []).map(editableCondition));
             } else {
@@ -466,7 +465,6 @@ export function AlertRuleFormModal({
             {
                 onSuccess: () => {
                     onClose();
-                    queryClient.invalidateQueries({ queryKey: alertKeys.all });
                 },
             }
         );
@@ -628,7 +626,7 @@ const AlertTemplateFormModalEditableConditionValue = (
     condition: Alert.Condition
 ): AlertTemplateFormModalEditableCondition => ({
     ...condition,
-    _key: crypto.randomUUID(),
+    _key: createUuid(),
 });
 interface AlertTemplateFormModalProps {
     open: boolean;
@@ -659,7 +657,6 @@ export function AlertTemplateFormModal({
     const [form] = Form.useForm<TemplateFormValues>();
     const [conditions, setConditions] = useState<AlertTemplateFormModalEditableCondition[]>([]);
     const [protocolType, setProtocolType] = useState<Protocol.Type | ''>('');
-    const queryClient = useQueryClient();
     // 根据协议类型获取配置选项列表
     const { data: configOptionsData } = useProtocolConfigOptions(protocolType as Protocol.Type, {
         enabled: open && !!protocolType,
@@ -758,8 +755,8 @@ export function AlertTemplateFormModal({
                 form.setFieldsValue({
                     id: editingDetail.id,
                     name: editingDetail.name,
-                    category: editingDetail.category,
-                    description: editingDetail.description,
+                    category: editingDetail.category ?? '',
+                    description: editingDetail.description ?? '',
                     severity: editingDetail.severity,
                     logic: editingDetail.logic,
                     silence_duration: editingDetail.silence_duration,
@@ -819,7 +816,6 @@ export function AlertTemplateFormModal({
             {
                 onSuccess: () => {
                     onClose();
-                    queryClient.invalidateQueries({ queryKey: alertKeys.all });
                 },
             }
         );
@@ -1016,7 +1012,6 @@ function RuleConfigModal({ open, onClose }: { open: boolean; onClose: () => void
     const [applyingTemplate, setApplyingTemplate] = useState<Alert.TemplateItem | null>(null);
     const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
     const { modal } = App.useApp();
-    const queryClient = useQueryClient();
     const canAdd = usePermission('iot:alert:add');
     const canEdit = usePermission('iot:alert:edit');
     const canDelete = usePermission('iot:alert:delete');
@@ -1041,6 +1036,7 @@ function RuleConfigModal({ open, onClose }: { open: boolean; onClose: () => void
         pageSize: tplPagination.pageSize,
     });
     const tplSaveMutation = useAlertTemplateSave();
+    const loadTemplate = useAlertTemplateLoader();
     const tplDeleteMutation = useAlertTemplateDelete();
     const applyMutation = useAlertApplyTemplate();
     // ---- 规则操作 ----
@@ -1082,12 +1078,12 @@ function RuleConfigModal({ open, onClose }: { open: boolean; onClose: () => void
     };
     const openTplEdit = async (record: Alert.TemplateItem) => {
         try {
-            const detail = await alertApi.getTemplateDetail(record.id);
+            const detail = await loadTemplate(record.id);
             setTplEditing(record);
             setTplEditingDetail(detail);
             setTplFormVisible(true);
         } catch {
-            // 错误由 axios 拦截器处理
+            // 请求层统一显示错误。
         }
     };
     const onTplDelete = (record: Alert.TemplateItem) => {
@@ -1110,7 +1106,6 @@ function RuleConfigModal({ open, onClose }: { open: boolean; onClose: () => void
             {
                 onSuccess: () => {
                     setApplyingTemplate(null);
-                    queryClient.invalidateQueries({ queryKey: alertKeys.all });
                 },
             }
         );
@@ -1413,16 +1408,26 @@ const AlertPage = () => {
     const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
     const [configModalOpen, setConfigModalOpen] = useState(false);
     const { modal } = App.useApp();
-    const { data: stats, isLoading: statsLoading } = useAlertStats({ enabled: canQuery });
-    const { data: recordPage, isLoading } = useAlertRecordList(
-        {
-            page: pagination.page,
-            pageSize: pagination.pageSize,
-            severity: severity || undefined,
-            status: status || undefined,
-        },
-        { enabled: canQuery }
-    );
+    const recordParams = {
+        page: pagination.page,
+        pageSize: pagination.pageSize,
+        severity: severity || undefined,
+        status: status || undefined,
+    };
+    const {
+        data: stats,
+        isLoading: statsLoading,
+        error: statsError,
+        refetch: retryStats,
+    } = useAlertStats(recordParams, {
+        enabled: canQuery,
+    });
+    const {
+        data: recordPage,
+        isLoading,
+        error: recordsError,
+        refetch: retryRecords,
+    } = useAlertRecordList(recordParams, { enabled: canQuery });
     const ackMutation = useAlertAcknowledge();
     const batchAckMutation = useAlertBatchAcknowledge();
     if (!canQuery) {
@@ -1504,6 +1509,10 @@ const AlertPage = () => {
     ];
     return (
         <PageContainer>
+            <LiveQueryError
+                error={recordsError ?? statsError}
+                retry={() => Promise.all([retryRecords(), retryStats()])}
+            />
             {/* 概要统计 + 管理入口 */}
             <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
                 {statsLoading ? (

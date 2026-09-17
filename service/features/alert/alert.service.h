@@ -86,7 +86,7 @@ return changed
     for (const auto& message : messages) {
         const auto durationKey = offlineDurationKey(message.deviceId);
         const auto deadlinesKey = offlineDeadlinesKey();
-        const auto wakeStream = service::message::workerWakeStream(std::nullopt);
+        const auto wakeStream = service::message::workerWakeStream(std::nullopt, service::runtime::instanceId());
         const auto observedAt = std::to_string(message.observedAtMs);
         const std::array<std::string_view, 3> keys{ durationKey, deadlinesKey, wakeStream };
         const std::array<std::string_view, 1> arguments{ observedAt };
@@ -365,7 +365,7 @@ return offline_count
         std::string(kReadyKey),
         std::string(kOfflineDurationKeys),
         offlineDeadlinesKey(),
-        service::message::workerWakeStream(std::nullopt)
+        service::message::workerWakeStream(std::nullopt, service::runtime::instanceId())
     };
     std::vector<std::string_view> keyViews(keys.begin(), keys.end());
     std::vector<std::string_view> views;
@@ -445,7 +445,7 @@ class AlertEvaluationService final {
                 continue;
             }
             evaluations[sequence].push_back(
-                evaluation(row, 1, relevant[sequence]->valuesJson)
+                evaluation(row, 1, relevant[sequence]->valuesJson, context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next())
             );
         }
         for (std::size_t sequence = 0; sequence < relevant.size(); ++sequence) {
@@ -505,7 +505,7 @@ class AlertEvaluationService final {
         std::vector<Evaluation> evaluations;
         evaluations.reserve(rows.size());
         for (const auto& row : rows) {
-            evaluations.push_back(evaluation(row, 1, fallbackData));
+            evaluations.push_back(evaluation(row, 1, fallbackData, context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next()));
         }
         co_await applyEvaluations(context, evaluations, occurredAtMs, {});
     }
@@ -520,7 +520,7 @@ class AlertEvaluationService final {
     }
 
     template <typename Row>
-    static Evaluation evaluation(const Row& row, std::size_t offset, std::string_view fallbackData) {
+    static Evaluation evaluation(const Row& row, std::size_t offset, std::string_view fallbackData, std::string recordId) {
         const auto ruleName = std::string(row[offset + 1].value().value_or(std::string_view{}));
         return Evaluation{
             .ruleId = std::string(row[offset].value().value_or(std::string_view{})),
@@ -535,7 +535,7 @@ class AlertEvaluationService final {
             .recoveryWait = std::string(row[offset + 8].value().value_or(std::string_view{})),
             .data = !row[offset + 9].value().has_value() ? std::string(fallbackData)
                                                          : std::string(row[offset + 9].value().value_or(std::string_view{})),
-            .recordId = service::common::nextUuidV7(),
+            .recordId = std::move(recordId),
             .message = ruleName + " 触发告警",
         };
     }

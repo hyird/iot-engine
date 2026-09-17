@@ -1,6 +1,5 @@
-import type { UseQueryOptions } from '@tanstack/react-query';
+import { useQuery, type UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
-import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import type { PaginatedResult } from '@/types/pagination';
 import { create, getList, getOptions, remove, update } from './dept.api';
 import type { Dept } from './dept.types';
@@ -9,17 +8,21 @@ export function useDeptList(
     params?: Dept.Query,
     options?: Omit<UseQueryOptions<PaginatedResult<Dept.Item>>, 'queryKey' | 'queryFn'>
 ) {
-    return useSnapshotQuery({
+    return useQuery({
         queryKey: deptQueryKeys.list(params),
-        queryFn: () => getList(params),
+        queryFn: ({ signal }) => getList(params, signal),
         ...options,
+        refetchInterval: false,
+        refetchOnWindowFocus: false,
     });
 }
 export function useDeptOptions(options?: { enabled?: boolean }) {
-    return useSnapshotQuery({
+    return useQuery({
         queryKey: deptQueryKeys.options(),
-        queryFn: getOptions,
+        queryFn: ({ signal }) => getOptions(signal),
         enabled: options?.enabled ?? true,
+        refetchInterval: false,
+        refetchOnWindowFocus: false,
     });
 }
 export function useDeptSave() {

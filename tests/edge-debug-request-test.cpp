@@ -1,0 +1,121 @@
+#include <iostream>
+
+#include <ruvia/web/Controller.h>
+#include <ruvia/web/Testing.h>
+
+#include "service/modules/edge_node/edge_node.controller.h"
+
+namespace {
+void require(bool condition, const char* reason) {
+    if (!condition) {
+        throw std::runtime_error(reason);
+    }
+}
+
+RUVIA_REQUEST_MODEL(EchoBody, RUVIA_REQUIRED_FIELD(value, ruvia::String));
+
+class EchoValidator : public ruvia::Middleware<EchoValidator> {
+  public:
+    RUVIA_VALIDATE_JSON(EchoBody, RUVIA_RULE(value, RUVIA_REQUIRED("required"), RUVIA_MIN(2, "short")))
+};
+
+class EventProbe final : public ruvia::Controller<EventProbe> {
+  public:
+    RUVIA_CONTROLLER_GROUP("/probe")
+    RUVIA_ROUTES_BEGIN
+    RUVIA_POST("/", probe);
+
+    RUVIA_ROUTES_END
+    void registerEvents(service::edge::debug::EventRegistry& registry) {
+        registry.add<EventProbe, &EventProbe::echo, EchoValidator>("echo.read", *this);
+    }
+
+  private:
+    ruvia::Task<service::edge::debug::EventResult> echo(service::edge::debug::EventContext& c, const EchoBody& body) {
+        require(c.connection.worker().isCurrent(), "event migrated to another worker");
+        require(c.arena() != c.connection.pool(), "debug invocation reused the connection allocation arena");
+        require(c.request.event == "echo.read", "event identity changed");
+        auto& workerGenerator = *c.connection.workerState<std::unique_ptr<service::common::UuidV7Generator>>();
+        require(c.workerState<std::unique_ptr<service::common::UuidV7Generator>>().get() == &workerGenerator, "debug event did not borrow its accepting worker's UUID generator");
+        const auto firstId = c.workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        service::middleware::RequestContext nextRequest(c.connection, "another-actor");
+        require(nextRequest.workerState<std::unique_ptr<service::common::UuidV7Generator>>().get() == &workerGenerator, "request scope replaced worker UUID state");
+        require(firstId < nextRequest.workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next(), "UUID order was reset between request scopes");
+        co_return service::edge::debug::EventResult{ service::utils::jsonQuoted(body.get<"value">().view()) };
+    }
+
+    ruvia::Task<ruvia::HttpResponse> probe(ruvia::Context& c) {
+        const auto wire = co_await c.req().text();
+        auto request = service::edge::debug::Request::parse(wire);
+        service::edge::debug::SessionIdentity identity{
+            c.workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next()};
+        service::edge::debug::ConnectionResources resources;
+        std::any state;
+        service::edge::debug::EventContext context(c, identity, request, c.stopToken(), resources, state);
+        service::edge::debug::EventRegistry registry;
+        registerEvents(registry);
+        bool duplicate = false;
+        try {
+            registerEvents(registry);
+        } catch (const std::logic_error&) {
+            duplicate = true;
+        }
+        require(duplicate, "duplicate event accepted");
+        registry.seal();
+        require(registry.policy("echo.read").authenticated, "events must require authentication by default");
+        bool sealed = false;
+        try {
+            registerEvents(registry);
+        } catch (const std::logic_error&) {
+            sealed = true;
+        }
+        require(sealed, "registration changed after sealing");
+        const auto result = co_await registry.invoke(context);
+        co_return c.text(std::string_view(result.data));
+    }
+};
+} // namespace
+
+int main() {
+    try {
+        const auto id = service::common::nextUuidV7();
+        const auto wire = "{\"id\":\"" + id + "\",\"event\":\"echo.read\",\"data\":{\"value\":\"typed\"}}";
+        const auto parsed = service::edge::debug::Request::parse(wire);
+        require(parsed.id == id && parsed.data == "{\"value\":\"typed\"}", "request ownership failed");
+        const auto lexical = "{\"id\":\"" + id + "\",\"event\":\"echo.read\",\"d\\u0061ta\":{\"value\":[1e3,{\"x\":\"a\\\"},b\"}]}}";
+        require(service::edge::debug::Request::parse(lexical).data == "{\"value\":[1e3,{\"x\":\"a\\\"},b\"}]}", "raw JSON or escaped field name changed");
+        for (const auto extra : { ",\"id\":\"other\"}", ",\"method\":\"GET\"}", ",\"unknown\":null}" }) {
+            auto malformed = wire.substr(0, wire.size() - 1) + extra;
+            bool rejected = false;
+            try {
+                (void)service::edge::debug::Request::parse(malformed);
+            } catch (const service::edge::debug::EventError&) {
+                rejected = true;
+            }
+            require(rejected, "duplicate or unknown envelope field accepted");
+        }
+        const auto duplicates = ruvia::JsonValue::parse(R"({"x":1,"x":{"nested":["comma,brace}",2]}})");
+        require(duplicates && service::utils::jsonField(*duplicates, "x")->view() == R"({"nested":["comma,brace}",2]})", "last duplicate field semantics changed");
+        for (const auto bad : { "{}", "[]", "{\"id\":\"1\",\"event\":\"echo.read\",\"data\":{}}" }) {
+            bool rejected = false;
+            try {
+                (void)service::edge::debug::Request::parse(bad);
+            } catch (const service::edge::debug::EventError&) {
+                rejected = true;
+            }
+            require(rejected, "invalid request accepted");
+        }
+        ruvia::TestApp app;
+        app.useWorkerState<std::unique_ptr<service::common::UuidV7Generator>>(
+            [] { return std::make_unique<service::common::UuidV7Generator>(); });
+        const auto good = app.request(ruvia::TestRequest::post("/probe").json(wire));
+        require(good.status().value() == 200 && good.body() == "\"typed\"", "typed event invocation failed");
+        const auto invalid = "{\"id\":\"" + id + "\",\"event\":\"echo.read\",\"data\":{\"value\":\"x\"}}";
+        require(app.request(ruvia::TestRequest::post("/probe").json(invalid)).status().value() == 400, "validator did not run");
+        std::cout << "Debug request parsing, typed dispatch, validation and worker ownership passed\n";
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n';
+        return 1;
+    }
+}

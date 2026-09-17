@@ -6,7 +6,26 @@ Windows 10/11 x64，C++20 / C++/WinRT + WinUI 3 原生 Fluent 控件，WiX 6.0.2
 
 仅注册一个后台服务 iot-egine.tunnel，显示名称 iot-egine。该 C++ 服务直接调用官方 WireGuardNT 驱动 API 管理网卡、地址、路由和隧道，同时订阅平台配置、刷新令牌并恢复连接。GUI 仅用于配置和查看状态，关闭 GUI 不影响隧道或配置同步。服务运行于 LocalSystem，程序安装到 Program Files/iot-egine。不包含独立隧道宿主或第二个隧道服务。内部状态保存在 ProgramData/IotEngineVpn，凭据键沿用已有标识以保留用户数据。
 
-从桌面或开始菜单启动，登录后选择设备并应用。关闭窗口不停止后台连接。获取设备使用 WinHTTP 流式读取，避免 SSE 长连接等待填满缓冲区。
+从桌面或开始菜单启动，登录后选择设备并应用。关闭窗口不停止后台连接。登录、设备查询与写操作使用 WinHTTP HTTP/JSON，配置变化通过 SSE 推送，不轮询业务数据。取消订阅不影响其他请求；注销或停止服务时取消会话内仍在进行的请求与订阅。
+
+## 目录结构
+
+`clients/windows/CMakeLists.txt` 是客户端统一构建入口，按职责组织源码：
+
+```text
+windows/
+├── winui/           # WinUI 界面、连接控制器、用户登录凭据与 NuGet 锁定
+├── service/         # 后台连接服务、平台 HTTP/SSE、状态存储与 WireGuard 适配
+├── service_control/ # 安装期间的服务控制、快照与恢复
+├── common/          # 共享产品与 IPC 契约、文本、文件、JSON 与加密基础操作
+├── assets/          # 产品图标与版本资源
+├── vendor/          # 实际使用的第三方头文件及许可证
+├── tests/           # 原生单元测试与传输探针
+├── cmake/           # 依赖准备、构建、打包与安装验证
+└── installer/       # WiX 安装定义
+```
+
+界面通过 IPC 调用后台服务；`common/` 不依赖界面或服务实现。构建产物统一放在仓库根 `build/`。
 
 ## 构建
 在 Windows x64、Visual Studio 2022 C++ 工具链及 Windows SDK 环境下配置 CMake：

@@ -441,3 +441,24 @@ export function parseProtocolImport(text: string, protocol: z.infer<typeof proto
     }
     return items;
 }
+
+const normalizeTsapValue = (value?: string) => {
+    if (!value) return undefined;
+    const normalized = value
+        .replace(/^0x/i, '')
+        .replace(/[\s.:\-_]/g, '')
+        .toUpperCase();
+    return normalized || undefined;
+};
+export const formatTsapValue = (value?: string) => {
+    const normalized = normalizeTsapValue(value);
+    if (!normalized || !/^[0-9A-F]{1,4}$/.test(normalized)) {
+        return undefined;
+    }
+    return normalized.padStart(4, '0');
+};
+export const validateTsapValue = async (_: unknown, value?: string) => {
+    if (!formatTsapValue(value)) {
+        throw new Error('请输入 1-4 位十六进制 TSAP，例如 4D57 或 0200');
+    }
+};

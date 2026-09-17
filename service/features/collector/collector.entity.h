@@ -124,8 +124,8 @@ struct CollectorWorkerRecord final {
                 {"state", state}, {"applied_at_ms", std::to_string(appliedAtMs)}};
     }
 
-    static std::string key(std::size_t index) {
-        return "iot:runtime:collector:" + service::runtime::instanceId() + ":" + std::to_string(index);
+    static std::string key(std::size_t index, std::string_view instance) {
+        return "iot:runtime:collector:" + std::string(instance) + ":" + std::to_string(index);
     }
 };
 
@@ -145,9 +145,9 @@ struct CollectorLinkRecord final {
         return record;
     }
 
-    static std::string key(std::string_view id, std::size_t index) {
+    static std::string key(std::string_view id, std::size_t index, std::string_view instance) {
         return "iot:runtime:link:" + std::string(id) + ":worker:" +
-            service::runtime::instanceId() + ":" + std::to_string(index);
+            std::string(instance) + ":" + std::to_string(index);
     }
 };
 

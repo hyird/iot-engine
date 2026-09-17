@@ -1,270 +1,319 @@
 #pragma once
-
-#include <string>
-
 #include <ruvia/web/Controller.h>
+#include <ruvia/web/ModelJson.h>
 
 #include "service/common/http.h"
+#include "service/middleware/auth.h"
 #include "service/middleware/live.h"
+#include "service/middleware/permission.h"
 #include "service/modules/gb28181/gb28181.schema.h"
 #include "service/modules/gb28181/gb28181.service.h"
-#include "service/middleware/auth.h"
-#include "service/middleware/permission.h"
 
 namespace service::gb28181 {
-
 class Gb28181Controller final : public ruvia::Controller<Gb28181Controller> {
-public:
-  RUVIA_CONTROLLER_GROUP("/v1/gb28181", service::middleware::AuthMiddleware)
-  RUVIA_ROUTES_BEGIN
-  RUVIA_GET_SSE("/health", health);
-  RUVIA_GET_SSE("/config/sip", sipConfig);
-  RUVIA_GET_SSE("/devices", devices);
-  RUVIA_GET_SSE("/streams", streams);
-  RUVIA_PUT("/devices/:deviceId/name", renameDevice, GbNameValidator);
-  RUVIA_PUT("/devices/:deviceId/channels/:channelId/name", renameChannel,
-            GbNameValidator);
-  RUVIA_POST("/devices/:deviceId/catalog/query", catalog);
-  RUVIA_POST("/devices/:deviceId/mapping", mapDevice);
-  RUVIA_DELETE("/devices/:deviceId/mapping", unmapDevice);
-  RUVIA_POST("/devices/:deviceId/channels/:channelId/preview/start",
-             startPreview);
-  RUVIA_POST("/devices/:deviceId/channels/:channelId/ptz/position/set",
-             ptzPosition);
-  RUVIA_POST("/devices/:deviceId/channels/:channelId/ptz/:action", ptz);
-  RUVIA_POST("/devices/:deviceId/channels/:channelId/records/query", records);
-  RUVIA_POST("/devices/:deviceId/channels/:channelId/playback/start",
-             startPlayback);
-  RUVIA_POST("/previews/:sessionId/heartbeat", heartbeatPreview);
-  RUVIA_POST("/previews/:sessionId/stop", stopPreview);
-  RUVIA_GET_SSE("/devices/:deviceId", device);
-  RUVIA_GET_SSE("/streams/:streamId", stream);
-  RUVIA_GET_SSE("/streams/:streamId/recording", recording);
-  RUVIA_POST("/streams/:streamId/recording/start", startRecording);
-  RUVIA_POST("/streams/:streamId/recording/stop", stopRecording);
-  RUVIA_ROUTES_END
-
-private:
-  ruvia::Task<void> health(ruvia::Context& c) {
-        co_await service::live::serve(c, "gb28181", [this, &c]() { return healthSnapshot(c); });
+  public:
+    RUVIA_CONTROLLER_GROUP("/v1/gb28181", service::middleware::AuthMiddleware)
+    RUVIA_ROUTES_BEGIN
+    RUVIA_GET("/health", health);
+    RUVIA_GET("/config/sip", sipConfig);
+    RUVIA_GET_SSE("/devices/events", devicesEvents);
+    RUVIA_GET("/devices", devices);
+    RUVIA_GET("/devices/:deviceId", device, GbDeviceValidator);
+    RUVIA_GET("/streams", streams);
+    RUVIA_GET("/streams/:streamId", stream, GbStreamValidator);
+    RUVIA_GET("/streams/:streamId/recording", recording, GbStreamValidator);
+    RUVIA_POST("/devices/:deviceId/catalog/query", catalog, GbDeviceValidator);
+    RUVIA_PUT("/devices/:deviceId/name", renameDevice, GbDeviceValidator);
+    RUVIA_PUT("/devices/:deviceId/channels/:channelId/name", renameChannel, GbChannelValidator);
+    RUVIA_POST("/devices/:deviceId/mapping", mapDevice, GbDeviceValidator);
+    RUVIA_DELETE("/devices/:deviceId/mapping", unmapDevice, GbDeviceValidator);
+    RUVIA_POST("/devices/:deviceId/channels/:channelId/preview/start", startPreview, GbChannelValidator);
+    RUVIA_POST("/previews/:sessionId/stop", stopPreview, GbSessionValidator);
+    RUVIA_POST("/previews/:sessionId/heartbeat", heartbeatPreview, GbSessionValidator);
+    RUVIA_POST("/devices/:deviceId/channels/:channelId/ptz/position/set", ptzPosition, GbChannelValidator);
+    RUVIA_POST("/devices/:deviceId/channels/:channelId/ptz/:action", ptz, GbPtzRouteValidator);
+    RUVIA_POST("/devices/:deviceId/channels/:channelId/records/query", records, GbChannelValidator);
+    RUVIA_POST("/devices/:deviceId/channels/:channelId/playback/start", startPlayback, GbChannelValidator);
+    RUVIA_POST("/streams/:streamId/recording/start", startRecording, GbStreamValidator);
+    RUVIA_POST("/streams/:streamId/recording/stop", stopRecording, GbStreamValidator);
+    RUVIA_ROUTES_END
+  private:
+    ruvia::Task<ruvia::HttpResponse> health(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        const auto payload = co_await healthSnapshot(c, request);
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
     }
 
-  ruvia::Task<std::string> healthSnapshot(ruvia::Context& c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:query");
-    co_return service::live::json(
-        service::common::ok<GbHealthResponse>(
-            c, co_await gb28181Service().health(c)));
-  }
-
-  ruvia::Task<void> sipConfig(ruvia::Context& c) {
-        co_await service::live::serve(c, "gb28181", [this, &c]() { return sipConfigSnapshot(c); });
+    ruvia::Task<std::string> healthSnapshot(ruvia::Context& c, service::middleware::RequestContext& request) {
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:query");
+        auto result = co_await gb28181Service().health(request);
+        co_return service::live::data(c, std::string(ruvia::toJson(result)));
     }
 
-  ruvia::Task<std::string> sipConfigSnapshot(ruvia::Context& c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:query");
-    co_return service::live::json(service::common::ok<GbSipConfigResponse>(
-        c, co_await gb28181Service().sipConfig(c)));
-  }
-
-  ruvia::Task<void> devices(ruvia::Context& c) {
-        co_await service::live::serve(c, "gb28181", [this, &c]() { return devicesSnapshot(c); });
+    ruvia::Task<ruvia::HttpResponse> sipConfig(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        const auto payload = co_await sipConfigSnapshot(c, request);
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
     }
 
-  ruvia::Task<std::string> devicesSnapshot(ruvia::Context& c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:query");
-    co_return service::live::json(service::common::ok<GbDeviceListResponse>(
-        c, co_await gb28181Service().devices(c)));
-  }
-
-  ruvia::Task<void> device(ruvia::Context& c) {
-        co_await service::live::serve(c, "gb28181", [this, &c]() { return deviceSnapshot(c); });
+    ruvia::Task<std::string> sipConfigSnapshot(ruvia::Context& c, service::middleware::RequestContext& request) {
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:query");
+        auto result = co_await gb28181Service().sipConfig(request);
+        co_return service::live::data(c, std::string(ruvia::toJson(result)));
     }
 
-  ruvia::Task<std::string> deviceSnapshot(ruvia::Context& c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:query");
-    co_return service::live::json(service::common::ok<GbDeviceResponse>(
-        c, co_await gb28181Service().device(
-               c, requiredRoute(c, "deviceId", "设备编号不能为空"))));
-  }
-
-  ruvia::Task<void> streams(ruvia::Context& c) {
-        co_await service::live::serve(c, "gb28181", [this, &c]() { return streamsSnapshot(c); });
+    ruvia::Task<ruvia::HttpResponse> devices(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        const auto payload = co_await devicesSnapshot(c, request);
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
     }
 
-  ruvia::Task<std::string> streamsSnapshot(ruvia::Context& c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:query");
-    co_return service::live::json(service::common::ok<GbStreamListResponse>(
-        c, co_await gb28181Service().streams(c)));
-  }
-
-  ruvia::Task<void> stream(ruvia::Context& c) {
-        co_await service::live::serve(c, "gb28181", [this, &c]() { return streamSnapshot(c); });
+    ruvia::Task<std::string> devicesSnapshot(ruvia::Context& c, service::middleware::RequestContext& request) {
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:query");
+        auto result = co_await gb28181Service().devices(request);
+        co_return service::live::data(c, std::string(ruvia::toJson(result)));
     }
 
-  ruvia::Task<std::string> streamSnapshot(ruvia::Context& c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:query");
-    co_return service::live::json(service::common::ok<GbStreamResponse>(
-        c, co_await gb28181Service().stream(
-               c, requiredRoute(c, "streamId", "流编号不能为空"))));
-  }
-
-  ruvia::Task<ruvia::HttpResponse> catalog(ruvia::Context &c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:control");
-    const auto deviceId = requiredRoute(c, "deviceId", "设备编号不能为空");
-    co_await gb28181Service().queryCatalog(c, deviceId);
-    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
-    data.set<"sent">(true).set<"deviceId">(deviceId);
-    co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
-  }
-
-  ruvia::Task<ruvia::HttpResponse> renameDevice(ruvia::Context &c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:control");
-    const auto deviceId = requiredRoute(c, "deviceId", "设备编号不能为空");
-    const auto name = requiredName(c.req().validated<GbNameBody>());
-    co_await gb28181Service().renameDevice(c, deviceId, name);
-    co_return c.json(service::common::operation(c, "摄像头名称已更新"));
-  }
-
-  ruvia::Task<ruvia::HttpResponse> renameChannel(ruvia::Context &c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:control");
-    const auto deviceId = requiredRoute(c, "deviceId", "设备编号不能为空");
-    const auto channelId = requiredRoute(c, "channelId", "通道编号不能为空");
-    const auto name = requiredName(c.req().validated<GbNameBody>());
-    co_await gb28181Service().renameChannel(c, deviceId, channelId, name);
-    co_return c.json(service::common::operation(c, "通道名称已更新"));
-  }
-
-  ruvia::Task<ruvia::HttpResponse> mapDevice(ruvia::Context &c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:control");
-    const auto deviceId = requiredRoute(c, "deviceId", "设备编号不能为空");
-    const auto mappedDeviceId =
-        requiredQuery(c, "mapped_device_id", "映射设备编号不能为空");
-    co_await gb28181Service().mapDevice(c, deviceId, mappedDeviceId);
-    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
-    data.set<"deviceId">(deviceId).set<"mappedDeviceId">(mappedDeviceId);
-    co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
-  }
-
-  ruvia::Task<ruvia::HttpResponse> unmapDevice(ruvia::Context &c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:control");
-    const auto deviceId = requiredRoute(c, "deviceId", "设备编号不能为空");
-    co_await gb28181Service().mapDevice(c, deviceId, {});
-    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
-    data.set<"deviceId">(deviceId).set<"mappedDeviceId">("");
-    co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
-  }
-
-  ruvia::Task<ruvia::HttpResponse> startPreview(ruvia::Context &c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:control");
-    const auto deviceId = requiredRoute(c, "deviceId", "设备编号不能为空");
-    const auto channelId = requiredRoute(c, "channelId", "通道编号不能为空");
-    co_return c.json(service::common::ok<GbPreviewStartResponse>(
-        c, co_await gb28181Service().startPreview(c, deviceId, channelId)));
-  }
-
-  ruvia::Task<ruvia::HttpResponse> stopPreview(ruvia::Context &c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:control");
-    const auto sessionId = requiredRoute(c, "sessionId", "会话编号不能为空");
-    co_return c.json(service::common::ok<GbPreviewStopResponse>(
-        c, co_await gb28181Service().stopPreview(c, sessionId)));
-  }
-
-  ruvia::Task<ruvia::HttpResponse> heartbeatPreview(ruvia::Context &c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:control");
-    const auto sessionId = requiredRoute(c, "sessionId", "会话编号不能为空");
-    co_await gb28181Service().renewPreview(c, sessionId);
-    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
-    data.set<"sent">(true).set<"action">("heartbeat");
-    co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
-  }
-
-  ruvia::Task<ruvia::HttpResponse> ptz(ruvia::Context &c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:control");
-    const auto deviceId = requiredRoute(c, "deviceId", "设备编号不能为空");
-    const auto channelId = requiredRoute(c, "channelId", "通道编号不能为空");
-    const auto action = requiredRoute(c, "action", "云台动作不能为空");
-    requirePtzAction(action);
-    const auto speed = ptzSpeed(c);
-    co_await gb28181Service().ptz(c, deviceId, channelId, action, speed);
-    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
-    data.set<"sent">(true)
-        .set<"deviceId">(deviceId)
-        .set<"channelId">(channelId)
-        .set<"action">(action)
-        .set<"speed">(speed);
-    co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
-  }
-
-  ruvia::Task<ruvia::HttpResponse> ptzPosition(ruvia::Context &c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:control");
-    const auto deviceId = requiredRoute(c, "deviceId", "设备编号不能为空");
-    const auto channelId = requiredRoute(c, "channelId", "通道编号不能为空");
-    const auto pan = finiteQuery(c, "pan", 0.0, 360.0);
-    const auto tilt = finiteQuery(c, "tilt", -30.0, 90.0);
-    const auto zoom = finiteQuery(c, "zoom", 1.0, 1000.0);
-    co_await gb28181Service().ptzPosition(c, deviceId, channelId, pan, tilt,
-                                          zoom);
-    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
-    data.set<"sent">(true).set<"pan">(pan).set<"tilt">(tilt).set<"zoom">(zoom);
-    co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
-  }
-
-  ruvia::Task<ruvia::HttpResponse> records(ruvia::Context &c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:record");
-    const auto deviceId = requiredRoute(c, "deviceId", "设备编号不能为空");
-    const auto channelId = requiredRoute(c, "channelId", "通道编号不能为空");
-    const auto startTime =
-        requiredUtcQuery(c, "start_time", "开始时间不能为空");
-    const auto endTime = requiredUtcQuery(c, "end_time", "结束时间不能为空");
-    co_await gb28181Service().queryRecords(c, deviceId, channelId, startTime,
-                                           endTime);
-    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
-    data.set<"sent">(true).set<"deviceId">(deviceId).set<"channelId">(
-        channelId);
-    co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
-  }
-
-  ruvia::Task<ruvia::HttpResponse> startPlayback(ruvia::Context &c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:record");
-    const auto deviceId = requiredRoute(c, "deviceId", "设备编号不能为空");
-    const auto channelId = requiredRoute(c, "channelId", "通道编号不能为空");
-    const auto startTime =
-        requiredUtcQuery(c, "start_time", "开始时间不能为空");
-    const auto endTime = requiredUtcQuery(c, "end_time", "结束时间不能为空");
-    co_return c.json(service::common::ok<GbPreviewStartResponse>(
-        c, co_await gb28181Service().startPlayback(c, deviceId, channelId,
-                                                   startTime, endTime)));
-  }
-
-  ruvia::Task<void> recording(ruvia::Context& c) {
-        co_await service::live::serve(c, "gb28181", [this, &c]() { return recordingSnapshot(c); });
+    ruvia::Task<void> devicesEvents(ruvia::Context& c) {
+        co_await service::live::serveSnapshots(c, "gb28181", service::middleware::requireAuth(c).userId, [this, &c](service::middleware::RequestContext& request) {
+            return devicesSnapshot(c, request);
+        },
+                                               [&c] {
+                                                   (void)service::middleware::requireAuth(c);
+                                               });
     }
 
-  ruvia::Task<std::string> recordingSnapshot(ruvia::Context& c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:record");
-    const auto streamId = requiredRoute(c, "streamId", "流编号不能为空");
-    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
-    data.set<"recording">(co_await gb28181Service().recording(c, streamId));
-    co_return service::live::json(service::common::ok<GbActionResponse>(c, std::move(data)));
-  }
+    ruvia::Task<ruvia::HttpResponse> device(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        const auto payload = co_await deviceSnapshot(c, request);
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
+    }
 
-  ruvia::Task<ruvia::HttpResponse> startRecording(ruvia::Context &c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:record");
-    const auto streamId = requiredRoute(c, "streamId", "流编号不能为空");
-    co_await gb28181Service().startRecording(c, streamId);
-    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
-    data.set<"recording">(true);
-    co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
-  }
+    ruvia::Task<std::string> deviceSnapshot(ruvia::Context& c, service::middleware::RequestContext& request) {
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:query");
+        const GbDeviceInput body{ std::string(c.req().validated<GbRouteParams>().get<"deviceId">()->view()) };
+        auto result = co_await gb28181Service().device(request, body.deviceId);
+        co_return service::live::data(c, std::string(ruvia::toJson(result)));
+    }
 
-  ruvia::Task<ruvia::HttpResponse> stopRecording(ruvia::Context &c) {
-    co_await service::middleware::requirePermission(c, "iot:gb28181:record");
-    const auto streamId = requiredRoute(c, "streamId", "流编号不能为空");
-    co_await gb28181Service().stopRecording(c, streamId);
-    GbActionDto data(ruvia::ModelOptions{.resource = c.arena()});
-    data.set<"recording">(false);
-    co_return c.json(service::common::ok<GbActionResponse>(c, std::move(data)));
-  }
+    ruvia::Task<ruvia::HttpResponse> streams(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        const auto payload = co_await streamsSnapshot(c, request);
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
+    }
+
+    ruvia::Task<std::string> streamsSnapshot(ruvia::Context& c, service::middleware::RequestContext& request) {
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:query");
+        auto result = co_await gb28181Service().streams(request);
+        co_return service::live::data(c, std::string(ruvia::toJson(result)));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> stream(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        const auto payload = co_await streamSnapshot(c, request);
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
+    }
+
+    ruvia::Task<std::string> streamSnapshot(ruvia::Context& c, service::middleware::RequestContext& request) {
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:query");
+        const GbStreamInput body{ std::string(c.req().validated<GbRouteParams>().get<"streamId">()->view()) };
+        auto result = co_await gb28181Service().stream(request, body.streamId);
+        co_return service::live::data(c, std::string(ruvia::toJson(result)));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> recording(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        const auto payload = co_await recordingSnapshot(c, request);
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
+    }
+
+    ruvia::Task<std::string> recordingSnapshot(ruvia::Context& c, service::middleware::RequestContext& request) {
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:record");
+        const GbStreamInput body{ std::string(c.req().validated<GbRouteParams>().get<"streamId">()->view()) };
+        GbActionDto result(ruvia::ModelOptions{ .resource = request.arena() });
+        result.set<"recording">(co_await gb28181Service().recording(request, body.streamId));
+        co_return service::live::data(c, std::string(ruvia::toJson(result)));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> catalog(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:control");
+        const GbDeviceInput body{ std::string(c.req().validated<GbRouteParams>().get<"deviceId">()->view()) };
+        co_await gb28181Service().queryCatalog(request, body.deviceId);
+        GbActionDto result(ruvia::ModelOptions{ .resource = request.arena() });
+        result.set<"sent">(true);
+        result.set<"deviceId">(body.deviceId);
+        const auto payload = service::live::data(c, std::string(ruvia::toJson(result)));
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> renameDevice(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:control");
+        const auto json = co_await c.req().jsonValue();
+        const auto body = GbDeviceNameValidator::parse(json, std::string(c.req().validated<GbRouteParams>().get<"deviceId">()->view()));
+        co_await gb28181Service().renameDevice(request, body.deviceId, body.name);
+        co_return c.json(service::common::operation(c, "操作成功"));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> renameChannel(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:control");
+        const auto json = co_await c.req().jsonValue();
+        const auto body = GbChannelNameValidator::parse(json, std::string(c.req().validated<GbRouteParams>().get<"deviceId">()->view()), std::string(c.req().validated<GbRouteParams>().get<"channelId">()->view()));
+        co_await gb28181Service().renameChannel(request, body.deviceId, body.channelId, body.name);
+        co_return c.json(service::common::operation(c, "操作成功"));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> mapDevice(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:control");
+        const auto json = co_await c.req().jsonValue();
+        const auto body = GbMappingValidator::parse(json, std::string(c.req().validated<GbRouteParams>().get<"deviceId">()->view()));
+        co_await gb28181Service().mapDevice(request, body.deviceId, body.mapped_device_id);
+        GbActionDto result(ruvia::ModelOptions{ .resource = request.arena() });
+        result.set<"deviceId">(body.deviceId);
+        result.set<"mappedDeviceId">(body.mapped_device_id);
+        const auto payload = service::live::data(c, std::string(ruvia::toJson(result)));
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> unmapDevice(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:control");
+        const GbDeviceInput body{ std::string(c.req().validated<GbRouteParams>().get<"deviceId">()->view()) };
+        co_await gb28181Service().mapDevice(request, body.deviceId, {});
+        GbActionDto result(ruvia::ModelOptions{ .resource = request.arena() });
+        result.set<"deviceId">(body.deviceId);
+        result.set<"mappedDeviceId">("");
+        const auto payload = service::live::data(c, std::string(ruvia::toJson(result)));
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> startPreview(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:control");
+        const GbChannelInput body{ std::string(c.req().validated<GbRouteParams>().get<"deviceId">()->view()), std::string(c.req().validated<GbRouteParams>().get<"channelId">()->view()) };
+        auto result = co_await gb28181Service().startPreview(request, body.deviceId, body.channelId);
+        const auto payload = service::live::data(c, std::string(ruvia::toJson(result)));
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> stopPreview(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:control");
+        const GbSessionInput body{ std::string(c.req().validated<GbRouteParams>().get<"sessionId">()->view()) };
+        auto result = co_await gb28181Service().stopPreview(request, body.sessionId);
+        const auto payload = service::live::data(c, std::string(ruvia::toJson(result)));
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> heartbeatPreview(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:control");
+        const GbSessionInput body{ std::string(c.req().validated<GbRouteParams>().get<"sessionId">()->view()) };
+        co_await gb28181Service().renewPreview(request, body.sessionId);
+        GbActionDto result(ruvia::ModelOptions{ .resource = request.arena() });
+        result.set<"sent">(true);
+        result.set<"action">("heartbeat");
+        const auto payload = service::live::data(c, std::string(ruvia::toJson(result)));
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> ptzPosition(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:control");
+        const auto json = co_await c.req().jsonValue();
+        const auto body = GbPositionValidator::parse(json, std::string(c.req().validated<GbRouteParams>().get<"deviceId">()->view()), std::string(c.req().validated<GbRouteParams>().get<"channelId">()->view()));
+        co_await gb28181Service().ptzPosition(request, body.deviceId, body.channelId, body.pan, body.tilt, body.zoom);
+        GbActionDto result(ruvia::ModelOptions{ .resource = request.arena() });
+        result.set<"pan">(body.pan);
+        result.set<"tilt">(body.tilt);
+        result.set<"zoom">(body.zoom);
+        result.set<"sent">(true);
+        const auto payload = service::live::data(c, std::string(ruvia::toJson(result)));
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> ptz(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:control");
+        const auto json = co_await c.req().jsonValue();
+        const auto body = GbPtzValidator::parse(json, std::string(c.req().validated<GbRouteParams>().get<"deviceId">()->view()), std::string(c.req().validated<GbRouteParams>().get<"channelId">()->view()), std::string(c.req().validated<GbRouteParams>().get<"action">()->view()));
+        co_await gb28181Service().ptz(request, body.deviceId, body.channelId, body.action, body.speed);
+        GbActionDto result(ruvia::ModelOptions{ .resource = request.arena() });
+        result.set<"deviceId">(body.deviceId);
+        result.set<"channelId">(body.channelId);
+        result.set<"action">(body.action);
+        result.set<"speed">(body.speed);
+        result.set<"sent">(true);
+        const auto payload = service::live::data(c, std::string(ruvia::toJson(result)));
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> records(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:record");
+        const auto json = co_await c.req().jsonValue();
+        const auto body = GbRecordValidator::parse(json, std::string(c.req().validated<GbRouteParams>().get<"deviceId">()->view()), std::string(c.req().validated<GbRouteParams>().get<"channelId">()->view()));
+        co_await gb28181Service().queryRecords(request, body.deviceId, body.channelId, body.start_time, body.end_time);
+        GbActionDto result(ruvia::ModelOptions{ .resource = request.arena() });
+        result.set<"sent">(true);
+        result.set<"deviceId">(body.deviceId);
+        result.set<"channelId">(body.channelId);
+        const auto payload = service::live::data(c, std::string(ruvia::toJson(result)));
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> startPlayback(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:record");
+        const auto json = co_await c.req().jsonValue();
+        const auto body = GbRecordValidator::parse(json, std::string(c.req().validated<GbRouteParams>().get<"deviceId">()->view()), std::string(c.req().validated<GbRouteParams>().get<"channelId">()->view()));
+        auto result = co_await gb28181Service().startPlayback(request, body.deviceId, body.channelId, body.start_time, body.end_time);
+        const auto payload = service::live::data(c, std::string(ruvia::toJson(result)));
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> startRecording(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:record");
+        const GbStreamInput body{ std::string(c.req().validated<GbRouteParams>().get<"streamId">()->view()) };
+        co_await gb28181Service().startRecording(request, body.streamId);
+        GbActionDto result(ruvia::ModelOptions{ .resource = request.arena() });
+        result.set<"recording">(true);
+        const auto payload = service::live::data(c, std::string(ruvia::toJson(result)));
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> stopRecording(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:gb28181:record");
+        const GbStreamInput body{ std::string(c.req().validated<GbRouteParams>().get<"streamId">()->view()) };
+        co_await gb28181Service().stopRecording(request, body.streamId);
+        GbActionDto result(ruvia::ModelOptions{ .resource = request.arena() });
+        result.set<"recording">(false);
+        const auto payload = service::live::data(c, std::string(ruvia::toJson(result)));
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
+    }
 };
-
 } // namespace service::gb28181

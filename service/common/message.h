@@ -20,14 +20,14 @@
 #include "service/utils/network.h"
 
 namespace service::message::serial_debug {
-inline std::string ticketKey(std::string_view ticket) {
-    return "iot:edge:serial:ticket:" + std::string(ticket);
-}
 inline std::string inputKey(std::string_view nodeId) {
     return "iot:edge:serial:input:" + std::string(nodeId);
 }
 inline std::string outputKey(std::string_view nodeId, std::string_view sessionId) {
     return "iot:edge:serial:output:" + std::string(nodeId) + ":" + std::string(sessionId);
+}
+inline std::string eventTopic(std::string_view nodeId, std::string_view sessionId) {
+    return "edge-serial:" + std::string(nodeId) + ":" + std::string(sessionId);
 }
 } // namespace service::message::serial_debug
 
@@ -98,42 +98,42 @@ inline constexpr std::string_view kControlStreamPrefix = "iot:channel:control:wo
 inline constexpr std::string_view kDeadLetterStreamPrefix = "iot:channel:dead-letter:worker:";
 
 inline std::string workerStream(std::string_view prefix, std::size_t workerIndex,
-                                std::string_view suffix = {},
-                                std::string_view instance = service::runtime::instanceId()) {
+                                std::string_view suffix,
+                                std::string_view instance) {
     return std::string(prefix) + std::string(instance) + ":" + std::to_string(workerIndex) + std::string(suffix);
 }
 
-inline std::string configStream(std::size_t workerIndex, std::string_view instance = service::runtime::instanceId()) {
+inline std::string configStream(std::size_t workerIndex, std::string_view instance) {
     return workerStream(kConfigStreamPrefix, workerIndex, {}, instance);
 }
 
-inline std::string ingressStream(std::size_t workerIndex) {
-    return workerStream(kIngressStreamPrefix, workerIndex);
+inline std::string ingressStream(std::size_t workerIndex, std::string_view instance) {
+    return workerStream(kIngressStreamPrefix, workerIndex, {}, instance);
 }
 
 inline std::string parsedStream() { return "iot:v3:telemetry"; }
 
-inline std::string egressStream(std::size_t workerIndex) {
-    return workerStream(kEgressStreamPrefix, workerIndex);
+inline std::string egressStream(std::size_t workerIndex, std::string_view instance) {
+    return workerStream(kEgressStreamPrefix, workerIndex, {}, instance);
 }
 
 inline std::string commandStream(std::size_t workerIndex, bool highPriority,
-                                  std::string_view instance = service::runtime::instanceId()) {
+                                  std::string_view instance) {
     return workerStream(kCommandStreamPrefix, workerIndex, highPriority ? ":high" : ":normal", instance);
 }
 
 inline std::string commandResultStream() { return "iot:v3:command-result"; }
 
-inline std::string linkEventStream(std::size_t workerIndex) {
-    return workerStream(kLinkEventStreamPrefix, workerIndex);
+inline std::string linkEventStream(std::size_t workerIndex, std::string_view instance) {
+    return workerStream(kLinkEventStreamPrefix, workerIndex, {}, instance);
 }
 
-inline std::string controlStream(std::size_t workerIndex) {
-    return workerStream(kControlStreamPrefix, workerIndex);
+inline std::string controlStream(std::size_t workerIndex, std::string_view instance) {
+    return workerStream(kControlStreamPrefix, workerIndex, {}, instance);
 }
 
-inline std::string deadLetterStream(std::size_t workerIndex) {
-    return workerStream(kDeadLetterStreamPrefix, workerIndex);
+inline std::string deadLetterStream(std::size_t workerIndex, std::string_view instance) {
+    return workerStream(kDeadLetterStreamPrefix, workerIndex, {}, instance);
 }
 
 enum class Direction { ToCollector, ToService };
@@ -245,7 +245,6 @@ inline std::int64_t utcNowMilliseconds() noexcept {
         .count();
 }
 
-inline std::string nextMessageId() { return service::common::nextUuidV7(); }
 
 inline std::int64_t effectiveObservedAt(std::int64_t observedAtMs,
                                         std::int64_t occurredAtMs) noexcept {
@@ -897,7 +896,7 @@ namespace service::message::worker_metrics {
 inline constexpr char kSnapshotTable[] = "iot_worker_snapshot";
 inline constexpr std::chrono::milliseconds kSnapshotTtl{15000};
 inline std::string snapshotId(std::size_t workerIndex,
-    std::string_view instance = service::runtime::instanceId()) {
+    std::string_view instance) {
     return std::string(instance) + ":worker:" + std::to_string(workerIndex);
 }
 
@@ -924,15 +923,15 @@ enum class WorkerStreamTask : std::uint8_t {
 inline constexpr std::string_view kWorkerWakeStreamPrefix{ "iot:service:worker:" };
 inline constexpr std::size_t kWorkerWakeCapacity = 100000;
 
-inline std::string workerWakeStream(std::size_t workerIndex, std::string_view instance = service::runtime::instanceId()) {
+inline std::string workerWakeStream(std::size_t workerIndex, std::string_view instance) {
     return std::string(kWorkerWakeStreamPrefix) + std::string(instance) + ":" + std::to_string(workerIndex) + ":wake";
 }
 
-inline std::string sharedWakeStream(std::string_view instance = service::runtime::instanceId()) {
+inline std::string sharedWakeStream(std::string_view instance) {
     return "iot:service:" + std::string(instance) + ":work-available";
 }
 
-inline std::string workerWakeStream(std::optional<std::size_t> workerIndex, std::string_view instance = service::runtime::instanceId()) {
+inline std::string workerWakeStream(std::optional<std::size_t> workerIndex, std::string_view instance) {
     return workerIndex ? workerWakeStream(*workerIndex, instance) : sharedWakeStream(instance);
 }
 
@@ -959,7 +958,7 @@ namespace service::edge::dispatch {
 inline constexpr std::string_view kGroup{ "iot-engine:edge-dispatch" };
 inline constexpr std::string_view kNodeKind{ "node" };
 
-inline std::string stream(std::size_t workerIndex, std::string_view instance = service::runtime::instanceId()) {
+inline std::string stream(std::size_t workerIndex, std::string_view instance) {
     return "iot:v2:edge:dispatch:" + std::string(instance) + ":" + std::to_string(workerIndex);
 }
 
@@ -978,6 +977,13 @@ inline Event eventFrom(const service::message::StreamMessage& message) {
 } // namespace service::edge::dispatch
 
 namespace service::edge::terminal_state {
+
+inline std::string terminalEventTopic(std::string_view nodeId, std::string_view terminalId) {
+    return "edge-terminal:" + std::string(nodeId) + ":" + std::string(terminalId);
+}
+inline std::string terminalAckTopic(std::string_view nodeId, std::string_view terminalId) {
+    return terminalEventTopic(nodeId, terminalId) + ":input-ack";
+}
 
 inline std::string terminalInputKey(std::string_view nodeId) {
         return "iot:edge:terminal:in:" + std::string(nodeId);
@@ -1032,16 +1038,16 @@ inline constexpr std::string_view kStreamPrefix{ "iot:v3:edge:projector:" };
 inline constexpr std::string_view kLeasePrefix{ "iot:v3:edge:projector:lease:" };
 inline constexpr std::string_view kStreamRegistry{ "iot:v3:edge:projector:streams" };
 
-inline std::string stream(std::size_t workerIndex, std::string_view instance = service::runtime::instanceId()) {
+inline std::string stream(std::size_t workerIndex, std::string_view instance) {
     return std::string(kStreamPrefix) + std::string(instance) + ":" + std::to_string(workerIndex);
 }
 
-inline std::string leaseKey(std::size_t workerIndex, std::string_view instance = service::runtime::instanceId()) {
+inline std::string leaseKey(std::size_t workerIndex, std::string_view instance) {
     return std::string(kLeasePrefix) + std::string(instance) + ":" +
         std::to_string(workerIndex);
 }
 
-inline std::string ownerToken(std::size_t workerIndex, std::string_view instance = service::runtime::instanceId()) {
+inline std::string ownerToken(std::size_t workerIndex, std::string_view instance) {
     return std::string(instance) + ":" + std::to_string(workerIndex);
 }
 

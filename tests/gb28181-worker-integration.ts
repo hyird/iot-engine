@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { createSocket } from 'node:dgram';
 import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
+import { openSnapshotSubscription } from './sse-fixture';
 
 const db = new Bun.SQL(databaseUrl);
 const redis = new Bun.RedisClient(redisUrl);
+const streams: Awaited<ReturnType<typeof openSnapshotSubscription>>[] = [];
 const sipPort = Number(process.env.GB_TEST_SIP_PORT);
 assert(Number.isInteger(sipPort) && sipPort > 0 && sipPort <= 65535, 'Run with Run-RpcIntegration.ps1 -Gb28181');
 const socket = createSocket('udp4');
@@ -56,6 +58,22 @@ const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('
 const now = Math.floor(Date.now() / 1000);
 const unsigned = `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({iss:'iot-engine',aud:'iot-engine-web',sub:'00000000-0000-7000-8000-000000000002',user_id:'00000000-0000-7000-8000-000000000002',username:'admin',token_type:'access',iat:now,exp:now+3600})}`;
 const jwt = `${unsigned}.${createHmac('sha256','architecture-test-only-access-secret-000000000').update(unsigned).digest('base64url')}`;
+async function request(method: string, path: string, data?: unknown, code = 0) {
+    const response = await fetch(apiBase+path,{method,headers:{Authorization:`Bearer ${jwt}`,'Content-Type':'application/json',Accept:'application/json'},body:data === undefined ? undefined : JSON.stringify(data),signal:AbortSignal.timeout(60000)});
+    const reply = await response.json();
+    assert.equal(reply.code,code,`${method} ${path}: ${JSON.stringify(reply)}`);
+    assert.equal(response.ok,code === 0);
+    return reply.data;
+}
+async function subscribe(path: string) {
+    const stream = await openSnapshotSubscription(path,jwt); streams.push(stream); return stream;
+}
+async function snapshot(stream: Awaited<ReturnType<typeof subscribe>>) {
+    let event = await stream.next();
+    while (event.event === 'heartbeat') event = await stream.next();
+    assert.equal(event.event,'snapshot');
+    return JSON.parse(event.data).data;
+}
 try {
     const controls = await until(async () => {
         const keys = await redis.send('KEYS', ['iot:gb28181:control:worker:*']) as string[];
@@ -71,17 +89,49 @@ try {
     assert(owner?.includes(':session:'));
     console.log('PASS REGISTER 200 follows DB commit and preserves preexisting metadata');
 
+    const health = await request('GET','/v1/gb28181/health');
+    assert.equal(health.enabled,true);
+    assert.equal((await request('GET','/v1/gb28181/config/sip')).domain,realm);
+    assert((await request('GET','/v1/gb28181/devices')).items.some((item:{id:string})=>item.id===device));
+    assert(Array.isArray((await request('GET','/v1/gb28181/streams')).items));
+    const deviceSubscription = await subscribe('/v1/gb28181/devices/events');
+    assert((await snapshot(deviceSubscription)).items.some((item: {id: string}) => item.id === device));
+    for (const [path,data] of [
+        [`/v1/gb28181/devices/${device}/channels/${device}/ptz/left`,{speed:'80'}],
+        [`/v1/gb28181/devices/${device}/channels/${device}/ptz/invalid`,{speed:80}],
+        [`/v1/gb28181/devices/${device}/channels/${device}/ptz/position/set`,{pan:361,tilt:0,zoom:1}],
+        [`/v1/gb28181/devices/${device}/channels/${device}/records/query`,{start_time:'invalid',end_time:'2026-01-01T00:00:00Z'}],
+        ['/v1/gb28181/previews/%20/stop',undefined],
+    ] as const) await request('POST',path,data,10001);
+    await request('GET',`/v1/gb28181/devices/${'x'.repeat(129)}`,undefined,10001);
+    assert.equal((await request('POST',`/v1/gb28181/devices/${device}/catalog/query`)).sent,true);
+    assert.equal((await request('POST',`/v1/gb28181/devices/${device}/channels/${device}/ptz/left`,{speed:80})).speed,80);
+    await until(async()=>inbox.find(frame=>frame.startsWith('MESSAGE ') && frame.includes('<PTZCmd>')), 'HTTP PTZ must reach original SIP transport');
+    assert.equal(await redis.get(ownerKey),owner,'HTTP control must retain the accepting Collector');
+
     const keepalive = `<?xml version="1.0"?><Notify><CmdType>Keepalive</CmdType><SN>1</SN><DeviceID>${device}</DeviceID><Status>OK</Status></Notify>`;
     assert.match(await exchange('MESSAGE', keepalive), /^SIP\/2\.0 200 /);
     assert.equal(await redis.get(ownerKey), owner, 'Keepalive must keep the accepting Collector and connection generation');
-    const renamed = await fetch(`${apiBase}/v1/gb28181/devices/${device}/name`, {
-        method:'PUT', headers:{Authorization:`Bearer ${jwt}`,'Content-Type':'application/json'}, body:JSON.stringify({name:'Committed worker name'})
-    });
-    const renameBody = await renamed.text();
-    assert.equal(renamed.status, 200, renameBody);
-    assert.equal((await db`SELECT custom_name FROM gb28181_device WHERE id=${device}`)[0]?.custom_name, 'Committed worker name', 'HTTP success must follow metadata commit');
-    assert.equal(await redis.get(ownerKey), owner);
-    console.log('PASS HTTP rename routes to connection owner and returns after persistence');
+    await request('PUT',`/v1/gb28181/devices/${device}/name`,{name:'Committed worker name'});
+    assert.equal((await db`SELECT custom_name FROM gb28181_device WHERE id=${device}`)[0]?.custom_name,'Committed worker name','HTTP success must follow metadata commit');
+    assert.equal(await redis.get(ownerKey),owner);
+    let changedDevice = (await snapshot(deviceSubscription)).items.find((item: {id: string}) => item.id === device);
+    while (changedDevice?.custom_name !== 'Committed worker name') changedDevice = (await snapshot(deviceSubscription)).items.find((item: {id: string}) => item.id === device);
+    await deviceSubscription.close();
+    assert.equal((await fetch(`${apiBase}/v1/gb28181/devices`)).status,401);
+    console.log('PASS HTTP rename routes to connection owner and returns after persistence; SSE change is visible');
+    const preview = await request('POST',`/v1/gb28181/devices/${device}/channels/${device}/preview/start`);
+    assert(preview.sent && preview.session_id && preview.stream_id);
+    assert(preview.lease_timeout_seconds > 0);
+    assert.equal(await redis.get(ownerKey),owner,'preview must retain original Collector ownership');
+    await until(async () => inbox.find(frame => frame.startsWith('INVITE ') && frame.includes(preview.stream_id)) ?? inbox.find(frame => frame.startsWith('INVITE ')), 'preview INVITE must reach the original SIP socket');
+    assert.equal((await request('POST',`/v1/gb28181/previews/${preview.session_id}/heartbeat`)).sent,true);
+    const stopped = await request('POST',`/v1/gb28181/previews/${preview.session_id}/stop`);
+    assert.equal(stopped.session_id,preview.session_id);
+    assert.equal(stopped.stopped,true);
+    assert.equal(stopped.rtp_server_closed,true);
+    console.log('PASS HTTP preview start/lease/stop reaches original Collector and closes its RTP server');
+
 
     // Exercise the actual nonempty batch SQL and retry acknowledgement path.
     async function projectList(change: string, fields: string[]) {
@@ -137,10 +187,7 @@ try {
         await releaseLock;
     });
     await locked;
-    const delayedRename = fetch(`${apiBase}/v1/gb28181/devices/${device}/name`, {
-        method:'PUT', headers:{Authorization:`Bearer ${jwt}`,'Content-Type':'application/json'},
-        body:JSON.stringify({name:'Delayed committed name'})
-    }).then(response => response.text(), error => String(error));
+    const delayedRename = request('PUT',`/v1/gb28181/devices/${device}/name`,{name:'Delayed committed name'}).catch(error => String(error));
     let heartbeat: Promise<string> | undefined;
     try {
         const pendingId = await until(async () => {
@@ -258,6 +305,7 @@ try {
     await until(async () => (await db`SELECT online FROM gb28181_device WHERE id=${device}`)[0]?.online === false ? true : undefined, 'lost owner must become offline durably');
     console.log('PASS lease loss fences old SIP session and clears durable online status');
 } finally {
+    for (const stream of streams) await stream.close();
     socket.close();
     await db.close();
     redis.close();

@@ -1,3 +1,4 @@
+import { LiveQueryError } from '@/components/LiveQueryError';
 import {
     ArrowDownOutlined,
     ArrowLeftOutlined,
@@ -45,13 +46,12 @@ import { PageContainer } from '@/components/PageContainer';
 import { usePermission } from '@/hooks/usePermission';
 import type { AdaptiveFlvPlayer } from '@/lib/flv_player/adaptiveFlvPlayer';
 import { createAdaptiveFlvPlayer } from '@/lib/flv_player/adaptiveFlvPlayer';
-import { useAuthStore } from '@/store/authStore';
 import {
     buildPlaybackCandidates,
     renewPreview,
     sendPtz,
     sendPtzPosition,
-    stopPreviewKeepalive,
+    stopPreviewOnExit,
     useGb28181CatalogQuery,
     useGb28181Devices,
     useGb28181Health,
@@ -986,7 +986,6 @@ export function Gb28181Page() {
     const canQuery = usePermission('iot:gb28181:query');
     const canControl = usePermission('iot:gb28181:control');
     const canRecord = usePermission('iot:gb28181:record');
-    const token = useAuthStore((state) => state.token);
     const [keyword, setKeyword] = useState('');
     const [selectedDeviceId, setSelectedDeviceId] = useState<string>();
     const [selectedChannelId, setSelectedChannelId] = useState<string>();
@@ -997,7 +996,6 @@ export function Gb28181Page() {
     const activeSessionRef = useRef<GB28181.PreviewStartResult | null>(null);
     const ptzSessionRef = useRef<GB28181.PreviewStartResult | null>(null);
     const ptzSpeedRef = useRef(ptzSpeed);
-    const tokenRef = useRef<string | null>(token);
     const healthQuery = useGb28181Health({ enabled: canQuery });
     const devicesQuery = useGb28181Devices({
         enabled: canQuery && healthQuery.data?.enabled === true,
@@ -1010,9 +1008,6 @@ export function Gb28181Page() {
     const recordingStartMutation = useGb28181RecordingStart();
     const recordingStopMutation = useGb28181RecordingStop();
     const devices = devicesQuery.data?.items ?? [];
-    useEffect(() => {
-        tokenRef.current = token;
-    }, [token]);
     useEffect(() => {
         ptzSpeedRef.current = ptzSpeed;
     }, [ptzSpeed]);
@@ -1030,7 +1025,7 @@ export function Gb28181Page() {
             }).catch(() => undefined);
         }
         activeSessionRef.current = null;
-        stopPreviewKeepalive(session.session_id, tokenRef.current);
+        stopPreviewOnExit(session.session_id);
     }, []);
     useEffect(() => {
         activeSessionRef.current = activeSession;
@@ -1197,7 +1192,7 @@ export function Gb28181Page() {
             onSuccess: (result) => {
                 const previousSession = activeSessionRef.current;
                 if (previousSession && previousSession.session_id !== result.session_id) {
-                    stopPreviewKeepalive(previousSession.session_id, tokenRef.current);
+                    stopPreviewOnExit(previousSession.session_id);
                 }
                 activeSessionRef.current = result;
                 setActiveSession(result);
@@ -1334,6 +1329,11 @@ export function Gb28181Page() {
     );
     return (
         <PageContainer header={pageHeader}>
+            <LiveQueryError
+                error={devicesQuery.error}
+                retry={devicesQuery.refetch}
+                loading={devicesQuery.isFetching}
+            />
             <div className="grid h-full min-h-0 grid-cols-1 grid-rows-[minmax(0,2fr)_minmax(0,3fr)] gap-4 overflow-hidden 2xl:grid-cols-[420px_minmax(0,1fr)] 2xl:grid-rows-1">
                 <div className="min-h-0 min-w-0 overflow-hidden">
                     <DeviceListCard

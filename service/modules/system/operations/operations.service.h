@@ -111,7 +111,7 @@ class OperationsService final {
         for (std::size_t index = 0; index < count; ++index) {
             const ruvia::DbFindOptions options{
                 .where = WorkerSnapshotEntity::column<"id">() ==
-                    service::message::worker_metrics::snapshotId(index)};
+                    service::message::worker_metrics::snapshotId(index, service::runtime::instanceId())};
             const auto snapshot = co_await snapshots.findOne(options);
             if (!snapshot) continue;
             auto& value = result[index];

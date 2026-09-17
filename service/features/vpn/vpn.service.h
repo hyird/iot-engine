@@ -1,4 +1,5 @@
 #pragma once
+#include "service/features/edge/edge.config.h"
 
 #include <ruvia/core/StopToken.h>
 
@@ -220,7 +221,7 @@ template <typename Db>
 ruvia::Task<void> syncEdgeBridgeRoutes(Db& db, std::string_view peerId,
                                        std::string_view networkId,
                                        std::string_view edgeNodeId,
-                                       std::string_view actorId) {
+                                       std::string_view actorId, service::common::UuidV7Generator& uuidGenerator) {
     struct RouteRecord final {
         std::string id;
         std::string lanInterface;
@@ -369,7 +370,7 @@ ruvia::Task<void> syncEdgeBridgeRoutes(Db& db, std::string_view peerId,
                     route.virtualNetwork = virtualNetwork;
                 }
         } else {
-            const auto id = service::common::nextUuidV7();
+            const auto id = uuidGenerator.next();
             ruvia::DbQuery route;
             route.insertInto(service::vpn::persistence::VpnRouteEntity::tableName(), { "id", "network_id", "edge_peer_id", "lan_interface", "target_cidr",
                 "virtual_cidr", "mode", "nat_mode", "enabled", "status", "created_by" })
@@ -423,11 +424,11 @@ ruvia::Task<void> queueEdgeConfig(Context& c, std::string_view peerId,
         .andWhere(routes.binary(routes.column(service::vpn::persistence::VpnRouteEntity::columnName<"edge_peer_id">()), Op::kEqual, routes.cast(routes.value(peerId), ruvia::DbDataType::kUuid)))
         .addOrderBy(routes.column(service::vpn::persistence::VpnRouteEntity::columnName<"virtual_cidr">())).limit(16);
     const auto routeRows = co_await c.db().query(routes);
-    const auto requestId = service::common::nextUuidV7();
+    const auto requestId = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
     std::uint8_t requestBytes[16]{};
     if (!service::edge::protocol::uuidBytes(requestId, requestBytes))
         co_return;
-    auto envelope = service::edge::protocol::outbound(service::common::nextUuidV7(), service::message::utcNowMilliseconds(), service::edge::protocol::platformId(), nodeId);
+    auto envelope = service::edge::protocol::outbound(c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next(), service::message::utcNowMilliseconds(), c.template workerState<service::edge::config::PlatformIdentity>().id, nodeId);
     if (!platformId.empty()) {
         std::uint8_t platformBytes[16]{};
         if (service::edge::protocol::uuidBytes(platformId, platformBytes))

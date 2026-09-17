@@ -1,11 +1,10 @@
 import { retainNewerRecords } from '@/utils/versioned-records';
-import type { UseQueryOptions } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, type UseQueryOptions } from '@tanstack/react-query';
 import { setDebug as saveDebugSwitch, getDebugPackets } from './device.api';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import { parseDateTime } from '@/utils/dateTime';
 import { createQueryKeys } from '@/utils/query';
-import { SnapshotStream } from '@/lib/snapshot-stream';
 import * as api from './device.api';
 import type { Device, DeviceGroup } from './device.types';
 export const isDeviceOnline = (device: Device.Overview, now = Date.now()) => {
@@ -24,25 +23,7 @@ const shareKeys = {
     targets: (kind: 'device' | 'group', id: string) =>
         ['device-shares', kind, id, 'targets'] as const,
 };
-const EMPTY_AGENTS: AgentOption[] = [];
-const EMPTY_ENDPOINTS: AgentEndpoint[] = [];
-interface AgentOption {
-    id: string;
-    name: string;
-    code: string;
-    is_online: boolean;
-}
-interface AgentEndpoint {
-    id: string;
-    name: string;
-    protocol: string;
-    mode: string;
-    transport?: string;
-    channel?: string;
-    baud_rate?: number;
-    ip?: string;
-    port?: number;
-}
+
 const buildDeviceGroupTree = (items: DeviceGroup.TreeItem[]) => {
     const map = new Map<string, DeviceGroup.TreeItem>();
     const roots: DeviceGroup.TreeItem[] = [];
@@ -54,19 +35,40 @@ const buildDeviceGroupTree = (items: DeviceGroup.TreeItem[]) => {
     }
     return roots;
 };
-export function useDeviceList(options?: { enabled?: boolean }) {
+export function useDeviceList(options?: {
+    enabled?: boolean;
+    debugDeviceId?: string;
+    commandIds?: string[];
+}) {
     return useSnapshotQuery({
-        queryKey: deviceKeys.lists(),
-        queryFn: api.getDeviceList,
+        queryKey: [...deviceKeys.lists(), options?.debugDeviceId, options?.commandIds],
+        queryFn: () => api.getDeviceList(options?.debugDeviceId, options?.commandIds),
+        placeholderData: keepPreviousData,
         enabled: options?.enabled ?? true,
         refetchOnWindowFocus: false,
         staleTime: 5000,
     });
 }
-export function useDeviceRealtimeSnapshot(options?: { enabled?: boolean }) {
+export function useDeviceConfigurationList(options?: { enabled?: boolean }) {
+    return useQuery({
+        queryKey: [...deviceKeys.all, 'configuration-list'],
+        queryFn: ({ signal }) => api.queryDeviceList(signal),
+        enabled: options?.enabled ?? true,
+        staleTime: 0,
+        refetchInterval: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
+    });
+}
+export function useDeviceRealtimeSnapshot(options?: {
+    enabled?: boolean;
+    debugDeviceId?: string;
+    commandIds?: string[];
+}) {
     return useSnapshotQuery({
-        queryKey: deviceRealtimeSnapshotKey,
-        queryFn: api.getDeviceRealtimeSnapshot,
+        queryKey: [...deviceRealtimeSnapshotKey, options?.debugDeviceId, options?.commandIds],
+        queryFn: () => api.getDeviceRealtimeSnapshot(options?.debugDeviceId, options?.commandIds),
+        placeholderData: keepPreviousData,
         enabled: options?.enabled ?? true,
         refetchOnWindowFocus: false,
         staleTime: 1000,
@@ -77,10 +79,12 @@ export function useDeviceHistory(
     query: Device.HistoryRecordQuery,
     enabled = true
 ) {
-    return useSnapshotQuery({
+    return useQuery({
         queryKey: [...deviceKeys.all, 'history', deviceId ?? '', query],
-        queryFn: () => api.getDeviceHistory(deviceId as string, query),
+        queryFn: ({ signal }) => api.getDeviceHistory(deviceId as string, query, signal),
         enabled: Boolean(deviceId) && enabled,
+        refetchInterval: false,
+        refetchOnWindowFocus: false,
     });
 }
 export function useDeviceSave() {
@@ -108,38 +112,42 @@ export function useDeviceDelete() {
 }
 export function useDeviceCommand() {
     return useMutationWithMessage({
-        mutationFn: async ({ deviceId, data }: { deviceId: string; data: Device.Command }) => {
-            const command = await api.createDeviceCommand(deviceId, data);
-            const result = await api
-                .getDeviceCommandStatuses(command.command_ids)
-                .filter((snapshot) => snapshot.complete)
-                .first(AbortSignal.timeout(60000));
-            const failed = result.statuses.find((state) =>
-                ['FAILED', 'REJECTED', 'UNKNOWN', 'READBACK_MISMATCH'].includes(state.status)
-            );
-            if (failed)
-                throw new Error(
-                    failed.status === 'UNKNOWN'
-                        ? '指令结果未知，请核对设备状态，勿直接重发'
-                        : failed.reason || '设备执行指令失败'
-                );
-            if (!result.complete) throw new Error('等待设备应答超时');
-            return result;
-        },
-        successMessage: (result) => {
-            const actualValues = result.statuses.flatMap((status) => status.actual_values ?? []);
-            if (!actualValues.length) return '指令下发成功，设备已应答';
-            const readback = actualValues
-                .map(
-                    (actual) =>
-                        `${actual.name || actual.element_id}=${actual.value}${actual.unit || ''}`
-                )
-                .join('，');
-            return `指令下发成功，设备回读：${readback}`;
-        },
+        mutationFn: ({ deviceId, data }: { deviceId: string; data: Device.Command }) =>
+            api.createDeviceCommand(deviceId, data),
+        successMessage: '指令已受理，正在等待设备执行结果',
         errorMessage: (error) => error.message,
-        invalidateKeys: [deviceKeys.all],
     });
+}
+export function useDeviceCommandResults(
+    commandIds: string[],
+    enabled: boolean,
+    debugDeviceId?: string
+) {
+    return useSnapshotQuery({
+        queryKey: [...deviceKeys.all, 'command-results', commandIds, debugDeviceId],
+        queryFn: () => api.getDeviceCommandStatuses(commandIds, debugDeviceId),
+        enabled: enabled && commandIds.length > 0,
+    });
+}
+export function summarizeDeviceCommandResult(result: Device.CommandStatusesResult) {
+    const failed = result.statuses.find((state) =>
+        ['FAILED', 'REJECTED', 'UNKNOWN', 'READBACK_MISMATCH'].includes(state.status)
+    );
+    if (failed)
+        return {
+            failed: true,
+            message:
+                failed.status === 'UNKNOWN'
+                    ? '指令结果未知，请核对设备状态，勿直接重发'
+                    : failed.reason || '设备执行指令失败',
+        };
+    const actualValues = result.statuses.flatMap((status) => status.actual_values ?? []);
+    return {
+        failed: false,
+        message: actualValues.length
+            ? `设备执行成功，回读：${actualValues.map((actual) => `${actual.name || actual.element_id}=${actual.value}${actual.unit || ''}`).join('，')}`
+            : '设备执行成功，已收到应答',
+    };
 }
 export function useDeviceShares(
     deviceId?: string,
@@ -147,10 +155,12 @@ export function useDeviceShares(
         enabled?: boolean;
     }
 ) {
-    return useSnapshotQuery({
+    return useQuery({
         queryKey: shareKeys.list('device', deviceId ?? ''),
-        queryFn: () => api.getDeviceShares(deviceId as string),
+        queryFn: ({ signal }) => api.getDeviceShares(deviceId as string, signal),
         enabled: !!deviceId && (options?.enabled ?? true),
+        refetchInterval: false,
+        refetchOnWindowFocus: false,
     });
 }
 export function useDeviceShareTargets(
@@ -159,10 +169,12 @@ export function useDeviceShareTargets(
         enabled?: boolean;
     }
 ) {
-    return useSnapshotQuery({
+    return useQuery({
         queryKey: shareKeys.targets('device', deviceId ?? ''),
-        queryFn: () => api.getDeviceShareTargets(deviceId as string),
+        queryFn: ({ signal }) => api.getDeviceShareTargets(deviceId as string, signal),
         enabled: !!deviceId && (options?.enabled ?? true),
+        refetchInterval: false,
+        refetchOnWindowFocus: false,
     });
 }
 export function useReplaceDeviceShares() {
@@ -179,10 +191,12 @@ export function useDeviceGroupShares(
         enabled?: boolean;
     }
 ) {
-    return useSnapshotQuery({
+    return useQuery({
         queryKey: shareKeys.list('group', groupId ?? ''),
-        queryFn: () => api.getDeviceGroupShares(groupId as string),
+        queryFn: ({ signal }) => api.getDeviceGroupShares(groupId as string, signal),
         enabled: !!groupId && (options?.enabled ?? true),
+        refetchInterval: false,
+        refetchOnWindowFocus: false,
     });
 }
 export function useDeviceGroupShareTargets(
@@ -191,10 +205,12 @@ export function useDeviceGroupShareTargets(
         enabled?: boolean;
     }
 ) {
-    return useSnapshotQuery({
+    return useQuery({
         queryKey: shareKeys.targets('group', groupId ?? ''),
-        queryFn: () => api.getDeviceGroupShareTargets(groupId as string),
+        queryFn: ({ signal }) => api.getDeviceGroupShareTargets(groupId as string, signal),
         enabled: !!groupId && (options?.enabled ?? true),
+        refetchInterval: false,
+        refetchOnWindowFocus: false,
     });
 }
 export function useReplaceDeviceGroupShares() {
@@ -208,18 +224,24 @@ export function useReplaceDeviceGroupShares() {
 export function useDeviceGroupTree(
     options?: Omit<UseQueryOptions<DeviceGroup.TreeItem[]>, 'queryKey' | 'queryFn'>
 ) {
-    return useSnapshotQuery({
+    return useQuery({
         queryKey: [...groupKeys.all, 'tree'],
-        queryFn: () => api.getDeviceGroups(false).map(buildDeviceGroupTree),
+        queryFn: ({ signal }) => api.getDeviceGroups(signal).then(buildDeviceGroupTree),
         ...options,
+        refetchInterval: false,
+        refetchOnWindowFocus: false,
     });
 }
 export function useDeviceGroupTreeWithCount(
-    options?: Omit<UseQueryOptions<DeviceGroup.TreeItem[]>, 'queryKey' | 'queryFn'>
+    options?: Omit<UseQueryOptions<DeviceGroup.TreeItem[]>, 'queryKey' | 'queryFn'>,
+    debugDeviceId?: string,
+    commandIds?: string[]
 ) {
     return useSnapshotQuery({
-        queryKey: [...groupKeys.all, 'tree-count'],
-        queryFn: () => api.getDeviceGroups(true).map(buildDeviceGroupTree),
+        queryKey: [...groupKeys.all, 'tree-count', debugDeviceId, commandIds],
+        queryFn: () =>
+            api.getDeviceGroupsWithCount(debugDeviceId, commandIds).map(buildDeviceGroupTree),
+        placeholderData: keepPreviousData,
         ...options,
     });
 }
@@ -246,32 +268,12 @@ export function useDeviceGroupDelete() {
         invalidateKeys: [groupKeys.all],
     });
 }
-export function useAgentOptions(options?: { enabled?: boolean }) {
-    return useSnapshotQuery({
-        queryKey: ['agents', 'options'],
-        queryFn: () => SnapshotStream.value(EMPTY_AGENTS),
-        enabled: options?.enabled ?? true,
-    });
-}
-export function useAgentEndpoints(
-    agentId?: string,
-    options?: {
-        enabled?: boolean;
-    }
-) {
-    return useSnapshotQuery({
-        queryKey: ['agents', agentId, 'endpoints'],
-        queryFn: () => SnapshotStream.value(EMPTY_ENDPOINTS),
-        enabled: options?.enabled ?? !!agentId,
-    });
-}
+export { getDeviceDetail, getDeviceOptions } from './device.api';
 
-export { getDeviceDetail } from './device.api';
-
-export function useDeviceDebug(id: string, open: boolean) {
+export function useDeviceDebug(id: string, open: boolean, commandIds?: string[]) {
     const packets = useSnapshotQuery({
-        queryKey: ['device-debug-packets', id],
-        queryFn: () => getDebugPackets(id),
+        queryKey: ['device-debug-packets', id, commandIds],
+        queryFn: () => getDebugPackets(id, commandIds),
         structuralSharing: retainNewerRecords,
         enabled: open,
     });

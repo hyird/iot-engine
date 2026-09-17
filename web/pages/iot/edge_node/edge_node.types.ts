@@ -127,6 +127,11 @@ export namespace Edge {
         totalBytes: number;
         message: string;
     }
+    export interface EventScope {
+        nodeId?: string;
+        logs?: LogsQuery;
+        vpn?: boolean;
+    }
     export interface Node {
         id: string;
         imei: string;
@@ -304,3 +309,13 @@ export const edgeVpnQueryKeys = {
     all: ['edge-vpn'] as const,
     node: (nodeId?: string) => [...edgeVpnQueryKeys.all, nodeId ?? ''] as const,
 };
+
+export interface DebugRequestOptions {
+    signal?: AbortSignal;
+    timeout?: number;
+    anonymous?: boolean;
+}
+export interface DebugSubscriptionObserver {
+    next: (data: unknown) => void;
+    error: (error: Error) => void;
+}

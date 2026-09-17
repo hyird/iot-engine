@@ -1,4 +1,6 @@
 #pragma once
+
+#include "service/common/uuid.h"
 #include "service/common/message.h"
 #include "service/features/packet_log/packet_log.entity.h"
 #include "service/utils/redis.h"
@@ -30,7 +32,7 @@ return 1
         co_await service::live::publish(redis, "packet-debug");
     }
     template <typename Redis>
-    static ruvia::Task<void> recordPacket(const Redis& redis, std::string_view linkId,
+    static ruvia::Task<void> recordPacket(const Redis& redis, service::common::UuidV7Generator& uuidGenerator, std::string_view linkId,
         std::string_view deviceId, std::string_view direction, std::string_view source,
         std::string_view address, std::span<const std::uint8_t> payload, std::int64_t time,
         bool deviceOnly = false, std::string_view eventId = {},
@@ -222,7 +224,7 @@ return changed and 1 or 0
                 });
             if (!valid) throw std::invalid_argument("invalid debug parsed fields");
         }
-        const auto identity = eventId.empty() ? message::nextMessageId() : std::string(eventId);
+        const auto identity = eventId.empty() ? uuidGenerator.next() : std::string(eventId);
         for (std::size_t offset = 0; offset < std::max<std::size_t>(1, payload.size()); offset += 4096) {
             const auto chunk = payload.subspan(offset, std::min<std::size_t>(4096, payload.size() - offset));
             const auto hex = message::toHex(std::vector<std::uint8_t>(chunk.begin(), chunk.end()));

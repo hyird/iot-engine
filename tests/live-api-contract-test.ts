@@ -8,30 +8,44 @@ async function files(directory: string): Promise<string[]> {
         ? files(join(directory, entry.name)) : [join(directory, entry.name)]))).flat();
 }
 
-test('business query routes retain streaming compatibility', async () => {
-    const plain: string[] = [];
+test('business controllers expose HTTP and reserve WS events for edge debugging', async () => {
+    const debugEvents: string[] = [];
     for (const path of await files('service/modules')) {
         if (!path.endsWith('.controller.h')) continue;
         const source = await readFile(path, 'utf8');
-        for (const match of source.matchAll(/RUVIA_GET\("([^"]+)"/g))
-            plain.push(`${path.replaceAll('\\', '/')}:${match[1]}`);
-        expect(source).not.toContain('/realtime/events');
-        expect(source).not.toContain('/commands/wait');
+        expect(source).not.toContain('"/channel"');
+        for (const match of source.matchAll(/registry\.add<[^>]+>\("([^\"]+)"/g)) {
+            expect(path.replaceAll('\\', '/')).toBe('service/modules/edge_node/edge_node.controller.h');
+            debugEvents.push(match[1]);
+        }
     }
-    expect(plain.sort()).toEqual([
-        'service/modules/edge_node/edge_node.controller.h:/:id/download',
-        'service/modules/system/operations/operations.controller.h:/health/live',
-        'service/modules/system/operations/operations.controller.h:/health/ready',
-        'service/modules/system/operations/operations.controller.h:/metrics',
+    expect(debugEvents.sort()).toEqual([
+        'edge.debug.authenticate', 'edge.serial.close', 'edge.serial.command',
+        'edge.serial.events.subscribe', 'edge.serial.open', 'edge.terminal.close',
+        'edge.terminal.events.subscribe', 'edge.terminal.keepalive', 'edge.terminal.open',
+        'edge.terminal.output.ack', 'edge.terminal.resize', 'edge.terminal.write',
     ]);
+    const device = await readFile('service/modules/device/device.controller.h', 'utf8');
+    expect(device).toContain('RUVIA_GET("/", list)');
+    expect(device).toContain('RUVIA_PUT("/:id", update');
+    expect(device).toContain('RUVIA_GET_SSE("/events", deviceEvents, DeviceEventsValidator)');
+    expect(device).not.toContain('RUVIA_GET_SSE("/realtime/events"');
+    expect(device).not.toContain('RUVIA_GET_SSE("/groups/tree-count/events"');
+    const auth = await readFile('service/modules/system/auth/auth.controller.h', 'utf8');
+    expect(auth).toContain('RUVIA_POST("/login", login');
+    expect(auth).toContain('RUVIA_POST("/refresh", refresh');
 });
 
-test('business pages use shared live query services without interval refetch', async () => {
-    for (const path of await files('web/pages')) {
+test('frontend allows ordinary GET but disables scheduled refetch and universal WS requests', async () => {
+    for (const path of await files('web')) {
         if (!/\.[jt]sx?$/.test(path)) continue;
         const source = await readFile(path, 'utf8');
-        expect(source).not.toMatch(/\brequest\.get\s*[<(]/);
-        expect(source).not.toMatch(/refetchInterval\s*:/);
-        expect(source).not.toContain('subscribeDeviceRealtime');
+        for (const match of source.matchAll(/refetchInterval\s*:\s*([^,}\n]+)/g))
+            expect(match[1].trim()).toBe('false');
+        expect(source).not.toContain('/v1/channel');
+        expect(source).not.toContain('requestEvent(');
     }
+    const api = await readFile('web/pages/iot/device/device.api.ts', 'utf8');
+    expect(api).toMatch(/request\.get[<(]/);
+    expect(api).toContain('createSseSnapshotStream');
 });

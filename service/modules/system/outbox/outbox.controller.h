@@ -1,48 +1,53 @@
 #pragma once
 
-#include <string>
-#include <string_view>
-
 #include <ruvia/web/Controller.h>
 
 #include "service/common/http.h"
+#include "service/common/worker.h"
+#include "service/middleware/auth.h"
 #include "service/middleware/live.h"
+#include "service/middleware/permission.h"
 #include "service/modules/system/outbox/outbox.schema.h"
 #include "service/modules/system/outbox/outbox.service.h"
-#include "service/middleware/auth.h"
 
 namespace service::system {
-
 class OutboxController final : public ruvia::Controller<OutboxController> {
-public:
-  RUVIA_CONTROLLER_GROUP("/v1/system/outbox",
-                         service::middleware::AuthMiddleware)
-  RUVIA_ROUTES_BEGIN
-  RUVIA_GET_SSE("/dead-letters", deadLetters);
-  RUVIA_POST("/dead-letters/:id/replay", replay, OutboxEventIdValidator);
-  RUVIA_ROUTES_END
+  public:
+    RUVIA_CONTROLLER_GROUP("/v1/system/outbox", service::middleware::AuthMiddleware)
+    RUVIA_ROUTES_BEGIN
+    RUVIA_GET("/dead-letters", deadLetters);
+    RUVIA_GET_SSE("/dead-letters/events", deadLetterEvents);
+    RUVIA_POST("/dead-letters/:id/replay", replay, OutboxEventIdValidator);
+    RUVIA_ROUTES_END
 
-private:
-  static std::string id(ruvia::Context &context) {
-    return std::string(
-        context.req().validated<OutboxEventIdParams>().get<"id">()->view());
-  }
+  private:
+    ruvia::Task<std::string> deadLetterSnapshot(service::middleware::RequestContext& request) {
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "system:outbox:manage");
+        co_return service::live::json(service::common::ok<OutboxDeadLetterListResponse>(request, co_await outboxService().deadLetters(request)));
+    }
 
-  ruvia::Task<void> deadLetters(ruvia::Context& context) {
-    co_await service::live::serve(context, "system",
-                                  [this, &context]() { return deadLettersSnapshot(context); });
-  }
+    ruvia::Task<ruvia::HttpResponse> deadLetters(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        const auto payload = co_await deadLetterSnapshot(request);
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
+    }
 
-  ruvia::Task<std::string> deadLettersSnapshot(ruvia::Context& context) {
-    co_return service::live::json(service::common::ok<OutboxDeadLetterListResponse>(
-        context, co_await outboxService().deadLetters(context)));
-  }
+    ruvia::Task<void> deadLetterEvents(ruvia::Context& c) {
+        co_await service::live::serveSnapshots(c, "system", service::middleware::requireAuth(c).userId, [this](service::middleware::RequestContext& request) {
+            return deadLetterSnapshot(request);
+        },
+                                               [&c] {
+                                                   (void)service::middleware::requireAuth(c);
+                                               });
+    }
 
-  ruvia::Task<ruvia::HttpResponse> replay(ruvia::Context &context) {
-    const auto eventId = id(context);
-    co_await outboxService().replay(context, eventId);
-    co_return context.json(service::common::operation(context, "死信事件已重新入队"));
-  }
+    ruvia::Task<ruvia::HttpResponse> replay(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "system:outbox:manage");
+        const auto index = c.workerState<service::ServiceWorkerTopology>().index.value();
+        co_await outboxService().replay(request, c.req().validated<OutboxEventIdParams>().get<"id">()->view(), index);
+        co_return c.json(service::common::operation(c, "死信事件已重新入队"));
+    }
 };
-
 } // namespace service::system

@@ -1,349 +1,199 @@
-/**
- * HTTP 请求基础配置
- */
-
-import { notification } from 'antd';
-import axios, {
-    type AxiosError,
-    type AxiosInstance,
-    type AxiosRequestConfig,
-    type AxiosResponse,
-    type InternalAxiosRequestConfig,
-} from 'axios';
 import { getMessageInstance } from '@/providers/MessageContextBridge';
 import { useAuthStore } from '@/store/authStore';
 
-function normalizePath(path: string) {
-    return path.startsWith('/') ? path : `/${path}`;
-}
-
-function getHashRoutePath(path: string) {
-    const baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/$/, '');
-    return `${baseUrl || ''}/#${normalizePath(path)}`;
-}
-
-function redirectToLogin() {
-    if (window.location.hash === '#/login') {
-        return;
-    }
-    window.location.replace(getHashRoutePath('/login'));
-}
-
-type ApiErrorSource = 'response' | 'network' | 'timeout' | 'server' | 'auth-refresh';
-
-interface ApiResponseEnvelope<T = unknown> {
-    code: number;
-    message: string;
-    data?: T;
-    status?: number;
-}
-
-interface ApiErrorOptions {
-    code?: number;
-    status?: number;
-    data?: unknown;
-    source?: ApiErrorSource;
-}
-
-class ApiError extends Error {
-    code?: number;
-    status?: number;
-    data?: unknown;
-    source: ApiErrorSource;
-
-    constructor(message: string, options: ApiErrorOptions = {}) {
-        super(message);
-        this.name = 'ApiError';
-        this.code = options.code;
-        this.status = options.status;
-        this.data = options.data;
-        this.source = options.source ?? 'response';
-
-        Object.setPrototypeOf(this, ApiError.prototype);
-    }
-}
-
-function isApiResponseEnvelope(value: unknown): value is ApiResponseEnvelope {
-    if (typeof value !== 'object' || value === null) return false;
-
-    const record = value as Record<string, unknown>;
-    return typeof record.code === 'number' && typeof record.message === 'string';
-}
-
-function getApiResponseMessage(value: unknown, fallback = '请求失败'): string {
-    if (!isApiResponseEnvelope(value)) return fallback;
-
-    const message = value.message.trim();
-    return message || fallback;
-}
-
-function getApiResponseCode(value: unknown): number | undefined {
-    return isApiResponseEnvelope(value) ? value.code : undefined;
-}
-
-export interface RequestConfig extends AxiosRequestConfig {
-    _retry?: boolean;
+export interface RequestConfig {
+    params?: Record<string, unknown>;
+    headers?: HeadersInit;
+    signal?: AbortSignal;
+    timeout?: number;
+    keepalive?: boolean;
+    onUploadProgress?: (loadedBytes: number, totalBytes: number) => void;
     _silent?: boolean;
 }
 
-interface RequestInstance extends Omit<AxiosInstance, 'get'> {
-    post<T = unknown>(url: string, data?: unknown, config?: RequestConfig): Promise<T>;
-    put<T = unknown>(url: string, data?: unknown, config?: RequestConfig): Promise<T>;
-    delete<T = unknown>(url: string, config?: RequestConfig): Promise<T>;
-    patch<T = unknown>(url: string, data?: unknown, config?: RequestConfig): Promise<T>;
+export class HttpRequestError extends Error {
+    constructor(
+        message: string,
+        readonly status: number,
+        readonly code?: number
+    ) {
+        super(message);
+        this.name = 'HttpRequestError';
+    }
 }
 
-const request = axios.create({
-    baseURL: '/',
-    timeout: 30000,
-}) as RequestInstance;
-
-function buildApiError(
-    message: string,
-    options: {
-        code?: number;
-        status?: number;
-        data?: unknown;
-        source?: ApiError['source'];
-    } = {}
-) {
-    return new ApiError(message, options);
+export function queryUrl(path: string, params?: Record<string, unknown>) {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params ?? {})) {
+        if (value === undefined || value === null) continue;
+        if (Array.isArray(value)) {
+            for (const item of value) query.append(key, String(item));
+        } else query.set(key, String(value));
+    }
+    const suffix = query.toString();
+    return suffix ? `${path}${path.includes('?') ? '&' : '?'}${suffix}` : path;
 }
 
-function buildApiErrorFromResponse(
-    response: { data: unknown; status: number },
-    fallbackMessage = '请求失败'
-) {
-    const payload = response.data;
-    const message = getApiResponseMessage(payload, fallbackMessage);
-    const code = getApiResponseCode(payload);
-
-    return buildApiError(message, {
-        code,
-        status: response.status,
-        data: payload,
-        source: 'response',
+export function uploadWithProgress(
+    url: string,
+    init: RequestInit,
+    progress: (loadedBytes: number, totalBytes: number) => void,
+    createRequest: () => XMLHttpRequest = () => new XMLHttpRequest()
+): Promise<Response> {
+    return new Promise((resolve, reject) => {
+        const xhr = createRequest();
+        const signal = init.signal;
+        const cleanup = () => signal?.removeEventListener('abort', abort);
+        const fail = (error: unknown) => {
+            cleanup();
+            reject(error);
+        };
+        const abort = () => {
+            xhr.abort();
+            fail(signal?.reason ?? new DOMException('请求已取消', 'AbortError'));
+        };
+        if (signal?.aborted) {
+            abort();
+            return;
+        }
+        xhr.open(init.method ?? 'POST', url);
+        new Headers(init.headers).forEach((value, name) => {
+            xhr.setRequestHeader(name, value);
+        });
+        xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable) progress(event.loaded, event.total);
+        };
+        xhr.onerror = () => fail(new TypeError('上传连接失败'));
+        xhr.onabort = () => fail(signal?.reason ?? new DOMException('请求已取消', 'AbortError'));
+        xhr.onload = () => {
+            cleanup();
+            if (xhr.status === 0) {
+                reject(new TypeError('上传连接已断开'));
+                return;
+            }
+            resolve(
+                new Response(xhr.status === 204 || xhr.status === 304 ? null : xhr.responseText, {
+                    status: xhr.status,
+                    headers: {
+                        'Content-Type': xhr.getResponseHeader('Content-Type') ?? 'application/json',
+                    },
+                })
+            );
+        };
+        signal?.addEventListener('abort', abort, { once: true });
+        try {
+            xhr.send(init.body as XMLHttpRequestBodyInit | null | undefined);
+        } catch (error) {
+            fail(error);
+        }
     });
 }
 
-function buildApiErrorFromAxiosError(error: AxiosError<unknown>) {
-    if (!error.response) {
-        const isTimeout = error.code === 'ECONNABORTED';
-        return buildApiError(isTimeout ? '请求超时' : '网络连接失败', {
-            status: isTimeout ? 408 : 0,
-            data: error,
-            source: isTimeout ? 'timeout' : 'network',
-        });
+export class HttpClient {
+    constructor(
+        private readonly options: {
+            fetch: typeof fetch;
+            token: () => string | null;
+            refresh: () => Promise<boolean>;
+            reportError?: (error: Error) => void;
+        }
+    ) {}
+
+    get<T>(url: string, config?: RequestConfig) {
+        return this.send<T>('GET', url, undefined, config);
+    }
+    post<T>(url: string, data?: unknown, config?: RequestConfig) {
+        return this.send<T>('POST', url, data, config);
+    }
+    put<T>(url: string, data?: unknown, config?: RequestConfig) {
+        return this.send<T>('PUT', url, data, config);
+    }
+    patch<T>(url: string, data?: unknown, config?: RequestConfig) {
+        return this.send<T>('PATCH', url, data, config);
+    }
+    delete<T>(url: string, config?: RequestConfig & { data?: unknown }) {
+        return this.send<T>('DELETE', url, config?.data, config);
     }
 
-    return buildApiErrorFromResponse(
-        {
-            data: error.response.data,
-            status: error.response.status,
-        },
-        error.message || '请求失败'
-    );
-}
-
-function notifyTransportIssue(error: AxiosError<unknown>) {
-    if (error.code === 'ECONNABORTED') {
-        notification.error({
-            message: '请求超时',
-            description: '网络连接较慢，请稍后重试',
-        });
-        return;
-    }
-
-    notification.error({
-        message: '网络连接失败',
-        description: '请检查网络连接是否正常',
-    });
-}
-
-function createExpiredAuthError() {
-    return buildApiError('登录状态已失效，请重新登录', {
-        status: 401,
-        source: 'auth-refresh',
-    });
-}
-
-function hasAuthorizationHeader(
-    headers?: InternalAxiosRequestConfig['headers'] | RequestConfig['headers']
-) {
-    if (!headers) return false;
-
-    const normalizedHeaders = headers as Record<string, unknown> & {
-        has?: (name: string) => boolean;
-    };
-
-    return typeof normalizedHeaders.has === 'function'
-        ? normalizedHeaders.has('Authorization') || normalizedHeaders.has('authorization')
-        : 'Authorization' in normalizedHeaders || 'authorization' in normalizedHeaders;
-}
-
-request.interceptors.request.use(
-    (config: InternalAxiosRequestConfig) => {
-        const token = useAuthStore.getState().token;
-        if (token && config.headers) {
-            if (!hasAuthorizationHeader(config.headers)) {
-                const headers = config.headers as Record<string, unknown>;
-                headers.Authorization = `Bearer ${token}`;
-            }
-        }
-        return config;
-    },
-    (error) => Promise.reject(error)
-);
-
-let isRefreshing = false;
-let refreshSubscribers: Array<{
-    onSuccess: (token: string) => void;
-    onError: (error: ApiError) => void;
-}> = [];
-
-function subscribeTokenRefresh(
-    onSuccess: (token: string) => void,
-    onError: (error: ApiError) => void
-) {
-    refreshSubscribers.push({ onSuccess, onError });
-}
-
-function onTokenRefreshed(token: string) {
-    const subscribers = refreshSubscribers;
-    refreshSubscribers = [];
-
-    subscribers.forEach(({ onSuccess }) => {
-        onSuccess(token);
-    });
-}
-
-function onTokenRefreshFailed(error: ApiError) {
-    const subscribers = refreshSubscribers;
-    refreshSubscribers = [];
-
-    subscribers.forEach(({ onError }) => {
-        onError(error);
-    });
-}
-
-function handleAuthExpired(error: ApiError): never {
-    isRefreshing = false;
-    onTokenRefreshFailed(error);
-    useAuthStore.getState().clearAuth();
-    redirectToLogin();
-    throw error;
-}
-
-request.interceptors.response.use(
-    (response): AxiosResponse => {
-        const data = response.data as unknown;
-        const isSilent = (response.config as RequestConfig | undefined)?._silent;
-        const responseCode = isApiResponseEnvelope(data) ? data.code : undefined;
-        const isSuccessCode = responseCode === 0;
-
-        if (isApiResponseEnvelope(data) && !isSuccessCode) {
-            const apiError = buildApiErrorFromResponse({
-                data,
-                status: response.status,
-            });
-            if (!isSilent) {
-                getMessageInstance()?.error(apiError.message);
-            }
-            throw apiError;
-        }
-
-        return (
-            isApiResponseEnvelope(data) && data.data !== undefined ? data.data : data
-        ) as AxiosResponse;
-    },
-    async (error: AxiosError<unknown>): Promise<AxiosResponse> => {
-        const originalRequest = error.config as RequestConfig | undefined;
-        const requestUrl = originalRequest?.url || '';
-        const isSilent = originalRequest?._silent ?? false;
-        const isAuthRefreshRequest = requestUrl.includes('/v1/auth/refresh');
-        const hasAuthHeader = hasAuthorizationHeader(originalRequest?.headers);
-
-        if (isSilent) {
-            throw buildApiErrorFromAxiosError(error);
-        }
-
-        if (
-            error.response?.status === 401 &&
-            originalRequest &&
-            !originalRequest._retry &&
-            hasAuthHeader &&
-            !isAuthRefreshRequest
-        ) {
-            if (isRefreshing) {
-                return new Promise<AxiosResponse>((resolve, reject) => {
-                    subscribeTokenRefresh(
-                        (token: string) => {
-                            if (originalRequest.headers) {
-                                originalRequest.headers.Authorization = `Bearer ${token}`;
-                            }
-                            resolve(request.request(originalRequest));
-                        },
-                        (refreshError: ApiError) => {
-                            reject(refreshError);
-                        }
-                    );
-                });
-            }
-
-            originalRequest._retry = true;
-            isRefreshing = true;
-
-            try {
-                const success = await refreshSession();
-                if (success) {
-                    const newToken = useAuthStore.getState().token;
-                    // biome-ignore lint/style/noNonNullAssertion: refreshAccessToken returns true only when token is set
-                    onTokenRefreshed(newToken!);
-                    if (originalRequest.headers) {
-                        originalRequest.headers.Authorization = `Bearer ${newToken}`;
-                    }
-                    return request.request(originalRequest);
+    private async send<T>(
+        method: string,
+        url: string,
+        data?: unknown,
+        config: RequestConfig = {}
+    ): Promise<T> {
+        const timeout = AbortSignal.timeout(config.timeout ?? 30000);
+        const signal = config.signal ? AbortSignal.any([config.signal, timeout]) : timeout;
+        const authRequest = url === '/v1/auth/login' || url === '/v1/auth/refresh';
+        try {
+            for (let attempt = 0; attempt < 2; attempt++) {
+                signal.throwIfAborted();
+                const headers = new Headers(config.headers);
+                headers.set('Accept', 'application/json');
+                const token = this.options.token();
+                if (token && !authRequest) headers.set('Authorization', `Bearer ${token}`);
+                let body: BodyInit | undefined;
+                if (data instanceof FormData || data instanceof Blob) body = data;
+                else if (data !== undefined) {
+                    headers.set('Content-Type', 'application/json');
+                    body = JSON.stringify(data);
                 }
-
-                return handleAuthExpired(createExpiredAuthError());
-            } catch {
-                return handleAuthExpired(createExpiredAuthError());
-            } finally {
-                isRefreshing = false;
+                const target = queryUrl(url, config.params);
+                const init: RequestInit = {
+                    method,
+                    headers,
+                    body,
+                    signal,
+                    keepalive: config.keepalive,
+                };
+                const response =
+                    config.onUploadProgress && data instanceof Blob
+                        ? await uploadWithProgress(target, init, config.onUploadProgress)
+                        : await this.options.fetch(target, init);
+                const text = await response.text();
+                let envelope: { code?: number; message?: string; data?: T } | undefined;
+                try {
+                    envelope = text ? JSON.parse(text) : undefined;
+                } catch {
+                    throw new HttpRequestError('服务器返回了无效的 JSON', response.status);
+                }
+                if (
+                    response.status === 401 &&
+                    method === 'GET' &&
+                    !authRequest &&
+                    token &&
+                    attempt === 0
+                ) {
+                    if (await this.options.refresh()) continue;
+                }
+                if (!response.ok || (envelope?.code !== undefined && envelope.code !== 0))
+                    throw new HttpRequestError(
+                        envelope?.message || `请求失败 (${response.status})`,
+                        response.status,
+                        envelope?.code
+                    );
+                return (envelope?.code !== undefined ? envelope.data : envelope) as T;
             }
+            throw new HttpRequestError('登录已过期', 401);
+        } catch (failure) {
+            const error = failure instanceof Error ? failure : new Error(String(failure));
+            if (!config._silent && !config.signal?.aborted) this.options.reportError?.(error);
+            throw error;
         }
-
-        const apiError = buildApiErrorFromAxiosError(error);
-
-        if (!error.response) {
-            notifyTransportIssue(error);
-            throw apiError;
-        }
-
-        if (error.response.status >= 500) {
-            notification.error({
-                message: '服务器错误',
-                description: '服务器遇到问题，请稍后重试',
-            });
-            throw buildApiError(apiError.message || '服务器错误', {
-                code: apiError.code,
-                status: apiError.status ?? error.response.status,
-                data: apiError.data,
-                source: 'server',
-            });
-        }
-
-        getMessageInstance()?.error(apiError.message || error.message || '请求失败');
-        throw apiError;
     }
-);
+}
 
-export default request;
-
-let refreshSessionCallback: () => Promise<boolean> = () => Promise.resolve(false);
+let refresh: () => Promise<boolean> = async () => false;
 export function configureSessionRefresh(callback: () => Promise<boolean>) {
-    refreshSessionCallback = callback;
+    refresh = callback;
 }
-export function refreshSession(): Promise<boolean> {
-    return refreshSessionCallback();
+export function refreshSession() {
+    return refresh();
 }
+
+const request = new HttpClient({
+    fetch: (input, init) => fetch(input, init),
+    token: () => useAuthStore.getState().token,
+    refresh: refreshSession,
+    reportError: (error) => getMessageInstance()?.error(error.message),
+});
+export default request;

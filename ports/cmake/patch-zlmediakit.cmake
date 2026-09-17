@@ -63,6 +63,26 @@ require_pinned_revision(
 # carrying an unreviewed compatibility patch forward.
 set(MEDIA_SERVER_ROOT "${SOURCE_DIR}/3rdpart/media-server")
 
+# IceTransport's global token subscribes before config.cpp's std::string
+# broadcast names have necessarily been initialized. Initialize the listener
+# with the function-local shared owner, after application startup, instead.
+patch_pinned_source(
+    "${SOURCE_DIR}/webrtc/IceTransport.cpp"
+    [=[        static auto instance = std::make_shared<PortManager>();
+        return *instance;]=]
+    [=[        static auto instance = std::make_shared<PortManager>();
+        static onceToken listener([]() { instance->addListenConfigReload(); });
+        return *instance;]=]
+    "ZLMediaKit lazy ICE port configuration listener")
+patch_pinned_source(
+    "${SOURCE_DIR}/webrtc/IceTransport.cpp"
+    [=[onceToken PortManager_token([](){
+    PortManager<0>::Instance().addListenConfigReload();
+    PortManager<1>::Instance().addListenConfigReload();
+});]=]
+    [=[// PortManager::Instance registers listeners after static initialization.]=]
+    "ZLMediaKit remove pre-main ICE listener registration")
+
 patch_pinned_source(
     "${MEDIA_SERVER_ROOT}/libflv/source/aom-av1.c"
     "obu_type = (data[i] >> 3) & 0x0F;\n"

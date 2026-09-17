@@ -35,7 +35,7 @@ template <typename Redis>
 ruvia::Task<void> publishRealtimeChange(const Redis& redis) {
     const auto reply = co_await service::message::redis::command(
         redis,
-        { "XADD", std::string(kRealtimeChangesStream), "MAXLEN", "~", "100000", "*", "topic", "device" }
+        { "XADD", std::string(kRealtimeChangesStream), "MAXLEN", "~", "100000", "*", "topic", "device.realtime" }
     );
     if (reply.kind() != ruvia::RedisValue::Kind::kString) {
         service::message::redis::throwValue("publish device change", reply);
@@ -274,7 +274,7 @@ for element_id, point in pairs(payload.values or {}) do
   end
 end
 if observed_at >= current_report then touched = true end
-if touched then redis.call('XADD', KEYS[3], 'MAXLEN', '~', '100000', '*', 'topic', 'device') end
+if touched then redis.call('XADD', KEYS[3], 'MAXLEN', '~', '100000', '*', 'topic', 'device.realtime') end
 return count
     )lua";
     const auto scriptSha = co_await redis.scriptLoad(script);
@@ -284,7 +284,7 @@ return count
         const auto updatedAt = std::to_string(service::message::utcNowMilliseconds());
         const auto onlineWindow = std::to_string(parsed.onlineWindowMs);
         const auto deadlinesKey = onlineDeadlinesKey();
-        const auto wakeStream = service::message::workerWakeStream(std::nullopt);
+        const auto wakeStream = service::message::workerWakeStream(std::nullopt, service::runtime::instanceId());
         const std::array<std::string_view, 14> command{
             "EVALSHA",
             scriptSha,
@@ -344,7 +344,7 @@ if expected <= now then
   redis.call('HSET', runtime_key, 'state', 'offline', 'state_reason', 'data_stale',
              'updated_at_ms', ARGV[2])
   redis.call('HSET', latest_key, '_state', state_json, '_updated_at_ms', ARGV[2])
-  redis.call('XADD', KEYS[2], 'MAXLEN', '~', '100000', '*', 'topic', 'device')
+  redis.call('XADD', KEYS[2], 'MAXLEN', '~', '100000', '*', 'topic', 'device.realtime')
   return 1
 end
 redis.call('ZADD', KEYS[1], expected, ARGV[1])

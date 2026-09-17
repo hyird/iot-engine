@@ -6,10 +6,14 @@ param(
     [int]$DatabasePort = 55459,
     [int]$RedisPort = 56459,
     [int]$ApiPort = 55122,
-    [string[]]$TestFiles = @('system-orm-integration.ts', 'live-query-integration.ts', 'protocol-offset-integration.ts'),
+    [ValidatePattern('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')]
+    [string]$EdgePlatformId = '00000000-0000-7000-8000-000000000001',
+    [string[]]$TestFiles = @('system-orm-integration.ts', 'business-orm-integration.ts', 'auth-http-sse-integration.ts', 'device-http-sse-integration.ts', 'protocol-offset-integration.ts'),
+    [switch]$UploadRecovery,
     [switch]$ReplayCounterMigration,
     [switch]$PacketDebugMigration,
-    [switch]$IndustrialProtocolsMigration
+    [switch]$IndustrialProtocolsMigration,
+    [switch]$DeadLetterQueryMigration
 )
 $ErrorActionPreference = 'Stop'
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -30,6 +34,7 @@ $redisProcess = $null
 $oldPath = $env:Path
 $oldDatabaseUrl = $env:ARCHITECTURE_DATABASE_URL
 $oldApiBase = $env:TEST_BASE_URL
+$oldEdgePlatformId = $env:TEST_EDGE_PLATFORM_ID
 $oldRedisUrl = $env:ARCHITECTURE_REDIS_URL
 $oldMigrationState = $env:ARCHITECTURE_MIGRATION_STATE
 function Stop-OwnedProcess($Process, [string]$ExpectedPath) {
@@ -67,7 +72,7 @@ function Start-FixtureApi([string]$Label, [string]$ExpectedFailure = '') {
     }
 }
 function Invoke-CounterMigrationPhase([string]$Phase) {
-    $migrationTest = if ($IndustrialProtocolsMigration) { 'tests/industrial-protocol-migration-integration.ts' } elseif ($PacketDebugMigration) { 'tests/packet-debug-migration-integration.ts' } else { 'tests/replay-counter-migration-integration.ts' }
+    $migrationTest = if ($DeadLetterQueryMigration) { 'tests/dead-letter-query-migration-integration.ts' } elseif ($IndustrialProtocolsMigration) { 'tests/industrial-protocol-migration-integration.ts' } elseif ($PacketDebugMigration) { 'tests/packet-debug-migration-integration.ts' } else { 'tests/replay-counter-migration-integration.ts' }
     & $Bun run (Join-Path $repository $migrationTest) $Phase
     if ($LASTEXITCODE -ne 0) { throw "Migration phase $Phase failed; inspect $fixture" }
 }
@@ -85,6 +90,14 @@ try {
     # A relative config path also works with the Cygwin Redis distribution.
     $redisProcess = Start-Process -FilePath $RedisExe -ArgumentList 'redis.conf' -WorkingDirectory $fixture -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $fixture 'redis.out') -RedirectStandardError (Join-Path $fixture 'redis.err')
     Copy-Item -LiteralPath $backend -Destination (Join-Path $fixture 'iot-engine.exe')
+    if ($UploadRecovery) {
+        $uploadDirectory = Join-Path $fixture 'firmware'
+        New-Item -ItemType Directory -Path $uploadDirectory | Out-Null
+        Set-Content -LiteralPath (Join-Path $uploadDirectory '00000000-0000-4000-8000-000000000004.upload') -Value 'abandoned' -Encoding ascii
+        Set-Content -LiteralPath (Join-Path $uploadDirectory '00000000-0000-4000-8000-000000000005.bin') -Value 'preserved' -Encoding ascii
+        Set-Content -LiteralPath (Join-Path $uploadDirectory 'unrelated.upload') -Value 'unrelated' -Encoding ascii
+    }
+
     @"
 JWT_SECRET=architecture-test-only-access-secret-000000000
 JWT_REFRESH_SECRET=architecture-test-only-refresh-secret-00000000
@@ -102,11 +115,12 @@ COLLECTOR_WORKERS=1
 GB28181_ENABLED=false
 VPN_HUB_ENABLED=false
 EDGE_PUBLIC_BASE_URL=http://127.0.0.1:$ApiPort
-EDGE_PLATFORM_ID=00000000-0000-7000-8000-000000000001
+EDGE_PLATFORM_ID=$EdgePlatformId
 "@ | Set-Content -LiteralPath (Join-Path $fixture '.env') -Encoding ascii
     $env:Path = (Join-Path $build 'Release') + ';' + $oldPath
     $env:ARCHITECTURE_DATABASE_URL = "postgres://architecture_test@127.0.0.1:$DatabasePort/iot_architecture"
     $env:TEST_BASE_URL = "http://127.0.0.1:$ApiPort"
+    $env:TEST_EDGE_PLATFORM_ID = $EdgePlatformId
     $env:ARCHITECTURE_REDIS_URL = "redis://127.0.0.1:$RedisPort"
     $apiProcess = Start-Process -FilePath (Join-Path $fixture 'iot-engine.exe') -WorkingDirectory $fixture -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $fixture 'api.out') -RedirectStandardError (Join-Path $fixture 'api.err')
     $ready = $false
@@ -126,7 +140,7 @@ EDGE_PLATFORM_ID=00000000-0000-7000-8000-000000000001
         & $Bun run (Join-Path $repository ('tests/' + $test))
         if ($LASTEXITCODE -ne 0) { throw "$test failed; logs retained at $fixture" }
     }
-    if ($ReplayCounterMigration -or $PacketDebugMigration -or $IndustrialProtocolsMigration) {
+    if ($ReplayCounterMigration -or $PacketDebugMigration -or $IndustrialProtocolsMigration -or $DeadLetterQueryMigration) {
         $env:ARCHITECTURE_MIGRATION_STATE = Join-Path $fixture 'migration-state.json'
         Invoke-CounterMigrationPhase 'initial'
         Stop-OwnedProcess $apiProcess (Join-Path $fixture 'iot-engine.exe')
@@ -141,7 +155,7 @@ EDGE_PLATFORM_ID=00000000-0000-7000-8000-000000000001
         $apiProcess = Start-FixtureApi 'drift' 'checksum|migration'
         Invoke-CounterMigrationPhase 'check-drift'
         Invoke-CounterMigrationPhase 'prepare-failure'
-        $apiProcess = Start-FixtureApi 'failure' 'outbox_replay_counter|debug_enabled|already exists|protocol_config_protocol_check'
+        $apiProcess = Start-FixtureApi 'failure' 'outbox_replay_counter|debug_enabled|already exists|protocol_config_protocol_check|live_dead_letters'
         Invoke-CounterMigrationPhase 'check-failure'
         $apiProcess = Start-FixtureApi 'recovered'
         Invoke-CounterMigrationPhase 'upgraded'
@@ -158,6 +172,7 @@ EDGE_PLATFORM_ID=00000000-0000-7000-8000-000000000001
     $env:Path = $oldPath
     $env:ARCHITECTURE_DATABASE_URL = $oldDatabaseUrl
     $env:TEST_BASE_URL = $oldApiBase
+    $env:TEST_EDGE_PLATFORM_ID = $oldEdgePlatformId
     $env:ARCHITECTURE_REDIS_URL = $oldRedisUrl
     $env:ARCHITECTURE_MIGRATION_STATE = $oldMigrationState
     Write-Output "Disposable fixture logs: $fixture"

@@ -70,6 +70,11 @@ function keys() {
     return ['node', 'owner', 'out', 'ack', 'sequence'].map((part) => `${prefix}:${part}`);
 }
 async function evalLua(script: string, scriptKeys: string[], args: string[]) {
+    if (script === inputAck || script === output || script === failTerminal) {
+        scriptKeys = [...scriptKeys, `${scriptKeys[0]}:changes`];
+        args = [...args, 'terminal-events'];
+        if (script === failTerminal) args.push('terminal-input-ack');
+    }
     return redis.send('EVAL', [script, String(scriptKeys.length), ...scriptKeys, ...args]);
 }
 async function seed(k: string[]) {
@@ -146,4 +151,6 @@ test('terminal failure preserves node and other terminals and publishes one clos
     expect(await redis.send('LRANGE', [broken[2], '0', '-1'])).toEqual(['close']);
     expect(await redis.send('EXISTS', [broken[1], broken[3], broken[4]])).toBe(0);
     expect(await evalLua(failTerminal, failureKeys, ['epoch', 'close'])).toBe(0);
+    // One initial input ACK, one output frame, then two failure notifications.
+    expect(Number(await redis.send('XLEN', [`${broken[1]}:changes`]))).toBe(4);
 });

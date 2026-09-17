@@ -148,7 +148,7 @@ foreach(_license IN LISTS _native_licenses)
     file(COPY_FILE "${_license}" "${_package}/licenses/${_license_name}")
   endif()
 endforeach()
-copy_required("${SOURCE_ROOT}/native/vendor/LICENSE-json.txt" "${_package}/licenses")
+copy_required("${SOURCE_ROOT}/vendor/LICENSE-json.txt" "${_package}/licenses")
 
 file(READ "${WINUI_LOCK_FILE}" _winui_lock_json)
 string(JSON _package_count LENGTH "${_winui_lock_json}")

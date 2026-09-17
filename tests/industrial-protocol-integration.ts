@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { apiBase, databaseUrl } from './architecture-fixture';
 
+import { openSnapshotSubscription } from './sse-fixture';
 const db = new Bun.SQL(databaseUrl);
 const admin = '00000000-0000-7000-8000-000000000002';
 const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
@@ -9,17 +10,37 @@ const now = Math.floor(Date.now() / 1000);
 const unsigned = `${encode({alg: 'HS256', typ: 'JWT'})}.${encode({iss: 'iot-engine', aud: 'iot-engine-web', sub: admin,
     user_id: admin, username: 'admin', token_type: 'access', iat: now, exp: now + 3600})}`;
 const token = `${unsigned}.${createHmac('sha256', 'architecture-test-only-access-secret-000000000').update(unsigned).digest('base64url')}`;
-async function request(path: string, body: unknown, method = 'POST') {
-    const response = await fetch(apiBase + path, {method, headers: {Authorization: `Bearer ${token}`, 'Content-Type': 'application/json'},
-        body: JSON.stringify(body), signal: AbortSignal.timeout(20000)});
-    const text = await response.text();
-    assert.equal(response.status, 200, `${path}: ${text}`);
-    return JSON.parse(text);
-}
+
 async function until(check: () => Promise<boolean>, reason: string) {
     const deadline = Date.now() + 25000;
     while (Date.now() < deadline) { if (await check()) return; await Bun.sleep(50); }
     throw Error(reason);
+}
+async function http(method: string, path: string, data?: unknown) {
+    const response = await fetch(apiBase + path, {method,
+        headers: {Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json'},
+        body: data === undefined ? undefined : JSON.stringify(data), signal: AbortSignal.timeout(15000)});
+    const reply = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(reply));
+    assert.equal(reply.code, 0, JSON.stringify(reply));
+    return reply.data;
+}
+async function commandCompleted(commandId: string) {
+    const stream = await openSnapshotSubscription(`/v1/device/events?commandIds=${commandId}`, token);
+    try {
+        for (let changes = 0; changes < 20; ++changes) {
+            const event = await stream.next();
+            if (event.event !== 'commands' && event.event !== 'error') continue;
+            assert.equal(event.event, 'commands', event.data);
+            const reply = JSON.parse(event.data);
+            assert.equal(reply.code, 0);
+            if (reply.data.complete) {
+                assert.equal(reply.data.statuses[0].status, 'SUCCEEDED');
+                return;
+            }
+        }
+        throw new Error('Command did not reach a terminal state');
+    } finally { await stream.close(); }
 }
 function meterFrame(request: Buffer, control: number, data: Buffer) {
     const frame = Buffer.alloc(12 + data.length);
@@ -75,7 +96,7 @@ async function verify(protocol: 'MC' | 'FINS' | 'DLT645', version: string) {
             socket.data.buffer = Buffer.from(buffer);
         }, error(_socket, error) { throw error; }, close() {},
     }});
-    const name = `industrial-${protocol}-${crypto.randomUUID().slice(0, 8)}`, link = crypto.randomUUID(), target = crypto.randomUUID(), device = crypto.randomUUID();
+    const name = `industrial-${protocol}-${crypto.randomUUID().slice(0, 8)}`, link = crypto.randomUUID(), target = crypto.randomUUID(), device = crypto.randomUUID(), keyId = crypto.randomUUID();
     const point = {id: '00000000-0000-7000-8000-000000000111', name: '测试点', dataType: protocol === 'DLT645' ? 'BCD' : 'UINT16', writable: true,
         ...(protocol === 'DLT645' ? {identifier: version === '1997' ? '9010' : '00000000', length: 4, digits: 2} :
             {area: 'D', address: 100, bit: 0, byteOrder: protocol === 'MC' ? 'LITTLE_ENDIAN' : 'BIG_ENDIAN'})};
@@ -83,7 +104,7 @@ async function verify(protocol: 'MC' | 'FINS' | 'DLT645', version: string) {
         {version, wakeupBytes: 4, writePassword: '00123456', operatorCode: '00000001'};
     const config = {connection, points: [point], readInterval: 1, storagePolicy: 'report', commandFastReadDuration: 3, commandFastReadInterval: 1};
     try {
-        await request('/v1/protocol/configs', {name, protocol, config});
+        await http('POST', '/v1/protocol/configs', {name, protocol, config});
         const [model] = await db`SELECT id FROM protocol_config WHERE name=${name}`;
         assert(model, 'API did not persist device type');
         const endpoint = {transport: 'tcp', mode: 'TCP Client', ip: '', port: 0,
@@ -92,17 +113,60 @@ async function verify(protocol: 'MC' | 'FINS' | 'DLT645', version: string) {
         const params = {device_code: '000000000001', target_id: target, remote_control: true};
         await db`INSERT INTO device(id,name,link_id,protocol_config_id,protocol_params,created_by)
             VALUES(${device},${device},${link},${model.id},${params}::jsonb,${admin})`;
-        await request(`/v1/device/${device}/debug`, {enabled: true}, 'PUT');
+        await http('PUT', `/v1/device/${device}/debug`, {enabled:true});
         await until(async () => (await db`SELECT 1 FROM device_data WHERE device_id=${device} AND data->'values'->'00000000-0000-7000-8000-000000000111'->>'value' IN ('42','42.00')`).length > 0,
             `${protocol} ${version} did not collect a persisted value`);
-        const result = await request(`/v1/device/${device}/commands`, {idempotency_key: crypto.randomUUID(), elements: [{elementId: '00000000-0000-7000-8000-000000000111', value: protocol === 'DLT645' ? '13.25' : '13'}]});
-        assert.equal(result.data.command_ids.length, 1);
-        const commandId = result.data.command_ids[0];
-        await until(async () => (await db`SELECT 1 FROM command_operation WHERE id=${commandId} AND status='SUCCEEDED'`).length > 0,
-            `${protocol} ${version} write did not finish through readback`);
+        const result = await http('POST', `/v1/device/${device}/commands`, {idempotency_key: crypto.randomUUID(), elements: [{elementId: '00000000-0000-7000-8000-000000000111', value: protocol === 'DLT645' ? '13.25' : '13'}]});
+        assert.equal(result.command_ids.length, 1);
+        const commandId = result.command_ids[0];
+        await commandCompleted(commandId);
+        assert.equal((await db`SELECT status FROM command_operation WHERE id=${commandId}`)[0].status,'SUCCEEDED');
         assert.equal(writes, 1, 'one command wrote more than once');
+        const status = await http('GET', `/v1/device/commands/${commandId}`);
+        assert.equal(status.status,'SUCCEEDED');
+        // Collector protocols verify readback bytes but currently do not publish
+        // optional actual_values (EdgeNode results can). Preserve the stored contract.
+        const recorded = (await db`SELECT actual_values FROM command_operation WHERE id=${commandId}`)[0].actual_values;
+        assert.equal((status.actual_values ?? []).length,recorded.length);
+        const statuses = await http('GET', `/v1/device/commands?ids=${commandId}`);
+        assert.equal(statuses.complete,true);
+        assert.equal(statuses.statuses[0].status,'SUCCEEDED');
+        if (protocol === 'MC' && version === '3E') {
+            const accessKey = `ak_${crypto.randomUUID().replaceAll('-','')}`;
+            const hash = createHash('sha256').update(accessKey).digest('hex');
+            await db.begin(async tx => {
+                await tx`INSERT INTO open_access_key(id,name,access_key_prefix,access_key_hash,scopes,created_by)
+                    VALUES(${keyId},${keyId},${accessKey.slice(0,12)},${hash},'["device:command"]'::jsonb,${admin})`;
+                await tx`INSERT INTO open_access_key_device(access_key_id,device_id) VALUES(${keyId},${device})`;
+                await tx`INSERT INTO outbox_event(id,event_type,aggregate_type,aggregate_id,action,schema_version,payload)
+                    VALUES(${crypto.randomUUID()},'config.changed','access_key',${keyId},'created',1,'{}'::jsonb)`;
+            });
+            const headers = {'X-Access-Key':accessKey,Accept:'application/json','Content-Type':'application/json'};
+            await until(async () => {
+                const response = await fetch(apiBase+'/open-api/device/list',{headers});
+                const body = await response.json() as {code:number};
+                return response.ok && body.code === 0;
+            },'third-party access session was not projected');
+            const denied = await fetch(apiBase+'/open-api/device/command',{method:'POST',headers,body:JSON.stringify({deviceId:crypto.randomUUID(),idempotency_key:crypto.randomUUID(),elements:[{elementId:point.id,value:'14'}]})});
+            assert.equal(denied.status,403);
+            const response = await fetch(apiBase+'/open-api/device/command',{method:'POST',headers,body:JSON.stringify({deviceId:device,idempotency_key:crypto.randomUUID(),elements:[{elementId:point.id,value:'14'}]})});
+            const external = await response.json() as {code:number;data:{command_ids:string[]}};
+            assert.equal(response.status,200,JSON.stringify(external));
+            assert.equal(external.code,0);
+            await commandCompleted(external.data.command_ids[0]);
+            assert.equal(writes,2);
+            const sseAbort = new AbortController();
+            const stream = await fetch(apiBase+'/open-api/device/list',{headers:{...headers,Accept:'text/event-stream'},signal:sseAbort.signal});
+            assert.equal(stream.status,200);
+            assert.match(stream.headers.get('content-type') ?? '',/text\/event-stream/);
+            const first = await stream.body!.getReader().read();
+            assert.match(new TextDecoder().decode(first.value),/event: snapshot/);
+            sseAbort.abort();
+            console.log('PASS third-party HTTP command and SSE: existing envelope, device ACL denial, actual write and readback');
+        }
         console.log(`PASS ${protocol} ${version}: API configuration, snapshot, TCP polling, persistence, write and readback`);
     } finally {
+        await db`DELETE FROM open_access_key WHERE id=${keyId}`;
         await db`UPDATE device SET deleted_at=NOW() WHERE id=${device}`;
         await db`UPDATE link SET status='disabled',deleted_at=NOW() WHERE id=${link}`;
         server.stop(true);

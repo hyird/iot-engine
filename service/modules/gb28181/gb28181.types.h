@@ -1,22 +1,74 @@
 #pragma once
 
+#include <cstdint>
+#include <string>
+
 #include <ruvia/web/Model.h>
 
 namespace service::gb28181 {
 
-RUVIA_REQUEST_MODEL(GbNameBody, RUVIA_OPTIONAL_FIELD(name, ruvia::String));
+RUVIA_REQUEST_MODEL(GbRouteParams, RUVIA_OPTIONAL_FIELD(deviceId, ruvia::String), RUVIA_OPTIONAL_FIELD(channelId, ruvia::String), RUVIA_OPTIONAL_FIELD(streamId, ruvia::String), RUVIA_OPTIONAL_FIELD(sessionId, ruvia::String), RUVIA_OPTIONAL_FIELD(action, ruvia::String));
 
-RUVIA_RESPONSE_MODEL(GbMediaPortsDto, RUVIA_OPTIONAL_FIELD(http, ruvia::Int64),
-                     RUVIA_OPTIONAL_FIELD(https, ruvia::Int64),
-                     RUVIA_OPTIONAL_FIELD(rtsp, ruvia::Int64),
-                     RUVIA_OPTIONAL_FIELD(rtsps, ruvia::Int64),
-                     RUVIA_OPTIONAL_FIELD(rtmp, ruvia::Int64),
-                     RUVIA_OPTIONAL_FIELD(rtmps, ruvia::Int64),
-                     RUVIA_OPTIONAL_FIELD(rtc, ruvia::Int64),
-                     RUVIA_OPTIONAL_FIELD(srt, ruvia::Int64));
+struct GbDeviceInput final {
+    std::string deviceId;
+};
+
+struct GbChannelInput final {
+    std::string deviceId;
+    std::string channelId;
+};
+
+struct GbStreamInput final {
+    std::string streamId;
+};
+
+struct GbSessionInput final {
+    std::string sessionId;
+};
+
+struct GbDeviceNameInput final {
+    std::string deviceId;
+    std::string name;
+};
+
+struct GbChannelNameInput final {
+    std::string deviceId;
+    std::string channelId;
+    std::string name;
+};
+
+struct GbMappingInput final {
+    std::string deviceId;
+    std::string mapped_device_id;
+};
+
+struct GbPtzInput final {
+    std::string deviceId;
+    std::string channelId;
+    std::string action;
+    std::uint8_t speed;
+};
+
+struct GbPositionInput final {
+    std::string deviceId;
+    std::string channelId;
+    double pan;
+    double tilt;
+    double zoom;
+};
+
+struct GbRecordInput final {
+    std::string deviceId;
+    std::string channelId;
+    std::string start_time;
+    std::string end_time;
+};
+
+RUVIA_RESPONSE_MODEL(GbMediaPortsDto, RUVIA_OPTIONAL_FIELD(http, ruvia::Int64), RUVIA_OPTIONAL_FIELD(https, ruvia::Int64), RUVIA_OPTIONAL_FIELD(rtsp, ruvia::Int64), RUVIA_OPTIONAL_FIELD(rtsps, ruvia::Int64), RUVIA_OPTIONAL_FIELD(rtmp, ruvia::Int64), RUVIA_OPTIONAL_FIELD(rtmps, ruvia::Int64), RUVIA_OPTIONAL_FIELD(rtc, ruvia::Int64), RUVIA_OPTIONAL_FIELD(srt, ruvia::Int64));
 
 RUVIA_RESPONSE_MODEL(
-    GbMediaCapabilitiesDto, RUVIA_OPTIONAL_FIELD(faac, ruvia::Bool),
+    GbMediaCapabilitiesDto,
+    RUVIA_OPTIONAL_FIELD(faac, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(ffmpeg, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(hls, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(mp4, ruvia::Bool),
@@ -27,37 +79,24 @@ RUVIA_RESPONSE_MODEL(
     RUVIA_OPTIONAL_FIELD(x264, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD_NAME("video_stack", videoStack, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(tls, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(recording, ruvia::Bool));
+    RUVIA_OPTIONAL_FIELD(recording, ruvia::Bool)
+);
 
-RUVIA_RESPONSE_MODEL(GbHealthDto, RUVIA_OPTIONAL_FIELD(status, ruvia::String),
-                     RUVIA_OPTIONAL_FIELD(service, ruvia::String),
-                     RUVIA_OPTIONAL_FIELD(enabled, ruvia::Bool),
-                     RUVIA_OPTIONAL_FIELD(started, ruvia::Bool),
-                     RUVIA_OPTIONAL_FIELD(error, ruvia::String),
-                     RUVIA_OPTIONAL_FIELD_NAME("media_ports", mediaPorts,
-                                               GbMediaPortsDto),
-                     RUVIA_OPTIONAL_FIELD_NAME("media_capabilities",
-                                               mediaCapabilities,
-                                               GbMediaCapabilitiesDto));
+RUVIA_RESPONSE_MODEL(GbHealthDto, RUVIA_OPTIONAL_FIELD(status, ruvia::String), RUVIA_OPTIONAL_FIELD(service, ruvia::String), RUVIA_OPTIONAL_FIELD(enabled, ruvia::Bool), RUVIA_OPTIONAL_FIELD(started, ruvia::Bool), RUVIA_OPTIONAL_FIELD(error, ruvia::String), RUVIA_OPTIONAL_FIELD_NAME("media_ports", mediaPorts, GbMediaPortsDto), RUVIA_OPTIONAL_FIELD_NAME("media_capabilities", mediaCapabilities, GbMediaCapabilitiesDto));
 
-RUVIA_RESPONSE_MODEL(GbSipConfigDto,
-                     RUVIA_OPTIONAL_FIELD(domain, ruvia::String),
-                     RUVIA_OPTIONAL_FIELD(id, ruvia::String),
-                     RUVIA_OPTIONAL_FIELD(host, ruvia::String),
-                     RUVIA_OPTIONAL_FIELD_NAME("public_ip", publicIp,
-                                               ruvia::String),
-                     RUVIA_OPTIONAL_FIELD(port, ruvia::Int64),
-                     RUVIA_OPTIONAL_FIELD(transport, ruvia::String));
+RUVIA_RESPONSE_MODEL(GbSipConfigDto, RUVIA_OPTIONAL_FIELD(domain, ruvia::String), RUVIA_OPTIONAL_FIELD(id, ruvia::String), RUVIA_OPTIONAL_FIELD(host, ruvia::String), RUVIA_OPTIONAL_FIELD_NAME("public_ip", publicIp, ruvia::String), RUVIA_OPTIONAL_FIELD(port, ruvia::Int64), RUVIA_OPTIONAL_FIELD(transport, ruvia::String));
 
 RUVIA_RESPONSE_MODEL(
-    GbChannelDto, RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    GbChannelDto,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
     RUVIA_OPTIONAL_FIELD(name, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("reported_name", reportedName, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("custom_name", customName, ruvia::String),
     RUVIA_OPTIONAL_FIELD(manufacturer, ruvia::String),
     RUVIA_OPTIONAL_FIELD(online, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD_NAME("ptz_type", ptzType, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD_NAME("ptz_capable", ptzCapable, ruvia::Bool));
+    RUVIA_OPTIONAL_FIELD_NAME("ptz_capable", ptzCapable, ruvia::Bool)
+);
 
 RUVIA_RESPONSE_MODEL(
     GbRecordDto,
@@ -68,10 +107,12 @@ RUVIA_RESPONSE_MODEL(
     RUVIA_OPTIONAL_FIELD_NAME("start_time", startTime, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("end_time", endTime, ruvia::String),
     RUVIA_OPTIONAL_FIELD(type, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("recorder_id", recorderId, ruvia::String));
+    RUVIA_OPTIONAL_FIELD_NAME("recorder_id", recorderId, ruvia::String)
+);
 
 RUVIA_RESPONSE_MODEL(
-    GbDeviceDto, RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    GbDeviceDto,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
     RUVIA_OPTIONAL_FIELD(name, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("reported_name", reportedName, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("custom_name", customName, ruvia::String),
@@ -79,93 +120,45 @@ RUVIA_RESPONSE_MODEL(
     RUVIA_OPTIONAL_FIELD_NAME("remote_address", remoteAddress, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("remote_ip", remoteIp, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("remote_port", remotePort, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("registration_source", registrationSource,
-                              ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("mapped_device_id", mappedDeviceId,
-                              ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("registration_source", registrationSource, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("mapped_device_id", mappedDeviceId, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("last_seen_at", lastSeenAt, ruvia::String),
     RUVIA_OPTIONAL_FIELD(online, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(channels, ruvia::BoxedArray<GbChannelDto>),
-    RUVIA_OPTIONAL_FIELD(records, ruvia::BoxedArray<GbRecordDto>));
+    RUVIA_OPTIONAL_FIELD(records, ruvia::BoxedArray<GbRecordDto>)
+);
 
-RUVIA_RESPONSE_MODEL(GbDeviceListDto,
-                     RUVIA_OPTIONAL_FIELD(items,
-                                          ruvia::BoxedArray<GbDeviceDto>));
+RUVIA_RESPONSE_MODEL(GbDeviceListDto, RUVIA_OPTIONAL_FIELD(items, ruvia::BoxedArray<GbDeviceDto>));
 
-RUVIA_RESPONSE_MODEL(GbStreamDto, RUVIA_OPTIONAL_FIELD(id, ruvia::String),
-                     RUVIA_OPTIONAL_FIELD(app, ruvia::String),
-                     RUVIA_OPTIONAL_FIELD(stream, ruvia::String),
-                     RUVIA_OPTIONAL_FIELD(schema, ruvia::String),
-                     RUVIA_OPTIONAL_FIELD(online, ruvia::Bool),
-                     RUVIA_OPTIONAL_FIELD_NAME("reader_count", readerCount,
-                                               ruvia::Int64));
+RUVIA_RESPONSE_MODEL(GbStreamDto, RUVIA_OPTIONAL_FIELD(id, ruvia::String), RUVIA_OPTIONAL_FIELD(app, ruvia::String), RUVIA_OPTIONAL_FIELD(stream, ruvia::String), RUVIA_OPTIONAL_FIELD(schema, ruvia::String), RUVIA_OPTIONAL_FIELD(online, ruvia::Bool), RUVIA_OPTIONAL_FIELD_NAME("reader_count", readerCount, ruvia::Int64));
 
-RUVIA_RESPONSE_MODEL(GbStreamListDto,
-                     RUVIA_OPTIONAL_FIELD(items,
-                                          ruvia::BoxedArray<GbStreamDto>));
+RUVIA_RESPONSE_MODEL(GbStreamListDto, RUVIA_OPTIONAL_FIELD(items, ruvia::BoxedArray<GbStreamDto>));
 
-RUVIA_RESPONSE_MODEL(GbPlayUrlsDto,
-                     RUVIA_OPTIONAL_FIELD_NAME("http_flv", httpFlv,
-                                               ruvia::String),
-                     RUVIA_OPTIONAL_FIELD_NAME("ws_flv", wsFlv, ruvia::String),
-                     RUVIA_OPTIONAL_FIELD_NAME("http_ts", httpTs,
-                                               ruvia::String),
-                     RUVIA_OPTIONAL_FIELD(hls, ruvia::String),
-                     RUVIA_OPTIONAL_FIELD(webrtc, ruvia::String),
-                     RUVIA_OPTIONAL_FIELD(rtsp, ruvia::String),
-                     RUVIA_OPTIONAL_FIELD(rtmp, ruvia::String));
+RUVIA_RESPONSE_MODEL(GbPlayUrlsDto, RUVIA_OPTIONAL_FIELD_NAME("http_flv", httpFlv, ruvia::String), RUVIA_OPTIONAL_FIELD_NAME("ws_flv", wsFlv, ruvia::String), RUVIA_OPTIONAL_FIELD_NAME("http_ts", httpTs, ruvia::String), RUVIA_OPTIONAL_FIELD(hls, ruvia::String), RUVIA_OPTIONAL_FIELD(webrtc, ruvia::String), RUVIA_OPTIONAL_FIELD(rtsp, ruvia::String), RUVIA_OPTIONAL_FIELD(rtmp, ruvia::String));
 
 RUVIA_RESPONSE_MODEL(
-    GbPreviewStartDto, RUVIA_OPTIONAL_FIELD(sent, ruvia::Bool),
+    GbPreviewStartDto,
+    RUVIA_OPTIONAL_FIELD(sent, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::String),
     RUVIA_OPTIONAL_FIELD(ssrc, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("rtp_port", rtpPort, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD_NAME("lease_timeout_seconds", leaseTimeoutSeconds,
-                              ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD_NAME("play_urls", playUrls, GbPlayUrlsDto));
+    RUVIA_OPTIONAL_FIELD_NAME("lease_timeout_seconds", leaseTimeoutSeconds, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("play_urls", playUrls, GbPlayUrlsDto)
+);
 
 RUVIA_RESPONSE_MODEL(
-    GbPreviewStopDto, RUVIA_OPTIONAL_FIELD(stopped, ruvia::Bool),
+    GbPreviewStopDto,
+    RUVIA_OPTIONAL_FIELD(stopped, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("bye_sent", byeSent, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD_NAME("rtp_server_closed", rtpServerClosed,
-                              ruvia::Bool));
+    RUVIA_OPTIONAL_FIELD_NAME("rtp_server_closed", rtpServerClosed, ruvia::Bool)
+);
 
-RUVIA_RESPONSE_MODEL(GbActionDto, RUVIA_OPTIONAL_FIELD(registered, ruvia::Bool),
-                     RUVIA_OPTIONAL_FIELD(sent, ruvia::Bool),
-                     RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId,
-                                               ruvia::String),
-                     RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId,
-                                               ruvia::String),
-                     RUVIA_OPTIONAL_FIELD(action, ruvia::String),
-                     RUVIA_OPTIONAL_FIELD_NAME("mapped_device_id",
-                                               mappedDeviceId, ruvia::String),
-                     RUVIA_OPTIONAL_FIELD(speed, ruvia::Int64),
-                     RUVIA_OPTIONAL_FIELD(pan, ruvia::Double),
-                     RUVIA_OPTIONAL_FIELD(tilt, ruvia::Double),
-                     RUVIA_OPTIONAL_FIELD(zoom, ruvia::Double),
-                     RUVIA_OPTIONAL_FIELD(recording, ruvia::Bool));
-
-#define GB28181_RESPONSE(name, dataType)                                       \
-  RUVIA_RESPONSE_MODEL(name, RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),         \
-                       RUVIA_OPTIONAL_FIELD(message, ruvia::String),           \
-                       RUVIA_OPTIONAL_FIELD(data, dataType))
-
-GB28181_RESPONSE(GbHealthResponse, GbHealthDto);
-GB28181_RESPONSE(GbSipConfigResponse, GbSipConfigDto);
-GB28181_RESPONSE(GbDeviceListResponse, GbDeviceListDto);
-GB28181_RESPONSE(GbDeviceResponse, GbDeviceDto);
-GB28181_RESPONSE(GbStreamListResponse, GbStreamListDto);
-GB28181_RESPONSE(GbStreamResponse, GbStreamDto);
-GB28181_RESPONSE(GbPreviewStartResponse, GbPreviewStartDto);
-GB28181_RESPONSE(GbPreviewStopResponse, GbPreviewStopDto);
-GB28181_RESPONSE(GbActionResponse, GbActionDto);
-
-#undef GB28181_RESPONSE
+RUVIA_RESPONSE_MODEL(GbActionDto, RUVIA_OPTIONAL_FIELD(registered, ruvia::Bool), RUVIA_OPTIONAL_FIELD(sent, ruvia::Bool), RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String), RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::String), RUVIA_OPTIONAL_FIELD(action, ruvia::String), RUVIA_OPTIONAL_FIELD_NAME("mapped_device_id", mappedDeviceId, ruvia::String), RUVIA_OPTIONAL_FIELD(speed, ruvia::Int64), RUVIA_OPTIONAL_FIELD(pan, ruvia::Double), RUVIA_OPTIONAL_FIELD(tilt, ruvia::Double), RUVIA_OPTIONAL_FIELD(zoom, ruvia::Double), RUVIA_OPTIONAL_FIELD(recording, ruvia::Bool));
 
 // The feature RPC uses the same wire names as the public DTOs, but these
 // request models deliberately belong to the module.  Keeping the decode side
@@ -173,17 +166,20 @@ GB28181_RESPONSE(GbActionResponse, GbActionDto);
 namespace rpc_wire {
 
 RUVIA_REQUEST_MODEL(
-    MediaPorts, RUVIA_OPTIONAL_FIELD(http, ruvia::Int64),
+    MediaPorts,
+    RUVIA_OPTIONAL_FIELD(http, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(https, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(rtsp, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(rtsps, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(rtmp, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(rtmps, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(rtc, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(srt, ruvia::Int64));
+    RUVIA_OPTIONAL_FIELD(srt, ruvia::Int64)
+);
 
 RUVIA_REQUEST_MODEL(
-    MediaCapabilities, RUVIA_OPTIONAL_FIELD(faac, ruvia::Bool),
+    MediaCapabilities,
+    RUVIA_OPTIONAL_FIELD(faac, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(ffmpeg, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(hls, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(mp4, ruvia::Bool),
@@ -194,126 +190,136 @@ RUVIA_REQUEST_MODEL(
     RUVIA_OPTIONAL_FIELD(x264, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD_NAME("video_stack", videoStack, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(tls, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD(recording, ruvia::Bool));
+    RUVIA_OPTIONAL_FIELD(recording, ruvia::Bool)
+);
 
 RUVIA_REQUEST_MODEL(
-    Health, RUVIA_OPTIONAL_FIELD(status, ruvia::String),
+    Health,
+    RUVIA_OPTIONAL_FIELD(status, ruvia::String),
     RUVIA_OPTIONAL_FIELD(service, ruvia::String),
     RUVIA_OPTIONAL_FIELD(enabled, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(started, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(error, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("media_ports", mediaPorts, MediaPorts),
-    RUVIA_OPTIONAL_FIELD_NAME("media_capabilities", mediaCapabilities,
-                              MediaCapabilities));
+    RUVIA_OPTIONAL_FIELD_NAME("media_capabilities", mediaCapabilities, MediaCapabilities)
+);
 
 RUVIA_REQUEST_MODEL(
-    SipConfig, RUVIA_OPTIONAL_FIELD(domain, ruvia::String),
+    SipConfig,
+    RUVIA_OPTIONAL_FIELD(domain, ruvia::String),
     RUVIA_OPTIONAL_FIELD(id, ruvia::String),
     RUVIA_OPTIONAL_FIELD(host, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("public_ip", publicIp, ruvia::String),
     RUVIA_OPTIONAL_FIELD(port, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD(transport, ruvia::String));
+    RUVIA_OPTIONAL_FIELD(transport, ruvia::String)
+);
 
 RUVIA_REQUEST_MODEL(
-    Channel, RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    Channel,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
     RUVIA_OPTIONAL_FIELD(name, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("reported_name", reportedName, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("custom_name", customName, ruvia::String),
     RUVIA_OPTIONAL_FIELD(manufacturer, ruvia::String),
     RUVIA_OPTIONAL_FIELD(online, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD_NAME("ptz_type", ptzType, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD_NAME("ptz_capable", ptzCapable, ruvia::Bool));
+    RUVIA_OPTIONAL_FIELD_NAME("ptz_capable", ptzCapable, ruvia::Bool)
+);
 
 RUVIA_REQUEST_MODEL(
-    Record, RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String),
+    Record,
+    RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String),
     RUVIA_OPTIONAL_FIELD(name, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("file_path", filePath, ruvia::String),
     RUVIA_OPTIONAL_FIELD(address, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("start_time", startTime, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("end_time", endTime, ruvia::String),
     RUVIA_OPTIONAL_FIELD(type, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("recorder_id", recorderId, ruvia::String));
+    RUVIA_OPTIONAL_FIELD_NAME("recorder_id", recorderId, ruvia::String)
+);
 
 RUVIA_REQUEST_MODEL(
-    Device, RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    Device,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
     RUVIA_OPTIONAL_FIELD(name, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("reported_name", reportedName, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("custom_name", customName, ruvia::String),
     RUVIA_OPTIONAL_FIELD(manufacturer, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("remote_address", remoteAddress,
-                              ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("remote_address", remoteAddress, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("remote_ip", remoteIp, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("remote_port", remotePort, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("registration_source", registrationSource,
-                              ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("mapped_device_id", mappedDeviceId,
-                              ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("registration_source", registrationSource, ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("mapped_device_id", mappedDeviceId, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("last_seen_at", lastSeenAt, ruvia::String),
     RUVIA_OPTIONAL_FIELD(online, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(channels, ruvia::Array<Channel>),
-    RUVIA_OPTIONAL_FIELD(records, ruvia::Array<Record>));
+    RUVIA_OPTIONAL_FIELD(records, ruvia::Array<Record>)
+);
 
-RUVIA_REQUEST_MODEL(DeviceList,
-                    RUVIA_OPTIONAL_FIELD(items, ruvia::Array<Device>));
+RUVIA_REQUEST_MODEL(DeviceList, RUVIA_OPTIONAL_FIELD(items, ruvia::Array<Device>));
 
 RUVIA_REQUEST_MODEL(
-    Stream, RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    Stream,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
     RUVIA_OPTIONAL_FIELD(app, ruvia::String),
     RUVIA_OPTIONAL_FIELD(stream, ruvia::String),
     RUVIA_OPTIONAL_FIELD(schema, ruvia::String),
     RUVIA_OPTIONAL_FIELD(online, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD_NAME("reader_count", readerCount, ruvia::Int64));
+    RUVIA_OPTIONAL_FIELD_NAME("reader_count", readerCount, ruvia::Int64)
+);
 
-RUVIA_REQUEST_MODEL(StreamList,
-                    RUVIA_OPTIONAL_FIELD(items, ruvia::Array<Stream>));
+RUVIA_REQUEST_MODEL(StreamList, RUVIA_OPTIONAL_FIELD(items, ruvia::Array<Stream>));
 
 RUVIA_REQUEST_MODEL(
-    PlayUrls, RUVIA_OPTIONAL_FIELD_NAME("http_flv", httpFlv, ruvia::String),
+    PlayUrls,
+    RUVIA_OPTIONAL_FIELD_NAME("http_flv", httpFlv, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("ws_flv", wsFlv, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("http_ts", httpTs, ruvia::String),
     RUVIA_OPTIONAL_FIELD(hls, ruvia::String),
     RUVIA_OPTIONAL_FIELD(webrtc, ruvia::String),
     RUVIA_OPTIONAL_FIELD(rtsp, ruvia::String),
-    RUVIA_OPTIONAL_FIELD(rtmp, ruvia::String));
+    RUVIA_OPTIONAL_FIELD(rtmp, ruvia::String)
+);
 
 RUVIA_REQUEST_MODEL(
-    PreviewStart, RUVIA_OPTIONAL_FIELD(sent, ruvia::Bool),
+    PreviewStart,
+    RUVIA_OPTIONAL_FIELD(sent, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::String),
     RUVIA_OPTIONAL_FIELD(ssrc, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("rtp_port", rtpPort, ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD_NAME("lease_timeout_seconds", leaseTimeoutSeconds,
-                              ruvia::Int64),
-    RUVIA_OPTIONAL_FIELD_NAME("play_urls", playUrls, PlayUrls));
+    RUVIA_OPTIONAL_FIELD_NAME("lease_timeout_seconds", leaseTimeoutSeconds, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD_NAME("play_urls", playUrls, PlayUrls)
+);
 
 RUVIA_REQUEST_MODEL(
-    PreviewStop, RUVIA_OPTIONAL_FIELD(stopped, ruvia::Bool),
+    PreviewStop,
+    RUVIA_OPTIONAL_FIELD(stopped, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("stream_id", streamId, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("bye_sent", byeSent, ruvia::Bool),
-    RUVIA_OPTIONAL_FIELD_NAME("rtp_server_closed", rtpServerClosed,
-                              ruvia::Bool));
+    RUVIA_OPTIONAL_FIELD_NAME("rtp_server_closed", rtpServerClosed, ruvia::Bool)
+);
 
 RUVIA_REQUEST_MODEL(
-    Action, RUVIA_OPTIONAL_FIELD(registered, ruvia::Bool),
+    Action,
+    RUVIA_OPTIONAL_FIELD(registered, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(sent, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::String),
     RUVIA_OPTIONAL_FIELD(action, ruvia::String),
-    RUVIA_OPTIONAL_FIELD_NAME("mapped_device_id", mappedDeviceId,
-                              ruvia::String),
+    RUVIA_OPTIONAL_FIELD_NAME("mapped_device_id", mappedDeviceId, ruvia::String),
     RUVIA_OPTIONAL_FIELD(speed, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(pan, ruvia::Double),
     RUVIA_OPTIONAL_FIELD(tilt, ruvia::Double),
     RUVIA_OPTIONAL_FIELD(zoom, ruvia::Double),
-    RUVIA_OPTIONAL_FIELD(recording, ruvia::Bool));
+    RUVIA_OPTIONAL_FIELD(recording, ruvia::Bool)
+);
 
-#define GB28181_RPC_RESPONSE(name, dataType)                                 \
-  RUVIA_REQUEST_MODEL(name, RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),         \
-                      RUVIA_OPTIONAL_FIELD(message, ruvia::String),           \
-                      RUVIA_OPTIONAL_FIELD(data, dataType))
+#define GB28181_RPC_RESPONSE(name, dataType) \
+    RUVIA_REQUEST_MODEL(name, RUVIA_OPTIONAL_FIELD(code, ruvia::Int64), RUVIA_OPTIONAL_FIELD(message, ruvia::String), RUVIA_OPTIONAL_FIELD(data, dataType))
 
 GB28181_RPC_RESPONSE(HealthResponse, Health);
 GB28181_RPC_RESPONSE(SipConfigResponse, SipConfig);

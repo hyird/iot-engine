@@ -1,18 +1,20 @@
-import type { UseQueryOptions } from '@tanstack/react-query';
+import { useQuery, type UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
-import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import type { PaginatedResult } from '@/types/pagination';
-import { create, getList, remove, update } from './role.api';
+import { create, getList, getOptions, remove, update } from './role.api';
 import type { Role } from './role.types';
 import { roleQueryKeys } from './role.types';
+export const getRoleOptions = getOptions;
 export function useRoleList(
     params?: Role.Query,
     options?: Omit<UseQueryOptions<PaginatedResult<Role.Item>>, 'queryKey' | 'queryFn'>
 ) {
-    return useSnapshotQuery({
+    return useQuery({
         queryKey: roleQueryKeys.list(params),
-        queryFn: () => getList(params),
+        queryFn: ({ signal }) => getList(params, signal),
         ...options,
+        refetchInterval: false,
+        refetchOnWindowFocus: false,
     });
 }
 export function useRoleSave() {

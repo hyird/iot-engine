@@ -8,14 +8,6 @@
 
 namespace service::edge {
 
-// GETDEL 一次性票据使用 Redis String；ORM Hash 映射不能表达该消费语义。
-struct SerialDebugTicketRecord final {
-    std::string nodeId;
-    std::string nodeSession;
-    std::string path;
-    std::string encode() const { return nodeId + "\n" + nodeSession + "\n" + path; }
-};
-
 RUVIA_DB_ENTITY(
     EdgeNodeEntity, "edge_node",
     RUVIA_DB_COLUMN(id, std::pmr::string,

@@ -12,7 +12,6 @@
 #include <random>
 #include <string>
 #include <string_view>
-#include <terminal.pb.h>
 
 #include <ruvia/core/TaskScope.h>
 #include <ruvia/web/Controller.h>
@@ -25,19 +24,12 @@
 #include "service/features/edge/firmware/firmware.service.h"
 #include "service/features/edge/gateway/gateway.service.h"
 #include "service/features/edge/gateway/gateway.types.h"
+#include "service/features/edge/serial_debug/serial_debug.service.h"
 #include "service/features/edge/session/session.service.h"
 #include "service/features/edge/terminal/terminal.service.h"
-#include "service/features/edge/serial_debug/serial_debug.runtime.h"
 #include "service/features/live/live.service.h"
 
 namespace service::edge {
-
-class GatewayTicketValidator final : public ruvia::Middleware<GatewayTicketValidator> {
-  public:
-    RUVIA_VALIDATE_QUERY(gateway::TerminalTicketQuery, RUVIA_RULE(ticket, RUVIA_REQUIRED("终端票据不能为空"), RUVIA_CUSTOM("终端票据无效", service::common::isUuidField)));
-};
-
-namespace webpb = ::iot::edge::terminal::v1;
 
 class GatewayController final : public ruvia::Controller<GatewayController> {
   public:
@@ -53,13 +45,6 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         },
     };
     RUVIA_GET_WS_OPTIONS("/connect", connect, webSocketOptions);
-    RUVIA_GET_WS_OPTIONS("/serial", serialDebug, webSocketOptions, GatewayTicketValidator);
-    RUVIA_GET_WS_OPTIONS(
-        "/terminal",
-        terminal,
-        webSocketOptions,
-        GatewayTicketValidator
-    );
     RUVIA_ROUTES_END
 
   private:
@@ -98,15 +83,6 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         bool active{ true };
         bool flushPending{};
         bool flushing{};
-    };
-
-    struct TerminalSession {
-        std::uint32_t columns{ 120 };
-        std::uint32_t rows{ 30 };
-        std::uint32_t protocolVersion{ protocol::kProtocolVersion };
-        std::uint64_t inputSequence{};
-        bool opened{};
-        bool nodeClosed{};
     };
 
     ruvia::Task<void> connect(ruvia::Context& c) {
@@ -149,7 +125,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             workerIndex
         );
         if (status != "approved") {
-            co_await sendEnrollment(socket, session);
+            co_await sendEnrollment(c, socket, session);
 
             session.inboundSequence = input.sequence();
             while (auto message = co_await socket.read()) {
@@ -176,7 +152,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                     break;
                 }
 
-                auto heartbeat = makeEnvelope(session);
+                auto heartbeat = makeEnvelope(c, session);
                 heartbeat.mutable_heartbeat_ack()->set_platform_time_ms(service::message::utcNowMilliseconds());
                 co_await send(socket, heartbeat);
             }
@@ -224,7 +200,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             });
             co_return;
         }
-        auto ack = makeEnvelope(session);
+        auto ack = makeEnvelope(c, session);
         auto* helloAck = ack.mutable_hello_ack();
         helloAck->set_assigned_node_id(
             protocol::bytes(session.nodeBytes.data(), session.nodeBytes.size())
@@ -337,184 +313,6 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         }
     }
 
-    ruvia::Task<void> serialDebug(ruvia::Context& c) {
-        const auto& query = c.req().validated<gateway::TerminalTicketQuery>();
-        co_await serial_debug::Runtime::serve(c, query.get<"ticket">()->view());
-    }
-
-    ruvia::Task<void> terminal(ruvia::Context& c) {
-        auto& socket = c.webSocket();
-        const auto& query = c.req().validated<gateway::TerminalTicketQuery>();
-        const std::string ticket(query.get<"ticket">()->view());
-        const auto node = co_await terminal_state::TerminalService::consumeTicket(c, ticket);
-        if (!node) {
-            co_await socket.close(ruvia::WebSocketCloseOptions{
-                .code = 1008,
-                .reason = "invalid terminal ticket",
-            });
-            co_return;
-        }
-        const std::string nodeId(*node);
-        const auto active = co_await terminal_state::TerminalService::findNodeSession(c, nodeId);
-        if (!active) {
-            co_await socket.close(
-                ruvia::WebSocketCloseOptions{ .code = 1013, .reason = "edge node offline" }
-            );
-            co_return;
-        }
-        const auto terminalId = service::common::nextUuidV7();
-        std::array<std::uint8_t, 16> terminalBytes{};
-        (void)service::common::uuidBytes(terminalId, terminalBytes.data());
-        const std::string nodeSession(*active);
-        const auto sessionProtocolVersion =
-            session_state::protocolVersion(nodeSession);
-        if (!sessionProtocolVersion ||
-            !protocol::supportsProtocolVersion(*sessionProtocolVersion)) {
-            co_await socket.close(ruvia::WebSocketCloseOptions{
-                .code = 1013,
-                .reason = "edge node protocol state unavailable",
-            });
-            co_return;
-        }
-        co_await terminal_state::TerminalService::registerSession(c, nodeId, terminalId, nodeSession);
-        auto open = service::edge::protocol::outbound(service::common::nextUuidV7(), service::message::utcNowMilliseconds(), service::edge::protocol::platformId(), nodeId);
-        auto* terminalOpen = open.mutable_terminal_open();
-        terminalOpen->set_terminal_id(
-            protocol::bytes(terminalBytes.data(), terminalBytes.size())
-        );
-        if (*sessionProtocolVersion <= 3) {
-            terminalOpen->set_ticket(ticket);
-        }
-        terminalOpen->set_columns(120);
-        terminalOpen->set_rows(30);
-        co_await terminal_state::TerminalService::enqueueInput(c, nodeId, open);
-
-        TerminalSession terminalSession;
-        terminalSession.protocolVersion = *sessionProtocolVersion;
-        if (terminalSession.protocolVersion <= 3) {
-            webpb::WebTerminalFrame ready;
-            ready.mutable_ready();
-            co_await sendWebTerminal(socket, ready);
-            terminalSession.opened = true;
-        }
-        ruvia::TaskScope outputScope(
-            c.worker(),
-            ruvia::TaskScopeOptions{ .resource = c.pool() }
-        );
-        outputScope.spawn(pumpTerminal(c, socket, nodeId, nodeSession, terminalId, terminalBytes, outputScope.stopToken(), terminalSession));
-        std::exception_ptr failure;
-        std::uint16_t closeCode = 1000;
-        std::string closeReason;
-        try {
-            while (auto message = co_await socket.read()) {
-                if (!message->binary()) {
-                    closeCode = 1003;
-                    closeReason = "terminal frames must use protobuf";
-                    break;
-                }
-                webpb::WebTerminalFrame frame;
-                if (!frame.ParseFromArray(message->payload().data(), static_cast<int>(message->payload().size()))) {
-                    closeCode = 1002;
-                    closeReason = "invalid terminal protobuf";
-                    break;
-                }
-                if (!terminalSession.opened) {
-                    closeCode = 1002;
-                    closeReason = "terminal is not ready";
-                    break;
-                }
-                if (frame.payload_case() == webpb::WebTerminalFrame::kResize) {
-                    const auto& size = frame.resize();
-                    if (size.columns() < 20 || size.columns() > 300 || size.rows() < 5 ||
-                        size.rows() > 100) {
-                        closeCode = 1002;
-                        closeReason = "invalid terminal size";
-                        break;
-                    }
-                    auto resize = service::edge::protocol::outbound(service::common::nextUuidV7(), service::message::utcNowMilliseconds(), service::edge::protocol::platformId(), nodeId);
-                    auto* terminalResize = resize.mutable_terminal_resize();
-                    terminalResize->set_terminal_id(
-                        protocol::bytes(terminalBytes.data(), terminalBytes.size())
-                    );
-                    terminalResize->set_columns(size.columns());
-                    terminalResize->set_rows(size.rows());
-                    terminalSession.columns = size.columns();
-                    terminalSession.rows = size.rows();
-                    co_await terminal_state::TerminalService::enqueueInput(c, nodeId, resize);
-                } else if (frame.payload_case() == webpb::WebTerminalFrame::kData) {
-                    std::string_view remaining = frame.data().data();
-                    while (!remaining.empty()) {
-                        const auto size = std::min<std::size_t>(remaining.size(), 4096);
-                        auto data = service::edge::protocol::outbound(service::common::nextUuidV7(), service::message::utcNowMilliseconds(), service::edge::protocol::platformId(), nodeId);
-                        auto* terminalData = data.mutable_terminal_data();
-                        terminalData->set_terminal_id(
-                            protocol::bytes(terminalBytes.data(), terminalBytes.size())
-                        );
-                        terminalData->set_data(remaining.data(), size);
-                        if (terminalSession.protocolVersion >= 5) {
-                            terminalData->set_sequence(++terminalSession.inputSequence);
-                        }
-                        co_await terminal_state::TerminalService::enqueueInput(c, nodeId, data);
-                        if (terminalSession.protocolVersion >= 5 &&
-                            !co_await waitTerminalInputAck(
-                                c,
-                                nodeId,
-                                nodeSession,
-                                terminalId,
-                                terminalSession.inputSequence,
-                                terminalSession
-                            )) {
-                            closeCode = 1013;
-                            closeReason = terminalSession.nodeClosed
-                                ? "edge node closed terminal"
-                                : "terminal input acknowledgement timed out";
-                            break;
-                        }
-                        remaining.remove_prefix(size);
-                    }
-                    if (!closeReason.empty()) {
-                        break;
-                    }
-                } else if (frame.payload_case() == webpb::WebTerminalFrame::kClose) {
-                    closeReason = "browser closed";
-                    break;
-                } else {
-                    closeCode = 1002;
-                    closeReason = "invalid terminal payload";
-                    break;
-                }
-            }
-        } catch (...) {
-            failure = std::current_exception();
-        }
-        outputScope.requestStop();
-        try {
-            co_await outputScope.join();
-        } catch (...) {
-            if (!failure) {
-                failure = std::current_exception();
-            }
-        }
-        if (!terminalSession.nodeClosed) {
-            auto close = service::edge::protocol::outbound(service::common::nextUuidV7(), service::message::utcNowMilliseconds(), service::edge::protocol::platformId(), nodeId);
-            auto* terminalClose = close.mutable_terminal_close();
-            terminalClose->set_terminal_id(
-                protocol::bytes(terminalBytes.data(), terminalBytes.size())
-            );
-            terminalClose->set_reason("browser closed");
-            co_await terminal_state::TerminalService::enqueueInput(c, nodeId, close);
-        }
-        co_await terminal_state::TerminalService::releaseTerminalSession(c, nodeId, terminalId, nodeSession);
-        if (!terminalSession.nodeClosed && !closeReason.empty()) {
-            co_await socket.close(
-                ruvia::WebSocketCloseOptions{ .code = closeCode, .reason = closeReason }
-            );
-        }
-        if (failure) {
-            std::rethrow_exception(failure);
-        }
-    }
-
     static Session makeSession(std::string nodeId, std::uint32_t protocolVersion, std::string_view platformId, std::size_t workerIndex) {
         Session result;
         result.nodeId = std::move(nodeId);
@@ -526,8 +324,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         return result;
     }
 
-    static ruvia::Task<void> sendEnrollment(ruvia::WebSocket& socket, Session& session) {
-        auto reply = makeEnvelope(session);
+    static ruvia::Task<void> sendEnrollment(ruvia::Context& c, ruvia::WebSocket& socket, Session& session) {
+        auto reply = makeEnvelope(c, session);
         auto* enrollment = reply.mutable_enrollment_pending();
         enrollment->set_code("pending");
         enrollment->set_message("registration pending approval");
@@ -603,11 +401,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         return {};
     }
 
-    static pb::Envelope makeEnvelope(Session& session) {
-        auto result = service::edge::protocol::outbound(service::common::nextUuidV7(), service::message::utcNowMilliseconds(), service::edge::protocol::platformId(), session.nodeId, session.epoch, ++session.outboundSequence, session.protocolVersion);
-        result.set_platform_id(
-            protocol::bytes(session.platformBytes.data(), session.platformBytes.size())
-        );
+    static pb::Envelope makeEnvelope(ruvia::Context& c, Session& session) {
+        auto result = service::edge::protocol::outbound(c.workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next(), service::message::utcNowMilliseconds(), protocol::uuidText(protocol::bytes(session.platformBytes.data(), session.platformBytes.size())), session.nodeId, session.epoch, ++session.outboundSequence, session.protocolVersion);
         return result;
     }
 
@@ -678,7 +473,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 }
                 // This also services the old firmware's application watchdog
                 // without requesting extra business telemetry.
-                auto keepalive = makeEnvelope(*live->session);
+                auto keepalive = makeEnvelope(*live->context, *live->session);
                 keepalive.mutable_ping()->set_nonce(keepalive.sequence());
                 enqueue(*live->session, keepalive);
                 requestFlush(live);
@@ -759,8 +554,9 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             const auto now = service::message::utcNowMilliseconds();
             if (envelope.session_epoch() != session.epoch ||
                 envelope.protocol_version() != session.protocolVersion ||
-                envelope.created_at_ms() > now || now - envelope.created_at_ms() > 15000)
+                envelope.created_at_ms() > now || now - envelope.created_at_ms() > 15000) {
                 co_return false;
+            }
         }
         if (envelope.has_command_request()) {
             const auto id = protocol::uuidText(envelope.command_request().command_id());
@@ -811,158 +607,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
     }
 
     static terminal_state::ConnectionIdentity terminalIdentity(const Session& session) {
-        return {session.nodeId, session.epoch, session.protocolVersion, session.workerIndex};
-    }
-    static ruvia::Task<bool> waitTerminalInputAck(
-        ruvia::Context& c,
-        std::string_view nodeId,
-        std::string_view nodeSession,
-        std::string_view terminalId,
-        std::uint64_t sequence,
-        const TerminalSession& terminalSession
-    ) {
-        const auto deadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds(15);
-        while (std::chrono::steady_clock::now() < deadline) {
-            if (terminalSession.nodeClosed) {
-                co_return false;
-            }
-            const auto status = co_await terminal_state::TerminalService::inputAckStatus(
-                c, nodeId, terminalId, nodeSession, sequence);
-            if (status == terminal_state::InputAckStatus::Acknowledged) co_return true;
-            if (status == terminal_state::InputAckStatus::OwnershipLost) co_return false;
-            (void)co_await ruvia::sleepFor(c.worker(), std::chrono::milliseconds(10));
-        }
-        co_return false;
-    }
-
-    static ruvia::Task<void> sendWebTerminal(ruvia::WebSocket& socket, const webpb::WebTerminalFrame& frame) {
-        std::string wire;
-        if (!frame.SerializeToString(&wire)) {
-            throw std::runtime_error("web terminal protobuf encode failed");
-        }
-        co_await socket.binary(wire);
-    }
-
-    static ruvia::Task<void> pumpTerminal(
-        ruvia::Context& c,
-        ruvia::WebSocket& socket,
-        std::string nodeId,
-        std::string nodeSession,
-        std::string terminalId,
-        std::array<std::uint8_t, 16> terminalBytes,
-        ruvia::StopToken stopToken,
-        TerminalSession& terminalSession
-    ) {
-        const auto openDeadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds(15);
-        auto nextKeepalive =
-            std::chrono::steady_clock::now() + std::chrono::seconds(20);
-        while (!stopToken.stopRequested()) {
-            auto item = co_await terminal_state::TerminalService::takeOutput(c, nodeId, terminalId);
-            if (item) {
-                webpb::WebTerminalFrame frame;
-                if (!frame.ParseFromArray(item->data(), static_cast<int>(item->size()))) {
-                    webpb::WebTerminalFrame close;
-                    close.mutable_close()->set_reason("terminal stream protocol error");
-                    co_await sendWebTerminal(socket, close);
-                    co_await socket.close(ruvia::WebSocketCloseOptions{
-                        .code = 1011,
-                        .reason = "terminal stream protocol error",
-                    });
-                    co_return;
-                }
-                if (terminalSession.protocolVersion >= 5 &&
-                    frame.payload_case() == webpb::WebTerminalFrame::kData &&
-                    frame.data().sequence() == 0) {
-                    webpb::WebTerminalFrame close;
-                    close.mutable_close()->set_reason("terminal output sequence missing");
-                    co_await sendWebTerminal(socket, close);
-                    co_await socket.close(ruvia::WebSocketCloseOptions{
-                        .code = 1011,
-                        .reason = "terminal output sequence missing",
-                    });
-                    co_return;
-                }
-                if (frame.payload_case() == webpb::WebTerminalFrame::kReady) {
-                    terminalSession.opened = true;
-                } else if (frame.payload_case() == webpb::WebTerminalFrame::kClose) {
-                    terminalSession.nodeClosed = true;
-                }
-                co_await socket.binary(*item);
-                if (terminalSession.protocolVersion >= 5 &&
-                    frame.payload_case() == webpb::WebTerminalFrame::kData) {
-                    auto ack = service::edge::protocol::outbound(service::common::nextUuidV7(), service::message::utcNowMilliseconds(), service::edge::protocol::platformId(), nodeId);
-                    auto* terminalAck = ack.mutable_terminal_data_ack();
-                    terminalAck->set_terminal_id(
-                        protocol::bytes(terminalBytes.data(), terminalBytes.size())
-                    );
-                    terminalAck->set_sequence(frame.data().sequence());
-                    co_await terminal_state::TerminalService::enqueueInput(c, nodeId, ack);
-                }
-                if (frame.payload_case() == webpb::WebTerminalFrame::kClose) {
-                    co_await socket.close(
-                        ruvia::WebSocketCloseOptions{ .code = 1000, .reason = "terminal closed" }
-                    );
-                    co_return;
-                }
-            }
-
-            if (!terminalSession.opened &&
-                std::chrono::steady_clock::now() >= openDeadline) {
-                webpb::WebTerminalFrame close;
-                close.mutable_close()->set_reason("terminal open timed out");
-                co_await sendWebTerminal(socket, close);
-                co_await socket.close(ruvia::WebSocketCloseOptions{
-                    .code = 1013,
-                    .reason = "terminal open timed out",
-                });
-                co_return;
-            }
-
-            if (terminalSession.opened &&
-                std::chrono::steady_clock::now() >= nextKeepalive) {
-                const auto refreshed = co_await terminal_state::TerminalService::refreshSession(c, nodeId, terminalId, nodeSession);
-                if (refreshed < 0) {
-                    webpb::WebTerminalFrame close;
-                    close.mutable_close()->set_reason("edge node connection lost");
-                    co_await sendWebTerminal(socket, close);
-                    terminalSession.nodeClosed = true;
-                    co_await socket.close(ruvia::WebSocketCloseOptions{
-                        .code = 1013,
-                        .reason = "edge node connection lost",
-                    });
-                    co_return;
-                }
-                if (refreshed == 0) {
-                    webpb::WebTerminalFrame close;
-                    close.mutable_close()->set_reason("terminal ownership lost");
-                    co_await sendWebTerminal(socket, close);
-                    co_await socket.close(ruvia::WebSocketCloseOptions{
-                        .code = 1013,
-                        .reason = "terminal ownership lost",
-                    });
-                    co_return;
-                }
-                // WebSocket ping/pong only keeps the browser connection alive. A resize is a
-                // harmless application frame that also keeps the node-to-ttyd terminal path
-                // active while the user is reading output or the browser tab is backgrounded.
-                auto keepalive = service::edge::protocol::outbound(service::common::nextUuidV7(), service::message::utcNowMilliseconds(), service::edge::protocol::platformId(), nodeId);
-                auto* resize = keepalive.mutable_terminal_resize();
-                resize->set_terminal_id(
-                    protocol::bytes(terminalBytes.data(), terminalBytes.size())
-                );
-                resize->set_columns(terminalSession.columns);
-                resize->set_rows(terminalSession.rows);
-                co_await terminal_state::TerminalService::enqueueInput(c, nodeId, keepalive);
-                nextKeepalive =
-                    std::chrono::steady_clock::now() + std::chrono::seconds(20);
-            }
-
-            if (!item) {
-                (void)co_await ruvia::sleepFor(c.worker(), std::chrono::milliseconds(10));
-            }
-        }
+        return { session.nodeId, session.epoch, session.protocolVersion, session.workerIndex };
     }
 
     static ruvia::Task<void> handle(ruvia::Context& c, Session& session, const pb::Envelope& input) {
@@ -977,7 +622,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                         input.heartbeat().active_config_version()
                     );
                 }
-                auto reply = makeEnvelope(session);
+                auto reply = makeEnvelope(c, session);
                 auto* heartbeatAck = reply.mutable_heartbeat_ack();
                 heartbeatAck->set_platform_time_ms(service::message::utcNowMilliseconds());
                 heartbeatAck->set_request_capability_report(!session.capabilitySeen);
@@ -994,12 +639,12 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 if (std::any_of(input.telemetry_batch().records().begin(), input.telemetry_batch().records().end(), [](const auto& record) {
                         return !record.has_device_status();
                     })) {
-                    auto statusRequest = makeEnvelope(session);
+                    auto statusRequest = makeEnvelope(c, session);
                     statusRequest.mutable_heartbeat_ack()->set_request_device_status(true);
                     statusRequest.mutable_heartbeat_ack()->set_platform_time_ms(service::message::utcNowMilliseconds());
                     enqueue(session, statusRequest);
                 }
-                auto reply = makeEnvelope(session);
+                auto reply = makeEnvelope(c, session);
                 auto* telemetryAck = reply.mutable_telemetry_ack();
                 for (const auto& record : input.telemetry_batch().records()) {
                     if (record.record_id().size() != 16) {
@@ -1016,7 +661,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 if (packet.packet_id().size() != 16) {
                     break;
                 }
-                auto reply = makeEnvelope(session);
+                auto reply = makeEnvelope(c, session);
                 co_await ConfigService::storeDebugPacket(c, session.nodeId, packet);
                 reply.mutable_raw_packet_ack()->set_packet_id(packet.packet_id());
                 enqueue(session, reply);
@@ -1027,7 +672,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 if (result.command_id().size() != 16) {
                     break;
                 }
-                auto reply = makeEnvelope(session);
+                auto reply = makeEnvelope(c, session);
                 reply.mutable_command_result_ack()->set_command_id(result.command_id());
                 enqueue(session, reply);
                 break;
@@ -1040,15 +685,13 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 // terminal is open. They still use the pong as their application
                 // liveness signal, so ignoring nonce zero forces a reconnect after
                 // the negotiated watchdog interval and strands the browser terminal.
-                auto reply = makeEnvelope(session);
+                auto reply = makeEnvelope(c, session);
                 reply.mutable_pong()->set_nonce(input.ping().nonce());
                 enqueue(session, reply);
                 break;
             }
             case pb::Envelope::kSerialDebugEvent:
-                co_await serial_debug::Service::saveEvent(c, session.nodeId,
-                    session_state::value(session.epoch, session.protocolVersion, session.workerIndex),
-                    input.serial_debug_event());
+                co_await serial_debug::Service::saveEvent(c, session.nodeId, session_state::value(session.epoch, session.protocolVersion, session.workerIndex, service::runtime::instanceId()), input.serial_debug_event());
                 break;
             case pb::Envelope::kTerminalData:
                 co_await terminal_state::TerminalService::saveTerminalData(c, terminalIdentity(session), input.terminal_data());
@@ -1101,7 +744,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             }
         }
 
-        auto reply = makeEnvelope(session);
+        auto reply = makeEnvelope(c, session);
         auto* chunk = reply.mutable_firmware_chunk();
         chunk->set_request_id(request.request_id());
         chunk->set_offset(request.offset());
@@ -1123,7 +766,6 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         }
         enqueue(session, reply);
     }
-
 };
 
 } // namespace service::edge

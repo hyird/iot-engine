@@ -497,13 +497,17 @@ void testStorageOwnership() {
             "storage ownership check misses raw Hash reads");
     require(!std::regex_search(std::string{"redis.call('GET', KEYS[1]); redis.call('XACK', KEYS[2], ARGV[1])"}, rawHashAccess),
             "storage ownership check mistakes lock and queue commands for Hash records");
-    const std::regex implicitIdentityGeneration(R"(\b(?:nextUuidV7|nextMessageId)\s*\(|\bUuidV7Generator\s*::)");
+    const std::regex implicitIdentityGeneration(R"(\b(?:nextUuidV7|nextMessageId)\s*\(|\bUuidV7Generator\s*::|\bruntime\s*::\s*instanceId\s*\()");
     require(std::regex_search(std::string{"message::nextMessageId ()"}, implicitIdentityGeneration),
             "identity boundary check misses a message UUID call");
     require(std::regex_search(std::string{"service::common::nextUuidV7()"}, implicitIdentityGeneration),
             "identity boundary check misses a direct UUID call");
     require(!std::regex_search(std::string{"uuidBytes(messageId, bytes)"}, implicitIdentityGeneration),
             "identity boundary check rejects pure UUID conversion");
+    require(std::regex_search(std::string{"service::runtime::instanceId()"}, implicitIdentityGeneration),
+            "identity boundary check misses implicit process state");
+    require(!std::regex_search(source("service/common/message.h"), implicitIdentityGeneration),
+            "message contract implicitly reads or generates a runtime identity");
     const std::regex entityDeclaration(R"(\bRUVIA_(?:DB|REDIS)_ENTITY\s*\(\s*([A-Za-z_][A-Za-z_0-9]*))");
     for (const auto& path : serviceSourceFiles()) {
         const auto key = pathKey(path);
@@ -659,10 +663,14 @@ void testOutboxOperations() {
                 "outbox consumer acknowledges before persisting its receipt");
     }
     const auto controller = source("service/modules/system/outbox/outbox.controller.h");
-    require(controller.find("/dead-letters/:id/replay") != std::string::npos,
-            "dead-letter replay route is missing");
+    require(controller.find("RUVIA_POST(\"/dead-letters/:id/replay\"") != std::string::npos,
+            "dead-letter HTTP replay route is missing");
+    require(controller.find("RUVIA_GET_SSE(\"/dead-letters/events\"") != std::string::npos,
+            "dead-letter SSE subscription is missing");
+    require(controller.find("RUVIA_WS_EVENT") == std::string::npos,
+            "dead-letter operations retain universal WS events");
     const auto service = source("service/modules/system/outbox/outbox.service.h");
-    require(service.find("system:outbox:manage") != std::string::npos,
+    require(controller.find("\"system:outbox:manage\"") != std::string::npos,
             "dead-letter operations are not permission protected");
     require(service.find(".set(\"dead_lettered_at\", query.nullValue())") != std::string::npos,
             "dead-letter replay does not requeue the event");
@@ -736,7 +744,7 @@ void testSymmetricServiceWorkers() {
                 std::string::npos &&
                 webhook.find("session::ensure(context)") != std::string::npos,
             "access-session projection does not claim shared work with idempotent startup");
-    require(edge.find("projector_stream::stream(index)") != std::string::npos,
+    require(edge.find("projector_stream::stream(index, service::runtime::instanceId())") != std::string::npos,
              "edge projection is not isolated by accepting Worker");
 
     for (const auto path : {
@@ -774,7 +782,7 @@ void testWorkerStreamMultiplexing() {
                 service::rpc::Contract::requests("instance", 1),
             "RPC requests can be consumed by another Service Worker");
     require(multiplexer.find("readGroupManyBlockingUntil") != std::string::npos &&
-                multiplexer.find("workerWakeStream(index)") != std::string::npos &&
+                multiplexer.find("workerWakeStream(index, service::runtime::instanceId())") != std::string::npos &&
                 multiplexer.find(".capacity = 1") != std::string::npos,
             "Stream multiplexer does not use one coalescing blocker per Worker");
     const auto stream = source("service/features/messaging/messaging.transport.h");

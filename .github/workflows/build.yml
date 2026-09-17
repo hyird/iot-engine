@@ -32,8 +32,15 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Bun for native WS integration
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
       - name: Configure Windows client
-        run: cmake -S clients/windows -B build/ci/windows-client -A x64
+        run: |
+          $bun = (Get-Command bun).Source
+          cmake -S clients/windows -B build/ci/windows-client -A x64 "-DIOT_EGINE_WINDOWS_BUN=$bun"
 
       # This target runs native CTest and packaged GUI/service self-tests before WiX.
       # Dependency preparation and checksum verification remain in CMake.
@@ -87,17 +94,25 @@ jobs:
         run: >-
           bun test
           ./tests/session-refresh-test.ts
+          ./tests/alert-query-cache-test.ts
+          ./tests/http-request-test.ts
+          ./tests/sse-subscriptions-test.ts
           ./tests/client-architecture-test.ts
           ./tests/frontend-architecture-test.ts
           ./tests/edge-group-view-test.ts
           ./tests/terminal-protocol-test.ts
+          ./tests/terminal-channel-test.ts
+          ./tests/edge-terminal-connection-test.ts
           ./tests/edge-serial-debug-test.ts
           ./tests/command-validation-test.ts
           ./tests/protocol-schema-test.ts
           ./tests/device-status-test.ts
           ./tests/sse-test.ts
           ./tests/snapshot-stream-test.ts
-          ./tests/snapshot-subscriptions-test.ts
+          ./tests/edge-debug-refresh-test.ts
+          ./tests/edge-debug-connection-test.ts
+          ./tests/edge-debug-subscriptions-test.ts
+          ./tests/firmware-upload-test.ts
           ./tests/live-api-contract-test.ts
           ./tests/device-card-label-test.tsx
           ./tests/edge-network-view-test.ts

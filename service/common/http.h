@@ -87,7 +87,7 @@ inline std::int64_t errorCode(std::string_view code, std::uint16_t status) {
     return status >= 500 ? kServerErrorCode : kBadRequestErrorCode;
 }
 
-template <typename Response, typename Data> Response ok(ruvia::Context& c, Data&& data) {
+template <typename Response, typename Context, typename Data> Response ok(Context& c, Data&& data) {
     Response response(ruvia::ModelOptions{.resource = c.arena()});
     response.template set<"code">(0)
         .template set<"message">("ok")

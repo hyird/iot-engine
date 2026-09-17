@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -15,6 +16,13 @@ export default defineConfig(({ mode }) => {
         root: fileURLToPath(new URL('./web', import.meta.url)),
         envDir: rootDir,
         plugins: [
+            {
+                name: 'inline-favicon',
+                transformIndexHtml(html) {
+                    const icon = readFileSync(new URL('./web/public/favicon.svg', import.meta.url));
+                    return html.replace('href="/favicon.svg"', `href="data:image/svg+xml;base64,${icon.toString('base64')}"`);
+                },
+            },
             tailwindcss(),
             react(),
             cssInjectedByJs(),

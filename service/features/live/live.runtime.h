@@ -1,5 +1,7 @@
 #pragma once
 
+#include "service/common/uuid.h"
+
 #include <chrono>
 #include <cstddef>
 #include <exception>
@@ -91,13 +93,13 @@ class LiveChangeRuntime final {
              ++collectorIndex) {
             const std::vector<std::string> args{
                 "XADD",
-                service::message::configStream(collectorIndex),
+                service::message::configStream(collectorIndex, service::runtime::instanceId()),
                 "MAXLEN",
                 "~",
                 "10000",
                 "*",
                 "message_id",
-                service::message::nextMessageId(),
+                context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next(),
                 "worker_id",
                 std::to_string(collectorIndex),
                 "created_at_ms",

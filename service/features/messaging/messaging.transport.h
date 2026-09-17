@@ -57,7 +57,7 @@ void queueAddAndWake(Pipeline& pipeline, std::string_view stream, const std::vec
     }
     const std::vector<std::string> keyStore{
         std::string(stream),
-        workerWakeStream(workerIndex)
+        workerWakeStream(workerIndex, service::runtime::instanceId())
     };
     std::vector<std::string> argumentStore{
         std::to_string(maxLength),
@@ -76,7 +76,7 @@ void queueAddAndWake(Pipeline& pipeline, std::string_view stream, const std::vec
 
 template <typename Redis>
 ruvia::Task<void> wakeWorker(const Redis& redis, std::optional<std::size_t> workerIndex, WorkerStreamTask task) {
-    (void)co_await add(redis, workerWakeStream(workerIndex), { { "task", std::string(workerStreamTaskName(task)) } }, kWorkerWakeCapacity);
+    (void)co_await add(redis, workerWakeStream(workerIndex, service::runtime::instanceId()), { { "task", std::string(workerStreamTaskName(task)) } }, kWorkerWakeCapacity);
 }
 
 template <typename Redis>
@@ -168,7 +168,7 @@ return 1
     ownedKeys.reserve(publications.size() * 2 + 1);
     for (const auto& publication : publications) {
         ownedKeys.emplace_back(publication.stream);
-        ownedKeys.push_back(publication.wake ? workerWakeStream(publication.wake->workerIndex) : std::string(publication.stream));
+        ownedKeys.push_back(publication.wake ? workerWakeStream(publication.wake->workerIndex, service::runtime::instanceId()) : std::string(publication.stream));
     }
     ownedKeys.emplace_back(inputStream);
     const std::vector<std::string_view> keys(ownedKeys.begin(), ownedKeys.end());

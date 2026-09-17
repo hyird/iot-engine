@@ -1,39 +1,196 @@
 #pragma once
+
+#include "service/common/uuid.h"
+
+#include <memory>
+#include "service/features/edge/edge.config.h"
+#include <ruvia/web/Context.h>
+#include <ruvia/web/WebWorker.h>
+
+#include "service/common/http.h"
+#include "service/features/edge/edge.protocol.h"
 #include "service/features/edge/serial_debug/serial_debug.entity.h"
 #include "service/features/edge/serial_debug/serial_debug.protocol.h"
 #include "service/features/edge/session/session.service.h"
-#include "service/features/edge/edge.protocol.h"
 
 namespace service::edge::serial_debug {
 class Service final {
   public:
-    static ruvia::Task<std::optional<TicketRecord>> consumeTicket(ruvia::Context& c, std::string_view ticket) {
-        const auto value = co_await c.redis().getDel(service::message::serial_debug::ticketKey(ticket));
-        if (!value) co_return std::nullopt;
-        co_return TicketRecord::decode(*value);
+    static ruvia::Task<std::string> executeBrowserOperation(ruvia::WebWorkerContext& c, std::string_view operation, std::string_view payload, ruvia::StopToken stop) {
+        if (stop.stopRequested()) {
+            service::common::fail(10004, "串口操作已取消", 503);
+        }
+        const auto input = ruvia::JsonValue::parse(payload);
+        if (!input || !input->isObject()) {
+            service::common::fail(17021, "串口请求格式无效", 400);
+        }
+        const auto field = [&](std::string_view name) {
+            const auto value = input->template get<ruvia::String>(name);
+            return value ? std::string(value->view()) : std::string{};
+        };
+        const auto user = field("userId"), connection = field("connectionId"), node = field("nodeId");
+        if (!service::common::isUuid(user) || !service::common::isUuid(connection) || !service::common::isUuid(node)) {
+            service::common::fail(17021, "串口会话身份无效", 400);
+        }
+        const auto id = field("sessionId");
+        if (!service::common::isUuid(id)) {
+            service::common::fail(17021, "串口会话无效", 400);
+        }
+        const auto closedKey = BrowserBindingRecord::closedKey(id);
+        if (operation == "serial-open") {
+            const auto current = co_await c.redis().get(session_state::key(node));
+            if (!current) {
+                service::common::fail(17019, "节点当前离线", 409);
+            }
+            auto ticket = SerialTargetRecord::decode(node + "\n" + std::string(*current) + "\n" + field("path"));
+            if (!ticket || !co_await registerSession(c, *ticket, id)) {
+                service::common::fail(17021, "节点不支持串口调试或已重新连接", 409);
+            }
+            const BrowserBindingRecord binding{ user, connection, *ticket };
+            co_await c.redis().set(BrowserBindingRecord::key(id), binding.encode(), { .expiration = ruvia::RedisSetExpiration::expiresAfter(std::chrono::seconds(60)) });
+            co_await c.redis().set(BrowserBindingRecord::sequenceKey(id), "1", { .expiration = ruvia::RedisSetExpiration::expiresAfter(std::chrono::seconds(60)) });
+            wire::SerialDebugRequest request;
+            request.set_action("open");
+            request.set_request_sequence(1);
+            request.mutable_settings()->set_channel(ticket->path);
+            if (!co_await enqueue(c, *ticket, id, std::move(request))) {
+                co_await release(c, *ticket, id);
+                const auto bindingKey = BrowserBindingRecord::key(id);
+                const auto sequenceKey = BrowserBindingRecord::sequenceKey(id);
+                const std::string_view keys[]{ bindingKey, sequenceKey };
+                (void)co_await c.redis().eval("return redis.call('DEL',KEYS[1],KEYS[2])", keys, std::span<const std::string_view>{});
+                service::common::fail(17021, "串口打开指令未入队", 409);
+            }
+            co_return "{\"id\":" + service::utils::jsonQuoted(id) + "}";
+        }
+        const auto bindingKey = BrowserBindingRecord::key(id);
+        const auto stored = co_await c.redis().get(bindingKey);
+        const auto binding = stored ? BrowserBindingRecord::decode(*stored) : std::nullopt;
+        if (!stored && operation == "serial-close") {
+            co_await c.redis().set(closedKey, "1", { .expiration = ruvia::RedisSetExpiration::expiresAfter(std::chrono::seconds(120)) });
+            co_return "{}";
+        }
+        if (!binding || binding->userId != user || binding->connectionId != connection || binding->ticket.nodeId != node) {
+            service::common::fail(17021, "串口会话已结束或不属于当前连接", 409);
+        }
+        const auto& ticket = binding->ticket;
+        if (operation == "serial-events") {
+            const auto after = input->template get<ruvia::Int64>("after");
+            if (!after || after->value < 0) {
+                service::common::fail(17021, "串口事件游标无效", 400);
+            }
+            const auto current = co_await c.redis().get(session_state::key(node));
+            if (!current || std::string_view(*current) != ticket.nodeSession) {
+                service::common::fail(17019, "节点已断开或重新连接", 409);
+            }
+            const auto items = co_await c.redis().lrange(service::message::serial_debug::outputKey(node, id), 0, -1);
+            std::string events = "[";
+            auto cursor = after->value;
+            bool comma = false;
+            for (const auto& item : items) {
+                const auto event = ruvia::JsonValue::parse(item);
+                const auto sequence = event ? event->template get<ruvia::Int64>("sequence") : std::nullopt;
+                if (!sequence || sequence->value <= cursor) {
+                    continue;
+                }
+                if (sequence->value != cursor + 1) {
+                    service::common::fail(17021, "串口接收缓冲区已溢出，请重新打开调试", 409);
+                }
+                if (comma) {
+                    events += ',';
+                }
+                events += item;
+                comma = true;
+                cursor = sequence->value;
+            }
+            co_return "{\"events\":" + events + "],\"cursor\":" + std::to_string(cursor) + "}";
+        }
+        const auto sequenceKey = BrowserBindingRecord::sequenceKey(id);
+        if (operation == "serial-close") {
+            co_await c.redis().set(closedKey, "1", { .expiration = ruvia::RedisSetExpiration::expiresAfter(std::chrono::seconds(120)) });
+            const auto next = co_await c.redis().incr(sequenceKey);
+            wire::SerialDebugRequest request;
+            request.set_action("close");
+            request.set_request_sequence(static_cast<std::uint64_t>(next));
+            request.mutable_settings()->set_channel(ticket.path);
+            if (!co_await enqueue(c, ticket, id, std::move(request))) {
+                const auto current = co_await c.redis().get(session_state::key(node));
+                const auto owner = co_await c.redis().get(SessionRecord::key(node, id));
+                if (current && owner && std::string_view(*current) == ticket.nodeSession && std::string_view(*owner) == ticket.nodeSession) {
+                    // Preserve the owner and binding so cleanup can retry after
+                    // backpressure subsides. A ended node connection needs no command.
+                    service::common::fail(17021, "串口关闭指令暂未入队，将重试清理", 409);
+                }
+            }
+            co_await release(c, ticket, id);
+            const std::string_view keys[]{ bindingKey, sequenceKey };
+            (void)co_await c.redis().eval("return redis.call('DEL',KEYS[1],KEYS[2])", keys, std::span<const std::string_view>{});
+            co_return "{}";
+        }
+        if (operation != "serial-command") {
+            service::common::fail(17021, "未知串口操作", 400);
+        }
+        const auto command = service::utils::jsonField(*input, "command");
+        auto request = command ? decodeRequest(command->view(), ticket.path, 1) : std::nullopt;
+        if (!request) {
+            service::common::fail(17021, "串口指令或参数无效", 400);
+        }
+        const auto sequence = std::to_string(request->request_sequence());
+        const auto ownerKey = SessionRecord::key(node, id);
+        const std::string_view keys[]{ bindingKey, sequenceKey, ownerKey };
+        const std::string_view args[]{ *stored, sequence, ticket.nodeSession };
+        const auto accepted = co_await c.redis().eval(R"lua(
+if redis.call('GET',KEYS[1]) ~= ARGV[1] or redis.call('GET',KEYS[3]) ~= ARGV[3] then return 0 end
+local previous=tonumber(redis.call('GET',KEYS[2]) or '0')
+if tonumber(ARGV[2]) <= previous then return 0 end
+redis.call('SET',KEYS[2],ARGV[2],'EX',60)
+redis.call('EXPIRE',KEYS[1],60)
+return 1
+)lua",
+                                                      keys,
+                                                      args);
+        if (accepted.kind() != ruvia::RedisValue::Kind::kInteger || accepted.integer() != 1) {
+            service::common::fail(17021, "串口指令重复或会话已结束", 409);
+        }
+        if (!co_await enqueue(c, ticket, id, std::move(*request))) {
+            service::common::fail(17021, "串口指令未入队，请检查节点连接", 409);
+        }
+        co_return "{}";
     }
-    static ruvia::Task<bool> registerSession(ruvia::Context& c, const TicketRecord& ticket, std::string_view id) {
+
+    template <typename Context>
+    static ruvia::Task<bool> registerSession(Context& c, const SerialTargetRecord& ticket, std::string_view id) {
         const auto parsed = session_state::parse(ticket.nodeSession);
-        if (!parsed || parsed->protocolVersion < 5) co_return false;
-        const SessionRecord record{ticket.nodeSession};
+        if (!parsed || parsed->protocolVersion < 5) {
+            co_return false;
+        }
+        const SessionRecord record{ ticket.nodeSession };
         const auto currentKey = session_state::key(ticket.nodeId);
         const auto ownerKey = SessionRecord::key(ticket.nodeId, id);
-        const std::string_view keys[]{currentKey, ownerKey};
-        const std::string_view args[]{record.nodeSession};
+        const auto closedKey = BrowserBindingRecord::closedKey(id);
+        const std::string_view keys[]{ currentKey, ownerKey, closedKey };
+        const std::string_view args[]{ record.nodeSession };
         const auto reply = co_await c.redis().eval(
-            "if redis.call('GET',KEYS[1]) ~= ARGV[1] then return 0 end "
-            "redis.call('SET',KEYS[2],ARGV[1],'EX',60); return 1", keys, args);
-        co_return reply.kind() == ruvia::RedisValue::Kind::kInteger && reply.integer() == 1;
+            "if redis.call('GET',KEYS[1]) ~= ARGV[1] or redis.call('EXISTS',KEYS[3]) == 1 then return 0 end "
+            "if not redis.call('SET',KEYS[2],ARGV[1],'EX',60,'NX') then return 0 end; return 1",
+            keys,
+            args
+        );
+        co_return reply.kind() == ruvia::RedisValue::Kind::kInteger&& reply.integer() == 1;
     }
-    static ruvia::Task<bool> enqueue(ruvia::Context& c, const TicketRecord& ticket,
-                                    std::string_view id, wire::SerialDebugRequest request) {
+
+    template <typename Context>
+    static ruvia::Task<bool> enqueue(Context& c, const SerialTargetRecord& ticket, std::string_view id, wire::SerialDebugRequest request) {
         const auto parsed = session_state::parse(ticket.nodeSession);
-        if (!parsed) co_return false;
+        if (!parsed) {
+            co_return false;
+        }
         std::array<std::uint8_t, 16> bytes{};
-        if (!service::common::uuidBytes(id, bytes.data())) co_return false;
+        if (!service::common::uuidBytes(id, bytes.data())) {
+            co_return false;
+        }
         request.set_session_id(bytes.data(), bytes.size());
-        auto envelope = protocol::outbound(service::common::nextUuidV7(),
-            service::message::utcNowMilliseconds(), protocol::platformId(), ticket.nodeId);
+        auto envelope = protocol::outbound(c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next(), service::message::utcNowMilliseconds(), c.template workerState<service::edge::config::PlatformIdentity>().id, ticket.nodeId);
         envelope.set_session_epoch(parsed->epoch);
         envelope.set_protocol_version(parsed->protocolVersion);
         *envelope.mutable_serial_debug_request() = std::move(request);
@@ -41,57 +198,63 @@ class Service final {
         const auto currentKey = session_state::key(ticket.nodeId);
         const auto ownerKey = SessionRecord::key(ticket.nodeId, id);
         const auto inputKey = service::message::serial_debug::inputKey(ticket.nodeId);
-        const std::string_view keys[]{currentKey, ownerKey, inputKey};
-        const std::string_view args[]{ticket.nodeSession, encoded};
+        const auto closedKey = BrowserBindingRecord::closedKey(id);
+        const std::string_view keys[]{ currentKey, ownerKey, inputKey, closedKey };
+        const std::string_view args[]{ ticket.nodeSession, encoded, envelope.serial_debug_request().action() };
         const auto reply = co_await c.redis().eval(R"lua(
 if redis.call('GET',KEYS[1]) ~= ARGV[1] or redis.call('GET',KEYS[2]) ~= ARGV[1] then return 0 end
+if ARGV[3] ~= 'close' and redis.call('EXISTS',KEYS[4]) == 1 then return 0 end
 if redis.call('LLEN',KEYS[3]) >= 64 then return 0 end
 redis.call('EXPIRE',KEYS[2],60)
 redis.call('RPUSH',KEYS[3],ARGV[2])
 redis.call('EXPIRE',KEYS[3],15)
 return 1
-)lua", keys, args);
-        if (reply.kind() != ruvia::RedisValue::Kind::kInteger || reply.integer() != 1) co_return false;
+)lua",
+                                                   keys,
+                                                   args);
+        if (reply.kind() != ruvia::RedisValue::Kind::kInteger || reply.integer() != 1) {
+            co_return false;
+        }
         co_await dispatch::notifyNode(c.redis(), ticket.nodeId);
         co_return true;
     }
-    static ruvia::Task<std::optional<std::string>> takeOutput(ruvia::Context& c,
-        const TicketRecord& ticket, std::string_view id) {
-        const auto item = co_await c.redis().lpop(service::message::serial_debug::outputKey(ticket.nodeId, id));
-        if (!item) co_return std::nullopt;
-        co_return std::string(*item);
-    }
-    static ruvia::Task<bool> connected(ruvia::Context& c, const TicketRecord& ticket) {
-        const auto current = co_await c.redis().get(session_state::key(ticket.nodeId));
-        co_return current && std::string_view(current->data(), current->size()) == std::string_view(ticket.nodeSession);
-    }
-    static ruvia::Task<void> saveEvent(ruvia::Context& c, std::string_view nodeId,
-        std::string_view nodeSession, const wire::SerialDebugEvent& event) {
+
+    static ruvia::Task<void> saveEvent(ruvia::Context& c, std::string_view nodeId, std::string_view nodeSession, const wire::SerialDebugEvent& event) {
         if (event.session_id().size() != 16 || event.data().size() > 1024 ||
-            event.sequence() == 0) co_return;
+            event.sequence() == 0) {
+            co_return;
+        }
         const auto id = protocol::uuidText(event.session_id());
         const auto ownerKey = SessionRecord::key(nodeId, id);
         const auto outputKey = service::message::serial_debug::outputKey(nodeId, id);
         const auto currentKey = session_state::key(nodeId);
         const auto json = eventJson(event);
-        const std::string_view keys[]{ownerKey, outputKey, currentKey};
-        const std::string_view args[]{nodeSession, json};
+        const auto topic = service::message::serial_debug::eventTopic(nodeId, id);
+        const std::string_view keys[]{ ownerKey, outputKey, currentKey, service::message::live::kChanges };
+        const std::string_view args[]{ nodeSession, json, topic };
         (void)co_await c.redis().eval(R"lua(
 if redis.call('GET',KEYS[1]) ~= ARGV[1] or redis.call('GET',KEYS[3]) ~= ARGV[1] then return 0 end
 redis.call('RPUSH',KEYS[2],ARGV[2])
 redis.call('LTRIM',KEYS[2],-256,-1)
 redis.call('EXPIRE',KEYS[2],60)
+redis.call('XADD',KEYS[4],'MAXLEN','~',100000,'*','schema_version','1','topic',ARGV[3])
 return 1
-)lua", keys, args);
+)lua",
+                                      keys,
+                                      args);
     }
-    static ruvia::Task<void> release(ruvia::Context& c, const TicketRecord& ticket, std::string_view id) {
+
+    template <typename Context>
+    static ruvia::Task<void> release(Context& c, const SerialTargetRecord& ticket, std::string_view id) {
         const auto ownerKey = SessionRecord::key(ticket.nodeId, id);
         const auto outputKey = service::message::serial_debug::outputKey(ticket.nodeId, id);
-        const std::string_view keys[]{ownerKey, outputKey};
-        const std::string_view args[]{ticket.nodeSession};
+        const std::string_view keys[]{ ownerKey, outputKey };
+        const std::string_view args[]{ ticket.nodeSession };
         (void)co_await c.redis().eval(
             "if redis.call('GET',KEYS[1]) == ARGV[1] then redis.call('DEL',KEYS[1],KEYS[2]) end; return 1",
-            keys, args);
+            keys,
+            args
+        );
     }
 };
 } // namespace service::edge::serial_debug

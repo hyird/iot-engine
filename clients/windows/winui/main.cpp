@@ -1,5 +1,5 @@
-#include "../native/common/ipc.h"
-#include "../native/common/product.h"
+#include "../common/ipc.h"
+#include "../common/product.h"
 #include <windows.h>
 #undef GetCurrentTime
 #include <shellapi.h>
@@ -26,8 +26,8 @@
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 #include <microsoft.ui.xaml.window.h>
-#include "../native/gui/connection_controller.h"
-#include "../native/gui/credentials.h"
+#include "connection_controller.h"
+#include "credentials.h"
 #include <fstream>
 #include <map>
 #include <cstdio>

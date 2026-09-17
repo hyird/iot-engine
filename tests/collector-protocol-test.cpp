@@ -1018,6 +1018,52 @@ void testStationScopeAndInstanceIdentity() {
     require(service::command::terminalState("UNKNOWN") && !service::command::terminalState("AWAITING_RESULT"), "command wait completion semantics are incorrect");
 }
 
+void testSl651ObservationReplay() {
+    collector::RuntimeSnapshot snapshot;
+    snapshot.links.push_back({.id = "replay-link", .mode = "TCP Server", .protocol = "SL651", .status = "enabled"});
+    collector::DeviceDefinition device;
+    device.id = "replay-device"; device.code = "0001000102";
+    device.linkId = "replay-link"; device.protocol = "SL651"; device.sl651ResponseMode = "M2";
+    device.elements.push_back({.id = "water", .name = "Water", .functionCode = "32", .guideHex = "3923", .encoding = "BCD", .length = 4, .digits = 3});
+    snapshot.devices.push_back(device);
+    const std::array<std::string_view, 3> frames{
+        "7E7E010001000102FFFA320031020076260917021000F1F1000100010249F0F02609170210392300001521371B000654272B0000001458FFB02800000000190330CE",
+        "7E7E010001000102FFFA320031020076260917021005F1F1000100010249F0F02609170210392300001521371B000654272B0000001458FFB0280000000019033607",
+        "7E7E010001000102FFFA320031020076260917021501F1F1000100010249F0F02609170210392300001521371B000654272B0000001458FFB02800000000190327CA"};
+    std::string identity;
+    for (std::size_t index = 0; index < frames.size(); ++index) {
+        // 新建引擎模拟重连、Worker 变化和进程重启，不能依赖会话缓存去重。
+        collector::ProtocolEngine engine(sessionFactories());
+        engine.reload(snapshot);
+        const auto connection = "replay-" + std::to_string(index);
+        (void)engine.connected({.connectionId = connection, .linkId = "replay-link", .sessionEpoch = 1});
+        service::message::IngressPacket packet{.messageId = connection, .linkId = "replay-link", .connectionId = connection, .occurredAtMs = 1789582200000 + 19000};
+        packet.payload = collector::sl651::detail::hexBytes(frames[index]);
+        const auto actions = engine.consume(packet);
+        const auto& publication = first(actions, collector::ProtocolActionKind::PublishParsed);
+        require(publication.parsed.observedAtMs == 1789582200000, "SL651 replay used sending time instead of observation time");
+        if (identity.empty()) identity = publication.parsed.acquisitionId;
+        require(identity == publication.parsed.acquisitionId, "SL651 replay changed acquisition across sessions");
+        require(!has(actions, collector::ProtocolActionKind::Send), "SL651 replay ACK preceded durable publication");
+        const auto acknowledged = engine.parsedPublished(connection, publication.publicationToken);
+        const auto& ack = first(acknowledged, collector::ProtocolActionKind::Send).bytes;
+        require(ack[14] == 0 && ack[15] == 0x76 && ack[ack.size() - 3] == 0x04,
+                "SL651 replay ACK lost original serial or EOT");
+        auto next = packet.payload;
+        next[14 + 22] = 0x15; // 相同数值、流水号的下一观测时刻仍是不同采样。
+        const auto crc = crc16(std::span<const std::uint8_t>(next).first(next.size() - 2));
+        next[next.size() - 2] = static_cast<std::uint8_t>(crc >> 8U); next.back() = static_cast<std::uint8_t>(crc);
+        packet.payload = next;
+        require(first(engine.consume(packet), collector::ProtocolActionKind::PublishParsed).parsed.acquisitionId != identity,
+                "SL651 distinct observation was deduplicated");
+    }
+    auto invalid = collector::sl651::detail::hexBytes(frames[0]);
+    auto body = std::vector<std::uint8_t>(invalid.begin() + 14, invalid.end() - 3);
+    body[19] = 0x13;
+    require(!collector::sl651::detail::observationTimeMilliseconds(body, 0x32, "+08:00"), "invalid SL651 observation month accepted");
+    require(!collector::sl651::detail::observationTimeMilliseconds(body, 0x4C, "+08:00"), "command response treated as unsolicited observation");
+}
+
 void testSl651() {
     collector::RuntimeSnapshot snapshot;
     snapshot.links.push_back({ .id = "sl-link", .name = "SL", .mode = "TCP Server", .protocol = "SL651", .ip = "127.0.0.1", .port = 15001, .status = "enabled" });
@@ -2285,7 +2331,7 @@ void testAtomicStreamFinalizationContract() {
 
     RecordingRedis committed(1);
     require(runTask(service::message::redis::publishAllAndAcknowledge(committed, publications, "command-input", "collector-group", "collector-0", "10-0")), "pending stream finalization did not report a commit");
-    require(committed.keys == std::vector<std::string>{ "dead-letter", "dead-letter", "command-result", service::message::workerWakeStream(0), "command-input" }, "atomic stream finalization changed Redis key order");
+    require(committed.keys == std::vector<std::string>{ "dead-letter", "dead-letter", "command-result", service::message::workerWakeStream(0, service::runtime::instanceId()), "command-input" }, "atomic stream finalization changed Redis key order");
     require(committed.arguments == std::vector<std::string>{ "collector-group", "10-0", "collector-0", "100", "1", "", "source_entry_id", "10-0", "200", "1", "command-result", "command_id", "command-1" }, "atomic stream finalization encoded invalid arguments");
     const auto pendingCheck = committed.script.find("XPENDING");
     const auto typeCheck = committed.script.find("TYPE");
@@ -2298,10 +2344,11 @@ void testAtomicStreamFinalizationContract() {
 }
 
 void testRuntimeProjectionRejectsRedisErrors() {
+    service::common::UuidV7Generator uuidGenerator;
     FailingConfigRedis redis;
     bool rejected = false;
     try {
-        (void)runTask(service::collector::config::project(redis, service::collector::RuntimeSnapshot{}));
+        (void)runTask(service::collector::config::project(redis, service::collector::RuntimeSnapshot{}, uuidGenerator));
     } catch (const std::runtime_error& error) {
         rejected = std::string_view(error.what()).find("active runtime") !=
             std::string_view::npos;
@@ -2310,8 +2357,9 @@ void testRuntimeProjectionRejectsRedisErrors() {
 }
 
 void testRuntimeProjectionRefreshesPreviousGrace() {
+    service::common::UuidV7Generator uuidGenerator;
     FailingConfigRedis redis(false, true);
-    (void)runTask(service::collector::config::project(redis, service::collector::RuntimeSnapshot{}));
+    (void)runTask(service::collector::config::project(redis, service::collector::RuntimeSnapshot{}, uuidGenerator));
     const auto refresh = std::ranges::find_if(redis.commands, [](const auto& command) {
         return command.size() >= 4 && command.front() == "ZADD" &&
             command.back() == "previous-version";
@@ -2356,6 +2404,48 @@ void testRuntimeSetOrderingContract() {
 }
 
 void testRealtimeProjectionContract() {
+    const auto scopedKeys = [](std::size_t worker, std::string_view instance) {
+        return std::vector<std::string>{
+            service::message::configStream(worker, instance),
+            service::message::ingressStream(worker, instance),
+            service::message::egressStream(worker, instance),
+            service::message::commandStream(worker, true, instance),
+            service::message::commandStream(worker, false, instance),
+            service::message::linkEventStream(worker, instance),
+            service::message::controlStream(worker, instance),
+            service::message::deadLetterStream(worker, instance),
+            service::message::workerWakeStream(worker, instance),
+            service::message::worker_metrics::snapshotId(worker, instance),
+            service::edge::dispatch::stream(worker, instance),
+            service::edge::projector_stream::stream(worker, instance),
+            service::edge::projector_stream::leaseKey(worker, instance),
+            service::edge::projector_stream::ownerToken(worker, instance)};
+    };
+    const auto keys = scopedKeys(2, "process-a");
+    const std::vector<std::string> expected{
+        "iot:channel:config:worker:process-a:2",
+        "iot:channel:packet:raw:worker:process-a:2",
+        "iot:channel:socket:egress:worker:process-a:2",
+        "iot:channel:command:worker:process-a:2:high",
+        "iot:channel:command:worker:process-a:2:normal",
+        "iot:channel:link:event:worker:process-a:2",
+        "iot:channel:control:worker:process-a:2",
+        "iot:channel:dead-letter:worker:process-a:2",
+        "iot:service:worker:process-a:2:wake",
+        "process-a:worker:2", "iot:v2:edge:dispatch:process-a:2",
+        "iot:v3:edge:projector:process-a:2",
+        "iot:v3:edge:projector:lease:process-a:2", "process-a:2"};
+    require(keys == expected, "explicit process identity changed persisted message keys");
+    const auto otherWorker = scopedKeys(3, "process-a");
+    const auto otherProcess = scopedKeys(2, "process-b");
+    for (std::size_t index = 0; index < keys.size(); ++index)
+        require(keys[index] != otherWorker[index] && keys[index] != otherProcess[index],
+                "message key collided across Worker or process identity");
+    require(service::message::workerWakeStream(std::nullopt, "process-a") ==
+                "iot:service:process-a:work-available" &&
+                service::message::sharedWakeStream("process-b") !=
+                    service::message::sharedWakeStream("process-a"),
+            "shared wake stream lost process isolation");
     collector::RuntimeSnapshot original;
     collector::RealtimeDeviceDefinition device;
     device.id = "019fd9f6-4bd5-7ec3-80ff-0ba381987024";
@@ -2392,10 +2482,16 @@ void testFreshnessDeadlineWait() {
 }
 
 void testEdgeSessionOwnership() {
-    const auto encoded = service::edge::session_state::value(22, 5, 1);
+    constexpr std::string_view instance = "01970000-1234-7000-8000-000000000123";
+    const auto encoded = service::edge::session_state::value(22, 5, 1, instance);
     const auto parsed = service::edge::session_state::parse(encoded);
     require(parsed && parsed->epoch == 22 && parsed->protocolVersion == 5 && parsed->workerIndex == 1, "edge routing identity did not round trip");
-    require(parsed->instanceId == service::runtime::instanceId(), "edge owner instance was lost");
+    require(parsed->instanceId == instance, "edge owner instance was lost");
+    require(encoded == "22|5|1|01970000-1234-7000-8000-000000000123",
+            "edge session persisted format changed");
+    require(service::edge::session_state::value(22, 5, 1,
+                "01970000-1234-7000-8000-000000000124") != encoded,
+            "edge sessions collide between process incarnations");
     require(!service::edge::session_state::parse("22|5").has_value(), "incomplete routing identity was accepted");
     require(!service::edge::session_state::parse("22|5|1|bad-instance").has_value(), "invalid owner instance was accepted");
 }
@@ -2436,7 +2532,7 @@ void testLatestProjectionRefreshesPreservedElementMetadata() {
         [](const auto& command) {
             return command.size() == 8 && command[0] == "XADD" &&
                 command[1] == service::telemetry::latest::kRealtimeChangesStream &&
-                command[6] == "topic" && command[7] == "device";
+                command[6] == "topic" && command[7] == "device.realtime";
         }
     );
     require(publishedChange, "latest projection did not notify device realtime subscribers");
@@ -2749,8 +2845,10 @@ void testTcpServerListenersAreWorkerLocal() {
     const auto noDisconnect = [](std::string, std::string) {
     };
 
-    collector::TcpTransport firstWorker(io, scheduler0, 0, 2, onConnection0, noPacket, noDisconnect, onState);
-    collector::TcpTransport secondWorker(io, scheduler1, 1, 2, onConnection1, noPacket, noDisconnect, onState);
+    service::common::UuidV7Generator firstWorkerUuids;
+    collector::TcpTransport firstWorker(firstWorkerUuids, io, scheduler0, 0, 2, onConnection0, noPacket, noDisconnect, onState);
+    service::common::UuidV7Generator secondWorkerUuids;
+    collector::TcpTransport secondWorker(secondWorkerUuids, io, scheduler1, 1, 2, onConnection1, noPacket, noDisconnect, onState);
     firstWorker.reload(snapshot);
     secondWorker.reload(snapshot);
 
@@ -2827,7 +2925,8 @@ void testTcpClientTargetReconcile() {
 
     std::map<std::string, std::vector<std::string>, std::less<>> connectedByTarget;
     std::vector<std::string> disconnected;
-    collector::TcpTransport tcp(
+    service::common::UuidV7Generator tcpUuids;
+    collector::TcpTransport tcp(tcpUuids,
         io,
         scheduler,
         0,
@@ -2930,7 +3029,8 @@ void testTcpClientTargetsUseConnectionClaim() {
     };
     const auto noState = [](collector::LinkState) {
     };
-    collector::TcpTransport firstWorker(
+    service::common::UuidV7Generator firstWorkerUuids;
+    collector::TcpTransport firstWorker(firstWorkerUuids,
         io,
         scheduler0,
         0,
@@ -2946,7 +3046,8 @@ void testTcpClientTargetsUseConnectionClaim() {
         claim,
         release
     );
-    collector::TcpTransport secondWorker(
+    service::common::UuidV7Generator secondWorkerUuids;
+    collector::TcpTransport secondWorker(secondWorkerUuids,
         io,
         scheduler1,
         1,
@@ -3000,7 +3101,8 @@ void testTcpClientLateClaimCompletionAfterStop() {
     snapshot.links.front().targets.resize(1);
     snapshot.links.front().targets.front().port = server.local_endpoint().port();
     snapshot.devices.resize(1);
-    collector::TcpTransport tcp(
+    service::common::UuidV7Generator tcpUuids;
+    collector::TcpTransport tcp(tcpUuids,
         io,
         scheduler,
         0,
@@ -3084,7 +3186,8 @@ void testTcpClientRevokePendingConnect() {
     snapshot.links.front().targets.resize(1);
     snapshot.links.front().targets.front().port = server.local_endpoint().port();
     snapshot.devices.resize(1);
-    collector::TcpTransport tcp(
+    service::common::UuidV7Generator tcpUuids;
+    collector::TcpTransport tcp(tcpUuids,
         io,
         scheduler,
         0,
@@ -3138,7 +3241,8 @@ void testTcpCloseDuringPendingWrite() {
 
     std::string connectionId;
     int writeCompletions = 0;
-    collector::TcpTransport tcp(
+    service::common::UuidV7Generator tcpUuids;
+    collector::TcpTransport tcp(tcpUuids,
         io,
         scheduler,
         0,
@@ -3345,6 +3449,26 @@ void testAtomicPendingCommandDispatch() {
     require(!runTask(service::command::dispatchPendingBatch(full, "queue", service::command::PendingQueueKind::Stream, dispatches, "user", 1)), "capacity rejection must be observable");
 }
 
+void testCollectorUuidOwnership() {
+    service::common::UuidV7Generator firstWorker;
+    service::common::UuidV7Generator secondWorker;
+    std::set<std::string> identities;
+    std::string previousFirst;
+    std::string previousSecond;
+    for (std::size_t index = 0; index < 2048; ++index) {
+        const auto first = firstWorker.next();
+        const auto second = secondWorker.next();
+        require(service::common::isUuid(first) && first[14] == '7', "Collector identity must remain UUIDv7");
+        require(service::common::isUuid(second) && second[14] == '7', "second Collector identity must remain UUIDv7");
+        require(previousFirst < first && previousSecond < second, "each Collector UUID sequence must be monotonic");
+        require(identities.insert(first).second && identities.insert(second).second, "independent Collector UUID sequences must not collide");
+        previousFirst = first;
+        previousSecond = second;
+    }
+    service::common::UuidV7Generator restartedWorker;
+    require(identities.insert(restartedWorker.next()).second, "recreated Collector must not reuse an identity");
+}
+
 } // namespace
 
 int main() {
@@ -3353,6 +3477,7 @@ int main() {
             std::cerr << "[ RUN      ] " << name << '\n';
             test();
         };
+        run("Collector UUID ownership", testCollectorUuidOwnership);
         run("capabilities", testCapabilities);
         run("protocol factory boundary", testProtocolFactoryBoundary);
         run("protocol debug attribution", testProtocolDebugAttribution);
@@ -3367,6 +3492,7 @@ int main() {
         run("TCP Client revoke pending connect", testTcpClientRevokePendingConnect);
         run("TCP close during pending write", testTcpCloseDuringPendingWrite);
         run("station scope and instance identity", testStationScopeAndInstanceIdentity);
+        run("sl651 observation replay", testSl651ObservationReplay);
         run("sl651", testSl651);
         run("sl651 element order", testSl651ElementOrder);
         run("sl651 encodings", testSl651AllEncodingsAndFunctionCodes);

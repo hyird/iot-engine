@@ -1,8 +1,9 @@
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
+import { useEffect } from 'react';
+import { HttpRequestError } from '@/lib/http';
 import { useAuthStore } from '@/store/authStore';
-import { fetchCurrentUser, logout, refreshToken } from './login.api';
+import { fetchCurrentUser, observeCurrentUser, logout, refreshToken } from './login.api';
 
 const loginKeys = {
     currentUser: ['auth', 'currentUser'] as const,
@@ -11,18 +12,36 @@ export function useCurrentUser() {
     const token = useAuthStore((s) => s.token);
     const user = useAuthStore((s) => s.user);
     const setUser = useAuthStore((s) => s.setUser);
-    return useSnapshotQuery({
-        queryKey: loginKeys.currentUser,
-        queryFn: () =>
-            fetchCurrentUser().map((freshUser) => {
+    const queryClient = useQueryClient();
+    const userId = user?.id;
+    useEffect(() => {
+        if (!token) return;
+        return observeCurrentUser().subscribe({
+            next: (freshUser) => {
+                if (useAuthStore.getState().user?.id !== userId) return;
+                const queryKey = [...loginKeys.currentUser, userId];
+                void queryClient.cancelQueries({ queryKey, exact: true });
+                queryClient.setQueryData(queryKey, freshUser);
                 setUser(freshUser);
-                return freshUser;
-            }),
+            },
+            error: () => {},
+        });
+    }, [token, userId, queryClient, setUser]);
+    return useQuery({
+        queryKey: [...loginKeys.currentUser, userId],
+        queryFn: async ({ signal }) => {
+            const freshUser = await fetchCurrentUser(signal);
+            if (!signal.aborted && useAuthStore.getState().user?.id === userId) setUser(freshUser);
+            return freshUser;
+        },
         enabled: !!token,
         initialData: user ?? undefined,
         initialDataUpdatedAt: 0,
-        staleTime: 2 * 60 * 1000,
-        refetchOnWindowFocus: true,
+        staleTime: Infinity,
+        refetchInterval: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
+        refetchOnMount: 'always',
     });
 }
 export function useLogout() {
@@ -44,11 +63,17 @@ export function refreshAccessToken(): Promise<boolean> {
     if (!currentRefreshToken) return Promise.resolve(false);
     pendingRefresh = refreshToken(currentRefreshToken, { _silent: true })
         .then(({ token, refresh_token, user }) => {
+            if (useAuthStore.getState().refresh_token !== currentRefreshToken) return false;
             useAuthStore.getState().setAuth(token, refresh_token, user);
             return true;
         })
-        .catch(() => {
-            useAuthStore.getState().clearAuth();
+        .catch((error) => {
+            if (
+                error instanceof HttpRequestError &&
+                (error.status === 401 || error.status === 403) &&
+                useAuthStore.getState().refresh_token === currentRefreshToken
+            )
+                useAuthStore.getState().clearAuth();
             return false;
         })
         .finally(() => {

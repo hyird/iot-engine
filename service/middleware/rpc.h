@@ -1,6 +1,6 @@
 #pragma once
 
-#include "service/utils/number.h"
+#include <memory>
 #include <chrono>
 #include <cstddef>
 #include <exception>
@@ -11,17 +11,19 @@
 #include "service/common/message.h"
 #include "service/common/uuid.h"
 #include "service/middleware/live.h"
+#include "service/utils/number.h"
 #include "service/utils/redis.h"
 
 namespace service::rpc {
 
 class RpcRequestClient final {
   public:
-    static ruvia::Task<std::string> call(ruvia::Context& context, std::string_view component, std::string_view operation, std::string payload) {
+    template <typename Context>
+    static ruvia::Task<std::string> call(Context& context, std::string_view component, std::string_view operation, std::string payload) {
         if (payload.size() > Contract::maximumPayload) {
             service::common::fail(10002, "RPC payload exceeds limit", 413);
         }
-        const auto id = service::common::nextUuidV7();
+        const auto id = context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
         const auto replyKey = Contract::reply(id);
         const auto deadline = Contract::now() +
             std::chrono::duration_cast<std::chrono::milliseconds>(Contract::timeout).count();
@@ -87,7 +89,8 @@ class RpcRequestClient final {
     }
 };
 
-inline ruvia::Task<std::string> call(ruvia::Context& context, std::string_view component, std::string_view operation, std::string payload) {
+template <typename Context>
+ruvia::Task<std::string> call(Context& context, std::string_view component, std::string_view operation, std::string payload) {
     return RpcRequestClient::call(context, component, operation, std::move(payload));
 }
 

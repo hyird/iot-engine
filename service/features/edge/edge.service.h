@@ -1,4 +1,5 @@
 #pragma once
+#include "service/features/edge/edge.config.h"
 #include "service/features/packet_log/packet_log.service.h"
 
 #include "service/features/edge/edge.entity.h"
@@ -1196,7 +1197,7 @@ class ConfigService final {
             decoded.set_protocol(pb::PROTOCOL_SL651); // Allows existing binary-value formatting; no wire decoding.
             parsedJson = protocol::TelemetryValues::telemetryJson(decoded);
         }
-        co_await packet_log::DebugPacketService::recordPacket(c.redis(), linkId, deviceId,
+        co_await packet_log::DebugPacketService::recordPacket(c.redis(), *c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>(), linkId, deviceId,
             packet.direction(), "edge", packet.client_address(),
             std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(packet.payload().data()), packet.payload().size()),
             packet.observed_at_ms(), packet.device_only(),
@@ -1461,7 +1462,7 @@ class ConfigService final {
         snapshot.itemCount = items.size();
         snapshot.wires.reserve(items.size() + 2);
 
-        auto begin = service::edge::protocol::outbound(service::common::nextUuidV7(), service::message::utcNowMilliseconds(), service::edge::protocol::platformId(), nodeId);
+        auto begin = service::edge::protocol::outbound(c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next(), service::message::utcNowMilliseconds(), c.template workerState<service::edge::config::PlatformIdentity>().id, nodeId);
         auto* configBegin = begin.mutable_config_begin();
         configBegin->set_revision(revision);
         configBegin->set_item_count(static_cast<std::uint32_t>(items.size()));
@@ -1469,11 +1470,11 @@ class ConfigService final {
             protocol::bytes(snapshotDigest.data(), snapshotDigest.size()));
         appendWire(snapshot.wires, begin);
         for (const auto& item : items) {
-            auto envelope = service::edge::protocol::outbound(service::common::nextUuidV7(), service::message::utcNowMilliseconds(), service::edge::protocol::platformId(), nodeId);
+            auto envelope = service::edge::protocol::outbound(c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next(), service::message::utcNowMilliseconds(), c.template workerState<service::edge::config::PlatformIdentity>().id, nodeId);
             *envelope.mutable_config_item() = item;
             appendWire(snapshot.wires, envelope);
         }
-        auto commit = service::edge::protocol::outbound(service::common::nextUuidV7(), service::message::utcNowMilliseconds(), service::edge::protocol::platformId(), nodeId);
+        auto commit = service::edge::protocol::outbound(c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next(), service::message::utcNowMilliseconds(), c.template workerState<service::edge::config::PlatformIdentity>().id, nodeId);
         auto* configCommit = commit.mutable_config_commit();
         configCommit->set_revision(revision);
         configCommit->set_sha256(
@@ -1962,7 +1963,7 @@ protected:
                                        const pb::Hello& hello) {
         if (!protocol::validImei(hello.imei()))
             co_return;
-        const auto candidate = service::common::nextUuidV7();
+        const auto candidate = context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
         ruvia::DbQuery query;
         const auto uuid = [&query](std::string_view value) {
             return query.cast(query.value(value), ruvia::DbDataType::kUuid);
@@ -2032,7 +2033,7 @@ protected:
                          {"id", "platform_id", "imei", "model", "software_version",
                           "hostname", "architecture", "openwrt_release", "capability",
                           "mobile", "status", "last_seen_at", "updated_at"})
-            .values({uuid(std::string_view(candidate)), uuid(protocol::platformId()),
+            .values({uuid(std::string_view(candidate)), uuid(context.template workerState<service::edge::config::PlatformIdentity>().id),
                      query.value(std::string_view(hello.imei())),
                      query.value(std::string_view(hello.model())),
                      query.value(std::string_view(hello.software_version())),
@@ -2560,7 +2561,7 @@ protected:
                     co_await service::vpn::feature::syncEdgeBridgeRoutes(
                         transaction, row[0].value().value_or(std::string_view{}),
                         row[1].value().value_or(std::string_view{}), nodeId,
-                        row[2].value().value_or(std::string_view{}));
+                        row[2].value().value_or(std::string_view{}), *context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>());
                     co_await transaction.commit();
                     co_await service::vpn::queueEdgeConfig(
                         context, row[0].value().value_or(std::string_view{}));
@@ -3231,7 +3232,7 @@ return 1
         const auto completedAtMs = message::effectiveObservedAt(
             result.completed_at_ms(), receivedAtMs);
         std::vector<message::StreamField> fields{
-            {"message_id", message::nextMessageId()},
+            {"message_id", context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next()},
             {"causation_id", commandId},
             {"command_id", commandId},
             {"device_id", deviceId},
@@ -3323,8 +3324,8 @@ return 1
 if redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') then return 1 end
 return 0
 )lua";
-        const auto key = projector_stream::leaseKey(index);
-        const auto token = projector_stream::ownerToken(index);
+        const auto key = projector_stream::leaseKey(index, service::runtime::instanceId());
+        const auto token = projector_stream::ownerToken(index, service::runtime::instanceId());
         const auto ttl = std::to_string(projector_stream::kLeaseTtl.count());
         const std::string_view keys[]{ key };
         const std::string_view arguments[]{ token, ttl };
@@ -3369,8 +3370,8 @@ return 0
 
     template <typename Redis>
     static ruvia::Task<bool> renewLease(const Redis& redis, std::size_t index) {
-        const auto key = projector_stream::leaseKey(index);
-        const auto token = projector_stream::ownerToken(index);
+        const auto key = projector_stream::leaseKey(index, service::runtime::instanceId());
+        const auto token = projector_stream::ownerToken(index, service::runtime::instanceId());
         co_return co_await renewLeaseKey(redis, key, token);
     }
 
@@ -3391,8 +3392,8 @@ return redis.call('DEL', KEYS[1])
 
     template <typename Redis>
     static ruvia::Task<bool> releaseLease(const Redis& redis, std::size_t index) {
-        const auto key = projector_stream::leaseKey(index);
-        const auto token = projector_stream::ownerToken(index);
+        const auto key = projector_stream::leaseKey(index, service::runtime::instanceId());
+        const auto token = projector_stream::ownerToken(index, service::runtime::instanceId());
         co_return co_await releaseLeaseKey(redis, key, token);
     }
 
@@ -3666,7 +3667,7 @@ class EdgeControlService final {
             service::common::fail(10002, "Empty edge control request", 400);
         }
 
-        pb::Envelope envelope = service::edge::protocol::outbound(service::common::nextUuidV7(), service::message::utcNowMilliseconds(), service::edge::protocol::platformId(), nodeId);
+        pb::Envelope envelope = service::edge::protocol::outbound(context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next(), service::message::utcNowMilliseconds(), context.template workerState<service::edge::config::PlatformIdentity>().id, nodeId);
         bool parsed = false;
         if (operation == "queue-network") {
             pb::NetworkConfigRequest request;

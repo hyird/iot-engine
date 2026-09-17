@@ -20,13 +20,10 @@ function payload(name: string, offset: string | undefined, length: string, field
 }
 
 async function write(method: string, path: string, body: string, valid: boolean) {
-    const response = await fetch(apiBase + path, {
-        method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body, signal: AbortSignal.timeout(10000),
-    });
-    const text = await response.text();
-    assert.equal(response.status, valid ? 200 : 400, `${method} ${body}: ${text}`);
-    if (!valid) assert.equal(JSON.parse(text).code, 16004, text);
+    const response = await fetch(apiBase+path,{method,headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body,signal:AbortSignal.timeout(15000)});
+    const reply = await response.json();
+    assert.equal(reply.code,valid ? 0 : 16004,`${method} ${path}: ${JSON.stringify(reply)}`);
+    assert.equal(response.ok,valid);
 }
 
 const cases: [string | undefined, string, boolean][] = [
@@ -39,7 +36,7 @@ const cases: [string | undefined, string, boolean][] = [
 ];
 try {
     const baseName = `${tag}_base`;
-    await write('POST', '/v1/protocol/configs', payload(baseName, '0', '1', 'elements'), true);
+    await write('POST','/v1/protocol/configs', payload(baseName, '0', '1', 'elements'), true);
     const [base] = await sql`SELECT id FROM protocol_config WHERE name=${baseName}`;
     assert(base);
     let index = 0;
@@ -47,9 +44,9 @@ try {
         for (const [offset, length, valid] of cases) {
             const name = `${tag}_${index++}`;
             const body = payload(name, offset, length, field);
-            await write('POST', '/v1/protocol/configs', body, valid);
+            await write('POST','/v1/protocol/configs', body, valid);
             const [before] = await sql`SELECT config FROM protocol_config WHERE id=${base.id}`;
-            await write('PUT', `/v1/protocol/configs/${base.id}`, payload(baseName, offset, length, field), valid);
+            await write('PUT',`/v1/protocol/configs/${base.id}`,payload(baseName, offset, length, field),valid);
             const [after] = await sql`SELECT config FROM protocol_config WHERE id=${base.id}`;
             if (!valid) assert.deepEqual(after.config, before.config, 'rejected update changed stored config');
             else assert.deepEqual(after.config, JSON.parse(body).config, 'accepted config changed during storage');

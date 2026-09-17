@@ -197,10 +197,10 @@ class WorkerStreamMultiplexer final {
         bool readySet = false;
         try {
             const auto redis = context.redis();
-            const auto wakeStream = workerWakeStream(index);
+            const auto wakeStream = workerWakeStream(index, service::runtime::instanceId());
             const auto consumer = service::runtime::instanceId() + ":service-" + std::to_string(index);
             const auto group = std::string(kGroup) + ":" + std::to_string(index);
-            const std::vector<std::string> streams{ wakeStream, sharedWakeStream() };
+            const std::vector<std::string> streams{ wakeStream, sharedWakeStream(service::runtime::instanceId()) };
             for (const auto& stream : streams) {
                 co_await service::message::redis::ensureGroup(redis, stream, group);
             }

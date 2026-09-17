@@ -87,9 +87,22 @@ int main() {
                     workerHash.at("version") == "version-a" && workerHash.at("state") == "applied" &&
                     workerHash.at("applied_at_ms") == "1700000000000",
                 "worker snapshot changed the stored field contract");
-        require(service::collector::CollectorLinkRecord::key("link-a", 2) !=
-                    service::collector::CollectorLinkRecord::key("link-a", 3),
+        constexpr std::string_view instance = "01970000-1234-7000-8000-000000000123";
+        constexpr std::string_view restarted = "01970000-1234-7000-8000-000000000124";
+        require(service::collector::CollectorLinkRecord::key("link-a", 2, instance) !=
+                    service::collector::CollectorLinkRecord::key("link-a", 3, instance),
                 "link snapshots collide between workers");
+        require(service::collector::CollectorLinkRecord::key("link-a", 2, instance) ==
+                    "iot:runtime:link:link-a:worker:01970000-1234-7000-8000-000000000123:2",
+                "link snapshot persisted key changed");
+        require(service::collector::CollectorWorkerRecord::key(2, instance) ==
+                    "iot:runtime:collector:01970000-1234-7000-8000-000000000123:2",
+                "worker snapshot persisted key changed");
+        require(service::collector::CollectorLinkRecord::key("link-a", 2, instance) !=
+                    service::collector::CollectorLinkRecord::key("link-a", 2, restarted) &&
+                    service::collector::CollectorWorkerRecord::key(2, instance) !=
+                    service::collector::CollectorWorkerRecord::key(2, restarted),
+                "collector snapshots collide between process incarnations");
         std::cout << "collector state mapping tests passed\n";
         return 0;
     } catch (const std::exception& error) {

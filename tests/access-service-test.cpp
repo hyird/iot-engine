@@ -3,6 +3,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <regex>
 
 namespace {
 
@@ -60,8 +61,8 @@ void requireStrictPresentFieldTypes(std::string_view source) {
 void requireCanonicalBooleanPointValues(std::string_view source) {
     require(source.find("service::telemetry::latest::canonicalPointJson(") !=
                     std::string_view::npos &&
-                source.find("normalizedValues.call(\"jsonb_typeof\", {normalizedPointValue})") != std::string_view::npos &&
-                source.find("items.call(\"to_jsonb\", {itemPointNumber})") != std::string_view::npos,
+                std::regex_search(source.begin(), source.end(), std::regex(R"pattern(normalizedValues\.call\("jsonb_typeof",\s*\{\s*normalizedPointValue\s*\}\))pattern")) &&
+                std::regex_search(source.begin(), source.end(), std::regex(R"pattern(items\.call\("to_jsonb",\s*\{\s*itemPointNumber\s*\}\))pattern")),
             "public device data does not canonicalize BOOL points to 0/1");
 }
 
@@ -117,8 +118,10 @@ int main() {
         requireStrictPresentFieldTypes(source + schema);
         require(source.find("static void validateWebhookUrl") == std::string::npos,
                 "access service still defines URL structure validation");
-        require(source.find("AccessPayloadValidator::validateWebhookUrl(") != std::string::npos,
-                "access service does not call schema URL validation");
+        require(source.find("open_access.schema.h") == std::string::npos,
+                "access service still depends on request schema");
+        require(schema.find("validateWebhookUrl(*result.url)") != std::string::npos,
+                "webhook input does not validate its URL before business execution");
         requireCanonicalBooleanPointValues(source);
         requireAccessQueriesUseOrm(featureSource);
         std::cout << "access service tests passed\n";

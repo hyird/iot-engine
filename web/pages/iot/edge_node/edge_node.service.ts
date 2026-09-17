@@ -1,11 +1,15 @@
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { useAuthStore } from '@/store/authStore';
+import { refreshAccessToken } from '@/pages/login/login.service';
 import { useEffect, useRef, useState } from 'react';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
-import { SnapshotStream } from '@/lib/snapshot-stream';
 import {
-    getSerialDebugTicket,
-    openSerialDebugSocket,
+    DebugOperationError,
+    edgeDebugConnection,
+    authenticateDebugConnection,
     captureLogs,
+    closeSerialDebug,
     configureNetwork,
     createEdgeGroup,
     createEdgeVpnPeer,
@@ -14,15 +18,18 @@ import {
     deleteEdgeGroup,
     deleteEdgeVpnRoute,
     deleteEnrollment,
-    getEdgeDetail,
     getEdgeGroups,
-    getEdgeList,
-    getEdgeVpnPeers,
-    getEdgeVpnRoutes,
+    getEdgeInventory,
+    observeEdgeDetail,
+    queryEdgeList,
+    getEdgeVpnState,
     getLogs,
+    getSerialEvents,
     getVpnNetworks,
+    openSerialDebug,
     renameEdge,
     revokeEdgeVpnPeer,
+    sendSerialCommand,
     setEdgeGroup,
     setEnrollment,
     setLogLevel,
@@ -32,10 +39,12 @@ import {
     updateEdgeVpnRoute,
     upgradeFirmware,
 } from './edge_node.api';
-import type { Edge, EdgeVpn } from './edge_node.types';
 import { serialDebugEventSchema, serialSettingsSchema } from './edge_node.schema';
+import type { Edge, EdgeVpn } from './edge_node.types';
 import { edgeQueryKeys, edgeVpnQueryKeys } from './edge_node.types';
+
 export { getWindowsClientDownloadUrl } from './edge_node.api';
+
 const buildGroupTree = (items: Edge.GroupItem[]) => {
     const index = new Map<string, Edge.GroupTreeItem>();
     const roots: Edge.GroupTreeItem[] = [];
@@ -104,7 +113,11 @@ export function useSerialDebug(nodeId: string, path: string) {
     const [notice, setNotice] = useState('');
     const [pending, setPending] = useState(false);
     const [attempt, setAttempt] = useState(0);
-    const socketRef = useRef<WebSocket | null>(null);
+    const sessionRef = useRef<{
+        busy: boolean;
+        send: (command: Record<string, unknown>) => Promise<void>;
+        close: () => void;
+    } | null>(null);
     const sequenceRef = useRef(1);
     const pendingRef = useRef<{ id: number; timer: ReturnType<typeof setTimeout> } | null>(null);
     const readyRef = useRef(false);
@@ -143,27 +156,59 @@ export function useSerialDebug(nodeId: string, path: string) {
             setCounts({ tx, rx, dropped });
         }, 80);
         const heartbeat = setInterval(() => {
-            const socket = socketRef.current;
-            if (
-                readyRef.current &&
-                socket?.readyState === WebSocket.OPEN &&
-                socket.bufferedAmount < 8192
-            ) {
-                socket.send(
-                    JSON.stringify({ action: 'keepalive', requestId: ++sequenceRef.current })
-                );
-            }
+            const session = sessionRef.current;
+            if (readyRef.current && session && !session.busy && !pendingRef.current)
+                void session
+                    .send({ action: 'keepalive', requestId: ++sequenceRef.current })
+                    .catch(() => session.close());
         }, 10000);
-        getSerialDebugTicket(nodeId, path)
-            .then(({ ticket }) => {
-                if (disposed) return;
-                const socket = openSerialDebugSocket(ticket);
-                socketRef.current = socket;
-                socket.onmessage = (message) => {
-                    if (disposed) return;
+        openSerialDebug(nodeId, path)
+            .then(({ id }) => {
+                if (disposed) {
+                    void closeSerialDebug(nodeId, id).catch(() => {});
+                    return;
+                }
+                let active = true;
+                let release: (() => void) | undefined;
+                const opening = setTimeout(() => {
+                    setNotice('串口打开超时，请检查节点状态');
+                    session.close();
+                }, 20000);
+                const session = {
+                    busy: false,
+                    async send(command: Record<string, unknown>) {
+                        if (!active || session.busy)
+                            throw new Error('串口指令正在发送，请稍后再试');
+                        session.busy = true;
+                        try {
+                            await sendSerialCommand(nodeId, id, command);
+                        } finally {
+                            session.busy = false;
+                        }
+                    },
+                    close() {
+                        if (!active) return;
+                        active = false;
+                        clearTimeout(opening);
+                        release?.();
+                        if (sessionRef.current === session) sessionRef.current = null;
+                        void closeSerialDebug(nodeId, id).catch(() => {});
+                        if (disposed) return;
+                        readyRef.current = false;
+                        setConnection('closed');
+                        setManual(false);
+                        if (pendingRef.current)
+                            setNotice('连接中断，最后一次操作结果未知；请勿直接重复发送');
+                        finishPending();
+                    },
+                };
+                sessionRef.current = session;
+                const receive = (raw: unknown) => {
+                    if (disposed || !active) return;
                     try {
-                        const event = serialDebugEventSchema.parse(JSON.parse(message.data));
+                        const event = serialDebugEventSchema.parse(raw);
                         if (event.sequence !== undefined) {
+                            if (event.sequence <= lastSequence) return;
                             if (lastSequence && event.sequence > lastSequence + 1)
                                 setNotice(
                                     '部分监听记录因链路拥塞被省略；收发计数仅包含已收到的数据'
@@ -176,6 +221,7 @@ export function useSerialDebug(nodeId: string, path: string) {
                             received = true;
                         }
                         if (event.kind === 'state' || event.kind === 'error') {
+                            clearTimeout(opening);
                             readyRef.current = true;
                             setConnection('ready');
                             setManual(event.manual ?? false);
@@ -227,25 +273,28 @@ export function useSerialDebug(nodeId: string, path: string) {
                                     event.message ||
                                     '串口调试已结束'
                             );
-                            socket.close();
+                            session.close();
                         }
                     } catch {
                         setNotice('串口调试数据格式错误，连接已关闭');
-                        socket.close();
+                        session.close();
                     }
                 };
-                socket.onerror = () => {
-                    if (!disposed) setNotice('串口调试连接失败');
-                };
-                socket.onclose = () => {
-                    if (disposed) return;
-                    readyRef.current = false;
-                    setConnection('closed');
-                    setManual(false);
-                    if (pendingRef.current)
-                        setNotice('连接中断，最后一次操作结果未知；请勿直接重复发送');
-                    finishPending();
-                };
+                release = getSerialEvents(nodeId, id).subscribe({
+                    next: (snapshot) => {
+                        if (!Array.isArray(snapshot.events)) {
+                            setNotice('串口事件格式错误');
+                            session.close();
+                            return;
+                        }
+                        for (const event of snapshot.events) receive(event);
+                    },
+                    error: (error) => {
+                        if (!disposed) setNotice(error.message);
+                        session.close();
+                    },
+                });
+                if (!active) release();
             })
             .catch(() => {
                 if (!disposed) {
@@ -260,8 +309,8 @@ export function useSerialDebug(nodeId: string, path: string) {
             clearInterval(heartbeat);
             if (pendingRef.current) clearTimeout(pendingRef.current.timer);
             pendingRef.current = null;
-            socketRef.current?.close();
-            socketRef.current = null;
+            sessionRef.current?.close();
+            sessionRef.current = null;
         };
     }, [nodeId, path, attempt]);
 
@@ -269,22 +318,28 @@ export function useSerialDebug(nodeId: string, path: string) {
         action: 'manual' | 'monitor' | 'write',
         payload: Partial<Edge.SerialSettings> & { hex?: string } = {}
     ) => {
-        const socket = socketRef.current;
-        if (!readyRef.current || socket?.readyState !== WebSocket.OPEN || pendingRef.current)
+        const session = sessionRef.current;
+        if (!readyRef.current || !session || pendingRef.current)
             throw new Error('串口尚未就绪或正在等待操作结果');
-        if (socket.bufferedAmount > 8192) throw new Error('连接拥塞，请稍后发送');
+        if (session.busy) throw new Error('串口指令正在发送，请稍后再试');
         if (action === 'manual') serialSettingsSchema.parse(payload);
         const requestId = ++sequenceRef.current;
         const timer = setTimeout(() => {
             pendingRef.current = null;
             setPending(false);
             setNotice('操作确认超时，结果未知；请重新连接核实，避免重复发送');
-            socket.close();
+            session.close();
         }, 20000);
         pendingRef.current = { id: requestId, timer };
         setPending(true);
         setNotice('');
-        socket.send(JSON.stringify({ action, requestId, ...payload }));
+        void session.send({ action, requestId, ...payload }).catch((error: unknown) => {
+            if (sessionRef.current !== session) return;
+            session.close();
+            setNotice(
+                error instanceof Error ? error.message : '串口指令发送失败，请确认结果后再操作'
+            );
+        });
     };
     return {
         connection,
@@ -411,56 +466,65 @@ export function normalizeReportedNetwork(
     };
 }
 
-export const useEdgeList = (query?: Edge.Query, enabled = true) =>
-    useSnapshotQuery({
-        queryKey: edgeQueryKeys.list(query),
-        queryFn: () => getEdgeList(query),
+export async function queryEdgeSelectionList(signal?: AbortSignal): Promise<Edge.Node[]> {
+    const first = await queryEdgeList({ page: 1, pageSize: 100 }, signal);
+    const nodes = new Map(first.list.map((node) => [node.id, node]));
+    for (let page = 2; page <= Math.ceil(first.total / 100); page++) {
+        const result = await queryEdgeList({ page, pageSize: 100 }, signal);
+        for (const node of result.list) nodes.set(node.id, node);
+    }
+    return [...nodes.values()];
+}
+export const useEdgeSelectionList = (enabled: boolean) =>
+    useQuery({
+        queryKey: [...edgeQueryKeys.all, 'selection'],
+        queryFn: ({ signal }) => queryEdgeSelectionList(signal),
         enabled,
-    });
-// Match device management: group complete inventories, never just one page.
-export const useEdgeInventory = (enabled = true) =>
-    useSnapshotQuery({
-        queryKey: [...edgeQueryKeys.all, 'inventory'],
-        queryFn: () =>
-            getEdgeList({ page: 1, pageSize: 100 }).switchMap((first) => {
-                const pages = Array.from(
-                    { length: Math.max(1, Math.ceil(first.total / 100)) },
-                    (_, index) =>
-                        index === 0
-                            ? SnapshotStream.value(first)
-                            : getEdgeList({ page: index + 1, pageSize: 100 })
-                );
-                return SnapshotStream.combine(pages).map((results) => [
-                    ...new Map(
-                        results.flatMap((result) => result.list).map((node) => [node.id, node])
-                    ).values(),
-                ]);
-            }),
-        enabled,
+        staleTime: 0,
+        refetchInterval: false,
         refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
     });
-export const useEdgeDetail = (id?: string) =>
+export const useEdgeInventory = (enabled = true, scope?: Edge.EventScope) =>
     useSnapshotQuery({
-        queryKey: edgeQueryKeys.detail(id),
-        queryFn: () => getEdgeDetail(id as string),
-        enabled: Boolean(id),
+        queryKey: [...edgeQueryKeys.all, 'inventory', scope],
+        queryFn: () => getEdgeInventory(scope),
+        enabled,
+        placeholderData: keepPreviousData,
+    });
+export const useEdgeDetail = (scope: Edge.EventScope) =>
+    useSnapshotQuery({
+        queryKey: [...edgeQueryKeys.detail(scope.nodeId), scope],
+        queryFn: () => observeEdgeDetail(scope),
+        enabled: Boolean(scope.nodeId),
     });
 export const useEdgeGroupTree = () =>
-    useSnapshotQuery({
+    useQuery({
         queryKey: edgeQueryKeys.groups(),
-        queryFn: () => getEdgeGroups().map(buildGroupTree),
+        queryFn: async ({ signal }) => buildGroupTree(await getEdgeGroups(signal)),
+        refetchInterval: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
     });
-export const useEdgeLogs = (id?: string, query?: Edge.LogsQuery, enabled = true) => {
+export const useEdgeLogs = (scope: Edge.EventScope, enabled = true) => {
+    const id = scope.nodeId;
     const result = useSnapshotQuery({
-        queryKey: edgeQueryKeys.logs(id, query),
-        queryFn: () => getLogs(id as string, query),
-        enabled: enabled && Boolean(id),
+        queryKey: [...edgeQueryKeys.logs(id, scope.logs), scope],
+        queryFn: () => getLogs(scope),
+        enabled: enabled && Boolean(id && scope.logs),
         staleTime: 0,
     });
     useEffect(() => {
         if (enabled && id) void captureLogs(id).catch(() => undefined);
     }, [enabled, id]);
-    return { ...result, refetch: () => (id ? captureLogs(id) : Promise.resolve()) };
+    return {
+        ...result,
+        refetch: async () => {
+            if (!id) return;
+            if (result.error) await result.refetch({ throwOnError: true });
+            await captureLogs(id);
+        },
+    };
 };
 export function useEnrollmentMutation() {
     return useMutationWithMessage({
@@ -550,23 +614,31 @@ export function useSetEdgeLogLevel() {
     });
 }
 
-export const useEdgeVpn = (nodeId?: string) =>
-    useSnapshotQuery({
-        queryKey: edgeVpnQueryKeys.node(nodeId),
-        queryFn: () =>
-            SnapshotStream.combine([
-                getVpnNetworks(),
-                getEdgeVpnPeers(nodeId as string),
-                getEdgeVpnRoutes(nodeId as string),
-            ] as const).map(
-                ([networks, peers, routes]): EdgeVpn.Overview => ({
-                    networks: networks.list,
-                    peers,
-                    routes,
-                })
-            ),
-        enabled: Boolean(nodeId),
+export const useEdgeVpn = (scope: Edge.EventScope, enabled: boolean) => {
+    const networks = useQuery({
+        queryKey: [...edgeVpnQueryKeys.all, 'networks'],
+        queryFn: ({ signal }) => getVpnNetworks(signal),
+        enabled,
+        refetchInterval: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
     });
+    const state = useSnapshotQuery({
+        queryKey: [...edgeVpnQueryKeys.node(scope.nodeId), scope],
+        queryFn: () => getEdgeVpnState(scope),
+        enabled: enabled && Boolean(scope.nodeId && scope.vpn),
+    });
+    return {
+        ...state,
+        data:
+            state.data && networks.data
+                ? { ...state.data, networks: networks.data.list }
+                : undefined,
+        isLoading: state.isLoading || networks.isLoading,
+        isFetching: state.isFetching || networks.isFetching,
+        refetch: () => Promise.all([state.refetch(), networks.refetch()]),
+    };
+};
 const vpnInvalidations = [edgeVpnQueryKeys.all, edgeQueryKeys.all];
 export const useVpnNetworkCreate = () =>
     useMutationWithMessage({
@@ -612,4 +684,35 @@ export const useEdgeVpnRouteDelete = () =>
         invalidateKeys: vpnInvalidations,
     });
 
-export { getEdgeDetail, getTerminalTicket, openTerminalSocket } from './edge_node.api';
+export {
+    acknowledgeTerminalOutput,
+    closeTerminal,
+    getEdgeDetail,
+    getTerminalEvents,
+    keepTerminalAlive,
+    openTerminal,
+    resizeTerminal,
+    writeTerminal,
+} from './edge_node.api';
+
+async function restoreDebugConnectionSession(): Promise<void> {
+    const token = useAuthStore.getState().token;
+    if (!token) return;
+    try {
+        await authenticateDebugConnection(token);
+    } catch (error) {
+        if (useAuthStore.getState().token !== token) throw error;
+        if (
+            error instanceof DebugOperationError &&
+            error.code === 11005 &&
+            (await refreshAccessToken())
+        )
+            return;
+        if (error instanceof DebugOperationError) useAuthStore.getState().clearAuth();
+        throw error;
+    }
+}
+
+export function configureEdgeDebugConnection() {
+    edgeDebugConnection.configureSessionRestore(restoreDebugConnectionSession);
+}

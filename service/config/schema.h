@@ -1835,6 +1835,27 @@ END $schema$;
         sql += "EXECUTE $ddl$" + std::string(kIndustrialProtocolAddressMigration) + "$ddl$;\nEND $industrial$;";
         return ruvia::DbMigration({.id="0049_industrial_protocols", .sql=std::move(sql)});
     }(),
+    ruvia::DbMigration({.id="0050_dead_letter_query_changes", .sql=R"sql(
+DO $schema$ BEGIN
+CREATE FUNCTION publish_dead_letter_change() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.published_at IS NOT NULL OR NEW.dead_lettered_at IS NULL THEN RETURN NULL; END IF;
+  ELSIF TG_OP = 'DELETE' THEN
+    IF OLD.published_at IS NOT NULL OR OLD.dead_lettered_at IS NULL THEN RETURN NULL; END IF;
+  ELSE
+    IF NOT ((OLD.published_at IS NULL AND OLD.dead_lettered_at IS NOT NULL)
+         OR (NEW.published_at IS NULL AND NEW.dead_lettered_at IS NOT NULL)) THEN RETURN NULL; END IF;
+    IF OLD IS NOT DISTINCT FROM NEW THEN RETURN NULL; END IF;
+  END IF;
+  INSERT INTO outbox_event(id,event_type,aggregate_type,aggregate_id,action,schema_version)
+  VALUES(gen_random_uuid(),'query.changed','system','outbox_event',TG_OP,1);
+  RETURN NULL;
+END $fn$;
+CREATE TRIGGER live_dead_letters AFTER INSERT OR UPDATE OR DELETE ON outbox_event
+FOR EACH ROW EXECUTE FUNCTION publish_dead_letter_change();
+END $schema$;
+)sql"}),
     };
     // Only audited original digests may transition to their equivalent ORM definitions.
     // This transaction runs before normal checksum validation; all other drift still fails.

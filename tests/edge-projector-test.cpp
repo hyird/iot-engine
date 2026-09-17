@@ -70,7 +70,7 @@ int main() {
         require(protocolSource.find(",\\\"dataType\\\":\\\"") != std::string::npos &&
                     protocolSource.find("scalarKind(item.value())") != std::string::npos,
                 "edge telemetry does not retain point data types");
-        require(runtimeSource.find("projector_stream::stream(index)") !=
+        require(runtimeSource.find("projector_stream::stream(index, service::runtime::instanceId())") !=
                     std::string::npos,
                 "edge projector does not consume its accepting worker's stream");
         std::cout << "edge projector tests passed\n";

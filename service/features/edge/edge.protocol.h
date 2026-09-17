@@ -186,7 +186,6 @@ public:
 using service::message::edge::kProtocolVersion;
 using service::message::edge::kOldestCompatibleProtocolVersion;
 using service::message::edge::kDefaultPlatformId;
-using service::message::edge::kDefaultPublicBaseUrl;
 using service::message::edge::kMaxMessageSize;
 
 inline constexpr bool isCurrentProtocolVersion(std::uint32_t version) noexcept {
@@ -204,20 +203,6 @@ inline constexpr bool terminalCommandResultState(pb::CommandState state) noexcep
            state == pb::COMMAND_STATE_TIMED_OUT ||
            state == pb::COMMAND_STATE_REJECTED || state == pb::COMMAND_STATE_FAILED;
 }
-
-inline std::string& publicBaseUrlStorage() {
-    static std::string value(kDefaultPublicBaseUrl);
-    return value;
-}
-
-inline std::string& platformIdStorage() {
-    static std::string value(kDefaultPlatformId);
-    return value;
-}
-
-inline std::string_view platformId() { return platformIdStorage(); }
-
-inline std::string_view publicBaseUrl() { return publicBaseUrlStorage(); }
 
 using service::message::edge::authKey;
 
@@ -242,19 +227,6 @@ inline bool validImei(std::string_view imei) {
 using service::common::hexDigit;
 using service::common::uuidBytes;
 
-inline bool configurePlatformId(std::string_view platformId) {
-    std::uint8_t value[16]{};
-    if (!uuidBytes(platformId, value))
-        return false;
-    bool nonzero = false;
-    for (const auto byte : value)
-        nonzero = nonzero || byte != 0;
-    if (!nonzero)
-        return false;
-    platformIdStorage().assign(platformId);
-    return true;
-}
-
 inline bool validSessionPlatformId(std::string_view value) noexcept {
     if (value.size() != 16)
         return false;
@@ -262,23 +234,6 @@ inline bool validSessionPlatformId(std::string_view value) noexcept {
         if (byte != 0)
             return true;
     return false;
-}
-
-inline bool configurePublicBaseUrl(std::string_view publicBaseUrl) {
-    const std::size_t schemeSize = publicBaseUrl.starts_with("https://")
-                                       ? 8
-                                   : publicBaseUrl.starts_with("http://") ? 7
-                                                                            : 0;
-    if (publicBaseUrl.size() > 255 || schemeSize == 0 ||
-        publicBaseUrl.size() <= schemeSize || publicBaseUrl[schemeSize] == '/')
-        return false;
-    for (const unsigned char character : publicBaseUrl)
-        if (std::iscntrl(character) || std::isspace(character))
-            return false;
-    while (publicBaseUrl.ends_with('/'))
-        publicBaseUrl.remove_suffix(1);
-    publicBaseUrlStorage().assign(publicBaseUrl);
-    return true;
 }
 
 using service::common::uuidText;

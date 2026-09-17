@@ -3,7 +3,6 @@
 #include <ruvia/web/Controller.h>
 
 #include "service/common/http.h"
-#include "service/middleware/live.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/permission.h"
 #include "service/modules/system/user/user.schema.h"
@@ -15,9 +14,9 @@ class UserController final : public ruvia::Controller<UserController> {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/users", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
-    RUVIA_GET_SSE("/", list, UserListQueryValidator);
-    RUVIA_GET_SSE("/options", options, UserOptionsQueryValidator);
-    RUVIA_GET_SSE("/:id", detail, UserIdParamsValidator);
+    RUVIA_GET("/", list, UserListQueryValidator);
+    RUVIA_GET("/options", options, UserOptionsQueryValidator);
+    RUVIA_GET("/:id", detail, UserIdParamsValidator);
     RUVIA_POST("/", create, CreateUserValidator);
     RUVIA_PUT("/:id", update, UserIdParamsValidator, UpdateUserValidator);
     RUVIA_DELETE("/:id", remove, UserIdParamsValidator);
@@ -28,11 +27,7 @@ class UserController final : public ruvia::Controller<UserController> {
         return std::string(c.req().validated<UserIdParams>().get<"id">()->view());
     }
 
-    ruvia::Task<void> list(ruvia::Context& c) {
-        co_await service::live::serve(c, "auth", [this, &c]() { return listSnapshot(c); });
-    }
-
-    ruvia::Task<std::string> listSnapshot(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> list(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:user:query");
         const auto& query = c.req().validated<UserListQuery>();
         const auto page = static_cast<std::int64_t>(*query.get<"page">());
@@ -43,31 +38,23 @@ class UserController final : public ruvia::Controller<UserController> {
         const auto status = query.get<"status">()
                                 ? std::optional<std::string>(std::string(query.get<"status">()->view()))
                                 : std::nullopt;
-        co_return service::live::json(service::common::ok<UserPageResponse>(
+        co_return c.json(service::common::ok<UserPageResponse>(
             c, co_await userService().list(c, page, pageSize, keyword, status)));
     }
 
-    ruvia::Task<void> options(ruvia::Context& c) {
-        co_await service::live::serve(c, "auth", [this, &c]() { return optionsSnapshot(c); });
-    }
-
-    ruvia::Task<std::string> optionsSnapshot(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> options(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:user:query");
         const auto& query = c.req().validated<UserOptionsQuery>();
         const auto keyword = query.get<"keyword">()
                                  ? std::optional<std::string>(std::string(query.get<"keyword">()->view()))
                                  : std::nullopt;
-        co_return service::live::json(service::common::ok<UserOptionsResponse>(
+        co_return c.json(service::common::ok<UserOptionsResponse>(
             c, co_await userService().options(c, keyword)));
     }
 
-    ruvia::Task<void> detail(ruvia::Context& c) {
-        co_await service::live::serve(c, "auth", [this, &c]() { return detailSnapshot(c); });
-    }
-
-    ruvia::Task<std::string> detailSnapshot(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> detail(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:user:query");
-        co_return service::live::json(
+        co_return c.json(
             service::common::ok<UserDetailResponse>(c, co_await userService().detail(c, id(c))));
     }
 

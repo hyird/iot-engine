@@ -1,5 +1,9 @@
 #pragma once
 
+#include "service/common/uuid.h"
+
+#include <memory>
+
 #include "service/features/configuration/configuration.entity.h"
 
 // 数据库配置读取与 Collector 配置投影编排。
@@ -591,7 +595,7 @@ class ConfigurationService final {
         auto snapshot =
             co_await service::configuration::loadRuntimeSnapshot(transaction);
         auto version =
-            co_await service::collector::config::project(context.redis(), snapshot);
+            co_await service::collector::config::project(context.redis(), snapshot, *context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>());
         if (notify)
             co_await service::live::publish(context.redis(), "runtime-config");
         co_await transaction.commit();

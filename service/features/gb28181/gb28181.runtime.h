@@ -1,5 +1,7 @@
 #pragma once
 
+#include "service/common/uuid.h"
+
 #include <asio/steady_timer.hpp>
 #include <atomic>
 #include <chrono>
@@ -49,7 +51,7 @@ class CollectorRuntime final {
   public:
     using OwnerIndex = std::size_t;
 
-    CollectorRuntime(AppConfig config, ruvia::EventLoop loop, ruvia::RedisHandle redis, OwnerIndex index, OwnerIndex count);
+    CollectorRuntime(service::common::UuidV7Generator& uuidGenerator, AppConfig config, ruvia::EventLoop loop, ruvia::RedisHandle redis, OwnerIndex index, OwnerIndex count);
     CollectorRuntime(const CollectorRuntime&) = delete;
     CollectorRuntime& operator=(const CollectorRuntime&) = delete;
     ~CollectorRuntime();
@@ -110,6 +112,7 @@ class CollectorRuntime final {
 
     using ProjectionEvent = std::variant<DeviceProjection, StreamProjection, ProjectionBarrier>;
 
+    service::common::UuidV7Generator& uuidGenerator_;
     AppConfig config_;
     ruvia::EventLoop loop_;
     ruvia::WorkerHandle worker_;

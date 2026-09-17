@@ -1,5 +1,9 @@
 #pragma once
 
+#include "service/common/uuid.h"
+
+#include <memory>
+
 #include "service/features/edge/gateway/gateway.entity.h"
 
 #include <charconv>
@@ -27,7 +31,7 @@ class GatewayService final {
             const auto record = EnrollmentRecord::decode(std::string_view(value->data(), value->size()));
             if (record) co_return *record;
         }
-        co_return EnrollmentRecord{pendingNodeId.empty() ? service::common::nextUuidV7() :
+        co_return EnrollmentRecord{pendingNodeId.empty() ? c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next() :
                                    std::string(pendingNodeId), "pending"};
     }
 
@@ -65,7 +69,9 @@ class GatewayService final {
         ruvia::RedisSetOptions options;
         options.expiration =
             ruvia::RedisSetExpiration::expiresAfter(std::chrono::seconds(60));
-        co_await c.redis().set(LogResultRecord::levelKey(id), record.protobufBytes, std::move(options));
+        const auto key = LogResultRecord::levelKey(id);
+        co_await c.redis().set(key, record.protobufBytes, std::move(options));
+        co_await service::live::publish(c.redis(), key);
     }
 
 

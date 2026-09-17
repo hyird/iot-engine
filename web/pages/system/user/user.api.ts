@@ -1,7 +1,5 @@
 import request from '@/lib/http';
 import type { PaginatedResult } from '@/types/pagination';
-import { appendQueryParams } from '@/utils/query';
-import { createSnapshotStream } from '@/lib/snapshot-request';
 import {
     createUserSchema,
     updateUserSchema,
@@ -11,31 +9,21 @@ import {
 } from './user.schema';
 import type { User } from './user.types';
 
-const ENDPOINTS = {
-    BASE: '/v1/users',
-    DETAIL: (id: string) => `/v1/users/${id}`,
-    OPTIONS: '/v1/users/options',
-} as const;
-export function getList(params?: User.Query) {
+export function getList(params?: User.Query, signal?: AbortSignal) {
     const query = userListQuerySchema.parse(params ?? {});
-    return createSnapshotStream<PaginatedResult<User.Item>>(
-        appendQueryParams(ENDPOINTS.BASE, query)
-    );
+    return request.get<PaginatedResult<User.Item>>('/v1/users', { params: query, signal });
 }
-export function getOptions(params?: Pick<User.Query, 'keyword'>) {
+export function getOptions(params?: Pick<User.Query, 'keyword'>, signal?: AbortSignal) {
     const query = userOptionsQuerySchema.parse(params ?? {});
-    return createSnapshotStream<User.Option[]>(appendQueryParams(ENDPOINTS.OPTIONS, query));
-}
-export function getRoleOptions() {
-    return createSnapshotStream<User.Role[]>('/v1/roles/options');
+    return request.get<User.Option[]>('/v1/users/options', { params: query, signal });
 }
 export function create(data: User.CreateDto) {
-    return request.post<void>(ENDPOINTS.BASE, createUserSchema.parse(data));
+    return request.post<void>('/v1/users', createUserSchema.parse(data));
 }
 export function update(id: string, data: User.UpdateDto) {
     const validatedId = userIdSchema.parse(id);
-    return request.put<void>(ENDPOINTS.DETAIL(validatedId), updateUserSchema.parse(data));
+    return request.put<void>(`/v1/users/${validatedId}`, updateUserSchema.parse(data));
 }
 export function remove(id: string) {
-    return request.delete<void>(ENDPOINTS.DETAIL(userIdSchema.parse(id)));
+    return request.delete<void>(`/v1/users/${userIdSchema.parse(id)}`);
 }

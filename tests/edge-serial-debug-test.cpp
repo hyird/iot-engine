@@ -25,8 +25,17 @@ int main() {
     const auto encoded = eventJson(event);
     require(encoded.find("\"hex\":\"00FF\"") != std::string::npos, "event lost binary bytes");
     require(ruvia::JsonValue::parse(encoded).has_value(), "event JSON is invalid");
-    const auto ticket = TicketRecord::decode("00000000-0000-7000-8000-000000000001\n1|6|2|owner\n/dev/ttyS1");
+    const auto ticket = SerialTargetRecord::decode("00000000-0000-7000-8000-000000000001\n1|6|2|owner\n/dev/ttyS1");
     require(ticket && ticket->path == "/dev/ttyS1", "ticket mapping failed");
-    require(!TicketRecord::decode("00000000-0000-7000-8000-000000000001\nowner\n/dev/ttyS1\nextra"), "multiline path accepted");
+    require(!SerialTargetRecord::decode("00000000-0000-7000-8000-000000000001\nowner\n/dev/ttyS1\nextra"), "multiline path accepted");
+    const BrowserBindingRecord binding{
+        "00000000-0000-7000-8000-000000000002",
+        "00000000-0000-7000-8000-000000000003", *ticket};
+    const auto restored = BrowserBindingRecord::decode(binding.encode());
+    require(restored && restored->userId == binding.userId && restored->connectionId == binding.connectionId &&
+        restored->ticket.nodeSession == binding.ticket.nodeSession && restored->ticket.path == binding.ticket.path,
+        "browser binding lost connection ownership");
+    require(!BrowserBindingRecord::decode("other-user\n" + binding.connectionId + "\n" + binding.encode()),
+        "invalid browser owner accepted");
     std::cout << "serial debug protocol tests passed\n";
 }

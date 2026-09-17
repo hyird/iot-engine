@@ -4,14 +4,16 @@ import zhCN from 'antd/es/locale/zh_CN';
 import ReactDOM from 'react-dom/client';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { APP_NAME } from './config/app';
+import { configureSessionRefresh } from './lib/http';
 import { refreshAccessToken } from './pages/login/login.service';
+import { configureEdgeDebugConnection } from './pages/iot/edge_node/edge_node.service';
 import { MessageContextBridge } from './providers/MessageContextBridge';
 import { TanStackQueryProvider } from './providers/TanStackQueryProvider';
 import { AppRoutes } from './routes';
-import { configureSessionRefresh } from './lib/http';
 import './styles/index.css';
 
 configureSessionRefresh(refreshAccessToken);
+configureEdgeDebugConnection();
 
 const rootElement = document.getElementById('root');
 if (!rootElement) throw new Error('Root element #root not found in DOM');

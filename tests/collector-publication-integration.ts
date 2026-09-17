@@ -71,8 +71,10 @@ const savedStream = `${stream}:publication-test-backup`;
 let fault = false;
 let saved = false;
 const pointId = crypto.randomUUID();
-function frame(sequence: number) {
-    const body = [0, sequence, 0x26, 0x09, 0x15, 0x03, 0x04, 0x05, 0x39, 0x12, 0x12, 0x34];
+function frame(sequence: number, sendingSecond = 5, observationMinute = 4, value = 0x34) {
+    const body = [0, sequence, 0x26, 0x09, 0x15, 0x03, 0x04, sendingSecond,
+        0xf1, 0xf1, 0, 0, 0, 0, 1, 0x49, 0xf0, 0xf0, 0x26, 0x09, 0x15, 0x03, observationMinute,
+        0x39, 0x12, 0x12, value];
     const bytes = Buffer.from([0x7e,0x7e,1,0,0,0,0,1,0,0,0x32,0,body.length,2,...body,3]);
     let crc = 0xffff;
     for (const byte of bytes) {
@@ -135,6 +137,35 @@ try {
         assert.equal(new Set(rows.map(row=>row.event_id)).size,rows.length,`${scope}: duplicate status events`);
         assert(rows.some(row=>row.direction==='TX' && row.reply_to_packet_id===receivedRows[0].event_id),'ACK must reference the received packet');
     }
+    const initial = (await db`SELECT id,extract(epoch FROM report_time)*1000 AS sample_time FROM device_data WHERE device_id=${device}`)[0];
+    assert.equal(Number(initial.sample_time), Date.parse('2026-09-15T03:04:00Z'));
+    for (const second of [0x10, 0x15]) {
+        // 重连清空会话缓存；清除 Redis 回执后仍必须由数据库唯一键保护历史。
+        socket!.destroy();
+        if (second === 0x15) assert.equal(Number(await redis.send('DEL', [`iot:telemetry:fanout:${initial.id}`])), 1,
+            'receipt-loss test must remove an existing fanout receipt');
+        received = Buffer.alloc(0);
+        socket = net.createConnection({host:'127.0.0.1', port});
+        socket.on('data', data => {received = Buffer.concat([received, data]);});
+        socket.on('error', () => {});
+        await new Promise<void>((resolve, reject) => {socket!.once('connect', resolve); socket!.once('error', reject);});
+        socket.write(frame(1, second));
+        await until(async () => received.length >= 25, 'replay after reconnect was not acknowledged');
+        assert.equal(received.readUInt16BE(14), 1, 'ACK must echo the retransmitted serial');
+        await until(async () => (await debugRows('device', device)).filter(row => row.direction === 'RX').length >= (second === 0x10 ? 2 : 3), 'replay receive record missing');
+    }
+    for (const [minute, value] of [[5, 0x34], [5, 0x35]]) {
+        received = Buffer.alloc(0);
+        socket!.write(frame(1, 0x15, minute, value));
+        await until(async () => received.length >= 25, 'distinct observation was not acknowledged');
+    }
+    await until(async () => Number((await db`SELECT count(*) AS n FROM device_data WHERE device_id=${device}`)[0].n) >= 3, 'new observation or corrected value was discarded');
+    await Bun.sleep(500);
+    assert.equal(Number((await db`SELECT count(*) AS n FROM device_data WHERE device_id=${device}`)[0].n), 3, 'replay created duplicate history');
+    const replayRows = (await debugRows('device', device)).filter(row => row.acquisition_id === initial.id);
+    assert.equal(replayRows.filter(row => row.direction === 'RX').length, 3, 'replay receives must share one acquisition');
+    assert.equal(replayRows.filter(row => row.direction === 'TX').length, 3, 'each replay must retain its ACK');
+    console.log('PASS SL651 observation time, reconnect replay, receipt loss, per-packet ACK and corrected values');
     received=Buffer.alloc(0);
     saved=Number(await redis.send('EXISTS',[stream]))===1;
     if(saved) await redis.send('RENAME',[stream,savedStream]);

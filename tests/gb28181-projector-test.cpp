@@ -64,6 +64,14 @@ void testNonemptyProjectionQueries() {
 
 int main() {
   try {
+    constexpr std::string_view instance = "01970000-1234-7000-8000-000000000123";
+    const auto controlStream = service::gb28181::control_protocol::stream::control(2, instance);
+    require(controlStream == "iot:gb28181:control:worker:01970000-1234-7000-8000-000000000123:2",
+            "GB28181 control stream persisted key changed");
+    require(controlStream != service::gb28181::control_protocol::stream::control(3, instance) &&
+            controlStream != service::gb28181::control_protocol::stream::control(
+                2, "01970000-1234-7000-8000-000000000124"),
+            "GB28181 control streams collide between workers or process incarnations");
     testNonemptyProjectionQueries();
     require(service::gb28181::GbProjectionService::integerForTest("12", -1) == 12,
             "GB28181 projector integer parser changed valid integer");

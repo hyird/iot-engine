@@ -1,43 +1,63 @@
 import { expect, test } from 'bun:test';
-import { openTerminalSocket } from '../web/pages/iot/edge_node/edge_node.service';
+import { edgeDebugConnection } from '../web/pages/iot/edge_node/edge_node.api';
+import { openTerminal, writeTerminal, closeTerminal, acknowledgeTerminalOutput } from '../web/pages/iot/edge_node/edge_node.service';
 
-test('terminal connection preserves ticket encoding and binary frames through its service interface', async () => {
+test('terminal control and output use the dedicated debug connection', async () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
-    const ticket = 'one-use/?&=+% ticket';
-    let receivedPath = '';
-    let receivedTicket: string | null = null;
+    const node = '00000000-0000-7000-8000-000000000001';
+    const sessionId = '00000000-0000-7000-8000-000000000002';
+    const bytes = Buffer.from([0, 255, 27, 91, 51, 49, 109]);
+    let connections = 0;
+    const received: { id: string; event: string; data: Record<string, unknown> }[] = [];
     const server = Bun.serve({
         hostname: '127.0.0.1',
         port: 0,
         fetch(request, server) {
             const url = new URL(request.url);
-            receivedPath = url.pathname;
-            receivedTicket = url.searchParams.get('ticket');
+            expect(url.pathname).toBe('/v1/edge/debug');
             if (server.upgrade(request)) return;
             return new Response('upgrade required', { status: 400 });
         },
         websocket: {
-            open(socket) { socket.send(new Uint8Array([0x1a, 0x04, 0x08, 0x78, 0x10, 0x1e])); },
-            message() {},
+            open() { connections++; },
+            message(socket, wire) {
+                const request = JSON.parse(String(wire));
+                expect(Object.keys(request).sort()).toEqual(['data', 'event', 'id']);
+                expect(request.id).toMatch(/^[0-9a-f]{8}-[0-9a-f-]{27}$/);
+                received.push(request);
+                const data = request.event === 'edge.terminal.open' ? { id: sessionId }
+                    : request.event === 'edge.terminal.events.subscribe' ? { events: [
+                        { kind: 'ready' }, { kind: 'data', content: bytes.toString('base64'), sequence: 1 },
+                    ] } : null;
+                socket.send(JSON.stringify({ id: request.id, data }));
+            },
         },
     });
-    let socket: WebSocket | undefined;
+    let release: (() => void) | undefined;
     try {
         Object.defineProperty(globalThis, 'window', { configurable: true, value: {
             location: { protocol: 'http:', host: `127.0.0.1:${server.port}` },
         } });
-        socket = openTerminalSocket(ticket);
-        expect(socket.binaryType).toBe('arraybuffer');
-        const frame = await new Promise<ArrayBuffer>((resolve, reject) => {
-            socket!.onmessage = (event) => resolve(event.data);
-            socket!.onerror = () => reject(new Error('terminal connection failed'));
+        expect(await openTerminal(node, 120, 30)).toEqual({ id: sessionId });
+        const output = await new Promise<{ events: { kind: string; content?: string }[] }>((resolve, reject) => {
+            release = edgeDebugConnection.subscribe('edge.terminal.events.subscribe', { id: node, sessionId }, {
+                next: value => resolve(value as { events: { kind: string; content?: string }[] }), error: reject,
+            });
         });
-        expect(frame).toBeInstanceOf(ArrayBuffer);
-        expect([...new Uint8Array(frame)]).toEqual([0x1a, 0x04, 0x08, 0x78, 0x10, 0x1e]);
-        expect(receivedPath).toBe('/edge/v1/terminal');
-        expect(receivedTicket).toBe(ticket);
+        expect(output.events[0].kind).toBe('ready');
+        expect(Buffer.from(output.events[1].content!, 'base64')).toEqual(bytes);
+        await acknowledgeTerminalOutput(node, sessionId, 1);
+        await writeTerminal(node, sessionId, bytes);
+        const input = received.find(request => request.event === 'edge.terminal.write');
+        expect(input?.data.sessionId).toBe(sessionId);
+        expect(Buffer.from(input?.data.content as string, 'base64')).toEqual(bytes);
+        release(); release = undefined;
+        await closeTerminal(node, sessionId);
+        expect(connections).toBe(1);
+        expect(new Set(received.map(request => request.id)).size).toBe(received.length);
     } finally {
-        socket?.close();
+        release?.();
+        edgeDebugConnection.reset();
         server.stop(true);
         if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
         else Reflect.deleteProperty(globalThis, 'window');

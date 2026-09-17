@@ -103,8 +103,8 @@ test('edge nodes use hierarchical groups without repeating the group inside card
     expect(groupPanel).toContain('全部节点');
     expect(groupPanel).toContain('未分组');
     expect(groupPanel).toContain('新增子分组');
-    expect(client).toContain('`${BASE}/groups`');
-    expect(client).toContain('`${BASE}/${edgeIdSchema.parse(id)}/group`');
+    expect(client).toContain("request.get<Edge.GroupItem[]>('/v1/edge/groups', { signal })");
+    expect(client).toContain('request.put<void>(`${edgePath(id)}/group`');
 });
 
 test('edge bridge routes commit before configuration is queued', () => {

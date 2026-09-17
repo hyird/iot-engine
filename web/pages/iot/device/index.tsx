@@ -1,3 +1,5 @@
+import type { Dispatch, SetStateAction } from 'react';
+import { saveDeviceSchema } from './device.schema';
 import {
     ApartmentOutlined,
     CopyOutlined,
@@ -11,7 +13,9 @@ import {
     ShareAltOutlined,
 } from '@ant-design/icons';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { replaceEqualDeep } from '@tanstack/react-query';
 import {
+    Alert,
     App,
     Button,
     Card,
@@ -62,6 +66,8 @@ import {
     getDeviceDetail,
     isDeviceOnline,
     useDeviceCommand,
+    useDeviceCommandResults,
+    summarizeDeviceCommandResult,
     useDeviceDelete,
     useDeviceGroupDelete,
     useDeviceGroupSave,
@@ -93,6 +99,8 @@ interface CommandElement {
     digits?: number;
 }
 interface CommandPopoverProps {
+    pending: boolean;
+    onSubmit: (deviceId: string, data: Device.Command) => void;
     device: Device.Overview;
     func: Device.CommandOperation;
     onClose: () => void;
@@ -178,9 +186,8 @@ export const validateValue = (element: CommandElement): string | null => {
         ? null
         : `「${element.name}」请输入有效数字`;
 };
-const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
+const CommandPopover = ({ device, func, onClose, pending, onSubmit }: CommandPopoverProps) => {
     const { message } = App.useApp();
-    const commandMutation = useDeviceCommand();
     const isSl651CompleteCommand = device.protocol_type === 'SL651';
     const [elements, setElements] = useState<CommandElement[]>(() =>
         (func.elements || []).map((element) => ({
@@ -213,19 +220,14 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
             }
         }
         if (!checkOnline()) return;
-        commandMutation.mutate(
-            {
-                deviceId: device.id,
-                data: {
-                    elements: selected.map((element) => ({
-                        elementId: element.elementId,
-                        value: element.value.trim(),
-                    })),
-                },
-            },
-            { onSuccess: onClose }
-        );
-    }, [checkOnline, commandMutation, device.id, elements, message, onClose, selectedKeys]);
+        if (pending) return;
+        onSubmit(device.id, {
+            elements: selected.map((element) => ({
+                elementId: element.elementId,
+                value: element.value.trim(),
+            })),
+        });
+    }, [checkOnline, pending, onSubmit, device.id, elements, message, selectedKeys]);
     const handlePresetClick = useCallback(
         (element: CommandElement, value: string) => {
             if (isSl651CompleteCommand) {
@@ -236,12 +238,10 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
                 return;
             }
             if (!checkOnline()) return;
-            commandMutation.mutate({
-                deviceId: device.id,
-                data: { elements: [{ elementId: element.elementId, value }] },
-            });
+            if (pending) return;
+            onSubmit(device.id, { elements: [{ elementId: element.elementId, value }] });
         },
-        [checkOnline, commandMutation, device.id, elements, isSl651CompleteCommand]
+        [checkOnline, pending, onSubmit, device.id, elements, isSl651CompleteCommand]
     );
     if (!elements.length) return <div className="p-3">暂无可下发要素</div>;
     return (
@@ -302,7 +302,7 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
                                             size="small"
                                             type="primary"
                                             ghost
-                                            loading={commandMutation.isPending}
+                                            loading={pending}
                                             onClick={() => handlePresetClick(element, option.value)}
                                         >
                                             {option.label}
@@ -321,7 +321,7 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
                 <Button
                     size="small"
                     type="primary"
-                    loading={commandMutation.isPending}
+                    loading={pending}
                     disabled={!selectedKeys.length}
                     onClick={handleSend}
                 >
@@ -662,6 +662,8 @@ const DeviceGroupFormModal = ({
 };
 
 interface DeviceGroupPanelProps {
+    commandIds: string[];
+    debugDeviceId?: string;
     selectedGroupId: string | null;
     onSelect: (groupId: string | null) => void;
     canManageGroup: boolean;
@@ -670,6 +672,8 @@ interface DeviceGroupPanelProps {
 }
 type TreeKey = string | number;
 const DeviceGroupPanel = ({
+    commandIds,
+    debugDeviceId,
     selectedGroupId,
     onSelect,
     canManageGroup,
@@ -681,9 +685,13 @@ const DeviceGroupPanel = ({
     const [formModalVisible, setFormModalVisible] = useState(false);
     const [editingGroup, setEditingGroup] = useState<DeviceGroup.TreeItem | null>(null);
     const [parentIdForCreate, setParentIdForCreate] = useState<string | null>(null);
-    const { data: treeData = [], isLoading } = useDeviceGroupTreeWithCount({
-        refetchOnWindowFocus: false,
-    });
+    const { data: treeData = [], isLoading } = useDeviceGroupTreeWithCount(
+        {
+            refetchOnWindowFocus: false,
+        },
+        debugDeviceId,
+        commandIds
+    );
     const saveMutation = useDeviceGroupSave();
     const deleteMutation = useDeviceGroupDelete();
     const groupIndex = useMemo(() => {
@@ -1393,7 +1401,7 @@ const parseHistoryBitLabels = (
 };
 const formatHistoryValue = (
     point: Device.HistoryPointValue | undefined,
-    meta?: Pick<Device.Element, 'decimals' | 'dictConfig' | 'unit'>
+    meta?: Pick<Device.Element, 'decimals' | 'scale' | 'dictConfig' | 'unit'>
 ) => {
     if (!point) return '-';
     const value = point.value;
@@ -1407,12 +1415,28 @@ const formatHistoryValue = (
         if (labels.length) return labels.join('、');
     }
     const numeric = typeof value === 'number' ? value : Number(value);
-    const formatted =
+    let formatted =
         Number.isFinite(numeric) && meta?.decimals !== undefined && meta.decimals >= 0
             ? numeric.toFixed(meta.decimals)
             : typeof value === 'object'
               ? JSON.stringify(value)
               : String(value);
+    if (
+        typeof value === 'number' &&
+        Number.isFinite(value) &&
+        (meta?.decimals === undefined || meta.decimals < 0) &&
+        meta?.scale !== undefined &&
+        Number.isFinite(meta.scale) &&
+        meta.scale !== 0
+    ) {
+        const [coefficient, exponent = '0'] = Math.abs(meta.scale).toString().split('e');
+        const decimals = Math.max(0, (coefficient.split('.')[1]?.length ?? 0) - Number(exponent));
+        if (decimals <= 15) {
+            const rounded = Number(value.toFixed(decimals));
+            const tolerance = Number.EPSILON * Math.abs(value);
+            if (Math.abs(value - rounded) <= tolerance) formatted = String(rounded);
+        }
+    }
     const unit = point.unit ?? meta?.unit;
     return unit ? `${formatted} ${unit}` : formatted;
 };
@@ -1423,6 +1447,7 @@ interface HistoryPointColumn {
     order: number;
     unit?: string;
     decimals?: number;
+    scale?: number;
     dictConfig?: Device.Element['dictConfig'];
 }
 const buildHistoryPointColumns = (
@@ -1441,6 +1466,7 @@ const buildHistoryPointColumns = (
             order: index,
             unit: element.unit,
             decimals: element.decimals,
+            scale: element.scale,
             dictConfig: element.dictConfig,
         };
         configuredByKey.set(key, meta);
@@ -1643,9 +1669,28 @@ function HistoryRawPayloadButton({ payloads }: { payloads: string[] }) {
     );
 }
 
-function DeviceDebug({ item }: { item: Device.Overview }) {
-    const [open, setOpen] = useState(false);
-    const { packets, toggle } = useDeviceDebug(item.id, open);
+function DeviceDebug({
+    commandIds,
+    item,
+    open,
+    onOpen,
+    onClose,
+}: {
+    commandIds: string[];
+    item: Device.Overview;
+    open: boolean;
+    onOpen: () => void;
+    onClose: () => void;
+}) {
+    const closeOnUnmount = useRef({ open, onClose });
+    closeOnUnmount.current = { open, onClose };
+    useEffect(
+        () => () => {
+            if (closeOnUnmount.current.open) closeOnUnmount.current.onClose();
+        },
+        []
+    );
+    const { packets, toggle } = useDeviceDebug(item.id, open, commandIds);
     return (
         <PacketDebugPanel
             scope="device"
@@ -1660,13 +1705,18 @@ function DeviceDebug({ item }: { item: Device.Overview }) {
             error={packets.error}
             acquisitions={packets.data}
             onToggle={() => toggle.mutate(!item.debug_enabled)}
-            onOpen={() => setOpen(true)}
-            onClose={() => setOpen(false)}
+            onOpen={onOpen}
+            onClose={onClose}
         />
     );
 }
 
 interface DeviceGridItemProps {
+    commandIds: string[];
+    commandPending: boolean;
+    onSubmitCommand: (deviceId: string, data: Device.Command) => void;
+    debugDeviceId?: string;
+    onDebug: Dispatch<SetStateAction<string | undefined>>;
     device: Device.Overview;
     online: boolean;
     linkById: ReadonlyMap<string, Link.Item>;
@@ -1686,7 +1736,10 @@ interface DeviceGridItemProps {
 const DeviceGridItem = memo(
     ({
         device,
+        commandIds,
         online,
+        debugDeviceId,
+        onDebug,
         linkById,
         onHistory,
         onShare,
@@ -1697,6 +1750,8 @@ const DeviceGridItem = memo(
         commandDevice,
         commandFunc,
         commandLoadingId,
+        commandPending,
+        onSubmitCommand,
         onOpenCommandPopover,
         onSelectCommandOperation,
         onCloseCommandPopover,
@@ -1813,6 +1868,8 @@ const DeviceGridItem = memo(
                                 content={
                                     isCommandPopoverOpen && commandFunc && activeCommandDevice ? (
                                         <CommandPopover
+                                            pending={commandPending}
+                                            onSubmit={onSubmitCommand}
                                             device={activeCommandDevice}
                                             func={commandFunc}
                                             onClose={onCloseCommandPopover}
@@ -1860,7 +1917,19 @@ const DeviceGridItem = memo(
                                     />
                                 </Tooltip>
                             </Popover>
-                            {device.can_edit && <DeviceDebug item={device} />}
+                            {device.can_edit && (
+                                <DeviceDebug
+                                    commandIds={commandIds}
+                                    item={device}
+                                    open={debugDeviceId === device.id}
+                                    onOpen={() => onDebug(device.id)}
+                                    onClose={() =>
+                                        onDebug((current) =>
+                                            current === device.id ? undefined : current
+                                        )
+                                    }
+                                />
+                            )}
                             <Tooltip title="历史数据">
                                 <Button
                                     type="text"
@@ -2040,6 +2109,7 @@ const DeviceGrid = memo(
         );
     }
 );
+const EMPTY_COMMAND_IDS: string[] = [];
 const DevicePage = () => {
     const { modal, message } = App.useApp();
     const { has } = usePermissions();
@@ -2049,6 +2119,7 @@ const DevicePage = () => {
         has('iot:device-group:add') ||
         has('iot:device-group:edit') ||
         has('iot:device-group:delete');
+    const [debugDeviceId, setDebugDeviceId] = useState<string>();
     const [searchText, setSearchText] = useState('');
     const [keyword, setKeyword] = useState('');
     const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
@@ -2064,6 +2135,43 @@ const DevicePage = () => {
     const [commandDevice, setCommandDevice] = useState<Device.Overview | null>(null);
     const [commandFunc, setCommandFunc] = useState<Device.CommandOperation | null>(null);
     const [commandLoadingId, setCommandLoadingId] = useState<string>();
+    const [submittedCommand, setSubmittedCommand] = useState<{
+        ids: string[];
+        complete: boolean;
+        result?: Device.CommandStatusesResult;
+    } | null>(null);
+    const submitCommand = useDeviceCommand();
+    const commandResults = useDeviceCommandResults(
+        submittedCommand?.ids ?? EMPTY_COMMAND_IDS,
+        !!submittedCommand && !submittedCommand.complete,
+        debugDeviceId
+    );
+    const activeCommandIds =
+        submittedCommand && !submittedCommand.complete ? submittedCommand.ids : EMPTY_COMMAND_IDS;
+    const commandPending =
+        submitCommand.isPending || (!!submittedCommand && !submittedCommand.complete);
+    useEffect(() => {
+        if (!submittedCommand || submittedCommand.complete || !commandResults.data?.complete)
+            return;
+        setSubmittedCommand((current) =>
+            current ? { ...current, complete: true, result: commandResults.data } : current
+        );
+    }, [submittedCommand, commandResults.data]);
+    const sendCommand = useCallback(
+        (deviceId: string, command: Device.Command) => {
+            if (commandPending) return;
+            submitCommand.mutate(
+                { deviceId, data: command },
+                {
+                    onSuccess: (accepted) => {
+                        setSubmittedCommand({ ids: accepted.command_ids, complete: false });
+                        setCommandPopoverOpen(false);
+                    },
+                }
+            );
+        },
+        [commandPending, submitCommand]
+    );
     const [statusNow, setStatusNow] = useState(() => Date.now());
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     useEffect(() => {
@@ -2073,35 +2181,46 @@ const DevicePage = () => {
     const {
         data,
         isLoading,
+        error: listError,
         isFetching: isListFetching,
         refetch,
     } = useDeviceList({
+        debugDeviceId,
+        commandIds: activeCommandIds,
         enabled: canQuery,
         // Device metadata is stable between edits. Realtime snapshots below keep the page fresh
         // without repeatedly rebuilding and transferring the complete device list.
     });
     const {
         data: realtimeSnapshotData,
+        error: realtimeError,
         isFetching: isRealtimeSnapshotFetching,
         refetch: refetchRealtimeSnapshot,
     } = useDeviceRealtimeSnapshot({
+        debugDeviceId,
+        commandIds: activeCommandIds,
         enabled: canQuery && !!data,
     });
-    const { data: groupTree = [] } = useDeviceGroupTreeWithCount({
-        enabled: canQuery,
-        refetchOnWindowFocus: false,
-    });
+    const { data: groupTree = [] } = useDeviceGroupTreeWithCount(
+        {
+            enabled: canQuery,
+            refetchOnWindowFocus: false,
+        },
+        debugDeviceId,
+        activeCommandIds
+    );
     const { data: linkOptions = [] } = useLinkOptions({
         enabled: canQuery,
         refetchOnWindowFocus: false,
     });
     const saveMutation = useDeviceSave();
     const { mutateAsync: deleteDevice } = useDeviceDelete();
+    const committedDevices = useRef<Device.Overview[]>([]);
     const deviceList = useMemo(() => {
         const realtimeSnapshotById = new Map(
             (realtimeSnapshotData?.list ?? []).map((device) => [device.id, device] as const)
         );
-        return (data?.list ?? EMPTY_DEVICE_LIST).map((device) => {
+        const merged = (data?.list ?? EMPTY_DEVICE_LIST).map((device) => {
             const snapshot = realtimeSnapshotById.get(device.id);
             if (!snapshot) return device;
             return {
@@ -2113,7 +2232,12 @@ const DevicePage = () => {
                 edgeStatus: snapshot.edgeStatus ?? device.edgeStatus,
             };
         });
+        // Keep unchanged card props stable when another device reports a value.
+        return replaceEqualDeep(committedDevices.current, merged);
     }, [data, realtimeSnapshotData]);
+    useLayoutEffect(() => {
+        committedDevices.current = deviceList;
+    }, [deviceList]);
     const isFetching = isListFetching || isRealtimeSnapshotFetching;
     const linkById = useMemo(
         () => new Map(linkOptions.map((link) => [link.id, link])),
@@ -2213,8 +2337,12 @@ const DevicePage = () => {
         setEditing(null);
     };
     const save = (values: DeviceFormValues) => {
-        const dto = values;
-        saveMutation.mutate({ ...dto, id: editing?.id }, { onSuccess: closeForm });
+        const parsed = saveDeviceSchema.safeParse(values);
+        if (!parsed.success) {
+            message.error(parsed.error.issues[0]?.message ?? '设备参数无效');
+            return;
+        }
+        saveMutation.mutate({ ...values, id: editing?.id }, { onSuccess: closeForm });
     };
     const remove = useCallback(
         (device: Device.Overview) => {
@@ -2261,6 +2389,9 @@ const DevicePage = () => {
     }, []);
     const renderDeviceCards = (devices: Device.Overview[]) => (
         <DeviceGrid
+            commandIds={activeCommandIds}
+            debugDeviceId={debugDeviceId}
+            onDebug={setDebugDeviceId}
             devices={devices}
             statusNow={statusNow}
             linkById={linkById}
@@ -2274,6 +2405,8 @@ const DevicePage = () => {
             commandDevice={commandDevice}
             commandFunc={commandFunc}
             commandLoadingId={commandLoadingId}
+            commandPending={commandPending}
+            onSubmitCommand={sendCommand}
             onOpenCommandPopover={openCommandPopover}
             onSelectCommandOperation={selectCommandOperation}
             onCloseCommandPopover={closeCommandPopover}
@@ -2357,6 +2490,24 @@ const DevicePage = () => {
             </PageContainer>
         );
     }
+    if (listError || realtimeError) {
+        return (
+            <PageContainer>
+                <Result
+                    status="error"
+                    title="设备数据加载失败"
+                    subTitle={(listError ?? realtimeError)?.message}
+                    extra={
+                        <Button
+                            onClick={() => void Promise.all([refetch(), refetchRealtimeSnapshot()])}
+                        >
+                            重新加载
+                        </Button>
+                    }
+                />
+            </PageContainer>
+        );
+    }
     return (
         <PageContainer
             header={
@@ -2364,6 +2515,8 @@ const DevicePage = () => {
                     <h3 className="m-0 text-base font-medium">设备管理</h3>
                     <Space wrap>
                         <DeviceGroupPanel
+                            commandIds={activeCommandIds}
+                            debugDeviceId={debugDeviceId}
                             selectedGroupId={selectedGroupId}
                             onSelect={setSelectedGroupId}
                             canManageGroup={canManageGroup}
@@ -2515,6 +2668,42 @@ const DevicePage = () => {
                     </Space>
                 )}
             </div>
+
+            {submittedCommand && (
+                <Alert
+                    showIcon
+                    type={
+                        (submittedCommand.complete ? null : commandResults.error)
+                            ? 'error'
+                            : submittedCommand.complete
+                              ? submittedCommand.result &&
+                                summarizeDeviceCommandResult(submittedCommand.result).failed
+                                  ? 'error'
+                                  : 'success'
+                              : 'info'
+                    }
+                    title={
+                        (submittedCommand.complete ? null : commandResults.error)
+                            ? '指令结果连接失败'
+                            : submittedCommand.complete && submittedCommand.result
+                              ? summarizeDeviceCommandResult(submittedCommand.result).message
+                              : '指令已受理，等待设备执行结果'
+                    }
+                    description={(submittedCommand.complete ? null : commandResults.error)?.message}
+                    action={
+                        <Space>
+                            {(submittedCommand.complete ? null : commandResults.error) && (
+                                <Button onClick={() => void commandResults.refetch()}>
+                                    重试结果订阅
+                                </Button>
+                            )}
+                            <Button onClick={() => setSubmittedCommand(null)}>
+                                {submittedCommand.complete ? '关闭' : '停止查看'}
+                            </Button>
+                        </Space>
+                    }
+                />
+            )}
 
             <DeviceFormModal
                 open={formOpen}

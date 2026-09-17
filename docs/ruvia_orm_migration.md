@@ -56,3 +56,5 @@ Redis 继续按业务需要混用 Repository、原生命令和 Lua。新版将 R
 - 覆盖权限 JSON 转义和重复值、多层部门循环拒绝与合法祖先调整、联表 NULL 和 UTC 时间输出、账号状态与令牌、数据库失败后的用户/角色事务回滚、协议 JSON 合并及 SSE 权限撤销。
 - CTest 29 项中 28 项通过；`gb28181-sip` 失败信息为 `GB28181 IPv6 UDP catalog datagram was not delivered`。媒体及媒体代理测试通过，不能继续沿用上一轮的监听绑定失败结论。
 - `git diff --check` 通过。本次未运行 Linux 构建，未提交、发布或部署。
+
+2026-09-17：通信方式恢复为 HTTP/SSE 后，旧 `live-query-integration.ts` 已删除，其全局通知及系统管理 WS/SSE 假设不再适用；现行验证使用 `auth-http-sse-integration.ts`、`device-http-sse-integration.ts` 及恢复 HTTP 的系统/业务 ORM 集成测试。

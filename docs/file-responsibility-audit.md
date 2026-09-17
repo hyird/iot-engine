@@ -8,6 +8,42 @@
 
 ## 已实施，等待最终验收
 
+- 后台 Service Worker 的消息/配置版本/告警记录/投递审计/设备登记和命令回执 ID 改从所属 Worker 状态生成；Redis-only 的采集配置投影、报文调试和数据库-only 的 VPN 路由、命令事件显式接收生成器或 ID。网关响应封包明确接收当前连接上下文，保留会话 epoch/sequence 与旧固件字段。后台剩余隐式 UUID 调用为 ZLMediaKit RTP 流身份，公共线程局部入口与进程身份仍待后续清理。本批与设备 SSE 合并一同构建验证，尚未部署，不以搜索结果代替运行验收。
+
+- 线上 `f47eefa` 补充角色页面真实 Chrome 验收：创建 `verify_f47eefa_disabled`（禁用、无权限、未分配用户），空描述修改名称，刷新页面后读取新名称，按编码筛选，再删除并清空筛选。最终列表仅有原超级管理员角色，浏览器 warning/error 为空；未改变现有用户授权。SSH 确认 `/opt/iot/server` 仍指向 `releases/f47eefa/iot-engine`，本项不作为下述尚未部署的 Worker UUID 改动验收。
+
+- Service Worker 的 UUID 生成器通过 Ruvia 公开 `useWorkerState` 注册，每个 Worker 独占 `unique_ptr<UuidV7Generator>`，避免含互斥量的生成器被复制。管理模块、RPC、调试连接、串口/终端会话与上传 ID 从接入 Worker 取状态；请求作用域沿用原连接的 Worker 状态。用户角色绑定、VPN 网桥路由同步显式接收生成器，事务内配置事件显式接收事件 ID。移除管理模块和 middleware 对线程局部 `nextUuidV7()` 的调用；真实请求测试补充跨请求作用域状态一致性和 UUID 顺序断言。未部署；后台 Service Worker 组件及公共进程身份仍待整改。
+- 本批验证：Linux Release 和完整 CTest 35/35、Windows Release 和排除已知主机 IPv6 故障后的 CTest 34/34 通过（`build/service-owned-uuid-{linux,windows}-final.log`）。双 Service Worker 的真实数据库/Redis 集成覆盖系统用户角色及失败回滚、协议/链路/设备/开放接入、400 台设备 SSE、告警 CRUD 与推送（`build/service-owned-uuid-integration.log`）。该组合脚本在已通过上述项目后因错误加入使用专用固定端口的 VPN 测试而中断；改用 `Run-VpnDesktopIntegration.ps1` 后完整通过（`build/service-owned-uuid-vpn-integration.log`），不将首次组合运行宣称为全部成功。剩余 Edge HTTP/SSE、终端协议 3/6、串口手动收发/恢复及会话清理、固件上传边界/撤权/旧固件下载集成独立通过（`build/service-owned-uuid-edge-integration.log`）。Ruvia 两个依赖源码目录未修改。
+
+- Collector 的 UUID 生成状态开始迁入实际 Worker 生命周期：每个 `CollectorWorker` 独占一个 `UuidV7Generator`，TCP 传输及同 Worker 的 GB28181 CollectorRuntime 通过必填构造参数持有该生成器引用。连接/重连令牌、采集与消息 ID、GB 投影 ID 和 Worker 代次均由所属实例生成，保留原 UUIDv7 算法；成员声明顺序保证生成器晚于借用组件销毁。8 处真实 TCP 测试装配同步注入独立生成器，新增同线程两个独立实例的格式/单调性/4096 个 ID 唯一性及重建不复用验证。本批尚未部署；Service Worker 调用与 `common/uuid.h` 中剩余线程局部入口、进程身份仍未完成整改，不将本批视为全局状态已清除。
+- 本批验证：Linux Release 与完整 CTest 35/35 通过（`build/collector-owned-uuid-linux.log`）；Windows Release 成功、相关 CTest 7/8，GB28181 IPv6 UDP 数据报用例连续两次失败，未隐瞒为通过（`build/collector-owned-uuid-windows.log`、`build/collector-owned-uuid-sip-recheck.log`）。独立 Python UDP 回环探针 IPv4 通过、IPv6 `::1` 超时（`build/collector-owned-uuid-host-loopback.log`），主机环境存在同类问题，未修改用户网络配置。真实 GB28181 Worker 集成以及 MC/FINS/DLT645 采集写回、第三方 HTTP/SSE、设备 CRUD/历史/调试/共享/400 设备推送集成通过（`build/collector-owned-uuid-{gb,device}-integration.log`）。
+
+- `f47eefa` 线上补充规则验收：独立禁用规则新增、空备注编辑、名称筛选、再次读取新阈值及批量删除通过，无测试数据遗留。抓包定位规则选择器每次打开额外订阅设备 SSE。本地改为设备 service 中的按需 HTTP 配置查询，API 复用已有 GET `/v1/device`，设备管理实时页保持 SSE；类型检查/lint/格式/构建和 11 项相关测试通过。证据 `build/alert-rule-browser-network.json`、`build/alert-device-selection-*.log`。此选择器改动尚未部署复验。
+
+- 告警查询范围与详情接入已随 `f47eefa` 发布，556 个文件核对快照一致，CI 前端完整测试列表 96/96、Windows 安装包 6/6 通过。线上 Chrome 完成独立模板新增、读取、更新、再次编辑读取新值与删除；75 秒抓包仅有详情 GET、PUT/DELETE 及对应模板列表 GET，无规则查询和 SSE 重建。日志及备份见 `docs/ws-event-migration.md` 最新节；下述此批“尚未部署”为历史记录，整体职责整改仍未完成。
+
+- 告警页面删除 `alertApi` 整体转导出与直接详情调用。模板编辑通过 service 的 `useAlertTemplateLoader` 使用 TanStack Query 获取详情，合并并发读取，下一次编辑重新读取最新值；模板写操作仅失效模板列表/详情，规则写操作仅失效规则列表，确认告警依赖原 SSE 推送，不重新查询配置或重建订阅。新增实际 React Hook 与 QueryClient 行为测试 3 项，纳入 CI；相关前端契约 15 项、类型检查/lint/格式/构建通过（`build/alert-cache-*.log`、`build/alert-query-cache-test.log`）。真实服务集成新增批量确认后原 SSE 上记录和统计变化断言并通过（`build/alert-cache-integration.log`）。本批尚未部署，线上仍为 `b958c74`；不能把本地缓存测试视为线上网络复验。
+
+- 2026-09-17 发布 `b958c74`：显式消息/实体/协议身份传入和告警空值/重复刷新修复已部署，Linux 完整 CTest 35/35、Windows 安装包 6/6 通过。真实浏览器验证空分类/空描述模板新增、编辑、刷新持久化和删除；抓包显示一次 PUT 后规则/模板各一次 GET，后续约 58 秒无新请求。详细交付证据见 `docs/ws-event-migration.md` 最新节。下述对应“尚未部署”均为历史状态，公共 UUID 本身及整体审计依然未完成。
+
+- 线上真实告警模板编辑暴露可空字段回填问题，本地将模板分类/描述及规则备注的响应类型准确标为可空，表单回填转为空字符串，保留接口与数据库清空语义。同时删除页面三处重复缓存失效；规则保存、模板保存及应用的缓存刷新只由已有 service mutation 负责。类型检查、lint、生产构建和格式检查通过，详见 `build/alert-nullable-*.log`。线上测试模板已删除，本批修复尚未部署复验。
+
+- 公共消息契约的 Worker 流、唤醒流、指标快照及 Edge 分发/投影/租约键已移除隐式 `runtime::instanceId()` 默认值，调用方显式传入原进程身份；14 类键新增精确格式及跨 Worker/进程隔离断言，共享唤醒另验证进程隔离。删除仅转发 UUID 生成的 `message::nextMessageId()`，实际生成调用归回 service/runtime/transport，协议与实体不生成身份。结构检查禁止 `common/message.h` 隐式读取或生成运行身份。Windows Release 与相关 5/5 CTest 已通过（`build/message-identity-windows.log`），Linux 完整构建和真实服务回归仍在进行。本批尚未部署；`common/uuid.h` 的线程局部生成器及进程身份缓存仍待按 Worker 生命周期整改，不能据此认定公共运行状态问题已全部解决。
+
+- Edge `session.entity.h::value`、Collector 实体的 Worker/链路键及 GB28181 `stream::control` 已改为必须显式传入进程身份，不再在实体或协议默认参数中读取全局运行状态。全部实际调用由 service/runtime 传入原进程身份，Redis 键与会话值逐字保持不变，不增加旧签名或兼容入口。测试新增不同 Worker、不同进程身份互不冲突及固定存储格式断言；结构检查禁止纯定义直接调用 `runtime::instanceId`。Linux Release 与完整 CTest 35/35、Windows Release 与相关 4/4 CTest 通过（`build/explicit-identity-{linux,windows}.log`）；此项不解决 service/runtime 和公共消息函数中的隐式身份读取，也不代替 UUID 生成器本身的 Worker 生命周期整改。本批尚未部署。
+
+- 上述平台配置整改的后续验证已完成：Linux Release 构建成功；完整 CTest 首次 34/35，失败原因是 collector-protocol 仍断言旧主题 `device`，而真实发布端与订阅端使用 `device.realtime`。核对两端实际代码后更新断言，重新构建并通过完整 CTest 35/35（`build/platform-identity-linux-verified.log`）；Windows 同一测试重建通过。真实设备 HTTP/SSE 集成再次通过设备 CRUD、旧编码保存、历史、调试推送、共享撤销与 400 设备快照（`build/platform-identity-device-integration.log`）。本批尚未部署，全仓审计仍未完成。
+
+- Edge 平台身份配置已移除协议层的 `platformIdStorage`、`platformId` 和 `configurePlatformId`。启动装配通过 Ruvia 公开 `useWorkerState` 为各 Worker 创建独立、不可变的 `edge.config.h::PlatformIdentity`，后台业务通过所属 Worker 读取；网关出站信封沿用当前连接的 `session.platformBytes`。不修改 Ruvia 源码，不改变已部署固件的平台字段语义。Windows Release 与 6 项相关 CTest 通过；Edge HTTP/SSE、串口、终端协议 3/6 和固件上传/旧下载集成通过（`build/platform-identity-integration.log`）。另以非默认平台 ID 执行真实服务集成，逐帧断言下行平台身份，网络控制、同步、日志抓取及级别修改通过（`build/platform-identity-custom-integration.log`）。Linux 完整构建与部署验收尚待完成；公共 UUID 生成器及进程身份问题仍未解决。
+
+- TSAP 规范化/格式化与 Ant Form 校验从 protocol.service.ts 迁入 protocol.schema.ts；normalizeTsapValue 改为 schema 私有，service 直接引用 formatTsapValue 构造连接配置，页面从 schema 引入格式化/校验，无转发导出。保留前缀/分隔符处理顺序、十六进制长度、补零及错误提示。
+
+- S7 页面私有展示职责继续迁移：区域/数据类型选项、地址前缀和提示映射、地址示例/后缀示例/规则文案/范围文案，共 10 个定义从 protocol.service.ts 移至 index.tsx；它们仅由本页使用，移除服务导出。保留 service 的类型规范化、字节大小、位地址能力和配置转换，展示算法及文案不变。
+
+- 协议页面 12 个私有展示定义从 protocol.service.ts 移至 index.tsx：Modbus 寄存器/数据类型/字节序选项及数量选择，S7 连接类型/模式选项、提示、标签与对应选择函数。所有真实调用均在本页，移除服务导出/页面导入，值与逻辑保持原样；PLC 预设与其余表单数据转换仍需后续审查。
+
+- 删除 edge.protocol.h 中无业务读取方的 publicBaseUrlStorage/publicBaseUrl/configurePublicBaseUrl，全局缓存没有参与固件下载 URL 构造。启动格式校验改为 edge.config.h 的无状态 validPublicBaseUrl，保留 EDGE_PUBLIC_BASE_URL 环境变量、原错误提示与校验边界；实际模块仍从请求环境读取并裁剪尾部斜杠。配置用例从 edge-protocol-test 移至 edge-config-test，新增无主机、空白及长度边界检查。平台 ID 的可变存储仍待处理。
+
 - Edge protocol::outbound 只装配显式传入的消息 UUID、时间戳和平台 ID，service/runtime 调用方负责生成运行输入。删除协议内 randomUuidV7Bytes 的线程局部随机引擎及 nowMs 时钟读取函数；终端 ID 也由 gateway runtime 生成。所有信封调用和测试同步参数，保留协议版本、会话 epoch/sequence 和二进制 UUID 格式；平台配置的可变存储仍待整改。
 
 - Modbus/S7/SL651 parsedAction 不再调用 UUID 生成器，Collector runtime 在 PublishParsed 分支发布前分配 messageId；causationId 保持协议解析结果。SL651 改用会话内 publicationToken 关联待发布报告，接口、engine 和真实测试调用同步变更，Redis 发布成功后才回传完成令牌并生成协议确认。UUID 生成器本身和进程身份仍待后续整改。
@@ -137,6 +173,22 @@
 - 对前端和 Windows 客户端作内容与实际调用审查；现有结构测试通过不足以宣称完成。
 - 完善原生 Redis 数据访问及自定义存储映射的结构检查和必要行为测试，不能用固定文件豁免掩盖问题。
 - 完成对应 Release 构建、CTests、前端质量检查和生产构建、涉及页面的实际验证、Windows 客户端 CMake 验证及最终差异检查。
+
+## 当前验证证据（2026-09-16）
+
+- 2026-09-17 公共消息显式身份参数整改的最终验证通过：Linux Release/CTest 35/35（`build/message-identity-linux.log`），Windows Release/相关 CTest 5/5（`build/message-identity-windows.log`）。真实服务通过第三方 HTTP 命令/SSE 的权限、实际写入和读回，MC 3E/4E、FINS TCP、DL/T645 1997/2007 采集与持久化、设备 CRUD/旧编码保存/历史/共享/400 设备快照，以及串口和终端协议 3/6（`build/message-identity-device-integration.log`）。GB28181 连接归属、数据库提交顺序、投影防覆盖、回执恢复及租约失效验证通过（`build/message-identity-rpc-integration.log`）。两份 Ruvia 源码均无改动；本批尚未部署，生成器自身的 Worker 生命周期整改仍待完成。
+
+- 2026-09-17 显式身份参数调整后的真实服务集成通过：串口连接归属、监听/手动/二进制/恢复、重复发送拒绝及清理，终端协议 3/6 输入输出确认、窗口调整与关闭（`build/explicit-identity-edge-integration.log`）；GB28181 双 Worker 验证注册成功晚于提交、HTTP 操作归原 Collector、预览租约与关闭、错误 Collector 拒绝、投影顺序、迟到重试防覆盖、回执恢复及租约失效后的 SIP fencing（`build/explicit-identity-gb-integration.log`）。所有测试在独立本地数据库/Redis 夹具中执行，运行器退出码均为 0；本批源代码尚未部署。
+
+- TSAP schema 迁移：typecheck、lint、生产 build、修改文件 Biome 格式检查通过；13 项测试通过，包括新增 TSAP 格式化/表单一致性、缺失/非法字符/超长输入和既有前端结构/导入/SL651 测试（build/responsibility-tsap-schema-*.log）。本轮未修改布局，未新增浏览器交互验证。
+
+- S7 展示定义迁移：锁定 Bun 下 typecheck、lint、生产 build、修改文件 Biome 格式检查及 11 项 frontend-architecture/protocol-import/sl651-config 测试全部通过（build/responsibility-s7-display-*.log）。本轮未改布局，未新增浏览器渲染验证，现有页面最终验收缺口仍保留。
+
+- 协议页面选项职责调整：锁定 Bun 下 typecheck、lint、生产 build 和修改文件 Biome 格式检查通过（build/responsibility-protocol-options-*.log）；frontend-architecture、protocol-import、sl651-config 测试已执行，结果见 build/responsibility-protocol-options-tests.log。本轮为定义归属迁移，无布局改动，未新增浏览器渲染验证，历史导出落盘/窄屏未覆盖项继续保留。
+
+- GB SIP 测试共用端口选择改为先 UDP bind(0) 再验证 TCP，避免 TCP 连续临时端口可能落入同一 UDP 排除区间；失败信息增加最后端口与系统错误。读取到本机 TCP/UDP 排除范围不同，但原失败未保留具体端口，不能据此断言唯一根因。完整 Release 通过（build/responsibility-gb-port-reservation-release.log），CTest 31/32（build/responsibility-gb-port-reservation-ctest.log）；GB 测试本次成功越过端口分配和 IPv4 用例，仍因 IPv6 UDP catalog 未送达失败。未更改系统网络配置或跳过 IPv6 测试。
+
+- Edge URL 配置职责：完整 Release 通过（build/responsibility-edge-url-config-release-final.log），CTest 31/32（build/responsibility-edge-url-config-ctest.log），Edge config/protocol 均通过。唯一 gb28181-sip 失败为无法保留共用 TCP/UDP loopback 端口，独立重跑仍失败（build/responsibility-edge-url-config-gb-retry.log）；本轮不能归因为历史 IPv6 收包失败。实际 RPC/Edge 恢复集成通过（build/responsibility-edge-url-config-integration.log）。当前工作区已由外部提交到 dd6dc5e，本轮从干净状态继续，未重写该提交。
 
 ## 当前验证证据（2026-09-15）
 

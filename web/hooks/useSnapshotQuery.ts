@@ -15,8 +15,9 @@ export function useSnapshotQuery<T, Selected = T>(options: Options<T, Selected>)
     const key = hashKey(options.queryKey);
     const result = useQuery({
         ...options,
-        queryFn: ({ signal }) => factory.current().first(signal),
+        queryFn: ({ signal }) => factory.current().first(signal, { fresh: true }),
         staleTime: Infinity,
+        retry: false,
         refetchInterval: false,
         refetchOnWindowFocus: false,
         refetchOnReconnect: false,

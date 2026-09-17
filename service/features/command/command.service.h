@@ -1,5 +1,8 @@
 #pragma once
 
+#include <memory>
+#include "service/features/edge/edge.config.h"
+
 #include <ruvia/core/StopToken.h>
 
 #include "service/utils/number.h"
@@ -155,8 +158,7 @@ namespace service::command::repository {
 
 template <typename Database>
 ruvia::Task<void> event(Database& db, std::string_view commandId,
-                         std::string_view type) {
-    const auto eventId = service::common::nextUuidV7();
+                         std::string_view type, std::string_view eventId) {
     ruvia::DbQuery operation;
     operation.select({ operation.cast(operation.value(eventId), ruvia::DbDataType::kUuid), operation.value(type), operation.value("command"),
             operation.cast(operation.column(service::command::persistence::CommandOperationEntity::columnName<"device_id">()), ruvia::DbDataType::kText), operation.value("updated"), operation.value(2),
@@ -253,7 +255,7 @@ ruvia::Task<void> dispatch(Context& context) {
                 .andWhere(dispatched.binary(dispatched.column(service::command::persistence::CommandAttemptEntity::columnName<"operation_id">()), Op::kEqual, dispatched.cast(dispatched.value(cell(0)), Type::kUuid)));
             (void)co_await update.execute(dispatched);
         }
-        else co_await event(update,cell(0),"device.command.updated");
+        else co_await event(update,cell(0),"device.command.updated", context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await update.commit();
         if (published && !cell(4).empty())
             co_await edge::dispatch::notifyNode(context.redis(),cell(4));
@@ -271,7 +273,7 @@ ruvia::Task<void> dispatch(Context& context) {
         .returning({ overdue.cast(overdue.column(service::command::persistence::CommandOperationEntity::columnName<"id">(), "o"), Type::kText) });
     const auto expired = co_await expiry.query(overdue);
     for (const auto& row : expired)
-        co_await event(expiry,row[0].value().value_or(std::string_view{}),"device.command.updated");
+        co_await event(expiry,row[0].value().value_or(std::string_view{}),"device.command.updated", context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next());
     co_await expiry.commit();
 }
 
@@ -344,7 +346,7 @@ class CommandResultService final {
                 .returning({ outcome.cast(outcome.column(service::command::persistence::CommandOperationEntity::columnName<"id">()), ruvia::DbDataType::kText) });
             const auto updated = co_await transaction.query(outcome);
             if (!updated.empty())
-                co_await repository::event(transaction, id, "device.command.updated");
+                co_await repository::event(transaction, id, "device.command.updated", context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         }
         co_await transaction.commit();
     }
@@ -565,7 +567,7 @@ private:
         for (const auto& elements : tasks) {
             PendingDispatch dispatch;
             auto& task = dispatch.task;
-            task.messageId = service::common::nextUuidV7();
+            task.messageId = context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
             task.groupKey = "device:" + device->id;
             task.protocol = device->protocol;
             task.transport = definition.commandTransport == service::collector::CommandTransport::DeviceConfigured
@@ -626,7 +628,7 @@ private:
         for (const auto& elements : tasks) {
             PendingDispatch dispatch;
             auto& task = dispatch.task;
-            task.messageId = service::common::nextUuidV7();
+            task.messageId = context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
             task.groupKey = "device:" + device.id;
             task.protocol = device.protocol;
             task.transport = "EDGE";
@@ -639,7 +641,7 @@ private:
             for (const auto& element : elements)
                 task.elements.emplace_back(element.elementId, element.value);
 
-            auto envelope = service::edge::protocol::outbound(service::common::nextUuidV7(), service::message::utcNowMilliseconds(), service::edge::protocol::platformId(), nodeId);
+            auto envelope = service::edge::protocol::outbound(context.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next(), service::message::utcNowMilliseconds(), context.template workerState<service::edge::config::PlatformIdentity>().id, nodeId);
             auto* command = envelope.mutable_command_request();
             if (!setUuid(command->mutable_command_id(), task.messageId) ||
                 !setUuid(command->mutable_device_id(), task.deviceId))

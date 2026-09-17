@@ -26,7 +26,7 @@ export namespace Alert {
         recovery_condition: string;
         recovery_wait_seconds: number;
         status: 'enabled' | 'disabled';
-        remark: string;
+        remark: string | null;
         created_at: string;
         updated_at: string;
     }
@@ -70,8 +70,8 @@ export namespace Alert {
     export interface TemplateItem {
         id: string;
         name: string;
-        category: string;
-        description: string;
+        category: string | null;
+        description: string | null;
         severity: Severity;
         logic: 'and' | 'or';
         silence_duration: number;
@@ -83,8 +83,8 @@ export namespace Alert {
     export interface TemplateDetail {
         id: string;
         name: string;
-        category: string;
-        description: string;
+        category: string | null;
+        description: string | null;
         severity: Severity;
         conditions: Condition[];
         logic: 'and' | 'or';

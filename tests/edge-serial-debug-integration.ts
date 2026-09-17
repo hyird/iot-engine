@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { apiBase, databaseUrl, redisUrl } from './architecture-fixture';
+import { EdgeDebugConnection, DebugOperationError } from '../web/pages/iot/edge_node/edge_node.api';
 const db = new Bun.SQL(databaseUrl), redis = new Bun.RedisClient(redisUrl);
 const platform = '00000000-0000-7000-8000-000000000001', admin = '00000000-0000-7000-8000-000000000002';
 const bytes = (id: string) => Buffer.from(id.replaceAll('-', ''), 'hex');
@@ -34,16 +35,21 @@ async function until(check: () => Promise<boolean>, reason: string) {
     const end = Date.now()+25000;
     while (Date.now()<end) {if(await check())return;await Bun.sleep(50);} throw Error(reason);
 }
-async function request(path: string, body: unknown, method = 'POST') {
-    const response = await fetch(apiBase+path,{method,headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
-    const text = await response.text();assert.equal(response.status,200,`${path}: ${text}`);return JSON.parse(text);
+let connections = 0;
+const channel = new EdgeDebugConnection(() => { connections++; return new WebSocket(apiBase.replace('http:', 'ws:') + '/v1/edge/debug'); });
+channel.configureSessionRestore(async () => {
+    await channel.request('edge.debug.authenticate', {token}, {anonymous:true});
+});
+async function rejected(operation: Promise<unknown>, code: number) {
+    await assert.rejects(operation,error => error instanceof DebugOperationError && error.code === code);
 }
 function imei() {
     const base='99'+String(Math.floor(Math.random()*1e12)).padStart(12,'0');let sum=0;
     for(let i=0;i<14;i++){let n=Number(base[i])*(i%2?2:1);if(n>9)n-=9;sum+=n;}return base+String((10-sum%10)%10);
 }
 const node = crypto.randomUUID(), identity = imei();
-let socket: WebSocket | undefined, browser: WebSocket | undefined;
+let socket: WebSocket | undefined;
+let release: (() => void) | undefined;
 try {
     await until(async () => (await fetch(apiBase + '/internal/health/ready')).status === 200, 'workers not ready');
     await db`INSERT INTO edge_node(id,platform_id,imei,enrollment_status) VALUES(${node},${platform},${identity},'approved')`;
@@ -70,10 +76,19 @@ try {
     socket.send(envelope(26, field(8, 1)));
     await until(async () => (await db`SELECT 1 FROM edge_node WHERE id=${node} AND capability->>'serialDebug'='true'`).length > 0, 'serial capability missing');
     await db`INSERT INTO edge_node_serial(node_id,path,available) VALUES(${node},'/dev/ttyS1',true)`;
-    const ticket = (await request(`/v1/edge/${node}/serial-ticket`, {path: '/dev/ttyS1'})).data.ticket;
-    const events: {kind: string; requestId?: number; hex?: string; manual?: boolean}[] = [];
-    browser = new WebSocket(apiBase.replace('http:', 'ws:') + `/edge/v1/serial?ticket=${ticket}`);
-    browser.onmessage = event => events.push(JSON.parse(String(event.data)));
+    assert.equal((await fetch(apiBase + '/v1/channel')).status, 404, 'universal business route remains');
+    for (const event of ['auth.login', 'auth.refresh', 'auth.logout', 'auth.me.subscribe', 'device.create']) {
+        await rejected(channel.request(event, {}), 10003);
+    }
+    const sessionId = (await channel.request<{id:string}>('edge.serial.open', {id:node,path:'/dev/ttyS1'})).id;
+    const session = {id:node,sessionId};
+    const sendCommand = (command: unknown) => channel.request('edge.serial.command',{...session,command});
+    const events: {kind: string; requestId?: number; hex?: string; manual?: boolean; sequence?: number}[] = [];
+    release = channel.subscribe<{events: typeof events}>('edge.serial.events.subscribe', session, {
+        next: data => {
+            events.push(...data.events);
+        }, error: error => { throw error; },
+    });
     await until(async () => commands.length > 0, 'serial open not delivered');
     const open = commands[0];
     assert.equal((open.get(3) as Buffer).toString(), 'open');
@@ -85,30 +100,55 @@ try {
     ])));
     emit('state', 1, false);
     await until(async () => events.some(e => e.kind === 'state'), 'open state not delivered');
-    const replay = new WebSocket(apiBase.replace('http:', 'ws:') + `/edge/v1/serial?ticket=${ticket}`);
-    await new Promise<void>((resolve, reject) => { const timer = setTimeout(() => reject(Error('ticket replay remained open')), 5000); replay.onclose = () => {clearTimeout(timer); resolve();}; });
-    browser.send(JSON.stringify({action: 'manual', requestId: 2, baudRate: 9600, dataBits: 8, stopBits: 1, parity: 'none', rs485: false}));
+    const intruder = new EdgeDebugConnection(() => new WebSocket(apiBase.replace('http:', 'ws:') + '/v1/edge/debug'));
+    intruder.configureSessionRestore(async () => { await intruder.request('edge.debug.authenticate',{token},{anonymous:true}); });
+    try {
+        await rejected(intruder.request('edge.serial.command',{...session,command:{action:'write',requestId:2,hex:'FF'}}),17021);
+    } finally { intruder.reset(); }
+    await sendCommand({action: 'manual', requestId: 2, baudRate: 9600, dataBits: 8, stopBits: 1, parity: 'none', rs485: false});
     await until(async () => commands.some(c => c.get(2) === 2n), 'manual command not delivered');
     emit('state', 2, true);
     await until(async () => events.some(e => e.requestId === 2 && e.manual), 'manual state missing');
-    browser.send(JSON.stringify({action: 'write', requestId: 3, hex: '00FF0A80'}));
+    await sendCommand({action: 'write', requestId: 3, hex: '00FF0A80'});
     await until(async () => commands.some(c => c.get(2) === 3n), 'write not delivered');
     assert.equal((commands.find(c => c.get(2) === 3n)!.get(5) as Buffer).toString('hex'), '00ff0a80');
     emit('data', 0, true, Buffer.from([0, 255, 10, 128])); emit('sent', 3, true);
     await until(async () => events.some(e => e.kind === 'sent'), 'write acknowledgement missing');
     assert(events.some(e => e.hex === '00FF0A80'));
-    browser.send(JSON.stringify({action: 'monitor', requestId: 4}));
+    for (let index = 0; index < 40; index++) emit('data', 0, true, Buffer.alloc(1024, index));
+    await until(async () => events.filter(event => event.kind === 'data').length === 41, 'burst serial data was lost');
+    await rejected(sendCommand({action:'write',requestId:3,hex:'00FF0A80'}),17021);
+    assert.equal(commands.filter(command => command.get(2) === 3n).length, 1);
+    assert.equal(new Set(events.map(event => event.sequence)).size, events.length, 'event cursor replayed old serial data');
+    assert.equal(connections, 1, 'serial control and events opened more than one connection');
+    await sendCommand({action: 'monitor', requestId: 4});
     await until(async () => commands.some(c => c.get(2) === 4n), 'resume not delivered');
     emit('state', 4, false);
     await until(async () => events.some(e => e.requestId === 4 && !e.manual), 'resume acknowledgement missing');
-    browser.close();
+    release(); release = undefined; channel.reset();
     await until(async () => commands.some(c => (c.get(3) as Buffer).toString() === 'close'), 'browser disconnect did not close serial session');
+
+    const closed = (sessionId: string) => commands.some(command =>
+        (command.get(1) as Buffer).equals(bytes(sessionId)) && (command.get(3) as Buffer).toString() === 'close');
+    const explicit = await channel.request<{id:string}>('edge.serial.open', {id:node,path:'/dev/ttyS1'});
+    await channel.request('edge.serial.close', {id:node,sessionId:explicit.id});
+    await channel.request('edge.serial.close', {id:node,sessionId:explicit.id});
+    await until(async () => closed(explicit.id), 'explicit close did not reach the owning node');
+    await rejected(channel.request('edge.serial.command', {id:node,sessionId:explicit.id,command:{action:'write',requestId:2,hex:'FF'}}),17021);
+
+    const logoutSession = await channel.request<{id:string}>('edge.serial.open', {id:node,path:'/dev/ttyS1'});
+    assert.equal((await fetch(apiBase + '/v1/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${token}` } })).status, 200);
+    channel.reset();
+    await until(async () => closed(logoutSession.id), 'logout left the serial resource open');
+    channel.reset();
     socket.send(envelope(26, Buffer.alloc(0)));
     await until(async () => (await db`SELECT 1 FROM edge_node WHERE id=${node} AND capability->>'serialDebug'='false'`).length > 0, 'legacy capability not reset');
-    const denied = await fetch(apiBase + `/v1/edge/${node}/serial-ticket`, {method: 'POST', headers: {Authorization: `Bearer ${token}`, 'Content-Type': 'application/json'}, body: JSON.stringify({path: '/dev/ttyS1'})});
-    assert.equal(denied.status, 409);
-    console.log('PASS real HTTP ticket, single-use replay rejection, Redis/WebSocket open/manual/binary/resume/close, legacy capability gate');
+    await rejected(channel.request('edge.serial.open',{id:node,path:'/dev/ttyS1'}),17004);
+    const removed = await fetch(apiBase + '/edge/v1/serial?ticket=' + crypto.randomUUID());
+    assert.equal(removed.status, 404, 'independent serial WebSocket route remains');
+    console.log('PASS dedicated WS serial: connection ownership, open/manual/binary/resume, event cursor, duplicate-write rejection, explicit/disconnect/logout close, legacy capability gate');
+
 } finally {
-    browser?.close(); socket?.close();
+    release?.(); channel.reset(); socket?.close();
     await redis.send('DEL', [`iot:edge:auth:${identity}`]); redis.close(); await db.close();
 }

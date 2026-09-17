@@ -74,7 +74,7 @@ ruvia::Task<bool> mutate(const Redis& redis, std::string_view script,
     std::string_view nodeId, std::uint64_t epoch, std::uint32_t protocolVersion,
     std::size_t workerIndex) {
     const auto sessionKey=key(nodeId);
-    const auto expected=value(epoch,protocolVersion,workerIndex);
+    const auto expected=value(epoch,protocolVersion,workerIndex,service::runtime::instanceId());
     const std::string_view keys[]{sessionKey,kDeadlines,kChanges};
     const std::string_view args[]{expected};
     const auto reply=co_await redis.eval(script,keys,args);
