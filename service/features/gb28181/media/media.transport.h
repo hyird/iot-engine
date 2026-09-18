@@ -71,7 +71,7 @@ class ZlmSdk final {
     [[nodiscard]] MediaCapabilities capabilities() const noexcept;
 
     [[nodiscard]] std::optional<OpenRtpServerResult>
-    openRtpServer(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& mode = "preview");
+    openRtpServer(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& sessionId, const std::string& mode = "preview");
     [[nodiscard]] bool closeRtpServer(const std::string& streamId);
     [[nodiscard]] PlayUrls buildPlayUrls(const std::string& streamId) const;
     [[nodiscard]] bool validatePlayToken(std::string_view stream, std::string_view token, std::int64_t expires) const;
@@ -114,7 +114,7 @@ class ZlmSdk final {
     static std::weak_ptr<CallbackState> activeCallbacks_;
     static thread_local OwnerIndex actorOwner_;
 
-    [[nodiscard]] std::string makeStreamId(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& mode) const;
+    [[nodiscard]] std::string makeStreamId(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& sessionId, const std::string& mode) const;
     [[nodiscard]] std::uint16_t allocateRtpPort();
     [[nodiscard]] std::string sdkIni() const;
     [[nodiscard]] std::string makePlayToken(std::string_view stream, std::int64_t expires) const;

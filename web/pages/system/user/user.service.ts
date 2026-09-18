@@ -1,13 +1,20 @@
+import { createQueryKeys } from '@/utils/query';
 import { useQuery, type UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import type { PaginatedResult } from '@/types/pagination';
 import { getRoleOptions } from '@/pages/system/role/role.service';
 import { create, getList, getOptions, remove, update } from './user.api';
 import type { User } from './user.types';
-import { roleOptionQueryKey, userQueryKeys } from './user.types';
 
 // ============ Queries ============
 type UserListResult = PaginatedResult<User.Item>;
+const userKeys = createQueryKeys('users');
+const userQueryKeys = {
+    ...userKeys,
+    list: (params?: User.Query) => [...userKeys.lists(), params] as const,
+};
+const roleOptionQueryKey = ['roles', 'options'] as const;
+
 export function useUserList(
     params?: User.Query,
     options?: Omit<UseQueryOptions<UserListResult>, 'queryKey' | 'queryFn'>

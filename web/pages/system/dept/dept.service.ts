@@ -1,9 +1,15 @@
+import { createQueryKeys } from '@/utils/query';
 import { useQuery, type UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import type { PaginatedResult } from '@/types/pagination';
 import { create, getList, getOptions, remove, update } from './dept.api';
 import type { Dept } from './dept.types';
-import { deptQueryKeys } from './dept.types';
+const deptKeys = createQueryKeys('departments');
+const deptQueryKeys = {
+    ...deptKeys,
+    list: (params?: Dept.Query) => [...deptKeys.lists(), params] as const,
+};
+
 export function useDeptList(
     params?: Dept.Query,
     options?: Omit<UseQueryOptions<PaginatedResult<Dept.Item>>, 'queryKey' | 'queryFn'>

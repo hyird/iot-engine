@@ -37,6 +37,7 @@ enum ConfigItemKind {
   CONFIG_ITEM_SL651_ELEMENT = 6;
   CONFIG_ITEM_SL651_DICTIONARY = 7;
   CONFIG_ITEM_INDUSTRIAL_POINT = 8;
+  CONFIG_ITEM_DTU = 9;
 }
 
 enum ValueKind {
@@ -230,6 +231,7 @@ message CapabilityReport {
   repeated NetworkCapability networks = 5 [(nanopb).max_count = 8];
   VpnCapabilities vpn = 6;
   bool supports_serial_debug = 8;
+  bool supports_dtu = 9;
 }
 
 message Heartbeat {
@@ -303,6 +305,48 @@ message SerialSettings {
   uint32 rs485_rts_delay_after_us = 8;
 }
 
+message DtuConfig {
+  bytes channel_id = 1 [(nanopb).max_size = 16];
+  string name = 2 [(nanopb).max_length = 100];
+  bool enabled = 3;
+  LinkMode south_mode = 4;
+  SerialSettings serial = 5;
+  string south_host = 6 [(nanopb).max_length = 253];
+  uint32 south_port = 7;
+  string north_host = 8 [(nanopb).max_length = 253];
+  uint32 north_port = 9;
+  uint32 max_clients = 10;
+  bool uplink_only = 11;
+  bytes registration = 12 [(nanopb).max_size = 256];
+  uint32 queue_bytes = 13;
+  uint32 serial_frame_ms = 14;
+  bool debug_enabled = 15;
+  bytes heartbeat = 16 [(nanopb).max_size = 256];
+  uint32 heartbeat_interval_sec = 17;
+}
+
+message DtuTrace {
+  uint64 sequence = 1;
+  string direction = 2 [(nanopb).max_length = 16];
+  uint32 client_slot = 3;
+  bytes payload = 4 [(nanopb).max_size = 256];
+  uint32 total_bytes = 5;
+  uint64 monotonic_ms = 6;
+}
+
+message DtuStatus {
+  bytes channel_id = 1 [(nanopb).max_size = 16];
+  string north_state = 2 [(nanopb).max_length = 24];
+  string south_state = 3 [(nanopb).max_length = 24];
+  uint32 client_count = 4;
+  uint64 upstream_bytes = 5;
+  uint64 downstream_bytes = 6;
+  uint32 queued_bytes = 7;
+  string error = 8 [(nanopb).max_length = 160];
+  repeated DtuTrace traces = 9 [(nanopb).max_count = 8];
+  uint64 omitted_traces = 10;
+}
+
 message EndpointConfig {
   bool debug_enabled = 11;
   bytes endpoint_id = 1 [(nanopb).max_size = 16];
@@ -330,12 +374,12 @@ message DeviceConfig {
   string name = 4 [(nanopb).max_length = 100];
   Protocol protocol = 5;
   string timezone = 6 [(nanopb).max_length = 64];
-  // Southbound DTU I/O is fixed at 1000 ms in protocol v1. A value of zero means
-  // the same 1000 ms default; other values are rejected instead of silently
-  // changing the device sampling cadence.
+  // Southbound acquisition interval in milliseconds (1000..3600000).
+  // Zero follows report_interval_sec on updated firmware. Legacy firmware accepts
+  // zero/1000 only and keeps its historical one-second cadence until upgraded.
   uint32 io_interval_ms = 7;
-  // Telemetry reporting is deliberately independent from the one-second DTU I/O
-  // loop. Each origin platform may configure its own reporting interval.
+  // Each origin platform configures its own read/report interval in seconds.
+  // An explicit nonzero io_interval_ms may override the acquisition interval.
   uint32 report_interval_sec = 8;
   uint32 online_timeout_sec = 9;
   uint32 modbus_slave_id = 10;
@@ -473,6 +517,7 @@ message ConfigItem {
     Sl651ElementConfig sl651_element = 15;
     Sl651DictionaryConfig sl651_dictionary = 16;
     IndustrialPointConfig industrial_point = 17;
+    DtuConfig dtu = 18;
   }
 }
 
@@ -914,6 +959,7 @@ message Envelope {
     Pong pong = 81;
     SerialDebugRequest serial_debug_request = 86;
     SerialDebugEvent serial_debug_event = 87;
+    DtuStatus dtu_status = 88;
     Error error = 90;
   }
 }

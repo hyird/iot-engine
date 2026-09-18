@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ruvia/web/ModelTypes.h>
+
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -45,11 +47,6 @@ class UuidV7Generator {
         return format(bytes);
     }
 
-    static UuidV7Generator& instance() {
-        static thread_local UuidV7Generator generator;
-        return generator;
-    }
-
   private:
     void randomSequence() {
         for (auto& byte : sequence_)
@@ -90,8 +87,6 @@ class UuidV7Generator {
     std::uint64_t lastTimestampMs_ = 0;
     std::array<std::uint8_t, 10> sequence_{};
 };
-
-inline std::string nextUuidV7() { return UuidV7Generator::instance().next(); }
 
 inline bool isUuid(std::string_view value) noexcept {
     if (value.size() != 36)
@@ -162,13 +157,22 @@ inline std::string uuidText(const std::uint8_t value[16]) {
     return uuidText(std::string_view(reinterpret_cast<const char*>(value), 16));
 }
 
+inline bool isUuidField(const ruvia::String& value) noexcept { return isUuid(value.view()); }
+
+inline bool isOptionalUuidField(const ruvia::String& value) noexcept {
+    return value.empty() || isUuid(value.view());
+}
+
 } // namespace service::common
 
 namespace service::runtime {
 
 // A process incarnation is never reused after a restart.
 inline const std::string& instanceId() {
-    static const std::string id = service::common::nextUuidV7();
+    static const std::string id = [] {
+        service::common::UuidV7Generator generator;
+        return generator.next();
+    }();
     return id;
 }
 

@@ -1,7 +1,7 @@
 import { BugOutlined, FileTextOutlined } from '@ant-design/icons';
-import { Alert, App, Button, Modal, Space, Tooltip } from 'antd';
-import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { Terminal } from '@xterm/xterm';
+import { Alert, App, Button, Modal, Space, Tooltip } from 'antd';
 import '@xterm/xterm/css/xterm.css';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DebugAcquisition } from '@/types/packet_debug';
@@ -13,7 +13,6 @@ interface Props {
     title: string;
     buttonClassName?: string;
     enabled: boolean;
-    inherited?: boolean;
     open: boolean;
     pending: boolean;
     loading: boolean;
@@ -24,12 +23,15 @@ interface Props {
     onClose: () => void;
 }
 export function PacketDebugPanel(props: Props) {
-    const active = props.enabled || props.inherited;
+    const active = props.enabled;
     const toggleTitle = props.enabled ? '关闭调试' : '开启调试';
+    useEffect(() => {
+        if (props.open && !props.enabled) props.onClose();
+    }, [props.open, props.enabled, props.onClose]);
     return (
         <>
             <Space size={2}>
-                <Tooltip title={props.inherited ? `${toggleTitle}（链路调试中）` : toggleTitle}>
+                <Tooltip title={toggleTitle}>
                     <Button
                         size="small"
                         type="text"
@@ -90,7 +92,7 @@ export function PacketDebugPanel(props: Props) {
                     header: { flexShrink: 0 },
                     footer: { flexShrink: 0 },
                 }}
-                open={props.open}
+                open={props.open && active}
                 onCancel={props.onClose}
                 footer={
                     <Space>
@@ -103,15 +105,9 @@ export function PacketDebugPanel(props: Props) {
             >
                 <div className="flex h-full min-h-0 flex-col gap-3">
                     <Alert
-                        type={props.enabled || props.inherited ? 'info' : 'warning'}
+                        type={props.enabled ? 'info' : 'warning'}
                         showIcon
-                        title={
-                            props.enabled
-                                ? '调试开关已开启，需手动关闭'
-                                : props.inherited
-                                  ? '设备独立调试已关闭，链路调试仍在运行'
-                                  : '调试已关闭'
-                        }
+                        title={props.enabled ? '调试开关已开启，需手动关闭' : '调试已关闭'}
                     />
                     {props.error && (
                         <Alert
@@ -120,7 +116,7 @@ export function PacketDebugPanel(props: Props) {
                             description={props.error.message}
                         />
                     )}
-                    {props.open && (
+                    {props.open && active && (
                         <PacketTerminal key={`${props.scope}:${props.title}`} {...props} />
                     )}
                 </div>

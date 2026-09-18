@@ -22,12 +22,6 @@ RUVIA_RESPONSE_MODEL(OperationResponse,
     RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(message, ruvia::String));
 
-inline bool isUuidField(const ruvia::String& value) noexcept { return isUuid(value.view()); }
-
-inline bool isOptionalUuidField(const ruvia::String& value) noexcept {
-    return value.empty() || isUuid(value.view());
-}
-
 inline constexpr std::int64_t kValidationErrorCode{10001};
 inline constexpr std::int64_t kBadRequestErrorCode{10002};
 inline constexpr std::int64_t kNotFoundErrorCode{10003};

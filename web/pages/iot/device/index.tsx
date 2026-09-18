@@ -1,5 +1,3 @@
-import type { Dispatch, SetStateAction } from 'react';
-import { saveDeviceSchema } from './device.schema';
 import {
     ApartmentOutlined,
     CopyOutlined,
@@ -12,8 +10,8 @@ import {
     SendOutlined,
     ShareAltOutlined,
 } from '@ant-design/icons';
-import { useVirtualizer } from '@tanstack/react-virtual';
 import { replaceEqualDeep } from '@tanstack/react-query';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import {
     Alert,
     App,
@@ -49,25 +47,26 @@ import type { ColumnsType } from 'antd/es/table';
 import type { DataNode, TreeProps } from 'antd/es/tree';
 import type { Dayjs } from 'dayjs';
 import dayjs from 'dayjs';
-import type { CSSProperties, ReactNode, RefObject } from 'react';
+import type { CSSProperties, Dispatch, ReactNode, RefObject, SetStateAction } from 'react';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { DeviceCardItem } from '@/components/DeviceCard';
 import DeviceCard from '@/components/DeviceCard';
-import { PacketDebugPanel } from '@/components/PacketDebugPanel';
-import { useDeviceDebug } from './device.service';
 import { FormModal } from '@/components/FormModal';
+import { PacketDebugPanel } from '@/components/PacketDebugPanel';
 import { PageContainer } from '@/components/PageContainer';
 import { usePermissions } from '@/hooks/usePermission';
 import { formatDateTime } from '@/utils/dateTime';
 import { useLinkOptions } from '../link/link.service';
 import type { Link } from '../link/link.types';
 import { useProtocolConfigOptions } from '../protocol/protocol.service';
+import { saveDeviceSchema } from './device.schema';
 import {
     getDeviceDetail,
     isDeviceOnline,
+    summarizeDeviceCommandResult,
     useDeviceCommand,
     useDeviceCommandResults,
-    summarizeDeviceCommandResult,
+    useDeviceDebug,
     useDeviceDelete,
     useDeviceGroupDelete,
     useDeviceGroupSave,
@@ -1690,7 +1689,11 @@ function DeviceDebug({
         },
         []
     );
-    const { packets, toggle } = useDeviceDebug(item.id, open, commandIds);
+    const { packets, toggle } = useDeviceDebug(
+        item.id,
+        open && item.debug_enabled === true,
+        commandIds
+    );
     return (
         <PacketDebugPanel
             scope="device"
@@ -1698,7 +1701,6 @@ function DeviceDebug({
             buttonClassName={DEVICE_CARD_ACTION_BUTTON_CLASS}
             title={`设备调试 · ${item.name}`}
             enabled={item.debug_enabled === true}
-            inherited={item.link_debug_enabled === true}
             open={open}
             pending={toggle.isPending}
             loading={packets.isLoading}

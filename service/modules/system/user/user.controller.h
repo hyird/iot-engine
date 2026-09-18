@@ -5,7 +5,7 @@
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/permission.h"
-#include "service/modules/system/user/user.schema.h"
+#include "service/modules/system/user/user.types.h"
 #include "service/modules/system/user/user.service.h"
 
 namespace service::user {
@@ -14,20 +14,20 @@ class UserController final : public ruvia::Controller<UserController> {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/users", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
-    RUVIA_GET("/", list, UserListQueryValidator);
-    RUVIA_GET("/options", options, UserOptionsQueryValidator);
-    RUVIA_GET("/:id", detail, UserIdParamsValidator);
-    RUVIA_POST("/", create, CreateUserValidator);
-    RUVIA_PUT("/:id", update, UserIdParamsValidator, UpdateUserValidator);
-    RUVIA_DELETE("/:id", remove, UserIdParamsValidator);
+    RUVIA_GET("/", list, ruvia::QueryModel<UserListQuery>);
+    RUVIA_GET("/options", options, ruvia::QueryModel<UserOptionsQuery>);
+    RUVIA_GET("/:id", detail, ruvia::PathModel<UserIdParams>);
+    RUVIA_POST("/", create, ruvia::JsonBody<CreateUserBody>);
+    RUVIA_PUT("/:id", update, ruvia::PathModel<UserIdParams>, ruvia::JsonBody<UpdateUserBody>);
+    RUVIA_DELETE("/:id", remove, ruvia::PathModel<UserIdParams>);
     RUVIA_ROUTES_END
 
   private:
     static std::string id(ruvia::Context& c) {
-        return std::string(c.req().validated<UserIdParams>().get<"id">()->view());
+        return std::string(c.req().validated<UserIdParams>().get<"id">().view());
     }
 
-    ruvia::Task<ruvia::HttpResponse> list(ruvia::Context& c) {
+    ruvia::Task<> list(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:user:query");
         const auto& query = c.req().validated<UserListQuery>();
         const auto page = static_cast<std::int64_t>(*query.get<"page">());
@@ -42,7 +42,7 @@ class UserController final : public ruvia::Controller<UserController> {
             c, co_await userService().list(c, page, pageSize, keyword, status)));
     }
 
-    ruvia::Task<ruvia::HttpResponse> options(ruvia::Context& c) {
+    ruvia::Task<> options(ruvia::Context& c) {
         co_await service::middleware::requirePermission(c, "system:user:query");
         const auto& query = c.req().validated<UserOptionsQuery>();
         const auto keyword = query.get<"keyword">()
@@ -52,25 +52,28 @@ class UserController final : public ruvia::Controller<UserController> {
             c, co_await userService().options(c, keyword)));
     }
 
-    ruvia::Task<ruvia::HttpResponse> detail(ruvia::Context& c) {
+    ruvia::Task<> detail(ruvia::Context& c) {
+
         co_await service::middleware::requirePermission(c, "system:user:query");
-        co_return c.json(
-            service::common::ok<UserDetailResponse>(c, co_await userService().detail(c, id(c))));
+        co_return c.json(service::common::ok<UserDetailResponse>(c, co_await userService().detail(c, id(c))));
     }
 
-    ruvia::Task<ruvia::HttpResponse> create(ruvia::Context& c) {
+    ruvia::Task<> create(ruvia::Context& c) {
+
         co_await service::middleware::requirePermission(c, "system:user:add");
         co_await userService().create(c, c.req().validated<CreateUserBody>());
         co_return c.json(service::common::operation(c, "创建成功"));
     }
 
-    ruvia::Task<ruvia::HttpResponse> update(ruvia::Context& c) {
+    ruvia::Task<> update(ruvia::Context& c) {
+
         co_await service::middleware::requirePermission(c, "system:user:edit");
         co_await userService().update(c, id(c), c.req().validated<UpdateUserBody>());
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 
-    ruvia::Task<ruvia::HttpResponse> remove(ruvia::Context& c) {
+    ruvia::Task<> remove(ruvia::Context& c) {
+
         co_await service::middleware::requirePermission(c, "system:user:delete");
         const auto principal = service::middleware::requireAuth(c);
         co_await userService().remove(c, id(c), principal.userId);

@@ -112,15 +112,15 @@ void requireAccessQueriesUseOrm(std::string_view source) {
 int main() {
     try {
         const auto source = accessSource("open_access.service.h");
-        const auto schema = accessSource("open_access.schema.h");
+        const auto types = accessSource("open_access.types.h");
         const auto featureSource = accessFeatureSource();
         requireNoUnsafeParsers(source);
-        requireStrictPresentFieldTypes(source + schema);
+        requireStrictPresentFieldTypes(source + types);
         require(source.find("static void validateWebhookUrl") == std::string::npos,
                 "access service still defines URL structure validation");
         require(source.find("open_access.schema.h") == std::string::npos,
                 "access service still depends on request schema");
-        require(schema.find("validateWebhookUrl(*result.url)") != std::string::npos,
+        require(types.find("validateWebhookUrl(*result.url)") != std::string::npos,
                 "webhook input does not validate its URL before business execution");
         requireCanonicalBooleanPointValues(source);
         requireAccessQueriesUseOrm(featureSource);

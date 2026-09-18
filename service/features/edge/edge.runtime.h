@@ -337,8 +337,9 @@ namespace service::edge {
 
 class EdgeProjectionRuntime final : private EdgeProjectionService {
   public:
-    explicit EdgeProjectionRuntime(observability::RuntimeDiagnostics& diagnostics)
-        : diagnostics_(diagnostics) {}
+    explicit EdgeProjectionRuntime(observability::RuntimeDiagnostics& diagnostics,
+                                   std::filesystem::path firmwareDirectory = "firmware")
+        : diagnostics_(diagnostics), firmwareDirectory_(std::filesystem::absolute(std::move(firmwareDirectory)).lexically_normal()) {}
     EdgeProjectionRuntime(const EdgeProjectionRuntime&) = delete;
     EdgeProjectionRuntime& operator=(const EdgeProjectionRuntime&) = delete;
 
@@ -573,6 +574,8 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
             ready->set_value();
             readySet = true;
 
+            auto nextFirmwareCleanup = std::chrono::steady_clock::now();
+
             bool recovering = true;
             const auto consumer = service::runtime::instanceId() + ":service-" +
                 std::to_string(index);
@@ -601,6 +604,14 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
                     lostRecoveryLeases_.clear();
                 }
 
+                if (std::chrono::steady_clock::now() >= nextFirmwareCleanup) {
+                    nextFirmwareCleanup = std::chrono::steady_clock::now() + std::chrono::minutes(1);
+                    try {
+                        co_await cleanupFirmwares(context, firmwareDirectory_);
+                    } catch (const std::exception& error) {
+                        std::cerr << "firmware cleanup failed: " << error.what() << '\n';
+                    }
+                }
                 bool maintenanceFailed = false;
                 try {
                     if (std::chrono::steady_clock::now() >= nextDiscovery) {
@@ -979,6 +990,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
     std::atomic_bool leaseLost_{ false };
     std::atomic_bool failed_{ false };
     observability::RuntimeDiagnostics& diagnostics_;
+    const std::filesystem::path firmwareDirectory_;
     std::map<std::string, std::string, std::less<>> recoveryLeases_;
     std::set<std::string, std::less<>> lostRecoveryLeases_;
 };

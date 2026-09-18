@@ -60,15 +60,13 @@ void requireInputValidation(std::string_view source) {
 int main() {
     try {
         const auto source = linkSource("link.service.h");
-        const auto schema = linkSource("link.schema.h");
+        const auto types = linkSource("link.types.h");
         requireNoUnsafeParsing(source);
-        requireInputValidation(source + schema);
-        require(source.find("static void validateConfiguration") == std::string::npos,
-                "link service still defines request configuration validation");
-        require(source.find("LinkPayloadValidator::validateConfiguration(") != std::string::npos,
-                "link service does not call schema configuration validation");
-        require(schema.find("class LinkPayloadValidator final") != std::string::npos,
-                "link schema does not own payload validation");
+        requireInputValidation(source + types);
+        require(source.find("static void validateConfiguration") != std::string::npos,
+                "link service must enforce protocol and endpoint combinations");
+        require(types.find("RUVIA_REQUIRED_FIELD(name") != std::string::npos,
+                "link request must declare its required fields");
         std::cout << "link service tests passed\n";
         return 0;
     } catch (const std::exception& error) {

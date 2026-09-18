@@ -330,47 +330,6 @@ export const normalizePacketConfig = (
         : DEFAULT_PACKET_MAX_QUANTITY;
     return { mergeGap, maxQuantity };
 };
-export const REGISTER_TYPE_ORDER: Modbus.RegisterType[] = [
-    'COIL',
-    'DISCRETE_INPUT',
-    'INPUT_REGISTER',
-    'HOLDING_REGISTER',
-];
-export const REGISTER_TYPE_META: Record<
-    Modbus.RegisterType,
-    {
-        label: string;
-        color: string;
-        prefix: string;
-        short: string;
-    }
-> = {
-    COIL: { label: '0X - 线圈 (Coil)', color: 'green', prefix: '0X', short: '0X' },
-    DISCRETE_INPUT: {
-        label: '1X - 离散输入 (Discrete Input)',
-        color: 'blue',
-        prefix: '1X',
-        short: '1X',
-    },
-    INPUT_REGISTER: {
-        label: '3X - 输入寄存器 (Input Register)',
-        color: 'cyan',
-        prefix: '3X',
-        short: '3X',
-    },
-    HOLDING_REGISTER: {
-        label: '4X - 保持寄存器 (Holding Register)',
-        color: 'orange',
-        prefix: '4X',
-        short: '4X',
-    },
-};
-const UNKNOWN_REGISTER_TYPE_META = {
-    label: '未知寄存器类型',
-    color: 'default',
-    prefix: '',
-    short: '?',
-};
 /**
  * 将南桥旧配置中的寄存器类型归一化为管理端/API 使用的标准枚举。
  * 未识别值保留给兜底展示，避免一条历史脏数据导致整个配置页崩溃。
@@ -392,12 +351,6 @@ export const normalizeRegisterType = (value: unknown): Modbus.RegisterType | und
         default:
             return undefined;
     }
-};
-export const getRegisterTypeMeta = (value: unknown) => {
-    const registerType = normalizeRegisterType(value);
-    if (registerType) return REGISTER_TYPE_META[registerType];
-    const suffix = typeof value === 'string' && value.trim() ? `（${value.trim()}）` : '';
-    return { ...UNKNOWN_REGISTER_TYPE_META, label: `${UNKNOWN_REGISTER_TYPE_META.label}${suffix}` };
 };
 export const normalizeModbusRegisters = (registers: unknown): Modbus.Register[] => {
     if (!Array.isArray(registers)) return [];
@@ -441,44 +394,9 @@ export const generateId = (): string =>
     '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (c) =>
         (+c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (+c / 4)))).toString(16)
     );
-/** 检查寄存器地址是否冲突 */
-export const checkAddressConflict = (
-    registers: Modbus.Register[],
-    newRegister: {
-        registerType: Modbus.RegisterType;
-        address: number;
-        quantity: number;
-    },
-    excludeId?: string
-): {
-    conflict: boolean;
-    conflictWith?: Modbus.Register;
-} => {
-    const newStart = newRegister.address;
-    const newEnd = newRegister.address + newRegister.quantity - 1;
-    for (const reg of registers) {
-        // 跳过自身（编辑模式）
-        if (excludeId && reg.id === excludeId) continue;
-        // 只检查同类型寄存器
-        if (reg.registerType !== newRegister.registerType) continue;
-        const existStart = reg.address;
-        const existEnd = reg.address + reg.quantity - 1;
-        // 检查地址范围是否重叠
-        if (!(newEnd < existStart || newStart > existEnd)) {
-            return { conflict: true, conflictWith: reg };
-        }
-    }
-    return { conflict: false };
-};
-/** 设备类型 Modal Ref */
-
-/** 寄存器 Modal Ref */
-
 /**
  * S7 协议配置
  */
-
-/** 生成唯一 ID（兼容非安全上下文） */
 
 export const defaultConfig = (): S7.Config => ({
     deviceType: '',
@@ -703,15 +621,6 @@ export const supportsS7Decimals = (dataType?: S7.AreaDataType) =>
     dataType === 'FLOAT' || dataType === 'LREAL';
 export const supportsBitAddress = (areaType?: S7.AreaType, dataType?: S7.AreaDataType) =>
     dataType === 'BOOL' && !!areaType && areaType !== 'CT' && areaType !== 'TM';
-/**
- * SL651 协议配置 - 共享类型和常量
- */
-/** 编码类型列表 */
-export const EncodeList: SL651.EncodeType[] = ['BCD', 'TIME_YYMMDDHHMMSS', 'JPEG', 'DICT', 'HEX'];
-/** 生成唯一 ID（兼容非安全上下文） */
-
-/** SaveMutation 类型（避免每个 Modal 重复定义） */
-
 /** 设备类型表单默认值与编辑回填值。 */
 export const getSl651DeviceTypeFormValues = (data?: Protocol.Item) => {
     const config = data?.config as SL651.Config | undefined;
@@ -723,6 +632,3 @@ export const getSl651DeviceTypeFormValues = (data?: Protocol.Item) => {
         remark: data?.remark ?? '',
     };
 };
-/** 表单中的条件数据（可能不完整） */
-
-/** 表单中的映射项数据（可能不完整） */

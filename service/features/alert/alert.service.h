@@ -546,7 +546,7 @@ class AlertEvaluationService final {
             co_return;
         }
 
-        Query incoming(context.resource());
+        Query incoming(context.pool());
         for (auto index = begin; index < end; ++index) {
             const auto& evaluation = evaluations[index];
             incoming.values({
@@ -567,7 +567,7 @@ class AlertEvaluationService final {
             });
         }
 
-        Query stateRows(context.resource());
+        Query stateRows(context.pool());
         const auto initialRecovery = stateRows.caseWhen(
             {{stateRows.column("matched", "incoming"), stateRows.nullValue()}},
             stateRows.call("now"));
@@ -577,7 +577,7 @@ class AlertEvaluationService final {
                      stateRows.call("now"), stateRows.call("now")})
             .from("incoming", "incoming");
 
-        Query states(context.resource());
+        Query states(context.pool());
         const auto recoveryStarted = states.caseWhen(
             {{states.excluded(service::alert::persistence::AlertRuleStateEntity::columnName<"matched">()), states.nullValue()},
              {states.column(service::alert::persistence::AlertRuleStateEntity::columnName<"matched">(), "alert_rule_state"), states.call("now")}},
@@ -594,7 +594,7 @@ class AlertEvaluationService final {
                                     {"updated_at", states.call("now")}}})
             .returning({states.column(service::alert::persistence::AlertRuleStateEntity::columnName<"rule_id">()), states.column(service::alert::persistence::AlertRuleStateEntity::columnName<"recovery_started_at">())});
 
-        Query activeRecord(context.resource());
+        Query activeRecord(context.pool());
         activeRecord
             .select(activeRecord.cast(activeRecord.value(std::int64_t{1}), Type::kInteger))
             .from(service::alert::persistence::OpenAlertRecordEntity::tableName(), "record")
@@ -604,7 +604,7 @@ class AlertEvaluationService final {
                 activeRecord.column(service::alert::persistence::OpenAlertRecordEntity::columnName<"status">(), "record"), Op::kIn,
                 activeRecord.list({activeRecord.value("active"),
                                    activeRecord.value("acknowledged")})));
-        Query recentRecord(context.resource());
+        Query recentRecord(context.pool());
         const auto silenceWindow = recentRecord.binary(
             recentRecord.column("silence_duration", "incoming"), Op::kMultiply,
             recentRecord.cast(recentRecord.value("1 second"), Type::kInterval));
@@ -617,7 +617,7 @@ class AlertEvaluationService final {
                 recentRecord.column(service::alert::persistence::OpenAlertRecordEntity::columnName<"triggered_at">(), "record"), Op::kGreater,
                 recentRecord.binary(recentRecord.call("now"), Op::kSubtract, silenceWindow)));
 
-        Query createdRows(context.resource());
+        Query createdRows(context.pool());
         createdRows
             .select({createdRows.column("record_id", "incoming"),
                      createdRows.column("rule_id", "incoming"),
@@ -632,7 +632,7 @@ class AlertEvaluationService final {
                                         createdRows.exists(activeRecord)))
             .andWhere(createdRows.unary(ruvia::DbUnaryOperator::kNot,
                                         createdRows.exists(recentRecord)));
-        Query created(context.resource());
+        Query created(context.pool());
         created
             .insertInto(service::alert::persistence::OpenAlertRecordEntity::tableName(), {"id", "rule_id", "device_id", "severity",
                                                 "status", "message", "detail", "triggered_at"})
@@ -640,7 +640,7 @@ class AlertEvaluationService final {
             .onConflict({.doNothing = true})
             .returning({created.column(service::alert::persistence::OpenAlertRecordEntity::columnName<"id">()), created.column(service::alert::persistence::OpenAlertRecordEntity::columnName<"rule_id">())});
 
-        Query resolved(context.resource());
+        Query resolved(context.pool());
         const auto reverseReady = resolved.binary(
             resolved.binary(resolved.column("recovery_condition", "incoming"), Op::kEqual,
                             resolved.value("reverse")),
@@ -695,7 +695,7 @@ class AlertEvaluationService final {
             .returning({resolved.column(service::alert::persistence::OpenAlertRecordEntity::columnName<"id">(), "record"),
                         resolved.column("rule_id", "incoming")});
 
-        Query changes(context.resource());
+        Query changes(context.pool());
         changes
             .select({changes.alias(
                          changes.cast(changes.value("device.alert.triggered"), Type::kText),
@@ -704,7 +704,7 @@ class AlertEvaluationService final {
                      changes.alias(changes.column("id", "created"), "id"),
                      changes.alias(changes.column("rule_id", "created"), "rule_id")})
             .from("created", "created");
-        Query resolvedChanges(context.resource());
+        Query resolvedChanges(context.pool());
         resolvedChanges
             .select({resolvedChanges.cast(resolvedChanges.value("device.alert.resolved"),
                                           Type::kText),
@@ -714,7 +714,7 @@ class AlertEvaluationService final {
             .from("resolved", "resolved");
         changes.combine(ruvia::DbSetOperation::kUnionAll, resolvedChanges);
 
-        Query queuedRows(context.resource());
+        Query queuedRows(context.pool());
         const auto jsonKey = [&queuedRows](std::string_view key) {
             return queuedRows.cast(queuedRows.value(key), Type::kText);
         };
@@ -740,7 +740,7 @@ class AlertEvaluationService final {
                   queuedRows.binary(queuedRows.column("rule_id", "incoming"), Op::kEqual,
                                    queuedRows.column("rule_id", "changes")),
                   "incoming");
-        Query queued(context.resource());
+        Query queued(context.pool());
         queued
             .insertInto(service::alert::persistence::AlertEventOutboxEntity::tableName(), {"event_id", "event_type", "rule_id", "device_id",
                                                  "device_code", "occurred_at_ms", "data"})
@@ -751,12 +751,12 @@ class AlertEvaluationService final {
                         queued.column(service::alert::persistence::AlertEventOutboxEntity::columnName<"device_code">()), queued.column(service::alert::persistence::AlertEventOutboxEntity::columnName<"occurred_at_ms">()),
                         queued.column(service::alert::persistence::AlertEventOutboxEntity::columnName<"data">()), queued.column(service::alert::persistence::AlertEventOutboxEntity::columnName<"created_at">())});
 
-        Query queuedBarrier(context.resource());
+        Query queuedBarrier(context.pool());
         queuedBarrier
             .select(queuedBarrier.alias(queuedBarrier.aggregate("count", {queuedBarrier.star()}),
                                         "queued_count"))
             .from("queued");
-        Query receiptedRows(context.resource());
+        Query receiptedRows(context.pool());
         receiptedRows
             .select({receiptedRows.cast(
                          receiptedRows.nullIf(
@@ -774,18 +774,18 @@ class AlertEvaluationService final {
             .andWhere(receiptedRows.binary(
                 receiptedRows.column("queued_count", "queued_barrier"), Op::kGreaterEqual,
                 receiptedRows.cast(receiptedRows.value(std::int64_t{0}), Type::kBigInt)));
-        Query receipted(context.resource());
+        Query receipted(context.pool());
         receipted
             .insertInto(service::alert::persistence::AlertEvaluationReceiptEntity::tableName(), {"message_id", "device_id"})
             .insertFrom(receiptedRows)
             .onConflict({.columns = {"message_id"}, .doNothing = true})
             .returning({receipted.column(service::alert::persistence::AlertEvaluationReceiptEntity::columnName<"message_id">())});
 
-        Query receiptedCount(context.resource());
+        Query receiptedCount(context.pool());
         receiptedCount
             .select(receiptedCount.aggregate("count", {receiptedCount.star()}))
             .from("receipted");
-        Query pruned(context.resource());
+        Query pruned(context.pool());
         pruned
             .deleteFrom(service::alert::persistence::AlertEvaluationReceiptEntity::tableName())
             .andWhere(pruned.binary(
@@ -796,12 +796,12 @@ class AlertEvaluationService final {
                                     pruned.cast(pruned.value(std::int64_t{0}), Type::kBigInt)))
             .returning({pruned.column(service::alert::persistence::AlertEvaluationReceiptEntity::columnName<"message_id">())});
 
-        Query relevant(context.resource());
+        Query relevant(context.pool());
         relevant
             .select(relevant.column("rule_id", "incoming"))
             .distinct()
             .from("incoming", "incoming");
-        Query deliverable(context.resource());
+        Query deliverable(context.pool());
         deliverable
             .select({deliverable.column("event_id", "queued"),
                      deliverable.column("event_type", "queued"),
@@ -812,7 +812,7 @@ class AlertEvaluationService final {
                      deliverable.column("data", "queued"),
                      deliverable.column("created_at", "queued")})
             .from("queued", "queued");
-        Query existingDeliverable(context.resource());
+        Query existingDeliverable(context.pool());
         existingDeliverable
             .select({existingDeliverable.column(service::alert::persistence::AlertEventOutboxEntity::columnName<"event_id">(), "outbox"),
                      existingDeliverable.column(service::alert::persistence::AlertEventOutboxEntity::columnName<"event_type">(), "outbox"),
@@ -830,13 +830,13 @@ class AlertEvaluationService final {
                   "relevant");
         deliverable.combine(ruvia::DbSetOperation::kUnionAll, existingDeliverable);
 
-        Query pruneBarrier(context.resource());
+        Query pruneBarrier(context.pool());
         pruneBarrier
             .select(pruneBarrier.alias(pruneBarrier.aggregate("count", {pruneBarrier.star()}),
                                        "pruned_count"))
             .from("pruned");
 
-        Query result(context.resource());
+        Query result(context.pool());
         result
             .with("incoming", incoming,
                   {.columns = {"rule_id", "matched", "record_id", "device_id", "severity",
@@ -904,7 +904,7 @@ class AlertEvaluationService final {
         const auto replies = co_await std::move(pipeline).exec();
         service::message::redis::requirePipelineSuccess("publish alert outbox", replies);
 
-        Query remove(context.resource());
+        Query remove(context.pool());
         std::vector<Query::Expr> keys;
         keys.reserve(events.size());
         for (const auto& event : events) {
@@ -923,7 +923,7 @@ class AlertEvaluationService final {
     }
 
     static ruvia::Task<void> drainOutbox(ruvia::WebWorkerContext& context) {
-        Query prune(context.resource());
+        Query prune(context.pool());
         prune.deleteFrom(service::alert::persistence::AlertEvaluationReceiptEntity::tableName())
             .andWhere(prune.binary(
                 prune.column(service::alert::persistence::AlertEvaluationReceiptEntity::columnName<"created_at">()), Op::kLess,
@@ -931,7 +931,7 @@ class AlertEvaluationService final {
                              prune.cast(prune.value("7 days"), Type::kInterval))));
         (void)co_await context.db().execute(prune);
         while (true) {
-            Query eventsQuery(context.resource());
+            Query eventsQuery(context.pool());
             eventsQuery
                 .select({eventsQuery.cast(eventsQuery.column(service::alert::persistence::AlertEventOutboxEntity::columnName<"event_id">()), Type::kText),
                          eventsQuery.column(service::alert::persistence::AlertEventOutboxEntity::columnName<"event_type">()),

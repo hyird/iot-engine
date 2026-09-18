@@ -123,7 +123,7 @@ public:
     RUVIA_GET("/ip", ip);
     RUVIA_ROUTES_END
 private:
-    ruvia::Task<ruvia::HttpResponse> ip(ruvia::Context& context) {
+    ruvia::Task<> ip(ruvia::Context& context) {
         const auto owner = std::this_thread::get_id();
         service::link::LinkService service;
         const auto first = co_await service.publicIp(context);

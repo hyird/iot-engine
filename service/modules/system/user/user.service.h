@@ -109,18 +109,18 @@ class UserService {
 
     template <typename Context>
     ruvia::Task<void> create(Context& c, const CreateUserBody& body) {
-        const std::string username(body.get<"username">()->view());
+        const std::string username(body.get<"username">().view());
         ruvia::DbFindOptions exists;
         exists.where = UserEntity::column<"username">() == username &&
             UserEntity::column<"deleted_at">().isNull();
         if (co_await c.db().template getRepository<UserEntity>().exists(exists)) {
             service::common::fail(12002, "用户名已存在", 409);
         }
-        co_await validateRoles(c, *body.get<"roleIds">());
+        co_await validateRoles(c, body.get<"roleIds">());
         co_await validateDepartment(c, body.get<"departmentId">());
 
         const std::string passwordHash =
-            service::utils::hashPassword(body.get<"password">()->view());
+            service::utils::hashPassword(body.get<"password">().view());
         const std::string nickname =
             body.get<"nickname">() ? std::string(body.get<"nickname">()->view()) : "";
         const std::string phone =
@@ -159,7 +159,7 @@ class UserService {
             user.set<"department_id">(departmentId);
         }
         (void)co_await tx.template getRepository<UserEntity>().insert(user);
-        co_await replaceRoles(tx, id, *body.get<"roleIds">(), c.pool(), *c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>());
+        co_await replaceRoles(tx, id, body.get<"roleIds">(), c.pool(), *c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>());
         co_await tx.commit();
     }
 

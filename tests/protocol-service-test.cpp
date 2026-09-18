@@ -67,9 +67,9 @@ void requireStrictUpdateFieldTypes(std::string_view source) {
     require(source.find("if (const auto name = payload.get<ruvia::String>(\"name\"))") ==
                 std::string_view::npos,
             "protocol update writes present non-string name fields through SQL");
-    require(source.find("ProtocolRequestFields::text(object, \"protocol\", 16)") != std::string_view::npos,
+    require(source.find("protocolRequest::text(object, \"protocol\", 16)") != std::string_view::npos,
             "protocol update does not decode a typed protocol field");
-    require(source.find("ProtocolRequestFields::text(object, \"name\", 64)") != std::string_view::npos,
+    require(source.find("protocolRequest::text(object, \"name\", 64)") != std::string_view::npos,
             "protocol update does not decode a typed name field");
     require(source.find("remark 必须是字符串或 null") != std::string_view::npos,
             "protocol service does not reject non-string remark fields");
@@ -153,12 +153,12 @@ void requireEdgeSyncDoesNotLeakAsUpdateFailure(std::string_view source) {
 int main() {
     try {
         const auto service = protocolSource("protocol.service.h");
-        const auto schema = protocolSource("protocol.schema.h");
-        const auto source = service + schema;
+        const auto types = protocolSource("protocol.types.h");
+        const auto source = service + types;
         require(service.find("protocol.schema.h") == std::string::npos,
                 "protocol service depends on request schema");
-        require(schema.find("class UpdateProtocolValidator final") != std::string::npos,
-                "protocol schema has no typed update validator");
+        require(types.find("static UpdateProtocolBody parse") != std::string::npos,
+                "protocol update value has no request parser");
         require(service.find("ProtocolConfigurationRules::validateConfig") != std::string::npos,
                 "protocol service does not enforce persisted protocol configuration rules");
         require(source.find("ruvia::detail::") == std::string::npos,

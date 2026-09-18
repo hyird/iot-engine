@@ -1,3 +1,4 @@
+import type { Modbus } from './protocol.types';
 import { z } from 'zod';
 export const protocolIdSchema = z.uuid({ error: 'id 必须是 UUID' });
 export const protocolTypeSchema = z.enum(['SL651', 'Modbus', 'S7', 'MC', 'FINS', 'DLT645']);
@@ -461,4 +462,34 @@ export const validateTsapValue = async (_: unknown, value?: string) => {
     if (!formatTsapValue(value)) {
         throw new Error('请输入 1-4 位十六进制 TSAP，例如 4D57 或 0200');
     }
+};
+
+/** 检查寄存器地址是否冲突 */
+export const checkAddressConflict = (
+    registers: Modbus.Register[],
+    newRegister: {
+        registerType: Modbus.RegisterType;
+        address: number;
+        quantity: number;
+    },
+    excludeId?: string
+): {
+    conflict: boolean;
+    conflictWith?: Modbus.Register;
+} => {
+    const newStart = newRegister.address;
+    const newEnd = newRegister.address + newRegister.quantity - 1;
+    for (const reg of registers) {
+        // 跳过自身（编辑模式）
+        if (excludeId && reg.id === excludeId) continue;
+        // 只检查同类型寄存器
+        if (reg.registerType !== newRegister.registerType) continue;
+        const existStart = reg.address;
+        const existEnd = reg.address + reg.quantity - 1;
+        // 检查地址范围是否重叠
+        if (!(newEnd < existStart || newStart > existEnd)) {
+            return { conflict: true, conflictWith: reg };
+        }
+    }
+    return { conflict: false };
 };

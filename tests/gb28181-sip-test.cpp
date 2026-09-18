@@ -378,14 +378,14 @@ void verifySipRegistrationGeneration(
     );
 }
 
-void verifyKeepaliveExpiry(std::shared_ptr<SipServer>& server, SipConfig sip, const MediaConfig& media, DeviceRegistry& devices, ZlmSdk& zlm, const ruvia::EventLoop& loop, asio::io_context& clientContext) {
+void verifyKeepaliveExpiry(service::common::UuidV7Generator& uuidGenerator, std::shared_ptr<SipServer>& server, SipConfig sip, const MediaConfig& media, DeviceRegistry& devices, ZlmSdk& zlm, const ruvia::EventLoop& loop, asio::io_context& clientContext) {
     server->stop();
     server.reset();
 
     sip.port = reserveLocalPort();
     sip.transport = "udp";
     sip.registrationTimeoutSeconds = 1;
-    server = std::make_shared<SipServer>(sip, media, devices, zlm, loop);
+    server = std::make_shared<SipServer>(uuidGenerator, sip, media, devices, zlm, loop);
     server->start();
 
     const asio::ip::udp::endpoint endpoint(asio::ip::address_v4::loopback(), sip.port);
@@ -436,11 +436,12 @@ void verifyDualUdpWorkerOwnership(const SipConfig& baseSip, const MediaConfig& m
     sip.registrationTimeoutSeconds = 30;
     DeviceRegistry firstDevices;
     DeviceRegistry secondDevices;
+    service::common::UuidV7Generator firstIds, secondIds;
     std::shared_ptr<SipServer> first;
     std::shared_ptr<SipServer> second;
     try {
-        first = std::make_shared<SipServer>(sip, media, firstDevices, zlm, dualPool.loop(0), SipServer::ViewerCountObserver{}, 0);
-        second = std::make_shared<SipServer>(sip, media, secondDevices, zlm, dualPool.loop(1), SipServer::ViewerCountObserver{}, 1);
+        first = std::make_shared<SipServer>(firstIds, sip, media, firstDevices, zlm, dualPool.loop(0), SipServer::ViewerCountObserver{}, 0);
+        second = std::make_shared<SipServer>(secondIds, sip, media, secondDevices, zlm, dualPool.loop(1), SipServer::ViewerCountObserver{}, 1);
         first->start();
         second->start();
 
@@ -734,6 +735,7 @@ std::string recordInfoMessage(std::string_view sn, std::string_view deviceId) {
 } // namespace
 
 int main() {
+    service::common::UuidV7Generator uuidGenerator;
     ruvia::EventLoopPool pool(
         ruvia::EventLoopPoolOptions{ .loopCount = 1, .mailboxCapacity = 128 }
     );
@@ -840,6 +842,7 @@ int main() {
         zlm = std::make_unique<ZlmSdk>(media);
         zlm->start();
         server = std::make_shared<SipServer>(
+            uuidGenerator,
             sip,
             media,
             *devices,
@@ -1208,6 +1211,7 @@ int main() {
             ipv6Sip.transport = "udp";
             ipv6Sip.port = reserveLocalUdpPort(ipv6Address);
             auto ipv6Server = std::make_shared<SipServer>(
+                uuidGenerator,
                 ipv6Sip,
                 media,
                 ipv6Devices,
@@ -1242,7 +1246,7 @@ int main() {
         }
 
         verifyDualUdpWorkerOwnership(sip, media, *zlm);
-        verifyKeepaliveExpiry(server, sip, media, *devices, *zlm, loop, clientContext);
+        verifyKeepaliveExpiry(uuidGenerator, server, sip, media, *devices, *zlm, loop, clientContext);
         zlm->stop();
         require(service::common::canonicalUtcTimestamp("2026-07-29 08:40:45+00") == "2026-07-29T08:40:45Z", "offset timestamp was not normalized");
         require(service::common::canonicalUtcTimestamp("2026-07-29T08:40:45", 480) == "2026-07-29T00:40:45Z", "GB28181 local timestamp was not normalized with device timezone");

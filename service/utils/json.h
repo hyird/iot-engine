@@ -10,6 +10,21 @@
 
 namespace service::utils {
 
+inline bool isJsonContentType(std::string_view value) noexcept {
+    value = value.substr(0, value.find(';'));
+    const auto first = value.find_first_not_of(" \t");
+    if (first == std::string_view::npos) return false;
+    value = value.substr(first, value.find_last_not_of(" \t") - first + 1);
+    constexpr std::string_view expected = "application/json";
+    if (value.size() != expected.size()) return false;
+    for (std::size_t index = 0; index < value.size(); ++index) {
+        const char ch = value[index];
+        const char lower = ch >= 'A' && ch <= 'Z' ? static_cast<char>(ch + ('a' - 'A')) : ch;
+        if (lower != expected[index]) return false;
+    }
+    return true;
+}
+
 template <typename Visitor>
 bool visitJsonArray(const ruvia::JsonValue& value, Visitor&& visitor) {
     if (!value.isArray()) {

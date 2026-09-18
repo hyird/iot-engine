@@ -361,6 +361,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             case pb::Envelope::kTelemetryBatch:
             case pb::Envelope::kCommandResult:
             case pb::Envelope::kDeviceStatusReport:
+            case pb::Envelope::kDtuStatus:
                 return true;
             default:
                 return false;

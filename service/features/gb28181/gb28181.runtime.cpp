@@ -465,6 +465,7 @@ ruvia::Task<void> CollectorRuntime::initialize() {
     try {
         registerSdkRoute();
         sip_ = std::make_shared<SipServer>(
+            uuidGenerator_,
             config_.sip,
             config_.media,
             devices_,

@@ -83,9 +83,8 @@ build/                      # 构建、后端生成代码、临时验证产物
 | --- | --- | --- |
 | `<name>.entity.h` | `modules`、`features` | 实体与存储映射；有数据访问时必需 |
 | `<name>.service.h` | `modules`、`features` | 业务规则、业务权限、查询、写入、事务 |
-| `<name>.types.h` | `modules`、`features` | DTO、领域值、内部状态；无 I/O |
+| `<name>.types.h` | `modules`、`features` | DTO、请求模型及字段校验、领域值、内部状态；无 I/O |
 | `<name>.error.h` | `modules`、`features` | 稳定错误 |
-| `<name>.schema.h` | `modules` | 请求校验；无 I/O |
 | `<name>.controller.h` | `modules` | 路由、参数、中间件与响应 |
 | `<name>.runtime.h` | `features` | 启停、调度、消费、生命周期 |
 | `<name>.config.h` | `features` | 配置类型、解析、默认值；无业务数据库访问 |
@@ -117,10 +116,10 @@ build/                      # 构建、后端生成代码、临时验证产物
 | 调用方 | 允许依赖 |
 | --- | --- |
 | 页面 | 所属 `service`、`types`、`schema`、公共 UI 与状态接口 |
-| `controller` | 所属 `service`、`schema`、`types`、`middleware` |
+| `controller` | 所属 `service`、`types`、`middleware` |
 | `runtime` | 所属 `service`、`protocol`、`transport`、`config` |
 | `service` | 所属实体与类型、同层公开接口、公共契约与工具 |
-| `protocol`、`types`、`entity`、`schema` | 无 I/O 类型与工具 |
+| `protocol`、`types`、`entity` | 无 I/O 类型与工具 |
 | `transport` | 协议类型、网络、SDK |
 | `server.cpp` | 公开装配入口 |
 
@@ -189,6 +188,8 @@ build/                      # 构建、后端生成代码、临时验证产物
 - 权限变化可随已有实时连接推送；服务端始终独立校验权限。
 - 用户操作直接返回 HTTP 结果，不等待 SSE 回执，不封装为 WS 事件。
 - Controller 使用 Ruvia 公开 HTTP 路由 API，接收类型化参数并调用所属 Service。
+- 后端字段校验直接绑定 `types.h` 中的 Ruvia 请求模型，不创建模块级 `schema.h` 或独立 Validator；创建、更新约束不同时使用独立模型。跨字段业务规则与数据库校验归 Service。
+- 普通 HTTP handler 返回 `ruvia::Task<>`，响应模型通过 `c.json(model)` 显式序列化；Service 和内部查询可返回 `Task<Model>`，无返回值的任务显式使用 `Task<void>`。模型必须在所属内存作用域释放前序列化。
 - 响应明确状态码与业务结果；鉴权、权限、校验、错误处理接入中间件。
 
 ### 4.2 事件驱动
@@ -348,12 +349,12 @@ build/                      # 构建、后端生成代码、临时验证产物
 
 | 项目 | 配置 |
 | --- | --- |
-| 主机 / 域名 | `103.236.69.112` / `i.a-z.xin` |
+| 主机 / 域名 | `43.142.33.210` / `i.a-z.xin` |
 | 入口 | Nginx 终止 TLS → `127.0.0.1:3000`；后端不监听公网 |
 | 服务 | `iot.service`；目录 `/opt/iot`；入口 `server`；静态目录 `web/` |
 | 数据库 | 独立 `iot_engine`，不改旧库 |
 | Redis | `127.0.0.1:6379`；AOF；`/opt/redis/data` |
-| 镜像源 | 官方镜像经 `docker.a-z.xin` 拉取 |
+| 镜像源 | 直接拉取官方镜像，不使用镜像代理；TimescaleDB 使用 `timescale/timescaledb:latest-pg18`，Redis 使用 `redis:latest`，由 Compose 管理 |
 | 制品目录 | `/opt/iot/releases/<短 SHA>/` |
 
 - 凭据不得写入提交、制品、日志或文档；生产 `.env` 权限 `600`，密钥在服务器生成。

@@ -1,11 +1,5 @@
 import type { PageParams } from '@/types/pagination';
-import { createQueryKeys } from '@/utils/query';
 
-const deptKeys = createQueryKeys('departments');
-export const deptQueryKeys = {
-    ...deptKeys,
-    list: (params?: Dept.Query) => [...deptKeys.lists(), params] as const,
-};
 type DeptStatus = 'enabled' | 'disabled';
 interface DeptItem {
     id: string;

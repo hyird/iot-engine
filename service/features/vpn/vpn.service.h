@@ -712,7 +712,7 @@ class VpnHubService final {
         // A separate worker-local connection keeps the lock while business
         // queries use their ordinary connection, without pool self-deadlock.
         auto ownership = co_await context.db("vpn-coordination").beginTransaction();
-        if (!(co_await VpnRuntimeService::acquireReconciliation(ownership, context.resource(), background))) {
+        if (!(co_await VpnRuntimeService::acquireReconciliation(ownership, context.pool(), background))) {
             co_return wireguard::RuntimeStatus{ .code = "reconciliation_in_progress" };
         }
         const auto instance = service::runtime::instanceId();
@@ -727,10 +727,10 @@ class VpnHubService final {
         // Keep address allocation behind the complete kernel reconciliation.
         // Otherwise an older snapshot could install a revoked key after its
         // address has already been returned to a newly enrolled client.
-        co_await VpnRuntimeService::lockAddressAllocation(ownership, context.resource());
+        co_await VpnRuntimeService::lockAddressAllocation(ownership, context.pool());
         auto result = co_await reconcileLocal(context, fallback);
         if (result.configured) {
-            ReconciliationSchedule schedule(context.resource());
+            ReconciliationSchedule schedule(context.pool());
             schedule.set<"id">(instance);
             const ruvia::RedisWriteOptions expiration{.ttl = std::chrono::seconds(10)};
             (void)co_await schedules.upsert(schedule, expiration);
@@ -745,7 +745,7 @@ class VpnHubService final {
                 service::common::fail(10002, "WireGuard Peer 公钥无效", 400);
             }
             auto ownership = co_await context.db("vpn-coordination").beginTransaction();
-            (void)co_await VpnRuntimeService::acquireReconciliation(ownership, context.resource(), false);
+            (void)co_await VpnRuntimeService::acquireReconciliation(ownership, context.pool(), false);
             const auto config = co_await hub_config::loadOrInitialize(context, fallback);
             if (config) {
                 const auto result = wireguard::controller().removePeer(*config, payload);

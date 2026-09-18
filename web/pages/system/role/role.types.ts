@@ -1,11 +1,5 @@
 import type { PageParams } from '@/types/pagination';
-import { createQueryKeys } from '@/utils/query';
 
-const roleKeys = createQueryKeys('roles');
-export const roleQueryKeys = {
-    ...roleKeys,
-    list: (params?: Role.Query) => [...roleKeys.lists(), params] as const,
-};
 type RoleStatus = 'enabled' | 'disabled';
 interface RoleItem {
     id: string;

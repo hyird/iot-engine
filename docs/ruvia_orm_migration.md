@@ -1,6 +1,6 @@
 # SQL ORM 迁移与能力边界
 
-核对版本：Ruvia `13eba75f3b8317a9fe4b5e27ca70554a3e887cab`，从 `6357a680e527c9776eadd1ee4e6674b9012d4808` 升级。
+本文记录 ORM 迁移时的核对版本 `13eba75f3b8317a9fe4b5e27ca70554a3e887cab`（从 `6357a680e527c9776eadd1ee4e6674b9012d4808` 升级）。当前依赖版本与接入变更见 [2026-09-18 Ruvia 更新](ruvia-update-20260918.md)。
 
 Redis 继续按业务需要混用 Repository、原生命令和 Lua。新版将 Redis 实体与 SQL 实体分离，因此同步将 Worker 快照的两处映射和 VPN 调度记录改为 `RUVIA_REDIS_ENTITY` / `RUVIA_REDIS_COLUMN`；键名、字段、过期和消息确认机制不变。
 

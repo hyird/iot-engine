@@ -1,3 +1,4 @@
+import { createQueryKeys } from '@/utils/query';
 import { retainNewerRecords } from '@/utils/versioned-records';
 import { keepPreviousData, useQuery, type UseQueryOptions } from '@tanstack/react-query';
 import { setDebug as saveDebugSwitch, getDebugPackets } from './link.api';
@@ -6,7 +7,12 @@ import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import type { PaginatedResult } from '@/types/pagination';
 import { create, getEnums, getList, queryList, getPublicIp, remove, update } from './link.api';
 import type { Link } from './link.types';
-import { linkQueryKeys } from './link.types';
+const keys = createQueryKeys('links');
+const linkQueryKeys = {
+    ...keys,
+    list: (params?: Link.Query) => [...keys.lists(), params] as const,
+};
+
 export function useLinkList(
     params?: Link.Query,
     options?: Omit<UseQueryOptions<PaginatedResult<Link.Item>>, 'queryKey' | 'queryFn'>,

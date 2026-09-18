@@ -1,11 +1,12 @@
-import { createUuid } from '@/utils/uuid';
-import { useAuthStore } from '@/store/authStore';
 import request, { refreshSession } from '@/lib/http';
+import { createSseSnapshotStream } from '@/lib/snapshot-request';
 import { type SnapshotObserver, SnapshotStream } from '@/lib/snapshot-stream';
 import { getMessageInstance } from '@/providers/MessageContextBridge';
-import { createSseSnapshotStream } from '@/lib/snapshot-request';
+import { useAuthStore } from '@/store/authStore';
 import type { PaginatedResult } from '@/types/pagination';
+import { createUuid } from '@/utils/uuid';
 import {
+    dtuChannelSchema,
     edgeGroupSchema,
     edgeIdSchema,
     edgeListQuerySchema,
@@ -32,6 +33,7 @@ const eventParams = (scope?: Edge.EventScope) => ({
     nodeId: scope?.nodeId ? edgeIdSchema.parse(scope.nodeId) : undefined,
     logs: scope?.logs ? true : undefined,
     vpn: scope?.vpn ? true : undefined,
+    dtu: scope?.dtu ? true : undefined,
     ...(scope?.logs ? logsQuerySchema.parse(scope.logs) : {}),
 });
 export const getEdgeInventory = (scope?: Edge.EventScope) =>
@@ -68,7 +70,19 @@ export const setEdgeGroup = (id: string, data: Edge.GroupDto) =>
 export const configureNetwork = (id: string, data: Edge.NetworkDto) =>
     request.post<void>(`${edgePath(id)}/network`, networkSchema.parse(data));
 export const syncDeviceConfig = (id: string) => request.post<void>(`${edgePath(id)}/sync`);
-export const upgradeFirmware = async (
+export const reuseFirmware = (
+    id: string,
+    sha256: string,
+    sizeBytes: number,
+    keepSettings: boolean
+) =>
+    request.post<Edge.FirmwareReuseResult>(`${edgePath(id)}/firmware/reuse`, {
+        sha256,
+        sizeBytes,
+        keepSettings,
+    });
+
+export const uploadFirmware = async (
     id: string,
     data: Edge.FirmwareUpgradeDto,
     onProgress?: (progress: Edge.FirmwareUploadProgress) => void
@@ -724,3 +738,12 @@ useAuthStore.subscribe(() => subscriptions.sessionChanged());
 function createDebugSnapshotStream<T>(event: string, data: unknown = {}) {
     return subscriptions.create<T>(event, data);
 }
+
+export const getDtuChannels = (id: string, signal?: AbortSignal) =>
+    request.get<Edge.DtuChannels>(`${edgePath(id)}/dtu`, { signal });
+export const observeDtuChannels = (scope: Edge.EventScope) =>
+    createSseSnapshotStream<Edge.DtuChannels>('/v1/edge/events', eventParams(scope), 'dtu');
+export const saveDtuChannel = (id: string, data: Edge.DtuChannel) =>
+    request.put<void>(`${edgePath(id)}/dtu`, dtuChannelSchema.parse(data));
+export const deleteDtuChannel = (id: string, channelId: string) =>
+    request.delete<void>(`${edgePath(id)}/dtu/${edgeIdSchema.parse(channelId)}`);

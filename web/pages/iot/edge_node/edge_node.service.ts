@@ -1,12 +1,14 @@
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { useAuthStore } from '@/store/authStore';
-import { refreshAccessToken } from '@/pages/login/login.service';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
+import { refreshAccessToken } from '@/pages/login/login.service';
+import { useAuthStore } from '@/store/authStore';
 import {
-    DebugOperationError,
-    edgeDebugConnection,
+    getDtuChannels,
+    observeDtuChannels,
+    saveDtuChannel,
+    deleteDtuChannel,
     authenticateDebugConnection,
     captureLogs,
     closeSerialDebug,
@@ -15,19 +17,22 @@ import {
     createEdgeVpnPeer,
     createEdgeVpnRoute,
     createVpnNetwork,
+    DebugOperationError,
     deleteEdgeGroup,
     deleteEdgeVpnRoute,
     deleteEnrollment,
+    edgeDebugConnection,
     getEdgeGroups,
     getEdgeInventory,
-    observeEdgeDetail,
-    queryEdgeList,
     getEdgeVpnState,
     getLogs,
     getSerialEvents,
     getVpnNetworks,
+    observeEdgeDetail,
     openSerialDebug,
+    queryEdgeList,
     renameEdge,
+    reuseFirmware,
     revokeEdgeVpnPeer,
     sendSerialCommand,
     setEdgeGroup,
@@ -37,9 +42,13 @@ import {
     syncEdgeVpnPeer,
     updateEdgeGroup,
     updateEdgeVpnRoute,
-    upgradeFirmware,
+    uploadFirmware,
 } from './edge_node.api';
-import { serialDebugEventSchema, serialSettingsSchema } from './edge_node.schema';
+import {
+    firmwareUpgradeSchema,
+    serialDebugEventSchema,
+    serialSettingsSchema,
+} from './edge_node.schema';
 import type { Edge, EdgeVpn } from './edge_node.types';
 import { edgeQueryKeys, edgeVpnQueryKeys } from './edge_node.types';
 
@@ -594,6 +603,24 @@ export function useDeviceConfigSyncMutation() {
         invalidateKeys: [edgeQueryKeys.all],
     });
 }
+export async function upgradeFirmware(
+    id: string,
+    data: Edge.FirmwareUpgradeDto,
+    onProgress?: (progress: Edge.FirmwareUploadProgress) => void
+): Promise<void> {
+    const value = firmwareUpgradeSchema.parse(data);
+    const digest = await crypto.subtle.digest('SHA-256', await value.file.arrayBuffer());
+    const sha256 = Array.from(new Uint8Array(digest), (byte) =>
+        byte.toString(16).padStart(2, '0')
+    ).join('');
+    const { reused } = await reuseFirmware(id, sha256, value.file.size, value.keepSettings);
+    if (reused) {
+        onProgress?.({ loadedBytes: value.file.size, totalBytes: value.file.size, percent: 100 });
+        return;
+    }
+    await uploadFirmware(id, value, onProgress);
+}
+
 export function useFirmwareUpgradeMutation() {
     return useMutationWithMessage({
         mutationFn: (value: {
@@ -715,4 +742,56 @@ async function restoreDebugConnectionSession(): Promise<void> {
 
 export function configureEdgeDebugConnection() {
     edgeDebugConnection.configureSessionRestore(restoreDebugConnectionSession);
+}
+
+export function useDtuChannels(scope: Edge.EventScope) {
+    const client = useQueryClient();
+    const [streamError, setStreamError] = useState<Error>();
+    const [attempt, setAttempt] = useState(0);
+    const token = useAuthStore((state) => state.token);
+    const signature = JSON.stringify(scope);
+    const id = scope.nodeId ?? '';
+    const result = useQuery({
+        queryKey: ['edge-dtu', id],
+        queryFn: ({ signal }) => getDtuChannels(id, signal),
+        enabled: Boolean(id && scope.dtu),
+        refetchInterval: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
+    });
+    useEffect(() => {
+        void attempt;
+        const current: Edge.EventScope = JSON.parse(signature);
+        if (!current.nodeId || !current.dtu || !token) return;
+        setStreamError(undefined);
+        return observeDtuChannels(current).subscribe({
+            next: (value) => {
+                client.setQueryData(['edge-dtu', current.nodeId], value);
+                setStreamError(undefined);
+            },
+            error: setStreamError,
+        });
+    }, [client, signature, attempt, token]);
+    return { ...result, streamError, retryStream: () => setAttempt((value) => value + 1) };
+}
+export const useDtuSave = (id: string) =>
+    useMutationWithMessage({
+        mutationFn: (data: Edge.DtuChannel) => saveDtuChannel(id, data),
+        successMessage: '透传配置已保存并提交下发',
+        invalidateKeys: [['edge-dtu', id]],
+    });
+export const useDtuDelete = (id: string) =>
+    useMutationWithMessage({
+        mutationFn: (channelId: string) => deleteDtuChannel(id, channelId),
+        successMessage: '透传通道已删除并提交下发',
+        invalidateKeys: [['edge-dtu', id]],
+    });
+export function dtuTraceHex(payload = '') {
+    try {
+        return Array.from(atob(payload), (byte) => byte.charCodeAt(0).toString(16).padStart(2, '0'))
+            .join(' ')
+            .toUpperCase();
+    } catch {
+        return '';
+    }
 }

@@ -1,4 +1,7 @@
 #pragma once
+#include <ruvia/web/Validation.h>
+#include <system_error>
+#include <asio/ip/address_v4.hpp>
 
 #include <memory>
 #include <algorithm>
@@ -25,7 +28,6 @@
 #include "service/common/uuid.h"
 #include "service/modules/edge_node/edge_node.service.h"
 #include "service/modules/link/link.entity.h"
-#include "service/modules/link/link.schema.h"
 #include "service/modules/link/link.types.h"
 #include "service/modules/system/outbox/outbox.service.h"
 #include "service/modules/system/role/role.entity.h"
@@ -173,16 +175,16 @@ class LinkService {
             co_await saveEdgeChannel(c, {}, body);
             co_return;
         }
-        const auto name = LinkPayloadValidator::required(body.get<"name">(), "链路名称不能为空");
-        const auto protocol = LinkPayloadValidator::required(body.get<"protocol">(), "协议不能为空");
-        const auto& endpoint = LinkPayloadValidator::requiredEndpoint(body);
-        const auto mode = LinkPayloadValidator::required(endpoint.get<"mode">(), "链路模式不能为空");
+        const auto name = std::string(body.get<"name">().view());
+        const auto protocol = std::string(body.get<"protocol">().view());
+        const auto& endpoint = body.get<"endpoint">();
+        const auto mode = required(endpoint.get<"mode">(), "链路模式不能为空");
         const auto ip = endpoint.get<"ip">() ? std::string(endpoint.get<"ip">()->view()) : "";
         const auto port = endpoint.get<"port">() ? static_cast<std::int64_t>(*endpoint.get<"port">()) : 0;
         const auto status = body.get<"status">() ? std::string(body.get<"status">()->view()) : "enabled";
-        LinkPayloadValidator::validateStatus(status);
-        const auto& targets = LinkPayloadValidator::requiredTargets(endpoint);
-        LinkPayloadValidator::validateConfiguration(mode, protocol, ip, port, targets);
+        validateStatus(status);
+        const auto& targets = requiredTargets(endpoint);
+        validateConfiguration(mode, protocol, ip, port, targets);
         co_await ensureAvailable(c, name, mode, ip, port, std::nullopt);
         const auto endpointJson = serializeEndpoint(mode, ip, port, targets);
         const auto id = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
@@ -347,19 +349,19 @@ return result
         }
         co_await requireOwner(c, rows.front()[2].value().value_or(std::string_view{}));
 
-        const auto name = LinkPayloadValidator::required(body.get<"name">(), "链路名称不能为空");
-        const auto protocol = LinkPayloadValidator::required(body.get<"protocol">(), "协议不能为空");
-        const auto& endpoint = LinkPayloadValidator::requiredEndpoint(body);
-        const auto mode = LinkPayloadValidator::required(endpoint.get<"mode">(), "链路模式不能为空");
+        const auto name = std::string(body.get<"name">().view());
+        const auto protocol = std::string(body.get<"protocol">().view());
+        const auto& endpoint = body.get<"endpoint">();
+        const auto mode = required(endpoint.get<"mode">(), "链路模式不能为空");
         if (mode != rows.front()[0].value().value_or(std::string_view{}) || protocol != rows.front()[1].value().value_or(std::string_view{})) {
             service::common::fail(15006, "链路模式和协议创建后不能修改", 400);
         }
         const auto ip = endpoint.get<"ip">() ? std::string(endpoint.get<"ip">()->view()) : "";
         const auto port = endpoint.get<"port">() ? static_cast<std::int64_t>(*endpoint.get<"port">()) : 0;
         const auto status = body.get<"status">() ? std::string(body.get<"status">()->view()) : "enabled";
-        LinkPayloadValidator::validateStatus(status);
-        const auto& targets = LinkPayloadValidator::requiredTargets(endpoint);
-        LinkPayloadValidator::validateConfiguration(mode, protocol, ip, port, targets);
+        validateStatus(status);
+        const auto& targets = requiredTargets(endpoint);
+        validateConfiguration(mode, protocol, ip, port, targets);
         co_await ensureAvailable(c, name, mode, ip, port, std::string(id));
         const auto endpointJson = serializeEndpoint(mode, ip, port, targets);
         auto transaction = co_await c.db().beginTransaction();
@@ -414,6 +416,150 @@ return result
     }
 
   private:
+
+    static std::string required(const std::optional<ruvia::String>& value, std::string_view message) {
+        if (!value || value->view().empty()) {
+            service::common::fail(15002, std::string(message), 400);
+        }
+        return std::string(value->view());
+    }
+
+
+
+    static const ruvia::Array<LinkTargetBody>& requiredTargets(const LinkEndpointBody& endpoint) {
+        if (!endpoint.get<"targets">()) {
+            service::common::fail(15002, "目标列表不能为空", 400);
+        }
+        return *endpoint.get<"targets">();
+    }
+
+    static void validateStatus(std::string_view status) {
+        if (status != "enabled" && status != "disabled") {
+            service::common::fail(15002, "状态无效", 400);
+        }
+    }
+
+    static void validateNodeId(std::string_view nodeId) {
+        if (!service::common::isUuid(nodeId)) {
+            service::common::fail(15002, "节点 ID 无效", 400);
+        }
+    }
+
+    static void validateEdgeEndpoint(const LinkEndpointBody& endpoint, std::string_view protocol, std::string_view transport, std::string_view interfaceName) {
+        if (interfaceName.size() > 96) {
+            service::common::fail(15002, "接口名称过长", 400);
+        }
+        if (transport == "serial") {
+            if (protocol == "S7" || protocol == "MC" || protocol == "FINS") {
+                service::common::fail(15002, "所选 PLC 协议仅支持 TCP", 400);
+            }
+            const auto baud = endpoint.get<"baudRate">().value_or(9600);
+            const auto bits = endpoint.get<"dataBits">().value_or(8);
+            const auto stops = endpoint.get<"stopBits">().value_or(1);
+            const auto parity = endpoint.get<"parity">() ? endpoint.get<"parity">()->view() : std::string_view("none");
+            if (baud < 300 || baud > 4000000 || bits < 5 || bits > 8 || stops < 1 || stops > 2 ||
+                (parity != "none" && parity != "odd" && parity != "even")) {
+                service::common::fail(15002, "串口参数无效", 400);
+            }
+        } else if (transport == "tcp") {
+            const auto mode = required(endpoint.get<"mode">(), "请选择 TCP 模式");
+            const auto ip = required(endpoint.get<"ip">(), "请输入 IP 地址");
+            std::error_code error;
+            (void)asio::ip::make_address_v4(ip, error);
+            const auto port = endpoint.get<"port">().value_or(0);
+            if (error || port < 1 || port > 65535 || (mode != "TCP Client" && mode != "TCP Server")) {
+                service::common::fail(15002, "TCP 参数无效", 400);
+            }
+        } else {
+            service::common::fail(15002, "传输类型无效", 400);
+        }
+    }
+
+    template <typename Targets>
+    static void validateConfiguration(std::string_view mode, std::string_view protocol, std::string_view ip, std::int64_t port, const Targets& targets) {
+        if (mode != "TCP Server" && mode != "TCP Client") {
+            service::common::fail(15003, "链路模式无效", 400);
+        }
+        if (protocol != "SL651" && protocol != "Modbus" && protocol != "S7" && protocol != "MC" && protocol != "FINS" && protocol != "DLT645") {
+            service::common::fail(15003, "协议无效", 400);
+        }
+        if (protocol == "SL651" && mode != "TCP Server") {
+            service::common::fail(15003, "SL651 只支持 TCP Server 模式", 400);
+        }
+        if (mode == "TCP Server") {
+            if (ip != "0.0.0.0") {
+                service::common::fail(15003, "TCP Server 监听 IP 必须是 0.0.0.0", 400);
+            }
+            if (port < 1 || port > 65535) {
+                service::common::fail(15003, "TCP Server 必须配置有效的监听端口", 400);
+            }
+            if (!targets.empty()) {
+                service::common::fail(15003, "TCP Server 不能配置目标地址", 400);
+            }
+            return;
+        }
+        if (!ip.empty() || port != 0) {
+            service::common::fail(15003, "TCP Client 不能配置监听地址", 400);
+        }
+        if (targets.empty()) {
+            service::common::fail(15003, "TCP Client 至少需要一个目标地址", 400);
+        }
+        std::set<std::string> ids;
+        std::set<std::string> endpoints;
+        for (const auto& target : targets) {
+            const auto id = std::string(target.template get<"id">().view());
+            const auto name = std::string(target.template get<"name">().view());
+            const auto targetIp = std::string(target.template get<"ip">().view());
+            const auto targetPort = static_cast<std::int64_t>(target.template get<"port">());
+            const auto targetStatus = target.template get<"status">()
+                ? std::string(target.template get<"status">()->view())
+                : "enabled";
+            if (targetStatus != "enabled" && targetStatus != "disabled") {
+                service::common::fail(15003, "目标状态无效", 400);
+            }
+            if (name.empty() || !isIpv4(targetIp) || targetPort < 1 || targetPort > 65535) {
+                service::common::fail(15003, "目标地址配置无效", 400);
+            }
+            if (!ids.emplace(id).second) {
+                service::common::fail(15004, "同一链路内目标 ID 不能重复", 409);
+            }
+            if (!endpoints.emplace(targetIp + ":" + std::to_string(targetPort)).second) {
+                service::common::fail(15004, "同一链路内目标地址不能重复", 409);
+            }
+        }
+    }
+
+    static bool isIpv4(std::string_view value) {
+        int parts = 0;
+        std::size_t start = 0;
+        while (start < value.size()) {
+            const auto end = value.find('.', start);
+            const auto part = value.substr(
+                start,
+                end == std::string_view::npos ? value.size() - start : end - start
+            );
+            if (part.empty() || part.size() > 3) {
+                return false;
+            }
+            int number = 0;
+            for (const char ch : part) {
+                if (!std::isdigit(static_cast<unsigned char>(ch))) {
+                    return false;
+                }
+                number = number * 10 + (ch - '0');
+            }
+            if (number > 255) {
+                return false;
+            }
+            ++parts;
+            if (end == std::string_view::npos) {
+                break;
+            }
+            start = end + 1;
+        }
+        return parts == 4;
+    }
+
     static ruvia::DbExpression jsonText(ruvia::DbQuery& query, std::string_view column, std::string_view key, std::string_view table = {}) {
         return query.binary(query.column(column, table), ruvia::DbBinaryOperator::kJsonGetText, query.cast(query.value(key), ruvia::DbDataType::kText));
     }
@@ -485,14 +631,14 @@ return result
 
     template <typename Context>
     ruvia::Task<void> saveEdgeChannel(Context& c, std::string_view existingId, const SaveLinkBody& body) {
-        const auto name = LinkPayloadValidator::required(body.get<"name">(), "通道名称不能为空");
-        const auto protocol = LinkPayloadValidator::required(body.get<"protocol">(), "协议不能为空");
-        const auto nodeId = LinkPayloadValidator::required(body.get<"edgeNodeId">(), "请选择边缘节点");
-        LinkPayloadValidator::validateNodeId(nodeId);
-        const auto& endpoint = LinkPayloadValidator::requiredEndpoint(body);
-        const auto transport = LinkPayloadValidator::required(endpoint.get<"transport">(), "请选择传输类型");
-        const auto interfaceName = LinkPayloadValidator::required(endpoint.get<"interfaceName">(), "请选择接口");
-        LinkPayloadValidator::validateEdgeEndpoint(endpoint, protocol, transport, interfaceName);
+        const auto name = std::string(body.get<"name">().view());
+        const auto protocol = std::string(body.get<"protocol">().view());
+        const auto nodeId = required(body.get<"edgeNodeId">(), "请选择边缘节点");
+        validateNodeId(nodeId);
+        const auto& endpoint = body.get<"endpoint">();
+        const auto transport = required(endpoint.get<"transport">(), "请选择传输类型");
+        const auto interfaceName = required(endpoint.get<"interfaceName">(), "请选择接口");
+        validateEdgeEndpoint(endpoint, protocol, transport, interfaceName);
         ruvia::DbQuery nodeQuery(c.pool());
         nodeQuery.select(nodeQuery.cast(nodeQuery.value(1), ruvia::DbDataType::kInteger))
             .from(service::link::entities::EdgeNodeEntity::tableName())
@@ -894,13 +1040,13 @@ return result
                 result.push_back(',');
             }
             result += "{\"id\":";
-            appendJsonString(result, target.template get<"id">()->view());
+            appendJsonString(result, target.template get<"id">().view());
             result += ",\"name\":";
-            appendJsonString(result, target.template get<"name">()->view());
+            appendJsonString(result, target.template get<"name">().view());
             result += ",\"ip\":";
-            appendJsonString(result, target.template get<"ip">()->view());
+            appendJsonString(result, target.template get<"ip">().view());
             result += ",\"port\":" +
-                std::to_string(static_cast<std::int64_t>(*target.template get<"port">()));
+                std::to_string(static_cast<std::int64_t>(target.template get<"port">()));
             result += ",\"status\":";
             const auto& status = target.template get<"status">();
             appendJsonString(result, status ? status->view() : "enabled");

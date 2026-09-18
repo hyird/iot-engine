@@ -250,7 +250,7 @@ class TelemetryService {
 
   protected:
     static ruvia::Task<std::string> prepareAlert(ruvia::WebWorkerContext& context, const message::ParsedDeviceMessage& value) {
-        ruvia::DbQuery state(context.resource());
+        ruvia::DbQuery state(context.pool());
         const auto newer = state.binary(state.tuple({ state.excluded(service::telemetry::persistence::AlertInputStateEntity::columnName<"observed_at_ms">()), state.excluded(service::telemetry::persistence::AlertInputStateEntity::columnName<"message_id">()) }), ruvia::DbBinaryOperator::kGreater,
             state.tuple({ state.column(service::telemetry::persistence::AlertInputStateEntity::columnName<"observed_at_ms">(), "alert_input_state"), state.column(service::telemetry::persistence::AlertInputStateEntity::columnName<"message_id">(), "alert_input_state") }));
         state.insertInto(service::telemetry::persistence::AlertInputStateEntity::tableName(), { "device_id", "observed_at_ms", "message_id", "data", "previous_data" })
@@ -460,7 +460,7 @@ class TelemetryService {
         using Query = ruvia::DbQuery;
         using Op = ruvia::DbBinaryOperator;
         using Type = ruvia::DbDataType;
-        auto persisted = persistenceQuery(context.resource(), messages, alertActive);
+        auto persisted = persistenceQuery(context.pool(), messages, alertActive);
         // Acquire per-device locks before taking the statement snapshot. Seeding
         // in a data-modifying CTE is invisible to sibling SELECTs and drops a
         // newly created device's first sample.
@@ -469,17 +469,17 @@ class TelemetryService {
         for (const auto& value : messages) {
             deviceIds.insert(value.deviceId);
         }
-        Query requestedDevices(context.resource());
+        Query requestedDevices(context.pool());
         for (const auto deviceId : deviceIds) requestedDevices.values({ requestedDevices.cast(requestedDevices.value(deviceId), Type::kUuid) });
-        Query locks(context.resource());
+        Query locks(context.pool());
         locks.with("requested", requestedDevices, { .columns = { "device_id" } })
             .select(locks.call("pg_advisory_xact_lock", { locks.call("hashtextextended", {
                 locks.cast(locks.column("device_id"), Type::kText), locks.cast(locks.value(734621), Type::kBigInt) }) }))
             .from("requested").addOrderBy(locks.column("device_id"));
         (void)co_await transaction.query(locks);
-        Query deviceRows(context.resource());
+        Query deviceRows(context.pool());
         deviceRows.select(deviceRows.column("device_id")).from("requested");
-        Query seed(context.resource());
+        Query seed(context.pool());
         seed.with("requested", requestedDevices, { .columns = { "device_id" } })
             .insertInto(service::telemetry::persistence::DeviceDataIngestStateEntity::tableName(), { "device_id" }).insertFrom(deviceRows)
             .onConflict({ .columns = { "device_id" }, .doNothing = true });

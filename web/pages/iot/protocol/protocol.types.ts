@@ -44,13 +44,6 @@ export interface IndustrialConfig extends DeviceTypeTimingConfig {
 }
 /** 历史数据存储策略 */
 export type StoragePolicy = 'report' | 'change';
-export const STORAGE_POLICY_OPTIONS: {
-    value: StoragePolicy;
-    label: string;
-}[] = [
-    { value: 'report', label: '上报时' },
-    { value: 'change', label: '数据改变时' },
-];
 /** 设备类型采集与存储策略 */
 export interface DeviceTypeTimingConfig {
     /** 定时读取/边缘上报间隔（秒），默认 1 */

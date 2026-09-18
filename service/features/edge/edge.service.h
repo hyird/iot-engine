@@ -1,4 +1,8 @@
 #pragma once
+
+#include <filesystem>
+#include <google/protobuf/util/json_util.h>
+#include <unordered_set>
 #include "service/features/edge/edge.config.h"
 #include "service/features/packet_log/packet_log.service.h"
 
@@ -1168,7 +1172,8 @@ class ConfigService final {
                 persistence::LinkEntity::column<"deleted_at">().isNull()).expression(link));
         const auto links = co_await c.db().query(link);
         if (links.empty()) co_return;
-        bool enabled = links.front()[0].value().value_or("") == "t";
+        const bool captureLink = links.front()[0].value().value_or("") == "t" && !packet.device_only();
+        bool captureDevice = false;
         if (!deviceId.empty()) {
             ruvia::DbQuery device;
             device.select(device.column(persistence::DeviceEntity::columnName<"debug_enabled">()))
@@ -1178,9 +1183,9 @@ class ConfigService final {
                     persistence::DeviceEntity::column<"deleted_at">().isNull()).expression(device));
             const auto devices = co_await c.db().query(device);
             if (devices.empty()) co_return;
-            enabled = enabled || devices.front()[0].value().value_or("") == "t";
+            captureDevice = devices.front()[0].value().value_or("") == "t";
         }
-        if (!enabled) co_return;
+        if (!captureLink && !captureDevice) co_return;
         if (packet.payload().empty() && !packet.has_parsed_value() && packet.acquisition_state() != "running") {
             co_await packet_log::DebugPacketService::finishAcquisition(c.redis(),
                 acquisitionId, packet.acquisition_state());
@@ -1200,7 +1205,7 @@ class ConfigService final {
         co_await packet_log::DebugPacketService::recordPacket(c.redis(), *c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>(), linkId, deviceId,
             packet.direction(), "edge", packet.client_address(),
             std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(packet.payload().data()), packet.payload().size()),
-            packet.observed_at_ms(), packet.device_only(),
+            packet.observed_at_ms(), captureLink, captureDevice,
             packet.packet_id().size() == 16 ? std::string(nodeId) + ":" + protocol::uuidText(packet.packet_id()) : std::string{},
             packet.status(), packet.reason(), parsedJson,
             packet.reply_to_packet_id().size() == 16 ? std::string(nodeId) + ":" + protocol::uuidText(packet.reply_to_packet_id()) : std::string{},
@@ -1513,6 +1518,33 @@ class ConfigService final {
     static ruvia::Task<std::vector<pb::ConfigItem>>
     buildItems(Context& c, std::string_view nodeId) {
         std::vector<pb::ConfigItem> items;
+        ruvia::DbQuery dtu;
+        dtu.select(dtu.column(persistence::EdgeDtuEntity::columnName<"wire_hex">()))
+            .from(persistence::EdgeDtuEntity::tableName()).where(dtu.binary(dtu.column(persistence::EdgeDtuEntity::columnName<"node_id">()), ruvia::DbBinaryOperator::kEqual,
+                dtu.cast(dtu.value(nodeId), ruvia::DbDataType::kUuid))).orderBy(dtu.column(persistence::EdgeDtuEntity::columnName<"channel_id">()));
+        const auto channels = co_await c.db().query(dtu);
+        if (!channels.empty()) {
+            ruvia::DbQuery capability;
+            capability.select(config::detail::jsonText(capability, capability.column(persistence::EdgeNodeEntity::columnName<"capability">()), "dtu"))
+                .from(persistence::EdgeNodeEntity::tableName()).where(capability.binary(capability.column(persistence::EdgeNodeEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual,
+                    capability.cast(capability.value(nodeId), ruvia::DbDataType::kUuid)));
+            const auto supported = co_await c.db().query(capability);
+            if (supported.empty() || supported.front()[0].value().value_or("") != "true")
+                throw std::runtime_error("边缘固件尚未声明支持 DTU 透传，不能下发透传配置");
+        }
+        for (const auto& row : channels) {
+            const auto encoded = row[0].value().value_or("");
+            std::string wire;
+            for (std::size_t i = 0; i + 1 < encoded.size(); i += 2) {
+                const int high = service::common::hexDigit(encoded[i]), low = service::common::hexDigit(encoded[i+1]);
+                if (high < 0 || low < 0) throw std::runtime_error("invalid DTU configuration encoding");
+                wire.push_back(static_cast<char>((high << 4) | low));
+            }
+            pb::ConfigItem item;
+            item.set_kind(pb::CONFIG_ITEM_DTU);
+            if (!item.mutable_dtu()->ParseFromString(wire)) throw std::runtime_error("invalid DTU configuration");
+            items.push_back(std::move(item));
+        }
         std::set<std::string> endpoints;
         const auto devices =
             co_await c.db().query(config::detail::buildItemsQuery(nodeId));
@@ -1588,10 +1620,10 @@ class ConfigService final {
                     throw std::invalid_argument("invalid SL651 response mode");
                 deviceValue->set_sl651_response_mode(static_cast<std::uint32_t>(mode[1] - '0'));
             }
-            // Southbound acquisition is fixed at one second. The protocol's configured
-            // read interval controls edge-to-platform reporting; storagePolicy remains
-            // a platform-only persistence policy carried by telemetry metadata.
-            deviceValue->set_io_interval_ms(1000);
+            // Zero selects the configured read/report interval on updated firmware.
+            // Legacy firmware accepts zero and retains its old one-second scheduler,
+            // so rollout does not reject the entire device configuration.
+            deviceValue->set_io_interval_ms(0);
             deviceValue->set_report_interval_sec(positiveCeil(row[5].value().value_or(std::string_view{})));
             deviceValue->set_online_timeout_sec(
                 static_cast<std::uint32_t>(integer(row[6].value().value_or(std::string_view{}), 300)));
@@ -1790,7 +1822,109 @@ inline bool validVpnPublicKey(std::string_view value) noexcept {
 }
 
 class EdgeProjectionService {
-protected:
+  protected:
+    template <typename Transaction>
+    static ruvia::Task<bool> claimFirmwareCleanup(Transaction& transaction) {
+        ruvia::DbQuery lock;
+        lock.select(lock.call("pg_try_advisory_xact_lock", {
+            lock.cast(lock.value(17011), ruvia::DbDataType::kInteger),
+            lock.cast(lock.value(1), ruvia::DbDataType::kInteger)}));
+        const auto rows = co_await transaction.query(lock);
+        co_return !rows.empty() && rows.front()[0].value().value_or(std::string_view{}) == "t";
+    }
+
+    static bool managedFirmwareFile(const std::filesystem::path& path, const std::filesystem::path& directory) {
+        return path.parent_path() == directory && path.extension() == ".bin" &&
+               service::common::isUuid(path.stem().string());
+    }
+
+    static ruvia::Task<void> cleanupFirmwares(ruvia::WebWorkerContext& context, const std::filesystem::path& directory) {
+        using Firmware = service::edge::persistence::EdgeFirmwareEntity;
+        using Task = service::edge::persistence::EdgeTaskEntity;
+        using Op = ruvia::DbBinaryOperator;
+        using Type = ruvia::DbDataType;
+        auto transaction = co_await context.db().beginTransaction();
+        if (!co_await claimFirmwareCleanup(transaction))
+            co_return;
+        ruvia::DbQuery active;
+        const auto cutoff = active.binary(active.call("now"), Op::kSubtract,
+            active.cast(active.value("1 hour"), Type::kInterval));
+        active.select(active.value(1)).from(Task::tableName(), "task")
+            .where(active.binary(active.column(Task::columnName<"task_type">(), "task"), Op::kEqual, active.value("firmware")))
+            .andWhere(active.binary(
+                active.binary(active.column(Task::columnName<"request">(), "task"), Op::kJsonGetText, active.value("firmware_id")),
+                Op::kEqual, active.cast(active.column(Firmware::columnName<"id">(), "firmware"), Type::kText)))
+            .andWhere(active.binary(
+                active.binary(active.column(Task::columnName<"status">(), "task"), Op::kNotIn,
+                    active.list({active.value("succeeded"), active.value("failed")})), Op::kOr,
+                active.binary(active.coalesce({active.column(Task::columnName<"completed_at">(), "task"),
+                    active.column(Task::columnName<"updated_at">(), "task"), active.column(Task::columnName<"created_at">(), "task")}),
+                    Op::kGreaterEqual, cutoff)));
+        ruvia::DbQuery candidates;
+        candidates.select({candidates.cast(candidates.column(Firmware::columnName<"id">(), "firmware"), Type::kText),
+                           candidates.column(Firmware::columnName<"storage_path">(), "firmware")})
+            .from(Firmware::tableName(), "firmware")
+            .where(candidates.binary(candidates.column(Firmware::columnName<"created_at">(), "firmware"), Op::kLess,
+                candidates.binary(candidates.call("now"), Op::kSubtract, candidates.cast(candidates.value("1 hour"), Type::kInterval))))
+            .andWhere(candidates.unary(ruvia::DbUnaryOperator::kNot, candidates.exists(active)))
+            .orderBy(candidates.column(Firmware::columnName<"created_at">(), "firmware"))
+            .limit(32);
+        const auto rows = co_await transaction.query(candidates);
+        std::vector<std::filesystem::path> removedPaths;
+        for (const auto& row : rows) {
+            const auto id = row[0].value().value_or(std::string_view{});
+            const auto path = std::filesystem::absolute(std::filesystem::path(std::string(row[1].value().value_or(std::string_view{})))).lexically_normal();
+            if (!managedFirmwareFile(path, directory))
+                continue;
+            ruvia::DbQuery removal;
+            removal.deleteFrom(Firmware::tableName()).where(removal.binary(removal.column(Firmware::columnName<"id">()),
+                Op::kEqual, removal.cast(removal.value(id), Type::kUuid)));
+            (void)co_await transaction.execute(removal);
+            removedPaths.push_back(path);
+        }
+        // 先提交删除记录；提交结果不确定时不删除文件，下一次按孤立文件回收。
+        co_await transaction.commit();
+        for (const auto& path : removedPaths) {
+            std::error_code error;
+            const auto status = std::filesystem::symlink_status(path, error);
+            if (error == std::errc::no_such_file_or_directory)
+                continue;
+            if (error)
+                throw std::filesystem::filesystem_error("inspect expired firmware", path, error);
+            if (std::filesystem::is_regular_file(status))
+                std::filesystem::remove(path);
+        }
+        std::error_code error;
+        if (!std::filesystem::exists(directory, error)) {
+            if (error)
+                throw std::filesystem::filesystem_error("inspect firmware directory", directory, error);
+            co_return;
+        }
+        // 数据库未引用的最终文件来自中断/不确定的上传提交。只回收自有命名、
+        // 超过一小时的普通文件；活动 .upload 文件仍由上传恢复锁保护。
+        auto orphanTransaction = co_await context.db().beginTransaction();
+        if (!co_await claimFirmwareCleanup(orphanTransaction))
+            co_return;
+        ruvia::DbQuery references;
+        references.select(references.column(Firmware::columnName<"storage_path">())).from(Firmware::tableName());
+        const auto referenced = co_await orphanTransaction.query(references);
+        std::unordered_set<std::string> paths;
+        for (const auto& row : referenced)
+            paths.insert(std::filesystem::absolute(std::filesystem::path(std::string(row[0].value().value_or(std::string_view{})))).lexically_normal().string());
+        const auto oldest = std::filesystem::file_time_type::clock::now() - std::chrono::hours(1);
+        std::size_t removed{};
+        for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+            const auto path = entry.path().lexically_normal();
+            if (!managedFirmwareFile(path, directory) || paths.contains(path.string()) ||
+                !std::filesystem::is_regular_file(entry.symlink_status()) || entry.last_write_time() >= oldest)
+                continue;
+            std::filesystem::remove(path);
+            if (++removed == 32)
+                break;
+        }
+        co_await orphanTransaction.commit();
+    }
+
     static ruvia::Task<void> hydrateAuth(ruvia::WebWorkerContext& context) {
         ruvia::DbQuery query;
         query.select({query.column(service::edge::persistence::EdgeNodeEntity::columnName<"imei">()),
@@ -1836,6 +1970,32 @@ protected:
         case pb::Envelope::kHeartbeat:
             co_await saveHeartbeat(context, nodeId, envelope.heartbeat());
             break;
+        case pb::Envelope::kDtuStatus: {
+            const auto& status = envelope.dtu_status();
+            if (status.channel_id().size() != 16) break;
+            std::string json;
+            if (!google::protobuf::util::MessageToJsonString(status, &json).ok()) break;
+            auto withoutDebug = status;
+            withoutDebug.clear_traces();
+            withoutDebug.clear_omitted_traces();
+            std::string statusOnly;
+            if (!google::protobuf::util::MessageToJsonString(withoutDebug, &statusOnly).ok()) break;
+            ruvia::DbQuery update;
+            const auto projected = update.caseWhen({{update.binary(
+                config::detail::jsonText(update, update.column(persistence::EdgeDtuEntity::columnName<"config">()), "debugEnabled"),
+                ruvia::DbBinaryOperator::kEqual, update.value("true")), update.cast(update.value(json), ruvia::DbDataType::kJsonb)}},
+                update.cast(update.value(statusOnly), ruvia::DbDataType::kJsonb));
+            update.update(persistence::EdgeDtuEntity::tableName())
+                .set(persistence::EdgeDtuEntity::columnName<"status">(), projected)
+                .where(update.binary(update.column(persistence::EdgeDtuEntity::columnName<"node_id">()), ruvia::DbBinaryOperator::kEqual,
+                    update.cast(update.value(nodeId), ruvia::DbDataType::kUuid)))
+                .andWhere(update.binary(update.column(persistence::EdgeDtuEntity::columnName<"channel_id">()), ruvia::DbBinaryOperator::kEqual,
+                    update.cast(update.value(protocol::uuidText(status.channel_id())), ruvia::DbDataType::kUuid)))
+                .andWhere(update.binary(update.column(persistence::EdgeDtuEntity::columnName<"status">()), ruvia::DbBinaryOperator::kNotEqual,
+                    projected));
+            (void)co_await context.db().execute(update);
+            break;
+        }
         case pb::Envelope::kCapabilityReport:
             co_await saveCapabilities(context, nodeId, envelope.capability_report());
             break;
@@ -2485,6 +2645,15 @@ protected:
             .where(serialCapability.binary(serialCapability.column(persistence::EdgeNodeEntity::columnName<"id">()),
                 ruvia::DbBinaryOperator::kEqual, serialCapability.cast(serialCapability.value(nodeId), ruvia::DbDataType::kUuid)));
         (void)co_await context.db().execute(serialCapability);
+        ruvia::DbQuery dtuCapability;
+        dtuCapability.update(persistence::EdgeNodeEntity::tableName())
+            .set(persistence::EdgeNodeEntity::columnName<"capability">(), dtuCapability.call("jsonb_set", {
+                dtuCapability.column(persistence::EdgeNodeEntity::columnName<"capability">()),
+                config::detail::jsonPath(dtuCapability, "{dtu}"),
+                config::detail::toJsonb(dtuCapability, dtuCapability.cast(dtuCapability.value(report.supports_dtu()), ruvia::DbDataType::kBoolean)), dtuCapability.value(true)}))
+            .where(dtuCapability.binary(dtuCapability.column(persistence::EdgeNodeEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual,
+                dtuCapability.cast(dtuCapability.value(nodeId), ruvia::DbDataType::kUuid)));
+        (void)co_await context.db().execute(dtuCapability);
         if (report.has_vpn()) {
             const auto vpnPublicKey = validVpnPublicKey(report.vpn().public_key())
                                           ? std::string(report.vpn().public_key())

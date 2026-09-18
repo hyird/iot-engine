@@ -101,7 +101,7 @@ class DeptService {
 
     template <typename Context>
     ruvia::Task<void> create(Context& c, const CreateDeptBody& body) {
-        const std::string name(body.get<"name">()->view());
+        const std::string name(body.get<"name">().view());
         const std::string code = body.get<"code">() ? std::string(body.get<"code">()->view()) : "";
         const std::string parentId =
             body.get<"parentId">() ? std::string(body.get<"parentId">()->view()) : "";

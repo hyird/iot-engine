@@ -425,7 +425,7 @@ public:
             common::fail(18010, "Invalid command preparation parameters", 400);
         auto remaining = elements->view();
         const auto values = ruvia::detail::parseJsonValue<ruvia::Array<ruvia::Array<ruvia::String>>>(
-            remaining, context.resource());
+            remaining, context.pool());
         if (!values || values->empty() || values->size() > 256)
             common::fail(18010, "Invalid command preparation elements", 400);
         std::vector<service::collector::CommandElementValue> requested;

@@ -54,6 +54,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { FormModal } from '@/components/FormModal';
 import { usePermissions } from '@/hooks/usePermission';
 import {
+    useDtuChannels,
+    useDtuSave,
+    useDtuDelete,
+    dtuTraceHex,
     getWindowsClientDownloadUrl,
     useEdgeGroupDelete,
     useEdgeGroupSave,
@@ -72,8 +76,11 @@ import type { DeviceCardItem } from '@/components/DeviceCard';
 import DeviceCard from '@/components/DeviceCard';
 import { PageContainer } from '@/components/PageContainer';
 import { formatDateTime } from '@/utils/dateTime';
+import { createUuid } from '@/utils/uuid';
 import { validateForm } from '@/utils/validation';
 import {
+    dtuChannelSchema,
+    dtuAsciiPacketSchema,
     firmwareUpgradeSchema,
     networkInterfaceSchema,
     networkSchema,
@@ -1514,6 +1521,7 @@ export function EdgeNodePage() {
     const firmwareFile = Form.useWatch('file', firmwareForm);
     const { message, modal } = App.useApp();
     const eventScope: Edge.EventScope = {
+        dtu: Boolean(selectedId && detailTab === 'dtu'),
         nodeId: selectedId,
         logs:
             selectedId && detailTab === 'events'
@@ -2439,6 +2447,14 @@ export function EdgeNodePage() {
                                     ),
                                 },
                                 {
+                                    key: 'dtu',
+                                    label: 'DTU 透传',
+                                    children:
+                                        detailTab === 'dtu' ? (
+                                            <DtuPanel node={detail} scope={eventScope} />
+                                        ) : null,
+                                },
+                                {
                                     key: 'config',
                                     label: '设备配置',
                                     children: (
@@ -3120,3 +3136,422 @@ export function EdgeNodePage() {
 }
 
 export default EdgeNodePage;
+
+function DtuPacketInput({
+    value = '',
+    onChange,
+    id,
+}: {
+    value?: string;
+    onChange?: (value: string) => void;
+    id?: string;
+}) {
+    const [format, setFormat] = useState<'hex' | 'ascii'>('hex');
+    const [error, setError] = useState('');
+    const bytes = value.match(/.{2}/g) ?? [];
+    const asciiAvailable =
+        /^(?:[0-9a-fA-F]{2})*$/.test(value) &&
+        bytes.every((byte) => Number.parseInt(byte, 16) <= 127);
+    const currentFormat = format === 'ascii' && asciiAvailable ? 'ascii' : 'hex';
+    return (
+        <div className="flex flex-col gap-2">
+            <Select<'hex' | 'ascii'>
+                className="w-28"
+                value={currentFormat}
+                options={[
+                    { value: 'hex', label: 'HEX' },
+                    { value: 'ascii', label: 'ASCII', disabled: !asciiAvailable },
+                ]}
+                onChange={(next) => {
+                    setFormat(next);
+                    setError('');
+                }}
+            />
+            <Input.TextArea
+                id={id}
+                rows={2}
+                maxLength={currentFormat === 'ascii' ? 256 : 512}
+                status={error ? 'error' : undefined}
+                value={
+                    currentFormat === 'ascii'
+                        ? bytes
+                              .map((byte) => String.fromCharCode(Number.parseInt(byte, 16)))
+                              .join('')
+                        : value
+                }
+                onChange={(event) => {
+                    if (currentFormat === 'hex') {
+                        setError('');
+                        onChange?.(event.target.value);
+                        return;
+                    }
+                    const parsed = dtuAsciiPacketSchema.safeParse(event.target.value);
+                    if (!parsed.success) {
+                        setError(parsed.error.issues[0]?.message ?? 'ASCII 内容无效');
+                        return;
+                    }
+                    setError('');
+                    onChange?.(parsed.data);
+                }}
+            />
+            {error && <span className="text-xs text-red-500">{error}</span>}
+        </div>
+    );
+}
+
+function DtuPanel({ node, scope }: { node: Edge.Node; scope: Edge.EventScope }) {
+    const { has } = usePermissions();
+    const query = useDtuChannels(scope);
+    const save = useDtuSave(node.id);
+    const remove = useDtuDelete(node.id);
+    const [editing, setEditing] = useState(false);
+    const [traceChannel, setTraceChannel] = useState<string>();
+    const [form] = Form.useForm<Edge.DtuChannel>();
+    const mode = Form.useWatch('southMode', form);
+    const canWrite = has('iot:edge:config') && query.data?.supported;
+    const channels = query.data?.channels ?? [];
+    const selected = channels.find((item) => item.channelId === traceChannel);
+    const edit = (channel?: Edge.DtuChannel) => {
+        form.resetFields();
+        form.setFieldsValue(
+            channel ?? {
+                channelId: createUuid(),
+                name: '',
+                enabled: true,
+                southMode: 'tcp_server',
+                southHost: '0.0.0.0',
+                southPort: 5000,
+                northHost: '',
+                northPort: 9000,
+                serialPath: node.serialPorts?.[0]?.path,
+                baudRate: 9600,
+                dataBits: 8,
+                stopBits: 1,
+                parity: 'none',
+                rs485: node.serialPorts?.[0]?.rs485 ?? false,
+                maxClients: 8,
+                queueBytes: 32768,
+                serialFrameMs: 20,
+                uplinkOnly: false,
+                registrationHex: '',
+                heartbeatHex: '',
+                heartbeatIntervalSec: 0,
+                debugEnabled: false,
+            }
+        );
+        setEditing(true);
+    };
+    const states: Record<string, string> = {
+        connected: '已连接',
+        connecting: '连接中',
+        reconnecting: '等待重连',
+        listening: '监听中',
+    };
+    const columns: ColumnsType<Edge.DtuChannel> = [
+        {
+            title: '通道',
+            dataIndex: 'name',
+            width: 150,
+            render: (name, row) => (
+                <Space>
+                    <span>{name}</span>
+                    {!row.enabled && <Tag>停用</Tag>}
+                </Space>
+            ),
+        },
+        {
+            title: '南向设备',
+            width: 210,
+            render: (_, row) => (
+                <div>
+                    <div>
+                        {row.southMode === 'serial'
+                            ? row.serialPath
+                            : `${row.southMode === 'tcp_server' ? 'TCP Server' : 'TCP Client'} ${row.southHost}:${row.southPort}`}
+                    </div>
+                    <span className="text-xs text-slate-500">
+                        {row.enabled
+                            ? (states[row.status?.southState ?? ''] ?? '等待应用')
+                            : '已停用'}{' '}
+                        · {row.status?.clientCount ?? 0} 个连接
+                    </span>
+                </div>
+            ),
+        },
+        {
+            title: '北向 TCP 服务器',
+            width: 190,
+            render: (_, row) => (
+                <div>
+                    {row.northHost}:{row.northPort}
+                    <div className="text-xs text-slate-500">
+                        {row.enabled
+                            ? (states[row.status?.northState ?? ''] ?? '等待应用')
+                            : '已停用'}
+                    </div>
+                </div>
+            ),
+        },
+        {
+            title: '转发字节',
+            width: 160,
+            render: (_, row) => (
+                <div>
+                    上行 {row.status?.upstreamBytes ?? 0}
+                    <br />
+                    下行 {row.status?.downstreamBytes ?? 0}
+                    <div className="text-xs text-slate-500">
+                        缓冲 {row.status?.queuedBytes ?? 0} B
+                    </div>
+                </div>
+            ),
+        },
+        {
+            title: '操作',
+            width: 210,
+            fixed: 'right',
+            render: (_, row) => (
+                <Space size={0}>
+                    <Button type="link" disabled={!canWrite} onClick={() => edit(row)}>
+                        配置
+                    </Button>
+                    <Button type="link" onClick={() => setTraceChannel(row.channelId)}>
+                        调试
+                    </Button>
+                    <Popconfirm
+                        title="删除此透传通道？"
+                        onConfirm={() => remove.mutateAsync(row.channelId)}
+                    >
+                        <Button type="link" danger disabled={!canWrite}>
+                            删除
+                        </Button>
+                    </Popconfirm>
+                </Space>
+            ),
+        },
+    ];
+    return (
+        <div className="flex min-h-0 flex-col gap-3">
+            {query.error && (
+                <Alert
+                    type="error"
+                    title={query.error.message}
+                    action={<Button onClick={() => void query.refetch()}>重试查询</Button>}
+                />
+            )}
+            {query.streamError && (
+                <Alert
+                    type="warning"
+                    title="实时状态连接已断开"
+                    action={<Button onClick={query.retryStream}>重连</Button>}
+                />
+            )}
+            {query.data && !query.data.supported && (
+                <Alert type="warning" title="当前固件未声明 DTU 能力，请升级支持透传的固件" />
+            )}
+            <Flex justify="flex-end" align="center">
+                <Space>
+                    <Button onClick={() => void query.refetch()}>刷新</Button>
+                    <Button
+                        type="primary"
+                        icon={<PlusOutlined />}
+                        disabled={!canWrite || channels.length >= 8}
+                        onClick={() => edit()}
+                    >
+                        新增通道
+                    </Button>
+                </Space>
+            </Flex>
+            <Table
+                rowKey="channelId"
+                size="small"
+                loading={query.isLoading}
+                dataSource={channels}
+                columns={columns}
+                pagination={false}
+                scroll={{ x: 960, y: 320 }}
+            />
+            <FormModal
+                title="透传通道配置"
+                open={editing}
+                onCancel={() => setEditing(false)}
+                confirmLoading={save.isPending}
+                onOk={async () => {
+                    const value = validateForm(form, dtuChannelSchema, form.getFieldsValue(true));
+                    if (!value) return;
+                    await save.mutateAsync(value);
+                    setEditing(false);
+                }}
+            >
+                <Form form={form} layout="vertical">
+                    <Form.Item name="channelId" hidden>
+                        <Input />
+                    </Form.Item>
+                    <Form.Item name="name" label="通道名称" required>
+                        <Input maxLength={100} />
+                    </Form.Item>
+                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                        <Form.Item name="enabled" label="启用透传" valuePropName="checked">
+                            <Switch />
+                        </Form.Item>
+                        <Form.Item name="southMode" label="南向连接">
+                            <Select
+                                options={[
+                                    { value: 'serial', label: '串口' },
+                                    { value: 'tcp_client', label: 'TCP Client（连接设备）' },
+                                    { value: 'tcp_server', label: 'TCP Server（设备接入）' },
+                                ]}
+                            />
+                        </Form.Item>
+                    </div>
+                    {mode === 'serial' ? (
+                        <>
+                            <Form.Item name="serialPath" label="独占串口" required>
+                                <Select
+                                    options={node.serialPorts?.map((port) => ({
+                                        value: port.path,
+                                        label: `${port.displayName || port.path} (${port.path})`,
+                                    }))}
+                                />
+                            </Form.Item>
+                            <div className="grid grid-cols-2 gap-x-4">
+                                <Form.Item name="baudRate" label="波特率">
+                                    <Select
+                                        options={[
+                                            300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600,
+                                            115200, 230400,
+                                        ].map((value) => ({ value, label: String(value) }))}
+                                    />
+                                </Form.Item>
+                                <Form.Item name="dataBits" label="数据位">
+                                    <Select
+                                        options={[5, 6, 7, 8].map((value) => ({
+                                            value,
+                                            label: String(value),
+                                        }))}
+                                    />
+                                </Form.Item>
+                                <Form.Item name="stopBits" label="停止位">
+                                    <Select
+                                        options={[
+                                            { value: 1, label: '1' },
+                                            { value: 2, label: '2' },
+                                        ]}
+                                    />
+                                </Form.Item>
+                                <Form.Item name="parity" label="校验">
+                                    <Select
+                                        options={[
+                                            { value: 'none', label: '无' },
+                                            { value: 'even', label: '偶校验' },
+                                            { value: 'odd', label: '奇校验' },
+                                        ]}
+                                    />
+                                </Form.Item>
+                                <Form.Item name="rs485" label="RS485" valuePropName="checked">
+                                    <Switch />
+                                </Form.Item>
+                                <Form.Item name="serialFrameMs" label="空闲组帧间隔（ms）">
+                                    <InputNumber min={0} max={1000} className="w-full" />
+                                </Form.Item>
+                            </div>
+                        </>
+                    ) : (
+                        <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                            <Form.Item
+                                name="southHost"
+                                label={mode === 'tcp_server' ? '监听地址' : '设备地址'}
+                                required
+                            >
+                                <Input />
+                            </Form.Item>
+                            <Form.Item name="southPort" label="南向端口" required>
+                                <InputNumber min={1} max={65535} className="w-full" />
+                            </Form.Item>
+                        </div>
+                    )}
+                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                        <Form.Item name="northHost" label="北向 TCP 服务器" required>
+                            <Input placeholder="域名或 IP" />
+                        </Form.Item>
+                        <Form.Item name="northPort" label="北向端口" required>
+                            <InputNumber min={1} max={65535} className="w-full" />
+                        </Form.Item>
+                    </div>
+                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                        <Form.Item name="maxClients" label="TCP Server 客户端上限">
+                            <InputNumber min={1} max={16} className="w-full" />
+                        </Form.Item>
+                        <Form.Item name="queueBytes" label="每个方向/客户端的缓冲（字节）">
+                            <InputNumber min={4096} max={65536} step={4096} className="w-full" />
+                        </Form.Item>
+                    </div>
+                    <Form.Item name="registrationHex" label="注册包">
+                        <DtuPacketInput />
+                    </Form.Item>
+                    <Form.Item name="heartbeatHex" label="心跳包">
+                        <DtuPacketInput />
+                    </Form.Item>
+                    <Form.Item name="heartbeatIntervalSec" label="心跳间隔（秒，0 关闭）">
+                        <InputNumber min={0} max={86400} className="w-full" />
+                    </Form.Item>
+                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                        <Form.Item name="uplinkOnly" label="仅上行" valuePropName="checked">
+                            <Switch />
+                        </Form.Item>
+                        <Form.Item name="debugEnabled" label="独立透传调试" valuePropName="checked">
+                            <Switch />
+                        </Form.Item>
+                    </div>
+                </Form>
+            </FormModal>
+            <FormModal
+                title={`透传调试 · ${selected?.name ?? ''}`}
+                open={Boolean(traceChannel)}
+                onCancel={() => setTraceChannel(undefined)}
+                footer={<Button onClick={() => setTraceChannel(undefined)}>关闭窗口</Button>}
+            >
+                {selected && (
+                    <Space orientation="vertical" className="w-full" size="middle">
+                        <Flex justify="space-between">
+                            <span>透传调试</span>
+                            <Switch
+                                checked={selected.debugEnabled ?? false}
+                                disabled={!canWrite}
+                                loading={save.isPending}
+                                onChange={(debugEnabled) =>
+                                    save.mutate({ ...selected, debugEnabled })
+                                }
+                            />
+                        </Flex>
+                        {selected.status?.error && (
+                            <Alert type="warning" title={selected.status.error} />
+                        )}
+                        <span className="text-xs text-slate-500">
+                            省略的调试事件：{selected.status?.omittedTraces ?? 0}
+                        </span>
+                        {selected.debugEnabled ? (
+                            (selected.status?.traces ?? []).map((trace) => (
+                                <div
+                                    key={`${trace.monotonicMs}-${trace.sequence}`}
+                                    className="rounded border border-slate-200 p-3"
+                                >
+                                    <Space>
+                                        <Tag>{trace.direction}</Tag>
+                                        <span>客户端 {trace.clientSlot ?? 0}</span>
+                                        <span>{trace.totalBytes ?? 0} B</span>
+                                    </Space>
+                                    <pre className="mt-2 whitespace-pre-wrap break-all text-xs">
+                                        {dtuTraceHex(trace.payload)}
+                                    </pre>
+                                </div>
+                            ))
+                        ) : (
+                            <Empty description="透传调试已关闭" />
+                        )}
+                    </Space>
+                )}
+            </FormModal>
+        </div>
+    );
+}

@@ -7,11 +7,14 @@
 #include <utility>
 
 #include <ruvia/web/Context.h>
+#include <ruvia/web/db/DbHandle.h>
+#include <ruvia/web/redis/RedisHandle.h>
 
 namespace service::middleware {
 
-// Snapshot DTOs must not accumulate in a long-lived HTTP request arena.
-// This allocation scope and every I/O operation stay on the accepting Worker.
+// Each operation owns temporary model storage on the accepting Worker.
+// HTTP handlers serialize with c.json(model) before this scope ends; SSE
+// snapshots release their model storage after each event.
 class RequestContext {
   public:
     RequestContext(ruvia::Context& connection, std::string actorId)

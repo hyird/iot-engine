@@ -1,5 +1,7 @@
 # 文件职责整改记录
 
+2026-09-18 更新：后端已采用 Ruvia 模型与字段校验合并声明，模块级 `schema.h` 和自有 Validator 已全部删除。纯请求解析归 `types.h`，链路业务组合检查归 Service，HTTP handler 使用 Task<> 并通过 c.json(model) 显式返回响应模型；详见 [Ruvia 更新记录](ruvia-update-20260918.md)。下文涉及 schema/Validator 的条目保留为此前整改阶段的历史证据，不代表当前结构。
+
 ## 目标与验收
 
 按照 `AGENTS.md` 完成整个仓库的文件职责与内容一致性整改，范围包括 `service/`、`web/`、`clients/` 和相关构建、测试、文档。本文用于追踪证据和剩余工作，不以已有改动代替全仓验收。
@@ -7,6 +9,18 @@
 验收必须覆盖真实调用、存储读写、实体使用、依赖方向与循环、Worker 状态和生命周期，以及接口、历史迁移、设备协议和已部署固件的兼容性。目录和字符串检查只能作为辅助证据。
 
 ## 已实施，等待最终验收
+
+- 用户、角色、部门、链路、开放接入的 QueryKey 工厂从各自 types 迁入唯一使用者 service 并设为私有；移除 types 对查询工具的运行时依赖。协议存储策略下拉选项从 types 移回页面私有 UI，保留 StoragePolicy 类型。5 组工厂与 HEAD 逐段核对一致，缓存键名称、参数组成及失效逻辑未变。类型检查、lint、生产构建及 14 项相关测试通过，证据 `build/responsibility-query-ownership-*.log`。无布局修改，未新增浏览器验证；Edge 类型中的缓存键仍需结合同时进行的 Edge 改动复核。
+
+- 删除 `UuidV7Generator::instance()` 的线程局部单例和 `nextUuidV7()` 隐式入口，剩余协议/遥测/调试测试均显式持有生成器。进程身份仍采用一次初始化的不可变 UUID，仅在初始化期间创建局部生成器，不再永久保留线程局部随机状态；这不代表进程身份已迁入启动装配，也不代表 `common/uuid.h` 的运行对象归属已完成。`build/uuid-explicit-check/` 独立 MSVC Release 验证 8192 个实例生成 ID 唯一、单实例单调及 8 个线程读取相同进程身份通过（`build/responsibility-uuid-explicit-smoke.log`）。
+- 已将上轮 ZLMediaKit 构建失败定位到准确原因：CMake 当前固定 `4b07053aa5f6d35505e8c548c2a08a978143fcf1`，而 `ports/cmake/patch-zlmediakit.cmake` 要求 `79d795a767da85bbba821b871265fd87d853d808`；并非笼统网络获取失败。证据 `build/responsibility-zlm-populate-diagnosis.log`。保留正在进行的升级改动，未绕过补丁版本校验；当前完整 Release、修改测试重编译及完整 CTest 尚未通过，独立 UUID 验证不能替代这些验收。
+
+- GB28181 RTP 流会话身份从 ZLMediaKit transport 的线程局部 UUID 生成改为由实际 Collector 的 `UuidV7Generator` 生成：CollectorRuntime 向所属 SipServer 注入生成器，预览/回放创建 RTP 时显式传入会话 ID。SDK 仅组合原流 ID 格式，不保留旧签名。测试装配同步显式提供生成器，媒体真实 SDK 测试增加流 ID 完整等值断言，保留跨 Worker 关闭隔离和回调所属测试。本批 GB28181 媒体/代理测试通过，现有双 Collector 可执行服务的真实集成完整通过（预览启停、租约、HTTP/SSE、持久化顺序、丢失回执恢复及失去租约后的隔离，`build/responsibility-rtp-identity-integration.log`）。CTest 为 33/35，`worker-isolation` 缺少可执行文件未运行，`gb28181-sip` 仍在 IPv6 UDP catalog 失败。完整 Release 未通过：首次遇到并行修改中的 Edge 成员初始化错误，随后 server.obj 写入冲突，待编译进程退出后重试又因工作区 ZLMediaKit 固定提交变更在 FetchContent 获取阶段失败；详见 `build/responsibility-rtp-identity-release*.log`，不能以已有二进制集成替代当前工作区完整重建。公共 UUID 文件的运行状态及进程身份尚未整改完成。
+
+- 寄存器显示顺序、颜色/标签/前缀映射、未知类型兜底展示及 SL651 编码下拉列表从 `protocol.service.ts` 移回唯一使用者 `index.tsx`，定义改为页面私有；历史类型规范化继续由 service 提供，不改变配置读写。删除 service 中迁移后悬空的 Modal、ID 和表单类型注释。核对搬迁的元数据及兜底函数与 HEAD 实现逐字一致；类型检查、lint（仅既有提示）、生产构建和 10 项相关测试通过，证据 `build/responsibility-register-display-*.log`。此批不改变布局，未补做浏览器视觉验收，全仓目标仍未完成。
+
+- 用户确认实体边界沿用现有规范：允许实际使用的自定义 Redis 存储映射，不限于数据库表；DTO、校验、业务操作、队列和锁不归入实体。`auth.entity.h` 的登录失败计数键和值映射属于此范围。
+- 寄存器地址冲突表单校验从 `protocol.service.ts` 移入 `protocol.schema.ts`，页面直接引用 schema，保留重叠、相邻地址、不同寄存器类型及编辑排除自身的语义。本批类型检查、生产构建、修改文件 Biome 格式检查及 10 项现有测试通过；补充 9 项边界断言通过。lint 无错误，仅有既有 `PacketDebugPanel.tsx` 字符串拼接提示。证据为 `build/responsibility-register-schema-*.log`；未涉及布局和后端，本批未执行浏览器及后端验证，不代表全仓完成。
 
 - 后台 Service Worker 的消息/配置版本/告警记录/投递审计/设备登记和命令回执 ID 改从所属 Worker 状态生成；Redis-only 的采集配置投影、报文调试和数据库-only 的 VPN 路由、命令事件显式接收生成器或 ID。网关响应封包明确接收当前连接上下文，保留会话 epoch/sequence 与旧固件字段。后台剩余隐式 UUID 调用为 ZLMediaKit RTP 流身份，公共线程局部入口与进程身份仍待后续清理。本批与设备 SSE 合并一同构建验证，尚未部署，不以搜索结果代替运行验收。
 

@@ -1856,6 +1856,28 @@ CREATE TRIGGER live_dead_letters AFTER INSERT OR UPDATE OR DELETE ON outbox_even
 FOR EACH ROW EXECUTE FUNCTION publish_dead_letter_change();
 END $schema$;
 )sql"}),
+    ruvia::DbMigration({.id="0051_edge_dtu", .sql=R"sql(
+DO $schema$ BEGIN
+CREATE TABLE edge_dtu (
+    node_id UUID NOT NULL REFERENCES edge_node(id) ON DELETE CASCADE,
+    channel_id UUID NOT NULL,
+    config JSONB NOT NULL CHECK (jsonb_typeof(config) = 'object'),
+    wire_hex TEXT NOT NULL CHECK (wire_hex ~ '^[0-9a-f]+$'),
+    status JSONB NOT NULL DEFAULT '{}'::jsonb,
+    PRIMARY KEY (node_id, channel_id)
+);
+CREATE FUNCTION publish_edge_dtu_change() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF TG_OP = 'UPDATE' AND OLD IS NOT DISTINCT FROM NEW THEN RETURN NULL; END IF;
+  INSERT INTO outbox_event(id,event_type,aggregate_type,aggregate_id,action,schema_version)
+  VALUES(gen_random_uuid(),'query.changed','edge-dtu:' || COALESCE(NEW.node_id,OLD.node_id)::text,
+    COALESCE(NEW.channel_id,OLD.channel_id)::text,TG_OP,1);
+  RETURN NULL;
+END $fn$;
+CREATE TRIGGER live_edge_dtu AFTER INSERT OR UPDATE OR DELETE ON edge_dtu
+FOR EACH ROW EXECUTE FUNCTION publish_edge_dtu_change();
+END $schema$;
+)sql"}),
     };
     // Only audited original digests may transition to their equivalent ORM definitions.
     // This transaction runs before normal checksum validation; all other drift still fails.

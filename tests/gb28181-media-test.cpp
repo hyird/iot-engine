@@ -14,6 +14,7 @@
 
 #include <ruvia/core/EventLoopPool.h>
 
+#include "service/common/uuid.h"
 #include "service/middleware/log.h"
 #include "service/features/packet_log/packet_log.transport.h"
 #include "service/features/gb28181/media/media.transport.h"
@@ -36,8 +37,9 @@ bool waitUntil(Predicate predicate, std::chrono::milliseconds timeout = std::chr
 }
 
 ruvia::Task<OpenRtpServerResult> openOwnedRtp(std::size_t owner) {
+    service::common::UuidV7Generator uuidGenerator;
     ZlmSdk::OwnerScope scope(owner);
-    auto result = sdkSupervisor().sdk().openRtpServer("callback-device", "channel", "2000000001");
+    auto result = sdkSupervisor().sdk().openRtpServer("callback-device", "channel", "2000000001", uuidGenerator.next());
     require(result.has_value(), "owned callback test RTP server did not open");
     co_return std::move(*result);
 }
@@ -109,6 +111,7 @@ void verifySdkCallbackOwners(const MediaConfig& config) {
 } // namespace
 
 int main() {
+    service::common::UuidV7Generator uuidGenerator;
     try {
         namespace packetLog = service::packet_log;
         packetLog::Config packetConfig;
@@ -196,8 +199,10 @@ int main() {
                     invalidDeregisteredReaderCount.load() == 0,
                 "embedded ZLM media deregistration queried an unsafe reader count");
 
-        const auto opened = sdk.openRtpServer("34020000002000000001", "34020000001320000001", "2000000001");
+        const auto sessionId = uuidGenerator.next();
+        const auto opened = sdk.openRtpServer("34020000002000000001", "34020000001320000001", "2000000001", sessionId);
         require(opened.has_value(), "embedded ZLM RTP server did not open");
+        require(opened->streamId == "gb_34020000002000000001_34020000001320000001_2000000001_" + sessionId, "RTP stream did not preserve the caller session identity");
         require(opened->port != 0, "embedded ZLM RTP server returned port zero");
         require(opened->port >= 30000 && opened->port <= 35000 && opened->port % 2 == 0, "automatic RTP allocation did not return a managed even port");
         require(opened->playUrls.httpFlv.find(std::to_string(ports.http)) != std::string::npos, "HTTP-FLV URL does not use the embedded HTTP server");
@@ -219,11 +224,11 @@ int main() {
         std::optional<OpenRtpServerResult> firstOwned, secondOwned;
         {
             ZlmSdk::OwnerScope owner(0);
-            firstOwned = sdk.openRtpServer("same-device", "same-channel", "2000000001");
+            firstOwned = sdk.openRtpServer("same-device", "same-channel", "2000000001", uuidGenerator.next());
         }
         {
             ZlmSdk::OwnerScope owner(1);
-            secondOwned = sdk.openRtpServer("same-device", "same-channel", "2000000001");
+            secondOwned = sdk.openRtpServer("same-device", "same-channel", "2000000001", uuidGenerator.next());
             require(firstOwned && secondOwned && firstOwned->streamId != secondOwned->streamId, "different Collector sessions collided in the SDK");
             require(!sdk.closeRtpServer(firstOwned->streamId), "a Collector closed another Collector's RTP server");
             require(sdk.closeRtpServer(secondOwned->streamId), "the calling Collector could not close its RTP server");

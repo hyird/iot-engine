@@ -35,7 +35,7 @@ return 1
     static ruvia::Task<void> recordPacket(const Redis& redis, service::common::UuidV7Generator& uuidGenerator, std::string_view linkId,
         std::string_view deviceId, std::string_view direction, std::string_view source,
         std::string_view address, std::span<const std::uint8_t> payload, std::int64_t time,
-        bool deviceOnly = false, std::string_view eventId = {},
+        bool captureLink, bool captureDevice, std::string_view eventId = {},
         std::string_view status = {}, std::string_view reason = {},
         std::string_view parsedJson = {},
         std::string_view replyToPacketId = {}, bool updateOnly = false, std::size_t baseOffset = 0,
@@ -204,8 +204,8 @@ return changed and 1 or 0
 
 )lua";
         std::vector<std::string> storage;
-        if (!deviceOnly) storage.push_back(DebugPacketStorage::key("link", linkId));
-        if (!deviceId.empty()) storage.push_back(DebugPacketStorage::key("device", deviceId));
+        if (captureLink) storage.push_back(DebugPacketStorage::key("link", linkId));
+        if (captureDevice && !deviceId.empty()) storage.push_back(DebugPacketStorage::key("device", deviceId));
         if (storage.empty()) co_return;
         const std::vector<std::string_view> keys(storage.begin(), storage.end());
         // Preserve decimal and 64-bit numeric text while merging per-response values in Redis.

@@ -1,3 +1,4 @@
+import { createQueryKeys } from '@/utils/query';
 import { useQuery } from '@tanstack/react-query';
 import { useMutationWithMessage } from '@/hooks/useMutation';
 import {
@@ -14,7 +15,15 @@ import {
     updateWebhook,
 } from './open_access.api';
 import type { Access } from './open_access.types';
-import { accessQueryKeys } from './open_access.types';
+const keys = createQueryKeys('open-access');
+const accessQueryKeys = {
+    ...keys,
+    devices: () => [...keys.all, 'devices'] as const,
+    keys: () => [...keys.all, 'keys'] as const,
+    webhooks: (accessKeyId?: string) => [...keys.all, 'webhooks', accessKeyId] as const,
+    logs: (query: Access.LogQuery) => [...keys.all, 'logs', query] as const,
+};
+
 export const useOpenDevices = () =>
     useQuery({
         queryKey: accessQueryKeys.devices(),

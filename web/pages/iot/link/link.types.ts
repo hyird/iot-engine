@@ -1,11 +1,5 @@
 import type { PageParams } from '@/types/pagination';
-import { createQueryKeys } from '@/utils/query';
 
-const keys = createQueryKeys('links');
-export const linkQueryKeys = {
-    ...keys,
-    list: (params?: Link.Query) => [...keys.lists(), params] as const,
-};
 type LinkMode = 'TCP Server' | 'TCP Client';
 type LinkProtocol = 'SL651' | 'Modbus' | 'S7' | 'MC' | 'FINS' | 'DLT645';
 type LinkStatus = 'enabled' | 'disabled';

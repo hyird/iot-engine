@@ -12,12 +12,7 @@ void require(bool condition, const char* reason) {
     }
 }
 
-RUVIA_REQUEST_MODEL(EchoBody, RUVIA_REQUIRED_FIELD(value, ruvia::String));
-
-class EchoValidator : public ruvia::Middleware<EchoValidator> {
-  public:
-    RUVIA_VALIDATE_JSON(EchoBody, RUVIA_RULE(value, RUVIA_REQUIRED("required"), RUVIA_MIN(2, "short")))
-};
+RUVIA_REQUEST_MODEL(EchoBody, RUVIA_REQUIRED_FIELD(value, ruvia::String, RUVIA_MIN(2, "short")));
 
 class EventProbe final : public ruvia::Controller<EventProbe> {
   public:
@@ -27,7 +22,7 @@ class EventProbe final : public ruvia::Controller<EventProbe> {
 
     RUVIA_ROUTES_END
     void registerEvents(service::edge::debug::EventRegistry& registry) {
-        registry.add<EventProbe, &EventProbe::echo, EchoValidator>("echo.read", *this);
+        registry.add<EventProbe, &EventProbe::echo, EchoBody>("echo.read", *this);
     }
 
   private:
@@ -44,7 +39,7 @@ class EventProbe final : public ruvia::Controller<EventProbe> {
         co_return service::edge::debug::EventResult{ service::utils::jsonQuoted(body.get<"value">().view()) };
     }
 
-    ruvia::Task<ruvia::HttpResponse> probe(ruvia::Context& c) {
+    ruvia::Task<> probe(ruvia::Context& c) {
         const auto wire = co_await c.req().text();
         auto request = service::edge::debug::Request::parse(wire);
         service::edge::debug::SessionIdentity identity{
@@ -77,8 +72,9 @@ class EventProbe final : public ruvia::Controller<EventProbe> {
 } // namespace
 
 int main() {
+    service::common::UuidV7Generator uuidGenerator;
     try {
-        const auto id = service::common::nextUuidV7();
+        const auto id = uuidGenerator.next();
         const auto wire = "{\"id\":\"" + id + "\",\"event\":\"echo.read\",\"data\":{\"value\":\"typed\"}}";
         const auto parsed = service::edge::debug::Request::parse(wire);
         require(parsed.id == id && parsed.data == "{\"value\":\"typed\"}", "request ownership failed");

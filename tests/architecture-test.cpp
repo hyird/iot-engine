@@ -93,7 +93,7 @@ void requireExpectedModule(std::string_view domain, std::string_view module,
 
 bool whitelistedModuleFile(std::string_view file, std::string_view owner) {
     static constexpr std::array<std::string_view, 6> suffixes{
-        ".types.h", ".schema.h", ".service.h", ".entity.h", ".error.h",
+        ".types.h", ".service.h", ".entity.h", ".error.h",
         ".controller.h",
     };
     for (const auto suffix : suffixes) {

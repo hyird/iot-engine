@@ -846,7 +846,8 @@ class CollectorWorker final {
         try {
             co_await packet_log::DebugPacketService::recordPacket(redis_, uuidGenerator_, linkId,
                 selected ? std::string_view(selected->id) : std::string_view{}, direction,
-                "collector", peerAddress, bytes, timestamp, deviceOnly, eventId, status, reason, parsedJson, replyToPacketId,
+                "collector", peerAddress, bytes, timestamp, link->debugEnabled && !deviceOnly,
+                selected && selected->debugEnabled, eventId, status, reason, parsedJson, replyToPacketId,
                 false, 0, acquisitionId);
         } catch (const std::exception& error) {
             lastCoordinatorError_ = std::string("debug_packet_failed: ") + error.what();

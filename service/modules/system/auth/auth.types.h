@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include <ruvia/web/Model.h>
+#include <ruvia/web/Validation.h>
 
 #include "service/modules/system/role/role.types.h"
 
@@ -13,9 +13,9 @@ struct JwtPayload {
     std::string username;
 };
 
-RUVIA_REQUEST_MODEL(LoginBody, RUVIA_OPTIONAL_FIELD(username, ruvia::String), RUVIA_OPTIONAL_FIELD(password, ruvia::String));
+RUVIA_REQUEST_MODEL(LoginBody, RUVIA_REQUIRED_FIELD(username, ruvia::String, RUVIA_MIN(1, "用户名不能为空")), RUVIA_REQUIRED_FIELD(password, ruvia::String, RUVIA_MIN(1, "密码不能为空")));
 
-RUVIA_REQUEST_MODEL(RefreshBody, RUVIA_OPTIONAL_FIELD_NAME("refresh_token", refreshToken, ruvia::String));
+RUVIA_REQUEST_MODEL(RefreshBody, RUVIA_REQUIRED_FIELD_NAME("refresh_token", refreshToken, ruvia::String, RUVIA_MIN(1, "刷新令牌不能为空")));
 
 RUVIA_RESPONSE_MODEL(AuthUserInfoDto, RUVIA_OPTIONAL_FIELD(id, ruvia::String), RUVIA_OPTIONAL_FIELD(username, ruvia::String), RUVIA_OPTIONAL_FIELD(nickname, ruvia::String, RUVIA_OMIT_EMPTY), RUVIA_OPTIONAL_FIELD(status, ruvia::String), RUVIA_OPTIONAL_FIELD(roles, ruvia::Array<service::role::RoleOptionDto>), RUVIA_OPTIONAL_FIELD(permissions, ruvia::Array<ruvia::String>));
 

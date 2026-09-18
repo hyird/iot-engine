@@ -73,22 +73,14 @@ async function debugSwitch(scope: string, id: string, enabled: boolean) {
     assert(BigInt(after.revision ?? 0) > BigInt(before.revision ?? 0),
         `${scope} debug switch must queue a new edge configuration, including when disabled`);
 }
-async function firstSnapshot(path: string) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
-    try {
-        const response = await fetch(apiBase+path,{headers:{Authorization:`Bearer ${token}`,Accept:'text/event-stream'},signal:controller.signal});
-        assert.equal(response.status,200);
-        const reader = response.body!.getReader(); const decoder = new TextDecoder(); let pending='';
-        for (;;) {
-            const part = await reader.read(); assert(!part.done);
-            pending += decoder.decode(part.value,{stream:true});
-            const end = pending.indexOf('\n\n'); if(end<0) continue;
-            const data = pending.slice(0,end).split('\n').find(line=>line.startsWith('data:'));
-            if(data) return JSON.parse(data.slice(5)).data;
-            pending=pending.slice(end+2);
-        }
-    } finally {clearTimeout(timeout);controller.abort();}
+async function queryDetails(path: string) {
+    const response = await fetch(apiBase+path, {
+        headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15000),
+    });
+    assert.equal(response.status,200);
+    const result = await response.json();
+    assert.equal(result.code,0);
+    return result.data;
 }
 const baseImei = `99${String(Math.floor(Math.random() * 1e12)).padStart(12, '0')}`;
 let checksum = 0;
@@ -175,20 +167,25 @@ try {
         for (const [linkOn, deviceOn] of [[false,false],[true,false],[true,true],[false,true],[false,false]]) {
             await debugSwitch('link',link,linkOn);
             await debugSwitch('device',device,deviceOn);
-            const view = await firstSnapshot(`/v1/device/${device}`);
+            const view = await queryDetails(`/v1/device/${device}`);
             assert.equal(view.debug_enabled,deviceOn);
             assert.equal(view.link_debug_enabled,linkOn);
-            const linkView = await firstSnapshot(`/v1/link/${link}`);
+            const linkView = await queryDetails(`/v1/link/${link}`);
             assert.equal(linkView.debug_enabled,linkOn);
             const packetId = uuid();
             const trace = Buffer.concat([field(1,bytes(packetId)),field(2,bytes(link)),field(3,bytes(device)),field(5,Date.now()),field(6,Buffer.from('AABBCC','hex')),field(7,1),field(8,'RX'),field(10,'received'),field(14,bytes(packetId))]);
             const key = `iot:debug:v4:device:${device}`;
+            const linkKey = `iot:debug:v4:link:${link}`;
             const before = Number(await redis.send('ZCARD',[key]));
+            const linkBefore = Number(await redis.send('ZCARD',[linkKey]));
             socket!.send(envelope(42,trace));
-            if(linkOn||deviceOn) await until(async()=>Number(await redis.send('ZCARD',[key]))===before+1,'debug packet was not captured');
-            else { await Bun.sleep(150); assert.equal(Number(await redis.send('ZCARD',[key])),before); }
-            const packets = await firstSnapshot(`/v1/device/${device}/debug/packets`);
-            assert.equal(packets.length, linkOn||deviceOn ? before+1 : before);
+            if(deviceOn) await until(async()=>Number(await redis.send('ZCARD',[key]))===before+1,'device debug packet was not captured');
+            if(linkOn) await until(async()=>Number(await redis.send('ZCARD',[linkKey]))===linkBefore+1,'link debug packet was not captured');
+            await Bun.sleep(150);
+            assert.equal(Number(await redis.send('ZCARD',[key])),before+Number(deviceOn),'link switch must not enable device capture');
+            assert.equal(Number(await redis.send('ZCARD',[linkKey])),linkBefore+Number(linkOn),'device switch must not enable link capture');
+            const packets = await queryDetails(`/v1/device/${device}/debug/packets`);
+            assert.equal(packets.length, deviceOn ? before+1 : before);
             if(packets.length) { assert.equal(packets[0].packets[0].payload_hex,'AABBCC'); assert.equal(packets[0].packets[0].transport_status,'received'); }
         }
         assert.equal((await db`SELECT debug_enabled FROM device WHERE id=${device}`)[0].debug_enabled,false);
@@ -252,7 +249,7 @@ try {
             assert.equal(await redis.send('HGET',[key,'payload_hex']),raw[packetIds.indexOf(packetId)].toString('hex').toUpperCase());
             assert.equal(await redis.send('HGET',[key,'history_id']),null);
         }
-        const rounds = await firstSnapshot(`/v1/device/${device}/debug/packets`);
+        const rounds = await queryDetails(`/v1/device/${device}/debug/packets`);
         const round = rounds.find((entry: any) => entry.id === report);
         assert(round);
         assert.equal(round.packets.length, 2, 'history updates must not duplicate packet rows');
@@ -260,13 +257,9 @@ try {
             assert.equal(packet.edge_node_id,node);
             assert.equal(packet.edge_node_name,'调试边缘节点');
         }
-        const linkRounds = await firstSnapshot(`/v1/link/${link}/debug/packets`);
+        const linkRounds = await queryDetails(`/v1/link/${link}/debug/packets`);
         const linkRound = linkRounds.find((entry: any) => entry.id === report);
-        assert(linkRound);
-        for (const packet of linkRound.packets) {
-            assert.equal(packet.edge_node_id,node);
-            assert.equal(packet.edge_node_name,'调试边缘节点');
-        }
+        assert.equal(linkRound,undefined,'device-only debugging must not add a link acquisition');
         assert.equal(round.history_id,undefined);
         assert.equal(round.storage_status,undefined);
         assert.equal(round.parsed_json,undefined);

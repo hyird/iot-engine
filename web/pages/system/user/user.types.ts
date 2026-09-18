@@ -1,16 +1,8 @@
 import type { PageParams } from '@/types/pagination';
-import { createQueryKeys } from '@/utils/query';
 
 /**
  * 用户管理类型定义
  */
-// ============ QueryKeys ============
-const userKeys = createQueryKeys('users');
-export const userQueryKeys = {
-    ...userKeys,
-    list: (params?: User.Query) => [...userKeys.lists(), params] as const,
-};
-export const roleOptionQueryKey = ['roles', 'options'] as const;
 // ============ 枚举/状态类型 ============
 type UserStatus = 'enabled' | 'disabled';
 // ============ 基础类型 ============

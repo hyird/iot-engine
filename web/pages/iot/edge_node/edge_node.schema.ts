@@ -284,3 +284,68 @@ export const logLevelSchema = z.object({
     level: z.enum(['debug', 'info', 'warn', 'error']),
 });
 export const edgeIdSchema = z.uuid('节点 ID 必须是 UUID');
+
+export const dtuAsciiPacketSchema = z
+    .string()
+    .max(256, '报文最多 256 字节')
+    .refine(
+        (value) => Array.from(value).every((char) => char.charCodeAt(0) <= 127),
+        'ASCII 不支持中文或其他非 ASCII 字符'
+    )
+    .transform((value) =>
+        Array.from(value, (char) => char.charCodeAt(0).toString(16).padStart(2, '0'))
+            .join('')
+            .toUpperCase()
+    );
+
+export const dtuChannelSchema = z
+    .object({
+        channelId: z.uuid(),
+        name: z.string().trim().min(1, '请输入通道名称').max(100),
+        enabled: z.boolean(),
+        southMode: z.enum(['serial', 'tcp_client', 'tcp_server']),
+        southHost: z.string().trim().max(253).optional(),
+        southPort: z.number().int().min(1).max(65535).optional(),
+        northHost: z.string().trim().min(1, '请输入北向服务器').max(253),
+        northPort: z.number().int().min(1).max(65535),
+        serialPath: z.string().max(96).optional(),
+        baudRate: z.number().int().optional(),
+        dataBits: z.number().int().min(5).max(8).optional(),
+        stopBits: z.number().int().min(1).max(2).optional(),
+        parity: z.enum(['none', 'even', 'odd']).optional(),
+        rs485: z.boolean().optional(),
+        maxClients: z.number().int().min(1).max(16),
+        queueBytes: z.number().int().min(4096).max(65536),
+        serialFrameMs: z.number().int().min(0).max(1000),
+        uplinkOnly: z.boolean().optional(),
+        debugEnabled: z.boolean().optional(),
+        registrationHex: z
+            .string()
+            .max(512)
+            .regex(/^(?:[0-9a-fA-F]{2})*$/, '请输入完整的 HEX 字节')
+            .optional(),
+        heartbeatHex: z
+            .string()
+            .max(512)
+            .regex(/^(?:[0-9a-fA-F]{2})*$/, '请输入完整的 HEX 字节')
+            .optional(),
+        heartbeatIntervalSec: z.number().int().min(0).max(86400).optional(),
+    })
+    .superRefine((value, context) => {
+        if ((value.heartbeatIntervalSec ?? 0) > 0 && !value.heartbeatHex)
+            context.addIssue({ code: 'custom', path: ['heartbeatHex'], message: '请输入心跳包' });
+        if (value.southMode === 'serial') {
+            if (!value.serialPath?.startsWith('/dev/'))
+                context.addIssue({
+                    code: 'custom',
+                    path: ['serialPath'],
+                    message: '请选择节点串口',
+                });
+        } else if (!value.southHost || !value.southPort) {
+            context.addIssue({
+                code: 'custom',
+                path: ['southHost'],
+                message: '请输入南向地址和端口',
+            });
+        }
+    });

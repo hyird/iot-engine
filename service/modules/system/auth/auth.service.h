@@ -205,8 +205,8 @@ class AuthService {
 
     template <typename Context>
     ruvia::Task<LoginResultDto> login(Context& c, const LoginBody& body) {
-        const std::string username(body.get<"username">()->view());
-        const std::string password(body.get<"password">()->view());
+        const std::string username(body.get<"username">().view());
+        const std::string password(body.get<"password">().view());
         if (co_await limiter_.locked(c, username)) {
             service::common::fail(11003, "登录失败次数过多，请 15 分钟后再试", 429);
         }
@@ -244,7 +244,7 @@ class AuthService {
     ruvia::Task<LoginResultDto> refresh(Context& c, const RefreshBody& body) {
         JwtPayload payload;
         try {
-            payload = AuthTokenService::verifyRefreshToken(c, body.get<"refreshToken">()->view());
+            payload = AuthTokenService::verifyRefreshToken(c, body.get<"refreshToken">().view());
         } catch (...) {
             service::common::fail(service::common::kTokenInvalidErrorCode, "刷新令牌无效", 401);
         }

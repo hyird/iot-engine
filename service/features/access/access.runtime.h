@@ -445,7 +445,7 @@ class WebhookRuntime final {
             std::vector<DeliveryAttempt> attempts(selected.size());
             ruvia::TaskScope scope(
                 context.worker(),
-                ruvia::TaskScopeOptions{ .resource = context.resource() }
+                ruvia::TaskScopeOptions{ .resource = context.pool() }
             );
             for (std::size_t index = 0; index < selected.size(); ++index) {
                 const auto messageIndex = selected[index]->indexes[selected[index]->next];
@@ -516,7 +516,7 @@ class WebhookRuntime final {
             const auto end = std::min(targets.size(), offset + kTargetConcurrency);
             ruvia::TaskScope scope(
                 context.worker(),
-                ruvia::TaskScopeOptions{ .resource = context.resource() }
+                ruvia::TaskScopeOptions{ .resource = context.pool() }
             );
             for (auto index = offset; index < end; ++index) {
                 scope.spawn(deliverTarget(context, http, *targets[index], delivery));

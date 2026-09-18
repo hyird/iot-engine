@@ -1,4 +1,3 @@
-import { LiveQueryError } from '@/components/LiveQueryError';
 import {
     App,
     Button,
@@ -14,9 +13,9 @@ import {
 } from 'antd';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import { useEffect, useState } from 'react';
-import { PacketDebugPanel } from '@/components/PacketDebugPanel';
-import { useLinkDebug } from './link.service';
 import { FormModal } from '@/components/FormModal';
+import { LiveQueryError } from '@/components/LiveQueryError';
+import { PacketDebugPanel } from '@/components/PacketDebugPanel';
 import { PageContainer } from '@/components/PageContainer';
 import { StatusTag } from '@/components/StatusTag';
 import { useDebounceFn } from '@/hooks/useDebounceFn';
@@ -25,7 +24,14 @@ import { formatDateTime } from '@/utils/dateTime';
 import { validateForm } from '@/utils/validation';
 import { useEdgeSelectionList } from '../edge_node/edge_node.service';
 import { saveLinkSchema } from './link.schema';
-import { useLinkDelete, useLinkEnums, useLinkList, useLinkSave, usePublicIp } from './link.service';
+import {
+    useLinkDebug,
+    useLinkDelete,
+    useLinkEnums,
+    useLinkList,
+    useLinkSave,
+    usePublicIp,
+} from './link.service';
 import type { Link } from './link.types';
 
 function LinkDebug({
@@ -41,7 +47,7 @@ function LinkDebug({
     onOpen: () => void;
     onClose: () => void;
 }) {
-    const { packets, toggle } = useLinkDebug(item.id, open, params);
+    const { packets, toggle } = useLinkDebug(item.id, open && item.debug_enabled === true, params);
     return (
         <PacketDebugPanel
             scope="link"

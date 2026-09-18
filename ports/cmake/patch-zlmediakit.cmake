@@ -48,10 +48,10 @@ function(patch_pinned_source SOURCE_FILE ORIGINAL_TEXT PATCHED_TEXT DESCRIPTION)
     message(STATUS "Patched pinned dependency source: ${DESCRIPTION}")
 endfunction()
 
-require_pinned_revision("${SOURCE_DIR}" "79d795a767da85bbba821b871265fd87d853d808")
+require_pinned_revision("${SOURCE_DIR}" "4b07053aa5f6d35505e8c548c2a08a978143fcf1")
 require_pinned_revision(
     "${SOURCE_DIR}/3rdpart/ZLToolKit"
-    "00f56528d28b5f4aaa94c175fe90ea9bdab4b17f")
+    "d7d601200f65f3111dbf9d20ed7f14d2654bbd6e")
 require_pinned_revision(
     "${SOURCE_DIR}/3rdpart/media-server"
     "21c4451ff2e4c4bb1c817e606c8b4e5deac1e719")

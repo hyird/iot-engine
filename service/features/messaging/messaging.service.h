@@ -135,7 +135,7 @@ pending(ruvia::WebWorkerContext& context, std::string_view consumer, const std::
         co_return result;
     }
 
-    ruvia::DbQuery receipts(context.resource());
+    ruvia::DbQuery receipts(context.pool());
     std::vector<ruvia::DbExpression> ids;
     ids.reserve(eventIds.size());
     for (const auto& id : eventIds) {
@@ -163,7 +163,7 @@ markProcessed(ruvia::WebWorkerContext& context, std::string_view consumer, const
     if (eventIds.empty()) {
         co_return;
     }
-    ruvia::DbQuery receipts(context.resource());
+    ruvia::DbQuery receipts(context.pool());
     receipts.insertInto(service::messaging::persistence::OutboxConsumerReceiptEntity::tableName(), { "consumer_name", "event_id" });
     for (const auto& id : eventIds) {
         receipts.values({ receipts.value(consumer), receipts.cast(receipts.value(id), ruvia::DbDataType::kUuid) });
@@ -219,7 +219,7 @@ class OutboxService {
     ruvia::Task<std::optional<Clock::time_point>> nextAvailable(ruvia::WebWorkerContext& context) {
         // No periodic empty-queue scan. A timer is armed only for a durable
         // retry, or for eligible rows currently locked by another dispatcher.
-        ruvia::DbQuery available(context.resource());
+        ruvia::DbQuery available(context.pool());
         const auto delayMs = available.binary(
             available.extract(ruvia::DbDatePart::kEpoch,
                 available.binary(available.aggregate("min", { available.column(service::messaging::persistence::OutboxEventEntity::columnName<"available_at">()) }),
@@ -240,7 +240,7 @@ class OutboxService {
 
     ruvia::Task<bool> dispatch(ruvia::WebWorkerContext& context) {
         auto transaction = co_await context.db().beginTransaction();
-        ruvia::DbQuery pending(context.resource());
+        ruvia::DbQuery pending(context.pool());
         const auto occurredAtMs = pending.call("floor", { pending.binary(
             pending.extract(ruvia::DbDatePart::kEpoch, pending.column(service::messaging::persistence::OutboxEventEntity::columnName<"occurred_at">())),
             ruvia::DbBinaryOperator::kMultiply, pending.value(1000)) });
@@ -302,7 +302,7 @@ class OutboxService {
                 if (publishError.size() > 2000) {
                     publishError.resize(2000);
                 }
-                ruvia::DbQuery retry(context.resource());
+                ruvia::DbQuery retry(context.pool());
                 const auto attempts = retry.binary(retry.column(service::messaging::persistence::OutboxEventEntity::columnName<"attempts">()), ruvia::DbBinaryOperator::kAdd, retry.value(1));
                 const auto seconds = retry.least({ retry.value(300), retry.cast(
                     retry.call("int8shl", { retry.cast(retry.value(1), ruvia::DbDataType::kBigInt),
@@ -322,7 +322,7 @@ class OutboxService {
                 observability_.incrementCounter("iot_engine_outbox_publish_retries_total");
                 co_return true;
             }
-            ruvia::DbQuery published(context.resource());
+            ruvia::DbQuery published(context.pool());
             published.update(service::messaging::persistence::OutboxEventEntity::tableName()).set(service::messaging::persistence::OutboxEventEntity::columnName<"published_at">(), published.call("now"))
                 .set(service::messaging::persistence::OutboxEventEntity::columnName<"attempts">(), published.binary(published.column(service::messaging::persistence::OutboxEventEntity::columnName<"attempts">()), ruvia::DbBinaryOperator::kAdd, published.value(1)))
                 .set(service::messaging::persistence::OutboxEventEntity::columnName<"last_error">(), published.nullValue())
@@ -349,7 +349,7 @@ class OutboxService {
         }
         using service::messaging::persistence::OutboxReplayCounterEntity;
         const auto counterId = service::runtime::instanceId() + ":" + std::to_string(workerIndex);
-        ruvia::DbQuery heartbeat(context.resource());
+        ruvia::DbQuery heartbeat(context.pool());
         heartbeat.update(OutboxReplayCounterEntity::tableName())
             .set(OutboxReplayCounterEntity::columnName<"updated_at">(), heartbeat.call("now"))
             .andWhere(heartbeat.binary(heartbeat.column(OutboxReplayCounterEntity::columnName<"id">()),
@@ -359,7 +359,7 @@ class OutboxService {
         if (!replayCounters.empty())
             observability_.setCounter("iot_engine_outbox_dead_letter_replays_total",
                 static_cast<std::uint64_t>(integer(replayCounters.front()[0].value().value_or("0"))));
-        ruvia::DbQuery metrics(context.resource());
+        ruvia::DbQuery metrics(context.pool());
         const auto pending = metrics.unary(ruvia::DbUnaryOperator::kIsNull, metrics.column(service::messaging::persistence::OutboxEventEntity::columnName<"dead_lettered_at">()));
         const auto count = metrics.aggregate("count", { metrics.star() });
         const auto oldest = metrics.filter(metrics.aggregate("min", { metrics.column(service::messaging::persistence::OutboxEventEntity::columnName<"occurred_at">()) }), pending);
@@ -407,7 +407,7 @@ class OutboxService {
         // The operations endpoints run on any Service Worker. Publish this
         // worker's complete snapshot so those endpoints can aggregate every
         // worker without reading another worker's in-memory runtime diagnostics.
-        WorkerSnapshotEntity snapshot(context.resource());
+        WorkerSnapshotEntity snapshot(context.pool());
         snapshot.set<"id">(service::message::worker_metrics::snapshotId(workerIndex, service::runtime::instanceId()));
         snapshot.set<"metrics">(observability_.prometheus());
         snapshot.set<"ready">(observability_.areComponentsReady());
@@ -448,7 +448,7 @@ class OutboxService {
 
     ruvia::Task<void> cleanupReplayCounters(ruvia::WebWorkerContext& context) {
         using service::messaging::persistence::OutboxReplayCounterEntity;
-        ruvia::DbQuery expired(context.resource());
+        ruvia::DbQuery expired(context.pool());
         const std::vector<ruvia::DbNamedArgument> intervalArgs{
             {"days", expired.cast(expired.value(policy_.replayCounterRetentionDays), ruvia::DbDataType::kInteger)}};
         expired.deleteFrom(OutboxReplayCounterEntity::tableName())
@@ -462,7 +462,7 @@ class OutboxService {
     }
 
     ruvia::Task<void> cleanupReceipts(ruvia::WebWorkerContext& context) {
-        ruvia::DbQuery expired(context.resource());
+        ruvia::DbQuery expired(context.pool());
         const std::vector<ruvia::DbNamedArgument> intervalArgs{
             { "days", expired.cast(expired.value(policy_.receiptRetentionDays), ruvia::DbDataType::kInteger) }
         };

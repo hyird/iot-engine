@@ -59,9 +59,7 @@ import {
     buildGroupSections,
     buildRegisterGroupSections,
     buildRemoteTsapFromRackSlot,
-    checkAddressConflict,
     defaultConfig,
-    EncodeList,
     formatScaleValue,
     generateId,
     getConnectionFormValues,
@@ -69,19 +67,17 @@ import {
     getGroupKey,
     getModbusDeviceTypeFormValues,
     getPlcPreset,
-    getRegisterTypeMeta,
     getS7DeviceTypeFormValues,
     getSl651DeviceTypeFormValues,
     inferConnectionMode,
     normalizeAreaTypeForPlcModel,
     normalizeGroupName,
     normalizeModbusRegisters,
+    normalizeRegisterType,
     normalizePacketConfig,
     normalizeS7DataType,
     numberOrDefault,
     plcModelOptions,
-    REGISTER_TYPE_META,
-    REGISTER_TYPE_ORDER,
     reorderItemsByGroupOrder,
     reorderItemsWithinGroupOrder,
     sortSectionsByOrder,
@@ -105,17 +101,76 @@ import type {
     RegisterModalRef,
     S7,
     SL651,
+    StoragePolicy,
     IndustrialProtocol,
     IndustrialConfig,
     IndustrialPoint,
 } from './protocol.types';
-import { STORAGE_POLICY_OPTIONS } from './protocol.types';
 import {
+    checkAddressConflict,
     parseProtocolImport,
     industrialConfigSchema,
     formatTsapValue,
     validateTsapValue,
 } from './protocol.schema';
+
+const STORAGE_POLICY_OPTIONS: {
+    value: StoragePolicy;
+    label: string;
+}[] = [
+    { value: 'report', label: '上报时' },
+    { value: 'change', label: '数据改变时' },
+];
+
+const REGISTER_TYPE_ORDER: Modbus.RegisterType[] = [
+    'COIL',
+    'DISCRETE_INPUT',
+    'INPUT_REGISTER',
+    'HOLDING_REGISTER',
+];
+const REGISTER_TYPE_META: Record<
+    Modbus.RegisterType,
+    {
+        label: string;
+        color: string;
+        prefix: string;
+        short: string;
+    }
+> = {
+    COIL: { label: '0X - 线圈 (Coil)', color: 'green', prefix: '0X', short: '0X' },
+    DISCRETE_INPUT: {
+        label: '1X - 离散输入 (Discrete Input)',
+        color: 'blue',
+        prefix: '1X',
+        short: '1X',
+    },
+    INPUT_REGISTER: {
+        label: '3X - 输入寄存器 (Input Register)',
+        color: 'cyan',
+        prefix: '3X',
+        short: '3X',
+    },
+    HOLDING_REGISTER: {
+        label: '4X - 保持寄存器 (Holding Register)',
+        color: 'orange',
+        prefix: '4X',
+        short: '4X',
+    },
+};
+const UNKNOWN_REGISTER_TYPE_META = {
+    label: '未知寄存器类型',
+    color: 'default',
+    prefix: '',
+    short: '?',
+};
+const getRegisterTypeMeta = (value: unknown) => {
+    const registerType = normalizeRegisterType(value);
+    if (registerType) return REGISTER_TYPE_META[registerType];
+    const suffix = typeof value === 'string' && value.trim() ? `（${value.trim()}）` : '';
+    return { ...UNKNOWN_REGISTER_TYPE_META, label: `${UNKNOWN_REGISTER_TYPE_META.label}${suffix}` };
+};
+/** 编码类型列表 */
+const EncodeList: SL651.EncodeType[] = ['BCD', 'TIME_YYMMDDHHMMSS', 'JPEG', 'DICT', 'HEX'];
 
 function useProtocolImportExport(protocol: Protocol.Type) {
     const { message } = App.useApp();

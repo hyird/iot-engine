@@ -6,11 +6,12 @@
 #include <string_view>
 
 #include <ruvia/web/Controller.h>
+#include "service/utils/json.h"
 
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/live.h"
-#include "service/modules/protocol/protocol.schema.h"
+#include "service/modules/protocol/protocol.types.h"
 #include "service/modules/protocol/protocol.service.h"
 
 namespace service::protocol {
@@ -19,20 +20,20 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/protocol/configs", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
-    RUVIA_GET("/", list, ProtocolListQueryValidator);
-    RUVIA_GET("/options", options, ProtocolListQueryValidator);
-    RUVIA_GET("/:id", detail, ProtocolIdParamsValidator);
+    RUVIA_GET("/", list, ruvia::QueryModel<ProtocolListQuery>);
+    RUVIA_GET("/options", options, ruvia::QueryModel<ProtocolListQuery>);
+    RUVIA_GET("/:id", detail, ruvia::PathModel<ProtocolIdParams>);
     RUVIA_POST("/", create);
-    RUVIA_PUT("/:id", update, ProtocolIdParamsValidator);
-    RUVIA_DELETE("/:id", remove, ProtocolIdParamsValidator);
+    RUVIA_PUT("/:id", update, ruvia::PathModel<ProtocolIdParams>);
+    RUVIA_DELETE("/:id", remove, ruvia::PathModel<ProtocolIdParams>);
     RUVIA_ROUTES_END
 
   private:
     static std::string id(ruvia::Context& c) {
-        return std::string(c.req().validated<ProtocolIdParams>().get<"id">()->view());
+        return std::string(c.req().validated<ProtocolIdParams>().get<"id">().view());
     }
 
-    ruvia::Task<ruvia::HttpResponse> list(ruvia::Context& c) {
+    ruvia::Task<> list(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:protocol:query");
         const auto& query = c.req().validated<ProtocolListQuery>();
@@ -47,7 +48,7 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
         co_return c.body(std::string_view(payload));
     }
 
-    ruvia::Task<ruvia::HttpResponse> options(ruvia::Context& c) {
+    ruvia::Task<> options(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:protocol:query");
         const auto& query = c.req().validated<ProtocolListQuery>();
@@ -61,7 +62,8 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
         co_return c.body(std::string_view(payload));
     }
 
-    ruvia::Task<ruvia::HttpResponse> detail(ruvia::Context& c) {
+    ruvia::Task<> detail(ruvia::Context& c) {
+
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:protocol:query");
         const auto modelId = id(c);
@@ -71,26 +73,46 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
         co_return c.body(std::string_view(payload));
     }
 
-    ruvia::Task<ruvia::HttpResponse> create(ruvia::Context& c) {
+    ruvia::Task<> create(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:protocol:add");
-        const auto json = co_await c.req().jsonValue();
-        const auto payload = CreateProtocolValidator::parse(json);
+        if (!service::utils::isJsonContentType(c.req().header("Content-Type").value_or(std::string_view{}))) {
+            throw ruvia::HttpError({ .status = ruvia::http_status::kUnsupportedMediaType,
+                .code = "unsupported_media_type", .message = "request body must be application/json" });
+        }
+        const auto rawBody = co_await c.req().text();
+        auto parsedJson = ruvia::JsonValue::parse(rawBody, { .resource = c.arena() });
+        if (!parsedJson) {
+            throw ruvia::HttpError({ .status = ruvia::http_status::kBadRequest, .message = "invalid json body" });
+        }
+        const auto json = std::move(*parsedJson);
+        const auto payload = CreateProtocolBody::parse(json);
         co_await protocolService().create(request, payload);
         co_return c.json(service::common::operation(c, "创建成功"));
     }
 
-    ruvia::Task<ruvia::HttpResponse> update(ruvia::Context& c) {
+    ruvia::Task<> update(ruvia::Context& c) {
+
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:protocol:edit");
-        const auto json = co_await c.req().jsonValue();
-        const auto payload = UpdateProtocolValidator::parse(json);
+        if (!service::utils::isJsonContentType(c.req().header("Content-Type").value_or(std::string_view{}))) {
+            throw ruvia::HttpError({ .status = ruvia::http_status::kUnsupportedMediaType,
+                .code = "unsupported_media_type", .message = "request body must be application/json" });
+        }
+        const auto rawBody = co_await c.req().text();
+        auto parsedJson = ruvia::JsonValue::parse(rawBody, { .resource = c.arena() });
+        if (!parsedJson) {
+            throw ruvia::HttpError({ .status = ruvia::http_status::kBadRequest, .message = "invalid json body" });
+        }
+        const auto json = std::move(*parsedJson);
+        const auto payload = UpdateProtocolBody::parse(json);
         const auto modelId = id(c);
         co_await protocolService().update(request, modelId, payload);
         co_return c.json(service::common::operation(c, "更新成功"));
     }
 
-    ruvia::Task<ruvia::HttpResponse> remove(ruvia::Context& c) {
+    ruvia::Task<> remove(ruvia::Context& c) {
+
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:protocol:delete");
         const auto modelId = id(c);

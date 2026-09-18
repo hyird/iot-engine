@@ -37,7 +37,7 @@ class CommandService final {
 
     template <typename Context>
     ruvia::Task<service::device::DeviceCommandCreateDto>
-    create(Context& context, std::string_view deviceId, const service::device::DeviceCommandBody& body) {
+    create(Context& context, std::string_view deviceId, const SubmitCommandBody& body) {
         const auto access = co_await accessService_.require(
             context,
             deviceId,
@@ -123,9 +123,9 @@ class CommandService final {
         return query;
     }
 
-    template <typename Context>
+    template <typename Context, typename Body>
     ruvia::Task<service::device::DeviceCommandCreateDto>
-    enqueueDevice(Context& context, std::string_view deviceId, const service::device::DeviceCommandBody& body, std::string submittedBy) {
+    enqueueDevice(Context& context, std::string_view deviceId, const Body& body, std::string submittedBy) {
         const auto& keyField = body.template get<"idempotencyKey">();
         if (!keyField || !service::common::isUuid(keyField->view())) {
             service::common::fail(18010, "idempotency_key 必须是 UUID", 400);
@@ -313,15 +313,23 @@ class CommandService final {
         co_return result;
     }
 
-    static std::vector<std::pair<std::string, std::string>>
-    normalize(const service::device::DeviceCommandBody& body) {
-        if (!body.template get<"elements">() || body.template get<"elements">()->empty() || body.template get<"elements">()->size() > 256) {
+    template <typename Body>
+    static std::vector<std::pair<std::string, std::string>> normalize(const Body& body) {
+        const auto* elements = [&]() -> const ruvia::Array<service::device::DeviceCommandElementBody>* {
+            if constexpr (std::is_same_v<Body, SubmitCommandBody>) {
+                return &body.template get<"elements">();
+            } else {
+                const auto& values = body.template get<"elements">();
+                return values ? &*values : nullptr;
+            }
+        }();
+        if (!elements || elements->empty() || elements->size() > 256) {
             service::common::fail(18010, "下发要素数量必须在 1 - 256 之间", 400);
         }
         std::vector<std::pair<std::string, std::string>> result;
         std::set<std::string, std::less<>> seenElementIds;
-        result.reserve(body.template get<"elements">()->size());
-        for (const auto& element : *body.template get<"elements">()) {
+        result.reserve(elements->size());
+        for (const auto& element : *elements) {
             if (!element.template get<"elementId">() || !element.template get<"value">()) {
                 service::common::fail(18010, "下发要素参数不完整", 400);
             }

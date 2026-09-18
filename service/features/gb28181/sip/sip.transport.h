@@ -18,6 +18,7 @@
 
 #include <ruvia/core/EventLoopPool.h>
 
+#include "service/common/uuid.h"
 #include "service/features/gb28181/device/device.runtime.h"
 #include "service/features/gb28181/gb28181.config.h"
 #include "service/features/gb28181/media/media.transport.h"
@@ -33,7 +34,7 @@ class SipServer : public std::enable_shared_from_this<SipServer> {
     using ViewerCountObserver =
         std::function<void(const std::string& streamId, unsigned int viewerCount)>;
 
-    SipServer(SipConfig sipConfig, MediaConfig mediaConfig, DeviceRegistry& deviceRegistry, ZlmSdk& zlmSdk, ruvia::EventLoop ioLoop, ViewerCountObserver viewerCountObserver = {}, ZlmSdk::OwnerIndex owner = ZlmSdk::kUnassignedOwner);
+    SipServer(service::common::UuidV7Generator& uuidGenerator, SipConfig sipConfig, MediaConfig mediaConfig, DeviceRegistry& deviceRegistry, ZlmSdk& zlmSdk, ruvia::EventLoop ioLoop, ViewerCountObserver viewerCountObserver = {}, ZlmSdk::OwnerIndex owner = ZlmSdk::kUnassignedOwner);
     ~SipServer();
 
     void start();
@@ -157,6 +158,7 @@ class SipServer : public std::enable_shared_from_this<SipServer> {
         SipPeer remote;
     };
 
+    service::common::UuidV7Generator& uuidGenerator_;
     SipConfig sipConfig_;
     MediaConfig mediaConfig_;
     DeviceRegistry& deviceRegistry_;

@@ -5,7 +5,7 @@
 #include <string>
 
 #include "service/features/alert/alert.runtime.h"
-#include "service/modules/alert/alert.schema.h"
+#include "service/modules/alert/alert.types.h"
 
 void require(bool condition, const char* message) {
     if (!condition) {
@@ -27,7 +27,7 @@ std::string readSource(const char* relative) {
 void expectInvalidConditions(std::string_view raw, const char* message) {
     bool rejected = false;
     try {
-        service::alert::AlertPayloadValidator::validateConditions(raw);
+        service::alert::alertRequest::validateConditions(raw);
     } catch (const std::exception&) {
         rejected = true;
     }
@@ -48,20 +48,20 @@ int main() {
         requireAbsent(metadataSource, "std::stoll(", "alert metadata uses unsafe/partial stoll parsing");
         const auto runtimeSource = readSource("service/features/alert/alert.runtime.h");
         requireAbsent(runtimeSource, "std::stoull(", "alert runtime uses unsafe/partial stoull parsing");
-        const auto serviceSource = readSource("service/modules/alert/alert.schema.h");
+        const auto serviceSource = readSource("service/modules/alert/alert.types.h");
         require(serviceSource.find("std::string(field) + \" 必须是字符串\"") != std::string::npos, "alert service treats present non-string optional fields as absent");
         require(serviceSource.find("std::string(field) + \" 必须是整数\"") != std::string::npos, "alert service treats present non-integer fields as default values");
 
-        service::alert::AlertPayloadValidator::validateConditions(
+        service::alert::alertRequest::validateConditions(
             R"([{"type":"threshold","elementKey":"temperature","operator":">","value":"12.5"}])"
         );
-        service::alert::AlertPayloadValidator::validateConditions(
+        service::alert::alertRequest::validateConditions(
             R"([{"type":"offline","duration":300}])"
         );
-        service::alert::AlertPayloadValidator::validateConditions(
+        service::alert::alertRequest::validateConditions(
             R"([{"type":"rate_of_change","elementKey":"flow","changeRate":"15","changeDirection":"rise"}])"
         );
-        service::alert::AlertPayloadValidator::validateConditions(
+        service::alert::alertRequest::validateConditions(
             R"([{"type":"threshold","elementKey":"a,]\"b","operator":"==","value":"quoted\\value","extra":{"nested":[{},[1,2]]}},{"type":"offline","duration":60}])"
         );
         expectInvalidConditions("[ ]", "empty spaced array was accepted");

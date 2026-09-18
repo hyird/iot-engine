@@ -100,9 +100,9 @@ class RoleService {
 
     template <typename Context>
     ruvia::Task<void> create(Context& c, const CreateRoleBody& body) {
-        const std::string code(body.get<"code">()->view());
+        const std::string code(body.get<"code">().view());
         co_await ensureCodeAvailable(c, code, std::nullopt);
-        const std::string name(body.get<"name">()->view());
+        const std::string name(body.get<"name">().view());
         const std::string description =
             body.get<"description">() ? std::string(body.get<"description">()->view()) : "";
         const std::string status =

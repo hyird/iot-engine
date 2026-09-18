@@ -563,13 +563,13 @@ class DeviceService {
     }
 
     template <typename Context>
-    ruvia::Task<void> create(Context& c, const SaveDeviceBody& body) {
+    ruvia::Task<void> create(Context& c, const CreateDeviceBody& body) {
         co_await validate(c, body, true);
         co_await ensureUnique(c, body, std::nullopt);
         co_await validateRuntimeIdentity(c, body, std::nullopt);
         const auto id = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
-        const std::string name(body.template get<"name">()->view());
-        const std::string deviceCode(body.template get<"deviceCode">()->view());
+        const std::string name(body.template get<"name">().view());
+        const std::string deviceCode(body.template get<"deviceCode">().view());
         const std::string linkId = str(body.template get<"linkId">());
         ruvia::DbQuery channelQuery(c.pool());
         channelQuery
@@ -582,7 +582,7 @@ class DeviceService {
         }
         const std::string edgeNodeId(channel.front()[0].value().value_or(""));
         const std::string targetId = str(body.template get<"targetId">());
-        const std::string protocolConfigId(body.template get<"protocolConfigId">()->view());
+        const std::string protocolConfigId(body.template get<"protocolConfigId">().view());
         const std::string groupId = str(body.template get<"groupId">());
         const std::string status = body.template get<"status">() ? std::string(body.template get<"status">()->view()) : "enabled";
         const std::int64_t onlineTimeout =
@@ -751,7 +751,7 @@ return result
     }
 
     template <typename Context>
-    ruvia::Task<void> update(Context& c, std::string_view id, const SaveDeviceBody& body) {
+    ruvia::Task<void> update(Context& c, std::string_view id, const UpdateDeviceBody& body) {
         (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner, c.userId);
         ruvia::DbQuery currentQuery(c.pool());
         currentQuery
@@ -1005,10 +1005,10 @@ return result
     }
 
     template <typename Context>
-    ruvia::Task<void> createGroup(Context& c, const SaveDeviceGroupBody& body) {
+    ruvia::Task<void> createGroup(Context& c, const CreateDeviceGroupBody& body) {
         co_await validateParent(c, body, std::nullopt);
         const auto id = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
-        const std::string name(body.template get<"name">()->view());
+        const std::string name(body.template get<"name">().view());
         const std::string parentId = body.template get<"parentId">() ? std::string(body.template get<"parentId">()->view()) : "";
         const std::string status = body.template get<"status">() ? std::string(body.template get<"status">()->view()) : "enabled";
         const std::int64_t sortOrder =
@@ -1021,7 +1021,7 @@ return result
     }
 
     template <typename Context>
-    ruvia::Task<void> updateGroup(Context& c, std::string_view id, const SaveDeviceGroupBody& body) {
+    ruvia::Task<void> updateGroup(Context& c, std::string_view id, const UpdateDeviceGroupBody& body) {
         ruvia::DbQuery currentQuery(c.pool());
         currentQuery.select(currentQuery.column(service::device::entities::DeviceGroupEntity::columnName<"created_by">()))
             .from(service::device::entities::DeviceGroupEntity::tableName())
@@ -2211,6 +2211,8 @@ return result
         }
     }
 
+    static std::string str(const ruvia::String& value) { return std::string(value.view()); }
+
     static std::string str(const std::optional<ruvia::String>& value) {
         return value ? std::string(value->view()) : std::string{};
     }
@@ -2306,8 +2308,8 @@ return result
 
     // 扁平字段（必填/长度/枚举/范围/UUID/timezone）由声明式校验器保证；
     // 此处只做跨字段、依赖 DB 与协议相关的校验（保留 18002/18003 域码）。
-    template <typename Context>
-    ruvia::Task<void> validate(Context& c, const SaveDeviceBody& body, bool required) {
+    template <typename Context, typename Body>
+    ruvia::Task<void> validate(Context& c, const Body& body, bool required) {
         validatePacket(body.template get<"heartbeat">());
         validatePacket(body.template get<"registration">());
         const auto linkId = str(body.template get<"linkId">());
@@ -2319,7 +2321,14 @@ return result
             service::common::fail(18003, "请选择设备类型", 400);
         }
 
-        const auto& code = body.template get<"deviceCode">();
+        const ruvia::String* code = [&]() -> const ruvia::String* {
+            if constexpr (std::is_same_v<Body, CreateDeviceBody>) {
+                return &body.template get<"deviceCode">();
+            } else {
+                const auto& value = body.template get<"deviceCode">();
+                return value ? &*value : nullptr;
+            }
+        }();
         if (code) {
             if (code->view().empty() || code->view().size() > 100) {
                 service::common::fail(18002, "设备编码长度必须在 1 - 100 之间", 400);
@@ -2383,8 +2392,8 @@ return result
         return packet && packet->template get<"mode">() && packet->template get<"mode">()->view() != "OFF";
     }
 
-    template <typename Context>
-    ruvia::Task<void> validateRuntimeIdentity(Context& c, const SaveDeviceBody& body, std::optional<std::string> excludedId) {
+    template <typename Context, typename Body>
+    ruvia::Task<void> validateRuntimeIdentity(Context& c, const Body& body, std::optional<std::string> excludedId) {
         const std::string excluded = excludedId.value_or(std::string(kNilUuid));
         const std::string inLinkId = str(body.template get<"linkId">());
         const std::string inTargetId = str(body.template get<"targetId">());
@@ -2615,12 +2624,12 @@ return result
         }
     }
 
-    template <typename Context>
-    ruvia::Task<void> ensureUnique(Context& c, const SaveDeviceBody& body, std::optional<std::string> excludedId) {
+    template <typename Context, typename Body>
+    ruvia::Task<void> ensureUnique(Context& c, const Body& body, std::optional<std::string> excludedId) {
         const auto& name = body.template get<"name">();
         const auto& code = body.template get<"deviceCode">();
-        if (!name && !code) {
-            co_return;
+        if constexpr (std::is_same_v<Body, UpdateDeviceBody>) {
+            if (!name && !code) co_return;
         }
         const std::string nameValue = str(name);
         const std::string codeValue = str(code);
@@ -2677,8 +2686,8 @@ return result
         );
     }
 
-    template <typename Context>
-    ruvia::Task<void> validateParent(Context& c, const SaveDeviceGroupBody& body, std::optional<std::string> currentId) {
+    template <typename Context, typename Body>
+    ruvia::Task<void> validateParent(Context& c, const Body& body, std::optional<std::string> currentId) {
         const auto& parent = body.template get<"parentId">();
         if (!parent || parent->view().empty()) {
             co_return;
@@ -3023,13 +3032,10 @@ class DeviceShareService {
     };
 
     static std::vector<NormalizedShare> normalize(const ReplaceDeviceSharesBody& body) {
-        if (!body.template get<"shares">()) {
-            service::common::fail(18010, "分享列表不能为空", 400);
-        }
         std::vector<NormalizedShare> shares;
-        shares.reserve(body.template get<"shares">()->size());
+        shares.reserve(body.template get<"shares">().size());
         std::set<std::string, std::less<>> uniqueSubjects;
-        for (const auto& item : *body.template get<"shares">()) {
+        for (const auto& item : body.template get<"shares">()) {
             if (!item.template get<"subjectType">() || !item.template get<"subjectId">() || !item.template get<"accessLevel">()) {
                 service::common::fail(18010, "分享对象参数不完整", 400);
             }

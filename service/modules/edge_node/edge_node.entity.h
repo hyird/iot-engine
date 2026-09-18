@@ -9,6 +9,14 @@
 namespace service::edge {
 
 RUVIA_DB_ENTITY(
+    EdgeDtuEntity, "edge_dtu",
+    RUVIA_DB_COLUMN(node_id, std::pmr::string, ruvia::DbColumnOptions{.dataType=ruvia::DbDataType::kUuid, .primaryKey=true}),
+    RUVIA_DB_COLUMN(channel_id, std::pmr::string, ruvia::DbColumnOptions{.dataType=ruvia::DbDataType::kUuid, .primaryKey=true}),
+    RUVIA_DB_COLUMN(config, std::pmr::string, ruvia::DbColumnOptions{.dataType=ruvia::DbDataType::kJsonb}),
+    RUVIA_DB_COLUMN(wire_hex, std::pmr::string),
+    RUVIA_DB_COLUMN(status, std::pmr::string, ruvia::DbColumnOptions{.dataType=ruvia::DbDataType::kJsonb, .defaultExpression=ruvia::FixedString{"'{}'::jsonb"}}));
+
+RUVIA_DB_ENTITY(
     EdgeNodeEntity, "edge_node",
     RUVIA_DB_COLUMN(id, std::pmr::string,
                     ruvia::DbColumnOptions{.dataType = ruvia::DbDataType::kUuid,

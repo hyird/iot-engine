@@ -1,10 +1,12 @@
 #pragma once
 
+#include "service/common/uuid.h"
+
 #include <ruvia/web/Model.h>
 
 namespace service::system {
 
-RUVIA_REQUEST_MODEL(OutboxEventIdParams, RUVIA_OPTIONAL_FIELD(id, ruvia::String));
+RUVIA_REQUEST_MODEL(OutboxEventIdParams, RUVIA_REQUIRED_FIELD(id, ruvia::String, RUVIA_CUSTOM("事件 ID 必须是 UUID", service::common::isUuidField)));
 
 RUVIA_RESPONSE_MODEL(
     OutboxDeadLetterDto,

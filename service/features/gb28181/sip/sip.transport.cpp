@@ -440,8 +440,9 @@ void enablePortReuse(Socket& socket, std::error_code& error) {
 
 } // namespace
 
-SipServer::SipServer(SipConfig sipConfig, MediaConfig mediaConfig, DeviceRegistry& deviceRegistry, ZlmSdk& zlmSdk, ruvia::EventLoop ioLoop, ViewerCountObserver viewerCountObserver, ZlmSdk::OwnerIndex owner)
-    : sipConfig_(std::move(sipConfig)),
+SipServer::SipServer(service::common::UuidV7Generator& uuidGenerator, SipConfig sipConfig, MediaConfig mediaConfig, DeviceRegistry& deviceRegistry, ZlmSdk& zlmSdk, ruvia::EventLoop ioLoop, ViewerCountObserver viewerCountObserver, ZlmSdk::OwnerIndex owner)
+    : uuidGenerator_(uuidGenerator),
+      sipConfig_(std::move(sipConfig)),
       mediaConfig_(std::move(mediaConfig)),
       deviceRegistry_(deviceRegistry),
       zlmSdk_(zlmSdk),
@@ -1869,7 +1870,7 @@ SipServer::startPreview(const std::string& deviceId, const std::string& channelI
     LOG_DEBUG << "[GB28181][Preview] Opening ZLM RTP server, device=" << deviceId
               << ", channel=" << channelId
               << ", ssrc=" << ssrc;
-    const auto rtpServer = zlmSdk_.openRtpServer(deviceId, channelId, ssrc);
+    const auto rtpServer = zlmSdk_.openRtpServer(deviceId, channelId, ssrc, uuidGenerator_.next());
     if (!rtpServer.has_value()) {
         LOG_WARN << "[GB28181][Preview] Start failed, device=" << deviceId
                  << ", channel=" << channelId
@@ -2033,7 +2034,7 @@ SipServer::startPlayback(const std::string& deviceId, const std::string& channel
               << ", channel=" << channelId
               << ", ssrc=" << ssrc;
     const auto rtpServer =
-        zlmSdk_.openRtpServer(deviceId, channelId, ssrc, "playback");
+        zlmSdk_.openRtpServer(deviceId, channelId, ssrc, uuidGenerator_.next(), "playback");
     if (!rtpServer.has_value()) {
         LOG_WARN << "[GB28181][Playback] Start failed, device=" << deviceId
                  << ", channel=" << channelId

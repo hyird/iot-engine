@@ -56,7 +56,7 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(ruvia
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    GIT_TAG 13eba75f3b8317a9fe4b5e27ca70554a3e887cab)
+    GIT_TAG 7a60bfbc0e4cd359ed3edb18faea0d1c7ea28483)
 FetchContent_MakeAvailable(ruvia)
 
 FetchContent_Declare(nanopb
@@ -140,7 +140,7 @@ set(ENABLE_OBJCOPY OFF CACHE BOOL "" FORCE)
 set(DISABLE_REPORT ON CACHE BOOL "" FORCE)
 FetchContent_Declare(zlmediakit
     GIT_REPOSITORY https://github.com/ZLMediaKit/ZLMediaKit.git
-    GIT_TAG 79d795a767da85bbba821b871265fd87d853d808
+    GIT_TAG 4b07053aa5f6d35505e8c548c2a08a978143fcf1
     # A fixed commit stops being the shallow clone tip as upstream advances. Fetch the complete
     # history so clean CI checkouts can continue resolving this reproducible pin.
     GIT_SHALLOW FALSE
@@ -324,6 +324,10 @@ if(MSVC)
 endif()
 
 enable_testing()
+iot_engine_add_test(request-validation LARGE
+    SOURCES tests/request-validation-test.cpp
+    LIBRARIES ruvia::web)
+
 iot_engine_add_test(industrial-protocol
     SOURCES tests/industrial-protocol-test.cpp
     LIBRARIES ruvia::web OpenSSL::Crypto)
@@ -448,8 +452,8 @@ iot_engine_add_test(gb28181-media
         WIN32_LEAN_AND_MEAN
         MediaKitApi_STATIC)
 
-iot_engine_add_test(gb28181-schema LARGE
-    SOURCES tests/gb28181-schema-test.cpp
+iot_engine_add_test(gb28181-request LARGE
+    SOURCES tests/gb28181-request-test.cpp
     LIBRARIES ruvia::web)
 
 iot_engine_add_test(gb28181-media-proxy

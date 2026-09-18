@@ -1,9 +1,15 @@
+import { createQueryKeys } from '@/utils/query';
 import { useQuery, type UseQueryOptions } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import type { PaginatedResult } from '@/types/pagination';
 import { create, getList, getOptions, remove, update } from './role.api';
 import type { Role } from './role.types';
-import { roleQueryKeys } from './role.types';
+const roleKeys = createQueryKeys('roles');
+const roleQueryKeys = {
+    ...roleKeys,
+    list: (params?: Role.Query) => [...roleKeys.lists(), params] as const,
+};
+
 export const getRoleOptions = getOptions;
 export function useRoleList(
     params?: Role.Query,

@@ -384,7 +384,8 @@ ApplicationComponents createComponents(
         workerComponents.openWebhooks = std::make_shared<service::access::WebhookRuntime>();
         workerComponents.configReconciler = std::make_shared<service::runtime::Reconciler>();
         workerComponents.edgeProjection = std::make_shared<service::edge::EdgeProjectionRuntime>(
-            *workerComponents.observability);
+            *workerComponents.observability,
+            std::filesystem::path(env.get("EDGE_FIRMWARE_DIR").value_or("firmware")));
         const auto enableVpnHub = env.get<bool>("VPN_HUB_ENABLED").value_or(true);
         workerComponents.vpnHubRuntime = enableVpnHub
             ? std::make_shared<service::vpn::VpnHubRuntime>(vpnHubConfig(env))
@@ -418,7 +419,7 @@ void configureWeb(ruvia::App& app, const std::filesystem::path& runtime) {
     app.documentRoot(std::move(config));
 }
 
-ruvia::Task<ruvia::HttpResponse> handleError(
+ruvia::Task<> handleError(
     ruvia::Context& c,
     ruvia::HttpErrorInfo info
 ) {

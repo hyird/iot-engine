@@ -19,7 +19,6 @@
 
 #include "service/common/http.h"
 #include "service/middleware/log.h"
-#include "service/common/uuid.h"
 
 namespace {
 
@@ -648,12 +647,12 @@ void ZlmSdk::stop() noexcept {
 }
 
 std::optional<OpenRtpServerResult>
-ZlmSdk::openRtpServer(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& mode) {
+ZlmSdk::openRtpServer(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& sessionId, const std::string& mode) {
     if (!started_.load()) {
         return std::nullopt;
     }
 
-    const auto streamId = makeStreamId(deviceId, channelId, ssrc, mode);
+    const auto streamId = makeStreamId(deviceId, channelId, ssrc, sessionId, mode);
     const auto [rtpPortStart, rtpPortEnd] = rtpPortRange(config_);
     const auto attempts = (rtpPortEnd - rtpPortStart) / 2U + 1U;
     // A stream gets an owner only while it is created by the SIP actor on
@@ -858,12 +857,12 @@ ZlmSdk::OwnerIndex ZlmSdk::streamOwner(std::string_view stream) const {
                                                    : found->second;
 }
 
-std::string ZlmSdk::makeStreamId(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& mode) const {
+std::string ZlmSdk::makeStreamId(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& sessionId, const std::string& mode) const {
     const std::string prefix = mode == "playback" ? "gb_playback" : "gb";
     // SSRC values may repeat across Collectors and restarts. A new session
     // identity prevents delayed SDK events from being attributed to a replacement.
     return prefix + "_" + deviceId + "_" + channelId + "_" + ssrc + "_" +
-        service::common::nextUuidV7();
+        sessionId;
 }
 
 std::uint16_t ZlmSdk::allocateRtpPort() {

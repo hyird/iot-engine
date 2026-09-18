@@ -34,7 +34,7 @@ ruvia::Task<void> refresh(Context& context, bool onlyIfMissing = false) {
     // Serialize the database snapshot and Redis pointer swap across service instances.
     // The lock is held only by cold-path configuration projection, never by API reads.
     auto transaction = co_await context.db().beginTransaction();
-    ruvia::DbQuery advisoryLock(context.resource());
+    ruvia::DbQuery advisoryLock(context.pool());
     advisoryLock.select(advisoryLock.call(
         "pg_advisory_xact_lock",
         {advisoryLock.cast(advisoryLock.value(std::int64_t{734622}),
@@ -51,7 +51,7 @@ ruvia::Task<void> refresh(Context& context, bool onlyIfMissing = false) {
             co_return;
         }
     }
-    ruvia::DbQuery snapshot(context.resource());
+    ruvia::DbQuery snapshot(context.pool());
     const auto expiresAtMs = snapshot.cast(
         snapshot.coalesce({
             snapshot.cast(
@@ -159,7 +159,7 @@ template <typename Context> ruvia::Task<void> ensure(Context& context) {
 namespace service::access::webhook {
 
 inline ruvia::Task<Catalog> loadCatalog(ruvia::WebWorkerContext& context) {
-        ruvia::DbQuery catalog(context.resource());
+        ruvia::DbQuery catalog(context.pool());
         const auto expiresAtMs = catalog.cast(
             catalog.coalesce({
                 catalog.cast(
@@ -275,7 +275,7 @@ inline ruvia::Task<void> persistResults(
     const std::vector<message::StreamMessage>& messages) {
         if (messages.empty())
             co_return;
-        ruvia::DbQuery incoming(context.resource());
+        ruvia::DbQuery incoming(context.pool());
         for (std::size_t index = 0; index < messages.size(); ++index) {
             const auto httpStatus = service::utils::parseInt64(
                 std::optional<std::string_view>(messages[index].get("http_status")));
@@ -314,7 +314,7 @@ inline ruvia::Task<void> persistResults(
                     ruvia::DbDataType::kBigInt)
             });
         }
-        ruvia::DbQuery latest(context.resource());
+        ruvia::DbQuery latest(context.pool());
         latest
             .select(latest.star())
             .distinctOn({latest.column("webhook_id", "incoming")})
@@ -325,7 +325,7 @@ inline ruvia::Task<void> persistResults(
             .addOrderBy(latest.column("sequence", "incoming"),
                         ruvia::DbOrderDirection::kDesc);
 
-        ruvia::DbQuery summary(context.resource());
+        ruvia::DbQuery summary(context.pool());
         const auto successfulAt = summary.filter(
             summary.aggregate("max", {summary.column("completed_at_ms", "incoming")}),
             summary.binary(summary.column("status", "incoming"),
@@ -343,7 +343,7 @@ inline ruvia::Task<void> persistResults(
             .from("incoming", "incoming")
             .groupBy({summary.column("webhook_id", "incoming")});
 
-        ruvia::DbQuery updated(context.resource());
+        ruvia::DbQuery updated(context.pool());
         const auto asTimestamp = [&updated](ruvia::DbExpression milliseconds) {
             return updated.call(
                 "to_timestamp",
@@ -422,7 +422,7 @@ inline ruvia::Task<void> persistResults(
                                     updated.column(service::access::persistence::OpenWebhookEntity::columnName<"deleted_at">(), "webhook")))
             .returning({updated.column(service::access::persistence::OpenWebhookEntity::columnName<"id">(), "webhook")});
 
-        ruvia::DbQuery logRows(context.resource());
+        ruvia::DbQuery logRows(context.pool());
         logRows
             .select({logRows.column("log_id", "incoming"),
                      logRows.column("access_key_id", "incoming"),
@@ -442,7 +442,7 @@ inline ruvia::Task<void> persistResults(
                      logRows.column("response_payload", "incoming")})
             .from("incoming", "incoming");
 
-        ruvia::DbQuery write(context.resource());
+        ruvia::DbQuery write(context.pool());
         write
             .with("incoming", incoming,
                   {.columns = {"sequence", "log_id", "access_key_id", "webhook_id",
@@ -467,7 +467,7 @@ inline ruvia::Task<void> persistAudits(
         const std::vector<message::StreamMessage>& messages) {
         if (messages.empty())
             co_return;
-        ruvia::DbQuery incoming(context.resource());
+        ruvia::DbQuery incoming(context.pool());
         for (std::size_t index = 0; index < messages.size(); ++index) {
             const auto httpStatus = service::utils::parseInt64(
                 std::optional<std::string_view>(messages[index].get("http_status")));
@@ -503,7 +503,7 @@ inline ruvia::Task<void> persistAudits(
                     ruvia::DbDataType::kBigInt)
             });
         }
-        ruvia::DbQuery latestUsage(context.resource());
+        ruvia::DbQuery latestUsage(context.pool());
         latestUsage
             .select({latestUsage.column("access_key_id", "incoming"),
                      latestUsage.column("request_ip", "incoming"),
@@ -516,7 +516,7 @@ inline ruvia::Task<void> persistAudits(
             .addOrderBy(latestUsage.column("sequence", "incoming"),
                         ruvia::DbOrderDirection::kDesc);
 
-        ruvia::DbQuery usageUpdated(context.resource());
+        ruvia::DbQuery usageUpdated(context.pool());
         const auto latestTimestamp = usageUpdated.call(
             "to_timestamp",
             {usageUpdated.binary(
@@ -543,14 +543,14 @@ inline ruvia::Task<void> persistAudits(
                                    latestTimestamp)))
             .returning({usageUpdated.column(service::access::persistence::OpenAccessKeyEntity::columnName<"id">(), "key")});
 
-        ruvia::DbQuery updateBarrier(context.resource());
+        ruvia::DbQuery updateBarrier(context.pool());
         updateBarrier
             .select(updateBarrier.alias(
                 updateBarrier.aggregate("count", {updateBarrier.star()}),
                 "updated_count"))
             .from("usage_updated");
 
-        ruvia::DbQuery logRows(context.resource());
+        ruvia::DbQuery logRows(context.pool());
         logRows
             .select({logRows.column("log_id", "incoming"),
                      logRows.column("access_key_id", "incoming"),
@@ -573,7 +573,7 @@ inline ruvia::Task<void> persistAudits(
                                  ruvia::DbBinaryOperator::kGreaterEqual,
                                  logRows.value(std::int64_t{0})));
 
-        ruvia::DbQuery write(context.resource());
+        ruvia::DbQuery write(context.pool());
         write
             .with("incoming", incoming,
                   {.columns = {"sequence", "log_id", "access_key_id", "action",

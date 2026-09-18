@@ -127,7 +127,55 @@ export namespace Edge {
         totalBytes: number;
         message: string;
     }
+    export interface DtuTrace {
+        sequence?: string;
+        direction?: string;
+        clientSlot?: number;
+        payload?: string;
+        totalBytes?: number;
+        monotonicMs?: string;
+    }
+    export interface DtuChannel {
+        channelId: string;
+        name: string;
+        enabled: boolean;
+        southMode: 'serial' | 'tcp_client' | 'tcp_server';
+        southHost?: string;
+        southPort?: number;
+        northHost: string;
+        northPort: number;
+        serialPath?: string;
+        baudRate?: number;
+        dataBits?: number;
+        stopBits?: number;
+        parity?: 'none' | 'even' | 'odd';
+        rs485?: boolean;
+        maxClients: number;
+        queueBytes: number;
+        serialFrameMs: number;
+        uplinkOnly?: boolean;
+        registrationHex?: string;
+        heartbeatHex?: string;
+        heartbeatIntervalSec?: number;
+        debugEnabled?: boolean;
+        status?: {
+            northState?: string;
+            southState?: string;
+            clientCount?: number;
+            upstreamBytes?: string;
+            downstreamBytes?: string;
+            queuedBytes?: number;
+            error?: string;
+            traces?: DtuTrace[];
+            omittedTraces?: string;
+        };
+    }
+    export interface DtuChannels {
+        supported: boolean;
+        channels: DtuChannel[];
+    }
     export interface EventScope {
+        dtu?: boolean;
         nodeId?: string;
         logs?: LogsQuery;
         vpn?: boolean;
@@ -200,6 +248,9 @@ export namespace Edge {
     export interface FirmwareUpgradeDto {
         file: File;
         keepSettings: boolean;
+    }
+    export interface FirmwareReuseResult {
+        reused: boolean;
     }
     export interface FirmwareUploadProgress {
         loadedBytes: number;

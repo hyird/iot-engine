@@ -107,7 +107,7 @@ class GbProjectionService {
     // is performed after that lock to avoid clearing a newly acquired owner.
     static ruvia::Task<void>
     reconcileExpiredOwners(ruvia::WebWorkerContext& context) {
-        ruvia::DbQuery deviceQuery(context.resource());
+        ruvia::DbQuery deviceQuery(context.pool());
         deviceQuery.select(deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::columnName<"id">()))
             .from(service::gb28181::persistence::Gb28181DeviceEntity::tableName())
             .where(deviceQuery.binary(
@@ -126,8 +126,8 @@ class GbProjectionService {
             }
 
             auto transaction = co_await context.db().beginTransaction();
-            (void)co_await transaction.query(advisoryLockQuery(context.resource(), id));
-            ruvia::DbQuery currentQuery(context.resource());
+            (void)co_await transaction.query(advisoryLockQuery(context.pool(), id));
+            ruvia::DbQuery currentQuery(context.pool());
             currentQuery.select(currentQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::columnName<"online">()))
                 .from(service::gb28181::persistence::Gb28181DeviceEntity::tableName())
                 .where(currentQuery.binary(
@@ -144,7 +144,7 @@ class GbProjectionService {
                 co_await transaction.commit();
                 continue;
             }
-            ruvia::DbQuery updateQuery(context.resource());
+            ruvia::DbQuery updateQuery(context.pool());
             updateQuery.update(service::gb28181::persistence::Gb28181DeviceEntity::tableName())
                 .set(service::gb28181::persistence::Gb28181DeviceEntity::columnName<"online">(), updateQuery.value(false))
                 .set(service::gb28181::persistence::Gb28181DeviceEntity::columnName<"updated_at">(), updateQuery.call("now"))
@@ -165,7 +165,7 @@ class GbProjectionService {
             co_await transaction.commit();
         }
 
-        ruvia::DbQuery streamQuery(context.resource());
+        ruvia::DbQuery streamQuery(context.pool());
         streamQuery
             .select({streamQuery.column(service::gb28181::persistence::Gb28181StreamEntity::columnName<"app">()), streamQuery.column(service::gb28181::persistence::Gb28181StreamEntity::columnName<"stream">()),
                      streamQuery.column(service::gb28181::persistence::Gb28181StreamEntity::columnName<"schema">())})
@@ -194,8 +194,8 @@ class GbProjectionService {
 
             auto transaction = co_await context.db().beginTransaction();
             (void)co_await transaction.query(
-                advisoryLockQuery(context.resource(), identity));
-            ruvia::DbQuery currentQuery(context.resource());
+                advisoryLockQuery(context.pool(), identity));
+            ruvia::DbQuery currentQuery(context.pool());
             currentQuery.select(currentQuery.column(service::gb28181::persistence::Gb28181StreamEntity::columnName<"online">()))
                 .from(service::gb28181::persistence::Gb28181StreamEntity::tableName())
                 .where(currentQuery.binary(
@@ -221,7 +221,7 @@ class GbProjectionService {
                 co_await transaction.commit();
                 continue;
             }
-            ruvia::DbQuery updateQuery(context.resource());
+            ruvia::DbQuery updateQuery(context.pool());
             updateQuery.update(service::gb28181::persistence::Gb28181StreamEntity::tableName())
                 .set(service::gb28181::persistence::Gb28181StreamEntity::columnName<"online">(), updateQuery.value(false))
                 .set(service::gb28181::persistence::Gb28181StreamEntity::columnName<"reader_count">(), updateQuery.value(0))
@@ -307,7 +307,7 @@ class GbProjectionService {
     static ruvia::Task<ProjectionSnapshot> hydrate(ruvia::WebWorkerContext& context) {
         ProjectionSnapshot snapshot;
         std::unordered_map<std::string, std::size_t> deviceIndexes;
-        ruvia::DbQuery deviceQuery(context.resource());
+        ruvia::DbQuery deviceQuery(context.pool());
         deviceQuery
             .select({
                 deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::columnName<"id">()), deviceQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::columnName<"name">()),
@@ -352,7 +352,7 @@ class GbProjectionService {
             snapshot.devices.push_back(std::move(device));
         }
 
-        ruvia::DbQuery channelQuery(context.resource());
+        ruvia::DbQuery channelQuery(context.pool());
         channelQuery
             .select({channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::columnName<"device_id">()),
                      channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::columnName<"id">()), channelQuery.column(service::gb28181::persistence::Gb28181ChannelEntity::columnName<"name">()),
@@ -383,7 +383,7 @@ class GbProjectionService {
             });
         }
 
-        ruvia::DbQuery recordQuery(context.resource());
+        ruvia::DbQuery recordQuery(context.pool());
         recordQuery
             .select({recordQuery.column(service::gb28181::persistence::Gb28181RecordEntity::columnName<"device_id">()),
                      recordQuery.column(service::gb28181::persistence::Gb28181RecordEntity::columnName<"channel_id">()),
@@ -420,7 +420,7 @@ class GbProjectionService {
             });
         }
 
-        ruvia::DbQuery streamQuery(context.resource());
+        ruvia::DbQuery streamQuery(context.pool());
         streamQuery
             .select({streamQuery.column(service::gb28181::persistence::Gb28181StreamEntity::columnName<"app">()), streamQuery.column(service::gb28181::persistence::Gb28181StreamEntity::columnName<"stream">()),
                      streamQuery.column(service::gb28181::persistence::Gb28181StreamEntity::columnName<"schema">()),
@@ -742,8 +742,8 @@ class GbProjectionService {
     ) {
         auto transaction = co_await context.db().beginTransaction();
         (void)co_await transaction.query(
-            advisoryLockQuery(context.resource(), device.id));
-        ruvia::DbQuery cursorQuery(context.resource());
+            advisoryLockQuery(context.pool(), device.id));
+        ruvia::DbQuery cursorQuery(context.pool());
         cursorQuery
             .select(cursorQuery.binary(
                 cursorQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::columnName<"projection_cursor">()),
@@ -775,7 +775,7 @@ class GbProjectionService {
         const auto lastSeen = service::common::utcTimestamp(device.lastSeen);
 
         const auto buildDeviceUpsert = [&]() {
-            ruvia::DbQuery query(context.resource());
+            ruvia::DbQuery query(context.pool());
             query
                 .insertInto(
                     service::gb28181::persistence::Gb28181DeviceEntity::tableName(),
@@ -867,7 +867,7 @@ class GbProjectionService {
                     if (channel.customName.empty()) {
                         continue;
                     }
-                    ruvia::DbQuery updateQuery(context.resource());
+                    ruvia::DbQuery updateQuery(context.pool());
                     updateQuery.update(service::gb28181::persistence::Gb28181ChannelEntity::tableName())
                         .set(service::gb28181::persistence::Gb28181ChannelEntity::columnName<"custom_name">(), updateQuery.value(channel.customName))
                         .set(service::gb28181::persistence::Gb28181ChannelEntity::columnName<"updated_at">(), updateQuery.call("now"))
@@ -884,7 +884,7 @@ class GbProjectionService {
                 break;
         }
         co_await publishDevice(context, transaction, device.id);
-        ruvia::DbQuery cursorUpdate(context.resource());
+        ruvia::DbQuery cursorUpdate(context.pool());
         cursorUpdate
             .update(service::gb28181::persistence::Gb28181DeviceEntity::tableName())
             .set(service::gb28181::persistence::Gb28181DeviceEntity::columnName<"projection_cursor">(),
@@ -915,7 +915,7 @@ class GbProjectionService {
                 recordCount.column(service::gb28181::persistence::Gb28181RecordEntity::columnName<"device_id">()),
                 ruvia::DbBinaryOperator::kEqual,
                 recordCount.column(service::gb28181::persistence::Gb28181DeviceEntity::columnName<"id">(), "d")));
-        ruvia::DbQuery publishQuery(context.resource());
+        ruvia::DbQuery publishQuery(context.pool());
         publishQuery
             .select({
                 publishQuery.column(service::gb28181::persistence::Gb28181DeviceEntity::columnName<"id">(), "d"),
@@ -987,8 +987,8 @@ class GbProjectionService {
             StreamStatus::identity(stream.app, stream.stream, stream.schema);
         auto transaction = co_await context.db().beginTransaction();
         (void)co_await transaction.query(
-            advisoryLockQuery(context.resource(), identity));
-        ruvia::DbQuery cursorQuery(context.resource());
+            advisoryLockQuery(context.pool(), identity));
+        ruvia::DbQuery cursorQuery(context.pool());
         cursorQuery
             .select(cursorQuery.binary(
                 cursorQuery.column(service::gb28181::persistence::Gb28181StreamEntity::columnName<"projection_cursor">()),
@@ -1023,7 +1023,7 @@ class GbProjectionService {
             co_await transaction.commit();
             co_return false;
         }
-        ruvia::DbQuery upsert(context.resource());
+        ruvia::DbQuery upsert(context.pool());
         upsert
             .insertInto(service::gb28181::persistence::Gb28181StreamEntity::tableName(),
                         {"app", "stream", "schema", "online", "reader_count",
@@ -1047,7 +1047,7 @@ class GbProjectionService {
         upsert.onConflict(conflict);
         (void)co_await transaction.execute(upsert);
         co_await publishStream(context, stream);
-        ruvia::DbQuery cursorUpdate(context.resource());
+        ruvia::DbQuery cursorUpdate(context.pool());
         cursorUpdate
             .update(service::gb28181::persistence::Gb28181StreamEntity::tableName())
             .set(service::gb28181::persistence::Gb28181StreamEntity::columnName<"projection_cursor">(),
@@ -1453,7 +1453,7 @@ static ruvia::Task<std::string> executeOperation(
     if (operation == control_protocol::kHealthOperation) {
         co_return control_protocol::successJson(
             healthJson(context, enabled),
-            context.resource()
+            context.pool()
         );
     }
     if (operation == control_protocol::kSipConfigOperation) {
@@ -1463,8 +1463,8 @@ static ruvia::Task<std::string> executeOperation(
             service::common::fail(10004, "GB28181 配置投影不可用", 503);
         }
         co_return control_protocol::successJson(
-            control_protocol::sipConfigJson(context.resource(), config->domain, config->id, config->host, config->publicIp, config->port, config->transport),
-            context.resource()
+            control_protocol::sipConfigJson(context.pool(), config->domain, config->id, config->host, config->publicIp, config->port, config->transport),
+            context.pool()
         );
     }
 
@@ -1472,14 +1472,14 @@ static ruvia::Task<std::string> executeOperation(
         GbControlService::requireEnabled(enabled);
         const auto snapshot = co_await GbProjectionService::loadSnapshot(context);
         ruvia::BoxedArray<control_protocol::DeviceJson> items(
-            ruvia::ModelOptions{ .resource = context.resource() }
+            ruvia::ModelOptions{ .resource = context.pool() }
         );
         for (const auto& device : snapshot.devices) {
-            items.emplace(control_protocol::deviceJson(context.resource(), device));
+            items.emplace(control_protocol::deviceJson(context.pool(), device));
         }
-        control_protocol::DeviceListJson result(context);
+        control_protocol::DeviceListJson result({ .resource = context.pool() });
         result.set<"items">(std::move(items));
-        co_return control_protocol::successJson(result, context.resource());
+        co_return control_protocol::successJson(result, context.pool());
     }
     if (operation == control_protocol::kDeviceOperation) {
         GbControlService::requireEnabled(enabled);
@@ -1495,20 +1495,20 @@ static ruvia::Task<std::string> executeOperation(
         if (value == snapshot.devices.end()) {
             service::common::fail(10003, "设备不存在", 404);
         }
-        co_return control_protocol::successJson(control_protocol::deviceJson(context.resource(), *value), context.resource());
+        co_return control_protocol::successJson(control_protocol::deviceJson(context.pool(), *value), context.pool());
     }
     if (operation == control_protocol::kStreamsOperation) {
         GbControlService::requireEnabled(enabled);
         const auto snapshot = co_await GbProjectionService::loadSnapshot(context);
         ruvia::BoxedArray<control_protocol::StreamJson> items(
-            ruvia::ModelOptions{ .resource = context.resource() }
+            ruvia::ModelOptions{ .resource = context.pool() }
         );
         for (const auto& stream : snapshot.streams) {
-            items.emplace(control_protocol::streamJson(context.resource(), stream));
+            items.emplace(control_protocol::streamJson(context.pool(), stream));
         }
-        control_protocol::StreamListJson result(context);
+        control_protocol::StreamListJson result({ .resource = context.pool() });
         result.set<"items">(std::move(items));
-        co_return control_protocol::successJson(result, context.resource());
+        co_return control_protocol::successJson(result, context.pool());
     }
     if (operation == control_protocol::kStreamOperation) {
         GbControlService::requireEnabled(enabled);
@@ -1524,7 +1524,7 @@ static ruvia::Task<std::string> executeOperation(
         if (value == snapshot.streams.end()) {
             service::common::fail(10003, "流不存在", 404);
         }
-        co_return control_protocol::successJson(control_protocol::streamJson(context.resource(), *value), context.resource());
+        co_return control_protocol::successJson(control_protocol::streamJson(context.pool(), *value), context.pool());
     }
 
     if (operation == control_protocol::kCatalogOperation ||
@@ -1618,15 +1618,15 @@ static ruvia::Task<std::string> executeOperation(
   private:
 static control_protocol::HealthJson healthJson(ruvia::WebWorkerContext& context, bool enabled, std::string_view error = {}) {
     const auto started = sdkSupervisor().started();
-    control_protocol::HealthJson result(context);
+    control_protocol::HealthJson result({ .resource = context.pool() });
     result.set<"status">(started ? "ok" : (enabled ? "error" : "disabled"))
         .set<"service">("iot-engine-gb28181")
         .set<"enabled">(enabled)
         .set<"started">(started)
         .set<"error">(error)
-        .set<"mediaPorts">(control_protocol::mediaPortsJson(context.resource(), sdkSupervisor().ports()))
+        .set<"mediaPorts">(control_protocol::mediaPortsJson(context.pool(), sdkSupervisor().ports()))
         .set<"mediaCapabilities">(
-            control_protocol::mediaCapabilitiesJson(context.resource(), sdkSupervisor().capabilities())
+            control_protocol::mediaCapabilitiesJson(context.pool(), sdkSupervisor().capabilities())
         );
     return result;
 }
