@@ -49,8 +49,15 @@ export function useLinkOptions(
 ) {
     return useQuery({
         queryKey: [...linkQueryKeys.all, 'options'],
-        queryFn: ({ signal }) =>
-            queryList({ page: 1, pageSize: 100 }, signal).then((page) => page.list),
+        queryFn: async ({ signal }) => {
+            const first = await queryList({ page: 1, pageSize: 100 }, signal);
+            const links = new Map(first.list.map((link) => [link.id, link]));
+            for (let page = 2; page <= Math.ceil(first.total / 100); page++) {
+                const result = await queryList({ page, pageSize: 100 }, signal);
+                for (const link of result.list) links.set(link.id, link);
+            }
+            return [...links.values()];
+        },
         ...options,
         enabled: options?.enabled ?? true,
         refetchInterval: false,

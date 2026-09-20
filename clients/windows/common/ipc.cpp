@@ -4,10 +4,12 @@
 #include "product.h"
 #include "win32.h"
 #include <sddl.h>
+#include <shellapi.h>
 #include <shlobj.h>
 #include <wincrypt.h>
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <limits>
 #include <thread>
 
@@ -65,22 +67,24 @@ void verifyServer(HANDLE pipe) {
     ServiceHandle manager(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
     if (!manager) win32Error("Cannot access Windows services");
     ServiceHandle service(OpenServiceW(manager.value, AgentService, SERVICE_QUERY_STATUS));
-    if (!service) throw std::runtime_error("请先安装 iot-egine 网络服务。");
+    if (!service) throw LocalServiceError("本机网络服务未安装，请点击修复服务。");
     SERVICE_STATUS_PROCESS status{}; DWORD needed = 0;
     if (!QueryServiceStatusEx(service.value, SC_STATUS_PROCESS_INFO, reinterpret_cast<BYTE*>(&status), sizeof(status), &needed))
         win32Error("Cannot identify local service");
-    if (!status.dwProcessId || status.dwProcessId != serverPid) throw std::runtime_error("本机管道身份验证失败。");
+    if (!status.dwProcessId || status.dwProcessId != serverPid) throw LocalServiceError("本机管道身份验证失败，请点击修复服务。");
 }
 }
 
 Json pipeRequest(const Json& request, std::uint32_t timeoutMs, std::stop_token stop) {
     if (stop.stop_requested()) throw std::runtime_error("Operation cancelled");
     if (!WaitNamedPipeW(PipeName, 5000) && GetLastError() != ERROR_SEM_TIMEOUT)
-        throw std::runtime_error("网络服务尚未启动，请重新运行安装程序。");
+        throw LocalServiceError("网络服务尚未启动，请点击修复服务。");
     Handle pipe(CreateFileW(PipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
         FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr));
-    if (!pipe) throw std::runtime_error("无法连接网络服务，请稍后重试。");
-    verifyServer(pipe.value);
+    if (!pipe) throw LocalServiceError("无法连接网络服务，请点击修复服务。");
+    try { verifyServer(pipe.value); }
+    catch (const LocalServiceError&) { throw; }
+    catch (const std::exception&) { throw LocalServiceError("无法验证本机网络服务，请点击修复服务。"); }
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     writeFrame(pipe.value, request, deadline, stop);
     auto response = readFrame(pipe.value, deadline, stop);
@@ -88,6 +92,67 @@ Json pipeRequest(const Json& request, std::uint32_t timeoutMs, std::stop_token s
     // Older controllers may close immediately; a failed acknowledgment does not invalidate a complete response.
     try { char acknowledged = 0; transfer(pipe.value, &acknowledged, 1, true, deadline, stop); } catch (...) { }
     return response;
+}
+
+ServiceRepairResult repairLocalService() {
+    ServiceRepairResult result;
+    const auto root = productInstallRoot();
+    const auto exe = root / L"Service" / L"IotVpn.ServiceControl.exe";
+    if (!std::filesystem::is_regular_file(exe)) {
+        result.message = "未找到服务修复程序，请重新安装客户端。";
+        return result;
+    }
+    wchar_t tempDirectory[MAX_PATH]{};
+    const auto tempLength = GetTempPathW(MAX_PATH, tempDirectory);
+    if (!tempLength || tempLength >= MAX_PATH) {
+        result.message = "无法创建服务修复报告。";
+        return result;
+    }
+    const auto report = (std::filesystem::path(tempDirectory) / (L"iot-egine-repair-" + std::to_wstring(GetCurrentProcessId()) + L".txt")).wstring();
+    DeleteFileW(report.c_str());
+    const auto parameters = L"--repair --report \"" + report + L"\"";
+    SHELLEXECUTEINFOW info{};
+    info.cbSize = sizeof(info);
+    info.fMask = SEE_MASK_NOCLOSEPROCESS;
+    info.lpVerb = L"runas";
+    info.lpFile = exe.c_str();
+    info.lpParameters = parameters.c_str();
+    info.lpDirectory = root.c_str();
+    info.nShow = SW_HIDE;
+    if (!ShellExecuteExW(&info)) {
+        if (GetLastError() == ERROR_CANCELLED) {
+            result.cancelled = true;
+            result.message = "已取消服务修复。";
+            return result;
+        }
+        result.message = "无法启动服务修复程序。";
+        return result;
+    }
+    Handle process(info.hProcess);
+    if (WaitForSingleObject(process.value, 120000) == WAIT_TIMEOUT) {
+        result.message = "服务修复超时，请稍后重试。";
+        return result;
+    }
+    DWORD exitCode = 1;
+    GetExitCodeProcess(process.value, &exitCode);
+    std::string reportText;
+    if (std::filesystem::is_regular_file(report)) {
+        try {
+            const auto bytes = readFile(report, 4096);
+            reportText.assign(bytes.begin(), bytes.end());
+        } catch (...) {}
+        DeleteFileW(report.c_str());
+    }
+    while (!reportText.empty() && (reportText.back() == '\n' || reportText.back() == '\r')) reportText.pop_back();
+    if (exitCode == 0) {
+        result.succeeded = true;
+        result.message = "本机服务已修复。";
+        return result;
+    }
+    if (reportText.starts_with("FAIL ")) result.message = reportText.substr(5);
+    else if (!reportText.empty()) result.message = reportText;
+    else result.message = "服务修复失败，请稍后重试。";
+    return result;
 }
 
 void runPipeServer(std::stop_token stop, const std::function<Json(const Json&)>& handler) {

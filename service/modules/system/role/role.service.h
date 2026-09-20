@@ -245,7 +245,7 @@ class RoleService {
             .where(RoleEntity::column<"id">() == id)
             .orderBy(expressions.column("permission", "values"));
         const auto rows = co_await query.template getMany<RolePermission>();
-        ruvia::Array<ruvia::String> result(c.arena());
+        ruvia::Array<ruvia::String> result({ .resource = c.arena() });
         for (const auto& row : rows) {
             result.emplace_back(row.template get<"permission">(), ruvia::ModelOptions{ .resource = c.arena() });
         }

@@ -358,6 +358,7 @@ build/                      # 构建、后端生成代码、临时验证产物
 | 制品目录 | `/opt/iot/releases/<短 SHA>/` |
 
 - 凭据不得写入提交、制品、日志或文档；生产 `.env` 权限 `600`，密钥在服务器生成。
+- Nginx 以 `http` 用户直接提供 `/downloads/`，`/opt/iot/releases/<短 SHA>/` 与其中 `web/` 必须 `755`，禁止用 `umask 077` 创建前端目录。
 - 切换前核验哈希、架构、依赖、静态入口，备份二进制、静态文件、Nginx 配置。
-- 切换后检查服务、迁移、数据库、Redis、Nginx、证书及实际前端资源。
+- 切换后检查服务、迁移、数据库、Redis、Nginx、证书、实际前端资源，以及 `https://i.a-z.xin/downloads/iot-egine-Setup-x64.exe` 返回 200 且支持 Range。
 - 关键检查失败立即回滚，验证完成前保留备份。

@@ -32,6 +32,7 @@
 #include "service/features/packet_log/packet_log.transport.h"
 #include "service/common/message.h"
 #include "service/features/collector/collector.service.h"
+#include "service/features/telemetry/derived/derived.service.h"
 #include "service/features/collector/engine/engine.runtime.h"
 #include "service/features/collector/modbus/modbus.protocol.h"
 #include "service/features/collector/redis/redis.transport.h"
@@ -1401,6 +1402,7 @@ class CollectorWorker final {
                         actionLogContext(action, "bind")
                     );
                     co_await bindRouteIfConnected(action);
+                    co_await restoreDerived(action);
                     break;
                 case ProtocolActionKind::ObserveParsed:
                 case ProtocolActionKind::DiscardCollection:
@@ -1430,7 +1432,7 @@ class CollectorWorker final {
                         {},
                         action.parsed.source
                     );
-                    (void)co_await message::redis::publishAndWake(
+                    if (!co_await calculateDerived(action.parsed, action.connectionId)) (void)co_await message::redis::publishAndWake(
                         redis_,
                         parsedStream(),
                         message::parsedFields(action.parsed),
@@ -1491,6 +1493,72 @@ class CollectorWorker final {
         }
         if (disconnected) {
             co_await failPendingForConnection(connectionId, reason);
+        }
+    }
+
+    ruvia::Task<void> restoreDerived(const ProtocolAction& action) {
+        const auto device = std::find_if(loadedSnapshot_.devices.begin(), loadedSnapshot_.devices.end(), [&](const auto& item) { return item.id == action.deviceId; });
+        if (device == loadedSnapshot_.devices.end() || device->calculationConfig.empty()) co_return;
+        const auto configuration = ruvia::JsonValue::parse(device->calculationConfig);
+        if (!configuration || service::common::orderDerivedPoints(*configuration).empty()) co_return;
+        const std::string config = device->calculationConfig;
+        message::ParsedDeviceMessage parsed;
+        parsed.deviceId = device->id;
+        parsed.deviceCode = device->code;
+        parsed.linkId = device->linkId;
+        parsed.modelId = device->modelId;
+        parsed.protocol = device->protocol;
+        parsed.storagePolicy = device->storagePolicy;
+        parsed.connectionId = action.connectionId;
+        co_await expireDerived(std::move(parsed), action.connectionId, config);
+    }
+
+    ruvia::Task<bool> calculateDerived(message::ParsedDeviceMessage& parsed, const std::string& connectionId) {
+        const auto device = std::find_if(loadedSnapshot_.devices.begin(), loadedSnapshot_.devices.end(), [&](const auto& item) { return item.id == parsed.deviceId; });
+        if (device == loadedSnapshot_.devices.end() || device->calculationConfig.empty()) co_return false;
+        const std::string config = device->calculationConfig;
+        const auto result = co_await service::telemetry::derived::DerivedService::append(redis_, config, parsed);
+        scheduleDerivedExpiry(parsed, connectionId, config, result.nextDeadline);
+        co_return result.published;
+    }
+
+    void scheduleDerivedExpiry(message::ParsedDeviceMessage parsed, std::string connectionId,
+                               std::string config, std::optional<std::int64_t> at) {
+        parsed.rawPayloads.clear();
+        parsed.rawPacketIds.clear();
+        parsed.valuesJson = "{\"values\":{}}";
+        const auto id = parsed.deviceId;
+        if (const auto existing = derivedDeadlines_.find(id); existing != derivedDeadlines_.end()) {
+            scheduler_.cancel(existing->second.second);
+            derivedDeadlines_.erase(existing);
+        }
+        if (!at || stopping_) return;
+        const auto delay = std::chrono::milliseconds((std::max)(std::int64_t{1}, *at - message::utcNowMilliseconds()));
+        const auto connection = connectionId;
+        const auto token = scheduler_.scheduleAfter(delay, [this, parsed = std::move(parsed), connectionId = std::move(connectionId), config = std::move(config)]() mutable {
+            derivedDeadlines_.erase(parsed.deviceId);
+            if (!stopping_) scope_.spawn(expireDerived(std::move(parsed), std::move(connectionId), std::move(config)));
+        });
+        derivedDeadlines_[id] = {connection, token};
+    }
+
+    ruvia::Task<void> expireDerived(message::ParsedDeviceMessage parsed, std::string connectionId, std::string config) {
+        if (stopping_) co_return;
+        const auto device = std::find_if(loadedSnapshot_.devices.begin(), loadedSnapshot_.devices.end(), [&](const auto& item) { return item.id == parsed.deviceId; });
+        if (device == loadedSnapshot_.devices.end() || device->calculationConfig != config) co_return;
+        parsed.messageId = uuidGenerator_.next();
+        parsed.acquisitionId = parsed.messageId;
+        parsed.causationId = parsed.messageId;
+        parsed.source = "derived";
+        parsed.rawPayloads.clear(); parsed.rawPacketIds.clear();
+        parsed.observedAtMs = parsed.occurredAtMs = message::utcNowMilliseconds();
+        parsed.valuesJson = "{\"values\":{}}";
+        try {
+            const auto result = co_await service::telemetry::derived::DerivedService::append(redis_, config, parsed, true);
+            scheduleDerivedExpiry(std::move(parsed), std::move(connectionId), std::move(config), result.nextDeadline);
+        } catch (const std::exception& error) {
+            lastCoordinatorError_ = std::string("derived_expiry_failed: ") + error.what();
+            scheduleDerivedExpiry(std::move(parsed), std::move(connectionId), std::move(config), message::utcNowMilliseconds() + 1000);
         }
     }
 
@@ -1605,7 +1673,13 @@ class CollectorWorker final {
         co_return messages;
     }
 
-    void cancelProtocolDeadlinesForConnection(std::string_view connectionId) {
+    void cancelProtocolDeadlinesForConnection(std::string_view connectionId, bool cancelDerived = true) {
+        for (auto current = derivedDeadlines_.begin(); current != derivedDeadlines_.end();) {
+            if (cancelDerived && current->second.first == connectionId) {
+                scheduler_.cancel(current->second.second);
+                current = derivedDeadlines_.erase(current);
+            } else ++current;
+        }
         for (auto current = protocolDeadlines_.begin(); current != protocolDeadlines_.end();) {
             if (current->first.first == connectionId) {
                 scheduler_.cancel(current->second);
@@ -1640,7 +1714,10 @@ class CollectorWorker final {
     }
 
     ruvia::Task<void> cleanupConnection(std::string_view connectionId, std::string_view reason) {
-        cancelProtocolDeadlinesForConnection(connectionId);
+        // Retained input samples still expire after transport closes. Their
+        // bounded deadlines stay with this Worker and release themselves when
+        // no valid inputs/window samples remain; no socket or payload is kept.
+        cancelProtocolDeadlinesForConnection(connectionId, false);
         const auto bound = routes_.find(connectionId);
         if (bound != routes_.end()) {
             for (const auto& deviceCode : bound->second) {
@@ -2027,6 +2104,7 @@ class CollectorWorker final {
     std::string workerInstanceId_ = uuidGenerator_.next();
     std::string consumer_;
     std::map<std::pair<std::string, std::uint64_t>, DeadlineScheduler::Token> protocolDeadlines_;
+    std::map<std::string, std::pair<std::string, DeadlineScheduler::Token>> derivedDeadlines_;
     std::map<std::string, std::set<std::string>, std::less<>> routes_;
     std::map<std::string, ProtocolConnectionInfo, std::less<>> networkConnections_;
     std::map<std::string, std::uint64_t, std::less<>> connectionEpochs_;

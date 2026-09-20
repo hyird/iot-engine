@@ -263,7 +263,7 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
             defaultText(connection, "sourceUnit", "0"),
             defaultText(connection, "wakeupBytes", "4"),
             defaultText(connection, "writePassword", ""),
-            defaultText(connection, "operatorCode", "") })
+            defaultText(connection, "operatorCode", ""), deviceQuery.cast(config, Type::kText) })
         .from(service::configuration::persistence::DeviceEntity::tableName(), "d")
         .join(ruvia::DbJoinType::kInner, service::configuration::persistence::LinkEntity::tableName(),
             deviceQuery.binary(deviceQuery.column(service::configuration::persistence::LinkEntity::columnName<"id">(), "l"), Op::kEqual, deviceQuery.column(service::configuration::persistence::DeviceEntity::columnName<"link_id">(), "d")), "l")
@@ -311,6 +311,7 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
         device.s7DirectProbeTimeoutMs = cellInt(row, 22);
         device.s7ProbeMode = cell(row, 23);
         device.readInterval = cellInt(row, 24);
+        device.calculationConfig = cell(row, 49);
         device.storagePolicy = cell(row, 25);
         device.commandFastReadDuration = cellInt(row, 26);
         device.commandFastReadInterval = cellInt(row, 27);
@@ -359,7 +360,7 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
             .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::configuration::persistence::DeviceEntity::columnName<"deleted_at">(), "d")));
         const auto entries = query.call("jsonb_array_elements", { query.coalesce({
             query.binary(query.column(service::configuration::persistence::DeviceModelEntity::columnName<"config">(), "p"), Op::kJsonGet, query.value(arrayKey)), query.cast(query.value("[]"), Type::kJsonb) }) });
-        if (protocol == "SL651") {
+        if (protocol == "SL651" && arrayKey == "funcs") {
             query.joinFunction(ruvia::DbJoinType::kCross, entries, {}, "functions",
                 { .lateral = true, .withOrdinality = true, .columns = { { .name = "function" }, { .name = "function_position" } } })
                 .joinFunction(ruvia::DbJoinType::kCross, query.call("jsonb_array_elements", { query.coalesce({
@@ -377,6 +378,8 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
         return query;
     };
     auto configured = configuredProtocol("Modbus", "registers", 1);
+    for (const auto protocol : {"Modbus", "S7", "SL651", "MC", "FINS", "DLT645"})
+        configured.combine(ruvia::DbSetOperation::kUnionAll, configuredProtocol(protocol, "derivedPoints", 5));
     for (const auto protocol : {"MC", "FINS", "DLT645"})
         configured.combine(ruvia::DbSetOperation::kUnionAll, configuredProtocol(protocol, "points", 4));
     const auto s7Configured = configuredProtocol("S7", "areas", 2);

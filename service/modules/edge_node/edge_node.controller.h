@@ -187,9 +187,7 @@ class EventRegistry final {
         ruvia::Validator validation({ .resource = context.arena() });
         ruvia::JsonBody<Body> validator;
         validator.validate(*body, validation);
-        // A validation exception can outlive this invocation's arena while the
-        // caller unwinds it. Give the exception independently owned storage.
-        validation.throwIfInvalid({ .resource = std::pmr::new_delete_resource() });
+        validation.throwIfInvalid();
         co_return co_await (static_cast<Controller*>(instance)->*Handler)(context, *body);
     }
 

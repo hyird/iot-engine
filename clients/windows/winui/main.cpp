@@ -65,7 +65,7 @@ const wchar_t* layout=LR"XAML(
   <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
   <Border Background="{ThemeResource AccentFillColorDefaultBrush}" CornerRadius="10" Width="40" Height="40"><FontIcon Glyph="&#xE774;" Foreground="White" FontSize="20"/></Border>
   <StackPanel Grid.Column="1" VerticalAlignment="Center"><TextBlock Text="iot-egine" Style="{ThemeResource SubtitleTextBlockStyle}"/><TextBlock Text="设备网络" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/></StackPanel>
-  <StackPanel x:Name="Account" Grid.Column="2" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center" Visibility="Collapsed"><TextBlock x:Name="AccountName" VerticalAlignment="Center"/><Button x:Name="Logout" Content="退出登录"/></StackPanel>
+  <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center"><Button x:Name="RepairService" Content="修复服务" Visibility="Collapsed"/><StackPanel x:Name="Account" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center" Visibility="Collapsed"><TextBlock x:Name="AccountName" VerticalAlignment="Center"/><Button x:Name="Logout" Content="退出登录"/></StackPanel></StackPanel>
  </Grid>
  <ScrollViewer x:Name="LoginPanel" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
   <Border x:Name="LoginCard" MaxWidth="760" Padding="32" HorizontalAlignment="Center" VerticalAlignment="Center" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="12" Margin="0,24">
@@ -98,7 +98,7 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
     Markup::IXamlType GetXamlType(Windows::UI::Xaml::Interop::TypeName const& type) { return provider.GetXamlType(type); }
     com_array<Markup::XmlnsDefinition> GetXmlnsDefinitions() { return provider.GetXmlnsDefinitions(); }
     Window window{nullptr}; Grid root{nullptr}; DispatcherTimer timer{nullptr};
-    ContentDialog logoutDialog{nullptr}; bool logoutConfirming=false;
+    ContentDialog logoutDialog{nullptr}; bool logoutConfirming=false, repairing=false;
     std::unique_ptr<iotvpn::gui::ConnectionController> model;
     std::string rendered; bool updating=false,closed=false;
     template<class T> T control(const wchar_t* name) { return root.FindName(name).as<T>(); }
@@ -132,12 +132,16 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
             root=Markup::XamlReader::Load(layout).as<Grid>();
             model=std::make_unique<iotvpn::gui::ConnectionController>([this](const Json& request,std::stop_token stop) {
                 if(startupOptions.test) return fixture(request);
-                auto result=iotvpn::pipeRequest(request,90000,stop);
-                if(request.value("command","")=="login" && result.value("success",false)) {
-                    try { if(request.value("rememberCredentials",false)) iotvpn::gui::Credentials().save(request.at("username").get_ref<const std::string&>(),request.at("password").get_ref<const std::string&>()); else iotvpn::gui::Credentials().clear(); }
-                    catch(...) { result["message"]="登录成功，但保存账号失败，请重试。"; }
+                try {
+                    auto result=iotvpn::pipeRequest(request,90000,stop);
+                    if(request.value("command","")=="login" && result.value("success",false)) {
+                        try { if(request.value("rememberCredentials",false)) iotvpn::gui::Credentials().save(request.at("username").get_ref<const std::string&>(),request.at("password").get_ref<const std::string&>()); else iotvpn::gui::Credentials().clear(); }
+                        catch(...) { result["message"]="登录成功，但保存账号失败，请重试。"; }
+                    }
+                    return result;
+                } catch(const iotvpn::LocalServiceError& error) {
+                    return Json{{"success",false},{"message",error.what()},{"serviceRepair",true}};
                 }
-                return result;
             },startupOptions.test);
             window=Window(); window.Title(L"iot-egine"); window.Content(root);
             window.SystemBackdrop(MicaBackdrop());
@@ -156,6 +160,7 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
             });
             window.Closed([this](auto const&,auto const&) { closed=true; if(timer) timer.Stop(); model.reset(); });
             control<Button>(L"Login").Click([this](auto const&,auto const&) { login(); });
+            control<Button>(L"RepairService").Click([this](auto const&,auto const&) { repairService(); });
             control<PasswordBox>(L"Password").KeyDown([this](auto const&,Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) { if(e.Key()==Windows::System::VirtualKey::Enter) { login(); e.Handled(true); } });
             control<Button>(L"Logout").Click([this](auto const&,auto const&) { confirmLogout(); });
             for(auto [name,command]:{std::pair{L"Refresh","devices"},{L"Sync","sync"},{L"Apply","apply"}})
@@ -183,7 +188,7 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
     }
     fire_and_forget confirmLogout() {
         auto lifetime=get_strong();
-        if(!model||model->busy||logoutConfirming) co_return;
+        if(!model||model->busy||logoutConfirming||repairing) co_return;
         logoutConfirming=true;
         try {
             logoutDialog=ContentDialog(); logoutDialog.XamlRoot(root.XamlRoot());
@@ -198,8 +203,28 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
         }
         logoutDialog=nullptr; logoutConfirming=false;
     }
+    fire_and_forget repairService() {
+        auto lifetime=get_strong();
+        if(!model||model->busy||repairing||startupOptions.test) co_return;
+        repairing=true;
+        model->message="正在修复本机服务，请允许管理员权限。";
+        render();
+        apartment_context ui;
+        iotvpn::ServiceRepairResult result;
+        bool failed=false;
+        co_await winrt::resume_background();
+        try { result=iotvpn::repairLocalService(); } catch(...) { failed=true; }
+        co_await ui;
+        if(failed) result={false,false,"服务修复失败，请稍后重试。"};
+        repairing=false;
+        if(closed||!model) co_return;
+        model->message=result.message;
+        model->serviceRepairNeeded=!result.succeeded;
+        if(result.succeeded) model->request("status");
+        render();
+    }
     void login() {
-        if(model->busy) return;
+        if(model->busy||repairing) return;
         auto user=to_string(control<TextBox>(L"Username").Text()),password=to_string(control<PasswordBox>(L"Password").Password());
         const auto remember=control<CheckBox>(L"Remember").IsChecked().GetBoolean();
         if(user.empty()||password.empty()) model->message="请输入用户名和密码。";
@@ -214,9 +239,11 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
         control<Grid>(L"DevicesPanel").Visibility(logged?Visibility::Visible:Visibility::Collapsed);
         control<StackPanel>(L"Account").Visibility(logged?Visibility::Visible:Visibility::Collapsed);
         control<TextBlock>(L"AccountName").Text(to_hstring(model->username));
-        for(const auto name:{L"Login",L"Logout",L"Refresh",L"Sync",L"Connect",L"Apply"}) control<Button>(name).IsEnabled(!model->busy);
-        control<TextBox>(L"Username").IsEnabled(!model->busy); control<PasswordBox>(L"Password").IsEnabled(!model->busy); control<CheckBox>(L"Remember").IsEnabled(!model->busy);
-        control<Button>(L"Apply").IsEnabled(!model->busy&&model->selected.size()<=64);
+        for(const auto name:{L"Login",L"Logout",L"Refresh",L"Sync",L"Connect",L"Apply",L"RepairService"}) control<Button>(name).IsEnabled(!model->busy&&!repairing);
+        control<Button>(L"RepairService").Visibility(model->serviceRepairNeeded?Visibility::Visible:Visibility::Collapsed);
+        control<Button>(L"RepairService").Content(box_value(repairing?L"正在修复…":L"修复服务"));
+        control<TextBox>(L"Username").IsEnabled(!model->busy&&!repairing); control<PasswordBox>(L"Password").IsEnabled(!model->busy&&!repairing); control<CheckBox>(L"Remember").IsEnabled(!model->busy&&!repairing);
+        control<Button>(L"Apply").IsEnabled(!model->busy&&!repairing&&model->selected.size()<=64);
         control<Button>(L"Login").Content(box_value(model->busy?L"正在登录…":L"登录"));
         for(const auto name:{L"LoginMessage",L"DeviceMessage"}) { auto bar=control<InfoBar>(name); bar.Message(to_hstring(model->message)); bar.IsOpen(!model->message.empty()); }
         control<Button>(L"Connect").Content(box_value(model->connected?L"断开网络":L"连接网络"));
@@ -227,7 +254,7 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
         control<TextBlock>(L"Address").Text(to_hstring("本机地址  "+(assignedAddress.empty()?std::string("尚未分配"):assignedAddress)));
         control<TextBlock>(L"SyncTime").Text(to_hstring("同步  "+localTimestamp(model->status)));
         control<TextBlock>(L"Selection").Text(to_hstring("已选择 "+std::to_string(model->selected.size())+" 台"+(model->changed()?" · 待应用":"")));
-        control<TextBlock>(L"Hint").Text(model->busy?L"正在处理…":L"关闭窗口后，连接继续运行");
+        control<TextBlock>(L"Hint").Text(model->busy||repairing?L"正在处理…":L"关闭窗口后，连接继续运行");
         auto query=to_string(control<TextBox>(L"Search").Text()); const auto devices=model->filtered(query);
         std::string signature=query; for(const auto& d:devices) signature+=d.id+d.name+d.imei+d.subnet+d.address+(d.online?"1":"0")+(model->selected.contains(d.id)?"1":"0");
         if(signature!=rendered) {

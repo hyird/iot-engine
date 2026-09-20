@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <map>
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -777,7 +778,54 @@ class ProtocolConfigurationRules final {
 };
 
 class ProtocolService {
+    static void validateDerivedConfig(const ruvia::JsonValue& config) {
+        try { (void)service::common::orderDerivedPoints(config); }
+        catch (const std::invalid_argument& error) { service::common::fail(16004, error.what(), 400); }
+    }
   public:
+    static ExpressionTestResult testExpression(const ExpressionTestBody& body) {
+        try {
+            std::map<std::string, double> inputs;
+            for (const auto& input : body.get<"inputs">()) {
+                const std::string alias(input.get<"alias">().view());
+                const double value = input.get<"value">().value;
+                const utils::Expression variable(alias);
+                if (variable.variables().size() != 1 || variable.variables().front() != alias ||
+                    !std::isfinite(value) || !inputs.emplace(alias, value).second) {
+                    throw std::invalid_argument("变量名无效、重复或测试值不是有限数值");
+                }
+            }
+            const auto compile = [&](std::string_view text) {
+                utils::Expression expression(text);
+                for (const auto& alias : expression.variables()) {
+                    if (!inputs.contains(alias)) throw std::invalid_argument("未提供变量测试值：" + alias);
+                }
+                return expression;
+            };
+            const auto expression = compile(body.get<"expression">().view());
+            std::vector<utils::Expression> conditions;
+            for (const auto& rule : body.get<"unitRules">()) conditions.push_back(compile(rule.get<"condition">().view()));
+            const auto resolve = [&](std::string_view alias) { return inputs.at(std::string(alias)); };
+            const auto value = expression.evaluate(resolve);
+            std::string unit(body.get<"unit">().view());
+            std::int64_t matched{};
+            for (std::size_t i = 0; i < conditions.size(); ++i) {
+                if (conditions[i].evaluate(resolve) != 0) {
+                    unit = body.get<"unitRules">()[i].get<"unit">().view();
+                    matched = static_cast<std::int64_t>(i + 1);
+                    break;
+                }
+            }
+            ExpressionTestResult result;
+            result.set<"value">(value).set<"unit">(unit).set<"matchedRule">(matched);
+            return result;
+        } catch (const std::invalid_argument& error) {
+            common::fail(16004, error.what(), 400);
+        } catch (const std::domain_error& error) {
+            common::fail(16004, error.what(), 400);
+        }
+    }
+
     static ProtocolService& instance() {
         static thread_local ProtocolService service;
         return service;
@@ -859,6 +907,7 @@ class ProtocolService {
         ProtocolConfigurationRules::validateProtocol(protocol);
         ProtocolConfigurationRules::validateName(name);
         ProtocolConfigurationRules::validateConfig(body.config, protocol, true);
+        validateDerivedConfig(*body.config);
         co_await ensureNameAvailable(c, name, std::nullopt);
         const auto id = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
         const auto& config = body.config;
@@ -904,12 +953,31 @@ class ProtocolService {
             ProtocolConfigurationRules::validateName(*name);
             co_await ensureNameAvailable(c, *name, std::string(id));
         }
+        auto transaction = co_await c.db().beginTransaction();
+        options.lock = ruvia::DbLockOptions{};
+        const auto locked = co_await transaction.template getRepository<ProtocolConfigEntity>().findOne(options);
+        if (!locked) service::common::fail(16001, "协议配置不存在", 404);
         ProtocolConfigurationRules::validateConfig(body.config, protocol, false);
+        if (body.config) {
+            const auto previous = ruvia::JsonValue::parse(locked->template get<"config">());
+            std::map<std::string, std::string> fields;
+            if (!previous) throw std::runtime_error("invalid stored protocol configuration");
+            service::utils::visitJsonFields(*previous, [&](auto key, auto value) { fields[std::string(key)] = value; return true; });
+            service::utils::visitJsonFields(*body.config, [&](auto key, auto value) { fields[std::string(key)] = value; return true; });
+            std::string merged = "{";
+            for (const auto& [key, value] : fields) {
+                if (merged.size() > 1) merged += ',';
+                merged += service::utils::jsonQuoted(key) + ':' + value;
+            }
+            merged += '}';
+            const auto mergedConfig = ruvia::JsonValue::parse(merged);
+            validateDerivedConfig(*mergedConfig);
+            if (!service::common::orderDerivedPoints(*mergedConfig).empty()) co_await requireDerivedSupport(transaction, c.pool(), id);
+        }
         const auto& name = body.name;
         const auto& remark = body.remark;
         const auto& config = body.config;
         const auto& enabled = body.enabled;
-        auto transaction = co_await c.db().beginTransaction();
         ruvia::DbExpressions expressions(c.pool());
         std::vector<ruvia::DbAssignment> changes{ { "updated_at", expressions.call("now") } };
         if (name) {
@@ -983,9 +1051,8 @@ class ProtocolService {
         co_return itemJson(rows.front());
     }
 
-    template <typename Context>
-    static ruvia::Task<void> syncEdgeNodes(Context& c, std::string_view configId) {
-        ruvia::DbQuery query(c.pool());
+    static ruvia::DbQuery edgeNodeReferences(std::pmr::memory_resource* resource, std::string_view configId) {
+        ruvia::DbQuery query(resource);
         const auto edgeNodeId =
             query.cast(query.column("edge_node_id", "l"), ruvia::DbDataType::kText);
         query.select(edgeNodeId)
@@ -998,12 +1065,28 @@ class ProtocolService {
             .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNotNull, query.column("edge_node_id", "l")))
             .distinct()
             .orderBy(edgeNodeId);
-        const auto rows = co_await c.db().query(query);
+        return query;
+    }
+
+    static ruvia::Task<void> requireDerivedSupport(ruvia::DbTransaction& transaction, std::pmr::memory_resource* resource, std::string_view configId) {
+        const auto rows = co_await transaction.query(edgeNodeReferences(resource, configId));
         for (const auto& row : rows) {
             const auto nodeId = row[0].value().value_or(std::string_view{});
-            if (nodeId.empty()) {
-                continue;
-            }
+            ruvia::DbFindOptions nodeOptions;
+            nodeOptions.where = service::edge::EdgeNodeEntity::column<"id">() == nodeId;
+            const auto node = co_await transaction.template getRepository<service::edge::EdgeNodeEntity>().findOne(nodeOptions);
+            const auto capability = node ? ruvia::JsonValue::parse(node->template get<"capability">()) : std::optional<ruvia::JsonValue>{};
+            const auto supported = capability ? capability->template get<ruvia::Bool>("derivedPoints") : std::optional<ruvia::Bool>{};
+            if (!supported || !static_cast<bool>(*supported)) service::common::fail(16009, "关联边缘节点尚不支持派生点，请先升级固件", 409);
+        }
+    }
+
+    template <typename Context>
+    static ruvia::Task<void> syncEdgeNodes(Context& c, std::string_view configId) {
+        const auto rows = co_await c.db().query(edgeNodeReferences(c.pool(), configId));
+        for (const auto& row : rows) {
+            const auto nodeId = row[0].value().value_or(std::string_view{});
+            if (nodeId.empty()) continue;
             try {
                 (void)co_await service::edge::EdgeService::queueSnapshot(c, nodeId, c.userId);
             } catch (const std::exception& error) {

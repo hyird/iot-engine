@@ -3,6 +3,7 @@
 #include "service/common/http.h"
 
 #include "service/common/uuid.h"
+#include "service/common/derived_point.h"
 
 #include <optional>
 #include <string>
@@ -11,6 +12,26 @@
 #include <ruvia/web/ModelObject.h>
 
 namespace service::protocol {
+
+RUVIA_REQUEST_MODEL(ExpressionTestInput,
+    RUVIA_REQUIRED_FIELD(alias, ruvia::String, RUVIA_MIN(1, "变量名不能为空"), RUVIA_MAX(32, "变量名过长")),
+    RUVIA_REQUIRED_FIELD(value, ruvia::Double));
+RUVIA_REQUEST_MODEL(ExpressionTestUnitRule,
+    RUVIA_REQUIRED_FIELD(condition, ruvia::String, RUVIA_MIN(1, "单位条件不能为空"), RUVIA_MAX(512, "单位条件过长")),
+    RUVIA_REQUIRED_FIELD(unit, ruvia::String, RUVIA_MAX(32, "单位过长")));
+RUVIA_REQUEST_MODEL(ExpressionTestBody,
+    RUVIA_REQUIRED_FIELD(expression, ruvia::String, RUVIA_MIN(1, "公式不能为空"), RUVIA_MAX(512, "公式过长")),
+    RUVIA_REQUIRED_FIELD(inputs, ruvia::Array<ExpressionTestInput>, RUVIA_MAX(16, "最多 16 个变量")),
+    RUVIA_REQUIRED_FIELD(unit, ruvia::String, RUVIA_MAX(32, "单位过长")),
+    RUVIA_REQUIRED_FIELD(unitRules, ruvia::Array<ExpressionTestUnitRule>, RUVIA_MAX(8, "最多 8 条单位条件")));
+RUVIA_RESPONSE_MODEL(ExpressionTestResult,
+    RUVIA_REQUIRED_FIELD(value, ruvia::Double),
+    RUVIA_REQUIRED_FIELD(unit, ruvia::String),
+    RUVIA_REQUIRED_FIELD(matchedRule, ruvia::Int64));
+RUVIA_RESPONSE_MODEL(ExpressionTestResponse,
+    RUVIA_REQUIRED_FIELD(code, ruvia::Int64),
+    RUVIA_REQUIRED_FIELD(message, ruvia::String),
+    RUVIA_REQUIRED_FIELD(data, ExpressionTestResult));
 
 // Configuration JSON stays exact until PostgreSQL jsonb normalization. Request
 // fields have explicit types; an omitted remark differs from clearing it.

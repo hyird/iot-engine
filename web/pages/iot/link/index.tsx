@@ -22,7 +22,6 @@ import { useDebounceFn } from '@/hooks/useDebounceFn';
 import { usePermissions } from '@/hooks/usePermission';
 import { formatDateTime } from '@/utils/dateTime';
 import { validateForm } from '@/utils/validation';
-import { useEdgeSelectionList } from '../edge_node/edge_node.service';
 import { saveLinkSchema } from './link.schema';
 import {
     useLinkDebug,
@@ -111,9 +110,6 @@ export function IotLinkPage() {
     const [modalVisible, setModalVisible] = useState(false);
     const [editing, setEditing] = useState<Link.Item | null>(null);
     const [form] = Form.useForm<LinkFormValues>();
-    const selectedExecution = Form.useWatch('execution', form);
-    const selectedTransport = Form.useWatch('transport', form);
-    const { data: nodes = [] } = useEdgeSelectionList(modalVisible);
     const selectedMode = Form.useWatch('mode', form) as Link.Mode | undefined;
     const { modal } = App.useApp();
     const { has } = usePermissions();
@@ -145,14 +141,9 @@ export function IotLinkPage() {
         form.resetFields();
         form.setFieldsValue({
             execution: 'collector',
-            transport: 'serial',
-            baud_rate: 9600,
-            data_bits: 8,
-            stop_bits: 1,
-            parity: 'none',
             status: 'enabled',
             mode: 'TCP Client',
-            protocol: 'SL651',
+            protocol: 'Modbus',
             ip: '',
             port: 0,
             targets: [createTarget()],
@@ -172,8 +163,7 @@ export function IotLinkPage() {
         setEditing(record);
         form.setFieldsValue({
             ...record.endpoint,
-            execution: record.execution,
-            edge_node_id: record.edge_node_id,
+            execution: 'collector',
             id: record.id,
             name: record.name,
             mode: record.endpoint.mode || 'TCP Client',
@@ -195,36 +185,16 @@ export function IotLinkPage() {
         });
     const onFinish = (values: LinkFormValues) => {
         const payload: Link.SaveDto = {
-            execution: values.execution,
-            edge_node_id: values.edge_node_id,
+            execution: 'collector',
             name: values.name,
             protocol: values.protocol,
             status: values.status,
             endpoint: {
-                transport: values.transport,
-                interface: values.interface,
-                baud_rate: values.baud_rate,
-                data_bits: values.data_bits,
-                stop_bits: values.stop_bits,
-                parity: values.parity,
-                rs485: values.rs485,
+                transport: 'tcp',
                 mode: values.mode,
-                ip:
-                    values.execution === 'edge'
-                        ? (values.ip ?? '')
-                        : values.mode === 'TCP Server'
-                          ? '0.0.0.0'
-                          : '',
-                port:
-                    values.execution === 'edge'
-                        ? (values.port ?? 0)
-                        : values.mode === 'TCP Server'
-                          ? values.port
-                          : 0,
-                targets:
-                    values.execution !== 'edge' && values.mode === 'TCP Client'
-                        ? values.targets
-                        : [],
+                ip: values.mode === 'TCP Server' ? '0.0.0.0' : '',
+                port: values.mode === 'TCP Server' ? values.port : 0,
+                targets: values.mode === 'TCP Client' ? values.targets : [],
             },
         };
         const validated = validateForm(form, saveLinkSchema, payload);
@@ -291,7 +261,7 @@ export function IotLinkPage() {
             title: '连接状态',
             key: 'conn_status',
             render: (_, record) => {
-                if (record.execution === 'edge') return <Tag>由边缘节点管理</Tag>;
+                if (record.execution === 'edge') return <Tag>由设备配置</Tag>;
                 const runtime = record.runtime;
                 const state = runtime?.state ?? 'stopped';
                 const display = connectionLabels[state] ?? connectionLabels.stopped;
@@ -374,7 +344,8 @@ export function IotLinkPage() {
             fixed: 'right',
             render: (_, record) => (
                 <Space>
-                    {canEdit && (
+                    {record.execution === 'edge' && <Tag>由设备配置，只读</Tag>}
+                    {canEdit && record.execution !== 'edge' && (
                         <LinkDebug
                             item={record}
                             params={listParams}
@@ -383,12 +354,12 @@ export function IotLinkPage() {
                             onClose={() => setDebugLinkId(undefined)}
                         />
                     )}
-                    {canEdit && (
+                    {canEdit && record.execution !== 'edge' && (
                         <Button type="link" onClick={() => openEditModal(record)}>
                             编辑
                         </Button>
                     )}
-                    {canDelete && (
+                    {canDelete && record.execution !== 'edge' && (
                         <Button type="link" danger onClick={() => onDelete(record)}>
                             删除
                         </Button>
@@ -400,7 +371,7 @@ export function IotLinkPage() {
     const modes = linkEnums?.modes ?? ['TCP Server', 'TCP Client'];
     const protocols = linkEnums?.protocols ?? ['SL651', 'Modbus', 'S7', 'MC', 'FINS', 'DLT645'];
     const availableProtocols =
-        selectedExecution !== 'edge' && selectedMode === 'TCP Client'
+        selectedMode === 'TCP Client'
             ? protocols.filter((protocol) => protocol !== 'SL651')
             : protocols;
     return (
@@ -472,106 +443,9 @@ export function IotLinkPage() {
                     >
                         <Input placeholder="链路名称" />
                     </Form.Item>
-                    <Form.Item name="execution" label="采集位置" rules={[{ required: true }]}>
-                        <Select
-                            disabled={!!editing}
-                            options={[
-                                { value: 'collector', label: '平台采集' },
-                                { value: 'edge', label: '边缘节点' },
-                            ]}
-                        />
-                    </Form.Item>
-                    {selectedExecution === 'edge' && (
-                        <>
-                            <Form.Item
-                                name="edge_node_id"
-                                label="边缘节点"
-                                rules={[{ required: true }]}
-                            >
-                                <Select
-                                    showSearch
-                                    optionFilterProp="label"
-                                    options={nodes.map((n) => ({
-                                        value: n.id,
-                                        label: n.name || n.imei,
-                                    }))}
-                                />
-                            </Form.Item>
-                            <Form.Item
-                                name="transport"
-                                label="传输类型"
-                                rules={[{ required: true }]}
-                            >
-                                <Select
-                                    options={[
-                                        { value: 'serial', label: '串口' },
-                                        { value: 'tcp', label: 'TCP' },
-                                    ]}
-                                />
-                            </Form.Item>
-                            <Form.Item
-                                name="interface"
-                                label="节点接口"
-                                rules={[{ required: true }]}
-                            >
-                                <Input
-                                    placeholder={
-                                        selectedTransport === 'serial' ? '/dev/ttyS1' : 'br-lan'
-                                    }
-                                />
-                            </Form.Item>
-                            {selectedTransport === 'serial' ? (
-                                <>
-                                    <Form.Item name="baud_rate" label="波特率">
-                                        <InputNumber min={300} max={4000000} />
-                                    </Form.Item>
-                                    <Form.Item name="data_bits" label="数据位">
-                                        <InputNumber min={5} max={8} />
-                                    </Form.Item>
-                                    <Form.Item name="stop_bits" label="停止位">
-                                        <InputNumber min={1} max={2} />
-                                    </Form.Item>
-                                    <Form.Item name="parity" label="校验">
-                                        <Select
-                                            options={['none', 'odd', 'even'].map((value) => ({
-                                                value,
-                                                label: value,
-                                            }))}
-                                        />
-                                    </Form.Item>
-                                    <Form.Item name="rs485" label="RS485">
-                                        <Select
-                                            options={[
-                                                { value: true, label: '启用' },
-                                                { value: false, label: '停用' },
-                                            ]}
-                                        />
-                                    </Form.Item>
-                                </>
-                            ) : (
-                                <>
-                                    <Form.Item
-                                        name="ip"
-                                        label="IP 地址"
-                                        rules={[{ required: true }]}
-                                    >
-                                        <Input />
-                                    </Form.Item>
-                                    <Form.Item
-                                        name="port"
-                                        label="端口"
-                                        rules={[{ required: true }]}
-                                    >
-                                        <InputNumber min={1} max={65535} />
-                                    </Form.Item>
-                                </>
-                            )}
-                        </>
-                    )}
                     <Form.Item
                         label="模式"
                         name="mode"
-                        hidden={selectedExecution === 'edge' && selectedTransport === 'serial'}
                         rules={[{ required: true, message: '请选择模式' }]}
                         extra={editing ? '链路创建后模式不可修改' : undefined}
                     >
@@ -592,7 +466,7 @@ export function IotLinkPage() {
                             options={availableProtocols.map((value) => ({ value, label: value }))}
                         />
                     </Form.Item>
-                    {selectedExecution !== 'edge' && (
+                    {
                         <Form.Item
                             noStyle
                             shouldUpdate={(previous, next) => previous.mode !== next.mode}
@@ -739,7 +613,7 @@ export function IotLinkPage() {
                                 )
                             }
                         </Form.Item>
-                    )}
+                    }
                     <Form.Item
                         label="状态"
                         name="status"

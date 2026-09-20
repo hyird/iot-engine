@@ -15,6 +15,12 @@ std::filesystem::path productDataDirectory() {
     std::filesystem::path result(value); CoTaskMemFree(value);
     return result / L"IotEngineVpn";
 }
+std::filesystem::path productInstallRoot() {
+    PWSTR value = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_ProgramFiles, 0, nullptr, &value))) throw std::runtime_error("Cannot locate Program Files");
+    std::filesystem::path result(value); CoTaskMemFree(value);
+    return result / L"iot-egine";
+}
 std::filesystem::path moduleDirectory() {
     std::wstring path(32768, L'\0');
     const DWORD count = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));

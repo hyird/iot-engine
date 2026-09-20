@@ -23,6 +23,7 @@ import {
     deleteEnrollment,
     edgeDebugConnection,
     getEdgeGroups,
+    getEdgeDetail,
     getEdgeInventory,
     getEdgeVpnState,
     getLogs,
@@ -500,6 +501,14 @@ export const useEdgeInventory = (enabled = true, scope?: Edge.EventScope) =>
         queryFn: () => getEdgeInventory(scope),
         enabled,
         placeholderData: keepPreviousData,
+    });
+export const useEdgeConfigurationDetail = (nodeId?: string) =>
+    useQuery({
+        queryKey: [...edgeQueryKeys.detail(nodeId ?? ''), 'configuration'],
+        queryFn: ({ signal }) => getEdgeDetail(nodeId ?? '', signal),
+        enabled: Boolean(nodeId),
+        refetchInterval: false,
+        refetchOnWindowFocus: false,
     });
 export const useEdgeDetail = (scope: Edge.EventScope) =>
     useSnapshotQuery({

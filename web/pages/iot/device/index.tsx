@@ -18,7 +18,9 @@ import {
     Button,
     Card,
     Checkbox,
+    ConfigProvider,
     DatePicker,
+    Divider,
     Drawer,
     Dropdown,
     Empty,
@@ -30,6 +32,7 @@ import {
     Pagination,
     Popconfirm,
     Popover,
+    Radio,
     Result,
     Select,
     Skeleton,
@@ -56,6 +59,7 @@ import { PacketDebugPanel } from '@/components/PacketDebugPanel';
 import { PageContainer } from '@/components/PageContainer';
 import { usePermissions } from '@/hooks/usePermission';
 import { formatDateTime } from '@/utils/dateTime';
+import { useEdgeConfigurationDetail, useEdgeSelectionList } from '../edge_node/edge_node.service';
 import { useLinkOptions } from '../link/link.service';
 import type { Link } from '../link/link.types';
 import { useProtocolConfigOptions } from '../protocol/protocol.service';
@@ -82,7 +86,7 @@ import {
     useReplaceDeviceGroupShares,
     useReplaceDeviceShares,
 } from './device.service';
-import type { Device, DeviceGroup, EdgeStatus } from './device.types';
+import type { Device, DeviceGroup, EdgeConnection, EdgeStatus } from './device.types';
 
 interface CommandElement {
     _key: string;
@@ -331,9 +335,11 @@ const CommandPopover = ({ device, func, onClose, pending, onSubmit }: CommandPop
     );
 };
 
-export type DeviceFormValues = Device.CreateDto & {
-    id?: string;
-};
+export type DeviceFormValues = Device.CreateDto &
+    EdgeConnection & {
+        id?: string;
+        edge_protocol?: Link.Protocol;
+    };
 interface Props {
     open: boolean;
     editing: Device.Overview | null;
@@ -353,9 +359,40 @@ export function DeviceFormModal({
     onFinish,
 }: Props) {
     const [form] = Form.useForm<DeviceFormValues>();
+    const [source, setSource] = useState<'collector' | 'edge'>('collector');
+    const [nodeId, setNodeId] = useState<string>();
+    const { data: node } = useEdgeConfigurationDetail(
+        open && source === 'edge' ? nodeId : undefined
+    );
+    const edgeProtocol = Form.useWatch('edge_protocol', form);
+    const edgeTransport = Form.useWatch('edge_transport', form);
+    const edgeMode = Form.useWatch('edge_mode', form);
+    const { data: nodes = [], isLoading: loadingNodes } = useEdgeSelectionList(
+        open && source === 'edge'
+    );
+    const clearChannel = () =>
+        form.setFieldsValue({
+            link_id: undefined,
+            protocol_config_id: undefined,
+            target_id: undefined,
+        });
+    const availableLinks = linkOptions.filter((link) => link.execution !== 'edge');
+    const nodeOptions = nodes.map((node) => ({ value: node.id, label: node.name || node.imei }));
+    if (editing?.edge_node_id && !nodeOptions.some((node) => node.value === editing.edge_node_id)) {
+        nodeOptions.push({
+            value: editing.edge_node_id,
+            label: editing.edge_node_name || editing.edge_node_imei || editing.edge_node_id,
+        });
+    }
     const linkId = Form.useWatch('link_id', form);
     const channel = linkOptions.find((value) => value.id === linkId);
-    const protocol = channel?.protocol;
+    const protocol = source === 'edge' ? edgeProtocol : channel?.protocol;
+    const linkMode = source === 'edge' ? edgeMode : channel?.endpoint.mode;
+    const showHeartbeat =
+        (source === 'collector' || edgeTransport === 'tcp') &&
+        linkMode === 'TCP Server' &&
+        protocol !== 'SL651';
+    const showRegistration = source === 'collector' && showHeartbeat;
     const { data: models } = useProtocolConfigOptions(protocol ?? 'Modbus', {
         enabled: open && !!protocol,
     });
@@ -369,17 +406,80 @@ export function DeviceFormModal({
             { value: node.id, label: node.name },
             ...flatten(node.children ?? []),
         ]);
+    const protocolsForConnection = (transport?: string, mode?: string): Link.Protocol[] =>
+        transport === 'serial'
+            ? ['Modbus', 'DLT645']
+            : mode === 'TCP Server'
+              ? ['Modbus', 'SL651', 'MC', 'FINS', 'DLT645']
+              : ['Modbus', 'S7', 'MC', 'FINS', 'DLT645'];
+    const changeConnection = (values: Partial<DeviceFormValues>) => {
+        form.setFieldsValue(values);
+        const transport = values.edge_transport ?? edgeTransport;
+        const mode = values.edge_mode ?? edgeMode;
+        if (edgeProtocol && !protocolsForConnection(transport, mode).includes(edgeProtocol)) {
+            form.setFieldValue('edge_protocol', undefined);
+            clearChannel();
+        }
+    };
+    const protocolField = (
+        <Form.Item name="edge_protocol" label="协议" rules={[{ required: true }]}>
+            <Select
+                placeholder="请选择协议"
+                disabled={!edgeTransport || (edgeTransport === 'tcp' && !edgeMode)}
+                options={protocolsForConnection(edgeTransport, edgeMode).map((value) => ({
+                    value,
+                    label: value,
+                }))}
+                onChange={clearChannel}
+            />
+        </Form.Item>
+    );
     const packet = (name: 'heartbeat' | 'registration', label: string) => (
-        <>
-            <Form.Item label={label} name={[name, 'mode']}>
+        <div className="col-span-full grid grid-cols-1 gap-x-4 sm:grid-cols-[140px_minmax(0,1fr)]">
+            <Form.Item label={`${label}模式`} name={[name, 'mode']}>
                 <Select
-                    options={['OFF', 'HEX', 'ASCII'].map((value) => ({ value, label: value }))}
+                    options={[
+                        { value: 'OFF', label: '关闭' },
+                        { value: 'HEX', label: 'HEX' },
+                        { value: 'ASCII', label: 'ASCII' },
+                    ]}
                 />
             </Form.Item>
-            <Form.Item label={`${label}内容`} name={[name, 'content']}>
-                <Input />
+            <Form.Item noStyle dependencies={[[name, 'mode']]}>
+                {({ getFieldValue }) => {
+                    const mode = getFieldValue([name, 'mode']);
+                    if (!mode || mode === 'OFF') return null;
+                    return (
+                        <Form.Item
+                            label={`${label}内容`}
+                            name={[name, 'content']}
+                            rules={[
+                                { required: true, message: `请输入${label}内容` },
+                                {
+                                    validator: async (_, value: string) => {
+                                        if (
+                                            mode === 'HEX' &&
+                                            value &&
+                                            !/^(?:[0-9a-f]{2})+$/i.test(value.replace(/\s/g, ''))
+                                        )
+                                            throw new Error(
+                                                'HEX 内容必须由完整字节组成，例如 AA BB CC DD'
+                                            );
+                                    },
+                                },
+                            ]}
+                            extra={
+                                mode === 'HEX'
+                                    ? '十六进制字符串，空格会自动去除'
+                                    : 'ASCII 字符串，支持 \\r \\n 转义'
+                            }
+                        >
+                            <Input placeholder={mode === 'HEX' ? 'AA BB CC DD' : 'HELLO\\r\\n'} />
+                        </Form.Item>
+                    );
+                }}
             </Form.Item>
-        </>
+        </div>
     );
     return (
         <FormModal
@@ -389,16 +489,29 @@ export function DeviceFormModal({
             onOk={() => form.submit()}
             confirmLoading={loading}
             destroyOnHidden
-            width={640}
             afterOpenChange={(visible) => {
                 if (visible) {
+                    const currentLink = linkOptions.find((link) => link.id === editing?.link_id);
+                    setSource(
+                        currentLink?.execution === 'edge' || editing?.edge_node_id
+                            ? 'edge'
+                            : 'collector'
+                    );
+                    setNodeId(currentLink?.edge_node_id ?? editing?.edge_node_id);
                     form.resetFields();
                     form.setFieldsValue(
                         editing
                             ? {
                                   ...editing,
-                                  heartbeat: editing.heartbeat ?? { mode: 'OFF' },
-                                  registration: editing.registration ?? { mode: 'OFF' },
+                                  edge_protocol: editing.protocol_type,
+                                  heartbeat: {
+                                      ...editing.heartbeat,
+                                      mode: editing.heartbeat?.mode ?? 'OFF',
+                                  },
+                                  registration: {
+                                      ...editing.registration,
+                                      mode: editing.registration?.mode ?? 'OFF',
+                                  },
                               }
                             : {
                                   status: 'enabled',
@@ -406,6 +519,12 @@ export function DeviceFormModal({
                                   remote_control: true,
                                   timezone: '+08:00',
                                   slave_id: 1,
+                                  edge_transport: 'tcp',
+                                  edge_mode: 'TCP Client',
+                                  serial_baud_rate: 9600,
+                                  serial_data_bits: 8,
+                                  serial_stop_bits: 1,
+                                  serial_parity: 'none',
                                   heartbeat: { mode: 'OFF' },
                                   registration: { mode: 'OFF' },
                               }
@@ -413,133 +532,382 @@ export function DeviceFormModal({
                 }
             }}
         >
-            <Form
-                form={form}
-                layout="vertical"
-                onFinish={(values) => {
-                    if (channel?.execution === 'edge') {
-                        values.registration = { mode: 'OFF' };
-                        values.heartbeat = { mode: 'OFF' };
-                        if (protocol === 'Modbus')
-                            values.modbus_mode =
-                                channel.endpoint.transport === 'serial' ? 'RTU' : 'TCP';
-                    }
-                    if (protocol === 'SL651')
-                        values.device_code = values.device_code.padStart(10, '0');
-                    if (protocol === 'DLT645')
-                        values.device_code = values.device_code.padStart(12, '0');
-                    onFinish(values);
+            <ConfigProvider
+                theme={{
+                    components: { Form: { itemMarginBottom: 12, verticalLabelPadding: '0 0 4px' } },
                 }}
             >
-                <Form.Item name="name" label="设备名称" rules={[{ required: true }]}>
-                    <Input maxLength={100} />
-                </Form.Item>
-                <Form.Item
-                    name="device_code"
-                    label={protocol === 'DLT645' ? '电表地址（12 位数字）' : '设备编码'}
-                    rules={[
-                        { required: true },
-                        ...(protocol === 'DLT645'
-                            ? [
-                                  {
-                                      pattern: /^\d{1,12}$/,
-                                      message: '表地址须为 1 至 12 位数字，保存时补零',
-                                  },
-                              ]
-                            : []),
-                    ]}
-                >
-                    <Input maxLength={100} />
-                </Form.Item>
-                <Form.Item
-                    name="link_id"
-                    label="物理通道"
-                    rules={[{ required: true, message: '请先在链路管理中创建通道' }]}
-                >
-                    <Select
-                        showSearch
-                        optionFilterProp="label"
-                        options={linkOptions.map((c) => ({
-                            value: c.id,
-                            label: `${c.name} · ${c.execution === 'edge' ? '边缘' : '平台'} · ${c.protocol}`,
-                        }))}
-                        onChange={() =>
-                            form.setFieldsValue({
-                                protocol_config_id: undefined,
-                                target_id: undefined,
-                            })
+                <Form
+                    className="grid grid-cols-1 gap-x-4 sm:grid-cols-2"
+                    form={form}
+                    layout="vertical"
+                    onFinish={(values) => {
+                        if (source === 'edge') {
+                            if (!edgeProtocol || !nodeId) return;
+                            values.link_id = undefined;
+                            values.target_id = undefined;
+                            values.registration = { mode: 'OFF' };
+                            values.edge_connection = {
+                                name: values.name,
+                                edge_node_id: nodeId,
+                                protocol: edgeProtocol,
+                                status: 'enabled',
+                                endpoint: {
+                                    transport: edgeTransport,
+                                    interface: values.edge_interface,
+                                    mode: edgeMode ?? 'TCP Client',
+                                    ip: values.edge_ip ?? '',
+                                    port: values.edge_port ?? 0,
+                                    targets: [],
+                                    baud_rate: values.serial_baud_rate,
+                                    data_bits: values.serial_data_bits,
+                                    stop_bits: values.serial_stop_bits,
+                                    parity: values.serial_parity,
+                                },
+                            };
+                            if (protocol === 'Modbus')
+                                values.modbus_mode = edgeTransport === 'serial' ? 'RTU' : 'TCP';
+                        } else values.edge_connection = undefined;
+                        if (!showHeartbeat) values.heartbeat = { mode: 'OFF' };
+                        if (!showRegistration) values.registration = { mode: 'OFF' };
+                        for (const packet of [values.heartbeat, values.registration]) {
+                            if (packet?.mode === 'HEX' && packet.content)
+                                packet.content = packet.content.replace(/\s/g, '');
                         }
-                    />
-                </Form.Item>
-                {channel?.execution !== 'edge' && channel?.endpoint.mode === 'TCP Client' && (
-                    <Form.Item name="target_id" label="目标地址" rules={[{ required: true }]}>
-                        <Select
-                            options={channel.endpoint.targets.map((t) => ({
-                                value: t.id,
-                                label: `${t.name} · ${t.ip}:${t.port}`,
-                            }))}
+                        if (protocol === 'SL651')
+                            values.device_code = values.device_code.padStart(10, '0');
+                        if (protocol === 'DLT645')
+                            values.device_code = values.device_code.padStart(12, '0');
+                        onFinish(values);
+                    }}
+                >
+                    <Divider
+                        className="col-span-full"
+                        style={{ margin: '8px 0 12px' }}
+                        titlePlacement="start"
+                    >
+                        基本信息
+                    </Divider>
+                    <Form.Item name="name" label="设备名称" rules={[{ required: true }]}>
+                        <Input maxLength={100} />
+                    </Form.Item>
+                    <Form.Item
+                        name="device_code"
+                        label={protocol === 'DLT645' ? '电表地址（12 位数字）' : '设备编码'}
+                        rules={[
+                            { required: true },
+                            ...(protocol === 'DLT645'
+                                ? [
+                                      {
+                                          pattern: /^\d{1,12}$/,
+                                          message: '表地址须为 1 至 12 位数字，保存时补零',
+                                      },
+                                  ]
+                                : []),
+                        ]}
+                    >
+                        <Input maxLength={100} />
+                    </Form.Item>
+                    <Divider
+                        className="col-span-full"
+                        style={{ margin: '8px 0 12px' }}
+                        titlePlacement="start"
+                    >
+                        接入配置
+                    </Divider>
+                    <Form.Item label="接入方式">
+                        <Radio.Group
+                            aria-label="接入方式"
+                            optionType="button"
+                            value={source}
+                            options={[
+                                { value: 'collector', label: '本地链路' },
+                                { value: 'edge', label: '边缘节点' },
+                            ]}
+                            onChange={(event) => {
+                                setSource(event.target.value);
+                                setNodeId(undefined);
+                                form.setFieldValue('edge_node_id', undefined);
+                                clearChannel();
+                            }}
                         />
                     </Form.Item>
-                )}
-                <Form.Item name="protocol_config_id" label="设备类型" rules={[{ required: true }]}>
-                    <Select
-                        disabled={!protocol}
-                        options={models?.list.map((m) => ({ value: m.id, label: m.name }))}
-                    />
-                </Form.Item>
-                {protocol === 'Modbus' && (
-                    <>
-                        <Form.Item name="slave_id" label="从站地址" rules={[{ required: true }]}>
-                            <InputNumber min={1} max={247} />
+                    {source === 'edge' && (
+                        <Form.Item
+                            name="edge_node_id"
+                            label="边缘节点"
+                            rules={[{ required: true, message: '请选择边缘节点' }]}
+                        >
+                            <Select
+                                aria-label="边缘节点"
+                                value={nodeId}
+                                showSearch
+                                optionFilterProp="label"
+                                placeholder="请选择边缘节点"
+                                loading={loadingNodes}
+                                options={nodeOptions}
+                                onChange={(value) => {
+                                    setNodeId(value);
+                                    form.setFieldValue('edge_interface', undefined);
+                                    clearChannel();
+                                }}
+                            />
                         </Form.Item>
-                        {channel?.execution !== 'edge' && (
+                    )}
+                    {source === 'edge' && (
+                        <>
                             <Form.Item
-                                name="modbus_mode"
-                                label="Modbus 模式"
+                                name="edge_transport"
+                                label="传输方式"
                                 rules={[{ required: true }]}
                             >
                                 <Select
-                                    options={['TCP', 'RTU'].map((value) => ({
+                                    options={['tcp', 'serial'].map((value) => ({
                                         value,
-                                        label: value,
+                                        label: value === 'tcp' ? 'TCP' : '串口',
                                     }))}
+                                    onChange={(value) =>
+                                        changeConnection({
+                                            edge_transport: value,
+                                            edge_interface: undefined,
+                                            edge_mode: edgeMode ?? 'TCP Client',
+                                            serial_baud_rate:
+                                                form.getFieldValue('serial_baud_rate') ?? 9600,
+                                            serial_data_bits:
+                                                form.getFieldValue('serial_data_bits') ?? 8,
+                                            serial_stop_bits:
+                                                form.getFieldValue('serial_stop_bits') ?? 1,
+                                            serial_parity:
+                                                form.getFieldValue('serial_parity') ?? 'none',
+                                        })
+                                    }
                                 />
                             </Form.Item>
-                        )}
-                    </>
-                )}
-                {channel?.execution !== 'edge' &&
-                    channel?.endpoint.mode === 'TCP Server' &&
-                    protocol !== 'SL651' && (
-                        <>
-                            {packet('heartbeat', '心跳包')}
-                            {packet('registration', '注册包')}
+                            <Form.Item
+                                name="edge_interface"
+                                label={edgeTransport === 'serial' ? '串口' : '网口'}
+                                rules={[{ required: true }]}
+                            >
+                                <Select
+                                    showSearch
+                                    options={
+                                        edgeTransport === 'serial'
+                                            ? (node?.serialPorts ?? []).map((port) => ({
+                                                  value: port.path,
+                                                  label: port.path,
+                                              }))
+                                            : (node?.interfaces ?? [])
+                                                  .filter((port) => port.ipv4)
+                                                  .map((port) => ({
+                                                      value: port.name,
+                                                      label: `${port.name} · ${port.ipv4}`,
+                                                  }))
+                                    }
+                                    onChange={(value) => {
+                                        if (edgeMode === 'TCP Server')
+                                            form.setFieldValue(
+                                                'edge_ip',
+                                                node?.interfaces?.find(
+                                                    (port) => port.name === value
+                                                )?.ipv4
+                                            );
+                                    }}
+                                />
+                            </Form.Item>
+                            {edgeTransport === 'tcp' ? (
+                                <>
+                                    <Form.Item
+                                        name="edge_mode"
+                                        label="TCP 模式"
+                                        rules={[{ required: true }]}
+                                    >
+                                        <Select
+                                            options={['TCP Client', 'TCP Server'].map((value) => ({
+                                                value,
+                                                label: value,
+                                            }))}
+                                            onChange={(value) =>
+                                                changeConnection({ edge_mode: value })
+                                            }
+                                        />
+                                    </Form.Item>
+                                    {protocolField}
+                                    <Form.Item
+                                        name="edge_ip"
+                                        label={edgeMode === 'TCP Server' ? '监听 IP' : '目标 IP'}
+                                        rules={[{ required: true }]}
+                                    >
+                                        <Input />
+                                    </Form.Item>
+                                    <Form.Item
+                                        name="edge_port"
+                                        label={edgeMode === 'TCP Server' ? '监听端口' : '目标端口'}
+                                        rules={[{ required: true }]}
+                                    >
+                                        <InputNumber className="w-full" min={1} max={65535} />
+                                    </Form.Item>
+                                </>
+                            ) : (
+                                <>
+                                    {protocolField}
+                                    <Form.Item
+                                        name="serial_baud_rate"
+                                        label="波特率"
+                                        rules={[{ required: true }]}
+                                    >
+                                        <InputNumber className="w-full" min={300} max={4000000} />
+                                    </Form.Item>
+                                    <Form.Item name="serial_data_bits" label="数据位">
+                                        <Select
+                                            options={[5, 6, 7, 8].map((value) => ({ value }))}
+                                        />
+                                    </Form.Item>
+                                    <Form.Item name="serial_stop_bits" label="停止位">
+                                        <Select options={[1, 2].map((value) => ({ value }))} />
+                                    </Form.Item>
+                                    <Form.Item name="serial_parity" label="校验位">
+                                        <Select
+                                            options={[
+                                                { value: 'none', label: '无' },
+                                                { value: 'even', label: '偶校验' },
+                                                { value: 'odd', label: '奇校验' },
+                                            ]}
+                                        />
+                                    </Form.Item>
+                                </>
+                            )}
                         </>
                     )}
-                <Form.Item name="group_id" label="设备分组">
-                    <Select allowClear options={flatten(groups)} />
-                </Form.Item>
-                <Form.Item name="status" label="状态">
-                    <Select
-                        options={[
-                            { value: 'enabled', label: '启用' },
-                            { value: 'disabled', label: '停用' },
-                        ]}
-                    />
-                </Form.Item>
-                <Form.Item name="online_timeout" label="离线超时（秒）">
-                    <InputNumber min={1} max={86400} />
-                </Form.Item>
-                <Form.Item name="remote_control" label="允许远控" valuePropName="checked">
-                    <Switch />
-                </Form.Item>
-                <Form.Item name="timezone" label="设备时区">
-                    <Input placeholder="+08:00" />
-                </Form.Item>
-                <Form.Item name="remark" label="备注">
-                    <Input.TextArea />
-                </Form.Item>
-            </Form>
+                    {source === 'collector' && (
+                        <Form.Item
+                            name="link_id"
+                            label="本地链路"
+                            rules={[
+                                {
+                                    required: true,
+                                    message: '请选择链路；没有可用链路时请先在链路管理中创建',
+                                },
+                            ]}
+                        >
+                            <Select
+                                showSearch
+                                optionFilterProp="label"
+                                placeholder="请选择链路"
+                                options={availableLinks.map((c) => ({
+                                    value: c.id,
+                                    label: `${c.name} · ${c.protocol}`,
+                                }))}
+                                onChange={() =>
+                                    form.setFieldsValue({
+                                        protocol_config_id: undefined,
+                                        target_id: undefined,
+                                    })
+                                }
+                            />
+                        </Form.Item>
+                    )}
+                    {source === 'collector' && channel?.endpoint.mode === 'TCP Client' && (
+                        <Form.Item name="target_id" label="目标地址" rules={[{ required: true }]}>
+                            <Select
+                                options={channel.endpoint.targets.map((t) => ({
+                                    value: t.id,
+                                    label: `${t.name} · ${t.ip}:${t.port}`,
+                                }))}
+                            />
+                        </Form.Item>
+                    )}
+                    <Divider
+                        className="col-span-full"
+                        style={{ margin: '8px 0 12px' }}
+                        titlePlacement="start"
+                    >
+                        采集配置
+                    </Divider>
+                    <Form.Item
+                        name="protocol_config_id"
+                        label="设备类型"
+                        rules={[{ required: true }]}
+                    >
+                        <Select
+                            disabled={!protocol}
+                            options={models?.list.map((m) => ({ value: m.id, label: m.name }))}
+                        />
+                    </Form.Item>
+                    {protocol === 'Modbus' && (
+                        <>
+                            <Form.Item
+                                name="slave_id"
+                                label="从站地址"
+                                rules={[{ required: true }]}
+                            >
+                                <InputNumber className="w-full" min={1} max={247} />
+                            </Form.Item>
+                            {source === 'collector' && (
+                                <Form.Item
+                                    name="modbus_mode"
+                                    label="Modbus 模式"
+                                    rules={[{ required: true }]}
+                                >
+                                    <Select
+                                        options={['TCP', 'RTU'].map((value) => ({
+                                            value,
+                                            label: value,
+                                        }))}
+                                    />
+                                </Form.Item>
+                            )}
+                        </>
+                    )}
+                    {(showRegistration || showHeartbeat) && (
+                        <Divider
+                            className="col-span-full"
+                            style={{ margin: '8px 0 12px' }}
+                            titlePlacement="start"
+                        >
+                            连接识别
+                        </Divider>
+                    )}
+                    {showRegistration && packet('registration', '注册包')}
+                    {showHeartbeat && packet('heartbeat', '心跳包')}
+                    <Divider
+                        className="col-span-full"
+                        style={{ margin: '8px 0 12px' }}
+                        titlePlacement="start"
+                    >
+                        运行设置
+                    </Divider>
+                    <Form.Item name="group_id" label="设备分组">
+                        <Select allowClear options={flatten(groups)} />
+                    </Form.Item>
+                    <Form.Item name="status" label="状态">
+                        <Select
+                            options={[
+                                { value: 'enabled', label: '启用' },
+                                { value: 'disabled', label: '停用' },
+                            ]}
+                        />
+                    </Form.Item>
+                    <Form.Item name="online_timeout" label="离线超时（秒）">
+                        <InputNumber className="w-full" min={1} max={86400} />
+                    </Form.Item>
+                    <Form.Item name="remote_control" label="允许远控" valuePropName="checked">
+                        <Switch />
+                    </Form.Item>
+                    <Form.Item name="timezone" label="设备时区">
+                        <Select
+                            showSearch
+                            options={Array.from({ length: 105 }, (_, index) => {
+                                const minutes = index * 15 - 720;
+                                const value = `${minutes >= 0 ? '+' : '-'}${String(Math.floor(Math.abs(minutes) / 60)).padStart(2, '0')}:${String(Math.abs(minutes) % 60).padStart(2, '0')}`;
+                                return { value, label: `UTC${value}` };
+                            })}
+                        />
+                    </Form.Item>
+                    <Form.Item className="col-span-full" name="remark" label="备注">
+                        <Input.TextArea />
+                    </Form.Item>
+                </Form>
+            </ConfigProvider>
         </FormModal>
     );
 }
@@ -1000,12 +1368,14 @@ const formatElementValue = (element: Device.Element) => {
 };
 const buildCardItems = (device: Device.Overview): DeviceCardItem[] => {
     if (device.elements?.length) {
-        return device.elements.map((element, index) => ({
-            key: index,
-            label: element.name,
-            children: formatElementValue(element),
-            group: element.group,
-        }));
+        return device.elements
+            .filter((element) => element.visible !== false)
+            .map((element, index) => ({
+                key: index,
+                label: element.name,
+                children: formatElementValue(element),
+                group: element.group,
+            }));
     }
     const count = device.element_count ?? 0;
     return count > 0 ? [{ key: 'elements', label: '采集要素', children: `${count} 个` }] : [];
@@ -1456,6 +1826,7 @@ const buildHistoryPointColumns = (
     const configuredByKey = new Map<string, HistoryPointColumn>();
     const configuredByName = new Map<string, HistoryPointColumn>();
     device.elements?.forEach((element, index) => {
+        if (element.visible === false) return;
         const label = element.name?.trim();
         const key = element.id?.trim() || label || `configured_${index}`;
         const meta: HistoryPointColumn = {
@@ -1475,6 +1846,12 @@ const buildHistoryPointColumns = (
     let fallbackOrder = device.elements?.length ?? 0;
     for (const record of records) {
         for (const [pointKey, rawPoint] of Object.entries(record.values ?? {})) {
+            if (
+                device.elements?.some(
+                    (element) => element.id === pointKey && element.visible === false
+                )
+            )
+                continue;
             const point = normalizeHistoryPoint(rawPoint, pointKey);
             const label = point.name?.trim();
             const configured =
@@ -1493,7 +1870,7 @@ const buildHistoryPointColumns = (
                     order: fallbackOrder++,
                 }),
                 keys: Array.from(new Set([...(configured?.keys ?? []), pointKey])),
-                unit: configured?.unit ?? point.unit,
+                unit: point.unit ?? configured?.unit,
             });
         }
     }
@@ -2603,7 +2980,6 @@ const DevicePage = () => {
                                     {item.value}
                                     {item.field !== 'total' && (
                                         <span className="text-[13px] font-normal text-gray-400">
-                                            {' '}
                                             / {stats.total}
                                         </span>
                                     )}

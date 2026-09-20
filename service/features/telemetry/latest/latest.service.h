@@ -197,7 +197,7 @@ local observed_at = number_or(ARGV[4], 0)
 local online_until = observed_at + number_or(ARGV[7], 300000)
 local now = number_or(ARGV[5], observed_at)
 local current_report = number_or(redis.call('HGET', runtime_key, 'last_report_at_ms'), -1)
-if observed_at >= current_report then
+if ARGV[6] ~= 'derived' and observed_at >= current_report then
   local deadlines_key = KEYS[1]
   local earliest = redis.call('ZRANGE', deadlines_key, 0, 0, 'WITHSCORES')
   local wake = #earliest == 0 or online_until < number_or(earliest[2], online_until + 1)
@@ -257,6 +257,8 @@ for element_id, point in pairs(payload.values or {}) do
         value = value,
         dataType = data_type,
         unit = unit,
+        visible = point.visible ~= false and previous.visible ~= false,
+        quality = point.quality or 'good',
         scale = scale,
         decimals = decimals,
         group = group,
@@ -583,7 +585,7 @@ ruvia::Task<void> project(Context& context, ProjectionScope scope, const std::ve
         std::vector<ruvia::DbExpression> columns{ query.column(service::telemetry::latest::persistence::DeviceEntity::columnName<"id">(), "d"),
             query.binary(query.column(service::telemetry::latest::persistence::DeviceEntity::columnName<"protocol_params">(), "d"), Op::kJsonGetText, query.value("device_code")),
             query.column(service::telemetry::latest::persistence::DeviceModelEntity::columnName<"protocol">(), "p"), query.column("element"), query.cast(query.value(order), Type::kInteger) };
-        if (protocol == "SL651") {
+        if (protocol == "SL651" && arrayKey == "funcs") {
             query.joinFunction(ruvia::DbJoinType::kCross, entries, {}, "functions",
                 { .lateral = true, .withOrdinality = true, .columns = { { .name = "function" }, { .name = "function_position" } } });
             const auto fieldArray = [&](std::string_view key) {
@@ -600,10 +602,20 @@ ruvia::Task<void> project(Context& context, ProjectionScope scope, const std::ve
             columns.push_back(query.column("position"));
             columns.push_back(query.cast(query.value(0), Type::kBigInt));
         }
+        const auto element = query.column("element");
+        const auto configuration = query.column(service::telemetry::latest::persistence::DeviceModelEntity::columnName<"config">(), "p");
+        const auto visibility = query.binary(query.binary(configuration, Op::kJsonGet, query.value("pointVisibility")), Op::kJsonGet,
+            query.binary(element, Op::kJsonGetText, query.value("id")));
+        columns[3] = query.binary(element, Op::kJsonConcat, query.call("jsonb_build_object", {
+            query.cast(query.value("visible"), Type::kText), query.coalesce({visibility, query.binary(element, Op::kJsonGet, query.value("visible")), query.cast(query.value("true"), Type::kJsonb)})}));
         query.select(columns);
         return query;
     };
     auto configured = configuredProtocol("Modbus", "registers", 1);
+    for (const auto protocol : {"Modbus", "S7", "SL651", "MC", "FINS", "DLT645"})
+        configured.combine(ruvia::DbSetOperation::kUnionAll, configuredProtocol(protocol, "derivedPoints", 5));
+    for (const auto protocol : {"MC", "FINS", "DLT645"})
+        configured.combine(ruvia::DbSetOperation::kUnionAll, configuredProtocol(protocol, "points", 4));
     const auto s7 = configuredProtocol("S7", "areas", 2);
     const auto sl651 = configuredProtocol("SL651", "funcs", 3);
     configured.combine(ruvia::DbSetOperation::kUnionAll, s7).combine(ruvia::DbSetOperation::kUnionAll, sl651);
@@ -634,9 +646,13 @@ ruvia::Task<void> project(Context& context, ProjectionScope scope, const std::ve
     const auto numericDecimals = points.coalesce({ points.caseWhen({ { points.binary(
         points.coalesce({ decimals, points.value("") }), Op::kRegex, points.value("^-?[0-9]{1,18}$")), points.cast(decimals, Type::kBigInt) } }), points.value(-1) });
     const auto missing = points.unary(ruvia::DbUnaryOperator::kIsNull, points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::columnName<"observed_at">(), "point"));
+    const auto storedPoint = points.column(service::telemetry::latest::persistence::DeviceLatestValueEntity::columnName<"value">(), "point");
+    const auto observedUnit = points.coalesce({points.binary(storedPoint, Op::kJsonGetText, points.value("unit")), defaultText("unit", "")});
     const auto json = points.call("jsonb_build_object", {
         points.cast(points.value("id"), ruvia::DbDataType::kText), elementText("id"), points.cast(points.value("name"), ruvia::DbDataType::kText), elementText("name"), points.cast(points.value("value"), ruvia::DbDataType::kText), displayValue,
-        points.cast(points.value("dataType"), ruvia::DbDataType::kText), defaultText("dataType", ""), points.cast(points.value("unit"), ruvia::DbDataType::kText), defaultText("unit", ""),
+        points.cast(points.value("dataType"), ruvia::DbDataType::kText), defaultText("dataType", ""), points.cast(points.value("unit"), ruvia::DbDataType::kText), observedUnit,
+        points.cast(points.value("visible"), Type::kText), points.cast(defaultText("visible", "true"), Type::kBoolean),
+        points.cast(points.value("quality"), Type::kText), points.coalesce({points.binary(storedPoint, Op::kJsonGetText, points.value("quality")), points.value("missing")}),
         points.cast(points.value("scale"), ruvia::DbDataType::kText), numericScale, points.cast(points.value("decimals"), ruvia::DbDataType::kText), numericDecimals,
         points.cast(points.value("group"), ruvia::DbDataType::kText), defaultText("group", ""), points.cast(points.value("encode"), ruvia::DbDataType::kText), defaultText("encode", ""),
         points.cast(points.value("sort"), ruvia::DbDataType::kText), points.column("sort_order", "numbered"), points.cast(points.value("protocol"), ruvia::DbDataType::kText), points.column("protocol", "numbered"),
@@ -646,7 +662,7 @@ ruvia::Task<void> project(Context& context, ProjectionScope scope, const std::ve
     points.with("configured", configured, { .columns = { "device_id", "device_code", "protocol", "element", "protocol_order", "function_order", "element_order" } })
         .with("numbered", numbered)
         .select({ points.cast(points.column("device_id", "numbered"), Type::kText), points.column("device_code", "numbered"), points.column("protocol", "numbered"),
-            elementText("id"), elementText("name"), defaultText("unit", ""), displayValue,
+            elementText("id"), elementText("name"), observedUnit, displayValue,
             points.coalesce({ points.cast(observedAt, Type::kText), points.value("") }),
             points.coalesce({ points.nullIf(elementText("scale"), points.value("")), points.value("1") }),
             points.coalesce({ points.nullIf(decimals, points.value("")), points.value("-1") }),

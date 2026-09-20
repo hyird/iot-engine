@@ -24,6 +24,7 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
     RUVIA_GET("/options", options, ruvia::QueryModel<ProtocolListQuery>);
     RUVIA_GET("/:id", detail, ruvia::PathModel<ProtocolIdParams>);
     RUVIA_POST("/", create);
+    RUVIA_POST("/test-expression", testExpression, ruvia::JsonBody<ExpressionTestBody>);
     RUVIA_PUT("/:id", update, ruvia::PathModel<ProtocolIdParams>);
     RUVIA_DELETE("/:id", remove, ruvia::PathModel<ProtocolIdParams>);
     RUVIA_ROUTES_END
@@ -71,6 +72,13 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
         c.header("Content-Type", "application/json");
         const auto payload = service::live::data(c, data);
         co_return c.body(std::string_view(payload));
+    }
+
+    ruvia::Task<> testExpression(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:protocol:query");
+        const auto result = ProtocolService::testExpression(c.req().validated<ExpressionTestBody>());
+        co_return c.json(service::common::ok<ExpressionTestResponse>(c, result));
     }
 
     ruvia::Task<> create(ruvia::Context& c) {

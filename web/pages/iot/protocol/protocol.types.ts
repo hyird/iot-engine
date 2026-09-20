@@ -44,8 +44,25 @@ export interface IndustrialConfig extends DeviceTypeTimingConfig {
 }
 /** 历史数据存储策略 */
 export type StoragePolicy = 'report' | 'change';
+export interface DerivedPoint {
+    id: string;
+    name: string;
+    unit?: string;
+    unitMode: 'fixed' | 'conditional';
+    unitRules?: { condition: string; unit: string }[];
+    sourceAlias?: string;
+    kind: 'expression' | 'average' | 'minimum' | 'maximum';
+    valueType: 'number' | 'boolean';
+    expression?: string;
+    inputs: { alias: string; pointId: string }[];
+    windowSeconds?: number;
+    maxAgeSeconds: number;
+    visible: boolean;
+}
 /** 设备类型采集与存储策略 */
 export interface DeviceTypeTimingConfig {
+    derivedPoints?: DerivedPoint[];
+    pointVisibility?: Record<string, boolean>;
     /** 定时读取/边缘上报间隔（秒），默认 1 */
     readInterval?: number;
     /** 历史数据存储策略，默认每次上报都存储 */
@@ -456,4 +473,16 @@ export interface ProtocolImportResult {
         name: string;
         reason: string;
     }[];
+}
+
+export interface ExpressionTestRequest {
+    expression: string;
+    inputs: { alias: string; value: number }[];
+    unit: string;
+    unitRules: { condition: string; unit: string }[];
+}
+export interface ExpressionTestResult {
+    value: number;
+    unit: string;
+    matchedRule: number;
 }

@@ -28,7 +28,23 @@ const register = {id:crypto.randomUUID(), name:'temperature', registerType:'HOLD
 const config = {storagePolicy:'report',readInterval:10,byteOrder:'BIG_ENDIAN',registers:[register]};
 try {
     await request('GET','/v1/protocol/configs',undefined,11004);
+    await request('POST','/v1/protocol/configs/test-expression',{},11004);
     actor = admin;
+    const probe = {expression:'if(p > 100, p / 1000, p)',inputs:[{alias:'p',value:2500}],unit:'kPa',unitRules:[{condition:'p > 100',unit:'MPa'}]};
+    const beforeProbe = (await db`SELECT count(*)::int AS count FROM protocol_config`)[0].count;
+    assert.deepEqual(await request('POST','/v1/protocol/configs/test-expression',probe),{value:2.5,unit:'MPa',matchedRule:1});
+    assert.deepEqual(await request('POST','/v1/protocol/configs/test-expression',{...probe,inputs:[{alias:'p',value:25}]}),{value:25,unit:'kPa',matchedRule:0});
+    assert.equal((await request('POST','/v1/protocol/configs/test-expression',{...probe,expression:'if(p == 0, 0, 1 / p)',inputs:[{alias:'p',value:0}],unitRules:[]})).value,0);
+    for (const invalid of [
+        {...probe,expression:'p / 0'}, {...probe,expression:'sqrt(-1)'},
+        {...probe,expression:'if(true, p, unknown)'}, {...probe,expression:'p +'},
+        {...probe,inputs:[{alias:'p',value:1},{alias:'p',value:2}]},
+        {...probe,unitRules:[{condition:'true',unit:'MPa'},{condition:'missing > 0',unit:'kPa'}]},
+        {...probe,unitRules:[{condition:'p / 0',unit:'MPa'}]},
+    ]) await request('POST','/v1/protocol/configs/test-expression',invalid,16004);
+    await request('POST','/v1/protocol/configs/test-expression',{...probe,inputs:[{alias:'p',value:null}]},10001);
+    assert.equal((await db`SELECT count(*)::int AS count FROM protocol_config`)[0].count,beforeProbe,'manual validation saved a configuration');
+
     await request('POST','/v1/protocol/configs',{protocol:'Modbus',name:tag,config,remark:'original'});
     const item = (await request('GET','/v1/protocol/configs?protocol=Modbus')).list.find((row: {name:string}) => row.name === tag);
     assert(item);
@@ -36,6 +52,38 @@ try {
     ids.push(id);
     const detail = () => request('GET',`/v1/protocol/configs/${id}`);
     assert.equal((await detail()).config.registers[0].writable,true);
+    const derived = {
+        id:crypto.randomUUID(),name:'derived pressure',kind:'expression',valueType:'number',
+        expression:'if(p > 100, p / 1000, p)',inputs:[{alias:'p',pointId:register.id}],
+        unit:'kPa',unitMode:'conditional',unitRules:[{condition:'p > 100',unit:'MPa'}],maxAgeSeconds:10,visible:true,
+    };
+    await request('PUT',`/v1/protocol/configs/${id}`,{config:{derivedPoints:[derived],pointVisibility:{[register.id]:false}}});
+    assert.deepEqual((await detail()).config.derivedPoints,[derived]);
+    for (const bad of [
+        {...derived,expression:'if(true, p, unknown)'},
+        {...derived,inputs:[{alias:'p',pointId:derived.id}]},
+        {...derived,unitRules:[{condition:'unknown == 1',unit:'MPa'}]},
+        {...derived,inputs:[{alias:'p',pointId:crypto.randomUUID()}]},
+    ]) await request('PUT',`/v1/protocol/configs/${id}`,{config:{derivedPoints:[bad]}},16004);
+    await request('PUT',`/v1/protocol/configs/${id}`,{config:{registers:[]}},16004);
+    const windows=['average','minimum','maximum'].map(kind=>({...derived,id:crypto.randomUUID(),kind,sourceAlias:'p',windowSeconds:60,unitMode:'fixed',unitRules:[]}));
+    await request('PUT',`/v1/protocol/configs/${id}`,{config:{derivedPoints:[derived,...windows]}});
+    assert.equal((await detail()).config.derivedPoints.length,4);
+    const edgeNode=crypto.randomUUID(),edgeLink=crypto.randomUUID(),edgeDevice=crypto.randomUUID();
+    try {
+        await db`INSERT INTO edge_node(id,platform_id,imei,enrollment_status) VALUES(${edgeNode},'00000000-0000-7000-8000-000000000001','999999999999998','approved')`;
+        await db`INSERT INTO link(id,name,protocol,execution,edge_node_id,endpoint,created_by) VALUES(${edgeLink},${edgeLink},'Modbus','edge',${edgeNode},'{"transport":"serial","interface":"/dev/ttyS1","baud_rate":9600,"data_bits":8,"stop_bits":1,"parity":"none","rs485":true}'::jsonb,${admin})`;
+        await db`INSERT INTO device(id,name,link_id,protocol_config_id,protocol_params,created_by) VALUES(${edgeDevice},${edgeDevice},${edgeLink},${id},'{"device_code":"1","slave_id":1}'::jsonb,${admin})`;
+        await request('PUT',`/v1/protocol/configs/${id}`,{config:{derivedPoints:[derived]}},16009);
+        assert.equal((await detail()).config.derivedPoints.length,4,'unsupported firmware rejection mutated the configuration');
+    } finally {
+        await db`DELETE FROM device WHERE id=${edgeDevice}`;
+        await db`DELETE FROM link WHERE id=${edgeLink}`;
+        await db`DELETE FROM edge_node WHERE id=${edgeNode}`;
+    }
+
+    await request('PUT',`/v1/protocol/configs/${id}`,{config:{derivedPoints:[],pointVisibility:{}}});
+
     assert.equal((await db`SELECT created_by FROM protocol_config WHERE id=${id}`)[0].created_by,admin);
     assert((await request('GET','/v1/protocol/configs/options?protocol=Modbus')).list.some((row: {id:string})=>row.id===id));
     await request('PUT',`/v1/protocol/configs/${id}`,`{"config":{"readInterval":1e3,"large":9007199254740993}}`,0,true);
@@ -83,6 +131,7 @@ try {
     await db`INSERT INTO sys_role(id,name,code,permissions) VALUES(${role},${role},${role},'["iot:protocol:query","iot:protocol:edit","iot:protocol:delete"]'::jsonb)`;
     await db`INSERT INTO sys_user_role(id,user_id,role_id) VALUES(${crypto.randomUUID()},${other},${role})`;
     actor = other;
+    assert.equal((await request('POST','/v1/protocol/configs/test-expression',probe)).value,2.5);
     await request('POST','/v1/protocol/configs',{protocol:'Modbus',name:`${tag}_denied`,config},11007);
     await request('PUT',`/v1/protocol/configs/${id}`,{name:`${tag}_denied`},16007);
     await request('DELETE',`/v1/protocol/configs/${id}`,undefined,16007);

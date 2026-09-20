@@ -38,6 +38,7 @@ enum ConfigItemKind {
   CONFIG_ITEM_SL651_DICTIONARY = 7;
   CONFIG_ITEM_INDUSTRIAL_POINT = 8;
   CONFIG_ITEM_DTU = 9;
+  CONFIG_ITEM_DERIVED_POINT = 10;
 }
 
 enum ValueKind {
@@ -232,6 +233,7 @@ message CapabilityReport {
   VpnCapabilities vpn = 6;
   bool supports_serial_debug = 8;
   bool supports_dtu = 9;
+  bool supports_derived_points = 10;
 }
 
 message Heartbeat {
@@ -503,6 +505,32 @@ message Sl651DictionaryConfig {
   string dependency_value = 8 [(nanopb).max_length = 64];
 }
 
+message DerivedPointInput {
+  string alias = 1 [(nanopb).max_length = 32];
+  string point_id = 2 [(nanopb).max_length = 64];
+}
+
+message DerivedUnitRule {
+  string condition = 1 [(nanopb).max_length = 512];
+  string unit = 2 [(nanopb).max_length = 32];
+}
+
+message DerivedPointConfig {
+  bytes device_id = 1 [(nanopb).max_size = 16];
+  string point_id = 2 [(nanopb).max_length = 64];
+  string name = 3 [(nanopb).max_length = 100];
+  string unit = 4 [(nanopb).max_length = 32];
+  string kind = 5 [(nanopb).max_length = 16];
+  string expression = 6 [(nanopb).max_length = 512];
+  bool boolean_result = 7;
+  repeated DerivedPointInput inputs = 8 [(nanopb).type = FT_POINTER];
+  repeated DerivedUnitRule unit_rules = 9 [(nanopb).type = FT_POINTER];
+  string source_alias = 10 [(nanopb).max_length = 32];
+  uint32 window_seconds = 11;
+  uint32 max_age_seconds = 12;
+  bool hidden = 13;
+}
+
 message ConfigItem {
   uint64 revision = 1;
   uint32 index = 2;
@@ -518,6 +546,7 @@ message ConfigItem {
     Sl651DictionaryConfig sl651_dictionary = 16;
     IndustrialPointConfig industrial_point = 17;
     DtuConfig dtu = 18;
+    DerivedPointConfig derived_point = 19;
   }
 }
 
@@ -555,6 +584,10 @@ message ScalarValue {
 }
 
 message TelemetryValue {
+  bool derived = 7;
+  bool hidden = 8;
+  string quality = 9 [(nanopb).max_length = 24];
+  int64 sample_time_ms = 10;
   string element_id = 1 [(nanopb).max_length = 64];
   string name = 2 [(nanopb).max_length = 100];
   string unit = 3 [(nanopb).max_length = 32];
@@ -565,6 +598,7 @@ message TelemetryValue {
 }
 
 message TelemetryRecord {
+  bool derived_update = 19;
   // One immutable receive ID per original frame; absent in legacy firmware.
   repeated bytes raw_packet_ids = 18 [(nanopb).type = FT_POINTER];
   bytes record_id = 1 [(nanopb).max_size = 16];

@@ -213,6 +213,21 @@ void testDestructorCancelsBlockedTransport() {
     require(elapsed < 2s, "controller destructor exceeded two second cancellation bound");
 }
 
+void testServiceRepairNeeded() {
+    ConnectionController controller([](const Json&, std::stop_token) {
+        return Json{{"success",false},{"message","网络服务尚未启动，请点击修复服务。"},{"serviceRepair",true}};
+    }, true);
+    controller.request("status");
+    require(!controller.loggedIn && controller.serviceRepairNeeded, "local service failure did not offer repair");
+    require(controller.message.find("修复服务") != std::string::npos, "repair prompt missing");
+    ConnectionController recovered([](const Json&, std::stop_token) {
+        return success({{"status", status("LoggedOut", "", {})}});
+    }, true);
+    recovered.serviceRepairNeeded = true;
+    recovered.request("status");
+    require(!recovered.serviceRepairNeeded, "successful status did not clear repair");
+}
+
 void testAutomaticDeviceRefresh() {
     auto now=std::chrono::steady_clock::time_point{};
     int deviceCalls=0; bool online=false, fail=false;
@@ -254,6 +269,7 @@ int main() {
         {"apply selection revision", testApplyPreservesLatestEditWhenItMatchesOldApplied},
         {"logout and auth failure", testLogoutAndAuthFailures}, {"cross-account clear", testCrossAccountClear},
         {"async exceptions", testAsyncExceptions}, {"destructor cancellation", testDestructorCancelsBlockedTransport},
+        {"service repair needed", testServiceRepairNeeded},
         {"automatic device refresh", testAutomaticDeviceRefresh},
     };
     int passed = 0;

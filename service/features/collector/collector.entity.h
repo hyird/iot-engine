@@ -68,6 +68,7 @@ struct ElementDefinition {
 };
 
 struct DeviceDefinition {
+    std::string calculationConfig;
     bool debugEnabled = false;
     std::string id;
     std::string modelId;

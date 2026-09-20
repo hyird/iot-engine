@@ -1,4 +1,5 @@
 #pragma once
+#include "service/modules/link/link.service.h"
 
 #include <algorithm>
 #include <array>
@@ -563,20 +564,29 @@ class DeviceService {
     }
 
     template <typename Context>
-    ruvia::Task<void> create(Context& c, const CreateDeviceBody& body) {
-        co_await validate(c, body, true);
-        co_await ensureUnique(c, body, std::nullopt);
-        co_await validateRuntimeIdentity(c, body, std::nullopt);
+    ruvia::Task<void> create(Context& c, const CreateDeviceBody& input) {
+        auto transaction = co_await c.db().beginTransaction();
+        const auto& body = input;
+        std::string resolvedLinkId = str(body.template get<"linkId">());
+        if (body.template get<"edgeConnection">()) {
+            if (!resolvedLinkId.empty()) service::common::fail(18002, "本地链路和边缘连接不能同时配置", 400);
+            const auto endpointId = co_await service::link::LinkService::instance().configureDeviceEndpoint(c, transaction, *body.template get<"edgeConnection">());
+            resolvedLinkId = endpointId;
+        }
+
+        co_await validate(c, transaction, resolvedLinkId, body, true);
+        co_await ensureUnique(c, transaction, resolvedLinkId, body, std::nullopt);
+        co_await validateRuntimeIdentity(c, transaction, resolvedLinkId, body, std::nullopt);
         const auto id = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
         const std::string name(body.template get<"name">().view());
         const std::string deviceCode(body.template get<"deviceCode">().view());
-        const std::string linkId = str(body.template get<"linkId">());
+        const std::string linkId = resolvedLinkId;
         ruvia::DbQuery channelQuery(c.pool());
         channelQuery
             .select(channelQuery.coalesce({ DeviceAccessService::text(channelQuery, channelQuery.column(service::device::entities::LinkEntity::columnName<"edge_node_id">())), channelQuery.value("") }))
             .from(service::device::entities::LinkEntity::tableName())
             .where(andAll(channelQuery, channelQuery.binary(channelQuery.column(service::device::entities::LinkEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(channelQuery, linkId)), channelQuery.unary(ruvia::DbUnaryOperator::kIsNull, channelQuery.column(service::device::entities::LinkEntity::columnName<"deleted_at">()))));
-        const auto channel = co_await c.db().query(channelQuery);
+        const auto channel = co_await transaction.query(channelQuery);
         if (channel.empty()) {
             service::common::fail(18003, "通道不存在", 400);
         }
@@ -599,7 +609,7 @@ class DeviceService {
         const std::string registration =
             edgeNodeId.empty() ? packetJson(body.template get<"registration">()) : R"({"mode":"OFF"})";
         const std::string remark = str(body.template get<"remark">());
-        auto transaction = co_await c.db().beginTransaction();
+
         ruvia::DbQuery insert(c.pool());
         const auto jsonb = [&](std::string_view value) {
             return insert.cast(insert.value(value), ruvia::DbDataType::kJsonb);
@@ -751,7 +761,9 @@ return result
     }
 
     template <typename Context>
-    ruvia::Task<void> update(Context& c, std::string_view id, const UpdateDeviceBody& body) {
+    ruvia::Task<void> update(Context& c, std::string_view id, const UpdateDeviceBody& input) {
+        const auto& body = input;
+        std::string resolvedLinkId = str(body.template get<"linkId">());
         (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner, c.userId);
         ruvia::DbQuery currentQuery(c.pool());
         currentQuery
@@ -763,7 +775,15 @@ return result
         if (rows.empty()) {
             service::common::fail(18001, "设备不存在", 404);
         }
-        co_await validate(c, body, false);
+        auto transaction = co_await c.db().beginTransaction();
+        co_await lockConnectionNodes(c, transaction, rows.front()[1].value().value_or(""),
+            body.template get<"edgeConnection">() ? str(body.template get<"edgeConnection">()->template get<"edgeNodeId">()) : std::string{});
+        if (body.template get<"edgeConnection">()) {
+            if (!resolvedLinkId.empty()) service::common::fail(18002, "本地链路和边缘连接不能同时配置", 400);
+            const auto endpointId = co_await service::link::LinkService::instance().configureDeviceEndpoint(c, transaction, *body.template get<"edgeConnection">(), id);
+            resolvedLinkId = endpointId;
+        }
+        co_await validate(c, transaction, resolvedLinkId, body, false);
 
         const auto& current = rows.front();
         const std::string currentLinkId(
@@ -778,7 +798,7 @@ return result
         const std::string currentExecution(
             current[4].value().value_or(std::string_view{})
         );
-        const std::string requestedLinkId = str(body.template get<"linkId">());
+        const std::string requestedLinkId = resolvedLinkId;
         const std::string targetLinkId = requestedLinkId.empty() ? currentLinkId : requestedLinkId;
         const std::string targetProtocolConfigId = body.template get<"protocolConfigId">() ? str(body.template get<"protocolConfigId">()) : currentProtocolConfigId;
         ruvia::DbQuery targetQuery(c.pool());
@@ -787,15 +807,15 @@ return result
             .from(service::device::entities::LinkEntity::tableName(), "l")
             .join(ruvia::DbJoinType::kInner, service::device::entities::ProtocolConfigEntity::tableName(), targetQuery.binary(targetQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"protocol">(), "p"), ruvia::DbBinaryOperator::kEqual, targetQuery.column(service::device::entities::LinkEntity::columnName<"protocol">(), "l")), "p")
             .where(andAll(targetQuery, targetQuery.binary(targetQuery.column(service::device::entities::LinkEntity::columnName<"id">(), "l"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(targetQuery, targetLinkId)), targetQuery.binary(targetQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"id">(), "p"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(targetQuery, targetProtocolConfigId)), targetQuery.unary(ruvia::DbUnaryOperator::kIsNull, targetQuery.column(service::device::entities::LinkEntity::columnName<"deleted_at">(), "l")), targetQuery.unary(ruvia::DbUnaryOperator::kIsNull, targetQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"deleted_at">(), "p"))));
-        const auto target = co_await c.db().query(targetQuery);
+        const auto target = co_await transaction.query(targetQuery);
         if (target.empty()) {
             service::common::fail(18003, "通道或设备类型不存在，或协议不一致", 400);
         }
         const std::string targetEdgeNodeId(target.front()[0].value().value_or(""));
         const bool targetEdge = !targetEdgeNodeId.empty();
         const bool connectionChanged = targetLinkId != currentLinkId || targetProtocolConfigId != currentProtocolConfigId;
-        co_await ensureUnique(c, body, std::string(id));
-        co_await validateRuntimeIdentity(c, body, std::string(id));
+        co_await ensureUnique(c, transaction, resolvedLinkId, body, std::string(id));
+        co_await validateRuntimeIdentity(c, transaction, resolvedLinkId, body, std::string(id));
 
         ruvia::DbQuery update(c.pool());
         update.update(service::device::entities::DeviceEntity::tableName());
@@ -882,7 +902,6 @@ return result
         }
 
         {
-            auto transaction = co_await c.db().beginTransaction();
             if (changed) {
                 assign("updated_at", update.call("now"));
             }
@@ -893,6 +912,8 @@ return result
                 (void)co_await transaction.execute(update);
             }
             co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "updated", id, c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+            if (connectionChanged && currentExecution == "edge")
+                co_await service::link::LinkService::instance().retireUnusedDeviceEndpoint(c, transaction, currentLinkId);
             co_await transaction.commit();
         }
         try {
@@ -930,6 +951,7 @@ return result
             service::common::fail(18001, "设备不存在", 404);
         }
         auto transaction = co_await c.db().beginTransaction();
+        co_await lockConnectionNodes(c, transaction, rows.front()[1].value().value_or(""), {});
         ruvia::DbQuery removeQuery(c.pool());
         removeQuery.update(service::device::entities::DeviceEntity::tableName())
             .set(service::device::entities::DeviceEntity::columnName<"deleted_at">(), removeQuery.call("now"))
@@ -937,6 +959,8 @@ return result
             .where(removeQuery.binary(removeQuery.column(service::device::entities::DeviceEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(removeQuery, id)));
         (void)co_await transaction.execute(removeQuery);
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "deleted", id, c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        if (!rows.front()[1].value().value_or("").empty())
+            co_await service::link::LinkService::instance().retireUnusedDeviceEndpoint(c, transaction, rows.front()[2].value().value_or(""));
         co_await transaction.commit();
         try {
             (void)co_await service::rpc::call(c, "telemetry", "erase-device", std::string(id));
@@ -1391,25 +1415,6 @@ return result
               query.value("+08:00") }
         );
         const auto edgeExecution = query.binary(query.column("execution", "l"), ruvia::DbBinaryOperator::kEqual, query.value("edge"));
-        const auto rs485 = query.call(
-            "lower",
-            { query.coalesce({ DeviceAccessService::jsonText(query, endpoint, "rs485"), query.value("") }) }
-        );
-        const auto rs485Enabled = query.caseWhen(
-            { { query.binary(rs485, ruvia::DbBinaryOperator::kEqual, query.value("true")),
-                DeviceAccessService::boolean(query, true) },
-              { query.binary(rs485, ruvia::DbBinaryOperator::kEqual, query.value("t")),
-                DeviceAccessService::boolean(query, true) },
-              { query.binary(rs485, ruvia::DbBinaryOperator::kEqual, query.value("1")),
-                DeviceAccessService::boolean(query, true) },
-              { query.binary(rs485, ruvia::DbBinaryOperator::kEqual, query.value("yes")),
-                DeviceAccessService::boolean(query, true) },
-              { query.binary(rs485, ruvia::DbBinaryOperator::kEqual, query.value("y")),
-                DeviceAccessService::boolean(query, true) },
-              { query.binary(rs485, ruvia::DbBinaryOperator::kEqual, query.value("on")),
-                DeviceAccessService::boolean(query, true) } },
-            DeviceAccessService::boolean(query, false)
-        );
 
         ruvia::DbQuery functionCount(query.resource());
         const auto functions = functionCount.coalesce(
@@ -1450,15 +1455,15 @@ return result
             query.caseWhen({ { query.binary(query.column("protocol", "p"), ruvia::DbBinaryOperator::kEqual, query.value("SL651")), query.coalesce({ query.subquery(functionCount), DeviceAccessService::integer(query, 0) }) } }, query.call("jsonb_array_length", { query.coalesce({ DeviceAccessService::jsonValue(query, protocolConfig, "points"), emptyArray }) }))
         );
 
-        query.select({ DeviceAccessService::text(query, query.column("id", "d")), query.column("name", "d"), DeviceAccessService::jsonText(query, protocolParams, "device_code"), DeviceAccessService::text(query, query.column("link_id", "d")), nullableJsonText("target_id"), DeviceAccessService::text(query, query.column("protocol_config_id", "d")), DeviceAccessService::text(query, query.column("group_id", "d")), query.column("status", "d"), onlineTimeout, DeviceAccessService::remoteControlEnabled(query, protocolParams), nullableJsonText("modbus_mode"), nullableJsonText("slave_id"), timezone, DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "heartbeat"), "mode"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "heartbeat"), "content"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "registration"), "mode"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "registration"), "content"), query.coalesce({ query.column("remark", "d"), query.value("") }), DeviceAccessService::text(query, query.column("created_by", "d")), query.call("iot_utc_timestamp", { query.column("created_at", "d") }), query.call("iot_utc_timestamp", { query.column("updated_at", "d") }), query.coalesce({ query.column("name", "l"), query.value("") }), query.coalesce({ DeviceAccessService::jsonText(query, endpoint, "mode"), query.value("") }), query.coalesce({ query.column("protocol", "l"), query.value("") }), query.column("name", "p"), query.column("protocol", "p"), query.nullIf(DeviceAccessService::jsonText(query, protocolConfig, "readInterval"), query.value("")), query.nullIf(DeviceAccessService::jsonText(query, protocolConfig, "storagePolicy"), query.value("")), protocolElementCount, query.column("access_rank", "d"), query.caseWhen({ { edgeExecution, DeviceAccessService::text(query, query.column("edge_node_id", "l")) } }), query.coalesce({ query.column("name", "en"), query.value("") }), query.coalesce({ query.column("imei", "en"), query.value("") }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "transport"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "interface"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "mode"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "ip"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "port"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "baud_rate"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "data_bits"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "stop_bits"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "parity"), query.value("")) } }), query.caseWhen({ { edgeExecution, rs485Enabled } }), query.column("debug_enabled", "d"), query.column("debug_enabled", "l") });
+        query.select({ DeviceAccessService::text(query, query.column("id", "d")), query.column("name", "d"), DeviceAccessService::jsonText(query, protocolParams, "device_code"), DeviceAccessService::text(query, query.column("link_id", "d")), nullableJsonText("target_id"), DeviceAccessService::text(query, query.column("protocol_config_id", "d")), DeviceAccessService::text(query, query.column("group_id", "d")), query.column("status", "d"), onlineTimeout, DeviceAccessService::remoteControlEnabled(query, protocolParams), nullableJsonText("modbus_mode"), nullableJsonText("slave_id"), timezone, DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "heartbeat"), "mode"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "heartbeat"), "content"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "registration"), "mode"), DeviceAccessService::jsonText(query, DeviceAccessService::jsonValue(query, protocolParams, "registration"), "content"), query.coalesce({ query.column("remark", "d"), query.value("") }), DeviceAccessService::text(query, query.column("created_by", "d")), query.call("iot_utc_timestamp", { query.column("created_at", "d") }), query.call("iot_utc_timestamp", { query.column("updated_at", "d") }), query.coalesce({ query.column("name", "l"), query.value("") }), query.coalesce({ DeviceAccessService::jsonText(query, endpoint, "mode"), query.value("") }), query.coalesce({ query.column("protocol", "l"), query.value("") }), query.column("name", "p"), query.column("protocol", "p"), query.nullIf(DeviceAccessService::jsonText(query, protocolConfig, "readInterval"), query.value("")), query.nullIf(DeviceAccessService::jsonText(query, protocolConfig, "storagePolicy"), query.value("")), protocolElementCount, query.column("access_rank", "d"), query.caseWhen({ { edgeExecution, DeviceAccessService::text(query, query.column("edge_node_id", "l")) } }), query.coalesce({ query.column("name", "en"), query.value("") }), query.coalesce({ query.column("imei", "en"), query.value("") }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "transport"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "interface"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "mode"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "ip"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "port"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "baud_rate"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "data_bits"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "stop_bits"), query.value("")) } }), query.caseWhen({ { edgeExecution, query.nullIf(DeviceAccessService::jsonText(query, endpoint, "parity"), query.value("")) } }), query.column("debug_enabled", "d"), query.column("debug_enabled", "l") });
     }
 
     template <typename Context, typename Row>
     static void fillItem(Context& c, DeviceItemDto& item, Row&& row, const DeviceActor& actor) {
         item.template set<"id">(row[0].value().value_or(std::string_view{}));
         item.template set<"name">(row[1].value().value_or(std::string_view{}));
-        item.template set<"debugEnabled">(row[43].value().value_or("") == "t");
-        item.template set<"linkDebugEnabled">(row[44].value().value_or("") == "t");
+        item.template set<"debugEnabled">(row[42].value().value_or("") == "t");
+        item.template set<"linkDebugEnabled">(row[43].value().value_or("") == "t");
         item.template set<"deviceCode">(row[2].value().value_or(std::string_view{}));
         if (row[3].value().has_value()) {
             item.template set<"linkId">(row[3].value().value_or(std::string_view{}));
@@ -1564,9 +1569,6 @@ return result
         }
         if (row[41].value().has_value()) {
             item.template set<"serialParity">(row[41].value().value_or(std::string_view{}));
-        }
-        if (row[42].value().has_value()) {
-            item.template set<"serialRs485">(row[42].value().value_or(std::string_view{}) == "t");
         }
     }
 
@@ -2096,6 +2098,8 @@ return result
     }
 
     struct LatestElement final {
+        bool visible = true;
+        std::string quality;
         std::int64_t sort = 0;
         std::int64_t observedAt = 0;
         double scale = 1.0;
@@ -2159,6 +2163,8 @@ return result
                 element.dataType
             );
             element.unit = jsonString(*parsed, "unit").value_or("");
+            if (const auto visible = parsed->template get<ruvia::Bool>("visible")) element.visible = static_cast<bool>(*visible);
+            element.quality = jsonString(*parsed, "quality").value_or("missing");
             element.group = jsonString(*parsed, "group").value_or("");
             element.encode = jsonString(*parsed, "encode").value_or("");
             element.scale = jsonDouble(*parsed, "scale", 1.0);
@@ -2193,6 +2199,8 @@ return result
                 .template set<"name">(element.name)
                 .template set<"value">(element.value)
                 .template set<"unit">(element.unit)
+                .template set<"visible">(element.visible)
+                .template set<"quality">(element.quality)
                 .template set<"scale">(element.scale)
                 .template set<"decimals">(element.decimals);
             if (!element.group.empty()) {
@@ -2306,13 +2314,27 @@ return result
         }
     }
 
+    template <typename Context>
+    ruvia::Task<void> lockConnectionNodes(Context& c, ruvia::DbTransaction& transaction, std::string_view prior, std::string_view next) {
+        std::set<std::string> nodes;
+        if (!prior.empty()) nodes.emplace(prior);
+        if (!next.empty()) nodes.emplace(next);
+        for (const auto& id : nodes) {
+            if (!service::common::isUuid(id)) service::common::fail(18002, "边缘节点 ID 无效", 400);
+            ruvia::DbQuery query(c.pool());
+            query.select(query.column(entities::EdgeNodeEntity::columnName<"id">())).from(entities::EdgeNodeEntity::tableName())
+                .where((entities::EdgeNodeEntity::column<"id">() == id).expression(query)).lock(ruvia::DbLockOptions{});
+            (void)co_await transaction.query(query);
+        }
+    }
+
     // 扁平字段（必填/长度/枚举/范围/UUID/timezone）由声明式校验器保证；
     // 此处只做跨字段、依赖 DB 与协议相关的校验（保留 18002/18003 域码）。
     template <typename Context, typename Body>
-    ruvia::Task<void> validate(Context& c, const Body& body, bool required) {
+    ruvia::Task<void> validate(Context& c, ruvia::DbTransaction& transaction, std::string_view resolvedLinkId, const Body& body, bool required) {
         validatePacket(body.template get<"heartbeat">());
         validatePacket(body.template get<"registration">());
-        const auto linkId = str(body.template get<"linkId">());
+        const auto linkId = std::string(resolvedLinkId);
         const auto configId = str(body.template get<"protocolConfigId">());
         if (required && linkId.empty()) {
             service::common::fail(18003, "请选择通道", 400);
@@ -2345,7 +2367,7 @@ return result
                 .select(DeviceAccessService::integer(groupQuery, 1))
                 .from(service::device::entities::DeviceGroupEntity::tableName())
                 .where(andAll(groupQuery, groupQuery.binary(groupQuery.column(service::device::entities::DeviceGroupEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(groupQuery, body.template get<"groupId">()->view())), groupQuery.unary(ruvia::DbUnaryOperator::kIsNull, groupQuery.column(service::device::entities::DeviceGroupEntity::columnName<"deleted_at">()))));
-            const auto group = co_await c.db().query(groupQuery);
+            const auto group = co_await transaction.query(groupQuery);
             if (group.empty()) {
                 service::common::fail(18003, "设备分组不存在", 400);
             }
@@ -2360,7 +2382,7 @@ return result
             .from(service::device::entities::LinkEntity::tableName(), "l")
             .join(ruvia::DbJoinType::kInner, service::device::entities::ProtocolConfigEntity::tableName(), relationQuery.binary(relationQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"protocol">(), "p"), ruvia::DbBinaryOperator::kEqual, relationQuery.column(service::device::entities::LinkEntity::columnName<"protocol">(), "l")), "p")
             .where(andAll(relationQuery, relationQuery.binary(relationQuery.column(service::device::entities::LinkEntity::columnName<"id">(), "l"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(relationQuery, linkId)), relationQuery.binary(relationQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"id">(), "p"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(relationQuery, configId)), relationQuery.unary(ruvia::DbUnaryOperator::kIsNull, relationQuery.column(service::device::entities::LinkEntity::columnName<"deleted_at">(), "l")), relationQuery.unary(ruvia::DbUnaryOperator::kIsNull, relationQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"deleted_at">(), "p"))));
-        const auto relation = co_await c.db().query(relationQuery);
+        const auto relation = co_await transaction.query(relationQuery);
         if (relation.empty()) {
             service::common::fail(18003, "通道或设备类型不存在，或协议不一致", 400);
         }
@@ -2393,9 +2415,9 @@ return result
     }
 
     template <typename Context, typename Body>
-    ruvia::Task<void> validateRuntimeIdentity(Context& c, const Body& body, std::optional<std::string> excludedId) {
+    ruvia::Task<void> validateRuntimeIdentity(Context& c, ruvia::DbTransaction& transaction, std::string_view resolvedLinkId, const Body& body, std::optional<std::string> excludedId) {
         const std::string excluded = excludedId.value_or(std::string(kNilUuid));
-        const std::string inLinkId = str(body.template get<"linkId">());
+        const std::string inLinkId = std::string(resolvedLinkId);
         const std::string inTargetId = str(body.template get<"targetId">());
         const std::string inConfigId = str(body.template get<"protocolConfigId">());
         const std::string inSlaveId =
@@ -2486,7 +2508,7 @@ return result
             .join(ruvia::DbJoinType::kInner, service::device::entities::LinkEntity::tableName(), andAll(candidateQuery, candidateQuery.binary(candidateQuery.column(service::device::entities::LinkEntity::columnName<"id">(), "link"), ruvia::DbBinaryOperator::kEqual, candidateLink), candidateQuery.unary(ruvia::DbUnaryOperator::kIsNull, candidateQuery.column(service::device::entities::LinkEntity::columnName<"deleted_at">(), "link"))), "link")
             .join(ruvia::DbJoinType::kInner, service::device::entities::ProtocolConfigEntity::tableName(), andAll(candidateQuery, candidateQuery.binary(candidateQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"id">(), "protocol"), ruvia::DbBinaryOperator::kEqual, candidateConfig), candidateQuery.unary(ruvia::DbUnaryOperator::kIsNull, candidateQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"deleted_at">(), "protocol"))), "protocol")
             .limit(1);
-        const auto candidate = co_await c.db().query(candidateQuery);
+        const auto candidate = co_await transaction.query(candidateQuery);
         if (candidate.empty()) {
             co_return;
         }
@@ -2559,7 +2581,7 @@ return result
             .join(ruvia::DbJoinType::kInner, service::device::entities::ProtocolConfigEntity::tableName(), andAll(siblingsQuery, siblingsQuery.binary(siblingsQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"id">(), "config"), ruvia::DbBinaryOperator::kEqual, siblingsQuery.column(service::device::entities::DeviceEntity::columnName<"protocol_config_id">(), "device")), siblingsQuery.unary(ruvia::DbUnaryOperator::kIsNull, siblingsQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"deleted_at">(), "config"))), "config")
             .where(andAll(siblingsQuery, siblingsQuery.binary(siblingsQuery.column(service::device::entities::DeviceEntity::columnName<"link_id">(), "device"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(siblingsQuery, linkId)), siblingsQuery.binary(siblingsQuery.column(service::device::entities::DeviceEntity::columnName<"id">(), "device"), ruvia::DbBinaryOperator::kNotEqual, DeviceAccessService::uuid(siblingsQuery, excluded)), siblingsQuery.unary(ruvia::DbUnaryOperator::kIsNull, siblingsQuery.column(service::device::entities::DeviceEntity::columnName<"deleted_at">(), "device")), siblingsQuery.binary(siblingsQuery.column(service::device::entities::ProtocolConfigEntity::columnName<"protocol">(), "config"), ruvia::DbBinaryOperator::kEqual, siblingsQuery.value(protocol))))
             .orderBy(siblingsQuery.column(service::device::entities::DeviceEntity::columnName<"id">(), "device"));
-        const auto siblings = co_await c.db().query(siblingsQuery);
+        const auto siblings = co_await transaction.query(siblingsQuery);
 
         if (linkMode == "TCP Client") {
             if (targetId.empty()) {
@@ -2625,7 +2647,7 @@ return result
     }
 
     template <typename Context, typename Body>
-    ruvia::Task<void> ensureUnique(Context& c, const Body& body, std::optional<std::string> excludedId) {
+    ruvia::Task<void> ensureUnique(Context& c, ruvia::DbTransaction& transaction, std::string_view resolvedLinkId, const Body& body, std::optional<std::string> excludedId) {
         const auto& name = body.template get<"name">();
         const auto& code = body.template get<"deviceCode">();
         if constexpr (std::is_same_v<Body, UpdateDeviceBody>) {
@@ -2633,7 +2655,7 @@ return result
         }
         const std::string nameValue = str(name);
         const std::string codeValue = str(code);
-        const std::string linkValue = str(body.template get<"linkId">());
+        const std::string linkValue = std::string(resolvedLinkId);
         const std::string excluded = excludedId.value_or(std::string(kNilUuid));
         ruvia::DbQuery query(c.pool());
         ruvia::DbQuery currentLink(c.pool());
@@ -2660,7 +2682,7 @@ return result
             .from(service::device::entities::DeviceEntity::tableName())
             .where(andAll(query, query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::device::entities::DeviceEntity::columnName<"deleted_at">())), query.binary(query.column(service::device::entities::DeviceEntity::columnName<"id">()), ruvia::DbBinaryOperator::kNotEqual, DeviceAccessService::uuid(query, excluded)), query.binary(nameMatch, ruvia::DbBinaryOperator::kOr, codeMatch)))
             .limit(1);
-        const auto rows = co_await c.db().query(query);
+        const auto rows = co_await transaction.query(query);
         if (!rows.empty()) {
             service::common::fail(18004, "设备名称已存在或同一链路的设备编码重复", 409);
         }

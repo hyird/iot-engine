@@ -143,7 +143,7 @@ Options parse(int argc, wchar_t** argv) {
     Options result; std::array<bool, 4> seen{};
     for (int i = 1; i < argc; ++i) {
         const std::wstring arg(argv[i]);
-        if (arg == L"--prepare" || arg == L"--install" || arg == L"--remove" || arg == L"--stop" || arg == L"--verify-files" || arg == L"--probe" || arg == L"--rollback" || arg == L"--commit") {
+        if (arg == L"--prepare" || arg == L"--install" || arg == L"--repair" || arg == L"--remove" || arg == L"--stop" || arg == L"--verify-files" || arg == L"--probe" || arg == L"--rollback" || arg == L"--commit") {
             if (!result.command.empty()) fail("Exactly one command is required"); result.command = arg; continue;
         }
         if (arg == L"--owner" || arg == L"--root" || arg == L"--report") {
@@ -156,7 +156,7 @@ Options parse(int argc, wchar_t** argv) {
     if (result.command.empty()) fail("A command is required");
     if (result.command == L"--verify-files" && result.root.empty()) fail("--verify-files requires --root");
     if (result.command != L"--verify-files" && !result.root.empty()) fail("--root is only valid with --verify-files");
-    if (result.command != L"--prepare" && result.command != L"--install" && !result.owner.empty()) fail("--owner is only valid with --prepare or --install");
+    if (result.command != L"--prepare" && result.command != L"--install" && result.command != L"--repair" && !result.owner.empty()) fail("--owner is only valid with --prepare, --install or --repair");
     return result;
 }
 const std::array<std::wstring, 1> ServiceNames{Agent};
@@ -205,6 +205,28 @@ void install(const std::wstring& owner) {
         throw;
     }
 }
+void repair(const std::wstring& owner) {
+    requireAdmin(); validateOwner(owner); validateRoots(); validateStateOwner(owner);
+    if (!fs::is_regular_file(serviceExe())) fail("Installed service files are missing");
+    verifySignature(installRoot()/L"Service/wireguard.dll");
+    validateServices();
+    const auto oldAgent = sc::services::capture(Agent);
+    try {
+        if (oldAgent.present) sc::services::ensureStopped(Agent);
+        sc::safe_files::createProtectedDirectory(installRoot(), true);
+        sc::safe_files::createProtectedDirectory(stateRoot(), false);
+        if (!fs::exists(stateRoot()/L"owner.sid")) { const auto text = iotvpn::utf8(owner); iotvpn::atomicWrite(stateRoot()/L"owner.sid", {reinterpret_cast<const std::uint8_t*>(text.data()), text.size()}); }
+        sc::services::installOrUpdate(Agent, L"iot-egine", agentCommand(), true, {L"Nsi", L"TcpIp"});
+        sc::services::start(Agent);
+    } catch (...) {
+        try {
+            sc::services::ensureStopped(Agent);
+            sc::services::restore(Agent, oldAgent);
+            if (oldAgent.running) sc::services::start(Agent);
+        } catch (...) {}
+        throw;
+    }
+}
 void removeServices() {
     requireAdmin(); validateRoots(); validateServices(); ensureGuiClosed(); stopAll(); for (const auto& name : ServiceNames) sc::services::remove(name);
 }
@@ -226,6 +248,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             prepare(options.owner.empty() ? interactiveOwner().sid : canonicalSid(options.owner)); if (!options.report.empty()) writeReport(options.report, "PASS prepared");
         } else if (options.command == L"--install") {
             install(options.owner.empty() ? interactiveOwner().sid : canonicalSid(options.owner)); if (!options.report.empty()) writeReport(options.report, "PASS installed");
+        } else if (options.command == L"--repair") {
+            repair(options.owner.empty() ? interactiveOwner().sid : canonicalSid(options.owner)); if (!options.report.empty()) writeReport(options.report, "PASS repaired");
         } else if (options.command == L"--rollback") {
             rollback();
         } else if (options.command == L"--commit") {

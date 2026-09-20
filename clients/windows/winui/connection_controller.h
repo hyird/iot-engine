@@ -29,7 +29,7 @@ public:
     ~ConnectionController() { worker_.request_stop(); if (worker_.joinable()) worker_.join(); }
     ConnectionController(const ConnectionController&) = delete;
     ConnectionController& operator=(const ConnectionController&) = delete;
-    bool loggedIn = false, busy = false, connected = false;
+    bool loggedIn = false, busy = false, connected = false, serviceRepairNeeded = false;
     std::string username, message;
     Json status = {{"state","LoggedOut"}};
     std::set<std::string> selected, applied;
@@ -119,6 +119,7 @@ private:
     }
     void complete(const std::string& command, const Json& response, std::uint64_t requestSelectionRevision) {
         const bool success = response.is_object() && response.value("success",false);
+        serviceRepairNeeded = !success && response.is_object() && response.value("serviceRepair", false);
         if (response.contains("status")) update(response["status"],success && command == "login",requestSelectionRevision != selectionRevision_);
         if (!success) { message = text(response,"message","操作未完成，请稍后重试。"); return; }
         if (command != "status") message = text(response,"message");

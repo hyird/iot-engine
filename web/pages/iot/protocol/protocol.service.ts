@@ -8,6 +8,8 @@ import { createQueryKeys } from '@/utils/query';
 import * as api from './protocol.api';
 import { formatTsapValue } from './protocol.schema';
 import type {
+    DerivedPoint,
+    DeviceTypeTimingConfig,
     DeviceTypeFormValues,
     GroupSection,
     Modbus,
@@ -22,6 +24,25 @@ import type {
 } from './protocol.types';
 
 const MAX_PAGE_SIZE = 1000;
+
+export function protocolPointOptions(item: Protocol.Item): { value: string; label: string }[] {
+    const config = item.config;
+    const physical =
+        item.protocol === 'SL651'
+            ? ((config as SL651.Config).funcs ?? [])
+                  .filter((func) => func.dir === 'UP')
+                  .flatMap((func) => func.elements ?? [])
+            : item.protocol === 'Modbus'
+              ? ((config as Modbus.Config).registers ?? [])
+              : item.protocol === 'S7'
+                ? ((config as S7.Config).areas ?? [])
+                : ((config as { points?: { id: string; name: string }[] }).points ?? []);
+    return physical.map((point) => ({ value: point.id, label: point.name }));
+}
+
+export function protocolDerivedPoints(item: Protocol.Item): DerivedPoint[] {
+    return (item.config as DeviceTypeTimingConfig).derivedPoints ?? [];
+}
 export const getAllProtocolConfigs = async (
     params?: Protocol.Query,
     requestConfig?: RequestConfig
@@ -632,3 +653,5 @@ export const getSl651DeviceTypeFormValues = (data?: Protocol.Item) => {
         remark: data?.remark ?? '',
     };
 };
+
+export const testProtocolExpression = api.testExpression;

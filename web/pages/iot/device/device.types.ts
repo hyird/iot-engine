@@ -96,7 +96,6 @@ export interface EdgeConnection {
     serial_data_bits?: number;
     serial_stop_bits?: number;
     serial_parity?: SerialParity;
-    serial_rs485?: boolean;
 }
 /** 设备列表项 */
 export interface DeviceItem extends EdgeConnection {
@@ -171,6 +170,7 @@ export interface DeviceQuery extends PageParams {
 }
 /** 创建设备 DTO */
 export interface CreateDeviceDto {
+    edge_connection?: Link.SaveDto;
     name: string;
     device_code: string;
     link_id?: string;
@@ -196,6 +196,7 @@ export interface CreateDeviceDto {
 }
 /** 更新设备 DTO */
 export interface UpdateDeviceDto {
+    edge_connection?: Link.SaveDto;
     name?: string;
     device_code?: string;
     link_id?: string;
@@ -289,6 +290,8 @@ export interface DeviceRealtimeSnapshot {
 // ========== 实时数据相关类型 ==========
 /** 设备要素数据 */
 export interface DeviceElement {
+    visible?: boolean;
+    quality?: string;
     id?: string;
     name: string;
     value: string | number | null;

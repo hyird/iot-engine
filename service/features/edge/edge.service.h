@@ -4,6 +4,7 @@
 #include <google/protobuf/util/json_util.h>
 #include <unordered_set>
 #include "service/features/edge/edge.config.h"
+#include "service/common/derived_point.h"
 #include "service/features/packet_log/packet_log.service.h"
 
 #include "service/features/edge/edge.entity.h"
@@ -752,6 +753,7 @@ inline ruvia::DbQuery buildItemsQuery(std::string_view nodeId) {
             textDefault(query, jsonText(query, connectionConfig, "wakeupBytes"), "4"),
             textDefault(query, jsonText(query, connectionConfig, "writePassword"), ""),
             textDefault(query, jsonText(query, connectionConfig, "operatorCode"), ""),
+            query.cast(modelConfig, ruvia::DbDataType::kText),
         })
         .from(service::edge::persistence::DeviceEntity::tableName(), "d")
         .join(
@@ -1545,9 +1547,26 @@ class ConfigService final {
             if (!item.mutable_dtu()->ParseFromString(wire)) throw std::runtime_error("invalid DTU configuration");
             items.push_back(std::move(item));
         }
-        std::set<std::string> endpoints;
         const auto devices =
             co_await c.db().query(config::detail::buildItemsQuery(nodeId));
+        ruvia::DbQuery capability;
+        capability.select(config::detail::jsonText(capability, capability.column(persistence::EdgeNodeEntity::columnName<"capability">()), "derivedPoints"))
+            .from(persistence::EdgeNodeEntity::tableName()).where(capability.binary(capability.column(persistence::EdgeNodeEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual,
+                capability.cast(capability.value(nodeId), ruvia::DbDataType::kUuid)));
+        const auto supported = co_await c.db().query(capability);
+        const bool derivedSupported = !supported.empty() && supported.front()[0].value().value_or("") == "true";
+        appendConfiguredDevices(items, devices, derivedSupported);
+
+        co_await appendModbus(c, nodeId, items);
+        co_await appendS7(c, nodeId, items);
+        co_await appendIndustrial(c, nodeId, items);
+        co_await appendSl651(c, nodeId, items);
+        co_return items;
+    }
+
+    template <typename Rows>
+    static void appendConfiguredDevices(std::vector<pb::ConfigItem>& items, const Rows& devices, bool derivedSupported) {
+        std::set<std::string> endpoints;
         for (const auto& row : devices) {
             const auto protocol = protocolValue(row[3].value().value_or(std::string_view{}));
             pb::ConfigItem endpoint;
@@ -1572,7 +1591,6 @@ class ConfigService final {
                 serial->set_stop_bits(
                     static_cast<std::uint32_t>(integer(row[16].value().value_or(std::string_view{}), 1)));
                 serial->set_parity(row[17].value().value_or(std::string_view{}));
-                serial->set_rs485(row[18].value().value_or(std::string_view{}) == "t");
             } else {
                 endpointValue->set_transport(pb::TRANSPORT_ETHERNET);
                 endpointValue->set_mode(row[11].value().value_or(std::string_view{}) == "TCP Server"
@@ -1652,13 +1670,23 @@ class ConfigService final {
                    "heartbeat_payload");
             deviceValue->set_enabled(row[29].value().value_or(std::string_view{}) == "t");
             items.push_back(std::move(device));
+            const auto configuration = ruvia::JsonValue::parse(row[54].value().value_or("{}"));
+            if (!configuration) throw std::runtime_error("invalid device model configuration");
+            for (const auto& point : service::common::orderDerivedPoints(*configuration)) {
+                if (!derivedSupported) throw std::runtime_error("边缘固件尚不支持派生点，请先升级固件");
+                pb::ConfigItem derived;
+                derived.set_kind(pb::CONFIG_ITEM_DERIVED_POINT);
+                auto* value = derived.mutable_derived_point();
+                setUuid(value->mutable_device_id(), row[0].value().value_or(""));
+                value->set_point_id(point.id); value->set_name(point.name); value->set_unit(point.unit);
+                value->set_kind(point.kind); value->set_expression(point.expression); value->set_boolean_result(point.valueType == "boolean");
+                value->set_source_alias(point.sourceAlias); value->set_window_seconds(static_cast<std::uint32_t>(point.windowSeconds));
+                value->set_max_age_seconds(static_cast<std::uint32_t>(point.maxAgeSeconds)); value->set_hidden(!point.visible);
+                for (const auto& [alias, id] : point.inputs) { auto* input = value->add_inputs(); input->set_alias(alias); input->set_point_id(id); }
+                for (const auto& rule : point.unitRules) { auto* unit = value->add_unit_rules(); unit->set_condition(rule.condition); unit->set_unit(rule.unit); }
+                items.push_back(std::move(derived));
+            }
         }
-
-        co_await appendModbus(c, nodeId, items);
-        co_await appendS7(c, nodeId, items);
-        co_await appendIndustrial(c, nodeId, items);
-        co_await appendSl651(c, nodeId, items);
-        co_return items;
     }
 
     template <typename Context>
@@ -2654,6 +2682,13 @@ class EdgeProjectionService {
             .where(dtuCapability.binary(dtuCapability.column(persistence::EdgeNodeEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual,
                 dtuCapability.cast(dtuCapability.value(nodeId), ruvia::DbDataType::kUuid)));
         (void)co_await context.db().execute(dtuCapability);
+        ruvia::DbQuery derivedCapability;
+        derivedCapability.update(persistence::EdgeNodeEntity::tableName())
+            .set(persistence::EdgeNodeEntity::columnName<"capability">(), derivedCapability.call("jsonb_set", {
+                derivedCapability.column(persistence::EdgeNodeEntity::columnName<"capability">()), config::detail::jsonPath(derivedCapability, "{derivedPoints}"),
+                config::detail::toJsonb(derivedCapability, derivedCapability.cast(derivedCapability.value(report.supports_derived_points()), ruvia::DbDataType::kBoolean)), derivedCapability.value(true)}))
+            .where(derivedCapability.binary(derivedCapability.column(persistence::EdgeNodeEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, derivedCapability.cast(derivedCapability.value(nodeId), ruvia::DbDataType::kUuid)));
+        (void)co_await context.db().execute(derivedCapability);
         if (report.has_vpn()) {
             const auto vpnPublicKey = validVpnPublicKey(report.vpn().public_key())
                                           ? std::string(report.vpn().public_key())
@@ -3349,7 +3384,7 @@ return 1
             parsed.observedAtMs = record.observed_at_ms();
             parsed.storagePolicy = device->second.storagePolicy;
             parsed.onlineWindowMs = device->second.onlineWindowMs;
-            parsed.source = "edge";
+            parsed.source = record.derived_update() ? "derived" : "edge";
             parsed.valuesJson = protocol::TelemetryValues::telemetryJson(record);
             if (!record.raw_payloads().empty()) {
                 for (const auto& raw : record.raw_payloads())

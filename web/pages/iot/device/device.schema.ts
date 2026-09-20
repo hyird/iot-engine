@@ -41,28 +41,53 @@ const packetSchema = z
             });
         }
     });
-export const saveDeviceSchema = z.object({
-    name: z.string().trim().min(1, '设备名称不能为空').max(100, '设备名称最多100个字符'),
-    device_code: z
-        .string()
-        .trim()
-        .min(1, '设备编码不能为空')
-        .max(100, '设备编码最多100个字符')
-        .regex(/^[A-Za-z0-9_-]+$/, '设备编码只能包含字母、数字、连字符和下划线'),
-    link_id: z.uuid({ error: '请选择有效通道' }),
-    target_id: z.string().trim().max(100).optional(),
-    protocol_config_id: z.uuid({ error: '请选择有效设备类型' }),
-    group_id: z.uuid({ error: '请选择有效设备分组' }).nullish(),
-    status: statusSchema.default('enabled'),
-    online_timeout: z.coerce.number().int().min(1).max(86400).default(300),
-    remote_control: z.boolean().default(true),
-    modbus_mode: z.enum(['TCP', 'RTU']).nullish(),
-    slave_id: z.coerce.number().int().min(1).max(247).nullish(),
-    timezone: timezoneSchema.default('+08:00'),
-    heartbeat: packetSchema.default({ mode: 'OFF' }),
-    registration: packetSchema.default({ mode: 'OFF' }),
-    remark: z.string().optional(),
-});
+export const saveDeviceSchema = z
+    .object({
+        name: z.string().trim().min(1, '设备名称不能为空').max(100, '设备名称最多100个字符'),
+        device_code: z
+            .string()
+            .trim()
+            .min(1, '设备编码不能为空')
+            .max(100, '设备编码最多100个字符')
+            .regex(/^[A-Za-z0-9_-]+$/, '设备编码只能包含字母、数字、连字符和下划线'),
+        link_id: z.uuid({ error: '请选择有效本地链路' }).optional(),
+        edge_connection: z
+            .object({
+                name: z.string().min(1).max(100),
+                edge_node_id: z.uuid(),
+                protocol: z.enum(['Modbus', 'SL651', 'S7', 'MC', 'FINS', 'DLT645']),
+                endpoint: z.object({
+                    transport: z.enum(['serial', 'tcp']),
+                    interface: z.string().min(1).max(96),
+                    mode: z.enum(['TCP Client', 'TCP Server']),
+                    ip: z.string(),
+                    port: z.number().int(),
+                    targets: z.array(z.never()),
+                    baud_rate: z.number().int().min(300).max(4000000).optional(),
+                    data_bits: z.number().int().min(5).max(8).optional(),
+                    stop_bits: z.number().int().min(1).max(2).optional(),
+                    parity: z.enum(['none', 'even', 'odd']).optional(),
+                }),
+                status: statusSchema,
+            })
+            .optional(),
+        target_id: z.string().trim().max(100).optional(),
+        protocol_config_id: z.uuid({ error: '请选择有效设备类型' }),
+        group_id: z.uuid({ error: '请选择有效设备分组' }).nullish(),
+        status: statusSchema.default('enabled'),
+        online_timeout: z.coerce.number().int().min(1).max(86400).default(300),
+        remote_control: z.boolean().default(true),
+        modbus_mode: z.enum(['TCP', 'RTU']).nullish(),
+        slave_id: z.coerce.number().int().min(1).max(247).nullish(),
+        timezone: timezoneSchema.default('+08:00'),
+        heartbeat: packetSchema.default({ mode: 'OFF' }),
+        registration: packetSchema.default({ mode: 'OFF' }),
+        remark: z.string().optional(),
+    })
+    .refine((value) => Boolean(value.link_id) !== Boolean(value.edge_connection), {
+        message: '请选择本地链路或配置边缘设备连接',
+        path: ['link_id'],
+    });
 export const saveDeviceGroupSchema = z.object({
     name: z.string().trim().min(1, '分组名称不能为空').max(100, '分组名称最多100个字符'),
     parent_id: z.uuid({ error: '请选择有效上级分组' }).nullish(),

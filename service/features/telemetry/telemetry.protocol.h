@@ -48,6 +48,10 @@ inline void normalize(message::ParsedDeviceMessage& input) {
             scalar->isString()?"string":scalar->isNull()?"null":"json";
         const auto text=point->get<ruvia::String>("value");
         const bool invalid=image && text && text->view()=="INVALID_JPEG";
+        const auto derived = point->get<ruvia::Bool>("derived");
+        const auto reportedQuality = point->get<ruvia::String>("quality");
+        const auto quality = derived && static_cast<bool>(*derived) && reportedQuality ? std::string(reportedQuality->view()) : std::string(invalid?"invalid":scalar->isNull()?"missing":"good");
+        const auto sampleTime = derived && static_cast<bool>(*derived) ? point->get<ruvia::Int64>("sample_time_ms") : std::nullopt;
         if(!first)points+=',';first=false;
         points+=service::utils::jsonQuoted(id)+":{";
         fields(raw,[&](std::string_view key,std::string_view data){
@@ -55,8 +59,8 @@ inline void normalize(message::ParsedDeviceMessage& input) {
                 points+=service::utils::jsonQuoted(key)+":"+std::string(data)+",";
             return true;
         });
-        points+="\"value_type\":"+service::utils::jsonQuoted(kind)+",\"quality\":"+service::utils::jsonQuoted(invalid?"invalid":scalar->isNull()?"missing":"good")+
-            ",\"sample_time_ms\":"+std::to_string(input.observedAtMs)+
+        points+="\"value_type\":"+service::utils::jsonQuoted(kind)+",\"quality\":"+service::utils::jsonQuoted(quality)+
+            ",\"sample_time_ms\":"+std::to_string(sampleTime ? sampleTime->value : input.observedAtMs)+
             ",\"received_time_ms\":"+std::to_string(input.occurredAtMs)+"}";
         return true;
     });

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -166,6 +167,15 @@ public:
                 dataType = item.encoding();
             } else if (!item.encoded_value().empty())
                 throw std::runtime_error("edge binary element has no encoding");
+            if (item.derived() && item.has_value()) {
+                if (item.value().value_case() == pb::ScalarValue::kBoolValue) valueJson = item.value().bool_value() ? "true" : "false";
+                else if (item.value().value_case() == pb::ScalarValue::kDoubleValue) {
+                    char buffer[64];
+                    const auto result = std::to_chars(buffer, buffer + sizeof(buffer), item.value().double_value());
+                    if (result.ec != std::errc{}) throw std::runtime_error("cannot serialize derived number");
+                    valueJson.assign(buffer, result.ptr);
+                }
+            }
             if (!first)
                 output.push_back(',');
             output += "\"" + service::utils::jsonEscape(item.element_id()) + "\":{\"name\":\"" +
@@ -174,7 +184,10 @@ public:
                       ",\"dataType\":\"" +
                       service::utils::jsonEscape(dataType) +
                       "\"" +
-                      ",\"unit\":\"" + service::utils::jsonEscape(item.unit()) + "\"}";
+                      ",\"unit\":\"" + service::utils::jsonEscape(item.unit()) + "\"";
+            if (item.derived()) output += ",\"derived\":true,\"visible\":" + std::string(item.hidden() ? "false" : "true") +
+                ",\"quality\":" + service::utils::jsonQuoted(item.quality()) + ",\"sample_time_ms\":" + std::to_string(item.sample_time_ms());
+            output += '}';
             first = false;
         }
         output += "}}";
