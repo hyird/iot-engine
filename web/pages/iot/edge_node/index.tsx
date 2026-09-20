@@ -827,6 +827,11 @@ function mobileState(node: Edge.Node) {
     if (mobile.connected) return `已连接${mobile.ipv4 ? ` · ${mobile.ipv4}` : ''}`;
     return mobile.registered ? '已注册，未拨号' : '未注册';
 }
+function tcpTrafficText(traffic: Edge.TcpTraffic | undefined) {
+    if (!traffic) return '尚未上报';
+    if (!traffic.complete) return '统计不完整，暂不可作为区间总量';
+    return `上行 ${formatBytes(Number(traffic.uploadBytes))} / 下行 ${formatBytes(Number(traffic.downloadBytes))}（${Math.round(Number(traffic.intervalMs) / 1000)} 秒）`;
+}
 function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
     const status = node.status;
     const config = status.config;
@@ -857,6 +862,15 @@ function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
             key: 'outbox',
             label: '待传缓存',
             children: `${outbox.records ?? 0} 条 / ${formatBytes(outbox.bytes ?? 0)}`,
+        },
+        {
+            key: 'tcpTraffic',
+            label: '平台 TCP 区间流量',
+            children: (
+                <span title="仅本平台连接，内核 IP 字节计数，含 TCP/IP 包头、ACK 和重传；非 SIM 计费流量">
+                    {tcpTrafficText(status.tcpTraffic)}
+                </span>
+            ),
         },
         {
             key: 'networkManager',
@@ -2341,6 +2355,9 @@ export function EdgeNodePage() {
                             <Descriptions.Item label="待上报队列">
                                 {detail.status.outbox.records} 条 /{' '}
                                 {formatBytes(detail.status.outbox.bytes)}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="平台 TCP 区间流量">
+                                {tcpTrafficText(detail.status.tcpTraffic)}
                             </Descriptions.Item>
                             <Descriptions.Item label="ttyd">
                                 {detail.capability.terminal ? (

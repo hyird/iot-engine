@@ -75,7 +75,15 @@ export namespace Edge {
     export interface LogStatus {
         level: LogSetting;
     }
+    export interface TcpTraffic {
+        uploadBytes: string;
+        downloadBytes: string;
+        intervalMs: string;
+        sampleId: string;
+        complete: boolean;
+    }
     export interface NodeStatus {
+        tcpTraffic?: TcpTraffic;
         online: boolean;
         lastSeenAt: string;
         config: ConfigStatus;

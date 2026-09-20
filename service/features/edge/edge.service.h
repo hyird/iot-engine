@@ -2440,6 +2440,14 @@ class EdgeProjectionService {
              config::detail::jsonKey(query, "operator"), operatorName,
              config::detail::jsonKey(query, "connected"), boolean(heartbeat.mobile_connected()),
              config::detail::jsonKey(query, "ipv4"), text(heartbeat.mobile_ipv4())});
+        const auto tcpTraffic = heartbeat.has_tcp_traffic()
+            ? query.call("jsonb_build_object", {
+                config::detail::jsonKey(query, "uploadBytes"), text(std::to_string(heartbeat.tcp_traffic().upload_bytes())),
+                config::detail::jsonKey(query, "downloadBytes"), text(std::to_string(heartbeat.tcp_traffic().download_bytes())),
+                config::detail::jsonKey(query, "intervalMs"), text(std::to_string(heartbeat.tcp_traffic().interval_ms())),
+                config::detail::jsonKey(query, "sampleId"), text(std::to_string(heartbeat.tcp_traffic().sample_id())),
+                config::detail::jsonKey(query, "complete"), boolean(heartbeat.tcp_traffic().complete())})
+            : query.nullValue();
         query.update(service::edge::persistence::EdgeNodeEntity::tableName())
             .set(service::edge::persistence::EdgeNodeEntity::columnName<"status">(), query.call(
                                "jsonb_build_object",
@@ -2450,6 +2458,7 @@ class EdgeProjectionService {
                                             integer(heartbeat.outbox_records()),
                                             config::detail::jsonKey(query, "bytes"),
                                             integer(heartbeat.outbox_bytes())}),
+                                config::detail::jsonKey(query, "tcpTraffic"), tcpTraffic,
                                 config::detail::jsonKey(query, "log"),
                                 query.call("jsonb_build_object",
                                            {config::detail::jsonKey(query, "level"),

@@ -635,6 +635,10 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 heartbeatAck->set_platform_time_ms(service::message::utcNowMilliseconds());
                 heartbeatAck->set_request_capability_report(!session.capabilitySeen);
                 heartbeatAck->set_request_device_status(false);
+                // The ingress stream accepted this heartbeat before handle() is called.
+                if (input.heartbeat().has_tcp_traffic()) {
+                    heartbeatAck->set_traffic_sample_id(input.heartbeat().tcp_traffic().sample_id());
+                }
                 enqueue(session, reply);
                 break;
             }
