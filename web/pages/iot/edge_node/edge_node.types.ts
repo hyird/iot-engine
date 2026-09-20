@@ -15,6 +15,7 @@ export namespace Edge {
     }
     export type EnrollmentStatus = 'pending' | 'approved';
     export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+    export type LogSetting = LogLevel | 'silent';
     export interface Query {
         page?: number;
         pageSize?: number;
@@ -72,7 +73,7 @@ export namespace Edge {
         bytes: number;
     }
     export interface LogStatus {
-        level: LogLevel;
+        level: LogSetting;
     }
     export interface NodeStatus {
         online: boolean;
@@ -273,7 +274,7 @@ export namespace Edge {
         lines: LogLine[];
     }
     export interface LogLevelDto {
-        level: LogLevel;
+        level: LogSetting;
     }
 }
 export const edgeQueryKeys = {

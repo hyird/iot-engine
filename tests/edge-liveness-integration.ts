@@ -29,27 +29,40 @@ function imei() {
     let sum=0;for(let i=0;i<14;i++){let digit=Number(base[i])*(i%2?2:1);if(digit>9)digit-=9;sum+=digit;}
     return base+String((10-sum%10)%10);
 }
-const probes:Array<{node:string;imei:string;socket:WebSocket;pings:number;closed:boolean;version:number;respond:boolean}>=[];
+type Probe = {node:string;imei:string;socket:WebSocket;pings:number;closed:boolean;version:number;respond:boolean;sparse:boolean;heartbeats:number;heartbeatAcks:number;heartbeatTimer?:ReturnType<typeof setInterval>};
+const probes:Probe[]=[];
 try {
-    for(const [version,respond] of [[2,true],[5,true],[6,true],[2,false]] as const) {
+    for(const [version,respond,sparse] of [[2,true,false],[5,true,false],[6,true,false],[6,true,true],[6,false,true],[2,false,false]] as const) {
         const node=crypto.randomUUID(),identity=imei();
         await db`INSERT INTO edge_node(id,platform_id,imei,enrollment_status) VALUES(${node},${platform},${identity},'approved')`;
         await redis.send('SET',[`iot:edge:auth:${identity}`,`${node}|approved`]);
         const socket=new WebSocket(apiBase.replace('http:', 'ws:') + '/edge/v1/connect');socket.binaryType='arraybuffer';
-        const probe={node,imei:identity,socket,pings:0,closed:false,version,respond};probes.push(probe);
+        const probe:Probe={node,imei:identity,socket,pings:0,closed:false,version,respond,sparse,heartbeats:0,heartbeatAcks:0};probes.push(probe);
         let sequence=1n,epoch=0n;
         const envelope=(tag:number,payload:Buffer)=>Buffer.concat([
             field(1,version),field(2,bytes(crypto.randomUUID())),field(3,bytes(node)),field(4,bytes(platform)),
             field(5,epoch),field(6,Date.now()),field(8,sequence++),field(tag,payload)]);
         await new Promise<void>((resolve,reject)=>{
             const timeout=setTimeout(()=>reject(Error('Legacy Hello timed out')),10000);
-            socket.onopen=()=>socket.send(envelope(20,Buffer.concat([field(1,identity),field(2,'fixture'),field(3,'0.3.38')])));
+            socket.onopen=()=>socket.send(envelope(20,Buffer.concat([field(1,identity),field(2,'fixture'),field(3,'fixture'),field(35,sparse ? 1 : 0)])));
             socket.onerror=()=>{clearTimeout(timeout);reject(Error('Fixture WebSocket failed'));};
-            socket.onclose=()=>{probe.closed=true;clearTimeout(timeout);reject(Error('Fixture closed before HelloAck'));};
+            socket.onclose=()=>{probe.closed=true;clearInterval(probe.heartbeatTimer);clearTimeout(timeout);reject(Error('Fixture closed before HelloAck'));};
             socket.onmessage=(event)=>{
                 const message=decode(Buffer.from(event.data as ArrayBuffer));
                 assert.equal(Number(message.get(1)),version,'negotiated legacy version changed');
-                if(message.has(21)){epoch=message.get(5) as bigint;clearTimeout(timeout);resolve();}
+                if(message.has(21)){
+                    epoch=message.get(5) as bigint;clearTimeout(timeout);
+                    if(sparse && respond && !probe.heartbeatTimer) {
+                        probe.heartbeatTimer=setInterval(()=>{
+                            if(socket.readyState===WebSocket.OPEN){
+                                probe.heartbeats++;
+                                socket.send(envelope(24,Buffer.alloc(0)));
+                            }
+                        },300000);
+                    }
+                    resolve();
+                }
+                if(message.has(25))probe.heartbeatAcks++;
                 if(message.has(80)) {
                     probe.pings++;
                     if(respond)socket.send(envelope(81,message.get(80) as Buffer));
@@ -58,16 +71,33 @@ try {
         });
     }
     await Bun.sleep(65000);
+    for (const probe of probes) {
+        if (probe.sparse) {
+            assert.equal(probe.pings, 0, 'five-minute policy sent early application pings');
+            assert.equal(probe.closed, false, 'old one-minute watchdog closed an idle connection');
+            assert(Number(await redis.send('TTL', [`iot:edge:session:${probe.node}`])) > 800,
+                'routing lease cannot span the heartbeat interval');
+        } else {
+            assert(probe.pings >= 2, 'legacy firmware lost its application watchdog compatibility');
+            assert.equal(probe.closed, !probe.respond, 'legacy timeout changed');
+        }
+    }
+    // Real-time test: cross three five-minute intervals, including silent-peer expiry.
+    await Bun.sleep(840000);
     for(const probe of probes) {
-        assert(probe.pings>=2,`protocol ${probe.version}: no application probes`);
+        if(probe.sparse){
+            assert.equal(probe.pings,0,'node-driven session received unsolicited application probes');
+            assert.equal(probe.heartbeatAcks,probe.heartbeats,'heartbeat confirmations must match node reports');
+            if(probe.respond)assert(probe.heartbeats>=3,'node heartbeat fixture did not run');
+        }else assert(probe.pings>=2,`protocol ${probe.version}: no legacy application probes`);
         assert.equal(probe.closed,!probe.respond,`protocol ${probe.version}: incorrect response-based liveness`);
         const ttl=Number(await redis.send('TTL',[`iot:edge:session:${probe.node}`]));
-        if(probe.respond)assert(ttl>50,`protocol ${probe.version}: responsive legacy lease expired`);
+        if(probe.respond)assert(ttl>600,`protocol ${probe.version}: responsive legacy lease expired`);
         else assert.equal(ttl,-2,'silent node lease was kept alive by the server');
     }
-    console.log('PASS protocol 2/5/6 Ping/Pong retain responsive sessions; silent node closes without lease renewal');
+    console.log('PASS node-driven heartbeat/ACK and legacy Ping/Pong; silent node closes without lease renewal');
 } finally {
-    for(const probe of probes)probe.socket.close();
+    for(const probe of probes){clearInterval(probe.heartbeatTimer);probe.socket.close();}
     await Bun.sleep(100);
     for(const probe of probes)await redis.send('DEL',[`iot:edge:auth:${probe.imei}`]);
     await db.close();redis.close();

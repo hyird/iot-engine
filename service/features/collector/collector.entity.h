@@ -101,7 +101,7 @@ struct DeviceDefinition {
     mc::Connection mcConnection;
     fins::Connection finsConnection;
     dlt645::Connection dlt645Connection;
-    std::int64_t readInterval = 1;
+    std::int64_t readInterval = 300;
     std::string storagePolicy = "report";
     std::int64_t commandFastReadDuration = 60;
     std::int64_t commandFastReadInterval = 1;

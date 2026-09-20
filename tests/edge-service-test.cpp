@@ -80,6 +80,15 @@ int main() {
         const auto controllerSource = edgeSource("service/modules/edge_node/edge_node.controller.h");
         const auto gatewaySource = edgeSource("service/features/edge/gateway/gateway.runtime.h");
         const auto dispatchSource = edgeSource("service/features/edge/session/session.service.h");
+        requireContains(gatewaySource, ".pingInterval = std::chrono::seconds(300)", "node WebSocket heartbeat is not five minutes");
+        requireContains(gatewaySource, "if (live->session->sparseHeartbeat) {\n                    continue;\n                }", "node-driven heartbeats still trigger application probes");
+        requireContains(gatewaySource, "? std::chrono::seconds(900) : std::chrono::seconds(60)", "application watchdog cannot span three heartbeats");
+        requireContains(dispatchSource, "'EX',930", "routing lease expires before the application watchdog");
+        requireContains(dispatchSource, "+930000", "session deadline index disagrees with the lease");
+        requireContains(gatewaySource, "!session.sparseHeartbeat && freshTelemetry && std::any_of", "node-driven or duplicate telemetry requests redundant status");
+        requireContains(gatewaySource, "!record.has_device_status() && !record.derived_update()", "derived updates request redundant device status");
+        requireContains(gatewaySource, "input.hello().supports_sparse_heartbeat()", "five-minute heartbeat requires explicit firmware capability");
+        requireMissing(gatewaySource, "pendingTelemetryAck", "legacy single-ID nanopb ACK limit must be preserved");
         const auto dispatcherSource = edgeSource("service/features/edge/edge.runtime.h");
         const auto multiplexerSource =
             edgeSource("service/features/messaging/stream_multiplexer/stream_multiplexer.runtime.h");

@@ -169,6 +169,8 @@ message Hello {
   bool supports_logs = 32;
   string log_level = 33 [(nanopb).max_length = 8];
   bool supports_firmware_stream = 34;
+  // Supports 300s probes and a >=900s application watchdog; absent preserves legacy timing.
+  bool supports_sparse_heartbeat = 35;
 }
 
 message HelloAck {

@@ -1506,7 +1506,7 @@ export function EdgeNodePage() {
         title: string;
     }>();
     const [logLevel, setLogLevel] = useState<Edge.LogLevel>();
-    const [nodeLogLevel, setNodeLogLevel] = useState<Edge.LogLevel>('info');
+    const [nodeLogLevel, setNodeLogLevel] = useState<Edge.LogSetting>();
     const [networkOpen, setNetworkOpen] = useState(false);
     const [firmwareOpen, setFirmwareOpen] = useState(false);
     const [firmwareUploadProgress, setFirmwareUploadProgress] =
@@ -1592,7 +1592,7 @@ export function EdgeNodePage() {
         if (!exists) setSelectedId(undefined);
     }, [data, selectedId]);
     useEffect(() => {
-        if (detail) setNodeLogLevel(detail.status.log?.level ?? 'info');
+        if (detail) setNodeLogLevel(detail.status.log?.level);
     }, [detail]);
     if (!canQuery) {
         return (
@@ -2672,12 +2672,14 @@ export function EdgeNodePage() {
                                                 className="mb-3"
                                             >
                                                 <Space>
-                                                    <Select<Edge.LogLevel>
+                                                    <Select<Edge.LogSetting>
                                                         className="w-[140px]"
+                                                        placeholder="日志级别"
+                                                        title="新固件默认 SILENT；其他级别开启后 5 分钟自动恢复，再次设置重新计时。旧固件需升级后支持。"
                                                         value={nodeLogLevel}
                                                         loading={logLevelControl.isPending}
                                                         disabled={!canConfig}
-                                                        onChange={(value) => {
+                                                        onSelect={(value) => {
                                                             setNodeLogLevel(value);
                                                             if (selectedId)
                                                                 logLevelControl.mutate(
@@ -2688,10 +2690,16 @@ export function EdgeNodePage() {
                                                                     {
                                                                         onSuccess: () =>
                                                                             void refreshEventLogs(),
+                                                                        onError: () =>
+                                                                            setNodeLogLevel(
+                                                                                detail.status.log
+                                                                                    ?.level
+                                                                            ),
                                                                     }
                                                                 );
                                                         }}
                                                         options={[
+                                                            { value: 'silent', label: 'SILENT' },
                                                             { value: 'debug', label: 'DEBUG' },
                                                             { value: 'info', label: 'INFO' },
                                                             { value: 'warn', label: 'WARN' },

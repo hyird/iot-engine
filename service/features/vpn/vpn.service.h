@@ -49,7 +49,7 @@ inline std::string render(std::string_view privateKey, std::string_view address,
             config += ", ";
         config += allowedRoutes[index];
     }
-    config += "\nPersistentKeepalive = 25\n";
+    config += "\nPersistentKeepalive = 120\n";
     return config;
 }
 

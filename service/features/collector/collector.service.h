@@ -450,7 +450,7 @@ inline DeviceDefinition device(const std::vector<message::StreamField>& fields) 
         result.s7ProbeMode = "STANDARD";
     }
     ConnectionConfig::apply(result, fields);
-    result.readInterval = integer(fields, "read_interval", 1);
+    result.readInterval = integer(fields, "read_interval", 300);
     result.calculationConfig = field(fields, "calculation_config");
     result.storagePolicy = field(fields, "storage_policy");
     if (result.storagePolicy != "report" && result.storagePolicy != "change") {

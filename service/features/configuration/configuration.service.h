@@ -243,7 +243,7 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
             deviceQuery.coalesce({ jsonText(connection, "handshakeTimeout"), jsonText(config, "handshakeTimeout"), deviceQuery.value("5000") }),
             deviceQuery.coalesce({ jsonText(connection, "directProbeTimeout"), jsonText(config, "directProbeTimeout"), deviceQuery.value("5000") }),
             deviceQuery.coalesce({ jsonText(connection, "probeMode"), jsonText(config, "probeMode"), deviceQuery.value("STANDARD") }),
-            deviceQuery.coalesce({ deviceQuery.nullIf(jsonText(config, "readInterval"), deviceQuery.value("")), deviceQuery.value("1") }),
+            deviceQuery.coalesce({ deviceQuery.nullIf(jsonText(config, "readInterval"), deviceQuery.value("")), deviceQuery.value("300") }),
             defaultText(config, "storagePolicy", "report"), defaultText(config, "commandFastReadDuration", "60"),
             defaultText(config, "commandFastReadInterval", "1"), defaultText(packet, "mergeGap", "100"),
             defaultText(packet, "maxQuantity", "125"), deviceQuery.cast(deviceQuery.column(service::configuration::persistence::DeviceModelEntity::columnName<"id">(), "p"), Type::kText),

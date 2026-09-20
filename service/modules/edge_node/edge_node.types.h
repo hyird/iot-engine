@@ -83,7 +83,7 @@ RUVIA_REQUEST_MODEL(DtuChannelBody,
     RUVIA_OPTIONAL_FIELD(heartbeatHex, ruvia::String, RUVIA_MAX(512, "心跳包最多 256 字节")), RUVIA_OPTIONAL_FIELD(heartbeatIntervalSec, ruvia::Int64, RUVIA_MIN(0, "心跳间隔无效"), RUVIA_MAX(86400, "心跳间隔最多 86400 秒")));
 RUVIA_REQUEST_MODEL(DtuChannelParams, RUVIA_REQUIRED_FIELD(id, ruvia::String, RUVIA_CUSTOM("节点 ID 无效", service::common::isUuidField)), RUVIA_REQUIRED_FIELD(channelId, ruvia::String, RUVIA_CUSTOM("通道 ID 无效", service::common::isUuidField)));
 
-RUVIA_REQUEST_MODEL(LogLevelBody, RUVIA_REQUIRED_FIELD(level, ruvia::String, RUVIA_ONE_OF("日志级别无效", "debug", "info", "warn", "error")));
+RUVIA_REQUEST_MODEL(LogLevelBody, RUVIA_REQUIRED_FIELD(level, ruvia::String, RUVIA_ONE_OF("日志级别无效", "silent", "debug", "info", "warn", "error")));
 
 RUVIA_RESPONSE_MODEL(InterfaceDto, RUVIA_OPTIONAL_FIELD(name, ruvia::String), RUVIA_OPTIONAL_FIELD_NAME("displayName", displayName, ruvia::String), RUVIA_OPTIONAL_FIELD(mac, ruvia::String), RUVIA_OPTIONAL_FIELD(up, ruvia::Bool), RUVIA_OPTIONAL_FIELD(bridge, ruvia::Bool), RUVIA_OPTIONAL_FIELD(ipv4, ruvia::String), RUVIA_OPTIONAL_FIELD_NAME("prefixLength", prefixLength, ruvia::Int64), RUVIA_OPTIONAL_FIELD(gateway, ruvia::String), RUVIA_OPTIONAL_FIELD_NAME("bridgePorts", bridgePorts, ruvia::BoxedArray<ruvia::String>));
 

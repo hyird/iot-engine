@@ -1173,7 +1173,7 @@ class EdgeService {
             service::common::fail(17020, "日志级别不能为空", 400);
         }
         const auto level = std::string(levelValue.view());
-        if (level != "debug" && level != "info" && level != "warn" && level != "error") {
+        if (level != "silent" && level != "debug" && level != "info" && level != "warn" && level != "error") {
             service::common::fail(17020, "日志级别无效", 400);
         }
         const auto requestId = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();

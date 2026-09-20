@@ -1911,7 +1911,7 @@ const ModbusConfigPage = () => {
                 protocol: 'Modbus',
                 config: {
                     byteOrder: config.byteOrder,
-                    readInterval: numberOrDefault(config.readInterval, 1),
+                    readInterval: numberOrDefault(config.readInterval, 300),
                     packet: normalizePacketConfig(config.packet),
                     registers: nextRegisters,
                 },
@@ -1949,7 +1949,7 @@ const ModbusConfigPage = () => {
         const config = activeType.config as Modbus.Config;
         const newConfig: Modbus.Config = {
             byteOrder: config.byteOrder,
-            readInterval: numberOrDefault(config.readInterval, 1),
+            readInterval: numberOrDefault(config.readInterval, 300),
             packet: normalizePacketConfig(config.packet),
             registers: registers.filter((register) => register.id !== registerId),
         };
@@ -2200,7 +2200,7 @@ const ModbusConfigPage = () => {
                                             <Tag>
                                                 间隔{' '}
                                                 {(activeType.config as Modbus.Config)
-                                                    ?.readInterval ?? 1}
+                                                    ?.readInterval ?? 300}
                                                 s
                                             </Tag>
                                             <Tag>
@@ -3208,7 +3208,7 @@ const S7ConfigPage = () => {
                                             <Tag>
                                                 读取间隔{' '}
                                                 {(activeType.config as S7.Config)?.readInterval ??
-                                                    5}
+                                                    300}
                                                 s
                                             </Tag>
                                         </Space>
@@ -5762,7 +5762,7 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
                       enabled: true,
                       config: {
                           storagePolicy: 'report',
-                          readInterval: 1,
+                          readInterval: 300,
                           commandFastReadDuration: 60,
                           commandFastReadInterval: 1,
                           points: [],
@@ -5974,7 +5974,7 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
                                                       ? `DL/T645-${config?.connection.version ?? '2007'}`
                                                       : 'FINS/TCP'}
                                             </Tag>
-                                            <Tag>间隔 {config?.readInterval ?? 1}s</Tag>
+                                            <Tag>间隔 {config?.readInterval ?? 300}s</Tag>
                                             <Tag color="blue">
                                                 {config?.points.length ?? 0} 个点位
                                             </Tag>

@@ -281,7 +281,7 @@ export const logsQuerySchema = z.object({
     source: z.string().max(16).optional(),
 });
 export const logLevelSchema = z.object({
-    level: z.enum(['debug', 'info', 'warn', 'error']),
+    level: z.enum(['silent', 'debug', 'info', 'warn', 'error']),
 });
 export const edgeIdSchema = z.uuid('节点 ID 必须是 UUID');
 

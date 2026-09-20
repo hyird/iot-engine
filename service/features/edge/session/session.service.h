@@ -23,16 +23,16 @@ namespace service::edge::session_state {
 inline constexpr std::string_view kChanges = "iot:live:changes";
 inline constexpr std::string_view kClaimScript = R"lua(
 local now=redis.call('TIME')
-redis.call('SET',KEYS[1],ARGV[1],'EX',90)
-redis.call('ZADD',KEYS[2],now[1]*1000+math.floor(now[2]/1000)+90000,KEYS[1])
+redis.call('SET',KEYS[1],ARGV[1],'EX',930)
+redis.call('ZADD',KEYS[2],now[1]*1000+math.floor(now[2]/1000)+930000,KEYS[1])
 redis.call('XADD',KEYS[3],'MAXLEN','~',100000,'*','topic','edge')
 return 1
 )lua";
 inline constexpr std::string_view kRefreshScript = R"lua(
 if redis.call('GET',KEYS[1]) ~= ARGV[1] then return 0 end
 local now=redis.call('TIME')
-redis.call('EXPIRE',KEYS[1],90)
-redis.call('ZADD',KEYS[2],now[1]*1000+math.floor(now[2]/1000)+90000,KEYS[1])
+redis.call('EXPIRE',KEYS[1],930)
+redis.call('ZADD',KEYS[2],now[1]*1000+math.floor(now[2]/1000)+930000,KEYS[1])
 return 1
 )lua";
 inline constexpr std::string_view kReleaseScript = R"lua(

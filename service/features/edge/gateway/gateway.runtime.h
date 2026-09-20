@@ -38,8 +38,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
     const auto webSocketOptions = ruvia::WebSocketRouteConfig{
         .lifecycle = {
             .heartbeat = {
-                .pingInterval = std::chrono::seconds(30),
-                .pongTimeout = std::chrono::seconds(15),
+                .pingInterval = std::chrono::seconds(300),
+                .pongTimeout = std::chrono::seconds(60),
             },
             .closeHandshakeTimeout = std::chrono::seconds(5),
         },
@@ -72,6 +72,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         std::uint64_t firmwareSize{};
         bool firmwareSourceLoaded{};
         bool capabilitySeen{};
+        bool sparseHeartbeat{};
         std::chrono::steady_clock::time_point lastInbound{ std::chrono::steady_clock::now() };
     };
 
@@ -115,6 +116,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             co_return;
         }
         const std::string imei(input.hello().imei());
+        const bool sparseHeartbeat = input.hello().supports_sparse_heartbeat();
         const auto enrollment = co_await gateway::GatewayService::loadEnrollment(c, imei);
         std::string nodeId = enrollment.nodeId;
         std::string status = enrollment.status;
@@ -167,6 +169,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             );
         }
 
+        session.sparseHeartbeat = sparseHeartbeat;
         if (!co_await session_state::claim(
                 c.redis(),
                 session.nodeId,
@@ -282,7 +285,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                     break;
                 }
                 if (telemetry.acknowledge) {
-                    co_await handle(c, session, input);
+                    co_await handle(c, session, input, telemetry.publish);
                 }
                 requestFlush(live);
             }
@@ -457,23 +460,27 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
     }
 
     static ruvia::Task<void> maintainSession(std::shared_ptr<LiveSession> live) {
-        // A live socket object is not proof of a responsive device. Deployed
-        // 0.3.38 firmware already answers application Ping. Only actual inbound
-        // messages renew the routing lease in the read loop.
+        // 仅真实入站消息续租。旧固件看门狗可能小于 300 秒，必须显式声明
+        // 能力后才启用稀疏心跳；不以协议版本或软件版本字符串猜测。
+        const auto probeInterval = live->session->sparseHeartbeat
+            ? std::chrono::seconds(300) : std::chrono::seconds(20);
+        const auto idleTimeout = live->session->sparseHeartbeat
+            ? std::chrono::seconds(900) : std::chrono::seconds(60);
         try {
             while (live->active && !live->scope->stopRequested()) {
-                (void)co_await ruvia::sleepFor(live->context->worker(), std::chrono::seconds(20), live->scope->stopToken());
+                (void)co_await ruvia::sleepFor(live->context->worker(), probeInterval, live->scope->stopToken());
                 if (!live->active || live->scope->stopRequested()) {
                     break;
                 }
-                const auto& session = *live->session;
-                if (std::chrono::steady_clock::now() - session.lastInbound >=
-                    std::chrono::seconds(60)) {
+                const auto idle = std::chrono::steady_clock::now() - live->session->lastInbound;
+                if (idle >= idleTimeout) {
                     live->socket->abort();
                     break;
                 }
-                // This also services the old firmware's application watchdog
-                // without requesting extra business telemetry.
+                // 新固件主动心跳并接收确认；此任务仅检查超时，不主动发送应用 Ping。
+                if (live->session->sparseHeartbeat) {
+                    continue;
+                }
                 auto keepalive = makeEnvelope(*live->context, *live->session);
                 keepalive.mutable_ping()->set_nonce(keepalive.sequence());
                 enqueue(*live->session, keepalive);
@@ -611,7 +618,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         return { session.nodeId, session.epoch, session.protocolVersion, session.workerIndex };
     }
 
-    static ruvia::Task<void> handle(ruvia::Context& c, Session& session, const pb::Envelope& input) {
+    static ruvia::Task<void> handle(ruvia::Context& c, Session& session, const pb::Envelope& input, bool freshTelemetry) {
         switch (input.payload_case()) {
             case pb::Envelope::kHeartbeat: {
                 constexpr std::uint64_t retryIntervalMs = 30000;
@@ -637,8 +644,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             case pb::Envelope::kTelemetryBatch: {
                 // Legacy firmware cannot attach status to telemetry. Request it at
                 // report time using the existing acknowledgement it understands.
-                if (std::any_of(input.telemetry_batch().records().begin(), input.telemetry_batch().records().end(), [](const auto& record) {
-                        return !record.has_device_status();
+                if (!session.sparseHeartbeat && freshTelemetry && std::any_of(input.telemetry_batch().records().begin(), input.telemetry_batch().records().end(), [](const auto& record) {
+                        return !record.has_device_status() && !record.derived_update();
                     })) {
                     auto statusRequest = makeEnvelope(c, session);
                     statusRequest.mutable_heartbeat_ack()->set_request_device_status(true);

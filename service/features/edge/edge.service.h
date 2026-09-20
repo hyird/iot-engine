@@ -702,7 +702,7 @@ inline ruvia::DbQuery buildItemsQuery(std::string_view nodeId) {
             jsonText(query, protocolParams, "device_code"),
             query.column(service::edge::persistence::DeviceModelEntity::columnName<"protocol">(), "p"),
             textDefault(query, jsonText(query, protocolParams, "timezone"), "+08:00"),
-            textDefault(query, jsonText(query, modelConfig, "readInterval"), "1"),
+            textDefault(query, jsonText(query, modelConfig, "readInterval"), "300"),
             textDefault(query, jsonText(query, protocolParams, "online_timeout"), "300"),
             textDefault(query, jsonText(query, protocolParams, "slave_id"), "1"),
             nullableDefault(query, jsonText(query, protocolParams, "modbus_mode"), "TCP"),
@@ -1323,7 +1323,7 @@ class ConfigService final {
         return error == std::errc{} && end == value.data() + value.size() ? result : fallback;
     }
 
-    static std::uint32_t positiveCeil(std::string_view value, double fallback = 1.0) {
+    static std::uint32_t positiveCeil(std::string_view value, double fallback = 300.0) {
         double parsed = config::detail::number(value, fallback);
         if (parsed < 1.0)
             parsed = 1.0;

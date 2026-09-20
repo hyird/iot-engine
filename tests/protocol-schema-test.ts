@@ -1,11 +1,32 @@
 import { expect, test } from 'bun:test';
 
-import { numberOrDefault } from '../web/pages/iot/protocol/protocol.service';
+import {
+    defaultConfig,
+    getModbusDeviceTypeFormValues,
+    getS7DeviceTypeFormValues,
+    numberOrDefault,
+} from '../web/pages/iot/protocol/protocol.service';
 import {
     derivedPointSchema,
     protocolCreateSchema,
     validatePointExpression,
 } from '../web/pages/iot/protocol/protocol.schema';
+
+test('读取上报缺省为五分钟，显式间隔与命令快速读取保持不变', () => {
+    expect(defaultConfig().readInterval).toBe(300);
+    for (const form of [getModbusDeviceTypeFormValues, getS7DeviceTypeFormValues]) {
+        expect(form().readInterval).toBe(300);
+        expect(form().commandFastReadInterval).toBe(1);
+        for (const interval of [1, 5, 60, 300, 3600]) {
+            const value = form({
+                id: 'test', name: 'test', protocol: 'Modbus', enabled: true,
+                config: { readInterval: interval, commandFastReadInterval: 2 },
+            });
+            expect(value.readInterval).toBe(interval);
+            expect(value.commandFastReadInterval).toBe(2);
+        }
+    }
+});
 
 test('公式校验接受运行时支持的语法', () => {
     for (const expression of [
