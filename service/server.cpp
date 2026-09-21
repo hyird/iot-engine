@@ -417,6 +417,7 @@ void configureWeb(ruvia::App& app, const std::filesystem::path& runtime) {
     config.root = webRoot;
     config.staticOptions.indexFile = "index.html";
     config.staticOptions.cacheControl = "no-cache";
+    config.staticOptions.fileTypes.kind = ruvia::StaticFileTypePolicy::Kind::kAll;
     app.documentRoot(std::move(config));
 }
 

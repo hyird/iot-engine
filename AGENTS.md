@@ -359,15 +359,15 @@ build/                      # 构建、后端生成代码、临时验证产物
 | 项目 | 配置 |
 | --- | --- |
 | 主机 / 域名 | `43.142.33.210` / `i.a-z.xin` |
-| 入口 | Nginx 终止 TLS → `127.0.0.1:3000`；后端不监听公网 |
-| 服务 | `iot.service`；目录 `/opt/iot`；入口 `server`；静态目录 `web/` |
+| 入口 | Nginx 仅终止 TLS 并反代 `127.0.0.1:3000`；不托管静态文件或固件 |
+| 服务 | `iot.service`；目录 `/opt/iot`；入口 `server`；静态与固件由 `web/` 直接托管 |
 | 数据库 | 独立 `iot_engine`，不改旧库 |
 | Redis | `127.0.0.1:6379`；AOF；`/opt/redis/data` |
 | 镜像源 | 直接拉取官方镜像，不使用镜像代理；TimescaleDB 使用 `timescale/timescaledb:latest-pg18`，Redis 使用 `redis:latest`，由 Compose 管理 |
-| 制品目录 | `/opt/iot/releases/<短 SHA>/` |
+| 运行目录 | `/opt/iot/server`、`/opt/iot/web/` 均为实文件/目录，不用软链接 |
 
 - 凭据不得写入提交、制品、日志或文档；生产 `.env` 权限 `600`，密钥在服务器生成。
-- Nginx 以 `http` 用户直接提供 `/downloads/`，`/opt/iot/releases/<短 SHA>/` 与其中 `web/` 必须 `755`，禁止用 `umask 077` 创建前端目录。
+- `/opt/iot` 与 `/opt/iot/web` 必须 `755`，禁止用 `umask 077` 创建前端目录；固件放在 `web/downloads/firmware/`，由后端静态托管。
 - 切换前核验哈希、架构、依赖、静态入口，备份二进制、静态文件、Nginx 配置。
-- 切换后检查服务、迁移、数据库、Redis、Nginx、证书、实际前端资源，以及 `https://i.a-z.xin/downloads/iot-egine-Setup-x64.exe` 返回 200 且支持 Range。
+- 切换后检查服务、迁移、数据库、Redis、Nginx、证书、实际前端资源；固件 URL 由后端返回 200 且支持 Range。
 - 关键检查失败立即回滚，验证完成前保留备份。
