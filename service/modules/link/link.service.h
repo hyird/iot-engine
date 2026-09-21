@@ -157,7 +157,7 @@ class LinkService {
             auto response = co_await c.httpClient("link-public-ip").send({ .headers = headers });
             if (response.status().value() == 200) {
                 const auto body = co_await response.body().readAll(64U * 1024U);
-                const auto resolved = parsePublicIp(body);
+                const auto resolved = parsePublicIp(std::string_view(reinterpret_cast<const char*>(body.data()), body.size()));
                 if (!resolved.empty()) {
                     cachedPublicIp_ = resolved;
                     publicIpCachedAt_ = std::chrono::steady_clock::now();

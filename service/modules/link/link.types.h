@@ -19,7 +19,7 @@ RUVIA_REQUEST_MODEL(LinkEndpointBody, RUVIA_OPTIONAL_FIELD(transport, ruvia::Str
                     RUVIA_OPTIONAL_FIELD(port, ruvia::Int64),
                     RUVIA_OPTIONAL_FIELD(targets, ruvia::Array<LinkTargetBody>));
 
-RUVIA_REQUEST_MODEL(SaveLinkBody, RUVIA_OPTIONAL_FIELD(execution, ruvia::String, RUVIA_ONE_OF("采集位置无效", "collector", "edge")), RUVIA_OPTIONAL_FIELD_NAME("edge_node_id", edgeNodeId, ruvia::String), RUVIA_REQUIRED_FIELD(name, ruvia::String, RUVIA_MAX(100, "链路名称不能超过 100 个字符")), RUVIA_REQUIRED_FIELD(protocol, ruvia::String, RUVIA_ONE_OF("协议无效", "SL651", "Modbus", "S7", "MC", "FINS", "DLT645")), RUVIA_REQUIRED_FIELD(endpoint, LinkEndpointBody), RUVIA_OPTIONAL_FIELD(status, ruvia::String, RUVIA_ONE_OF("状态无效", "enabled", "disabled")));
+RUVIA_REQUEST_MODEL(SaveLinkBody, RUVIA_OPTIONAL_FIELD(execution, ruvia::String, RUVIA_ONE_OF("采集位置无效", "collector", "edge")), RUVIA_OPTIONAL_FIELD_NAME("edge_node_id", edgeNodeId, ruvia::String), RUVIA_REQUIRED_FIELD(name, ruvia::String, RUVIA_MIN(1, "链路名称不能为空"), RUVIA_MAX(100, "链路名称不能超过 100 个字符")), RUVIA_REQUIRED_FIELD(protocol, ruvia::String, RUVIA_ONE_OF("协议无效", "SL651", "Modbus", "S7", "MC", "FINS", "DLT645")), RUVIA_REQUIRED_FIELD(endpoint, LinkEndpointBody), RUVIA_OPTIONAL_FIELD(status, ruvia::String, RUVIA_ONE_OF("状态无效", "enabled", "disabled")));
 
 RUVIA_REQUEST_MODEL(LinkEventsQuery, RUVIA_OPTIONAL_FIELD_NAME("debugLinkId", debugLinkId, ruvia::String, RUVIA_CUSTOM("调试链路 ID 必须是 UUID", service::common::isUuidField)));
 

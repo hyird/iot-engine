@@ -1,4 +1,5 @@
 #include "service/middleware/api_upload.h"
+#include "service/middleware/validation.h"
 #include "service/features/edge/edge.config.h"
 #include <algorithm>
 #include <cctype>
@@ -419,13 +420,13 @@ void configureWeb(ruvia::App& app, const std::filesystem::path& runtime) {
     app.documentRoot(std::move(config));
 }
 
-ruvia::Task<> handleError(
+ruvia::Task<ruvia::HttpResponse> handleError(
     ruvia::Context& c,
     ruvia::HttpErrorInfo info
 ) {
     c.status(info.status());
     const auto message = info.message().empty() ? std::string_view("请求失败") : info.message();
-    co_return c.json(service::common::error(c, service::common::errorCode(info.code(), info.status().value()), message));
+    co_return c.json(service::common::error(c, service::middleware::requestErrorCode(c, info), message));
 }
 
 // Only the supervisor visits the owner collection. Each posted operation owns one

@@ -417,25 +417,21 @@ public:
 
     static ruvia::Task<std::string> prepare(ruvia::WebWorkerContext& context,
                                            std::string_view payload) {
-        const auto request = ruvia::JsonValue::parse(payload);
+        const auto request = ruvia::fromJson<PrepareCommandBody>(payload, {.resource = context.pool()});
         if (!request) common::fail(18010, "Invalid command preparation request", 400);
-        const auto id = request->get<ruvia::String>("deviceId");
-        const auto elements = service::utils::jsonField(*request, "elements");
-        if (!id || !common::isUuid(id->view()) || !elements)
-            common::fail(18010, "Invalid command preparation parameters", 400);
-        auto remaining = elements->view();
-        const auto values = ruvia::detail::parseJsonValue<ruvia::Array<ruvia::Array<ruvia::String>>>(
-            remaining, context.pool());
-        if (!values || values->empty() || values->size() > 256)
+        const auto id = request->get<"deviceId">().view();
+        if (!common::isUuid(id)) common::fail(18010, "Invalid command preparation parameters", 400);
+        const auto& values = request->get<"elements">();
+        if (values.empty() || values.size() > 256)
             common::fail(18010, "Invalid command preparation elements", 400);
         std::vector<service::collector::CommandElementValue> requested;
-        for (const auto& pair : *values) {
+        for (const auto& pair : values) {
             if (pair.size() != 2)
                 common::fail(18010, "Invalid command preparation element", 400);
             requested.push_back({std::string(pair[0].view()), std::string(pair[1].view())});
         }
         auto transaction = co_await context.db("control").beginTransaction();
-        const auto prepared = co_await compileDevice(context, id->view(), std::move(requested), transaction);
+        const auto prepared = co_await compileDevice(context, id, std::move(requested), transaction);
         co_await transaction.commit();
         co_return encode(prepared);
     }

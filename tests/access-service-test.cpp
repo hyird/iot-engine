@@ -37,10 +37,10 @@ void requireNoUnsafeParsers(std::string_view source) {
 }
 
 void requireStrictPresentFieldTypes(std::string_view source) {
-    require(source.find("std::string(field) + \" 必须是字符串\"") != std::string_view::npos,
-            "access service treats present non-string optional fields as absent");
-    require(source.find("std::string(field) + \" 必须是整数\"") != std::string_view::npos,
-            "access service treats present non-integer optional fields as absent");
+    require(source.find("RUVIA_OPTIONAL_FIELD(name, ruvia::String,") != std::string_view::npos,
+            "access request does not validate optional string fields through Model");
+    require(source.find("RUVIA_OPTIONAL_FIELD(timeoutSeconds, ruvia::Int64,") != std::string_view::npos,
+            "access request does not validate optional integer fields through Model");
     require(source.find(
                 "const auto scopes = payload.get<ruvia::Array<ruvia::String>>(\"scopes\")") ==
                 std::string_view::npos,
@@ -53,9 +53,12 @@ void requireStrictPresentFieldTypes(std::string_view source) {
                 "const auto events = payload.get<ruvia::Array<ruvia::String>>(\"eventTypes\")") ==
                 std::string_view::npos,
             "webhook update ignores present non-array eventTypes");
-    require(source.find("payload.get<ruvia::Bool>(field)") != std::string_view::npos,
+    require(source.find("RUVIA_OPTIONAL_FIELD(skipTlsVerify, ruvia::Bool)") != std::string_view::npos,
             "webhook TLS verification flag is not strictly parsed as boolean");
-
+    for (const auto field : {"expiresAt", "remark", "secret"}) {
+        require(source.find(std::string("payload.isPresent<\"") + field + "\">()") != std::string_view::npos,
+                "nullable update field lost its original input presence");
+    }
 }
 
 void requireCanonicalBooleanPointValues(std::string_view source) {
@@ -120,7 +123,7 @@ int main() {
                 "access service still defines URL structure validation");
         require(source.find("open_access.schema.h") == std::string::npos,
                 "access service still depends on request schema");
-        require(types.find("validateWebhookUrl(*result.url)") != std::string::npos,
+        require(types.find("RUVIA_CUSTOM(\"Webhook 地址必须是有效的 HTTP(S) URL\", isWebhookUrl)") != std::string::npos,
                 "webhook input does not validate its URL before business execution");
         requireCanonicalBooleanPointValues(source);
         requireAccessQueriesUseOrm(featureSource);

@@ -210,7 +210,8 @@ inline std::optional<ruvia::JsonValue> jsonField(const ruvia::JsonValue& object,
         }
         return true;
     });
-    return valid ? result : std::nullopt;
+    if (!valid) return std::nullopt;
+    return result;
 }
 
 } // namespace service::utils

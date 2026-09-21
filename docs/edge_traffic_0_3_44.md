@@ -101,3 +101,14 @@
 - 新旧协议字段向后兼容；旧固件不显示虚假的零流量。旧平台不会确认新统计样本，需平台升级后才能推进统计区间，不影响原有业务心跳。
 - 本次已通过固件 Windows 主机 Release 17/17、相关源码 MIPS 对象编译，以及构建机临时目录中的 Linux 合成事件测试（平台隔离、确认重试、重连尾部、IPv6、64 位计数）；未修改构建机发布源码目录。
 - 本次按用户要求先推送：修改文件 Biome 格式及 `git diff --check` 通过；新增代码的后端完整 Release 构建被中断，尚未完成对应 CTest、前端类型/lint 全量复验、真实网络计数对照及完整 OpenWrt 镜像构建。上述旧版验证结果不能替代本次验收。
+
+### 36a5a83 本地复验与长连接阻塞
+
+- 本轮使用隔离安装的 Bun `1.3.14`、CI 固定 vcpkg `4bca8fd8654e5ba76f92661db7bfe954768ad8ef`、Clang 19 与 GCC 14 标准库；未修改全局工具、依赖锁文件或生产环境。
+- `bun install --frozen-lockfile`、前端类型检查、lint、生产构建、最新两个前端修改文件的 Biome 格式检查通过。CI 所列前端契约测试加日志级别测试共 120 项通过；lint 有一条非阻断信息提示，未做无关修改。
+- `build/backend/` 的完整 Release 构建（自有目标启用警告即错误）及 CTest **37/37** 通过，包括此前失败的 `gb28181-sip`；此结果仅覆盖本机 Linux，不代替 Windows 验收。
+- 使用只绑定回环地址的独立 TimescaleDB `2.29.2-pg16`、Redis `7-alpine` 测试容器，完成新库 54 项迁移，并运行原始 `tests/edge-liveness-integration.ts`。这不是生产 PG18/Redis 镜像验证。约 905 秒后复现 `node heartbeat fixture did not run`，长连接验收仍失败。
+- 额外诊断副本仅写入 `build/verification/`，记录合成节点的 Hello、关闭与心跳时间。两条稀疏心跳连接分别在 Hello 后 74.154 秒、74.165 秒关闭，关闭码 `1006`，心跳发送数均为 0；旧固件静默连接约 60 秒关闭。诊断副本在获得关闭证据后终止，未宣称其完成整个测试。
+- 根因定位：固定 Ruvia 提交 `beabe540cdee1d0489a3f9868033cdcb8ebe53c6` 的 `ruvia-web/include/ruvia/web/ServerConfig.h` 默认 `idleTimeout=75s`；`HttpWebSocketSession.h` 将升级连接标为 `kLongLived`，而 `ruvia-core/src/ConnectionScanner.cpp` 的 `isTimedOut()` 仍对该阶段应用 `idleTimeout`。网关配置的 WS Ping 300 秒、Pong 等待 60 秒和应用空闲超时 900 秒无法阻止扫描器提前断开。旧固件每 20 秒的应用通信掩盖了此冲突。
+- 尚未修改运行策略：直接放宽全站 HTTP 空闲超时会改变无关连接行为；修复 Ruvia 则涉及依赖升级及公开 API 验证。下一步须明确该修复范围，不能靠增加频繁探活绕过节流目标，不能把测试改绿代替真实长连接验收。
+- 证据日志位于 `build/verification/`：`web-{typecheck,lint,build}.log`、`web-tests.log`、`backend-{configure,build,ctest}.log`、`edge-liveness.log`、`edge-liveness-diagnostic.log`。测试服务、探针及容器已清理；没有部署或发布制品。真实网络计数对照、浏览器行为、完整 OpenWrt 镜像及实机兼容性仍未验证。

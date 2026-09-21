@@ -49,8 +49,8 @@ int main() {
         const auto runtimeSource = readSource("service/features/alert/alert.runtime.h");
         requireAbsent(runtimeSource, "std::stoull(", "alert runtime uses unsafe/partial stoull parsing");
         const auto serviceSource = readSource("service/modules/alert/alert.types.h");
-        require(serviceSource.find("std::string(field) + \" 必须是字符串\"") != std::string::npos, "alert service treats present non-string optional fields as absent");
-        require(serviceSource.find("std::string(field) + \" 必须是整数\"") != std::string::npos, "alert service treats present non-integer fields as default values");
+        require(serviceSource.find("RUVIA_OPTIONAL_FIELD(remark, ruvia::String") != std::string::npos, "alert remark must have a typed model field");
+        require(serviceSource.find("silenceDuration, ruvia::Int64") != std::string::npos, "alert silence duration must have an integer model field");
 
         service::alert::alertRequest::validateConditions(
             R"([{"type":"threshold","elementKey":"temperature","operator":">","value":"12.5"}])"

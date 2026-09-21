@@ -565,16 +565,11 @@ class WebhookRuntime final {
 
     static std::vector<std::pair<std::string, std::string>> parseHeaders(std::string_view json) {
         std::vector<std::pair<std::string, std::string>> result;
-        (void)ruvia::detail::visitJsonObjectFields(
-            ruvia::detail::ResolvedPmrResourceTag{},
-            json,
-            std::pmr::get_default_resource(),
-            [&](std::string_view name, std::string_view raw) {
-                auto input = raw;
-                const auto value = ruvia::detail::parseJsonValue<ruvia::String>(
-                    input,
-                    std::pmr::get_default_resource()
-                );
+        const auto object = ruvia::JsonValue::parse(json);
+        if (!object || !object->isObject()) return result;
+        (void)service::utils::visitJsonFields(*object,
+            [&](std::string_view name, std::string_view) {
+                const auto value = object->get<ruvia::String>(name);
                 if (value) {
                     validateWebhookHeader(name, value->view(), true);
                     result.emplace_back(name, value->view());

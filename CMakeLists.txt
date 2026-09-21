@@ -56,7 +56,7 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(ruvia
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    GIT_TAG beabe540cdee1d0489a3f9868033cdcb8ebe53c6)
+    GIT_TAG 636593ead5a4f111baa899b9d5f37a73befeeef3)
 FetchContent_MakeAvailable(ruvia)
 
 FetchContent_Declare(nanopb
@@ -454,6 +454,10 @@ iot_engine_add_test(gb28181-media
         NOMINMAX
         WIN32_LEAN_AND_MEAN
         MediaKitApi_STATIC)
+
+iot_engine_add_test(model-migration LARGE
+    SOURCES tests/model-migration-test.cpp
+    LIBRARIES ruvia::web)
 
 iot_engine_add_test(gb28181-request LARGE
     SOURCES tests/gb28181-request-test.cpp

@@ -26,7 +26,7 @@ test('business controllers expose HTTP and reserve WS events for edge debugging'
         'edge.terminal.output.ack', 'edge.terminal.resize', 'edge.terminal.write',
     ]);
     const device = await readFile('service/modules/device/device.controller.h', 'utf8');
-    expect(device).toContain('RUVIA_GET("/", list)');
+    expect(device).toContain('RUVIA_GET("/", list, service::middleware::PermissionMiddleware<"iot:device:query">)');
     expect(device).toContain('RUVIA_PUT("/:id", update');
     expect(device).toContain('RUVIA_GET_SSE("/events", deviceEvents, ruvia::QueryModel<DeviceEventsQuery>)');
     expect(device).not.toContain('RUVIA_GET_SSE("/realtime/events"');

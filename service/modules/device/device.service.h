@@ -1999,25 +1999,6 @@ return result
         return std::string(entries[index].string());
     }
 
-    static std::optional<ruvia::JsonValue> jsonField(const ruvia::JsonValue& object, std::string_view field) {
-        if (!object.isObject()) {
-            return std::nullopt;
-        }
-        std::optional<ruvia::JsonValue> result;
-        const auto valid = ruvia::detail::visitJsonObjectFields(
-            ruvia::detail::ResolvedPmrResourceTag{},
-            object.view(),
-            std::pmr::get_default_resource(),
-            [&](std::string_view key, std::string_view value) {
-                if (key == field) {
-                    result = ruvia::JsonValue::parse(value);
-                }
-                return true;
-            }
-        );
-        return valid ? result : std::nullopt;
-    }
-
     static std::optional<std::string> jsonString(const ruvia::JsonValue& object, std::string_view field) {
         const auto value = object.template get<ruvia::String>(field);
         if (!value) {
@@ -2030,7 +2011,7 @@ return result
         if (const auto value = object.template get<ruvia::Int64>(field)) {
             return static_cast<std::int64_t>(*value);
         }
-        const auto raw = jsonField(object, field);
+        const auto raw = object.get<ruvia::JsonValue>(field);
         if (!raw) {
             return fallback;
         }
@@ -2039,7 +2020,7 @@ return result
     }
 
     static double jsonDouble(const ruvia::JsonValue& object, std::string_view field, double fallback) {
-        const auto raw = jsonField(object, field);
+        const auto raw = object.get<ruvia::JsonValue>(field);
         if (!raw) {
             return fallback;
         }
@@ -2133,10 +2114,7 @@ return result
                 hasElementIds = true;
                 const auto parsed = ruvia::JsonValue::parse(entries[index + 1].string());
                 if (parsed && parsed->isObject()) {
-                    (void)ruvia::detail::visitJsonObjectFields(
-                        ruvia::detail::ResolvedPmrResourceTag{},
-                        parsed->view(),
-                        std::pmr::get_default_resource(),
+                    (void)service::utils::visitJsonFields(*parsed,
                         [&](std::string_view key, std::string_view) {
                             if (!key.empty()) {
                                 elementIds.emplace(key);

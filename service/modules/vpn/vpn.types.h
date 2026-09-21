@@ -1,26 +1,22 @@
 #pragma once
-#include "service/utils/json.h"
-#include "service/common/http.h"
-#include <unordered_set>
-#include <cctype>
+
 #include <algorithm>
-
-#include "service/common/uuid.h"
-
+#include <cctype>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <ruvia/web/Validation.h>
 
+#include "service/common/http.h"
 #include "service/common/message.h"
+#include "service/common/uuid.h"
 #include "service/utils/network.h"
 
 namespace service::vpn {
-
 namespace module {
-
 using service::message::vpn::kOverlayPool;
 using service::message::vpn::kVirtualLanPool;
 using service::message::vpn::mappedVirtualCidr;
@@ -32,188 +28,77 @@ using service::utils::network::parseCidr;
 using service::utils::network::parseIpv4;
 
 inline bool virtualMappingConflicts(const Ipv4Cidr& candidate, const std::optional<Ipv4Cidr>& realTarget, const std::optional<Ipv4Cidr>& existingVirtual) {
-    return (realTarget && candidate.overlaps(*realTarget)) ||
-        (existingVirtual && candidate.overlaps(*existingVirtual));
+    return (realTarget && candidate.overlaps(*realTarget)) || (existingVirtual && candidate.overlaps(*existingVirtual));
 }
-
 inline bool realTargetConflictsVirtual(const Ipv4Cidr& candidate, const std::optional<Ipv4Cidr>& existingVirtual) {
     return existingVirtual && candidate.overlaps(*existingVirtual);
 }
-
 } // namespace module
 
+inline bool validVpnNodeSelection(const ruvia::Array<ruvia::String>& values) {
+    std::unordered_set<std::string> unique;
+    for (const auto& value : values) {
+        if (!service::common::isUuid(value.view())) return false;
+        std::string id(value.view());
+        std::transform(id.begin(), id.end(), id.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (!unique.insert(std::move(id)).second) return false;
+    }
+    return true;
+}
+
 RUVIA_REQUEST_MODEL(VpnIdParams, RUVIA_REQUIRED_FIELD(id, ruvia::String, RUVIA_CUSTOM("VPN ID 必须是 UUID", service::common::isUuidField)));
-
 RUVIA_REQUEST_MODEL(VpnListQuery, RUVIA_OPTIONAL_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1), RUVIA_MIN(1, "page 必须大于 0")), RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64, RUVIA_DEFAULT(20), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")), RUVIA_OPTIONAL_FIELD(keyword, ruvia::String), RUVIA_OPTIONAL_FIELD(status, ruvia::String, RUVIA_ONE_OF("VPN 状态无效", "enabled", "disabled")));
-
-struct VpnNetworkInput final {
-    std::optional<std::string> name;
-    std::optional<std::string> overlayCidr;
-    std::optional<std::string> hubEndpoint;
-    std::optional<std::int64_t> hubListenPort;
-};
-
 RUVIA_REQUEST_MODEL(VpnFilterQuery, RUVIA_OPTIONAL_FIELD(networkId, ruvia::String, RUVIA_CUSTOM("networkId 必须是 UUID", service::common::isUuidField)), RUVIA_OPTIONAL_FIELD(edgeNodeId, ruvia::String, RUVIA_CUSTOM("edgeNodeId 必须是 UUID", service::common::isUuidField)));
 
-struct VpnRouteInput final {
-    std::string networkId;
-    std::string edgePeerId;
-    std::string targetCidr;
-    std::optional<std::string> virtualCidr;
-};
+RUVIA_REQUEST_MODEL(VpnNetworkBody,
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String, RUVIA_MAX(100, "name 长度超出限制")),
+    RUVIA_OPTIONAL_FIELD(overlayCidr, ruvia::String, RUVIA_MAX(32, "overlayCidr 长度超出限制")),
+    RUVIA_OPTIONAL_FIELD(hubEndpoint, ruvia::String, RUVIA_MAX(255, "hubEndpoint 长度超出限制")),
+    RUVIA_OPTIONAL_FIELD(hubListenPort, ruvia::Int64));
+RUVIA_REQUEST_MODEL(VpnRouteBody,
+    RUVIA_REQUIRED_FIELD(networkId, ruvia::String, RUVIA_CUSTOM("networkId 必须是 UUID", service::common::isUuidField)),
+    RUVIA_REQUIRED_FIELD(edgePeerId, ruvia::String, RUVIA_CUSTOM("edgePeerId 必须是 UUID", service::common::isUuidField)),
+    RUVIA_REQUIRED_FIELD(targetCidr, ruvia::String, RUVIA_MIN(1, "targetCidr 不能为空"), RUVIA_MAX(18, "targetCidr 长度超出限制")),
+    RUVIA_OPTIONAL_FIELD(virtualCidr, ruvia::String, RUVIA_MAX(18, "virtualCidr 长度超出限制")));
+RUVIA_REQUEST_MODEL(VpnRoutePatchBody,
+    RUVIA_OPTIONAL_FIELD(targetCidr, ruvia::String, RUVIA_MAX(18, "targetCidr 长度超出限制")),
+    RUVIA_OPTIONAL_FIELD(lanInterface, ruvia::String, RUVIA_MAX(64, "lanInterface 长度超出限制")),
+    RUVIA_OPTIONAL_FIELD(mode, ruvia::String, RUVIA_MAX(32, "mode 长度超出限制")),
+    RUVIA_OPTIONAL_FIELD(enabled, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD(virtualCidr, ruvia::String, RUVIA_MAX(18, "virtualCidr 长度超出限制")));
+RUVIA_REQUEST_MODEL(VpnPeerBody,
+    RUVIA_OPTIONAL_FIELD(networkId, ruvia::String, RUVIA_CUSTOM("networkId 必须是 UUID", service::common::isUuidField)),
+    RUVIA_REQUIRED_FIELD(peerType, ruvia::String, RUVIA_MIN(1, "peerType 不能为空"), RUVIA_MAX(16, "peerType 长度超出限制")),
+    RUVIA_REQUIRED_FIELD(name, ruvia::String, RUVIA_MIN(1, "name 不能为空"), RUVIA_MAX(100, "name 长度超出限制")),
+    RUVIA_OPTIONAL_FIELD(publicKey, ruvia::String, RUVIA_MAX(64, "publicKey 长度超出限制")),
+    RUVIA_OPTIONAL_FIELD(edgeNodeId, ruvia::String, RUVIA_CUSTOM("edgeNodeId 必须是 UUID", service::common::isUuidField)),
+    RUVIA_OPTIONAL_FIELD(allowedRoutes, ruvia::Array<ruvia::String>, RUVIA_MAX(10000, "allowedRoutes 数量超出限制")));
+RUVIA_REQUEST_MODEL(VpnPeerKeyBody, RUVIA_REQUIRED_FIELD(publicKey, ruvia::String, RUVIA_MIN(1, "publicKey 不能为空"), RUVIA_MAX(64, "publicKey 长度超出限制")));
+RUVIA_REQUEST_MODEL(VpnEnrollmentBody,
+    RUVIA_OPTIONAL_FIELD(networkId, ruvia::String, RUVIA_CUSTOM("networkId 必须是 UUID", service::common::isUuidField)),
+    RUVIA_OPTIONAL_FIELD(expiresInSec, ruvia::Int64));
+RUVIA_REQUEST_MODEL(VpnClientEnrollmentBody,
+    RUVIA_REQUIRED_FIELD(token, ruvia::String, RUVIA_MIN(1, "token 不能为空"), RUVIA_MAX(128, "token 长度超出限制")),
+    RUVIA_REQUIRED_FIELD(publicKey, ruvia::String, RUVIA_MIN(1, "publicKey 不能为空"), RUVIA_MAX(64, "publicKey 长度超出限制")),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String, RUVIA_MAX(100, "name 长度超出限制")));
+RUVIA_REQUEST_MODEL(VpnDesktopPeerBody,
+    RUVIA_REQUIRED_FIELD(name, ruvia::String, RUVIA_MIN(1, "name 不能为空"), RUVIA_MAX(100, "name 长度超出限制")),
+    RUVIA_REQUIRED_FIELD(publicKey, ruvia::String, RUVIA_MIN(1, "publicKey 不能为空"), RUVIA_MAX(64, "publicKey 长度超出限制")),
+    RUVIA_REQUIRED_FIELD(edgeNodeIds, ruvia::Array<ruvia::String>, RUVIA_MAX(64, "最多选择 64 个节点"), RUVIA_CUSTOM("Edge 节点 ID 必须为不重复的 UUID", validVpnNodeSelection)));
+RUVIA_REQUEST_MODEL(VpnDesktopSelectionBody,
+    RUVIA_REQUIRED_FIELD(edgeNodeIds, ruvia::Array<ruvia::String>, RUVIA_MAX(64, "最多选择 64 个节点"), RUVIA_CUSTOM("Edge 节点 ID 必须为不重复的 UUID", validVpnNodeSelection)));
 
-struct VpnRoutePatch final {
-    std::optional<std::string> targetCidr;
-    std::optional<std::string> lanInterface;
-    std::optional<std::string> mode;
-    std::optional<bool> enabled;
-    std::optional<std::string> virtualCidr;
-};
-
-struct VpnPeerInput final {
-    std::optional<std::string> networkId;
-    std::string peerType;
-    std::string name;
-    std::optional<std::string> publicKey;
-    std::optional<std::string> edgeNodeId;
-    std::vector<std::string> allowedRoutes;
-};
-
-struct VpnPeerKeyInput final {
-    std::string publicKey;
-};
-
-struct VpnEnrollmentInput final {
-    std::optional<std::string> networkId;
-    std::optional<std::int64_t> expiresInSec;
-};
-
-struct VpnClientEnrollmentInput final {
-    std::string token;
-    std::string publicKey;
-    std::optional<std::string> name;
-};
-
-struct VpnDesktopPeerInput final {
-    std::string name;
-    std::string publicKey;
-    std::vector<std::string> edgeNodeIds;
-};
-
-struct VpnDesktopSelectionInput final {
-    std::vector<std::string> edgeNodeIds;
-};
-
-
-
-namespace vpnRequest {
-inline std::optional<std::string> text(const ruvia::JsonValue& object, std::string_view field, std::size_t maximum, bool required = false, bool uuid = false);
-inline std::optional<std::int64_t> integer(const ruvia::JsonValue& object, std::string_view field);
-inline std::optional<bool> boolean(const ruvia::JsonValue& object, std::string_view field);
-inline std::vector<std::string> array(const ruvia::JsonValue& object, std::string_view field, bool nodes);
-inline VpnNetworkInput parseNetworkInput(const ruvia::JsonValue& object);
-inline VpnRouteInput parseRouteInput(const ruvia::JsonValue& object);
-inline VpnRoutePatch parseRoutePatch(const ruvia::JsonValue& object);
-inline VpnPeerInput parsePeerInput(const ruvia::JsonValue& object);
-inline VpnPeerKeyInput parsePeerKeyInput(const ruvia::JsonValue& object);
-inline VpnEnrollmentInput parseEnrollmentInput(const ruvia::JsonValue& object);
-inline VpnClientEnrollmentInput parseClientEnrollmentInput(const ruvia::JsonValue& object);
-inline VpnDesktopPeerInput parseDesktopPeerInput(const ruvia::JsonValue& object);
-inline VpnDesktopSelectionInput parseDesktopSelectionInput(const ruvia::JsonValue& object);
-
-inline std::optional<std::string> text(const ruvia::JsonValue& object, std::string_view field, std::size_t maximum, bool required, bool uuid) {
-        if (!object.isObject()) {
-            service::common::fail(21001, "VPN 请求必须是 JSON 对象", 400);
-        }
-        if (!service::utils::jsonField(object, field)) {
-            if (required) {
-                service::common::fail(21001, std::string(field) + " 不能为空", 400);
-            }
-            return std::nullopt;
-        }
-        const auto value = object.get<ruvia::String>(field);
-        if (!value || value->size() > maximum || (required && value->empty()) || (uuid && !service::common::isUuid(value->view()))) {
-            service::common::fail(21001, std::string(field) + " 格式无效", 400);
-        }
-        return std::string(value->view());
+inline std::optional<std::string> optionalVpnText(const std::optional<ruvia::String>& value) {
+    return value ? std::optional<std::string>(value->view()) : std::nullopt;
+}
+inline std::vector<std::string> normalizeVpnNodeIds(const ruvia::Array<ruvia::String>& values) {
+    std::vector<std::string> result;
+    result.reserve(values.size());
+    for (const auto& value : values) {
+        auto& id = result.emplace_back(value.view());
+        std::transform(id.begin(), id.end(), id.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     }
-
-inline std::optional<std::int64_t> integer(const ruvia::JsonValue& object, std::string_view field) {
-        if (!object.isObject()) {
-            service::common::fail(21001, "VPN 请求必须是 JSON 对象", 400);
-        }
-        if (!service::utils::jsonField(object, field)) {
-            return std::nullopt;
-        }
-        const auto value = object.get<ruvia::Int64>(field);
-        if (!value) {
-            service::common::fail(21001, std::string(field) + " 必须是整数", 400);
-        }
-        return static_cast<std::int64_t>(*value);
-    }
-
-inline std::optional<bool> boolean(const ruvia::JsonValue& object, std::string_view field) {
-        if (!object.isObject()) {
-            service::common::fail(21001, "VPN 请求必须是 JSON 对象", 400);
-        }
-        if (!service::utils::jsonField(object, field)) {
-            return std::nullopt;
-        }
-        const auto value = object.get<ruvia::Bool>(field);
-        if (!value) {
-            service::common::fail(21001, std::string(field) + " 必须是布尔值", 400);
-        }
-        return static_cast<bool>(*value);
-    }
-
-inline std::vector<std::string> array(const ruvia::JsonValue& object, std::string_view field, bool nodes) {
-        if (!nodes && !service::utils::jsonField(object, field)) {
-            return {};
-        }
-        const auto values = object.get<ruvia::Array<ruvia::String>>(field);
-        if (!values || values->size() > (nodes ? 64 : 10000)) {
-            service::common::fail(21001, std::string(field) + " 必须是大小受限的字符串数组", 400);
-        }
-        std::vector<std::string> result;
-        std::unordered_set<std::string> unique;
-        for (const auto& value : *values) {
-            std::string id(value.view());
-            if (nodes) {
-                if (!service::common::isUuid(id)) {
-                    service::common::fail(21001, "Edge 节点 ID 必须为 UUID", 400);
-                }
-                std::transform(id.begin(), id.end(), id.begin(), [](unsigned char c) {
-                    return static_cast<char>(std::tolower(c));
-                });
-                if (!unique.insert(id).second) {
-                    service::common::fail(21001, "Edge 节点 ID 不能重复", 400);
-                }
-            }
-            result.push_back(std::move(id));
-        }
-        if (nodes) {
-            std::sort(result.begin(), result.end());
-        }
-        return result;
-    }
-
-inline VpnNetworkInput parseNetworkInput(const ruvia::JsonValue& object) { return VpnNetworkInput{ text(object, "name", 100, false, false), text(object, "overlayCidr", 32, false, false), text(object, "hubEndpoint", 255, false, false), integer(object, "hubListenPort") }; }
-
-inline VpnRouteInput parseRouteInput(const ruvia::JsonValue& object) { return VpnRouteInput{ *text(object, "networkId", 36, true, true), *text(object, "edgePeerId", 36, true, true), *text(object, "targetCidr", 18, true, false), text(object, "virtualCidr", 18, false, false) }; }
-
-inline VpnRoutePatch parseRoutePatch(const ruvia::JsonValue& object) { return VpnRoutePatch{ text(object, "targetCidr", 18, false, false), text(object, "lanInterface", 64, false, false), text(object, "mode", 32, false, false), boolean(object, "enabled"), text(object, "virtualCidr", 18, false, false) }; }
-
-inline VpnPeerInput parsePeerInput(const ruvia::JsonValue& object) { return VpnPeerInput{ text(object, "networkId", 36, false, true), *text(object, "peerType", 16, true, false), *text(object, "name", 100, true, false), text(object, "publicKey", 64, false, false), text(object, "edgeNodeId", 36, false, true), array(object, "allowedRoutes", false) }; }
-
-inline VpnPeerKeyInput parsePeerKeyInput(const ruvia::JsonValue& object) { return VpnPeerKeyInput{ *text(object, "publicKey", 64, true, false) }; }
-
-inline VpnEnrollmentInput parseEnrollmentInput(const ruvia::JsonValue& object) { return VpnEnrollmentInput{ text(object, "networkId", 36, false, true), integer(object, "expiresInSec") }; }
-
-inline VpnClientEnrollmentInput parseClientEnrollmentInput(const ruvia::JsonValue& object) { return VpnClientEnrollmentInput{ *text(object, "token", 128, true, false), *text(object, "publicKey", 64, true, false), text(object, "name", 100, false, false) }; }
-
-inline VpnDesktopPeerInput parseDesktopPeerInput(const ruvia::JsonValue& object) { return VpnDesktopPeerInput{ *text(object, "name", 100, true, false), *text(object, "publicKey", 64, true, false), array(object, "edgeNodeIds", true) }; }
-
-inline VpnDesktopSelectionInput parseDesktopSelectionInput(const ruvia::JsonValue& object) { return VpnDesktopSelectionInput{ array(object, "edgeNodeIds", true) }; }
-} // namespace vpnRequest
-
+    std::sort(result.begin(), result.end());
+    return result;
+}
 } // namespace service::vpn

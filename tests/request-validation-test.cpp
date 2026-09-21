@@ -14,7 +14,7 @@
 #include "service/middleware/request_context.h"
 
 namespace {
-static_assert(std::is_same_v<ruvia::Task<>::value_type, ruvia::HttpResponse>);
+static_assert(std::is_same_v<ruvia::Task<ruvia::HttpResponse>::value_type, ruvia::HttpResponse>);
 RUVIA_RESPONSE_MODEL(CreatedResponse,
     RUVIA_REQUIRED_FIELD(created, ruvia::Bool),
     RUVIA_REQUIRED_FIELD(name, ruvia::String));
@@ -35,7 +35,7 @@ class ValidationRoutes final : public ruvia::Controller<ValidationRoutes> {
     RUVIA_ROUTES_END
 
   private:
-    ruvia::Task<> typedResponse(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> typedResponse(ruvia::Context& c) {
         service::middleware::RequestContext request(c, "test-user");
         if (request.arena() == c.arena()) throw std::runtime_error("业务操作未隔离临时内存");
         service::middleware::RequestContext snapshot(c, "test-user");
@@ -46,35 +46,35 @@ class ValidationRoutes final : public ruvia::Controller<ValidationRoutes> {
         co_return c.json(response);
     }
 
-    ruvia::Task<> createDevice(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> createDevice(ruvia::Context& c) {
 
         co_return c.text("accepted");
     }
-    ruvia::Task<> updateDevice(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> updateDevice(ruvia::Context& c) {
 
         co_return c.text("accepted");
     }
-    ruvia::Task<> network(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> network(ruvia::Context& c) {
 
         co_return c.text("accepted");
     }
-    ruvia::Task<> createUser(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> createUser(ruvia::Context& c) {
 
         co_return c.text("accepted");
     }
-    ruvia::Task<> device(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> device(ruvia::Context& c) {
 
         co_return c.text("accepted");
     }
-    ruvia::Task<> channel(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> channel(ruvia::Context& c) {
 
         co_return c.text("accepted");
     }
-    ruvia::Task<> debug(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> debug(ruvia::Context& c) {
 
         co_return c.text(std::string_view(c.req().validated<service::device::DeviceDebugBody>().get<"enabled">() ? "on" : "off"));
     }
-    ruvia::Task<> query(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> query(ruvia::Context& c) {
         const auto& body = c.req().validated<service::user::UserListQuery>();
         const auto page = std::to_string(body.get<"page">()->value);
         co_return c.text(std::string_view(page));

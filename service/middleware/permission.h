@@ -2,7 +2,8 @@
 
 #include <string_view>
 
-#include <ruvia/web/db/Db.h>
+#include <ruvia/web/Controller.h>
+#include <ruvia/web/FixedString.h>
 
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
@@ -14,5 +15,14 @@ inline ruvia::Task<void> requirePermission(ruvia::Context& c, std::string_view p
     const auto principal = requireAuth(c);
     co_await service::auth::AuthService::requirePermission(c, principal.userId, permission);
 }
+
+template <ruvia::FixedString Permission>
+class PermissionMiddleware final : public ruvia::Middleware {
+  public:
+    ruvia::Task<void> handle(ruvia::Context& c, ruvia::Next& next) {
+        co_await requirePermission(c, Permission.view());
+        co_await next();
+    }
+};
 
 } // namespace service::middleware

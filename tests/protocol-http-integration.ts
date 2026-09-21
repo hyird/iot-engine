@@ -29,6 +29,7 @@ const config = {storagePolicy:'report',readInterval:10,byteOrder:'BIG_ENDIAN',re
 try {
     await request('GET','/v1/protocol/configs',undefined,11004);
     await request('POST','/v1/protocol/configs/test-expression',{},11004);
+    await request('POST','/v1/protocol/configs','{',11004,true);
     actor = admin;
     const probe = {expression:'if(p > 100, p / 1000, p)',inputs:[{alias:'p',value:2500}],unit:'kPa',unitRules:[{condition:'p > 100',unit:'MPa'}]};
     const beforeProbe = (await db`SELECT count(*)::int AS count FROM protocol_config`)[0].count;
@@ -92,7 +93,11 @@ try {
     for (const scale of ['1000000000.000000000001','-1000000000.000000000001']) {
         await request('PUT',`/v1/protocol/configs/${id}`,`{"config":{"registers":[${JSON.stringify({...register,scale:'TOKEN'}).replace('"TOKEN"',scale)}]}}`,16004,true);
     }
-    for (const patch of [{name:42},{protocol:null},{remark:42}]) await request('PUT',`/v1/protocol/configs/${id}`,{...patch},16002);
+    // 经确认的新 Model 契约：可选标量字段的 null 与缺失一致，remark 仍表示清空。
+    await request('PUT',`/v1/protocol/configs/${id}`,{protocol:null,name:null,enabled:null});
+    assert.equal((await detail()).protocol,'Modbus');
+    assert.equal((await detail()).enabled,true);
+    for (const patch of [{name:42},{remark:42}]) await request('PUT',`/v1/protocol/configs/${id}`,{...patch},16002);
     for (const patch of [{enabled:'false'},{config:null},{config:[]},{config:{readInterval:'1e3'}},{config:{registers:[{...register,writable:'true'}]}}]) await request('PUT',`/v1/protocol/configs/${id}`,{...patch},16004);
     await request('PUT',`/v1/protocol/configs/${id}`,{protocol:'S7'},16006);
     await request('PUT','/v1/protocol/configs/invalid',{},10001);
@@ -133,6 +138,8 @@ try {
     actor = other;
     assert.equal((await request('POST','/v1/protocol/configs/test-expression',probe)).value,2.5);
     await request('POST','/v1/protocol/configs',{protocol:'Modbus',name:`${tag}_denied`,config},11007);
+    await request('POST','/v1/protocol/configs',{name:42},11007);
+    await request('POST','/v1/protocol/configs','{',11007,true);
     await request('PUT',`/v1/protocol/configs/${id}`,{name:`${tag}_denied`},16007);
     await request('DELETE',`/v1/protocol/configs/${id}`,undefined,16007);
     actor = admin;

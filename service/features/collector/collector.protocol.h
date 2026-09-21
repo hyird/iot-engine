@@ -55,8 +55,8 @@ class AcquisitionCycle final {
         combined.rawPacketIds.insert(combined.rawPacketIds.end(), response.parsed.rawPacketIds.begin(),
                                      response.parsed.rawPacketIds.end());
         const auto readFields = [](std::string_view json, auto visit) {
-            if (!ruvia::detail::visitJsonObjectFields(ruvia::detail::ResolvedPmrResourceTag{}, json,
-                    std::pmr::get_default_resource(), visit))
+            const auto object = ruvia::JsonValue::parse(json);
+            if (!object || !service::utils::visitJsonFields(*object, visit))
                 throw std::runtime_error("invalid acquisition values");
         };
         readFields(response.parsed.valuesJson, [&](std::string_view name, std::string_view value) {

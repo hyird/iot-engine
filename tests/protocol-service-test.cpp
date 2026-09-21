@@ -67,12 +67,12 @@ void requireStrictUpdateFieldTypes(std::string_view source) {
     require(source.find("if (const auto name = payload.get<ruvia::String>(\"name\"))") ==
                 std::string_view::npos,
             "protocol update writes present non-string name fields through SQL");
-    require(source.find("protocolRequest::text(object, \"protocol\", 16)") != std::string_view::npos,
-            "protocol update does not decode a typed protocol field");
-    require(source.find("protocolRequest::text(object, \"name\", 64)") != std::string_view::npos,
-            "protocol update does not decode a typed name field");
-    require(source.find("remark 必须是字符串或 null") != std::string_view::npos,
-            "protocol service does not reject non-string remark fields");
+    require(source.find("RUVIA_OPTIONAL_FIELD(protocol, ruvia::String") != std::string_view::npos,
+            "protocol update does not declare a typed protocol field");
+    require(source.find("RUVIA_OPTIONAL_FIELD(name, ruvia::String") != std::string_view::npos,
+            "protocol update does not declare a typed name field");
+    require(source.find("RUVIA_OPTIONAL_FIELD(remark, ruvia::String") != std::string_view::npos,
+            "protocol update does not declare a nullable string remark field");
 }
 
 void requireModbusRuntimeFieldValidation(std::string_view source) {
@@ -157,7 +157,7 @@ int main() {
         const auto source = service + types;
         require(service.find("protocol.schema.h") == std::string::npos,
                 "protocol service depends on request schema");
-        require(types.find("static UpdateProtocolBody parse") != std::string::npos,
+        require(types.find("RUVIA_REQUEST_MODEL(UpdateProtocolBody,") != std::string::npos,
                 "protocol update value has no request parser");
         require(service.find("ProtocolConfigurationRules::validateConfig") != std::string::npos,
                 "protocol service does not enforce persisted protocol configuration rules");

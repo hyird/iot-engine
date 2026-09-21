@@ -127,14 +127,14 @@ class AccessService final {
     }
 
     template <typename Context>
-    ruvia::Task<std::string> createKey(Context& c, const AccessKeyInput& payload) {
-        const auto& name = *payload.name;
-        const auto& status = *payload.status;
-        const auto& scopes = *payload.scopes;
-        const auto& devices = *payload.deviceIds;
-        co_await ensureDevicesAccessible(c, devices, scopes.contains(std::string(kScopeCommand)));
-        const auto& expiresAt = payload.expiresAt;
-        const auto& remark = payload.remark;
+    ruvia::Task<std::string> createKey(Context& c, const CreateAccessKeyBody& payload) {
+        const auto name = service::utils::trim(payload.get<"name">().view());
+        const auto status = payload.get<"status">()->view();
+        const auto scopes = accessStringSet(payload.get<"scopes">());
+        const auto devices = accessDeviceIds(payload.get<"deviceIds">());
+        co_await ensureDevicesAccessible(c, devices, scopes.contains(kScopeCommand));
+        const auto expiresAt = trimAccessText(payload.get<"expiresAt">());
+        const auto remark = trimAccessText(payload.get<"remark">());
         co_await ensureKeyNameAvailable(c, name, std::nullopt);
 
         const auto id = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
@@ -162,17 +162,17 @@ class AccessService final {
     }
 
     template <typename Context>
-    ruvia::Task<void> updateKey(Context& c, std::string_view id, const AccessKeyInput& payload) {
+    ruvia::Task<void> updateKey(Context& c, std::string_view id, const UpdateAccessKeyBody& payload) {
         service::common::requireUuid(19002, id, "调用配置 ID 无效");
         const auto existing = co_await requireKey(c, id);
-        const auto name = payload.name.value_or(existing.name);
-        const auto status = payload.status.value_or(existing.status);
-        const auto scopes = payload.scopes.value_or(existing.scopes);
-        const auto devices = payload.deviceIds.value_or(existing.deviceIds);
-        co_await ensureDevicesAccessible(c, devices, scopes.contains(std::string(kScopeCommand)));
+        const auto name = trimAccessText(payload.get<"name">()).value_or(existing.name);
+        const auto status = trimAccessText(payload.get<"status">()).value_or(existing.status);
+        const auto scopes = payload.get<"scopes">() ? accessStringSet(*payload.get<"scopes">()) : existing.scopes;
+        const auto devices = payload.get<"deviceIds">() ? accessDeviceIds(*payload.get<"deviceIds">()) : existing.deviceIds;
+        co_await ensureDevicesAccessible(c, devices, scopes.contains(kScopeCommand));
         co_await ensureKeyNameAvailable(c, name, std::string(id));
-        const auto expiresAt = payload.expiresAtPresent ? payload.expiresAt : existing.expiresAt;
-        const auto remark = payload.remarkPresent ? payload.remark : existing.remark;
+        const auto expiresAt = payload.isPresent<"expiresAt">() ? trimAccessText(payload.get<"expiresAt">()) : existing.expiresAt;
+        const auto remark = payload.isPresent<"remark">() ? trimAccessText(payload.get<"remark">()) : existing.remark;
         const auto scopeJson = stringArrayJson(scopes);
         const auto expiresAtValue = expiresAt.value_or("");
         const auto remarkValue = remark.value_or("");
@@ -187,7 +187,7 @@ class AccessService final {
             .set(service::open_access::entities::OpenAccessKeyEntity::columnName<"updated_at">(), update.call("now"))
             .where(andAll(update, update.binary(update.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, uuid(update, id)), update.unary(ruvia::DbUnaryOperator::kIsNull, update.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"deleted_at">()))));
         (void)co_await transaction.execute(update);
-        if (payload.deviceIds) {
+        if (payload.get<"deviceIds">()) {
             co_await replaceDevices(transaction, id, devices);
         }
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "access_key", "updated", id, c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next());
@@ -241,7 +241,7 @@ class AccessService final {
     }
 
     template <typename Context>
-    ruvia::Task<std::string> listWebhooks(Context& c, const WebhookQuery& filters) {
+    ruvia::Task<std::string> listWebhooks(Context& c, const WebhookQueryParams& filters) {
         ruvia::DbQuery listed(c.pool());
         const auto webhookId = listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"id">(), "webhook");
         const auto bindingDevice = listed.column(service::open_access::entities::OpenAccessKeyDeviceEntity::columnName<"device_id">(), "binding");
@@ -255,9 +255,9 @@ class AccessService final {
             .join(ruvia::DbJoinType::kLeft, service::open_access::entities::OpenAccessKeyDeviceEntity::tableName(), listed.binary(listed.column(service::open_access::entities::OpenAccessKeyDeviceEntity::columnName<"access_key_id">(), "binding"), ruvia::DbBinaryOperator::kEqual, listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"id">(), "key")), "binding")
             .where(listed.unary(ruvia::DbUnaryOperator::kIsNull, listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"deleted_at">(), "webhook")))
             .groupBy({ webhookId, listed.column(service::open_access::entities::OpenAccessKeyEntity::columnName<"id">(), "key") });
-        if (const auto& key = filters.accessKeyId; key && !key->empty()) {
-            service::common::requireUuid(19002, *key, "调用配置 ID 无效");
-            listed.andWhere(listed.binary(listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"access_key_id">(), "webhook"), ruvia::DbBinaryOperator::kEqual, uuid(listed, *key)));
+        if (const auto& key = filters.get<"accessKeyId">(); key && !key->view().empty()) {
+            service::common::requireUuid(19002, key->view(), "调用配置 ID 无效");
+            listed.andWhere(listed.binary(listed.column(service::open_access::entities::OpenWebhookEntity::columnName<"access_key_id">(), "webhook"), ruvia::DbBinaryOperator::kEqual, uuid(listed, key->view())));
         }
         ruvia::DbQuery query(c.pool());
         const std::array<ruvia::DbOrderTerm, 1> webhookOrder{ { ruvia::DbOrderTerm{ query.column("created_at", "listed"),
@@ -269,17 +269,18 @@ class AccessService final {
     }
 
     template <typename Context>
-    ruvia::Task<std::string> createWebhook(Context& c, const WebhookInput& payload) {
-        const auto& accessKeyId = *payload.accessKeyId;
+    ruvia::Task<std::string> createWebhook(Context& c, const CreateWebhookBody& payload) {
+        if (const auto& headers = payload.get<"headers">(); headers && !isWebhookHeaders(*headers)) service::common::fail(19002, "自定义 Header 包含非法或保留字段", 400);
+        const auto accessKeyId = payload.get<"accessKeyId">().view();
         (void)co_await requireKey(c, accessKeyId);
-        const auto& name = *payload.name;
-        const auto& url = *payload.url;
-        const auto& status = *payload.status;
-        const auto timeout = *payload.timeoutSeconds;
-        const auto skipTlsVerify = *payload.skipTlsVerify;
-        const auto& headers = *payload.headers;
-        const auto& events = *payload.eventTypes;
-        const auto& secret = payload.secret;
+        const auto name = service::utils::trim(payload.get<"name">().view());
+        const auto url = service::utils::trim(payload.get<"url">().view());
+        const auto status = payload.get<"status">()->view();
+        const auto timeout = payload.get<"timeoutSeconds">()->value;
+        const auto skipTlsVerify = payload.get<"skipTlsVerify">()->value;
+        const std::string headers(payload.get<"headers">() ? payload.get<"headers">()->view() : "{}");
+        const auto events = payload.get<"eventTypes">() ? accessStringSet(*payload.get<"eventTypes">()) : std::set<std::string, std::less<>>{"device.data.reported"};
+        const auto secret = trimAccessText(payload.get<"secret">());
         co_await ensureWebhookNameAvailable(c, accessKeyId, name, std::nullopt);
         const auto id = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
         const auto eventJson = stringArrayJson(events);
@@ -300,19 +301,20 @@ class AccessService final {
     }
 
     template <typename Context>
-    ruvia::Task<void> updateWebhook(Context& c, std::string_view id, const WebhookInput& payload) {
+    ruvia::Task<void> updateWebhook(Context& c, std::string_view id, const UpdateWebhookBody& payload) {
+        if (const auto& headers = payload.get<"headers">(); headers && !isWebhookHeaders(*headers)) service::common::fail(19002, "自定义 Header 包含非法或保留字段", 400);
         service::common::requireUuid(19002, id, "Webhook ID 无效");
         const auto existing = co_await requireWebhook(c, id);
-        const auto accessKeyId = payload.accessKeyId.value_or(existing.accessKeyId);
+        const auto accessKeyId = trimAccessText(payload.get<"accessKeyId">()).value_or(existing.accessKeyId);
         (void)co_await requireKey(c, accessKeyId);
-        const auto name = payload.name.value_or(existing.name);
-        const auto url = payload.url.value_or(existing.url);
-        const auto status = payload.status.value_or(existing.status);
-        const auto timeout = payload.timeoutSeconds.value_or(existing.timeout);
-        const auto skipTlsVerify = payload.skipTlsVerify.value_or(existing.skipTlsVerify);
-        const auto headers = payload.headers.value_or(existing.headers);
-        const auto events = payload.eventTypes.value_or(existing.events);
-        const auto secret = payload.secretPresent ? payload.secret : existing.secret;
+        const auto name = trimAccessText(payload.get<"name">()).value_or(existing.name);
+        const auto url = trimAccessText(payload.get<"url">()).value_or(existing.url);
+        const auto status = trimAccessText(payload.get<"status">()).value_or(existing.status);
+        const auto timeout = payload.get<"timeoutSeconds">() ? payload.get<"timeoutSeconds">()->value : existing.timeout;
+        const auto skipTlsVerify = payload.get<"skipTlsVerify">() ? payload.get<"skipTlsVerify">()->value : existing.skipTlsVerify;
+        const std::string headers(payload.get<"headers">() ? payload.get<"headers">()->view() : existing.headers);
+        const auto events = payload.get<"eventTypes">() ? accessStringSet(*payload.get<"eventTypes">()) : existing.events;
+        const auto secret = payload.isPresent<"secret">() ? trimAccessText(payload.get<"secret">()) : existing.secret;
         co_await ensureWebhookNameAvailable(c, accessKeyId, name, std::string(id));
         const auto eventJson = stringArrayJson(events);
         const auto secretValue = secret.value_or("");
@@ -351,15 +353,18 @@ class AccessService final {
     }
 
     template <typename Context>
-    ruvia::Task<std::string> listLogs(Context& c, const AccessLogQuery& filters) {
-        const service::common::Page pagination{ filters.page, filters.pageSize, (filters.page - 1) * filters.pageSize };
-        const auto& accessKeyId = filters.accessKeyId;
-        const auto& webhookId = filters.webhookId;
-        const auto& deviceId = filters.deviceId;
-        const auto& direction = filters.direction;
-        const auto& action = filters.action;
-        const auto& status = filters.status;
-        const auto& eventType = filters.eventType;
+    ruvia::Task<std::string> listLogs(Context& c, const AccessLogParams& filters) {
+        const auto pageNumber = filters.get<"page">()->value;
+        const auto pageSize = filters.get<"pageSize">()->value;
+        if (pageNumber - 1 > std::numeric_limits<std::int64_t>::max() / pageSize) service::common::fail(19002, "分页超出允许范围", 400);
+        const service::common::Page pagination{pageNumber, pageSize, (pageNumber - 1) * pageSize};
+        const auto accessKeyId = trimAccessText(filters.get<"accessKeyId">());
+        const auto webhookId = trimAccessText(filters.get<"webhookId">());
+        const auto deviceId = trimAccessText(filters.get<"deviceId">());
+        const auto direction = trimAccessText(filters.get<"direction">());
+        const auto action = trimAccessText(filters.get<"action">());
+        const auto status = trimAccessText(filters.get<"status">());
+        const auto eventType = trimAccessText(filters.get<"eventType">());
         const auto applyFilters = [&](ruvia::DbQuery& query, std::string_view alias) {
             auto predicate = service::device::DeviceAccessService::boolean(query, true);
             const auto addUuid = [&](std::string_view value, std::string_view column) {
@@ -909,11 +914,9 @@ return redis.call('HGET', ARGV[2] .. version, ARGV[1])
         if (!value || !value->isArray()) {
             return result;
         }
-        auto remaining = json;
-        const auto parsed = ruvia::detail::parseJsonValue<ruvia::Array<ruvia::String>>(
-            remaining,
-            std::pmr::get_default_resource()
-        );
+        const std::string document = "{\"values\":" + std::string(json) + "}";
+        const auto object = ruvia::JsonValue::parse(document);
+        const auto parsed = object ? object->get<ruvia::Array<ruvia::String>>("values") : std::nullopt;
         if (!parsed) {
             return result;
         }

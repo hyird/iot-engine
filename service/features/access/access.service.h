@@ -611,10 +611,7 @@ class DeliveryService final {
     static std::string mergeEventData(std::string_view deviceJson, std::string_view rawData) {
         std::string result = "{\"device\":" + std::string(deviceJson);
         if (const auto parsed = ruvia::JsonValue::parse(rawData); parsed && parsed->isObject()) {
-            (void)ruvia::detail::visitJsonObjectFields(
-                ruvia::detail::ResolvedPmrResourceTag{},
-                parsed->view(),
-                std::pmr::get_default_resource(),
+            (void)service::utils::visitJsonFields(*parsed,
                 [&](std::string_view name, std::string_view value) {
                     if (name != "device") {
                         result += "," + service::utils::jsonQuoted(name) + ":" + std::string(value);
@@ -638,10 +635,7 @@ class DeliveryService final {
         }
 
         std::string image;
-        (void)ruvia::detail::visitJsonObjectFields(
-            ruvia::detail::ResolvedPmrResourceTag{},
-            values->view(),
-            std::pmr::get_default_resource(),
+        (void)service::utils::visitJsonFields(*values,
             [&](std::string_view id, std::string_view raw) {
                 if (!image.empty()) {
                     return true;

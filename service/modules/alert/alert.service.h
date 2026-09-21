@@ -66,34 +66,36 @@ class AlertService final {
 
     template <typename Context>
     ruvia::Task<void> createRule(Context& c, const RuleInput& input) {
-        co_await ensureDevice(c, input.deviceId);
-        co_await ensureRuleName(c, input.name, input.deviceId, std::nullopt);
+        alertRequest::validateConditions(input.get<"conditions">().view());
+        co_await ensureDevice(c, input.get<"deviceId">().view());
+        co_await ensureRuleName(c, service::utils::trim(input.get<"name">().view()), input.get<"deviceId">().view(), std::nullopt);
         const auto id = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
         Query query(c.pool());
         query.insertInto(service::alert::entities::AlertRuleEntity::tableName(), { "id", "name", "device_id", "severity", "conditions", "logic", "silence_duration", "recovery_condition", "recovery_wait_seconds", "status", "remark", "created_by" })
-            .values({ query.cast(query.value(id), Type::kUuid), query.value(input.name), query.cast(query.value(input.deviceId), Type::kUuid), query.value(input.severity), query.cast(query.value(input.conditions), Type::kJsonb), query.value(input.logic), query.cast(query.value(input.silenceDuration), Type::kInteger), query.value(input.recoveryCondition), query.cast(query.value(input.recoveryWaitSeconds), Type::kInteger), query.cast(query.value(input.status), { .customName = "status_enum" }), query.nullIf(query.value(input.remark), query.value("")), query.cast(query.value(c.userId), Type::kUuid) });
+            .values({ query.cast(query.value(id), Type::kUuid), query.value(service::utils::trim(input.get<"name">().view())), query.cast(query.value(input.get<"deviceId">().view()), Type::kUuid), query.value(input.get<"severity">()->view()), query.cast(query.value(input.get<"conditions">().view()), Type::kJsonb), query.value(input.get<"logic">()->view()), query.cast(query.value(input.get<"silenceDuration">()->value), Type::kInteger), query.value(service::utils::trim(input.get<"recoveryCondition">()->view())), query.cast(query.value(input.get<"recoveryWaitSeconds">()->value), Type::kInteger), query.cast(query.value(input.get<"status">()->view()), { .customName = "status_enum" }), query.nullIf(query.value(service::utils::trim(input.get<"remark">()->view())), query.value("")), query.cast(query.value(c.userId), Type::kUuid) });
         (void)co_await c.db().execute(query);
         (void)co_await service::rpc::call(c, "alert", "refresh", "{}");
     }
 
     template <typename Context>
     ruvia::Task<void> updateRule(Context& c, std::string_view id, const RuleInput& input) {
+        alertRequest::validateConditions(input.get<"conditions">().view());
         service::common::requireUuid(19002, id, "告警规则 ID 无效");
         co_await requireRule(c, id);
-        co_await ensureDevice(c, input.deviceId);
-        co_await ensureRuleName(c, input.name, input.deviceId, std::string(id));
+        co_await ensureDevice(c, input.get<"deviceId">().view());
+        co_await ensureRuleName(c, service::utils::trim(input.get<"name">().view()), input.get<"deviceId">().view(), std::string(id));
         Query query(c.pool());
         query.update(service::alert::entities::AlertRuleEntity::tableName())
-            .set(service::alert::entities::AlertRuleEntity::columnName<"name">(), query.value(input.name))
-            .set(service::alert::entities::AlertRuleEntity::columnName<"device_id">(), query.cast(query.value(input.deviceId), Type::kUuid))
-            .set(service::alert::entities::AlertRuleEntity::columnName<"severity">(), query.value(input.severity))
-            .set(service::alert::entities::AlertRuleEntity::columnName<"conditions">(), query.cast(query.value(input.conditions), Type::kJsonb))
-            .set(service::alert::entities::AlertRuleEntity::columnName<"logic">(), query.value(input.logic))
-            .set(service::alert::entities::AlertRuleEntity::columnName<"silence_duration">(), query.cast(query.value(input.silenceDuration), Type::kInteger))
-            .set(service::alert::entities::AlertRuleEntity::columnName<"recovery_condition">(), query.value(input.recoveryCondition))
-            .set(service::alert::entities::AlertRuleEntity::columnName<"recovery_wait_seconds">(), query.cast(query.value(input.recoveryWaitSeconds), Type::kInteger))
-            .set(service::alert::entities::AlertRuleEntity::columnName<"status">(), query.cast(query.value(input.status), { .customName = "status_enum" }))
-            .set(service::alert::entities::AlertRuleEntity::columnName<"remark">(), query.nullIf(query.value(input.remark), query.value("")))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"name">(), query.value(service::utils::trim(input.get<"name">().view())))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"device_id">(), query.cast(query.value(input.get<"deviceId">().view()), Type::kUuid))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"severity">(), query.value(input.get<"severity">()->view()))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"conditions">(), query.cast(query.value(input.get<"conditions">().view()), Type::kJsonb))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"logic">(), query.value(input.get<"logic">()->view()))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"silence_duration">(), query.cast(query.value(input.get<"silenceDuration">()->value), Type::kInteger))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"recovery_condition">(), query.value(service::utils::trim(input.get<"recoveryCondition">()->view())))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"recovery_wait_seconds">(), query.cast(query.value(input.get<"recoveryWaitSeconds">()->value), Type::kInteger))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"status">(), query.cast(query.value(input.get<"status">()->view()), { .customName = "status_enum" }))
+            .set(service::alert::entities::AlertRuleEntity::columnName<"remark">(), query.nullIf(query.value(service::utils::trim(input.get<"remark">()->view())), query.value("")))
             .set(service::alert::entities::AlertRuleEntity::columnName<"updated_at">(), query.call("now"))
             .andWhere(query.binary(query.column(service::alert::entities::AlertRuleEntity::columnName<"id">()), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
             .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::alert::entities::AlertRuleEntity::columnName<"deleted_at">())));
@@ -155,38 +157,42 @@ class AlertService final {
 
     template <typename Context>
     ruvia::Task<void> createTemplate(Context& c, const TemplateInput& input) {
-        co_await ensureTemplateName(c, input.name, std::nullopt);
-        if (!input.protocolConfigId.empty()) {
-            co_await ensureProtocolConfig(c, input.protocolConfigId);
+        alertRequest::validateConditions(input.get<"conditions">().view());
+        if (const auto& protocols = input.get<"applicableProtocols">(); protocols && !protocols->isArray()) service::common::fail(17002, "applicable_protocols 必须是数组", 400);
+        co_await ensureTemplateName(c, service::utils::trim(input.get<"name">().view()), std::nullopt);
+        if (!input.get<"protocolConfigId">()->view().empty()) {
+            co_await ensureProtocolConfig(c, input.get<"protocolConfigId">()->view());
         }
         const auto id = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
         Query query(c.pool());
         query.insertInto(service::alert::entities::AlertRuleTemplateEntity::tableName(), { "id", "name", "category", "description", "severity", "conditions", "logic", "silence_duration", "recovery_condition", "recovery_wait_seconds", "applicable_protocols", "protocol_config_id", "created_by" })
-            .values({ query.cast(query.value(id), Type::kUuid), query.value(input.name), query.nullIf(query.value(input.category), query.value("")), query.nullIf(query.value(input.description), query.value("")), query.value(input.severity), query.cast(query.value(input.conditions), Type::kJsonb), query.value(input.logic), query.cast(query.value(input.silenceDuration), Type::kInteger), query.value(input.recoveryCondition), query.cast(query.value(input.recoveryWaitSeconds), Type::kInteger), query.cast(query.value(input.applicableProtocols), Type::kJsonb), query.cast(query.nullIf(query.value(input.protocolConfigId), query.value("")), Type::kUuid), query.cast(query.value(c.userId), Type::kUuid) });
+            .values({ query.cast(query.value(id), Type::kUuid), query.value(service::utils::trim(input.get<"name">().view())), query.nullIf(query.value(service::utils::trim(input.get<"category">()->view())), query.value("")), query.nullIf(query.value(service::utils::trim(input.get<"description">()->view())), query.value("")), query.value(input.get<"severity">()->view()), query.cast(query.value(input.get<"conditions">().view()), Type::kJsonb), query.value(input.get<"logic">()->view()), query.cast(query.value(input.get<"silenceDuration">()->value), Type::kInteger), query.value(service::utils::trim(input.get<"recoveryCondition">()->view())), query.cast(query.value(input.get<"recoveryWaitSeconds">()->value), Type::kInteger), query.cast(query.value(input.get<"applicableProtocols">() ? input.get<"applicableProtocols">()->view() : "[]"), Type::kJsonb), query.cast(query.nullIf(query.value(input.get<"protocolConfigId">()->view()), query.value("")), Type::kUuid), query.cast(query.value(c.userId), Type::kUuid) });
         (void)co_await c.db().execute(query);
     }
 
     template <typename Context>
     ruvia::Task<void> updateTemplate(Context& c, std::string_view id, const TemplateInput& input) {
+        alertRequest::validateConditions(input.get<"conditions">().view());
+        if (const auto& protocols = input.get<"applicableProtocols">(); protocols && !protocols->isArray()) service::common::fail(17002, "applicable_protocols 必须是数组", 400);
         service::common::requireUuid(19002, id, "告警模板 ID 无效");
         co_await requireTemplate(c, id);
-        co_await ensureTemplateName(c, input.name, std::string(id));
-        if (!input.protocolConfigId.empty()) {
-            co_await ensureProtocolConfig(c, input.protocolConfigId);
+        co_await ensureTemplateName(c, service::utils::trim(input.get<"name">().view()), std::string(id));
+        if (!input.get<"protocolConfigId">()->view().empty()) {
+            co_await ensureProtocolConfig(c, input.get<"protocolConfigId">()->view());
         }
         Query query(c.pool());
         query.update(service::alert::entities::AlertRuleTemplateEntity::tableName())
-            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"name">(), query.value(input.name))
-            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"category">(), query.nullIf(query.value(input.category), query.value("")))
-            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"description">(), query.nullIf(query.value(input.description), query.value("")))
-            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"severity">(), query.value(input.severity))
-            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"conditions">(), query.cast(query.value(input.conditions), Type::kJsonb))
-            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"logic">(), query.value(input.logic))
-            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"silence_duration">(), query.cast(query.value(input.silenceDuration), Type::kInteger))
-            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"recovery_condition">(), query.value(input.recoveryCondition))
-            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"recovery_wait_seconds">(), query.cast(query.value(input.recoveryWaitSeconds), Type::kInteger))
-            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"applicable_protocols">(), query.cast(query.value(input.applicableProtocols), Type::kJsonb))
-            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"protocol_config_id">(), query.cast(query.nullIf(query.value(input.protocolConfigId), query.value("")), Type::kUuid))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"name">(), query.value(service::utils::trim(input.get<"name">().view())))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"category">(), query.nullIf(query.value(service::utils::trim(input.get<"category">()->view())), query.value("")))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"description">(), query.nullIf(query.value(service::utils::trim(input.get<"description">()->view())), query.value("")))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"severity">(), query.value(input.get<"severity">()->view()))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"conditions">(), query.cast(query.value(input.get<"conditions">().view()), Type::kJsonb))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"logic">(), query.value(input.get<"logic">()->view()))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"silence_duration">(), query.cast(query.value(input.get<"silenceDuration">()->value), Type::kInteger))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"recovery_condition">(), query.value(service::utils::trim(input.get<"recoveryCondition">()->view())))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"recovery_wait_seconds">(), query.cast(query.value(input.get<"recoveryWaitSeconds">()->value), Type::kInteger))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"applicable_protocols">(), query.cast(query.value(input.get<"applicableProtocols">() ? input.get<"applicableProtocols">()->view() : "[]"), Type::kJsonb))
+            .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"protocol_config_id">(), query.cast(query.nullIf(query.value(input.get<"protocolConfigId">()->view()), query.value("")), Type::kUuid))
             .set(service::alert::entities::AlertRuleTemplateEntity::columnName<"updated_at">(), query.call("now"))
             .andWhere(query.binary(query.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"id">()), Op::kEqual, query.cast(query.value(id), Type::kUuid)))
             .andWhere(query.unary(ruvia::DbUnaryOperator::kIsNull, query.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"deleted_at">())));
@@ -204,8 +210,8 @@ class AlertService final {
 
     template <typename Context>
     ruvia::Task<std::string> applyTemplate(Context& c, const ApplyTemplateInput& input) {
-        const auto& templateId = input.templateId;
-        const auto& deviceIds = input.deviceIds;
+        const auto templateId = input.get<"templateId">().view();
+        const auto deviceIds = uniqueAlertIds(input.get<"deviceIds">());
         co_await requireTemplate(c, templateId);
         Query selected(c.pool());
         selected.select(selected.star()).from(service::alert::entities::AlertRuleTemplateEntity::tableName()).andWhere(selected.binary(selected.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"id">()), Op::kEqual, selected.cast(selected.value(templateId), Type::kUuid))).andWhere(selected.unary(ruvia::DbUnaryOperator::kIsNull, selected.column(service::alert::entities::AlertRuleTemplateEntity::columnName<"deleted_at">())));

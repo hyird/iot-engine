@@ -605,14 +605,14 @@ class VpnService final {
     }
 
     template <typename Context>
-    ruvia::Task<std::string> createNetwork(Context& c, const VpnNetworkInput&) {
+    ruvia::Task<std::string> createNetwork(Context& c, const VpnNetworkBody&) {
         (void)co_await ensureDefaultNetwork(c);
         service::common::fail(21003, "VPN 使用默认 iot-server，无需新建 VPN 网络", 409);
         co_return std::string{};
     }
 
     template <typename Context>
-    ruvia::Task<void> updateNetwork(Context& c, std::string_view id, const VpnNetworkInput&) {
+    ruvia::Task<void> updateNetwork(Context& c, std::string_view id, const VpnNetworkBody&) {
         requireUuid(id, "VPN 网络 ID 无效");
         (void)co_await ensureDefaultNetwork(c);
         service::common::fail(21003, "VPN 使用 iot-server，网络配置不可修改", 409);
@@ -659,14 +659,14 @@ class VpnService final {
     }
 
     template <typename Context>
-    ruvia::Task<std::string> createRoute(Context& c, const VpnRouteInput& payload) {
+    ruvia::Task<std::string> createRoute(Context& c, const VpnRouteBody& payload) {
         const auto defaultNetworkId = co_await ensureDefaultNetwork(c);
-        const auto networkId = payload.networkId;
+        const std::string networkId(payload.get<"networkId">().view());
         if (networkId != defaultNetworkId) {
             service::common::fail(21003, "VPN 仅使用默认 iot-server 网络", 409);
         }
-        const auto edgePeerId = payload.edgePeerId;
-        const auto targetText = payload.targetCidr;
+        const std::string edgePeerId(payload.get<"edgePeerId">().view());
+        const std::string targetText(payload.get<"targetCidr">().view());
         const auto target = cidr::parseCidr(targetText, 1, 30);
         if (!target || !cidr::isPrivateIpv4(*target)) {
             service::common::fail(21001, "真实 LAN 必须是有效的私有 IPv4 网段", 400);
@@ -701,7 +701,7 @@ class VpnService final {
         if (mapped.empty()) {
             service::common::fail(21004, "真实 LAN 不是 EdgeNode 的桥接网段", 409);
         }
-        const auto requestedVirtual = payload.virtualCidr;
+        const auto requestedVirtual = optionalVpnText(payload.get<"virtualCidr">());
         if (requestedVirtual && *requestedVirtual != detail::rowValue(mapped.front(), 1)) {
             service::common::fail(21003, "虚拟网段由平台自动生成，请使用编辑修改", 409);
         }
@@ -713,7 +713,7 @@ class VpnService final {
     }
 
     template <typename Context>
-    ruvia::Task<void> updateRoute(Context& c, std::string_view id, const VpnRoutePatch& payload) {
+    ruvia::Task<void> updateRoute(Context& c, std::string_view id, const VpnRoutePatchBody& payload) {
         using Op = ruvia::DbBinaryOperator;
         requireUuid(id, "VPN 路由 ID 无效");
         ruvia::DbQuery current(c.pool());
@@ -730,18 +730,18 @@ class VpnService final {
         const auto currentVirtual = detail::rowValue(rows.front(), 4);
         const auto currentMode = detail::rowValue(rows.front(), 5);
         const auto currentEnabled = detail::rowValue(rows.front(), 6) == "t";
-        const auto requestedTarget = payload.targetCidr;
-        const auto requestedInterface = payload.lanInterface;
-        const auto requestedMode = payload.mode;
-        const auto requestedEnabled = payload.enabled;
+        const auto requestedTarget = optionalVpnText(payload.get<"targetCidr">());
+        const auto requestedInterface = optionalVpnText(payload.get<"lanInterface">());
+        const auto requestedMode = optionalVpnText(payload.get<"mode">());
+        const auto& requestedEnabled = payload.get<"enabled">();
         if ((requestedTarget && *requestedTarget != currentTarget) ||
             (requestedInterface && *requestedInterface != currentInterface) ||
             (requestedMode && *requestedMode != currentMode) ||
-            (requestedEnabled && *requestedEnabled != currentEnabled)) {
+            (requestedEnabled && requestedEnabled->value != currentEnabled)) {
             service::common::fail(21003, "VPN 映射中只有虚拟网段可以修改", 409);
         }
         const auto targetText = currentTarget;
-        const auto virtualText = payload.virtualCidr.value_or(currentVirtual);
+        const auto virtualText = optionalVpnText(payload.get<"virtualCidr">()).value_or(currentVirtual);
         const auto target = cidr::parseCidr(targetText, 1, 30);
         const auto virtualNetwork = cidr::parseCidr(virtualText, 1, 30);
         if (!target || !virtualNetwork || target->prefix != virtualNetwork->prefix ||
@@ -826,9 +826,9 @@ class VpnService final {
     }
 
     template <typename Context>
-    ruvia::Task<std::string> createPeer(Context& c, const VpnPeerInput& payload) {
+    ruvia::Task<std::string> createPeer(Context& c, const VpnPeerBody& payload) {
         const auto defaultNetworkId = co_await ensureDefaultNetwork(c);
-        const auto requestedNetworkId = payload.networkId;
+        const auto requestedNetworkId = optionalVpnText(payload.get<"networkId">());
         if (requestedNetworkId && !service::common::isUuid(*requestedNetworkId)) {
             service::common::fail(21001, "VPN 网络 ID 无效", 400);
         }
@@ -836,12 +836,12 @@ class VpnService final {
             service::common::fail(21003, "VPN 仅使用默认 iot-server 网络", 409);
         }
         const auto networkId = defaultNetworkId;
-        const auto peerType = payload.peerType;
+        const std::string peerType(payload.get<"peerType">().view());
         if (peerType != "windows" && peerType != "edge") {
             service::common::fail(21001, "Peer 类型只支持 windows 或 edge", 400);
         }
-        const auto name = payload.name;
-        auto publicKey = payload.publicKey.value_or("");
+        const std::string name(payload.get<"name">().view());
+        auto publicKey = optionalVpnText(payload.get<"publicKey">()).value_or("");
         if (!publicKey.empty() && !detail::validKey(publicKey)) {
             service::common::fail(21001, "WireGuard 公钥格式无效", 400);
         }
@@ -849,7 +849,7 @@ class VpnService final {
         std::string userId = c.userId;
         std::string reusableEdgePeerId;
         if (peerType == "edge") {
-            edgeNodeId = payload.edgeNodeId.value_or("");
+            edgeNodeId = optionalVpnText(payload.get<"edgeNodeId">()).value_or("");
             if (!service::common::isUuid(edgeNodeId)) {
                 service::common::fail(21001, "Edge 节点 ID 无效", 400);
             }
@@ -915,7 +915,10 @@ class VpnService final {
         if (!overlay) {
             service::common::fail(21005, "VPN 网络 Overlay 配置损坏", 500);
         }
-        const auto allowedRoutes = payload.allowedRoutes;
+        std::vector<std::string> allowedRoutes;
+        if (const auto& routes = payload.get<"allowedRoutes">()) {
+            for (const auto& route : *routes) allowedRoutes.emplace_back(route.view());
+        }
         if (allowedRoutes.size() > 64) {
             service::common::fail(21001, "Peer 最多授权 64 条路由", 400);
         }
@@ -1022,10 +1025,10 @@ class VpnService final {
     }
 
     template <typename Context>
-    ruvia::Task<void> rotatePeerKey(Context& c, std::string_view id, const VpnPeerKeyInput& payload) {
+    ruvia::Task<void> rotatePeerKey(Context& c, std::string_view id, const VpnPeerKeyBody& payload) {
         using Op = ruvia::DbBinaryOperator;
         requireUuid(id, "VPN Peer ID 无效");
-        const auto publicKey = payload.publicKey;
+        const std::string publicKey(payload.get<"publicKey">().view());
         if (!detail::validKey(publicKey)) {
             service::common::fail(21001, "WireGuard 公钥格式无效", 400);
         }
@@ -1069,9 +1072,9 @@ class VpnService final {
     }
 
     template <typename Context>
-    ruvia::Task<std::string> createEnrollment(Context& c, const VpnEnrollmentInput& payload) {
+    ruvia::Task<std::string> createEnrollment(Context& c, const VpnEnrollmentBody& payload) {
         const auto defaultNetworkId = co_await ensureDefaultNetwork(c);
-        const auto requestedNetworkId = payload.networkId;
+        const auto requestedNetworkId = optionalVpnText(payload.get<"networkId">());
         if (requestedNetworkId && !service::common::isUuid(*requestedNetworkId)) {
             service::common::fail(21001, "VPN 网络 ID 无效", 400);
         }
@@ -1117,7 +1120,7 @@ class VpnService final {
             service::common::fail(21001, "当前账户可访问的 VPN 路由超过 64 条", 409);
         }
         co_await validateAllowedRoutes(c, networkId, routes);
-        const auto seconds = payload.expiresInSec.value_or(600);
+        const auto seconds = payload.get<"expiresInSec">().value_or(ruvia::Int64{600}).value;
         if (seconds < 60 || seconds > 3600) {
             service::common::fail(21001, "Enrollment 有效期必须在 60 - 3600 秒之间", 400);
         }
@@ -1141,10 +1144,10 @@ class VpnService final {
     }
 
     template <typename Context>
-    ruvia::Task<std::string> enrollClient(Context& c, const VpnClientEnrollmentInput& payload) {
+    ruvia::Task<std::string> enrollClient(Context& c, const VpnClientEnrollmentBody& payload) {
         using Op = ruvia::DbBinaryOperator;
-        const auto token = payload.token;
-        const auto publicKey = payload.publicKey;
+        const std::string token(payload.get<"token">().view());
+        const std::string publicKey(payload.get<"publicKey">().view());
         if (!detail::validKey(publicKey)) {
             service::common::fail(21001, "WireGuard 公钥格式无效", 400);
         }
@@ -1201,7 +1204,7 @@ class VpnService final {
             service::common::fail(21005, "VPN 网络 Overlay 配置损坏", 500);
         }
         const auto assigned = co_await allocateAddressFromDb(transaction, networkId, *overlay);
-        const auto name = payload.name.value_or("Windows client");
+        const auto name = optionalVpnText(payload.get<"name">()).value_or("Windows client");
         if (name.empty() || name.size() > 100) {
             service::common::fail(21001, "Peer 名称长度无效", 400);
         }
@@ -1290,9 +1293,9 @@ class VpnService final {
     template <typename Context>
     ruvia::Task<std::string> desktopDevices(Context& c);
     template <typename Context>
-    ruvia::Task<std::string> desktopCreatePeer(Context& c, const VpnDesktopPeerInput& payload);
+    ruvia::Task<std::string> desktopCreatePeer(Context& c, const VpnDesktopPeerBody& payload);
     template <typename Context>
-    ruvia::Task<std::string> desktopUpdatePeer(Context& c, std::string_view id, const VpnDesktopSelectionInput& payload);
+    ruvia::Task<std::string> desktopUpdatePeer(Context& c, std::string_view id, const VpnDesktopSelectionBody& payload);
     template <typename Context>
     ruvia::Task<std::string> desktopPeerConfig(Context& c, std::string_view id);
     template <typename Context>
@@ -1540,13 +1543,13 @@ ruvia::Task<std::string> VpnService::desktopDevices(Context& c) {
 }
 
 template <typename Context>
-ruvia::Task<std::string> VpnService::desktopCreatePeer(Context& c, const VpnDesktopPeerInput& payload) {
-    const auto name = payload.name;
-    const auto publicKey = payload.publicKey;
+ruvia::Task<std::string> VpnService::desktopCreatePeer(Context& c, const VpnDesktopPeerBody& payload) {
+    const std::string name(payload.get<"name">().view());
+    const std::string publicKey(payload.get<"publicKey">().view());
     if (!detail::validManagedKey(publicKey)) {
         service::common::fail(21001, "WireGuard 公钥格式无效", 400);
     }
-    const auto ids = payload.edgeNodeIds;
+    const auto ids = normalizeVpnNodeIds(payload.get<"edgeNodeIds">());
     auto tx = co_await c.db().beginTransaction();
     // Serialize allocation and the public-key retry lookup together. A lost POST
     // response can safely be retried with the locally persisted keypair.
@@ -1620,9 +1623,9 @@ ruvia::Task<std::string> VpnService::desktopCreatePeer(Context& c, const VpnDesk
 }
 
 template <typename Context>
-ruvia::Task<std::string> VpnService::desktopUpdatePeer(Context& c, std::string_view id, const VpnDesktopSelectionInput& payload) {
+ruvia::Task<std::string> VpnService::desktopUpdatePeer(Context& c, std::string_view id, const VpnDesktopSelectionBody& payload) {
     requireUuid(id, "VPN Peer ID 无效");
-    const auto ids = payload.edgeNodeIds;
+    const auto ids = normalizeVpnNodeIds(payload.get<"edgeNodeIds">());
     auto tx = co_await c.db().beginTransaction();
     // Lock the parent before replacing children so concurrent PATCH requests
     // cannot merge two selections or race revocation.

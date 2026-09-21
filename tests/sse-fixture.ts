@@ -36,8 +36,9 @@ export async function openSnapshotSubscription(path: string, bearer: string, opt
         get commentCount() { return commentCount; },
         async next(timeoutMs = 20000): Promise<ServerSentEvent> {
             if (!events.length && !ended) {
+                const timeoutError = new Error('SSE event timeout');
                 await new Promise<void>((resolve, reject) => {
-                    const timeout = setTimeout(() => { wake = undefined; reject(new Error('SSE event timeout')); }, timeoutMs);
+                    const timeout = setTimeout(() => { wake = undefined; reject(timeoutError); }, timeoutMs);
                     wake = () => { clearTimeout(timeout); wake = undefined; resolve(); };
                 });
             }
@@ -45,6 +46,9 @@ export async function openSnapshotSubscription(path: string, bearer: string, opt
             const event = events.shift();
             assert(event, 'SSE ended before the expected event');
             return event;
+        },
+        unread(event: ServerSentEvent) {
+            events.unshift(event);
         },
         async expectQuiet(durationMs = 16000) {
             assert.equal(events.length, 0, 'unexpected queued SSE business event');

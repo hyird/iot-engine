@@ -8,6 +8,7 @@
 #include "service/common/http.h"
 #include "service/middleware/live.h"
 #include "service/middleware/permission.h"
+#include "service/middleware/validation.h"
 #include "service/modules/command/command.service.h"
 #include "service/modules/device/device.types.h"
 #include "service/modules/open_access/open_access.types.h"
@@ -33,24 +34,24 @@ class AccessAdminController final : public ruvia::Controller<AccessAdminControll
   public:
     RUVIA_CONTROLLER_GROUP("/api", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
-    RUVIA_GET("/device/options", devices);
-    RUVIA_GET("/open-access-key", keys);
-    RUVIA_GET("/open-webhook", webhooks, ruvia::QueryModel<WebhookQueryParams>);
-    RUVIA_GET("/open-access-log", logs, ruvia::QueryModel<AccessLogParams>);
-    RUVIA_POST("/open-access-key", createKey);
-    RUVIA_PUT("/open-access-key/:id", updateKey, ruvia::PathModel<AccessIdParams>);
-    RUVIA_POST("/open-access-key/:id/rotate", rotateKey, ruvia::PathModel<AccessIdParams>);
-    RUVIA_DELETE("/open-access-key/:id", removeKey, ruvia::PathModel<AccessIdParams>);
-    RUVIA_POST("/open-webhook", createWebhook);
-    RUVIA_PUT("/open-webhook/:id", updateWebhook, ruvia::PathModel<AccessIdParams>);
-    RUVIA_DELETE("/open-webhook/:id", removeWebhook, ruvia::PathModel<AccessIdParams>);
+    RUVIA_GET("/device/options", devices, service::middleware::PermissionMiddleware<"iot:open-access:query">);
+    RUVIA_GET("/open-access-key", keys, service::middleware::PermissionMiddleware<"iot:open-access:query">);
+    RUVIA_GET("/open-webhook", webhooks, service::middleware::PermissionMiddleware<"iot:open-access:query">, ruvia::QueryModel<WebhookQueryParams>);
+    RUVIA_GET("/open-access-log", logs, service::middleware::PermissionMiddleware<"iot:open-access:query">, ruvia::QueryModel<AccessLogParams>);
+    RUVIA_POST("/open-access-key", createKey, service::middleware::PermissionMiddleware<"iot:open-access:add">, service::middleware::ValidationErrorCodeMiddleware<19002>, ruvia::JsonBody<CreateAccessKeyBody>);
+    RUVIA_PUT("/open-access-key/:id", updateKey, service::middleware::PermissionMiddleware<"iot:open-access:edit">, ruvia::PathModel<AccessIdParams>, service::middleware::ValidationErrorCodeMiddleware<19002>, ruvia::JsonBody<UpdateAccessKeyBody>);
+    RUVIA_POST("/open-access-key/:id/rotate", rotateKey, service::middleware::PermissionMiddleware<"iot:open-access:edit">, ruvia::PathModel<AccessIdParams>);
+    RUVIA_DELETE("/open-access-key/:id", removeKey, service::middleware::PermissionMiddleware<"iot:open-access:delete">, ruvia::PathModel<AccessIdParams>);
+    RUVIA_POST("/open-webhook", createWebhook, service::middleware::PermissionMiddleware<"iot:open-access:add">, service::middleware::ValidationErrorCodeMiddleware<19002>, ruvia::JsonBody<CreateWebhookBody>);
+    RUVIA_PUT("/open-webhook/:id", updateWebhook, service::middleware::PermissionMiddleware<"iot:open-access:edit">, ruvia::PathModel<AccessIdParams>, service::middleware::ValidationErrorCodeMiddleware<19002>, ruvia::JsonBody<UpdateWebhookBody>);
+    RUVIA_DELETE("/open-webhook/:id", removeWebhook, service::middleware::PermissionMiddleware<"iot:open-access:delete">, ruvia::PathModel<AccessIdParams>);
     RUVIA_ROUTES_END
   private:
     static std::string id(ruvia::Context& c) {
         return std::string(c.req().validated<AccessIdParams>().get<"id">().view());
     }
 
-    ruvia::Task<> devices(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> devices(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto payload = co_await devicesSnapshot(c, request);
         c.header("Content-Type", "application/json");
@@ -58,11 +59,10 @@ class AccessAdminController final : public ruvia::Controller<AccessAdminControll
     }
 
     ruvia::Task<std::string> devicesSnapshot(ruvia::Context& c, service::middleware::RequestContext& request) {
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:open-access:query");
         co_return service::live::data(c, co_await accessService().deviceOptions(request));
     }
 
-    ruvia::Task<> keys(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> keys(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto payload = co_await keysSnapshot(c, request);
         c.header("Content-Type", "application/json");
@@ -70,11 +70,10 @@ class AccessAdminController final : public ruvia::Controller<AccessAdminControll
     }
 
     ruvia::Task<std::string> keysSnapshot(ruvia::Context& c, service::middleware::RequestContext& request) {
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:open-access:query");
         co_return service::live::data(c, co_await accessService().listKeys(request));
     }
 
-    ruvia::Task<> webhooks(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> webhooks(ruvia::Context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto payload = co_await webhooksSnapshot(c, request);
@@ -83,15 +82,10 @@ class AccessAdminController final : public ruvia::Controller<AccessAdminControll
     }
 
     ruvia::Task<std::string> webhooksSnapshot(ruvia::Context& c, service::middleware::RequestContext& request) {
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:open-access:query");
-        WebhookQuery filters;
-        if (const auto& value = c.req().validated<WebhookQueryParams>().get<"accessKeyId">()) {
-            filters.accessKeyId = std::string(value->view());
-        }
-        co_return service::live::data(c, co_await accessService().listWebhooks(request, filters));
+        co_return service::live::data(c, co_await accessService().listWebhooks(request, c.req().validated<WebhookQueryParams>()));
     }
 
-    ruvia::Task<> logs(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> logs(ruvia::Context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
         const auto payload = co_await logsSnapshot(c, request);
@@ -100,113 +94,51 @@ class AccessAdminController final : public ruvia::Controller<AccessAdminControll
     }
 
     ruvia::Task<std::string> logsSnapshot(ruvia::Context& c, service::middleware::RequestContext& request) {
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:open-access:query");
-        co_return service::live::data(c, co_await accessService().listLogs(request, accessLogFilters(c.req().validated<AccessLogParams>())));
+        co_return service::live::data(c, co_await accessService().listLogs(request, c.req().validated<AccessLogParams>()));
     }
 
-    ruvia::Task<> createKey(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> createKey(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:open-access:add");
-        if (!service::utils::isJsonContentType(c.req().header("Content-Type").value_or(std::string_view{}))) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kUnsupportedMediaType,
-                .code = "unsupported_media_type", .message = "request body must be application/json" });
-        }
-        const auto rawBody = co_await c.req().text();
-        auto parsedJson = ruvia::JsonValue::parse(rawBody, { .resource = c.arena() });
-        if (!parsedJson) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kBadRequest, .message = "invalid json body" });
-        }
-        const auto json = std::move(*parsedJson);
-        if (!json.isObject()) {
-            service::common::fail(19002, "请求体必须是对象", 400);
-        }
-        const auto body = accessRequest::keyInput(json, true);
+        const auto& body = c.req().validated<CreateAccessKeyBody>();
         co_return jsonData(c, co_await accessService().createKey(request, body));
     }
 
-    ruvia::Task<> updateKey(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> updateKey(ruvia::Context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:open-access:edit");
-        if (!service::utils::isJsonContentType(c.req().header("Content-Type").value_or(std::string_view{}))) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kUnsupportedMediaType,
-                .code = "unsupported_media_type", .message = "request body must be application/json" });
-        }
-        const auto rawBody = co_await c.req().text();
-        auto parsedJson = ruvia::JsonValue::parse(rawBody, { .resource = c.arena() });
-        if (!parsedJson) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kBadRequest, .message = "invalid json body" });
-        }
-        const auto json = std::move(*parsedJson);
-        if (!json.isObject()) {
-            service::common::fail(19002, "请求体必须是对象", 400);
-        }
-        const auto body = accessRequest::keyInput(json, false);
-        co_await accessService().updateKey(request, id(c), body);
+        co_await accessService().updateKey(request, id(c), c.req().validated<UpdateAccessKeyBody>());
         co_return c.json(service::common::operation(c, "操作成功"));
     }
 
-    ruvia::Task<> rotateKey(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> rotateKey(ruvia::Context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:open-access:edit");
         co_return jsonData(c, co_await accessService().rotateKey(request, id(c)));
     }
 
-    ruvia::Task<> removeKey(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> removeKey(ruvia::Context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:open-access:delete");
         co_await accessService().removeKey(request, id(c));
         co_return c.json(service::common::operation(c, "操作成功"));
     }
 
-    ruvia::Task<> createWebhook(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> createWebhook(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:open-access:add");
-        if (!service::utils::isJsonContentType(c.req().header("Content-Type").value_or(std::string_view{}))) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kUnsupportedMediaType,
-                .code = "unsupported_media_type", .message = "request body must be application/json" });
-        }
-        const auto rawBody = co_await c.req().text();
-        auto parsedJson = ruvia::JsonValue::parse(rawBody, { .resource = c.arena() });
-        if (!parsedJson) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kBadRequest, .message = "invalid json body" });
-        }
-        const auto json = std::move(*parsedJson);
-        if (!json.isObject()) {
-            service::common::fail(19002, "请求体必须是对象", 400);
-        }
-        const auto body = accessRequest::webhookInput(json, true);
+        const auto& body = c.req().validated<CreateWebhookBody>();
         co_return jsonData(c, co_await accessService().createWebhook(request, body));
     }
 
-    ruvia::Task<> updateWebhook(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> updateWebhook(ruvia::Context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:open-access:edit");
-        if (!service::utils::isJsonContentType(c.req().header("Content-Type").value_or(std::string_view{}))) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kUnsupportedMediaType,
-                .code = "unsupported_media_type", .message = "request body must be application/json" });
-        }
-        const auto rawBody = co_await c.req().text();
-        auto parsedJson = ruvia::JsonValue::parse(rawBody, { .resource = c.arena() });
-        if (!parsedJson) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kBadRequest, .message = "invalid json body" });
-        }
-        const auto json = std::move(*parsedJson);
-        if (!json.isObject()) {
-            service::common::fail(19002, "请求体必须是对象", 400);
-        }
-        const auto body = accessRequest::webhookInput(json, false);
-        co_await accessService().updateWebhook(request, id(c), body);
+        co_await accessService().updateWebhook(request, id(c), c.req().validated<UpdateWebhookBody>());
         co_return c.json(service::common::operation(c, "操作成功"));
     }
 
-    ruvia::Task<> removeWebhook(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> removeWebhook(ruvia::Context& c) {
 
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:open-access:delete");
         co_await accessService().removeWebhook(request, id(c));
         co_return c.json(service::common::operation(c, "操作成功"));
     }
@@ -362,7 +294,7 @@ class AccessController final : public ruvia::Controller<AccessController> {
         co_return service::live::data(c, data);
     }
 
-    ruvia::Task<> command(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> command(ruvia::Context& c) {
         const auto session = co_await accessService().authenticate(c, kScopeCommand);
         const auto parsedBody = co_await c.req().jsonIf<service::device::DeviceCommandBody>();
         if (!parsedBody) {

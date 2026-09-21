@@ -22,20 +22,20 @@ class AuthController final : public ruvia::Controller<AuthController> {
     RUVIA_ROUTES_END
 
   private:
-    ruvia::Task<> login(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> login(ruvia::Context& c) {
 
         co_return c.json(service::common::ok<LoginResponse>(
             c, co_await authService().login(c, c.req().validated<LoginBody>())));
     }
-    ruvia::Task<> refresh(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> refresh(ruvia::Context& c) {
 
         co_return c.json(service::common::ok<LoginResponse>(
             c, co_await authService().refresh(c, c.req().validated<RefreshBody>())));
     }
-    ruvia::Task<> logout(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> logout(ruvia::Context& c) {
         co_return c.json(service::common::operation(c, "退出成功"));
     }
-    ruvia::Task<> me(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> me(ruvia::Context& c) {
         const auto principal = service::middleware::requireAuth(c);
         co_return c.json(service::common::ok<CurrentUserResponse>(
             c, co_await authService().current(c, principal.userId)));

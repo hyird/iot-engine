@@ -1,8 +1,13 @@
 #pragma once
 
 #include <string_view>
+#include <ruvia/web/ModelJson.h>
 
 namespace service::command {
+
+RUVIA_REQUEST_MODEL(PrepareCommandBody,
+    RUVIA_REQUIRED_FIELD(deviceId, ruvia::String),
+    RUVIA_REQUIRED_FIELD(elements, ruvia::Array<ruvia::Array<ruvia::String>>));
 
 inline bool terminalState(std::string_view state) {
     return state == "SUCCEEDED" || state == "REJECTED" || state == "UNKNOWN" ||

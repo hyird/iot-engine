@@ -125,12 +125,12 @@ ruvia::Task<void> verifyProxy(ruvia::EventLoop loop, std::uint16_t port) {
         require(response.status().value() == 200, "HLS proxy status failed");
         require(response.header("Cache-Control") == "no-cache", "media response headers were lost");
         const auto body = co_await response.body().readAll();
-        require(body == "#EXTM3U\nsegment.ts?token=test\n", "HLS child URL did not retain authorization");
+        require(std::string_view(reinterpret_cast<const char*>(body.data()), body.size()) == "#EXTM3U\nsegment.ts?token=test\n", "HLS child URL did not retain authorization");
     }
     {
         auto response = co_await client.send({ .target = "/media/rtp/large.live.flv" });
         const auto body = co_await response.body().readAll(4U * 1024U * 1024U);
-        require(body.size() == 3U * 1024U * 1024U && body.front() == 'm' && body.back() == 'm', "media stream was truncated at the proxy buffering limit");
+        require(body.size() == 3U * 1024U * 1024U && body.front() == std::byte{'m'} && body.back() == std::byte{'m'}, "media stream was truncated at the proxy buffering limit");
     }
     {
         auto response = co_await client.send({ .target = "/media/rtp/cancel.live.flv" });

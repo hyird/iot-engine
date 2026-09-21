@@ -163,6 +163,10 @@ build/                      # 构建、后端生成代码、临时验证产物
 - `DbColumnOptions` 的 `enumName`、`defaultExpression` 准确描述枚举及默认值。
 - 枚举按文本读写，物理类型与历史默认值归迁移，补充元数据不得修改历史迁移或实际列类型。
 - DTO、实体、校验、数据库约束一致，明确空值、可选、默认、清空语义。
+- Ruvia 字段必填与可空独立：`RUVIA_OPTIONAL_FIELD` 仅允许缺失，允许 null 须显式添加 `RUVIA_NULLABLE`。`RUVIA_DEFAULT` 只应用于缺失的可选字段，不能满足必填约束，显式 null 不应用默认值。PATCH 用公开 `isPresent`、`isNull` 区分缺失、不修改与 null、清空，不为判断存在性重新解析原文。此前明确接受 null 按缺失处理的字段须显式标记可空并保留对应测试。
+- `JsonValue`、`JsonObject` 字段不附加字段校验规则；固定字段使用具体类型，动态内容的业务约束归 Service。`fromJson` 仅解析结构，不替代路由字段校验。
+- 独立 Collector 使用公开 `RedisClient(EventLoop, RedisConfig)`，每个 Worker 独占客户端。停止业务任务后在所属 EventLoop 等待 `shutdown()`，再关闭线程；不使用私有 `RedisRegistry` 或新增 Redis 转发包装。
+- 请求 Model 能直接供 Service 使用时，不保留字段相同的输入 struct 和中间转换；独立领域类型须有实际业务或所有权职责。
 - 数据库及连接用 UTC，时间用 `TIMESTAMPTZ`。
 - 设备时间按其 `timezone` 入库，API 明确输出 UTC。
 
@@ -189,8 +193,13 @@ build/                      # 构建、后端生成代码、临时验证产物
 - 用户操作直接返回 HTTP 结果，不等待 SSE 回执，不封装为 WS 事件。
 - Controller 使用 Ruvia 公开 HTTP 路由 API，接收类型化参数并调用所属 Service。
 - 后端字段校验直接绑定 `types.h` 中的 Ruvia 请求模型，不创建模块级 `schema.h` 或独立 Validator；创建、更新约束不同时使用独立模型。跨字段业务规则与数据库校验归 Service。
-- 普通 HTTP handler 返回 `ruvia::Task<>`，响应模型通过 `c.json(model)` 显式序列化；Service 和内部查询可返回 `Task<Model>`，无返回值的任务显式使用 `Task<void>`。模型必须在所属内存作用域释放前序列化。
+- 普通 HTTP handler 返回 `ruvia::Task<ruvia::HttpResponse>`，响应模型通过 `c.json(model)` 显式序列化；Service 和内部查询可返回 `Task<Model>`，无返回值的任务显式使用 `Task<void>`。模型必须在所属内存作用域释放前序列化，不保留默认返回类型别名或兼容包装。
 - 响应明确状态码与业务结果；鉴权、权限、校验、错误处理接入中间件。
+- 所有自有管理 API 的接口权限码统一在路由声明中绑定 `service::middleware::PermissionMiddleware<"权限码">`；认证先于权限检查，权限检查先于模型校验和业务调用。Controller 普通 handler 不再调用 `requirePermission` 或自行查询接口权限；不得按模块保留新旧两套接入方式。
+- 接口权限中间件不能替代 Service 的业务权限：资源归属、租户或数据范围、共享授权、状态相关限制仍由所属 Service 校验。多权限、条件权限必须保持原有逻辑，不得简单合并成更宽松的单权限检查。
+- SSE、WebSocket 连接建立时校验权限，连接期间保留事件查询、命令执行所需的权限复核及撤销处理，不能只在握手时检查。第三方接口、固件和专用令牌认证保持各自原有授权契约，不强制套用管理端登录权限。
+- 权限迁移覆盖全部自有管理模块，逐路由核对原权限码、允许与拒绝条件、校验顺序及响应；验证未登录、无权限、合法权限、权限撤销和业务数据越权，不能仅凭删除调用或编译通过认定完成。
+- 升级 Ruvia 时，全项目按固定版本公开 API 迁移。固定结构请求、配置、消息及状态优先使用所属 `types.h` 或公共消息契约中的 Model；多协议配置分别建模，需原文入库时使用公开的 `ValidatedJson<T>::raw()`。真正包含运行时键名、任意 JSON 值或未知字段保留需求的结构，可使用固定版本已公开的 `JsonValue`、`JsonObject`；不得因此回退已完成的固定结构 Model 迁移。动态 JSON 视图借用输入，输入字符串及解析资源须覆盖全部使用期，不得传入临时字符串或让视图逃逸。不得引用框架 `detail` 解析器、在项目内恢复旧 API 或添加兼容包装；公开 API 仍无法表达的需求须先列明具体契约和能力缺口，再确定方案。
 
 ### 4.2 事件驱动
 

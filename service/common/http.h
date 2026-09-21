@@ -112,7 +112,7 @@ inline std::string clientIp(const ruvia::Context& context) {
         if (!resolved.empty())
             return resolved;
     }
-    return std::string(ruvia::getConnInfo(context).remote().address());
+    return std::string(context.conn().remote().address());
 }
 
 } // namespace service::common

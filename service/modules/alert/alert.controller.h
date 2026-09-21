@@ -1,11 +1,10 @@
 #pragma once
 #include <ruvia/web/Controller.h>
-#include "service/utils/json.h"
-
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
 #include "service/middleware/live.h"
 #include "service/middleware/permission.h"
+#include "service/middleware/validation.h"
 #include "service/modules/alert/alert.types.h"
 #include "service/modules/alert/alert.service.h"
 
@@ -14,303 +13,132 @@ class AlertController final : public ruvia::Controller<AlertController> {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/alert", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
-    RUVIA_GET("/rules", rules, ruvia::QueryModel<AlertListQuery>);
-    RUVIA_GET("/templates", templates, ruvia::QueryModel<AlertListQuery>);
-    RUVIA_GET_SSE("/events", alertEvents, ruvia::QueryModel<AlertListQuery>);
-    RUVIA_GET("/records", records, ruvia::QueryModel<AlertListQuery>);
-    RUVIA_GET("/records/grouped", grouped, ruvia::QueryModel<AlertGroupedQuery>);
-    RUVIA_GET("/stats", stats);
-    RUVIA_GET("/rules/:id", ruleDetail, ruvia::PathModel<AlertIdParams>);
-    RUVIA_GET("/templates/:id", templateDetail, ruvia::PathModel<AlertIdParams>);
-    RUVIA_POST("/rules", createRule);
-    RUVIA_DELETE("/rules", batchRemoveRules);
-    RUVIA_POST("/rules/apply-template", applyTemplate);
-    RUVIA_POST("/templates", createTemplate);
-    RUVIA_POST("/records/batch-ack", batchAcknowledge);
-    RUVIA_PUT("/rules/:id", updateRule, ruvia::PathModel<AlertIdParams>);
-    RUVIA_DELETE("/rules/:id", removeRule, ruvia::PathModel<AlertIdParams>);
-    RUVIA_PUT("/templates/:id", updateTemplate, ruvia::PathModel<AlertIdParams>);
-    RUVIA_DELETE("/templates/:id", removeTemplate, ruvia::PathModel<AlertIdParams>);
-    RUVIA_POST("/records/:id/ack", acknowledge, ruvia::PathModel<AlertIdParams>);
+    RUVIA_GET("/rules", rules, service::middleware::PermissionMiddleware<"iot:alert:query">, ruvia::QueryModel<AlertListQuery>);
+    RUVIA_GET("/templates", templates, service::middleware::PermissionMiddleware<"iot:alert:query">, ruvia::QueryModel<AlertListQuery>);
+    RUVIA_GET_SSE("/events", alertEvents, service::middleware::PermissionMiddleware<"iot:alert:query">, ruvia::QueryModel<AlertListQuery>);
+    RUVIA_GET("/records", records, service::middleware::PermissionMiddleware<"iot:alert:query">, ruvia::QueryModel<AlertListQuery>);
+    RUVIA_GET("/records/grouped", grouped, service::middleware::PermissionMiddleware<"iot:alert:query">, ruvia::QueryModel<AlertGroupedQuery>);
+    RUVIA_GET("/stats", stats, service::middleware::PermissionMiddleware<"iot:alert:query">);
+    RUVIA_GET("/rules/:id", ruleDetail, service::middleware::PermissionMiddleware<"iot:alert:query">, ruvia::PathModel<AlertIdParams>);
+    RUVIA_GET("/templates/:id", templateDetail, service::middleware::PermissionMiddleware<"iot:alert:query">, ruvia::PathModel<AlertIdParams>);
+    RUVIA_POST("/rules", createRule, service::middleware::PermissionMiddleware<"iot:alert:add">, service::middleware::ValidationErrorCodeMiddleware<17002>, ruvia::JsonBody<RuleInput>);
+    RUVIA_DELETE("/rules", batchRemoveRules, service::middleware::PermissionMiddleware<"iot:alert:delete">, service::middleware::ValidationErrorCodeMiddleware<17002>, ruvia::JsonBody<AlertBatchBody>);
+    RUVIA_POST("/rules/apply-template", applyTemplate, service::middleware::PermissionMiddleware<"iot:alert:add">, service::middleware::ValidationErrorCodeMiddleware<17002>, ruvia::JsonBody<ApplyTemplateInput>);
+    RUVIA_POST("/templates", createTemplate, service::middleware::PermissionMiddleware<"iot:alert:add">, service::middleware::ValidationErrorCodeMiddleware<17002>, ruvia::JsonBody<TemplateInput>);
+    RUVIA_POST("/records/batch-ack", batchAcknowledge, service::middleware::PermissionMiddleware<"iot:alert:ack">, service::middleware::ValidationErrorCodeMiddleware<17002>, ruvia::JsonBody<AlertBatchBody>);
+    RUVIA_PUT("/rules/:id", updateRule, service::middleware::PermissionMiddleware<"iot:alert:edit">, ruvia::PathModel<AlertIdParams>, service::middleware::ValidationErrorCodeMiddleware<17002>, ruvia::JsonBody<RuleInput>);
+    RUVIA_DELETE("/rules/:id", removeRule, service::middleware::PermissionMiddleware<"iot:alert:delete">, ruvia::PathModel<AlertIdParams>);
+    RUVIA_PUT("/templates/:id", updateTemplate, service::middleware::PermissionMiddleware<"iot:alert:edit">, ruvia::PathModel<AlertIdParams>, service::middleware::ValidationErrorCodeMiddleware<17002>, ruvia::JsonBody<TemplateInput>);
+    RUVIA_DELETE("/templates/:id", removeTemplate, service::middleware::PermissionMiddleware<"iot:alert:delete">, ruvia::PathModel<AlertIdParams>);
+    RUVIA_POST("/records/:id/ack", acknowledge, service::middleware::PermissionMiddleware<"iot:alert:ack">, ruvia::PathModel<AlertIdParams>);
     RUVIA_ROUTES_END
 
   private:
-    static std::string id(ruvia::Context& c) {
-        return std::string(c.req().validated<AlertIdParams>().get<"id">().view());
-    }
-
-    ruvia::Task<> rules(ruvia::Context& c) {
+    static std::string id(ruvia::Context& c) { return std::string(c.req().validated<AlertIdParams>().get<"id">().view()); }
+    ruvia::Task<ruvia::HttpResponse> rules(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        const auto payload = co_await rulesSnapshot(c, request);
+        const auto payload = service::live::data(c, co_await alertService().listRules(request, c.req().validated<AlertListQuery>()));
         c.header("Content-Type", "application/json");
         co_return c.body(std::string_view(payload));
     }
-
-    ruvia::Task<std::string> rulesSnapshot(ruvia::Context& c, service::middleware::RequestContext& request) {
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:query");
-        co_return service::live::data(c, co_await alertService().listRules(request, c.req().validated<AlertListQuery>()));
-    }
-
-    ruvia::Task<> ruleDetail(ruvia::Context& c) {
-
+    ruvia::Task<ruvia::HttpResponse> ruleDetail(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        const auto payload = co_await ruleDetailSnapshot(c, request);
+        const auto payload = service::live::data(c, co_await alertService().ruleDetail(request, id(c)));
         c.header("Content-Type", "application/json");
         co_return c.body(std::string_view(payload));
     }
-
-    ruvia::Task<std::string> ruleDetailSnapshot(ruvia::Context& c, service::middleware::RequestContext& request) {
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:query");
-        co_return service::live::data(c, co_await alertService().ruleDetail(request, id(c)));
-    }
-
-    ruvia::Task<> templates(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> templates(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        const auto payload = co_await templatesSnapshot(c, request);
+        const auto payload = service::live::data(c, co_await alertService().listTemplates(request, c.req().validated<AlertListQuery>()));
         c.header("Content-Type", "application/json");
         co_return c.body(std::string_view(payload));
     }
-
-    ruvia::Task<std::string> templatesSnapshot(ruvia::Context& c, service::middleware::RequestContext& request) {
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:query");
-        co_return service::live::data(c, co_await alertService().listTemplates(request, c.req().validated<AlertListQuery>()));
-    }
-
-    ruvia::Task<> templateDetail(ruvia::Context& c) {
-
+    ruvia::Task<ruvia::HttpResponse> templateDetail(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        const auto payload = co_await templateDetailSnapshot(c, request);
+        const auto payload = service::live::data(c, co_await alertService().templateDetail(request, id(c)));
         c.header("Content-Type", "application/json");
         co_return c.body(std::string_view(payload));
     }
-
-    ruvia::Task<std::string> templateDetailSnapshot(ruvia::Context& c, service::middleware::RequestContext& request) {
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:query");
-        co_return service::live::data(c, co_await alertService().templateDetail(request, id(c)));
-    }
-
-    ruvia::Task<> records(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> records(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        const auto payload = co_await recordsSnapshot(c, request);
+        const auto payload = service::live::data(c, co_await alertService().listRecords(request, c.req().validated<AlertListQuery>()));
         c.header("Content-Type", "application/json");
         co_return c.body(std::string_view(payload));
     }
-
-    ruvia::Task<std::string> recordsSnapshot(ruvia::Context& c, service::middleware::RequestContext& request) {
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:query");
-        co_return service::live::data(c, co_await alertService().listRecords(request, c.req().validated<AlertListQuery>()));
+    ruvia::Task<ruvia::HttpResponse> stats(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        const auto payload = service::live::data(c, co_await alertService().stats(request));
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
     }
-
+    ruvia::Task<ruvia::HttpResponse> grouped(ruvia::Context& c) {
+        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
+        const auto payload = service::live::data(c, co_await alertService().grouped(request, c.req().validated<AlertGroupedQuery>().get<"days">()->value));
+        c.header("Content-Type", "application/json");
+        co_return c.body(std::string_view(payload));
+    }
     ruvia::Task<void> alertEvents(ruvia::Context& c) {
-        service::middleware::RequestContext access(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(access, access.userId, "iot:alert:query");
-        std::vector<service::live::SnapshotChannel> channels;
-        channels.push_back({ "records", "alert", [this, &c](service::middleware::RequestContext& request) {
-                                return recordsSnapshot(c, request);
-                            } });
-        channels.push_back({ "stats", "alert", [this, &c](service::middleware::RequestContext& request) {
-                                return statsSnapshot(c, request);
-                            } });
-        co_await service::live::serveSnapshotChannels(c, service::middleware::requireAuth(c).userId, std::move(channels), [&c] {
-            (void)service::middleware::requireAuth(c);
-        });
+        std::vector<service::live::SnapshotChannel> channels{
+            {"records", "alert", [&c](service::middleware::RequestContext& request) -> ruvia::Task<std::string> {
+                co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:query");
+                co_return service::live::data(c, co_await alertService().listRecords(request, c.req().validated<AlertListQuery>()));
+            }},
+            {"stats", "alert", [&c](service::middleware::RequestContext& request) -> ruvia::Task<std::string> {
+                co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:query");
+                co_return service::live::data(c, co_await alertService().stats(request));
+            }}
+        };
+        co_await service::live::serveSnapshotChannels(c, service::middleware::requireAuth(c).userId, std::move(channels), [&c] { (void)service::middleware::requireAuth(c); });
     }
-
-    ruvia::Task<> grouped(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> createRule(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        const auto payload = co_await groupedSnapshot(c, request);
-        c.header("Content-Type", "application/json");
-        co_return c.body(std::string_view(payload));
-    }
-
-    ruvia::Task<std::string> groupedSnapshot(ruvia::Context& c, service::middleware::RequestContext& request) {
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:query");
-        co_return service::live::data(c, co_await alertService().grouped(request, static_cast<std::int64_t>(*c.req().validated<AlertGroupedQuery>().get<"days">())));
-    }
-
-    ruvia::Task<> stats(ruvia::Context& c) {
-        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        const auto payload = co_await statsSnapshot(c, request);
-        c.header("Content-Type", "application/json");
-        co_return c.body(std::string_view(payload));
-    }
-
-    ruvia::Task<std::string> statsSnapshot(ruvia::Context& c, service::middleware::RequestContext& request) {
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:query");
-        co_return service::live::data(c, co_await alertService().stats(request));
-    }
-
-    ruvia::Task<> createRule(ruvia::Context& c) {
-        service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:add");
-        if (!service::utils::isJsonContentType(c.req().header("Content-Type").value_or(std::string_view{}))) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kUnsupportedMediaType,
-                .code = "unsupported_media_type", .message = "request body must be application/json" });
-        }
-        const auto rawBody = co_await c.req().text();
-        auto parsedJson = ruvia::JsonValue::parse(rawBody, { .resource = c.arena() });
-        if (!parsedJson) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kBadRequest, .message = "invalid json body" });
-        }
-        const auto json = std::move(*parsedJson);
-        if (!json.isObject()) {
-            service::common::fail(17002, "请求体必须是对象", 400);
-        }
-        const auto body = alertRequest::ruleInput(json);
-        co_await alertService().createRule(request, body);
+        co_await alertService().createRule(request, c.req().validated<RuleInput>());
         co_return c.json(service::common::operation(c, "操作成功"));
     }
-
-    ruvia::Task<> updateRule(ruvia::Context& c) {
-
+    ruvia::Task<ruvia::HttpResponse> updateRule(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:edit");
-        if (!service::utils::isJsonContentType(c.req().header("Content-Type").value_or(std::string_view{}))) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kUnsupportedMediaType,
-                .code = "unsupported_media_type", .message = "request body must be application/json" });
-        }
-        const auto rawBody = co_await c.req().text();
-        auto parsedJson = ruvia::JsonValue::parse(rawBody, { .resource = c.arena() });
-        if (!parsedJson) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kBadRequest, .message = "invalid json body" });
-        }
-        const auto json = std::move(*parsedJson);
-        if (!json.isObject()) {
-            service::common::fail(17002, "请求体必须是对象", 400);
-        }
-        const auto body = alertRequest::ruleInput(json);
-        co_await alertService().updateRule(request, id(c), body);
+        co_await alertService().updateRule(request, id(c), c.req().validated<RuleInput>());
         co_return c.json(service::common::operation(c, "操作成功"));
     }
-
-    ruvia::Task<> removeRule(ruvia::Context& c) {
-
+    ruvia::Task<ruvia::HttpResponse> removeRule(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:delete");
         co_await alertService().removeRule(request, id(c));
         co_return c.json(service::common::operation(c, "操作成功"));
     }
-
-    ruvia::Task<> batchRemoveRules(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> batchRemoveRules(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:delete");
-        if (!service::utils::isJsonContentType(c.req().header("Content-Type").value_or(std::string_view{}))) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kUnsupportedMediaType,
-                .code = "unsupported_media_type", .message = "request body must be application/json" });
-        }
-        const auto rawBody = co_await c.req().text();
-        auto parsedJson = ruvia::JsonValue::parse(rawBody, { .resource = c.arena() });
-        if (!parsedJson) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kBadRequest, .message = "invalid json body" });
-        }
-        const auto json = std::move(*parsedJson);
-        if (!json.isObject()) {
-            service::common::fail(17002, "请求体必须是对象", 400);
-        }
-        const auto body = alertRequest::requiredUuids(json, "ids", "请选择操作对象");
-        co_await alertService().batchRemoveRules(request, body);
+        co_await alertService().batchRemoveRules(request, uniqueAlertIds(c.req().validated<AlertBatchBody>().get<"ids">()));
         co_return c.json(service::common::operation(c, "操作成功"));
     }
-
-    ruvia::Task<> applyTemplate(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> applyTemplate(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:add");
-        if (!service::utils::isJsonContentType(c.req().header("Content-Type").value_or(std::string_view{}))) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kUnsupportedMediaType,
-                .code = "unsupported_media_type", .message = "request body must be application/json" });
-        }
-        const auto rawBody = co_await c.req().text();
-        auto parsedJson = ruvia::JsonValue::parse(rawBody, { .resource = c.arena() });
-        if (!parsedJson) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kBadRequest, .message = "invalid json body" });
-        }
-        const auto json = std::move(*parsedJson);
-        if (!json.isObject()) {
-            service::common::fail(17002, "请求体必须是对象", 400);
-        }
-        const auto body = alertRequest::applyTemplateInput(json);
-        const auto payload = service::live::data(c, co_await alertService().applyTemplate(request, body));
+        const auto payload = service::live::data(c, co_await alertService().applyTemplate(request, c.req().validated<ApplyTemplateInput>()));
         c.header("Content-Type", "application/json");
         co_return c.body(std::string_view(payload));
     }
-
-    ruvia::Task<> createTemplate(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> createTemplate(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:add");
-        if (!service::utils::isJsonContentType(c.req().header("Content-Type").value_or(std::string_view{}))) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kUnsupportedMediaType,
-                .code = "unsupported_media_type", .message = "request body must be application/json" });
-        }
-        const auto rawBody = co_await c.req().text();
-        auto parsedJson = ruvia::JsonValue::parse(rawBody, { .resource = c.arena() });
-        if (!parsedJson) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kBadRequest, .message = "invalid json body" });
-        }
-        const auto json = std::move(*parsedJson);
-        if (!json.isObject()) {
-            service::common::fail(17002, "请求体必须是对象", 400);
-        }
-        const auto body = alertRequest::templateInput(json);
-        co_await alertService().createTemplate(request, body);
+        co_await alertService().createTemplate(request, c.req().validated<TemplateInput>());
         co_return c.json(service::common::operation(c, "操作成功"));
     }
-
-    ruvia::Task<> updateTemplate(ruvia::Context& c) {
-
+    ruvia::Task<ruvia::HttpResponse> updateTemplate(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:edit");
-        if (!service::utils::isJsonContentType(c.req().header("Content-Type").value_or(std::string_view{}))) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kUnsupportedMediaType,
-                .code = "unsupported_media_type", .message = "request body must be application/json" });
-        }
-        const auto rawBody = co_await c.req().text();
-        auto parsedJson = ruvia::JsonValue::parse(rawBody, { .resource = c.arena() });
-        if (!parsedJson) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kBadRequest, .message = "invalid json body" });
-        }
-        const auto json = std::move(*parsedJson);
-        if (!json.isObject()) {
-            service::common::fail(17002, "请求体必须是对象", 400);
-        }
-        const auto body = alertRequest::templateInput(json);
-        co_await alertService().updateTemplate(request, id(c), body);
+        co_await alertService().updateTemplate(request, id(c), c.req().validated<TemplateInput>());
         co_return c.json(service::common::operation(c, "操作成功"));
     }
-
-    ruvia::Task<> removeTemplate(ruvia::Context& c) {
-
+    ruvia::Task<ruvia::HttpResponse> removeTemplate(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:delete");
         co_await alertService().removeTemplate(request, id(c));
         co_return c.json(service::common::operation(c, "操作成功"));
     }
-
-    ruvia::Task<> acknowledge(ruvia::Context& c) {
-
+    ruvia::Task<ruvia::HttpResponse> acknowledge(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:ack");
         co_await alertService().acknowledge(request, id(c));
         co_return c.json(service::common::operation(c, "操作成功"));
     }
-
-    ruvia::Task<> batchAcknowledge(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> batchAcknowledge(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:alert:ack");
-        if (!service::utils::isJsonContentType(c.req().header("Content-Type").value_or(std::string_view{}))) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kUnsupportedMediaType,
-                .code = "unsupported_media_type", .message = "request body must be application/json" });
-        }
-        const auto rawBody = co_await c.req().text();
-        auto parsedJson = ruvia::JsonValue::parse(rawBody, { .resource = c.arena() });
-        if (!parsedJson) {
-            throw ruvia::HttpError({ .status = ruvia::http_status::kBadRequest, .message = "invalid json body" });
-        }
-        const auto json = std::move(*parsedJson);
-        if (!json.isObject()) {
-            service::common::fail(17002, "请求体必须是对象", 400);
-        }
-        const auto body = alertRequest::requiredUuids(json, "ids", "请选择操作对象");
-        co_await alertService().batchAcknowledge(request, body);
+        co_await alertService().batchAcknowledge(request, uniqueAlertIds(c.req().validated<AlertBatchBody>().get<"ids">()));
         co_return c.json(service::common::operation(c, "操作成功"));
     }
 };

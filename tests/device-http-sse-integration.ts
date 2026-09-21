@@ -40,6 +40,21 @@ async function snapshot(stream: Awaited<ReturnType<typeof subscribe>>, eventName
     assert.equal(JSON.parse(event.data).code, 0);
     return JSON.parse(event.data).data;
 }
+async function collectEvents(stream: Awaited<ReturnType<typeof subscribe>>, names: string[]) {
+    const remaining = new Set(names);
+    const data = new Map<string, any>();
+    while (remaining.size) {
+        const event = await stream.next();
+        if (event.event === 'error') {
+            assert.equal(event.event, names[0]);
+        }
+        if (!remaining.has(event.event)) continue;
+        assert.equal(JSON.parse(event.data).code, 0, event.event);
+        data.set(event.event, JSON.parse(event.data).data);
+        remaining.delete(event.event);
+    }
+    return data;
+}
 try {
     await request('GET', '/v1/device', undefined, 11004, null);
     await request('POST', '/v1/protocol/configs', {protocol:'Modbus',name:tag,config:{storagePolicy:'report',readInterval:10,byteOrder:'BIG_ENDIAN',registers:[]}});
@@ -49,12 +64,13 @@ try {
     await request('POST', '/v1/device/groups', {name:tag,status:'enabled',sort_order:1});
     group = (await db`SELECT id FROM device_group WHERE name=${tag}`)[0].id;
     const list = await subscribe('/v1/device/events');
-    await snapshot(list, 'realtime');
+    await collectEvents(list, ['devices', 'groups', 'realtime']);
     await request('POST', '/v1/device', {name:tag,device_code:`MB-${tag}`,link_id:link,protocol_config_id:model,group_id:group,status:'disabled',online_timeout:120,remote_control:true,modbus_mode:'TCP',slave_id:1,timezone:'+08:00',heartbeat:{mode:'OFF'},registration:{mode:'ASCII',content:tag},remark:'retained'});
-    const item = (await snapshot(list, 'devices')).list.find((row: {name:string}) => row.name === tag);
+    const created = await collectEvents(list, ['devices', 'groups', 'realtime']);
+    const item = created.get('devices').list.find((row: {name:string}) => row.name === tag);
     assert(item);
     device = item.id;
-    const countedGroup = (await snapshot(list, 'groups')).find((row: {id:string}) => row.id === group);
+    const countedGroup = created.get('groups').find((row: {id:string}) => row.id === group);
     assert.equal(countedGroup.deviceCount, 1, 'the shared connection must update group counts after device creation');
     await request('GET', '/v1/device/commands?ids=', undefined, 10001);
     await request('GET', `/v1/device/commands/${crypto.randomUUID()}`, undefined, 18012);
@@ -63,7 +79,7 @@ try {
     assert.equal((await detail()).created_by, admin);
     assert.equal((await detail()).online_timeout, 120);
     const realtime = list;
-    assert((await snapshot(realtime, 'realtime')).list.some((row: {id:string}) => row.id === device));
+    assert(created.get('realtime').list.some((row: {id:string}) => row.id === device));
     // Drain the create notification before isolating a telemetry-only change.
     await list.expectQuiet();
     assert(list.commentCount > 0, 'idle connection must use comment-only keepalive');

@@ -35,7 +35,7 @@
 #include "service/features/telemetry/derived/derived.service.h"
 #include "service/features/collector/engine/engine.runtime.h"
 #include "service/features/collector/modbus/modbus.protocol.h"
-#include "service/features/collector/redis/redis.transport.h"
+#include <ruvia/web/redis/RedisClient.h>
 #include "service/features/collector/s7/s7.protocol.h"
 #include "service/features/collector/mc/mc.protocol.h"
 #include "service/features/collector/fins/fins.protocol.h"
@@ -49,11 +49,12 @@ namespace service::collector {
 
 class CollectorWorker final {
   public:
-    CollectorWorker(ruvia::EventLoop loop, ruvia::RedisConfig redisConfig, std::size_t workerIndex, std::size_t workerCount, AppConfig gb28181)
+    CollectorWorker(ruvia::EventLoop loop, std::unique_ptr<ruvia::RedisClient> redisClient, std::size_t workerIndex, std::size_t workerCount, AppConfig gb28181)
         : loop_(std::move(loop)), workerHandle_(loop_.handle()), resource_(),
           scope_(workerHandle_, ruvia::TaskScopeOptions{ .resource = &resource_ }),
           scheduler_(loop_.ioContext()),
-          redis_(loop_.ioContext(), std::move(redisConfig), workerHandle_),
+          redisClient_(std::move(redisClient)),
+          redis_(redisClient_->withOptions({.timeout = std::chrono::seconds(30)})),
           engine_(protocols()),
           tcp_(
               uuidGenerator_,
@@ -86,7 +87,7 @@ class CollectorWorker final {
                   releaseTargetLease(std::move(linkId), std::move(targetId), std::move(connectionId));
               }
           ),
-          gb28181_(uuidGenerator_, std::move(gb28181), loop_, redis_.withOptions({}), workerIndex, workerCount),
+          gb28181_(uuidGenerator_, std::move(gb28181), loop_, redisClient_->withOptions({}), workerIndex, workerCount),
           workerIndex_(workerIndex), workerCount_(workerCount),
           consumer_("collector-" + std::to_string(workerIndex)) {}
 
@@ -149,7 +150,7 @@ class CollectorWorker final {
             co_await CollectorStateService::eraseWorker(redis_, workerIndex_);
         } catch (...) {
         }
-        redis_.close();
+        co_await redisClient_->shutdown();
         scheduler_.stop();
     }
 
@@ -519,7 +520,6 @@ class CollectorWorker final {
 
     ruvia::Task<void> initialize(std::shared_ptr<std::promise<void>> ready) {
         try {
-            co_await redis_.connect();
             co_await gb28181_.initialize();
             co_await message::redis::ensureGroup(redis_, configStream(), configGroup());
             co_await message::redis::ensureGroup(redis_, ingressStream(), ingressGroup());
@@ -1625,7 +1625,7 @@ class CollectorWorker final {
                 )
             );
             auto batches = co_await message::redis::readGroupManyBlockingUntil(
-                redis_,
+                *redisClient_,
                 streams,
                 collectorGroup(),
                 consumer_,
@@ -2095,7 +2095,8 @@ class CollectorWorker final {
     std::pmr::unsynchronized_pool_resource resource_;
     ruvia::TaskScope scope_;
     DeadlineScheduler scheduler_;
-    CollectorRedisClient redis_;
+    std::unique_ptr<ruvia::RedisClient> redisClient_;
+    ruvia::RedisHandle redis_;
     ProtocolEngine engine_;
     TcpTransport tcp_;
     service::gb28181::CollectorRuntime gb28181_;
@@ -2140,12 +2141,8 @@ class CollectorWorker final {
 
 } // namespace service::collector
 
-#include <asio/co_spawn.hpp>
-#include <asio/detached.hpp>
 #include <atomic>
 #include <thread>
-
-#include <ruvia/core/detail/io/AsioAwait.h>
 #include <ruvia/web/redis/Redis.h>
 
 namespace service::collector {
@@ -2163,15 +2160,29 @@ class CollectorWorkerPool final {
             return;
         }
         workerCount = std::max<std::size_t>(1, workerCount);
+        redisConfig.poolSizePerWorker = 1;
+        redisConfig.blockingPoolSizePerWorker = 2;
+        redisConfig.commandTimeout = std::nullopt;
         try {
             pool_ = std::make_unique<ruvia::EventLoopPool>(
                 ruvia::EventLoopPoolOptions{ .loopCount = workerCount, .mailboxCapacity = 8192 }
             );
-            workers_.reserve(workerCount);
-            for (std::size_t index = 0; index < workerCount; ++index) {
-                workers_.push_back(std::make_unique<CollectorWorker>(pool_->loop(index), redisConfig, index, workerCount, gb28181));
-            }
+            workers_.resize(workerCount);
             pool_->start();
+            std::vector<ruvia::RootTask<std::unique_ptr<CollectorWorker>>> initializing;
+            initializing.reserve(workerCount);
+            for (std::size_t index = 0; index < workerCount; ++index) {
+                initializing.push_back(pool_->loop(index).start(createWorker(pool_->loop(index), redisConfig, index, workerCount, gb28181)));
+            }
+            std::exception_ptr startupFailure;
+            for (std::size_t index = 0; index < workerCount; ++index) {
+                try {
+                    workers_[index] = initializing[index].get();
+                } catch (...) {
+                    if (!startupFailure) startupFailure = std::current_exception();
+                }
+            }
+            if (startupFailure) std::rethrow_exception(startupFailure);
 
             std::vector<std::future<void>> readiness;
             readiness.reserve(workerCount);
@@ -2197,27 +2208,10 @@ class CollectorWorkerPool final {
             workers_.clear();
             return;
         }
-        std::vector<std::future<void>> stopped;
+        std::vector<ruvia::RootTask<void>> stopped;
         stopped.reserve(workers_.size());
         for (std::size_t index = 0; index < workers_.size(); ++index) {
-            auto completion = std::make_shared<std::promise<void>>();
-            stopped.push_back(completion->get_future());
-            auto* worker = workers_[index].get();
-            auto loop = pool_->loop(index);
-            asio::co_spawn(
-                loop.ioContext(),
-                ruvia::detail::taskAsAwaitable(worker->shutdown()),
-                [completion](std::exception_ptr error) {
-                    try {
-                        if (error) {
-                            completion->set_exception(std::move(error));
-                        } else {
-                            completion->set_value();
-                        }
-                    } catch (...) {
-                    }
-                }
-            );
+            if (workers_[index]) stopped.push_back(pool_->loop(index).start(shutdownWorker(std::move(workers_[index]))));
         }
         for (auto& completion : stopped) {
             try {
@@ -2240,6 +2234,24 @@ class CollectorWorkerPool final {
     }
 
   private:
+    static ruvia::Task<std::unique_ptr<CollectorWorker>> createWorker(ruvia::EventLoop loop, ruvia::RedisConfig config, std::size_t index, std::size_t count, AppConfig gb28181) {
+        auto redis = std::make_unique<ruvia::RedisClient>(loop, config);
+        co_await redis->connect();
+        co_return std::make_unique<CollectorWorker>(std::move(loop), std::move(redis), index, count, std::move(gb28181));
+    }
+
+    static ruvia::Task<void> shutdownWorker(std::unique_ptr<CollectorWorker> worker) {
+        std::exception_ptr failure;
+        try {
+            co_await worker->shutdown();
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        // Redis handle 和客户端均在所属 EventLoop 上释放，先于线程停止。
+        worker.reset();
+        if (failure) std::rethrow_exception(failure);
+    }
+
     std::unique_ptr<ruvia::EventLoopPool> pool_;
     std::vector<std::unique_ptr<CollectorWorker>> workers_;
     std::atomic_bool running_{ false };

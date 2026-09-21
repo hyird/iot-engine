@@ -541,9 +541,11 @@ inline ParsedDeviceMessage parsedFrom(const StreamMessage& message) {
     parsed.acquisitionId = std::string(require("acquisition_id"));
     const auto packetIds = message.get("raw_packet_ids");
     if (!packetIds.empty()) {
-        auto remaining = packetIds;
-        const auto ids = ruvia::detail::parseJsonValue<ruvia::Array<ruvia::String>>(
-            remaining, std::pmr::get_default_resource());
+        const auto array = ruvia::JsonValue::parse(packetIds);
+        if (!array || !array->isArray()) throw std::runtime_error("Invalid raw packet IDs");
+        const std::string document = "{\"ids\":" + std::string(packetIds) + "}";
+        const auto object = ruvia::JsonValue::parse(document);
+        const auto ids = object ? object->get<ruvia::Array<ruvia::String>>("ids") : std::nullopt;
         if (!ids) throw std::runtime_error("Invalid raw packet IDs");
         for (const auto& id : *ids) parsed.rawPacketIds.emplace_back(id.view());
     }
@@ -789,9 +791,11 @@ struct Entry final {
 
 inline std::vector<std::string> parseStringArray(std::string_view json) {
     std::vector<std::string> result;
-    auto remaining = json;
-    const auto parsed = ruvia::detail::parseJsonValue<ruvia::Array<ruvia::String>>(
-        remaining, std::pmr::get_default_resource());
+    const auto array = ruvia::JsonValue::parse(json);
+    if (!array || !array->isArray()) throw std::runtime_error("invalid projected access-session array");
+    const std::string document = "{\"values\":" + std::string(json) + "}";
+    const auto object = ruvia::JsonValue::parse(document);
+    const auto parsed = object ? object->get<ruvia::Array<ruvia::String>>("values") : std::nullopt;
     if (!parsed)
         throw std::runtime_error("invalid projected access-session array");
     result.reserve(parsed->size());

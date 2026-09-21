@@ -39,7 +39,7 @@ class EventProbe final : public ruvia::Controller<EventProbe> {
         co_return service::edge::debug::EventResult{ service::utils::jsonQuoted(body.get<"value">().view()) };
     }
 
-    ruvia::Task<> probe(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> probe(ruvia::Context& c) {
         const auto wire = co_await c.req().text();
         auto request = service::edge::debug::Request::parse(wire);
         service::edge::debug::SessionIdentity identity{

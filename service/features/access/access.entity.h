@@ -224,10 +224,7 @@ struct LatestValuesRecord final {
                     hasConfigured = true;
                     const auto parsed = ruvia::JsonValue::parse(raw);
                     if (parsed && parsed->isObject()) {
-                        (void)ruvia::detail::visitJsonObjectFields(
-                            ruvia::detail::ResolvedPmrResourceTag{},
-                            parsed->view(),
-                            std::pmr::get_default_resource(),
+                        (void)service::utils::visitJsonFields(*parsed,
                             [&](std::string_view name, std::string_view) {
                                 if (!name.empty()) {
                                     configured.emplace(name);

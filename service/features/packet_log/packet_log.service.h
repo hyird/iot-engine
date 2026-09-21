@@ -215,8 +215,7 @@ return changed and 1 or 0
             if (!decoded) throw std::invalid_argument("invalid debug parsed JSON");
             const auto values = service::utils::jsonField(*decoded, "values");
             if (!values || !values->isObject()) throw std::invalid_argument("invalid debug parsed values");
-            const bool valid = ruvia::detail::visitJsonObjectFields(
-                ruvia::detail::ResolvedPmrResourceTag{}, values->view(), std::pmr::get_default_resource(),
+            const bool valid = service::utils::visitJsonFields(*values,
                 [&](std::string_view name, std::string_view value) {
                     parsedFields.push_back("parsed_value:" + std::string(name));
                     parsedFields.emplace_back(value);

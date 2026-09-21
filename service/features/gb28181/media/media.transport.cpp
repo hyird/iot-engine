@@ -1192,7 +1192,8 @@ ruvia::Task<void> MediaProxyController::proxy(ruvia::Context& context) {
     auto& writer = context.stream();
     if (upstreamPath.ends_with(".m3u8")) {
         const auto playlist = co_await upstream.body().readAll(2U * 1024U * 1024U);
-        const auto rewritten = media_proxy_detail::rewriteHlsPlaylist(playlist, query);
+        const std::string_view playlistText(reinterpret_cast<const char*>(playlist.data()), playlist.size());
+        const auto rewritten = media_proxy_detail::rewriteHlsPlaylist(playlistText, query);
         co_await writer.write(rewritten);
     } else {
         co_await upstream.body().pipeTo(writer);

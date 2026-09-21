@@ -4,10 +4,11 @@
 #include <ruvia/web/ModelObject.h>
 #include "service/common/message.h"
 #include "service/utils/crypto.h"
+#include "service/utils/json.h"
 namespace service::telemetry::contract {
 template<class Visit> void fields(std::string_view raw, Visit visit) {
-    if (!ruvia::detail::visitJsonObjectFields(ruvia::detail::ResolvedPmrResourceTag{},raw,
-        std::pmr::get_default_resource(),visit)) throw std::runtime_error("Invalid telemetry object");
+    const auto object = ruvia::JsonValue::parse(raw);
+    if (!object || !service::utils::visitJsonFields(*object, visit)) throw std::runtime_error("Invalid telemetry object");
 }
 inline std::string_view field(std::string_view raw,std::string_view key) {
     std::string_view found;

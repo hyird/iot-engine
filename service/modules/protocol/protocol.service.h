@@ -32,6 +32,7 @@
 #include "service/modules/system/role/role.entity.h"
 #include "service/modules/system/user/user.entity.h"
 #include "service/utils/json.h"
+#include "service/common/derived_point.h"
 
 namespace service::protocol {
 
@@ -902,17 +903,18 @@ class ProtocolService {
 
     template <typename Context>
     ruvia::Task<void> create(Context& c, const CreateProtocolBody& body) {
-        const auto& protocol = body.protocol;
-        const auto& name = body.name;
+        const std::string protocol(body.get<"protocol">().view());
+        const std::string name(body.get<"name">().view());
         ProtocolConfigurationRules::validateProtocol(protocol);
         ProtocolConfigurationRules::validateName(name);
-        ProtocolConfigurationRules::validateConfig(body.config, protocol, true);
-        validateDerivedConfig(*body.config);
+        if (body.isNull<"config">()) service::common::fail(16004, "config 必须是对象", 400);
+        ProtocolConfigurationRules::validateConfig(body.get<"config">(), protocol, true);
+        validateDerivedConfig(*body.get<"config">());
         co_await ensureNameAvailable(c, name, std::nullopt);
         const auto id = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
-        const auto& config = body.config;
-        const auto& remark = body.remark;
-        const bool enabled = body.enabled;
+        const auto& config = body.get<"config">();
+        const auto& remark = body.get<"remark">();
+        const bool enabled = body.get<"enabled">().value_or(ruvia::Bool{true}).value;
         auto transaction = co_await c.db().beginTransaction();
         ProtocolConfigEntity configuration(c.pool());
         configuration.set<"id">(id);
@@ -921,8 +923,8 @@ class ProtocolService {
         configuration.set<"enabled">(enabled);
         configuration.set<"config">(config->view());
         configuration.set<"created_by">(c.userId);
-        if (remark) {
-            configuration.set<"remark">(*remark);
+        if (remark && !remark->view().empty()) {
+            configuration.set<"remark">(remark->view());
         } else {
             configuration.setNull<"remark">();
         }
@@ -941,29 +943,30 @@ class ProtocolService {
         }
         co_await requireOwner(c, existing->template get<"created_by">());
         const std::string protocol(existing->template get<"protocol">());
-        if (const auto& requested = body.protocol) {
-            if (requested->empty()) {
+        if (const auto& requested = body.get<"protocol">()) {
+            if (requested->view().empty()) {
                 service::common::fail(16003, "protocol 不能为空", 400);
             }
-            if (*requested != protocol) {
+            if (requested->view() != protocol) {
                 service::common::fail(16006, "协议类型不可修改", 409);
             }
         }
-        if (const auto& name = body.name) {
-            ProtocolConfigurationRules::validateName(*name);
-            co_await ensureNameAvailable(c, *name, std::string(id));
+        if (const auto& name = body.get<"name">()) {
+            ProtocolConfigurationRules::validateName(name->view());
+            co_await ensureNameAvailable(c, std::string(name->view()), std::string(id));
         }
         auto transaction = co_await c.db().beginTransaction();
         options.lock = ruvia::DbLockOptions{};
         const auto locked = co_await transaction.template getRepository<ProtocolConfigEntity>().findOne(options);
         if (!locked) service::common::fail(16001, "协议配置不存在", 404);
-        ProtocolConfigurationRules::validateConfig(body.config, protocol, false);
-        if (body.config) {
+        if (body.isNull<"config">()) service::common::fail(16004, "config 必须是对象", 400);
+        ProtocolConfigurationRules::validateConfig(body.get<"config">(), protocol, false);
+        if (body.get<"config">()) {
             const auto previous = ruvia::JsonValue::parse(locked->template get<"config">());
             std::map<std::string, std::string> fields;
             if (!previous) throw std::runtime_error("invalid stored protocol configuration");
             service::utils::visitJsonFields(*previous, [&](auto key, auto value) { fields[std::string(key)] = value; return true; });
-            service::utils::visitJsonFields(*body.config, [&](auto key, auto value) { fields[std::string(key)] = value; return true; });
+            service::utils::visitJsonFields(*body.get<"config">(), [&](auto key, auto value) { fields[std::string(key)] = value; return true; });
             std::string merged = "{";
             for (const auto& [key, value] : fields) {
                 if (merged.size() > 1) merged += ',';
@@ -974,23 +977,23 @@ class ProtocolService {
             validateDerivedConfig(*mergedConfig);
             if (!service::common::orderDerivedPoints(*mergedConfig).empty()) co_await requireDerivedSupport(transaction, c.pool(), id);
         }
-        const auto& name = body.name;
-        const auto& remark = body.remark;
-        const auto& config = body.config;
-        const auto& enabled = body.enabled;
+        const auto& name = body.get<"name">();
+        const auto& remark = body.get<"remark">();
+        const auto& config = body.get<"config">();
+        const auto& enabled = body.get<"enabled">();
         ruvia::DbExpressions expressions(c.pool());
         std::vector<ruvia::DbAssignment> changes{ { "updated_at", expressions.call("now") } };
         if (name) {
-            changes.push_back({ "name", expressions.value(*name) });
+            changes.push_back({ "name", expressions.value(name->view()) });
         }
         if (enabled) {
-            changes.push_back({ "enabled", expressions.value(*enabled) });
+            changes.push_back({ "enabled", expressions.value(enabled->value) });
         }
         if (config) {
             changes.push_back({ "config", expressions.binary(expressions.column("config"), ruvia::DbBinaryOperator::kJsonConcat, expressions.cast(expressions.value(config->view()), ruvia::DbDataType::kJsonb)) });
         }
-        if (body.remarkPresent) {
-            changes.push_back({ "remark", remark ? expressions.value(*remark) : expressions.nullValue() });
+        if (body.isPresent<"remark">()) {
+            changes.push_back({ "remark", remark && !remark->view().empty() ? expressions.value(remark->view()) : expressions.nullValue() });
         }
         (void)co_await transaction.template getRepository<ProtocolConfigEntity>().update(
             service::common::database::activeId<ProtocolConfigEntity>(id),

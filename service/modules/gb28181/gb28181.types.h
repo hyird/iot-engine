@@ -1,5 +1,4 @@
 #pragma once
-#include "service/utils/json.h"
 #include "service/common/timestamp.h"
 #include "service/common/http.h"
 #include <string_view>
@@ -36,66 +35,35 @@ RUVIA_REQUEST_MODEL(GbPtzParams,
     RUVIA_REQUIRED_FIELD(channelId, ruvia::String, RUVIA_MAX(128, "channelId 长度超出限制"), RUVIA_CUSTOM("channelId 不能为空白", isGbIdentifier)),
     RUVIA_REQUIRED_FIELD(action, ruvia::String, RUVIA_MAX(128, "action 长度超出限制"), RUVIA_CUSTOM("action 不能为空白", isGbIdentifier), RUVIA_ONE_OF("不支持的云台动作", "left", "right", "up", "down", "zoomin", "zoomout", "stop")));
 
-struct GbDeviceInput final {
-    std::string deviceId;
-};
+inline bool isGbMappingId(const ruvia::String& value) {
+    return service::common::isUuid(service::utils::trim(value.view()));
+}
 
-struct GbChannelInput final {
-    std::string deviceId;
-    std::string channelId;
-};
+inline bool isGbRecordTimestamp(const ruvia::String& value) {
+    return !service::common::canonicalUtcTimestamp(service::utils::trim(value.view())).empty();
+}
 
-struct GbStreamInput final {
-    std::string streamId;
-};
+inline bool isGbFiniteNumber(const ruvia::Double& value) {
+    return std::isfinite(static_cast<double>(value));
+}
 
-struct GbSessionInput final {
-    std::string sessionId;
-};
+RUVIA_REQUEST_MODEL(GbNameBody,
+    RUVIA_REQUIRED_FIELD(name, ruvia::String, RUVIA_MAX(255, "name 长度超出限制"), RUVIA_CUSTOM("name 不能为空白", isGbIdentifier)));
 
-struct GbDeviceNameInput final {
-    std::string deviceId;
-    std::string name;
-    static GbDeviceNameInput parse(const ruvia::JsonValue& object, std::string deviceId);
-};
+RUVIA_REQUEST_MODEL(GbMappingBody,
+    RUVIA_REQUIRED_FIELD_NAME("mapped_device_id", mappedDeviceId, ruvia::String, RUVIA_MAX(128, "mapped_device_id 长度超出限制"), RUVIA_CUSTOM("mapped_device_id 必须是 UUID", isGbMappingId)));
 
-struct GbChannelNameInput final {
-    std::string deviceId;
-    std::string channelId;
-    std::string name;
-    static GbChannelNameInput parse(const ruvia::JsonValue& object, std::string deviceId, std::string channelId);
-};
+RUVIA_REQUEST_MODEL(GbPtzBody,
+    RUVIA_OPTIONAL_FIELD(speed, ruvia::Int64, RUVIA_NULLABLE, RUVIA_DEFAULT(80), RUVIA_MIN(0, "speed 必须在 0 - 255 之间"), RUVIA_MAX(255, "speed 必须在 0 - 255 之间")));
 
-struct GbMappingInput final {
-    std::string deviceId;
-    std::string mapped_device_id;
-    static GbMappingInput parse(const ruvia::JsonValue& object, std::string deviceId);
-};
+RUVIA_REQUEST_MODEL(GbPositionBody,
+    RUVIA_REQUIRED_FIELD(pan, ruvia::Double, RUVIA_MIN(0, "pan 必须在 0 - 360 之间"), RUVIA_MAX(360, "pan 必须在 0 - 360 之间"), RUVIA_CUSTOM("pan 必须是有限数字", isGbFiniteNumber)),
+    RUVIA_REQUIRED_FIELD(tilt, ruvia::Double, RUVIA_MIN(-30, "tilt 必须在 -30 - 90 之间"), RUVIA_MAX(90, "tilt 必须在 -30 - 90 之间"), RUVIA_CUSTOM("tilt 必须是有限数字", isGbFiniteNumber)),
+    RUVIA_REQUIRED_FIELD(zoom, ruvia::Double, RUVIA_MIN(1, "zoom 必须在 1 - 1000 之间"), RUVIA_MAX(1000, "zoom 必须在 1 - 1000 之间"), RUVIA_CUSTOM("zoom 必须是有限数字", isGbFiniteNumber)));
 
-struct GbPtzInput final {
-    std::string deviceId;
-    std::string channelId;
-    std::string action;
-    std::uint8_t speed;
-    static GbPtzInput parse(const ruvia::JsonValue& object, std::string deviceId, std::string channelId, std::string action);
-};
-
-struct GbPositionInput final {
-    std::string deviceId;
-    std::string channelId;
-    double pan;
-    double tilt;
-    double zoom;
-    static GbPositionInput parse(const ruvia::JsonValue& object, std::string deviceId, std::string channelId);
-};
-
-struct GbRecordInput final {
-    std::string deviceId;
-    std::string channelId;
-    std::string start_time;
-    std::string end_time;
-    static GbRecordInput parse(const ruvia::JsonValue& object, std::string deviceId, std::string channelId);
-};
+RUVIA_REQUEST_MODEL(GbRecordBody,
+    RUVIA_REQUIRED_FIELD_NAME("start_time", startTime, ruvia::String, RUVIA_MAX(128, "start_time 长度超出限制"), RUVIA_CUSTOM("start_time 必须是有效的 RFC 3339 时间", isGbRecordTimestamp)),
+    RUVIA_REQUIRED_FIELD_NAME("end_time", endTime, ruvia::String, RUVIA_MAX(128, "end_time 长度超出限制"), RUVIA_CUSTOM("end_time 必须是有效的 RFC 3339 时间", isGbRecordTimestamp)));
 
 RUVIA_RESPONSE_MODEL(GbMediaPortsDto, RUVIA_OPTIONAL_FIELD(http, ruvia::Int64), RUVIA_OPTIONAL_FIELD(https, ruvia::Int64), RUVIA_OPTIONAL_FIELD(rtsp, ruvia::Int64), RUVIA_OPTIONAL_FIELD(rtsps, ruvia::Int64), RUVIA_OPTIONAL_FIELD(rtmp, ruvia::Int64), RUVIA_OPTIONAL_FIELD(rtmps, ruvia::Int64), RUVIA_OPTIONAL_FIELD(rtc, ruvia::Int64), RUVIA_OPTIONAL_FIELD(srt, ruvia::Int64));
 
@@ -369,105 +337,6 @@ GB28181_RPC_RESPONSE(ActionResponse, Action);
 } // namespace rpc_wire
 
 
-
-namespace gbRequest {
-inline std::string text(const ruvia::JsonValue& body, std::string_view field, std::size_t maximum = 128);
-inline std::string timestamp(const ruvia::JsonValue& body, std::string_view field);
-inline std::uint8_t speed(const ruvia::JsonValue& body);
-inline double number(const ruvia::JsonValue& body, std::string_view field, double minimum, double maximum);
-
-
-inline std::string text(const ruvia::JsonValue& body, std::string_view field, std::size_t maximum) {
-        const auto value = body.get<ruvia::String>(field);
-        if (!value || value->empty() || value->size() > maximum) {
-            service::common::fail(10001, std::string(field) + " 必须是有效的非空字符串", 400);
-        }
-        auto result = service::utils::trim(value->view());
-        if (result.empty()) {
-            service::common::fail(10001, std::string(field) + " 不能为空", 400);
-        }
-        return result;
-    }
-
-inline std::string timestamp(const ruvia::JsonValue& body, std::string_view field) {
-        const auto value = service::common::canonicalUtcTimestamp(text(body, field));
-        if (value.empty()) {
-            service::common::fail(10001, std::string(field) + " 必须是有效的 RFC 3339 时间", 400);
-        }
-        return value;
-    }
-
-inline std::uint8_t speed(const ruvia::JsonValue& body) {
-        if (!service::utils::jsonField(body, "speed")) {
-            return 80;
-        }
-        const auto value = body.get<ruvia::Int64>("speed");
-        if (!value || static_cast<std::int64_t>(*value) < 0 || static_cast<std::int64_t>(*value) > 255) {
-            service::common::fail(10001, "speed 必须是 0 - 255 的整数", 400);
-        }
-        return static_cast<std::uint8_t>(static_cast<std::int64_t>(*value));
-    }
-
-inline double number(const ruvia::JsonValue& body, std::string_view field, double minimum, double maximum) {
-        const auto value = body.get<ruvia::Double>(field);
-        if (!value || !std::isfinite(static_cast<double>(*value)) || static_cast<double>(*value) < minimum || static_cast<double>(*value) > maximum) {
-            service::common::fail(10001, std::string(field) + " 必须是允许范围内的有限数字", 400);
-        }
-        return static_cast<double>(*value);
-    }
-} // namespace gbRequest
-
-inline GbDeviceNameInput GbDeviceNameInput::parse(const ruvia::JsonValue& object, std::string deviceId) {
-        if (!object.isObject()) {
-            service::common::fail(10001, "请求体必须是对象", 400);
-        }
-        GbDeviceNameInput result{ std::move(deviceId), gbRequest::text(object, "name", 255) };
-        return result;
-    }
-
-inline GbChannelNameInput GbChannelNameInput::parse(const ruvia::JsonValue& object, std::string deviceId, std::string channelId) {
-        if (!object.isObject()) {
-            service::common::fail(10001, "请求体必须是对象", 400);
-        }
-        GbChannelNameInput result{ std::move(deviceId), std::move(channelId), gbRequest::text(object, "name", 255) };
-        return result;
-    }
-
-inline GbMappingInput GbMappingInput::parse(const ruvia::JsonValue& object, std::string deviceId) {
-        if (!object.isObject()) {
-            service::common::fail(10001, "请求体必须是对象", 400);
-        }
-        GbMappingInput result{ std::move(deviceId), gbRequest::text(object, "mapped_device_id") };
-        service::common::requireUuid(10001, result.mapped_device_id, "mapped_device_id 必须是 UUID");
-        return result;
-    }
-
-inline GbPtzInput GbPtzInput::parse(const ruvia::JsonValue& object, std::string deviceId, std::string channelId, std::string action) {
-        if (!object.isObject()) {
-            service::common::fail(10001, "请求体必须是对象", 400);
-        }
-        GbPtzInput result{ std::move(deviceId), std::move(channelId), std::move(action), gbRequest::speed(object) };
-        if (result.action != "left" && result.action != "right" && result.action != "up" && result.action != "down" && result.action != "zoomin" && result.action != "zoomout" && result.action != "stop") {
-            service::common::fail(10001, "不支持的云台动作", 400);
-        }
-        return result;
-    }
-
-inline GbPositionInput GbPositionInput::parse(const ruvia::JsonValue& object, std::string deviceId, std::string channelId) {
-        if (!object.isObject()) {
-            service::common::fail(10001, "请求体必须是对象", 400);
-        }
-        GbPositionInput result{ std::move(deviceId), std::move(channelId), gbRequest::number(object, "pan", 0, 360), gbRequest::number(object, "tilt", -30, 90), gbRequest::number(object, "zoom", 1, 1000) };
-        return result;
-    }
-
-inline GbRecordInput GbRecordInput::parse(const ruvia::JsonValue& object, std::string deviceId, std::string channelId) {
-        if (!object.isObject()) {
-            service::common::fail(10001, "请求体必须是对象", 400);
-        }
-        GbRecordInput result{ std::move(deviceId), std::move(channelId), gbRequest::timestamp(object, "start_time"), gbRequest::timestamp(object, "end_time") };
-        return result;
-    }
 
 RUVIA_RESPONSE_MODEL(GbActionResponse,
     RUVIA_REQUIRED_FIELD(code, ruvia::Int64),

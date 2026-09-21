@@ -15,9 +15,9 @@ class OutboxController final : public ruvia::Controller<OutboxController> {
   public:
     RUVIA_CONTROLLER_GROUP("/v1/system/outbox", service::middleware::AuthMiddleware)
     RUVIA_ROUTES_BEGIN
-    RUVIA_GET("/dead-letters", deadLetters);
-    RUVIA_GET_SSE("/dead-letters/events", deadLetterEvents);
-    RUVIA_POST("/dead-letters/:id/replay", replay, ruvia::PathModel<OutboxEventIdParams>);
+    RUVIA_GET("/dead-letters", deadLetters, service::middleware::PermissionMiddleware<"system:outbox:manage">);
+    RUVIA_GET_SSE("/dead-letters/events", deadLetterEvents, service::middleware::PermissionMiddleware<"system:outbox:manage">);
+    RUVIA_POST("/dead-letters/:id/replay", replay, service::middleware::PermissionMiddleware<"system:outbox:manage">, ruvia::PathModel<OutboxEventIdParams>);
     RUVIA_ROUTES_END
 
   private:
@@ -26,9 +26,9 @@ class OutboxController final : public ruvia::Controller<OutboxController> {
         co_return service::common::ok<OutboxDeadLetterListResponse>(request, co_await outboxService().deadLetters(request));
     }
 
-    ruvia::Task<> deadLetters(ruvia::Context& c) {
+    ruvia::Task<ruvia::HttpResponse> deadLetters(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_return c.json(co_await queryDeadLetter(request));
+        co_return c.json(service::common::ok<OutboxDeadLetterListResponse>(request, co_await outboxService().deadLetters(request)));
     }
 
     ruvia::Task<void> deadLetterEvents(ruvia::Context& c) {
@@ -40,10 +40,8 @@ class OutboxController final : public ruvia::Controller<OutboxController> {
                                                });
     }
 
-    ruvia::Task<> replay(ruvia::Context& c) {
-
+    ruvia::Task<ruvia::HttpResponse> replay(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
-        co_await service::auth::AuthService::requirePermission(request, request.userId, "system:outbox:manage");
         const auto index = c.workerState<service::ServiceWorkerTopology>().index.value();
         co_await outboxService().replay(request, c.req().validated<OutboxEventIdParams>().get<"id">().view(), index);
         co_return c.json(service::common::operation(c, "死信事件已重新入队"));
