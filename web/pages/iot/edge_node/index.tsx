@@ -842,7 +842,6 @@ function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
     const config = node.status.config;
     const outbox = node.status.outbox;
     const mobile = node.mobile;
-    const firmware = node.firmware;
     return [
         { key: 'hostname', label: '主机名', children: node.hostname || '-' },
         { key: 'architecture', label: '系统架构', children: node.architecture || '-' },
@@ -882,25 +881,6 @@ function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
             label: '本月 VPN',
             children: monthlyTrafficPair(node.status.vpnTraffic),
         },
-        ...(firmware.state === 'accepted' || firmware.state === 'running'
-            ? [
-                  {
-                      key: 'firmwareProgress',
-                      label: '固件下载',
-                      children: (
-                          <Progress
-                              percent={firmware.progressPercent}
-                              size="small"
-                              status="active"
-                              format={(percent) =>
-                                  `${percent ?? 0}% · ${formatBytes(firmware.downloadedBytes)} / ${formatBytes(firmware.totalBytes)}`
-                              }
-                          />
-                      ),
-                      span: 2,
-                  } satisfies DeviceCardItem,
-              ]
-            : []),
         {
             key: 'vpnVirtualCidrs',
             label: 'VPN 网段',
@@ -2040,15 +2020,39 @@ export function EdgeNodePage() {
                                 items={buildNodeCardItems(node)}
                                 column={2}
                                 extra={
-                                    <Flex
-                                        align="center"
-                                        justify="center"
-                                        gap={6}
-                                        className="w-full text-slate-500"
-                                    >
-                                        <EyeOutlined />
-                                        <span>查看详情</span>
-                                    </Flex>
+                                    <div className="flex w-full flex-col gap-1.5">
+                                        <Progress
+                                            className={
+                                                node.firmware.state === 'accepted' ||
+                                                node.firmware.state === 'running'
+                                                    ? undefined
+                                                    : 'invisible'
+                                            }
+                                            percent={
+                                                node.firmware.state === 'accepted' ||
+                                                node.firmware.state === 'running'
+                                                    ? node.firmware.progressPercent
+                                                    : 0
+                                            }
+                                            size="small"
+                                            status="active"
+                                            format={() =>
+                                                node.firmware.state === 'accepted' ||
+                                                node.firmware.state === 'running'
+                                                    ? `${formatBytes(node.firmware.downloadedBytes)} / ${formatBytes(node.firmware.totalBytes)}`
+                                                    : '\u00a0'
+                                            }
+                                        />
+                                        <Flex
+                                            align="center"
+                                            justify="center"
+                                            gap={6}
+                                            className="w-full text-slate-500"
+                                        >
+                                            <EyeOutlined />
+                                            <span>查看详情</span>
+                                        </Flex>
+                                    </div>
                                 }
                             />
                         </div>
