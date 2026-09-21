@@ -1,11 +1,11 @@
-import { retainNewerRecords } from '@/utils/versioned-records';
-import { keepPreviousData, useQuery, type UseQueryOptions } from '@tanstack/react-query';
-import { setDebug as saveDebugSwitch, getDebugPackets } from './device.api';
+import { keepPreviousData, type UseQueryOptions, useQuery } from '@tanstack/react-query';
 import { useMutationWithMessage, useSaveMutation } from '@/hooks/useMutation';
 import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import { parseDateTime } from '@/utils/dateTime';
 import { createQueryKeys } from '@/utils/query';
+import { retainNewerRecords } from '@/utils/versioned-records';
 import * as api from './device.api';
+import { getDebugPackets, setDebug as saveDebugSwitch } from './device.api';
 import type { Device, DeviceGroup } from './device.types';
 export const isDeviceOnline = (device: Device.Overview, now = Date.now()) => {
     if (!device.reportTime) return false;
@@ -114,7 +114,6 @@ export function useDeviceCommand() {
     return useMutationWithMessage({
         mutationFn: ({ deviceId, data }: { deviceId: string; data: Device.Command }) =>
             api.createDeviceCommand(deviceId, data),
-        successMessage: '指令已受理，正在等待设备执行结果',
         errorMessage: (error) => error.message,
     });
 }

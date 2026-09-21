@@ -13,7 +13,6 @@ import {
 import { replaceEqualDeep } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
-    Alert,
     App,
     Button,
     Card,
@@ -2525,17 +2524,20 @@ const DevicePage = () => {
         !!submittedCommand && !submittedCommand.complete,
         debugDeviceId
     );
-    const activeCommandIds =
-        submittedCommand && !submittedCommand.complete ? submittedCommand.ids : EMPTY_COMMAND_IDS;
-    const commandPending =
-        submitCommand.isPending || (!!submittedCommand && !submittedCommand.complete);
+    const commandPending = submitCommand.isPending;
     useEffect(() => {
-        if (!submittedCommand || submittedCommand.complete || !commandResults.data?.complete)
+        if (!submittedCommand || submittedCommand.complete) return;
+        if (commandResults.error) {
+            message.error(commandResults.error.message || '指令结果连接失败');
+            setSubmittedCommand(null);
             return;
-        setSubmittedCommand((current) =>
-            current ? { ...current, complete: true, result: commandResults.data } : current
-        );
-    }, [submittedCommand, commandResults.data]);
+        }
+        if (!commandResults.data?.complete) return;
+        const summary = summarizeDeviceCommandResult(commandResults.data);
+        if (summary.failed) message.error(summary.message);
+        else message.success(summary.message);
+        setSubmittedCommand(null);
+    }, [commandResults.data, commandResults.error, message, submittedCommand]);
     const sendCommand = useCallback(
         (deviceId: string, command: Device.Command) => {
             if (commandPending) return;
@@ -2565,7 +2567,6 @@ const DevicePage = () => {
         refetch,
     } = useDeviceList({
         debugDeviceId,
-        commandIds: activeCommandIds,
         enabled: canQuery,
         // Device metadata is stable between edits. Realtime snapshots below keep the page fresh
         // without repeatedly rebuilding and transferring the complete device list.
@@ -2577,7 +2578,6 @@ const DevicePage = () => {
         refetch: refetchRealtimeSnapshot,
     } = useDeviceRealtimeSnapshot({
         debugDeviceId,
-        commandIds: activeCommandIds,
         enabled: canQuery && !!data,
     });
     const { data: groupTree = [] } = useDeviceGroupTreeWithCount(
@@ -2585,8 +2585,7 @@ const DevicePage = () => {
             enabled: canQuery,
             refetchOnWindowFocus: false,
         },
-        debugDeviceId,
-        activeCommandIds
+        debugDeviceId
     );
     const { data: linkOptions = [] } = useLinkOptions({
         enabled: canQuery,
@@ -2768,7 +2767,7 @@ const DevicePage = () => {
     }, []);
     const renderDeviceCards = (devices: Device.Overview[]) => (
         <DeviceGrid
-            commandIds={activeCommandIds}
+            commandIds={EMPTY_COMMAND_IDS}
             debugDeviceId={debugDeviceId}
             onDebug={setDebugDeviceId}
             devices={devices}
@@ -2894,7 +2893,7 @@ const DevicePage = () => {
                     <h3 className="m-0 text-base font-medium">设备管理</h3>
                     <Space wrap>
                         <DeviceGroupPanel
-                            commandIds={activeCommandIds}
+                            commandIds={EMPTY_COMMAND_IDS}
                             debugDeviceId={debugDeviceId}
                             selectedGroupId={selectedGroupId}
                             onSelect={setSelectedGroupId}
@@ -2936,160 +2935,115 @@ const DevicePage = () => {
                 </div>
             }
         >
-            <div className="flex h-full min-h-0 flex-col gap-3">
-                {submittedCommand && (
-                    <Alert
-                        className="shrink-0"
-                        showIcon
-                        type={
-                            (submittedCommand.complete ? null : commandResults.error)
-                                ? 'error'
-                                : submittedCommand.complete
-                                  ? submittedCommand.result &&
-                                    summarizeDeviceCommandResult(submittedCommand.result).failed
-                                      ? 'error'
-                                      : 'success'
-                                  : 'info'
-                        }
-                        title={
-                            (submittedCommand.complete ? null : commandResults.error)
-                                ? '指令结果连接失败'
-                                : submittedCommand.complete && submittedCommand.result
-                                  ? summarizeDeviceCommandResult(submittedCommand.result).message
-                                  : '指令已受理，等待设备执行结果'
-                        }
-                        description={
-                            (submittedCommand.complete ? null : commandResults.error)?.message
-                        }
-                        action={
-                            <Space>
-                                {(submittedCommand.complete ? null : commandResults.error) && (
-                                    <Button onClick={() => void commandResults.refetch()}>
-                                        重试结果订阅
-                                    </Button>
-                                )}
-                                <Button onClick={() => setSubmittedCommand(null)}>
-                                    {submittedCommand.complete ? '关闭' : '停止查看'}
-                                </Button>
-                            </Space>
-                        }
-                    />
-                )}
-                <div
-                    ref={scrollContainerRef}
-                    className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
-                >
-                    <Flex gap={12} className="mb-3" wrap>
-                        {[
-                            {
-                                label: '设备总数',
-                                value: stats.total,
-                                className: 'text-blue-600',
-                                tag: 'blue',
-                                field: 'total',
-                            },
-                            {
-                                label: '在线设备',
-                                value: stats.online,
-                                className: 'text-green-600',
-                                tag: 'green',
-                                field: 'online',
-                            },
-                            {
-                                label: '离线设备',
-                                value: stats.offline,
-                                className: 'text-red-500',
-                                tag: 'red',
-                                field: 'offline',
-                            },
-                            {
-                                label: '已启用',
-                                value: stats.enabled,
-                                className: 'text-purple-700',
-                                tag: 'purple',
-                                field: 'enabled',
-                            },
-                        ].map((item) => (
-                            <Card
-                                key={item.label}
-                                size="small"
-                                className="min-w-[140px] flex-1"
-                                classNames={{ body: 'px-4 py-3' }}
-                            >
-                                <Flex justify="space-between" align="center" className="mb-2.5">
-                                    <span className="text-[13px] text-gray-500">{item.label}</span>
-                                    <span className={`text-lg font-semibold ${item.className}`}>
-                                        {item.value}
-                                        {item.field !== 'total' && (
-                                            <span className="text-[13px] font-normal text-gray-400">
-                                                / {stats.total}
-                                            </span>
-                                        )}
-                                    </span>
-                                </Flex>
-                                <Flex gap={6} wrap>
-                                    {protocolStatsEntries.map(([protocol, protocolStats]) => (
-                                        <Tag
-                                            key={protocol}
-                                            color={item.tag}
-                                            className="!m-0 !px-3 !py-1 !text-sm !leading-5"
-                                        >
-                                            {protocol}:{' '}
-                                            {protocolStats[item.field as keyof DeviceProtocolStats]}
-                                            {item.field !== 'total' && `/${protocolStats.total}`}
-                                        </Tag>
-                                    ))}
-                                </Flex>
-                            </Card>
-                        ))}
-                    </Flex>
+            <div ref={scrollContainerRef} className="h-full overflow-y-auto overflow-x-hidden">
+                <Flex gap={12} className="mb-3" wrap>
+                    {[
+                        {
+                            label: '设备总数',
+                            value: stats.total,
+                            className: 'text-blue-600',
+                            tag: 'blue',
+                            field: 'total',
+                        },
+                        {
+                            label: '在线设备',
+                            value: stats.online,
+                            className: 'text-green-600',
+                            tag: 'green',
+                            field: 'online',
+                        },
+                        {
+                            label: '离线设备',
+                            value: stats.offline,
+                            className: 'text-red-500',
+                            tag: 'red',
+                            field: 'offline',
+                        },
+                        {
+                            label: '已启用',
+                            value: stats.enabled,
+                            className: 'text-purple-700',
+                            tag: 'purple',
+                            field: 'enabled',
+                        },
+                    ].map((item) => (
+                        <Card
+                            key={item.label}
+                            size="small"
+                            className="min-w-[140px] flex-1"
+                            classNames={{ body: 'px-4 py-3' }}
+                        >
+                            <Flex justify="space-between" align="center" className="mb-2.5">
+                                <span className="text-[13px] text-gray-500">{item.label}</span>
+                                <span className={`text-lg font-semibold ${item.className}`}>
+                                    {item.value}
+                                    {item.field !== 'total' && (
+                                        <span className="text-[13px] font-normal text-gray-400">
+                                            / {stats.total}
+                                        </span>
+                                    )}
+                                </span>
+                            </Flex>
+                            <Flex gap={6} wrap>
+                                {protocolStatsEntries.map(([protocol, protocolStats]) => (
+                                    <Tag
+                                        key={protocol}
+                                        color={item.tag}
+                                        className="!m-0 !px-3 !py-1 !text-sm !leading-5"
+                                    >
+                                        {protocol}:{' '}
+                                        {protocolStats[item.field as keyof DeviceProtocolStats]}
+                                        {item.field !== 'total' && `/${protocolStats.total}`}
+                                    </Tag>
+                                ))}
+                            </Flex>
+                        </Card>
+                    ))}
+                </Flex>
 
-                    {isLoading && filteredDevices.length === 0 ? (
-                        <div className={DEVICE_CARD_GRID_CLASS}>
-                            {['first', 'second', 'third', 'fourth'].map((key) => (
-                                <div key={key} className="rounded-lg bg-white px-3.5 py-3">
-                                    <Skeleton active title paragraph={{ rows: 4 }} />
+                {isLoading && filteredDevices.length === 0 ? (
+                    <div className={DEVICE_CARD_GRID_CLASS}>
+                        {['first', 'second', 'third', 'fourth'].map((key) => (
+                            <div key={key} className="rounded-lg bg-white px-3.5 py-3">
+                                <Skeleton active title paragraph={{ rows: 4 }} />
+                            </div>
+                        ))}
+                    </div>
+                ) : filteredDevices.length === 0 ? (
+                    <div className="py-12">
+                        <Empty
+                            description={keyword ? '搜索无结果，请尝试调整关键词' : '暂无设备数据'}
+                        />
+                    </div>
+                ) : (
+                    <Space direction="vertical" className="w-full" size="large">
+                        {groupRoots.length > 0 ? (
+                            <>
+                                {groupRoots.map((group) => renderGroupSection(group))}
+                                {selectedGroupId === null &&
+                                    renderUngroupedSection(ungroupedDevices)}
+                            </>
+                        ) : selectedGroupId === 'ungrouped' ? (
+                            (renderUngroupedSection(ungroupedDevices) ?? (
+                                <div className="py-12">
+                                    <Empty description="暂无未分组设备" />
                                 </div>
-                            ))}
-                        </div>
-                    ) : filteredDevices.length === 0 ? (
-                        <div className="py-12">
-                            <Empty
-                                description={
-                                    keyword ? '搜索无结果，请尝试调整关键词' : '暂无设备数据'
-                                }
-                            />
-                        </div>
-                    ) : (
-                        <Space direction="vertical" className="w-full" size="large">
-                            {groupRoots.length > 0 ? (
-                                <>
-                                    {groupRoots.map((group) => renderGroupSection(group))}
-                                    {selectedGroupId === null &&
-                                        renderUngroupedSection(ungroupedDevices)}
-                                </>
-                            ) : selectedGroupId === 'ungrouped' ? (
-                                (renderUngroupedSection(ungroupedDevices) ?? (
-                                    <div className="py-12">
-                                        <Empty description="暂无未分组设备" />
+                            ))
+                        ) : (
+                            <section className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                                <Flex justify="space-between" align="center" gap={12} wrap>
+                                    <div className="text-sm font-semibold text-slate-800">
+                                        {selectedGroup?.name ?? '全部设备'}
                                     </div>
-                                ))
-                            ) : (
-                                <section className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                                    <Flex justify="space-between" align="center" gap={12} wrap>
-                                        <div className="text-sm font-semibold text-slate-800">
-                                            {selectedGroup?.name ?? '全部设备'}
-                                        </div>
-                                        {renderSectionStats(
-                                            buildDeviceStats(filteredDevices, statusNow)
-                                        )}
-                                    </Flex>
-                                    {renderDeviceCards(filteredDevices)}
-                                </section>
-                            )}
-                        </Space>
-                    )}
-                </div>
+                                    {renderSectionStats(
+                                        buildDeviceStats(filteredDevices, statusNow)
+                                    )}
+                                </Flex>
+                                {renderDeviceCards(filteredDevices)}
+                            </section>
+                        )}
+                    </Space>
+                )}
             </div>
 
             <DeviceFormModal
