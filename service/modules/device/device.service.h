@@ -759,7 +759,7 @@ return result
         if (enabled) {
             co_await service::debug_idle::touch(c.redis(), "device", id);
             service::debug_idle::watch(
-                c.worker(),
+                c.template workerState<ruvia::WebWorkerHandle>(),
                 "device",
                 std::string(id),
                 [](ruvia::WebWorkerContext& ctx, const std::string& deviceId) -> ruvia::Task<void> {

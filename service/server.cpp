@@ -559,7 +559,8 @@ auto makeApplicationStart(ruvia::App& app, ApplicationComponents& components, st
             preparation.push_back(name);
             supervisor.add({ .name = name, .start = [owner, worker, index, uploadDirectory] {
                                 owner->multiplexer->configure(worker, index);
-                                initializeServiceWorker(worker, [owner, index, uploadDirectory](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
+                                initializeServiceWorker(worker, [owner, index, uploadDirectory, worker](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
+                                    context.workerState<ruvia::WebWorkerHandle>() = worker;
                                     context.workerState<service::ServiceWorkerTopology>().index = index;
                                     service::channel::UploadedFile::recoverAbandoned(uploadDirectory);
                                     (void)co_await service::configuration::ConfigurationService::project(context);
@@ -596,7 +597,8 @@ auto makeApplicationStart(ruvia::App& app, ApplicationComponents& components, st
             const auto owner = components.workers[index];
             registerServiceWorkerLifecycle(*owner, worker, index, count, collectors);
             supervisor.add({ .name = "service-worker-" + std::to_string(index), .dependencies = { "collector" }, .start = [owner, worker, index, count] {
-                                initializeServiceWorker(worker, [index, count](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
+                                initializeServiceWorker(worker, [index, count, worker](ruvia::WebWorkerContext& context) -> ruvia::Task<void> {
+                                    context.workerState<ruvia::WebWorkerHandle>() = worker;
                                     co_await service::telemetry::latest::hydrate(context, index, count);
                                 });
                                 owner->componentLifecycle->start();
@@ -629,7 +631,8 @@ void configureServer(
         .alias = "vpn-coordination",
         .config = components.database,
     });
-    app.useWorkerState<service::ServiceWorkerTopology>([count = components.workers.size()] {
+    app.useWorkerState<ruvia::WebWorkerHandle>()
+        .useWorkerState<service::ServiceWorkerTopology>([count = components.workers.size()] {
             return service::ServiceWorkerTopology{count};
         })
         .useWorkerState<std::unique_ptr<service::common::UuidV7Generator>>(

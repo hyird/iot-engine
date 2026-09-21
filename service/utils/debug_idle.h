@@ -49,7 +49,7 @@ ruvia::Task<bool> leased(const Redis& redis, std::string_view kind, std::string_
 }
 
 template <typename Disable>
-void watch(const ruvia::WorkerHandle& worker, std::string kind, std::string id, Disable disable) {
+void watch(const ruvia::WebWorkerHandle& worker, std::string kind, std::string id, Disable disable) {
     (void)worker.post([kind = std::move(kind), id = std::move(id), disable = std::move(disable)](
                           ruvia::WebWorkerContext& ctx) mutable -> ruvia::Task<void> {
         const auto watchId = watchKey(kind, id);
