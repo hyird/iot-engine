@@ -95,11 +95,11 @@ RUVIA_RESPONSE_MODEL(ConfigStatusDto, RUVIA_OPTIONAL_FIELD_NAME("activeVersion",
 
 RUVIA_RESPONSE_MODEL(OutboxStatusDto, RUVIA_OPTIONAL_FIELD(records, ruvia::Int64), RUVIA_OPTIONAL_FIELD(bytes, ruvia::Int64));
 
-RUVIA_RESPONSE_MODEL(TcpTrafficDto, RUVIA_OPTIONAL_FIELD(uploadBytes, ruvia::String), RUVIA_OPTIONAL_FIELD(downloadBytes, ruvia::String), RUVIA_OPTIONAL_FIELD(intervalMs, ruvia::String), RUVIA_OPTIONAL_FIELD(sampleId, ruvia::String), RUVIA_OPTIONAL_FIELD(complete, ruvia::Bool), RUVIA_OPTIONAL_FIELD(month, ruvia::String), RUVIA_OPTIONAL_FIELD(monthlyUploadBytes, ruvia::String), RUVIA_OPTIONAL_FIELD(monthlyDownloadBytes, ruvia::String));
+RUVIA_RESPONSE_MODEL(TcpTrafficDto, RUVIA_OPTIONAL_FIELD(uploadBytes, ruvia::String), RUVIA_OPTIONAL_FIELD(downloadBytes, ruvia::String), RUVIA_OPTIONAL_FIELD(intervalMs, ruvia::String), RUVIA_OPTIONAL_FIELD(sampleId, ruvia::String), RUVIA_OPTIONAL_FIELD(month, ruvia::String), RUVIA_OPTIONAL_FIELD(monthlyUploadBytes, ruvia::String), RUVIA_OPTIONAL_FIELD(monthlyDownloadBytes, ruvia::String));
 
 RUVIA_RESPONSE_MODEL(LogStatusDto, RUVIA_OPTIONAL_FIELD(level, ruvia::String));
 
-RUVIA_RESPONSE_MODEL(NodeStatusDto, RUVIA_OPTIONAL_FIELD(online, ruvia::Bool), RUVIA_OPTIONAL_FIELD_NAME("lastSeenAt", lastSeenAt, ruvia::String), RUVIA_OPTIONAL_FIELD(config, ConfigStatusDto), RUVIA_OPTIONAL_FIELD(outbox, OutboxStatusDto), RUVIA_OPTIONAL_FIELD(log, LogStatusDto), RUVIA_OPTIONAL_FIELD(tcpTraffic, TcpTrafficDto));
+RUVIA_RESPONSE_MODEL(NodeStatusDto, RUVIA_OPTIONAL_FIELD(online, ruvia::Bool), RUVIA_OPTIONAL_FIELD_NAME("lastSeenAt", lastSeenAt, ruvia::String), RUVIA_OPTIONAL_FIELD(config, ConfigStatusDto), RUVIA_OPTIONAL_FIELD(outbox, OutboxStatusDto), RUVIA_OPTIONAL_FIELD(log, LogStatusDto), RUVIA_OPTIONAL_FIELD(tcpTraffic, TcpTrafficDto), RUVIA_OPTIONAL_FIELD(vpnTraffic, TcpTrafficDto));
 
 RUVIA_RESPONSE_MODEL(VpnCapabilityDto, RUVIA_OPTIONAL_FIELD_NAME("supportsVpn", supportsVpn, ruvia::Bool), RUVIA_OPTIONAL_FIELD_NAME("wireguardVersion", wireguardVersion, ruvia::String), RUVIA_OPTIONAL_FIELD_NAME("agentVersion", agentVersion, ruvia::String), RUVIA_OPTIONAL_FIELD(publicKey, ruvia::String));
 

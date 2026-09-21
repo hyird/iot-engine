@@ -2460,6 +2460,11 @@ class EdgeProjectionService {
                     text(std::to_string(sample.sample_id())));
                 const auto sameMonth = query.binary(
                     tcpTrafficText("month"), ruvia::DbBinaryOperator::kEqual, currentMonth);
+                const auto monthMissing = query.unary(
+                    ruvia::DbUnaryOperator::kIsNull,
+                    query.nullIf(tcpTrafficText("month"), query.value(std::string_view{})));
+                const auto continueMonth = query.binary(
+                    sameMonth, ruvia::DbBinaryOperator::kOr, monthMissing);
                 const auto monthlyTotal = [&](std::string_view key, std::uint64_t bytes) {
                     const auto kept = query.coalesce({
                         query.cast(
@@ -2470,10 +2475,8 @@ class EdgeProjectionService {
                     return query.cast(
                         query.caseWhen(
                             {{sameSample, kept},
-                             {query.binary(sameMonth, ruvia::DbBinaryOperator::kAnd, boolean(sample.complete())), added},
-                             {boolean(sample.complete()), integer(bytes)},
-                             {sameMonth, kept}},
-                            integer(0)),
+                             {continueMonth, added}},
+                            integer(bytes)),
                         ruvia::DbDataType::kText);
                 };
                 const auto monthValue = query.caseWhen(
@@ -2484,7 +2487,6 @@ class EdgeProjectionService {
                     config::detail::jsonKey(query, "downloadBytes"), text(std::to_string(sample.download_bytes())),
                     config::detail::jsonKey(query, "intervalMs"), text(std::to_string(sample.interval_ms())),
                     config::detail::jsonKey(query, "sampleId"), text(std::to_string(sample.sample_id())),
-                    config::detail::jsonKey(query, "complete"), boolean(sample.complete()),
                     config::detail::jsonKey(query, "month"), monthValue,
                     config::detail::jsonKey(query, "monthlyUploadBytes"), monthlyTotal("monthlyUploadBytes", sample.upload_bytes()),
                     config::detail::jsonKey(query, "monthlyDownloadBytes"), monthlyTotal("monthlyDownloadBytes", sample.download_bytes())});
@@ -2493,6 +2495,58 @@ class EdgeProjectionService {
                   query,
                   query.column(service::edge::persistence::EdgeNodeEntity::columnName<"status">()),
                   "tcpTraffic");
+        const auto vpnTrafficText = [&query](std::string_view key) {
+            return config::detail::jsonText(
+                query,
+                config::detail::jsonGet(
+                    query,
+                    query.column(service::edge::persistence::EdgeNodeEntity::columnName<"status">()),
+                    "vpnTraffic"),
+                key);
+        };
+        const auto vpnTraffic = heartbeat.has_vpn_traffic()
+            ? [&] {
+                const auto& sample = heartbeat.vpn_traffic();
+                const auto sameSample = query.binary(
+                    vpnTrafficText("sampleId"), ruvia::DbBinaryOperator::kEqual,
+                    text(std::to_string(sample.sample_id())));
+                const auto sameMonth = query.binary(
+                    vpnTrafficText("month"), ruvia::DbBinaryOperator::kEqual, currentMonth);
+                const auto monthMissing = query.unary(
+                    ruvia::DbUnaryOperator::kIsNull,
+                    query.nullIf(vpnTrafficText("month"), query.value(std::string_view{})));
+                const auto continueMonth = query.binary(
+                    sameMonth, ruvia::DbBinaryOperator::kOr, monthMissing);
+                const auto monthlyTotal = [&](std::string_view key, std::uint64_t bytes) {
+                    const auto kept = query.coalesce({
+                        query.cast(
+                            query.nullIf(vpnTrafficText(key), query.value(std::string_view{})),
+                            ruvia::DbDataType::kBigInt),
+                        integer(0)});
+                    const auto added = query.binary(kept, ruvia::DbBinaryOperator::kAdd, integer(bytes));
+                    return query.cast(
+                        query.caseWhen(
+                            {{sameSample, kept},
+                             {continueMonth, added}},
+                            integer(bytes)),
+                        ruvia::DbDataType::kText);
+                };
+                const auto monthValue = query.caseWhen(
+                    {{sameSample, query.coalesce({vpnTrafficText("month"), currentMonth})}},
+                    currentMonth);
+                return query.call("jsonb_build_object", {
+                    config::detail::jsonKey(query, "uploadBytes"), text(std::to_string(sample.upload_bytes())),
+                    config::detail::jsonKey(query, "downloadBytes"), text(std::to_string(sample.download_bytes())),
+                    config::detail::jsonKey(query, "intervalMs"), text(std::to_string(sample.interval_ms())),
+                    config::detail::jsonKey(query, "sampleId"), text(std::to_string(sample.sample_id())),
+                    config::detail::jsonKey(query, "month"), monthValue,
+                    config::detail::jsonKey(query, "monthlyUploadBytes"), monthlyTotal("monthlyUploadBytes", sample.upload_bytes()),
+                    config::detail::jsonKey(query, "monthlyDownloadBytes"), monthlyTotal("monthlyDownloadBytes", sample.download_bytes())});
+            }()
+            : config::detail::jsonGet(
+                  query,
+                  query.column(service::edge::persistence::EdgeNodeEntity::columnName<"status">()),
+                  "vpnTraffic");
         query.update(service::edge::persistence::EdgeNodeEntity::tableName())
             .set(service::edge::persistence::EdgeNodeEntity::columnName<"status">(), query.call(
                                "jsonb_build_object",
@@ -2504,6 +2558,7 @@ class EdgeProjectionService {
                                             config::detail::jsonKey(query, "bytes"),
                                             integer(heartbeat.outbox_bytes())}),
                                 config::detail::jsonKey(query, "tcpTraffic"), tcpTraffic,
+                                config::detail::jsonKey(query, "vpnTraffic"), vpnTraffic,
                                 config::detail::jsonKey(query, "log"),
                                 query.call("jsonb_build_object",
                                            {config::detail::jsonKey(query, "level"),

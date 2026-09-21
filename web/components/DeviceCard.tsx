@@ -39,11 +39,22 @@ const buildSections = (items: DeviceCardItem[]): DeviceCardSection[] => {
     return [...sections.values()];
 };
 
-const DeviceValues = ({ items, wide = false }: { items: DeviceCardItem[]; wide?: boolean }) => (
+const DeviceValues = ({
+    items,
+    wide = false,
+    columns,
+}: {
+    items: DeviceCardItem[];
+    wide?: boolean;
+    columns?: number;
+}) => (
     <dl
         className="m-0 grid items-start gap-x-2 gap-y-1"
         style={{
-            gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, ${wide ? '100px' : '104px'}), 1fr))`,
+            gridTemplateColumns:
+                columns === 2
+                    ? 'repeat(2, minmax(0, 1fr))'
+                    : `repeat(auto-fit, minmax(min(100%, ${wide ? '100px' : '104px'}), 1fr))`,
         }}
     >
         {items.map((item) => (
@@ -106,11 +117,15 @@ const DeviceCard = ({
                                 </span>
                                 <span className="h-px flex-1 bg-slate-100" />
                             </div>
-                            <DeviceValues items={section.items} wide={column >= 8} />
+                            <DeviceValues
+                                items={section.items}
+                                wide={column >= 8}
+                                columns={column}
+                            />
                         </section>
                     ))
                 ) : (
-                    <DeviceValues items={items} wide={column >= 8} />
+                    <DeviceValues items={items} wide={column >= 8} columns={column} />
                 )}
             </div>
             {extra && (

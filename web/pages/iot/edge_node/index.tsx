@@ -827,33 +827,40 @@ function mobileState(node: Edge.Node) {
     if (mobile.connected) return `已连接${mobile.ipv4 ? ` · ${mobile.ipv4}` : ''}`;
     return mobile.registered ? '已注册，未拨号' : '未注册';
 }
-function monthlyTrafficText(bytes: string | undefined) {
-    if (bytes === undefined || bytes === '') return '-';
-    return formatBytes(Number(bytes));
+function compactBytes(value: number) {
+    if (value < 1024) return `${value}B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)}KiB`;
+    if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)}MiB`;
+    return `${(value / 1024 / 1024 / 1024).toFixed(1)}GiB`;
 }
 function monthlyTrafficPair(traffic: Edge.TcpTraffic | undefined) {
-    return `上行 ${monthlyTrafficText(traffic?.monthlyUploadBytes)} | 下行 ${monthlyTrafficText(traffic?.monthlyDownloadBytes)}`;
+    const format = (bytes: string | undefined) =>
+        bytes === undefined || bytes === '' ? '-' : compactBytes(Number(bytes));
+    return `${format(traffic?.monthlyUploadBytes)}|${format(traffic?.monthlyDownloadBytes)}`;
 }
 function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
-    const status = node.status;
-    const config = status.config;
-    const outbox = status.outbox;
-    const capability = node.capability;
+    const config = node.status.config;
+    const outbox = node.status.outbox;
     const mobile = node.mobile;
     const firmware = node.firmware;
     return [
-        {
-            key: 'vpnVirtualCidrs',
-            label: 'VPN 虚拟网段',
-            children: node.vpnVirtualCidrs?.length ? node.vpnVirtualCidrs.join('、') : '-',
-        },
         { key: 'hostname', label: '主机名', children: node.hostname || '-' },
         { key: 'architecture', label: '系统架构', children: node.architecture || '-' },
         { key: 'openwrt', label: 'OpenWrt', children: node.openwrtRelease || '-' },
+        { key: 'operator', label: '运营商', children: mobile.operator || '-' },
+        { key: 'mobileState', label: '4G 状态', children: mobileState(node) },
         {
-            key: 'enrollment',
-            label: '注册状态',
-            children: <span className="[&_.ant-tag]:!m-0">{statusTag(node.enrollmentStatus)}</span>,
+            key: 'mobileSignal',
+            label: '4G 信号',
+            children: mobile.available
+                ? `${mobile.signal.percent}%${mobile.signal.rssiDbm !== -1 ? ` · ${mobile.signal.rssiDbm} dBm` : ''}`
+                : '-',
+        },
+        {
+            key: 'iccid',
+            label: 'ICCID',
+            span: 2,
+            children: mobile.iccid || '-',
         },
         {
             key: 'configVersion',
@@ -866,26 +873,14 @@ function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
             children: `${outbox.records ?? 0} 条 / ${formatBytes(outbox.bytes ?? 0)}`,
         },
         {
-            key: 'networkManager',
-            label: '网络管理',
-            children:
-                capability.networkConfig && capability.networkConfigVersion >= 2
-                    ? '可用'
-                    : '需升级代理',
-        },
-        { key: 'mobileState', label: '4G 状态', children: mobileState(node) },
-        { key: 'iccid', label: 'ICCID', children: mobile.iccid || '-' },
-        {
-            key: 'mobileSignal',
-            label: '4G 信号',
-            children: mobile.available
-                ? `${mobile.signal.percent}%${mobile.signal.rssiDbm !== -1 ? ` · ${mobile.signal.rssiDbm} dBm` : ''}`
-                : '-',
+            key: 'monthlyTraffic',
+            label: '本月流量',
+            children: monthlyTrafficPair(node.status.tcpTraffic),
         },
         {
-            key: 'mobileNetwork',
-            label: 'APN / 运营商',
-            children: [mobile.apn, mobile.operator].filter(Boolean).join(' / ') || '-',
+            key: 'monthlyVpn',
+            label: '本月 VPN',
+            children: monthlyTrafficPair(node.status.vpnTraffic),
         },
         ...(firmware.state === 'accepted' || firmware.state === 'running'
             ? [
@@ -906,6 +901,12 @@ function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
                   } satisfies DeviceCardItem,
               ]
             : []),
+        {
+            key: 'vpnVirtualCidrs',
+            label: 'VPN 网段',
+            span: 2,
+            children: node.vpnVirtualCidrs?.length ? node.vpnVirtualCidrs.join('、') : '-',
+        },
     ];
 }
 export function SerialDebugModal({
@@ -1530,12 +1531,7 @@ export function EdgeNodePage() {
     const eventScope: Edge.EventScope = {
         dtu: Boolean(selectedId && detailTab === 'dtu'),
         nodeId: selectedId,
-        logs:
-            selectedId && detailTab === 'events'
-                ? { limit: 48, level: logLevel }
-                : selectedId && detailTab === 'system'
-                  ? { limit: 48, source: 'system' }
-                  : undefined,
+        logs: selectedId && detailTab === 'events' ? { limit: 48, level: logLevel } : undefined,
         vpn: Boolean(selectedId && detailTab === 'vpn' && has('iot:vpn:query')),
     };
     const {
@@ -1572,17 +1568,6 @@ export function EdgeNodePage() {
         eventScope,
         Boolean(
             selectedId && detailTab === 'events' && detail?.status.online && detail.capability.logs
-        )
-    );
-    const {
-        data: systemLogs,
-        isFetching: systemLogsLoading,
-        refetch: refreshSystemLogs,
-        error: systemLogsError,
-    } = useEdgeLogs(
-        eventScope,
-        Boolean(
-            selectedId && detailTab === 'system' && detail?.status.online && detail.capability.logs
         )
     );
     const enrollment = useEnrollmentMutation();
@@ -2008,50 +1993,52 @@ export function EdgeNodePage() {
                                 onClick={() => showDetail(node)}
                                 ariaLabel={`查看边缘节点 ${node.name || node.hostname || node.imei}`}
                                 title={
-                                    <Flex
-                                        justify="space-between"
-                                        align="start"
-                                        gap={10}
-                                        className="w-full min-w-0"
-                                    >
-                                        <Tooltip title={`${nodeTitle} · IMEI：${node.imei}`}>
-                                            <span className="min-w-0 flex-1 truncate whitespace-nowrap pr-1 text-left leading-5">
-                                                {nodeTitle}
-                                                <span className="ml-2 text-xs font-normal text-slate-400">
-                                                    IMEI：{node.imei}
-                                                </span>
-                                            </span>
-                                        </Tooltip>
-                                        <Tag
-                                            color={status.online ? 'success' : 'default'}
-                                            className="!mr-0 shrink-0 !rounded-md !px-2"
+                                    <div className="flex w-full min-w-0 flex-col gap-0.5">
+                                        <Flex
+                                            justify="space-between"
+                                            align="start"
+                                            gap={10}
+                                            className="w-full min-w-0"
                                         >
-                                            {status.online ? '在线' : '离线'}
-                                        </Tag>
-                                    </Flex>
-                                }
-                                subtitle={
-                                    <div className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                                        <span className="flex min-w-0 shrink-0 items-center">
-                                            <Tag color="blue" className="!mr-0 !rounded-md">
-                                                {node.model || '未知型号'}
-                                            </Tag>
-                                            <Tag color="purple" className="!mr-0 !rounded-md">
-                                                {node.softwareVersion || '未知版本'}
-                                            </Tag>
-                                            <Tooltip title="本月流量">
-                                                <span className="ml-2 text-xs text-slate-500">
-                                                    {monthlyTrafficPair(status.tcpTraffic)}
+                                            <Tooltip title={nodeTitle}>
+                                                <span className="min-w-0 flex-1 truncate whitespace-nowrap pr-1 text-left leading-5">
+                                                    {nodeTitle}
                                                 </span>
                                             </Tooltip>
-                                        </span>
-                                        <span className="min-w-0 truncate text-xs text-slate-400">
-                                            上报：{formatDateTime(status.lastSeenAt)}
-                                        </span>
+                                            <span className="flex shrink-0 items-center gap-1 [&_.ant-tag]:!m-0">
+                                                {statusTag(node.enrollmentStatus)}
+                                                <Tag
+                                                    color={status.online ? 'success' : 'default'}
+                                                    className="!mr-0 shrink-0 !rounded-md !px-2"
+                                                >
+                                                    {status.online ? '在线' : '离线'}
+                                                </Tag>
+                                            </span>
+                                        </Flex>
+                                        <div className="flex w-full min-w-0 items-center justify-between gap-2 text-xs font-normal leading-4 text-slate-400">
+                                            <Tooltip title={node.imei}>
+                                                <span className="min-w-0 truncate text-left">
+                                                    IMEI：{node.imei}
+                                                </span>
+                                            </Tooltip>
+                                            <span className="shrink-0 truncate">
+                                                上报：{formatDateTime(status.lastSeenAt)}
+                                            </span>
+                                        </div>
                                     </div>
                                 }
+                                subtitle={
+                                    <span className="flex min-w-0 items-center gap-1">
+                                        <Tag color="blue" className="!mr-0 !rounded-md">
+                                            {node.model || '未知型号'}
+                                        </Tag>
+                                        <Tag color="purple" className="!mr-0 !rounded-md">
+                                            {node.softwareVersion || '未知版本'}
+                                        </Tag>
+                                    </span>
+                                }
                                 items={buildNodeCardItems(node)}
-                                column={8}
+                                column={2}
                                 extra={
                                     <Flex
                                         align="center"
@@ -2194,18 +2181,13 @@ export function EdgeNodePage() {
                 error={
                     inventoryError ??
                     detailError ??
-                    (detailTab === 'events'
-                        ? eventLogsError
-                        : detailTab === 'system'
-                          ? systemLogsError
-                          : null)
+                    (detailTab === 'events' ? eventLogsError : null)
                 }
                 retry={() =>
                     Promise.all([
                         refetch(),
                         ...(selectedId ? [retryDetail()] : []),
                         ...(eventLogsError && detailTab === 'events' ? [refreshEventLogs()] : []),
-                        ...(systemLogsError && detailTab === 'system' ? [refreshSystemLogs()] : []),
                     ])
                 }
                 loading={isFetching}
@@ -2361,6 +2343,9 @@ export function EdgeNodePage() {
                             </Descriptions.Item>
                             <Descriptions.Item label="本月流量">
                                 {monthlyTrafficPair(detail.status.tcpTraffic)}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="本月 VPN">
+                                {monthlyTrafficPair(detail.status.vpnTraffic)}
                             </Descriptions.Item>
                             <Descriptions.Item label="ttyd">
                                 {detail.capability.terminal ? (
@@ -2760,44 +2745,6 @@ export function EdgeNodePage() {
                                                 columns={logColumns}
                                                 dataSource={eventLogs?.lines ?? []}
                                                 locale={{ emptyText: '暂无运行事件' }}
-                                                scroll={{ x: 'max-content', y: 420 }}
-                                            />
-                                        </>
-                                    ),
-                                },
-                                {
-                                    key: 'system',
-                                    label: '系统日志',
-                                    children: !detail.status.online ? (
-                                        <Empty description="节点当前离线，无法读取系统日志" />
-                                    ) : !detail.capability.logs ? (
-                                        <Empty
-                                            description={`节点代理 ${detail.softwareVersion || '当前版本'} 过旧，请升级后查看系统日志`}
-                                        />
-                                    ) : (
-                                        <>
-                                            <Flex justify="end" className="mb-3">
-                                                <Button
-                                                    icon={<ReloadOutlined />}
-                                                    loading={systemLogsLoading}
-                                                    onClick={() => void refreshSystemLogs()}
-                                                >
-                                                    刷新
-                                                </Button>
-                                            </Flex>
-                                            <Table
-                                                rowKey={(item, index) =>
-                                                    `${item.time}-${item.message}-${index ?? 0}`
-                                                }
-                                                size="small"
-                                                pagination={false}
-                                                loading={systemLogsLoading}
-                                                columns={logColumns}
-                                                dataSource={systemLogs?.lines ?? []}
-                                                locale={{
-                                                    emptyText:
-                                                        '暂无系统日志；节点版本低于 0.3.29 时请先升级代理',
-                                                }}
                                                 scroll={{ x: 'max-content', y: 420 }}
                                             />
                                         </>

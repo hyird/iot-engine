@@ -639,6 +639,9 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 if (input.heartbeat().has_tcp_traffic()) {
                     heartbeatAck->set_traffic_sample_id(input.heartbeat().tcp_traffic().sample_id());
                 }
+                if (input.heartbeat().has_vpn_traffic()) {
+                    heartbeatAck->set_vpn_traffic_sample_id(input.heartbeat().vpn_traffic().sample_id());
+                }
                 enqueue(session, reply);
                 break;
             }

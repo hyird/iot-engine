@@ -80,13 +80,13 @@ export namespace Edge {
         downloadBytes: string;
         intervalMs: string;
         sampleId: string;
-        complete: boolean;
         month?: string;
         monthlyUploadBytes?: string;
         monthlyDownloadBytes?: string;
     }
     export interface NodeStatus {
         tcpTraffic?: TcpTraffic;
+        vpnTraffic?: TcpTraffic;
         online: boolean;
         lastSeenAt: string;
         config: ConfigStatus;
