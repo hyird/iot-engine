@@ -5,10 +5,12 @@ import { Alert, App, Button, Modal, Space, Tooltip } from 'antd';
 import '@xterm/xterm/css/xterm.css';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DebugAcquisition } from '@/types/packet_debug';
+import { armDebugIdleOff, disarmDebugIdleOff } from '@/utils/debug-idle';
 import { formatDebugTerminal } from '@/utils/packet_debug';
 
 interface Props {
     scope: 'device' | 'link';
+    idleKey: string;
     protocol: string;
     title: string;
     buttonClassName?: string;
@@ -19,15 +21,29 @@ interface Props {
     error?: Error | null;
     acquisitions?: DebugAcquisition[];
     onToggle: () => void;
+    onDisable: () => void;
     onOpen: () => void;
     onClose: () => void;
 }
 export function PacketDebugPanel(props: Props) {
     const active = props.enabled;
     const toggleTitle = props.enabled ? '关闭调试' : '开启调试';
+    const onDisableRef = useRef(props.onDisable);
+    onDisableRef.current = props.onDisable;
     useEffect(() => {
         if (props.open && !props.enabled) props.onClose();
     }, [props.open, props.enabled, props.onClose]);
+    useEffect(() => {
+        if (!props.enabled) {
+            disarmDebugIdleOff(props.idleKey);
+            return;
+        }
+        if (props.open) {
+            disarmDebugIdleOff(props.idleKey);
+            return;
+        }
+        armDebugIdleOff(props.idleKey, () => onDisableRef.current());
+    }, [props.enabled, props.open, props.idleKey]);
     return (
         <>
             <Space size={2}>

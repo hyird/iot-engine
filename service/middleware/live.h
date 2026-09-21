@@ -283,8 +283,8 @@ struct SnapshotChannel {
 
 // Channels share one socket, but authorization, change detection and payloads
 // remain independent. Telemetry never reloads device metadata or the group tree.
-template <typename CheckToken>
-ruvia::Task<void> serveSnapshotChannels(ruvia::Context& context, std::string userId, std::vector<SnapshotChannel> channels, CheckToken checkToken) {
+template <typename CheckToken, typename OnKeepalive>
+ruvia::Task<void> serveSnapshotChannels(ruvia::Context& context, std::string userId, std::vector<SnapshotChannel> channels, CheckToken checkToken, OnKeepalive onKeepalive) {
     using namespace std::chrono_literals;
     if (context.req().header("Accept").value_or("").find("text/event-stream") == std::string_view::npos) {
         service::common::fail(10002, "此接口需要 text/event-stream", 406);
@@ -355,9 +355,15 @@ ruvia::Task<void> serveSnapshotChannels(ruvia::Context& context, std::string use
             }
         }
         if (notification.status() == ruvia::WorkerWaitStatus::kTimedOut) {
+            co_await onKeepalive();
             co_await context.stream().write(": keepalive\n\n");
         }
     }
+}
+
+template <typename CheckToken>
+ruvia::Task<void> serveSnapshotChannels(ruvia::Context& context, std::string userId, std::vector<SnapshotChannel> channels, CheckToken checkToken) {
+    co_await serveSnapshotChannels(context, std::move(userId), std::move(channels), std::move(checkToken), []() -> ruvia::Task<void> { co_return; });
 }
 
 // Only initial connection and change notifications execute the query. The

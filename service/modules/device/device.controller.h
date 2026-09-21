@@ -124,9 +124,18 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
                                     co_return service::live::json(co_await queryCommandStatuses(request, ids));
                                 } });
         }
-        co_await service::live::serveSnapshotChannels(c, service::middleware::requireAuth(c).userId, std::move(channels), [&c] {
-            (void)service::middleware::requireAuth(c);
-        });
+        const std::string debugId = debugDeviceId ? std::string(debugDeviceId->view()) : std::string();
+        co_await service::live::serveSnapshotChannels(
+            c,
+            service::middleware::requireAuth(c).userId,
+            std::move(channels),
+            [&c] { (void)service::middleware::requireAuth(c); },
+            [&c, debugId]() -> ruvia::Task<void> {
+                if (!debugId.empty()) {
+                    co_await service::debug_idle::touch(c.redis(), "device", debugId);
+                }
+                co_return;
+            });
     }
 
     ruvia::Task<DevicePageResponse> queryList(ruvia::Context& c, service::middleware::RequestContext& request) {

@@ -33,6 +33,7 @@
 #include "service/modules/system/role/role.entity.h"
 #include "service/modules/system/user/user.entity.h"
 #include "service/utils/number.h"
+#include "service/utils/debug_idle.h"
 #include "service/utils/redis.h"
 
 namespace service::link {
@@ -204,6 +205,7 @@ class LinkService {
     template <typename Context>
     ruvia::Task<ruvia::BoxedArray<LinkDebugAcquisitionDto>> debugPackets(Context& c, std::string_view id) {
         (void)co_await detail(c, id);
+        co_await service::debug_idle::touch(c.redis(), "link", id);
         const auto key = service::link::LinkDebugIndex::key(id);
         static constexpr std::string_view readPackets = R"lua(
 local result={}
@@ -319,6 +321,42 @@ return result
         ruvia::DbQuery query(c.pool());
         query.update(LinkEntity::tableName())
             .set(LinkEntity::columnName<"debug_enabled">(), query.value(enabled))
+            .set("updated_at", query.call("now"))
+            .where((LinkEntity::column<"id">() == id && LinkEntity::column<"deleted_at">().isNull()).expression(query));
+        (void)co_await transaction.execute(query);
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "link", "updated", id, c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await transaction.commit();
+        if (enabled) {
+            co_await service::debug_idle::touch(c.redis(), "link", id);
+            service::debug_idle::watch(
+                c.worker(),
+                "link",
+                std::string(id),
+                [](ruvia::WebWorkerContext& ctx, const std::string& linkId) -> ruvia::Task<void> {
+                    co_await LinkService::instance().disableExpiredDebug(ctx, linkId);
+                });
+        } else {
+            co_await service::debug_idle::clear(c.redis(), "link", id);
+        }
+    }
+
+    template <typename Context>
+    ruvia::Task<void> disableExpiredDebug(Context& c, std::string_view id) {
+        if (co_await service::debug_idle::leased(c.redis(), "link", id)) {
+            co_return;
+        }
+        ruvia::DbQuery lookup(c.pool());
+        lookup.select({ lookup.column("debug_enabled") })
+            .from(LinkEntity::tableName())
+            .where((LinkEntity::column<"id">() == id && LinkEntity::column<"deleted_at">().isNull()).expression(lookup));
+        const auto rows = co_await c.db().query(lookup);
+        if (rows.empty() || rows.front()[0].value().value_or("") != "t") {
+            co_return;
+        }
+        auto transaction = co_await c.db().beginTransaction();
+        ruvia::DbQuery query(c.pool());
+        query.update(LinkEntity::tableName())
+            .set(LinkEntity::columnName<"debug_enabled">(), query.value(false))
             .set("updated_at", query.call("now"))
             .where((LinkEntity::column<"id">() == id && LinkEntity::column<"deleted_at">().isNull()).expression(query));
         (void)co_await transaction.execute(query);

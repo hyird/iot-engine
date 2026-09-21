@@ -70,15 +70,25 @@ class LinkController final : public ruvia::Controller<LinkController> {
                                 co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:link:query");
                                 co_return service::live::json(co_await queryList(c, request));
                             } });
+        std::string debugId;
         if (const auto& value = c.req().validated<LinkEventsQuery>().get<"debugLinkId">()) {
-            channels.push_back({ "packets", "packet-debug", [this, &c, linkId = std::string(value->view())](service::middleware::RequestContext& request) -> ruvia::Task<std::string> {
+            debugId = std::string(value->view());
+            channels.push_back({ "packets", "packet-debug", [this, &c, linkId = debugId](service::middleware::RequestContext& request) -> ruvia::Task<std::string> {
                                     co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:link:edit");
                                     co_return service::live::json(co_await queryDebugPackets(c, request, linkId));
                                 } });
         }
-        co_await service::live::serveSnapshotChannels(c, access.userId, std::move(channels), [&c] {
-            (void)service::middleware::requireAuth(c);
-        });
+        co_await service::live::serveSnapshotChannels(
+            c,
+            access.userId,
+            std::move(channels),
+            [&c] { (void)service::middleware::requireAuth(c); },
+            [&c, debugId]() -> ruvia::Task<void> {
+                if (!debugId.empty()) {
+                    co_await service::debug_idle::touch(c.redis(), "link", debugId);
+                }
+                co_return;
+            });
     }
 
     ruvia::Task<LinkPageResponse> queryList(ruvia::Context& c, service::middleware::RequestContext& request) {

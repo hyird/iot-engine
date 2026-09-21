@@ -33,6 +33,7 @@
 #include "service/modules/edge_node/edge_node.service.h"
 #include "service/modules/system/auth/auth.service.h"
 #include "service/modules/system/outbox/outbox.service.h"
+#include "service/utils/debug_idle.h"
 #include "service/utils/number.h"
 #include "service/utils/redis.h"
 
@@ -637,6 +638,7 @@ class DeviceService {
     template <typename Context>
     ruvia::Task<ruvia::BoxedArray<DeviceDebugAcquisitionDto>> debugPackets(Context& c, std::string_view id) {
         (void)co_await deviceAccessService().require(c, id, DeviceAccessLevel::owner, c.userId);
+        co_await service::debug_idle::touch(c.redis(), "device", id);
         const auto key = service::device::entities::DeviceDebugIndex::key(id);
         static constexpr std::string_view readPackets = R"lua(
 local result={}
@@ -754,9 +756,51 @@ return result
         (void)co_await transaction.execute(query);
         co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "updated", id, c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next());
         co_await transaction.commit();
+        if (enabled) {
+            co_await service::debug_idle::touch(c.redis(), "device", id);
+            service::debug_idle::watch(
+                c.worker(),
+                "device",
+                std::string(id),
+                [](ruvia::WebWorkerContext& ctx, const std::string& deviceId) -> ruvia::Task<void> {
+                    co_await DeviceService::instance().disableExpiredDebug(ctx, deviceId);
+                });
+        } else {
+            co_await service::debug_idle::clear(c.redis(), "device", id);
+        }
         const auto device = co_await detail(c, id);
         if (device.template get<"edgeNodeId">() && !device.template get<"edgeNodeId">()->view().empty()) {
             (void)co_await service::edge::EdgeService::queueSnapshot(c, device.template get<"edgeNodeId">()->view(), c.userId);
+        }
+    }
+
+    template <typename Context>
+    ruvia::Task<void> disableExpiredDebug(Context& c, std::string_view id) {
+        if (co_await service::debug_idle::leased(c.redis(), "device", id)) {
+            co_return;
+        }
+        ruvia::DbQuery lookup(c.pool());
+        lookup.select({ lookup.column("debug_enabled", "d"), lookup.column("created_by", "d"), lookup.coalesce({ lookup.column("edge_node_id", "l"), lookup.value("") }) })
+            .from(service::device::entities::DeviceEntity::tableName(), "d")
+            .join(ruvia::DbJoinType::kLeft, service::device::entities::LinkEntity::tableName(), lookup.binary(lookup.column("id", "l"), ruvia::DbBinaryOperator::kEqual, lookup.column("link_id", "d")), "l")
+            .where(andAll(lookup, lookup.binary(lookup.column("id", "d"), ruvia::DbBinaryOperator::kEqual, DeviceAccessService::uuid(lookup, id)), lookup.unary(ruvia::DbUnaryOperator::kIsNull, lookup.column("deleted_at", "d"))));
+        const auto rows = co_await c.db().query(lookup);
+        if (rows.empty() || rows.front()[0].value().value_or("") != "t") {
+            co_return;
+        }
+        const auto actor = std::string(rows.front()[1].value().value_or(""));
+        const auto edgeNodeId = std::string(rows.front()[2].value().value_or(""));
+        auto transaction = co_await c.db().beginTransaction();
+        ruvia::DbQuery query(c.pool());
+        query.update(service::device::entities::DeviceEntity::tableName())
+            .set(service::device::entities::DeviceEntity::columnName<"debug_enabled">(), query.value(false))
+            .set("updated_at", query.call("now"))
+            .where((service::device::entities::DeviceEntity::column<"id">() == id && service::device::entities::DeviceEntity::column<"deleted_at">().isNull()).expression(query));
+        (void)co_await transaction.execute(query);
+        co_await service::system::OutboxService::enqueueConfigEvent(transaction, "device", "updated", id, c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next());
+        co_await transaction.commit();
+        if (!edgeNodeId.empty() && service::common::isUuid(actor)) {
+            (void)co_await service::edge::EdgeService::queueSnapshot(c, edgeNodeId, actor);
         }
     }
 

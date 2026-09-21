@@ -2073,6 +2073,7 @@ function DeviceDebug({
     return (
         <PacketDebugPanel
             scope="device"
+            idleKey={`device:${item.id}`}
             protocol={item.protocol_type ?? ''}
             buttonClassName={DEVICE_CARD_ACTION_BUTTON_CLASS}
             title={`设备调试 · ${item.name}`}
@@ -2083,6 +2084,7 @@ function DeviceDebug({
             error={packets.error}
             acquisitions={packets.data}
             onToggle={() => toggle.mutate(!item.debug_enabled)}
+            onDisable={() => toggle.mutate(false)}
             onOpen={onOpen}
             onClose={onClose}
         />
