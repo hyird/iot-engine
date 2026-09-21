@@ -2440,14 +2440,59 @@ class EdgeProjectionService {
              config::detail::jsonKey(query, "operator"), operatorName,
              config::detail::jsonKey(query, "connected"), boolean(heartbeat.mobile_connected()),
              config::detail::jsonKey(query, "ipv4"), text(heartbeat.mobile_ipv4())});
+        const auto tcpTrafficText = [&query](std::string_view key) {
+            return config::detail::jsonText(
+                query,
+                config::detail::jsonGet(
+                    query,
+                    query.column(service::edge::persistence::EdgeNodeEntity::columnName<"status">()),
+                    "tcpTraffic"),
+                key);
+        };
+        const auto currentMonth = query.call(
+            "to_char",
+            {query.call("timezone", {text("Asia/Shanghai"), query.call("now")}), text("YYYY-MM")});
         const auto tcpTraffic = heartbeat.has_tcp_traffic()
-            ? query.call("jsonb_build_object", {
-                config::detail::jsonKey(query, "uploadBytes"), text(std::to_string(heartbeat.tcp_traffic().upload_bytes())),
-                config::detail::jsonKey(query, "downloadBytes"), text(std::to_string(heartbeat.tcp_traffic().download_bytes())),
-                config::detail::jsonKey(query, "intervalMs"), text(std::to_string(heartbeat.tcp_traffic().interval_ms())),
-                config::detail::jsonKey(query, "sampleId"), text(std::to_string(heartbeat.tcp_traffic().sample_id())),
-                config::detail::jsonKey(query, "complete"), boolean(heartbeat.tcp_traffic().complete())})
-            : query.nullValue();
+            ? [&] {
+                const auto& sample = heartbeat.tcp_traffic();
+                const auto sameSample = query.binary(
+                    tcpTrafficText("sampleId"), ruvia::DbBinaryOperator::kEqual,
+                    text(std::to_string(sample.sample_id())));
+                const auto sameMonth = query.binary(
+                    tcpTrafficText("month"), ruvia::DbBinaryOperator::kEqual, currentMonth);
+                const auto monthlyTotal = [&](std::string_view key, std::uint64_t bytes) {
+                    const auto kept = query.coalesce({
+                        query.cast(
+                            query.nullIf(tcpTrafficText(key), query.value(std::string_view{})),
+                            ruvia::DbDataType::kBigInt),
+                        integer(0)});
+                    const auto added = query.binary(kept, ruvia::DbBinaryOperator::kAdd, integer(bytes));
+                    return query.cast(
+                        query.caseWhen(
+                            {{sameSample, kept},
+                             {query.binary(sameMonth, ruvia::DbBinaryOperator::kAnd, boolean(sample.complete())), added},
+                             {boolean(sample.complete()), integer(bytes)},
+                             {sameMonth, kept}},
+                            integer(0)),
+                        ruvia::DbDataType::kText);
+                };
+                const auto monthValue = query.caseWhen(
+                    {{sameSample, query.coalesce({tcpTrafficText("month"), currentMonth})}},
+                    currentMonth);
+                return query.call("jsonb_build_object", {
+                    config::detail::jsonKey(query, "uploadBytes"), text(std::to_string(sample.upload_bytes())),
+                    config::detail::jsonKey(query, "downloadBytes"), text(std::to_string(sample.download_bytes())),
+                    config::detail::jsonKey(query, "intervalMs"), text(std::to_string(sample.interval_ms())),
+                    config::detail::jsonKey(query, "sampleId"), text(std::to_string(sample.sample_id())),
+                    config::detail::jsonKey(query, "complete"), boolean(sample.complete()),
+                    config::detail::jsonKey(query, "month"), monthValue,
+                    config::detail::jsonKey(query, "monthlyUploadBytes"), monthlyTotal("monthlyUploadBytes", sample.upload_bytes()),
+                    config::detail::jsonKey(query, "monthlyDownloadBytes"), monthlyTotal("monthlyDownloadBytes", sample.download_bytes())});
+            }()
+            : config::detail::jsonGet(
+                  query,
+                  query.column(service::edge::persistence::EdgeNodeEntity::columnName<"status">()),
+                  "tcpTraffic");
         query.update(service::edge::persistence::EdgeNodeEntity::tableName())
             .set(service::edge::persistence::EdgeNodeEntity::columnName<"status">(), query.call(
                                "jsonb_build_object",

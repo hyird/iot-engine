@@ -95,7 +95,7 @@ RUVIA_RESPONSE_MODEL(ConfigStatusDto, RUVIA_OPTIONAL_FIELD_NAME("activeVersion",
 
 RUVIA_RESPONSE_MODEL(OutboxStatusDto, RUVIA_OPTIONAL_FIELD(records, ruvia::Int64), RUVIA_OPTIONAL_FIELD(bytes, ruvia::Int64));
 
-RUVIA_RESPONSE_MODEL(TcpTrafficDto, RUVIA_OPTIONAL_FIELD(uploadBytes, ruvia::String), RUVIA_OPTIONAL_FIELD(downloadBytes, ruvia::String), RUVIA_OPTIONAL_FIELD(intervalMs, ruvia::String), RUVIA_OPTIONAL_FIELD(sampleId, ruvia::String), RUVIA_OPTIONAL_FIELD(complete, ruvia::Bool));
+RUVIA_RESPONSE_MODEL(TcpTrafficDto, RUVIA_OPTIONAL_FIELD(uploadBytes, ruvia::String), RUVIA_OPTIONAL_FIELD(downloadBytes, ruvia::String), RUVIA_OPTIONAL_FIELD(intervalMs, ruvia::String), RUVIA_OPTIONAL_FIELD(sampleId, ruvia::String), RUVIA_OPTIONAL_FIELD(complete, ruvia::Bool), RUVIA_OPTIONAL_FIELD(month, ruvia::String), RUVIA_OPTIONAL_FIELD(monthlyUploadBytes, ruvia::String), RUVIA_OPTIONAL_FIELD(monthlyDownloadBytes, ruvia::String));
 
 RUVIA_RESPONSE_MODEL(LogStatusDto, RUVIA_OPTIONAL_FIELD(level, ruvia::String));
 

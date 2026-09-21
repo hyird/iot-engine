@@ -81,6 +81,9 @@ export namespace Edge {
         intervalMs: string;
         sampleId: string;
         complete: boolean;
+        month?: string;
+        monthlyUploadBytes?: string;
+        monthlyDownloadBytes?: string;
     }
     export interface NodeStatus {
         tcpTraffic?: TcpTraffic;

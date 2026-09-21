@@ -1,4 +1,3 @@
-import { LiveQueryError } from '@/components/LiveQueryError';
 import {
     ApartmentOutlined,
     CheckOutlined,
@@ -52,13 +51,14 @@ import type { ColumnsType } from 'antd/es/table';
 import type { DataNode, TreeProps } from 'antd/es/tree';
 import { useEffect, useMemo, useState } from 'react';
 import { FormModal } from '@/components/FormModal';
+import { LiveQueryError } from '@/components/LiveQueryError';
 import { usePermissions } from '@/hooks/usePermission';
 import {
-    useDtuChannels,
-    useDtuSave,
-    useDtuDelete,
     dtuTraceHex,
     getWindowsClientDownloadUrl,
+    useDtuChannels,
+    useDtuDelete,
+    useDtuSave,
     useEdgeGroupDelete,
     useEdgeGroupSave,
     useEdgeGroupTree,
@@ -79,8 +79,8 @@ import { formatDateTime } from '@/utils/dateTime';
 import { createUuid } from '@/utils/uuid';
 import { validateForm } from '@/utils/validation';
 import {
-    dtuChannelSchema,
     dtuAsciiPacketSchema,
+    dtuChannelSchema,
     firmwareUpgradeSchema,
     networkInterfaceSchema,
     networkSchema,
@@ -827,10 +827,12 @@ function mobileState(node: Edge.Node) {
     if (mobile.connected) return `已连接${mobile.ipv4 ? ` · ${mobile.ipv4}` : ''}`;
     return mobile.registered ? '已注册，未拨号' : '未注册';
 }
-function tcpTrafficText(traffic: Edge.TcpTraffic | undefined) {
-    if (!traffic) return '尚未上报';
-    if (!traffic.complete) return '统计不完整，暂不可作为区间总量';
-    return `上行 ${formatBytes(Number(traffic.uploadBytes))} / 下行 ${formatBytes(Number(traffic.downloadBytes))}（${Math.round(Number(traffic.intervalMs) / 1000)} 秒）`;
+function monthlyTrafficText(bytes: string | undefined) {
+    if (bytes === undefined || bytes === '') return '-';
+    return formatBytes(Number(bytes));
+}
+function monthlyTrafficPair(traffic: Edge.TcpTraffic | undefined) {
+    return `上行 ${monthlyTrafficText(traffic?.monthlyUploadBytes)} | 下行 ${monthlyTrafficText(traffic?.monthlyDownloadBytes)}`;
 }
 function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
     const status = node.status;
@@ -862,15 +864,6 @@ function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
             key: 'outbox',
             label: '待传缓存',
             children: `${outbox.records ?? 0} 条 / ${formatBytes(outbox.bytes ?? 0)}`,
-        },
-        {
-            key: 'tcpTraffic',
-            label: '平台 TCP 区间流量',
-            children: (
-                <span title="仅本平台连接，内核 IP 字节计数，含 TCP/IP 包头、ACK 和重传；非 SIM 计费流量">
-                    {tcpTrafficText(status.tcpTraffic)}
-                </span>
-            ),
         },
         {
             key: 'networkManager',
@@ -2046,6 +2039,11 @@ export function EdgeNodePage() {
                                             <Tag color="purple" className="!mr-0 !rounded-md">
                                                 {node.softwareVersion || '未知版本'}
                                             </Tag>
+                                            <Tooltip title="本月流量">
+                                                <span className="ml-2 text-xs text-slate-500">
+                                                    {monthlyTrafficPair(status.tcpTraffic)}
+                                                </span>
+                                            </Tooltip>
                                         </span>
                                         <span className="min-w-0 truncate text-xs text-slate-400">
                                             上报：{formatDateTime(status.lastSeenAt)}
@@ -2332,6 +2330,11 @@ export function EdgeNodePage() {
                     <>
                         <Descriptions bordered size="small" column={{ xs: 1, sm: 2, lg: 3 }}>
                             <Descriptions.Item label="IMEI">{detail.imei}</Descriptions.Item>
+                            <Descriptions.Item label="ICCID">
+                                <span className="break-all font-mono">
+                                    {detail.mobile.iccid || '-'}
+                                </span>
+                            </Descriptions.Item>
                             <Descriptions.Item label="状态">
                                 {statusTag(detail.enrollmentStatus)}{' '}
                                 {detail.status.online ? (
@@ -2356,8 +2359,8 @@ export function EdgeNodePage() {
                                 {detail.status.outbox.records} 条 /{' '}
                                 {formatBytes(detail.status.outbox.bytes)}
                             </Descriptions.Item>
-                            <Descriptions.Item label="平台 TCP 区间流量">
-                                {tcpTrafficText(detail.status.tcpTraffic)}
+                            <Descriptions.Item label="本月流量">
+                                {monthlyTrafficPair(detail.status.tcpTraffic)}
                             </Descriptions.Item>
                             <Descriptions.Item label="ttyd">
                                 {detail.capability.terminal ? (
@@ -2549,8 +2552,10 @@ export function EdgeNodePage() {
                                                 <Descriptions.Item label="SIM 状态">
                                                     {simStateText(detail.mobile.simState)}
                                                 </Descriptions.Item>
-                                                <Descriptions.Item label="ICCID">
-                                                    {detail.mobile.iccid || '-'}
+                                                <Descriptions.Item label="ICCID" span={2}>
+                                                    <span className="break-all font-mono">
+                                                        {detail.mobile.iccid || '-'}
+                                                    </span>
                                                 </Descriptions.Item>
                                                 <Descriptions.Item label="运营商">
                                                     {detail.mobile.operator || '-'}

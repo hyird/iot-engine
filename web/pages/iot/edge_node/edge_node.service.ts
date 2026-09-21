@@ -5,10 +5,6 @@ import { useSnapshotQuery } from '@/hooks/useSnapshotQuery';
 import { refreshAccessToken } from '@/pages/login/login.service';
 import { useAuthStore } from '@/store/authStore';
 import {
-    getDtuChannels,
-    observeDtuChannels,
-    saveDtuChannel,
-    deleteDtuChannel,
     authenticateDebugConnection,
     captureLogs,
     closeSerialDebug,
@@ -18,23 +14,27 @@ import {
     createEdgeVpnRoute,
     createVpnNetwork,
     DebugOperationError,
+    deleteDtuChannel,
     deleteEdgeGroup,
     deleteEdgeVpnRoute,
     deleteEnrollment,
     edgeDebugConnection,
-    getEdgeGroups,
+    getDtuChannels,
     getEdgeDetail,
+    getEdgeGroups,
     getEdgeInventory,
     getEdgeVpnState,
     getLogs,
     getSerialEvents,
     getVpnNetworks,
+    observeDtuChannels,
     observeEdgeDetail,
     openSerialDebug,
     queryEdgeList,
     renameEdge,
     reuseFirmware,
     revokeEdgeVpnPeer,
+    saveDtuChannel,
     sendSerialCommand,
     setEdgeGroup,
     setEnrollment,
@@ -497,7 +497,8 @@ export const useEdgeSelectionList = (enabled: boolean) =>
     });
 export const useEdgeInventory = (enabled = true, scope?: Edge.EventScope) =>
     useSnapshotQuery({
-        queryKey: [...edgeQueryKeys.all, 'inventory', scope],
+        queryKey: [...edgeQueryKeys.all, 'inventory'],
+        streamKey: scope,
         queryFn: () => getEdgeInventory(scope),
         enabled,
         placeholderData: keepPreviousData,
@@ -512,7 +513,8 @@ export const useEdgeConfigurationDetail = (nodeId?: string) =>
     });
 export const useEdgeDetail = (scope: Edge.EventScope) =>
     useSnapshotQuery({
-        queryKey: [...edgeQueryKeys.detail(scope.nodeId), scope],
+        queryKey: edgeQueryKeys.detail(scope.nodeId),
+        streamKey: scope,
         queryFn: () => observeEdgeDetail(scope),
         enabled: Boolean(scope.nodeId),
     });

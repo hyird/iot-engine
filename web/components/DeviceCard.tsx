@@ -53,12 +53,14 @@ const DeviceValues = ({ items, wide = false }: { items: DeviceCardItem[]; wide?:
                 style={item.span && item.span > 1 ? { gridColumn: '1 / -1' } : undefined}
             >
                 <Tooltip title={item.tooltipLabel ?? item.label}>
-                    <dt className="min-w-0 truncate whitespace-nowrap text-center text-[11px] leading-4 text-slate-500">
+                    <dt
+                        className={`min-w-0 text-center text-[11px] leading-4 text-slate-500 ${item.span && item.span > 1 ? 'whitespace-normal' : 'truncate whitespace-nowrap'}`}
+                    >
                         {item.label}
                     </dt>
                 </Tooltip>
                 <dd
-                    className="m-0 min-w-0 truncate whitespace-nowrap text-center text-[13px] font-semibold leading-5 tabular-nums text-slate-950"
+                    className={`m-0 min-w-0 text-center text-[13px] font-semibold leading-5 tabular-nums text-slate-950 ${item.span && item.span > 1 ? 'whitespace-normal break-all' : 'truncate whitespace-nowrap'}`}
                     title={
                         typeof item.children === 'string' || typeof item.children === 'number'
                             ? String(item.children)
