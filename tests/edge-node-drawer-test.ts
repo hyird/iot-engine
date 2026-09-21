@@ -147,6 +147,7 @@ test('drawer actions render above the detail drawer', () => {
 test('platform exposes mobile status without modem mutation controls', () => {
     expect(drawer).toContain('APN');
     expect(drawer).toContain('运营商');
+    expect(drawer).toContain('mobileOperatorName(detail.mobile.operator)');
     expect(source).not.toContain('useModemControlMutation');
     expect(client).not.toContain('/modem');
     expect(service).not.toContain('useModemControlMutation');

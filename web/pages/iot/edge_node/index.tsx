@@ -95,6 +95,7 @@ import {
     getEdgeDetail,
     getTerminalEvents,
     keepTerminalAlive,
+    mobileOperatorName,
     normalizeReportedNetwork,
     openTerminal,
     physicalNetworkInterfaces,
@@ -846,7 +847,7 @@ function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
         { key: 'hostname', label: '主机名', children: node.hostname || '-' },
         { key: 'architecture', label: '系统架构', children: node.architecture || '-' },
         { key: 'openwrt', label: 'OpenWrt', children: node.openwrtRelease || '-' },
-        { key: 'operator', label: '运营商', children: mobile.operator || '-' },
+        { key: 'operator', label: '运营商', children: mobileOperatorName(mobile.operator) || '-' },
         { key: 'mobileState', label: '4G 状态', children: mobileState(node) },
         {
             key: 'mobileSignal',
@@ -2547,7 +2548,8 @@ export function EdgeNodePage() {
                                                     </span>
                                                 </Descriptions.Item>
                                                 <Descriptions.Item label="运营商">
-                                                    {detail.mobile.operator || '-'}
+                                                    {mobileOperatorName(detail.mobile.operator) ||
+                                                        '-'}
                                                 </Descriptions.Item>
                                                 <Descriptions.Item label="信号">
                                                     {detail.mobile.available

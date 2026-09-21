@@ -67,6 +67,20 @@ const buildGroupTree = (items: Edge.GroupItem[]) => {
     return roots;
 };
 
+const chinaMobilePlmn = new Set(['46000', '46002', '46004', '46007', '46008', '46013']);
+const chinaUnicomPlmn = new Set(['46001', '46006', '46009', '46010']);
+const chinaTelecomPlmn = new Set(['46003', '46005', '46011', '46012']);
+
+export function mobileOperatorName(value = ''): string {
+    const operator = value.trim();
+    if (!operator) return '';
+    if (chinaMobilePlmn.has(operator)) return '中国移动';
+    if (chinaUnicomPlmn.has(operator)) return '中国联通';
+    if (chinaTelecomPlmn.has(operator)) return '中国电信';
+    if (operator === '46015') return '中国广电';
+    return operator;
+}
+
 export function serialPayloadHex(value: string, mode: 'hex' | 'text', ending = ''): string {
     if (mode === 'hex') {
         const hex = value.replace(/\s/g, '');
