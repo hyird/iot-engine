@@ -604,17 +604,17 @@ class DeliveryService final {
     }
 
     static std::string jsonFieldOr(const ruvia::JsonValue& object, std::string_view field, std::string_view fallback) {
-        const auto value = service::utils::jsonField(object, field);
+        const auto value = object.get<ruvia::JsonValue>(field);
         return value ? std::string(value->view()) : std::string(fallback);
     }
 
     static std::string mergeEventData(std::string_view deviceJson, std::string_view rawData) {
         std::string result = "{\"device\":" + std::string(deviceJson);
         if (const auto parsed = ruvia::JsonValue::parse(rawData); parsed && parsed->isObject()) {
-            (void)service::utils::visitJsonFields(*parsed,
-                [&](std::string_view name, std::string_view value) {
+            (void)parsed->forEachField(
+                [&](std::string_view name, const ruvia::JsonValue& value) {
                     if (name != "device") {
-                        result += "," + service::utils::jsonQuoted(name) + ":" + std::string(value);
+                        result += "," + service::utils::jsonQuoted(name) + ":" + std::string(value.view());
                     }
                     return true;
                 }
@@ -629,30 +629,29 @@ class DeliveryService final {
         if (!parsed || !parsed->isObject()) {
             return mergeEventData(deviceJson, rawData);
         }
-        const auto values = service::utils::jsonField(*parsed, "values");
+        const auto values = parsed->get<ruvia::JsonValue>("values");
         if (!values || !values->isObject()) {
             return mergeEventData(deviceJson, rawData);
         }
 
         std::string image;
-        (void)service::utils::visitJsonFields(*values,
-            [&](std::string_view id, std::string_view raw) {
+        (void)values->forEachField(
+            [&](std::string_view id, const ruvia::JsonValue& item) {
                 if (!image.empty()) {
                     return true;
                 }
-                const auto item = ruvia::JsonValue::parse(raw);
-                if (!item || !item->isObject()) {
+                if (!item.isObject()) {
                     return true;
                 }
-                const auto type = item->get<ruvia::String>("type");
-                const auto value = service::utils::jsonField(*item, "value");
-                const auto text = item->get<ruvia::String>("value");
+                const auto type = item.get<ruvia::String>("type");
+                const auto value = item.get<ruvia::JsonValue>("value");
+                const auto text = item.get<ruvia::String>("value");
                 const bool jpeg = type && type->view() == "JPEG";
                 const bool dataUrl = text && text->view().starts_with("data:image/");
                 if (!value || (!jpeg && !dataUrl)) {
                     return true;
                 }
-                const auto name = item->get<ruvia::String>("name");
+                const auto name = item.get<ruvia::String>("name");
                 image = "{\"id\":" + service::utils::jsonQuoted(id) + ",\"name\":" +
                     service::utils::jsonQuoted(name ? name->view() : std::string_view("image")) +
                     ",\"data\":" + std::string(value->view()) +
@@ -984,7 +983,7 @@ class AccessOperationService final {
                 return value ? std::string(value->view()) : std::string{};
             };
             const auto json = [&request](std::string_view field) {
-                const auto value = service::utils::jsonField(*request, field);
+                const auto value = request->get<ruvia::JsonValue>(field);
                 return value ? std::string(value->view()) : std::string("{}");
             };
             std::int64_t status = 200;

@@ -2158,8 +2158,8 @@ return result
                 hasElementIds = true;
                 const auto parsed = ruvia::JsonValue::parse(entries[index + 1].string());
                 if (parsed && parsed->isObject()) {
-                    (void)service::utils::visitJsonFields(*parsed,
-                        [&](std::string_view key, std::string_view) {
+                    (void)parsed->forEachField(
+                        [&](std::string_view key, const ruvia::JsonValue&) {
                             if (!key.empty()) {
                                 elementIds.emplace(key);
                             }

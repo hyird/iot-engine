@@ -8,7 +8,9 @@
 namespace service::telemetry::contract {
 template<class Visit> void fields(std::string_view raw, Visit visit) {
     const auto object = ruvia::JsonValue::parse(raw);
-    if (!object || !service::utils::visitJsonFields(*object, visit)) throw std::runtime_error("Invalid telemetry object");
+    if (!object || !object->forEachField([&](std::string_view name, const ruvia::JsonValue& value) {
+        return visit(name, value.view());
+    })) throw std::runtime_error("Invalid telemetry object");
 }
 inline std::string_view field(std::string_view raw,std::string_view key) {
     std::string_view found;

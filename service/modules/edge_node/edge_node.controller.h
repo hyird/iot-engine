@@ -53,7 +53,7 @@ struct Request final {
             throw EventError(10002, "消息格式无效");
         }
         unsigned fields = 0;
-        const auto validFields = service::utils::visitJsonFields(*value, [&](std::string_view key, std::string_view) {
+        const auto validFields = value->forEachField([&](std::string_view key, const ruvia::JsonValue&) {
             const unsigned bit = key == "id" ? 1U : key == "event" ? 2U
                 : key == "data"                                    ? 4U
                                                                    : 0U;
@@ -65,7 +65,7 @@ struct Request final {
         });
         const auto id = value->get<ruvia::String>("id");
         const auto event = value->get<ruvia::String>("event");
-        const auto data = service::utils::jsonField(*value, "data");
+        const auto data = value->get<ruvia::JsonValue>("data");
         if (!id || !service::common::isUuid(id->view()) || !event || event->empty() ||
             event->view().size() > 128 || !data || !validFields || fields != 7U) {
             throw EventError(10002, "事件编号、名称或参数无效");
@@ -735,7 +735,7 @@ class EdgeController final : public ruvia::Controller<EdgeController> {
 
     ruvia::Task<service::edge::debug::EventResult> sendSerialCommand(service::edge::debug::EventContext& c, const NodeSerialCommandInput& body) {
         const auto payload = ruvia::JsonValue::parse(c.request.data);
-        const auto command = service::utils::jsonField(*payload, "command");
+        const auto command = payload->get<ruvia::JsonValue>("command");
         if (!command || command->view().size() > 4096) {
             throw service::edge::debug::EventError(10001, "串口指令过大");
         }

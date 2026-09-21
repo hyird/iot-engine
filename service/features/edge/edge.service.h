@@ -2449,9 +2449,9 @@ class EdgeProjectionService {
                     "tcpTraffic"),
                 key);
         };
-        const auto currentMonth = query.call(
-            "to_char",
-            {query.call("timezone", {text("Asia/Shanghai"), query.call("now")}), text("YYYY-MM")});
+        const auto shanghaiNow = query.call("timezone", {text("Asia/Shanghai"), query.call("now")});
+        const auto currentMonth = query.call("to_char", {shanghaiNow, text("YYYY-MM")});
+        const auto currentDay = query.call("to_char", {shanghaiNow, text("YYYY-MM-DD")});
         const auto tcpTraffic = heartbeat.has_tcp_traffic()
             ? [&] {
                 const auto& sample = heartbeat.tcp_traffic();
@@ -2465,7 +2465,14 @@ class EdgeProjectionService {
                     query.nullIf(tcpTrafficText("month"), query.value(std::string_view{})));
                 const auto continueMonth = query.binary(
                     sameMonth, ruvia::DbBinaryOperator::kOr, monthMissing);
-                const auto monthlyTotal = [&](std::string_view key, std::uint64_t bytes) {
+                const auto sameDay = query.binary(
+                    tcpTrafficText("day"), ruvia::DbBinaryOperator::kEqual, currentDay);
+                const auto dayMissing = query.unary(
+                    ruvia::DbUnaryOperator::kIsNull,
+                    query.nullIf(tcpTrafficText("day"), query.value(std::string_view{})));
+                const auto continueDay = query.binary(
+                    sameDay, ruvia::DbBinaryOperator::kOr, dayMissing);
+                const auto periodTotal = [&](std::string_view key, const auto& continuePeriod, std::uint64_t bytes) {
                     const auto kept = query.coalesce({
                         query.cast(
                             query.nullIf(tcpTrafficText(key), query.value(std::string_view{})),
@@ -2475,21 +2482,27 @@ class EdgeProjectionService {
                     return query.cast(
                         query.caseWhen(
                             {{sameSample, kept},
-                             {continueMonth, added}},
+                             {continuePeriod, added}},
                             integer(bytes)),
                         ruvia::DbDataType::kText);
                 };
                 const auto monthValue = query.caseWhen(
                     {{sameSample, query.coalesce({tcpTrafficText("month"), currentMonth})}},
                     currentMonth);
+                const auto dayValue = query.caseWhen(
+                    {{sameSample, query.coalesce({tcpTrafficText("day"), currentDay})}},
+                    currentDay);
                 return query.call("jsonb_build_object", {
                     config::detail::jsonKey(query, "uploadBytes"), text(std::to_string(sample.upload_bytes())),
                     config::detail::jsonKey(query, "downloadBytes"), text(std::to_string(sample.download_bytes())),
                     config::detail::jsonKey(query, "intervalMs"), text(std::to_string(sample.interval_ms())),
                     config::detail::jsonKey(query, "sampleId"), text(std::to_string(sample.sample_id())),
                     config::detail::jsonKey(query, "month"), monthValue,
-                    config::detail::jsonKey(query, "monthlyUploadBytes"), monthlyTotal("monthlyUploadBytes", sample.upload_bytes()),
-                    config::detail::jsonKey(query, "monthlyDownloadBytes"), monthlyTotal("monthlyDownloadBytes", sample.download_bytes())});
+                    config::detail::jsonKey(query, "monthlyUploadBytes"), periodTotal("monthlyUploadBytes", continueMonth, sample.upload_bytes()),
+                    config::detail::jsonKey(query, "monthlyDownloadBytes"), periodTotal("monthlyDownloadBytes", continueMonth, sample.download_bytes()),
+                    config::detail::jsonKey(query, "day"), dayValue,
+                    config::detail::jsonKey(query, "dailyUploadBytes"), periodTotal("dailyUploadBytes", continueDay, sample.upload_bytes()),
+                    config::detail::jsonKey(query, "dailyDownloadBytes"), periodTotal("dailyDownloadBytes", continueDay, sample.download_bytes())});
             }()
             : config::detail::jsonGet(
                   query,
@@ -2517,7 +2530,14 @@ class EdgeProjectionService {
                     query.nullIf(vpnTrafficText("month"), query.value(std::string_view{})));
                 const auto continueMonth = query.binary(
                     sameMonth, ruvia::DbBinaryOperator::kOr, monthMissing);
-                const auto monthlyTotal = [&](std::string_view key, std::uint64_t bytes) {
+                const auto sameDay = query.binary(
+                    vpnTrafficText("day"), ruvia::DbBinaryOperator::kEqual, currentDay);
+                const auto dayMissing = query.unary(
+                    ruvia::DbUnaryOperator::kIsNull,
+                    query.nullIf(vpnTrafficText("day"), query.value(std::string_view{})));
+                const auto continueDay = query.binary(
+                    sameDay, ruvia::DbBinaryOperator::kOr, dayMissing);
+                const auto periodTotal = [&](std::string_view key, const auto& continuePeriod, std::uint64_t bytes) {
                     const auto kept = query.coalesce({
                         query.cast(
                             query.nullIf(vpnTrafficText(key), query.value(std::string_view{})),
@@ -2527,21 +2547,27 @@ class EdgeProjectionService {
                     return query.cast(
                         query.caseWhen(
                             {{sameSample, kept},
-                             {continueMonth, added}},
+                             {continuePeriod, added}},
                             integer(bytes)),
                         ruvia::DbDataType::kText);
                 };
                 const auto monthValue = query.caseWhen(
                     {{sameSample, query.coalesce({vpnTrafficText("month"), currentMonth})}},
                     currentMonth);
+                const auto dayValue = query.caseWhen(
+                    {{sameSample, query.coalesce({vpnTrafficText("day"), currentDay})}},
+                    currentDay);
                 return query.call("jsonb_build_object", {
                     config::detail::jsonKey(query, "uploadBytes"), text(std::to_string(sample.upload_bytes())),
                     config::detail::jsonKey(query, "downloadBytes"), text(std::to_string(sample.download_bytes())),
                     config::detail::jsonKey(query, "intervalMs"), text(std::to_string(sample.interval_ms())),
                     config::detail::jsonKey(query, "sampleId"), text(std::to_string(sample.sample_id())),
                     config::detail::jsonKey(query, "month"), monthValue,
-                    config::detail::jsonKey(query, "monthlyUploadBytes"), monthlyTotal("monthlyUploadBytes", sample.upload_bytes()),
-                    config::detail::jsonKey(query, "monthlyDownloadBytes"), monthlyTotal("monthlyDownloadBytes", sample.download_bytes())});
+                    config::detail::jsonKey(query, "monthlyUploadBytes"), periodTotal("monthlyUploadBytes", continueMonth, sample.upload_bytes()),
+                    config::detail::jsonKey(query, "monthlyDownloadBytes"), periodTotal("monthlyDownloadBytes", continueMonth, sample.download_bytes()),
+                    config::detail::jsonKey(query, "day"), dayValue,
+                    config::detail::jsonKey(query, "dailyUploadBytes"), periodTotal("dailyUploadBytes", continueDay, sample.upload_bytes()),
+                    config::detail::jsonKey(query, "dailyDownloadBytes"), periodTotal("dailyDownloadBytes", continueDay, sample.download_bytes())});
             }()
             : config::detail::jsonGet(
                   query,

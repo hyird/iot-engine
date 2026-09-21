@@ -74,24 +74,23 @@ struct StateRecord final {
         if (!value) {
             throw std::runtime_error("invalid derived state");
         }
-        if (const auto latest = utils::jsonField(*value, "latest")) {
-            utils::visitJsonFields(*latest, [&](auto id, auto raw) {
-                state.latest[std::string(id)] = sample(*ruvia::JsonValue::parse(raw), 0);
+        if (const auto latest = value->get<ruvia::JsonValue>("latest")) {
+            (void)latest->forEachField([&](std::string_view id, const ruvia::JsonValue& raw) {
+                state.latest[std::string(id)] = sample(raw, 0);
                 return true;
             });
         }
-        if (const auto windows = utils::jsonField(*value, "windows")) {
-            utils::visitJsonFields(*windows, [&](auto id, auto raw) {
-                const auto item = ruvia::JsonValue::parse(raw);
+        if (const auto windows = value->get<ruvia::JsonValue>("windows")) {
+            (void)windows->forEachField([&](std::string_view id, const ruvia::JsonValue& item) {
                 auto& window = state.windows[std::string(id)];
-                if (const auto unit = item->template get<ruvia::String>("unit")) {
+                if (const auto unit = item.get<ruvia::String>("unit")) {
                     window.unit = unit->view();
                 }
-                if (const auto overflow = item->template get<ruvia::Int64>("overflowUntil")) {
+                if (const auto overflow = item.get<ruvia::Int64>("overflowUntil")) {
                     window.overflowUntil = overflow->value;
                 }
-                if (const auto samples = utils::jsonField(*item, "samples")) {
-                    utils::visitJsonArray(*samples, [&](const auto& point) {
+                if (const auto samples = item.get<ruvia::JsonValue>("samples")) {
+                    (void)samples->forEachElement([&](const ruvia::JsonValue& point) {
                         const auto parsed = sample(point, 0);
                         if (parsed.value) {
                             window.samples.emplace_back(parsed.at, *parsed.value);

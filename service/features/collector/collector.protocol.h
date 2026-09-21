@@ -56,7 +56,9 @@ class AcquisitionCycle final {
                                      response.parsed.rawPacketIds.end());
         const auto readFields = [](std::string_view json, auto visit) {
             const auto object = ruvia::JsonValue::parse(json);
-            if (!object || !service::utils::visitJsonFields(*object, visit))
+            if (!object || !object->forEachField([&](std::string_view name, const ruvia::JsonValue& value) {
+                return visit(name, value.view());
+            }))
                 throw std::runtime_error("invalid acquisition values");
         };
         readFields(response.parsed.valuesJson, [&](std::string_view name, std::string_view value) {

@@ -34,7 +34,7 @@ struct OpenRtpServerResult {
     PlayUrls playUrls;
 };
 
-RUVIA_RESPONSE_MODEL(WebRtcResponseModel,
+RUVIA_MODEL(WebRtcResponseModel,
     RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(type, ruvia::String),
     RUVIA_OPTIONAL_FIELD(sdp, ruvia::String),

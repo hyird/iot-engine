@@ -5,7 +5,7 @@
 
 namespace service::command {
 
-RUVIA_REQUEST_MODEL(PrepareCommandBody,
+RUVIA_MODEL(PrepareCommandBody,
     RUVIA_REQUIRED_FIELD(deviceId, ruvia::String),
     RUVIA_REQUIRED_FIELD(elements, ruvia::Array<ruvia::Array<ruvia::String>>));
 

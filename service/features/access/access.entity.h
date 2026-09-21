@@ -224,8 +224,8 @@ struct LatestValuesRecord final {
                     hasConfigured = true;
                     const auto parsed = ruvia::JsonValue::parse(raw);
                     if (parsed && parsed->isObject()) {
-                        (void)service::utils::visitJsonFields(*parsed,
-                            [&](std::string_view name, std::string_view) {
+                        (void)parsed->forEachField(
+                            [&](std::string_view name, const ruvia::JsonValue&) {
                                 if (!name.empty()) {
                                     configured.emplace(name);
                                 }
@@ -266,7 +266,7 @@ struct LatestValuesRecord final {
                 if (const auto value = parsed->get<ruvia::Int64>("observedAt")) {
                     point.observedAt = static_cast<std::int64_t>(*value);
                 }
-                if (const auto value = service::utils::jsonField(*parsed, "value")) {
+                if (const auto value = parsed->get<ruvia::JsonValue>("value")) {
                     point.value = telemetry::latest::canonicalPointJson(
                         value->view(),
                         point.dataType

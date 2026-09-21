@@ -6,9 +6,9 @@
 
 namespace service::system {
 
-RUVIA_REQUEST_MODEL(OutboxEventIdParams, RUVIA_REQUIRED_FIELD(id, ruvia::String, RUVIA_CUSTOM("事件 ID 必须是 UUID", service::common::isUuidField)));
+RUVIA_MODEL(OutboxEventIdParams, RUVIA_REQUIRED_FIELD(id, ruvia::String, RUVIA_CUSTOM("事件 ID 必须是 UUID", service::common::isUuidField)));
 
-RUVIA_RESPONSE_MODEL(
+RUVIA_MODEL(
     OutboxDeadLetterDto,
     RUVIA_OPTIONAL_FIELD(id, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("event_type", eventType, ruvia::String),
@@ -22,7 +22,7 @@ RUVIA_RESPONSE_MODEL(
     RUVIA_OPTIONAL_FIELD_NAME("dead_lettered_at", deadLetteredAt, ruvia::String)
 );
 
-RUVIA_RESPONSE_MODEL(
+RUVIA_MODEL(
     OutboxDeadLetterListResponse,
     RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(message, ruvia::String),

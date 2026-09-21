@@ -16,7 +16,7 @@
 
 namespace service::alert {
 
-RUVIA_REQUEST_MODEL(AlertCondition,
+RUVIA_MODEL(AlertCondition,
     RUVIA_REQUIRED_FIELD(type, ruvia::String),
     RUVIA_OPTIONAL_FIELD(elementKey, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("operator", comparison, ruvia::String),
@@ -68,7 +68,7 @@ inline std::optional<std::int64_t> integerValue(const ruvia::JsonValue& object, 
 inline void validateConditions(std::string_view raw) {
     const auto parsed = ruvia::JsonValue::parse(raw);
     std::size_t count = 0;
-    const bool valid = parsed && service::utils::visitJsonArray(*parsed, [&](const ruvia::JsonValue& value) {
+    const bool valid = parsed && parsed->forEachElement([&](const ruvia::JsonValue& value) {
         const auto condition = ruvia::fromJson<AlertCondition>(value.view());
         if (!condition) service::common::fail(17002, "告警条件字段类型无效", 400);
         ++count;
@@ -116,13 +116,13 @@ inline std::vector<std::string> uniqueAlertIds(const ruvia::Array<ruvia::String>
 }
 inline bool isAlertOptionalUuid(const ruvia::String& value) { return value.view().empty() || service::common::isUuidField(value); }
 
-RUVIA_REQUEST_MODEL(ApplyTemplateInput,
+RUVIA_MODEL(ApplyTemplateInput,
     RUVIA_REQUIRED_FIELD_NAME("template_id", templateId, ruvia::String, RUVIA_CUSTOM("请选择告警模板", service::common::isUuidField)),
     RUVIA_REQUIRED_FIELD_NAME("device_ids", deviceIds, ruvia::Array<ruvia::String>, RUVIA_CUSTOM("请选择有效的目标设备", isAlertUuidList)));
-RUVIA_REQUEST_MODEL(AlertBatchBody,
+RUVIA_MODEL(AlertBatchBody,
     RUVIA_REQUIRED_FIELD(ids, ruvia::Array<ruvia::String>, RUVIA_CUSTOM("请选择有效的操作对象", isAlertUuidList)));
 // 条件和扩展协议列表保留原文；条件的跨字段业务约束在 Service 中校验。
-RUVIA_REQUEST_MODEL(RuleInput,
+RUVIA_MODEL(RuleInput,
     RUVIA_REQUIRED_FIELD(name, ruvia::String, RUVIA_CUSTOM("规则名称无效", isAlertName)),
     RUVIA_REQUIRED_FIELD_NAME("device_id", deviceId, ruvia::String, RUVIA_CUSTOM("请选择关联设备", service::common::isUuidField)),
     RUVIA_OPTIONAL_FIELD(severity, ruvia::String, RUVIA_DEFAULT("warning"), RUVIA_ONE_OF("severity 无效", "critical", "warning", "info")),
@@ -133,7 +133,7 @@ RUVIA_REQUEST_MODEL(RuleInput,
     RUVIA_OPTIONAL_FIELD_NAME("recovery_wait_seconds", recoveryWaitSeconds, ruvia::Int64, RUVIA_DEFAULT(60), RUVIA_MIN(0, "恢复等待不能为负"), RUVIA_MAX(86400, "恢复等待过长")),
     RUVIA_OPTIONAL_FIELD(status, ruvia::String, RUVIA_DEFAULT("enabled"), RUVIA_ONE_OF("status 无效", "enabled", "disabled")),
     RUVIA_OPTIONAL_FIELD(remark, ruvia::String, RUVIA_DEFAULT(""), RUVIA_MAX(500, "备注过长")));
-RUVIA_REQUEST_MODEL(TemplateInput,
+RUVIA_MODEL(TemplateInput,
     RUVIA_REQUIRED_FIELD(name, ruvia::String, RUVIA_CUSTOM("模板名称无效", isAlertName)),
     RUVIA_OPTIONAL_FIELD(category, ruvia::String, RUVIA_DEFAULT(""), RUVIA_MAX(64, "分类过长")),
     RUVIA_OPTIONAL_FIELD(description, ruvia::String, RUVIA_DEFAULT(""), RUVIA_MAX(500, "描述过长")),
@@ -146,8 +146,8 @@ RUVIA_REQUEST_MODEL(TemplateInput,
     RUVIA_OPTIONAL_FIELD_NAME("applicable_protocols", applicableProtocols, ruvia::JsonValue),
     RUVIA_OPTIONAL_FIELD_NAME("protocol_config_id", protocolConfigId, ruvia::String, RUVIA_DEFAULT(""), RUVIA_CUSTOM("协议配置无效", isAlertOptionalUuid)));
 
-RUVIA_REQUEST_MODEL(AlertIdParams, RUVIA_REQUIRED_FIELD(id, ruvia::String, RUVIA_CUSTOM("id 必须是 UUID", service::common::isUuidField)));
-RUVIA_REQUEST_MODEL(AlertListQuery, RUVIA_OPTIONAL_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1), RUVIA_MIN(1, "page 必须大于 0")), RUVIA_OPTIONAL_FIELD(pageSize, ruvia::Int64, RUVIA_DEFAULT(20), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")), RUVIA_OPTIONAL_FIELD(keyword, ruvia::String), RUVIA_OPTIONAL_FIELD(deviceId, ruvia::String), RUVIA_OPTIONAL_FIELD(ruleId, ruvia::String), RUVIA_OPTIONAL_FIELD(status, ruvia::String), RUVIA_OPTIONAL_FIELD(severity, ruvia::String), RUVIA_OPTIONAL_FIELD(category, ruvia::String));
-RUVIA_REQUEST_MODEL(AlertGroupedQuery, RUVIA_OPTIONAL_FIELD(days, ruvia::Int64, RUVIA_DEFAULT(7), RUVIA_MIN(1, "days 必须在 1 - 365 之间"), RUVIA_MAX(365, "days 必须在 1 - 365 之间")));
+RUVIA_MODEL(AlertIdParams, RUVIA_REQUIRED_FIELD(id, ruvia::String, RUVIA_CUSTOM("id 必须是 UUID", service::common::isUuidField)));
+RUVIA_MODEL(AlertListQuery, RUVIA_OPTIONAL_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1), RUVIA_MIN(1, "page 必须大于 0")), RUVIA_OPTIONAL_FIELD(pageSize, ruvia::Int64, RUVIA_DEFAULT(20), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")), RUVIA_OPTIONAL_FIELD(keyword, ruvia::String), RUVIA_OPTIONAL_FIELD(deviceId, ruvia::String), RUVIA_OPTIONAL_FIELD(ruleId, ruvia::String), RUVIA_OPTIONAL_FIELD(status, ruvia::String), RUVIA_OPTIONAL_FIELD(severity, ruvia::String), RUVIA_OPTIONAL_FIELD(category, ruvia::String));
+RUVIA_MODEL(AlertGroupedQuery, RUVIA_OPTIONAL_FIELD(days, ruvia::Int64, RUVIA_DEFAULT(7), RUVIA_MIN(1, "days 必须在 1 - 365 之间"), RUVIA_MAX(365, "days 必须在 1 - 365 之间")));
 
 } // namespace service::alert

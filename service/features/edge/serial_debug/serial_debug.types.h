@@ -2,7 +2,7 @@
 #include <ruvia/web/Model.h>
 
 namespace service::edge::serial_debug {
-RUVIA_REQUEST_MODEL(BrowserRequest,
+RUVIA_MODEL(BrowserRequest,
     RUVIA_OPTIONAL_FIELD(action, ruvia::String),
     RUVIA_OPTIONAL_FIELD(requestId, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(baudRate, ruvia::Int64),

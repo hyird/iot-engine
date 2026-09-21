@@ -31,7 +31,7 @@ class DerivedService final {
         if (!root) {
             throw std::runtime_error("invalid sample JSON");
         }
-        const auto values = utils::jsonField(*root, "values");
+        const auto values = root->get<ruvia::JsonValue>("values");
         if (!values) {
             throw std::runtime_error("sample has no values");
         }
@@ -42,9 +42,9 @@ class DerivedService final {
             }
         }
         if (!expiration) {
-            utils::visitJsonFields(*values, [&](auto id, auto wire) {
+            (void)values->forEachField([&](std::string_view id, const ruvia::JsonValue& wire) {
                 if (inputIds.contains(std::string(id))) {
-                    incoming[std::string(id)] = StateRecord::sample(*ruvia::JsonValue::parse(wire), message.observedAtMs);
+                    incoming[std::string(id)] = StateRecord::sample(wire, message.observedAtMs);
                 }
                 return true;
             });
@@ -60,8 +60,8 @@ class DerivedService final {
             const auto after = StateRecord::encode(state);
             std::map<std::string, std::string> fields;
             if (!expiration) {
-                utils::visitJsonFields(*values, [&](auto id, auto raw) {
-                    fields[std::string(id)] = raw;
+                (void)values->forEachField([&](std::string_view id, const ruvia::JsonValue& raw) {
+                    fields[std::string(id)] = std::string(raw.view());
                     return true;
                 });
             }
@@ -72,9 +72,9 @@ class DerivedService final {
                 }
             }
             std::string json = "{";
-            utils::visitJsonFields(*root, [&](auto name, auto raw) {
+            (void)root->forEachField([&](std::string_view name, const ruvia::JsonValue& raw) {
                 if (name != "values") {
-                    json += utils::jsonQuoted(name) + ':' + std::string(raw) + ',';
+                    json += utils::jsonQuoted(name) + ':' + std::string(raw.view()) + ',';
                 }
                 return true;
             });

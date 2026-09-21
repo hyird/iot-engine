@@ -156,7 +156,7 @@ inline bool completeOwnerToken(std::string_view token) {
 // The northbound module and the GB28181 feature communicate with a small,
 // deliberately boring JSON contract.  These models are feature-owned: the
 // module keeps its HTTP DTOs independent and only parses the wire shape.
-RUVIA_REQUEST_MODEL(
+RUVIA_MODEL(
     ControlRequest,
     RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("channel_id", channelId, ruvia::String),
@@ -173,7 +173,7 @@ RUVIA_REQUEST_MODEL(
     RUVIA_OPTIONAL_FIELD(zoom, ruvia::Double)
 );
 
-RUVIA_RESPONSE_MODEL(
+RUVIA_MODEL(
     MediaPortsJson,
     RUVIA_OPTIONAL_FIELD(http, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(https, ruvia::Int64),
@@ -185,7 +185,7 @@ RUVIA_RESPONSE_MODEL(
     RUVIA_OPTIONAL_FIELD(srt, ruvia::Int64)
 );
 
-RUVIA_RESPONSE_MODEL(
+RUVIA_MODEL(
     MediaCapabilitiesJson,
     RUVIA_OPTIONAL_FIELD(faac, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(ffmpeg, ruvia::Bool),
@@ -201,7 +201,7 @@ RUVIA_RESPONSE_MODEL(
     RUVIA_OPTIONAL_FIELD(recording, ruvia::Bool)
 );
 
-RUVIA_RESPONSE_MODEL(
+RUVIA_MODEL(
     HealthJson,
     RUVIA_OPTIONAL_FIELD(status, ruvia::String),
     RUVIA_OPTIONAL_FIELD(service, ruvia::String),
@@ -212,7 +212,7 @@ RUVIA_RESPONSE_MODEL(
     RUVIA_OPTIONAL_FIELD_NAME("media_capabilities", mediaCapabilities, MediaCapabilitiesJson)
 );
 
-RUVIA_RESPONSE_MODEL(
+RUVIA_MODEL(
     SipConfigJson,
     RUVIA_OPTIONAL_FIELD(domain, ruvia::String),
     RUVIA_OPTIONAL_FIELD(id, ruvia::String),
@@ -222,7 +222,7 @@ RUVIA_RESPONSE_MODEL(
     RUVIA_OPTIONAL_FIELD(transport, ruvia::String)
 );
 
-RUVIA_RESPONSE_MODEL(
+RUVIA_MODEL(
     ChannelJson,
     RUVIA_OPTIONAL_FIELD(id, ruvia::String),
     RUVIA_OPTIONAL_FIELD(name, ruvia::String),
@@ -234,7 +234,7 @@ RUVIA_RESPONSE_MODEL(
     RUVIA_OPTIONAL_FIELD_NAME("ptz_capable", ptzCapable, ruvia::Bool)
 );
 
-RUVIA_RESPONSE_MODEL(
+RUVIA_MODEL(
     RecordJson,
     RUVIA_OPTIONAL_FIELD_NAME("device_id", deviceId, ruvia::String),
     RUVIA_OPTIONAL_FIELD(name, ruvia::String),
@@ -246,7 +246,7 @@ RUVIA_RESPONSE_MODEL(
     RUVIA_OPTIONAL_FIELD_NAME("recorder_id", recorderId, ruvia::String)
 );
 
-RUVIA_RESPONSE_MODEL(
+RUVIA_MODEL(
     DeviceJson,
     RUVIA_OPTIONAL_FIELD(id, ruvia::String),
     RUVIA_OPTIONAL_FIELD(name, ruvia::String),
@@ -264,9 +264,9 @@ RUVIA_RESPONSE_MODEL(
     RUVIA_OPTIONAL_FIELD(records, ruvia::BoxedArray<RecordJson>)
 );
 
-RUVIA_RESPONSE_MODEL(DeviceListJson, RUVIA_OPTIONAL_FIELD(items, ruvia::BoxedArray<DeviceJson>));
+RUVIA_MODEL(DeviceListJson, RUVIA_OPTIONAL_FIELD(items, ruvia::BoxedArray<DeviceJson>));
 
-RUVIA_RESPONSE_MODEL(
+RUVIA_MODEL(
     StreamJson,
     RUVIA_OPTIONAL_FIELD(id, ruvia::String),
     RUVIA_OPTIONAL_FIELD(app, ruvia::String),
@@ -276,9 +276,9 @@ RUVIA_RESPONSE_MODEL(
     RUVIA_OPTIONAL_FIELD_NAME("reader_count", readerCount, ruvia::Int64)
 );
 
-RUVIA_RESPONSE_MODEL(StreamListJson, RUVIA_OPTIONAL_FIELD(items, ruvia::BoxedArray<StreamJson>));
+RUVIA_MODEL(StreamListJson, RUVIA_OPTIONAL_FIELD(items, ruvia::BoxedArray<StreamJson>));
 
-RUVIA_RESPONSE_MODEL(
+RUVIA_MODEL(
     PlayUrlsJson,
     RUVIA_OPTIONAL_FIELD_NAME("http_flv", httpFlv, ruvia::String),
     RUVIA_OPTIONAL_FIELD_NAME("ws_flv", wsFlv, ruvia::String),
@@ -289,7 +289,7 @@ RUVIA_RESPONSE_MODEL(
     RUVIA_OPTIONAL_FIELD(rtmp, ruvia::String)
 );
 
-RUVIA_RESPONSE_MODEL(
+RUVIA_MODEL(
     PreviewStartJson,
     RUVIA_OPTIONAL_FIELD(sent, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::String),
@@ -302,7 +302,7 @@ RUVIA_RESPONSE_MODEL(
     RUVIA_OPTIONAL_FIELD_NAME("play_urls", playUrls, PlayUrlsJson)
 );
 
-RUVIA_RESPONSE_MODEL(
+RUVIA_MODEL(
     PreviewStopJson,
     RUVIA_OPTIONAL_FIELD(stopped, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD_NAME("session_id", sessionId, ruvia::String),
@@ -311,7 +311,7 @@ RUVIA_RESPONSE_MODEL(
     RUVIA_OPTIONAL_FIELD_NAME("rtp_server_closed", rtpServerClosed, ruvia::Bool)
 );
 
-RUVIA_RESPONSE_MODEL(
+RUVIA_MODEL(
     ActionJson,
     RUVIA_OPTIONAL_FIELD(registered, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(sent, ruvia::Bool),

@@ -10,7 +10,7 @@
 #include "service/modules/link/link.types.h"
 
 namespace {
-RUVIA_REQUEST_MODEL(PresenceBody,
+RUVIA_MODEL(PresenceBody,
     RUVIA_REQUIRED_FIELD(requiredText, ruvia::String, RUVIA_NULLABLE),
     RUVIA_OPTIONAL_FIELD(enabled, ruvia::Bool, RUVIA_DEFAULT(true)),
     RUVIA_OPTIONAL_FIELD(nullableDefault, ruvia::Int64, RUVIA_NULLABLE, RUVIA_DEFAULT(7)));

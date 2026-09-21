@@ -12,7 +12,7 @@ void require(bool condition, const char* reason) {
     }
 }
 
-RUVIA_REQUEST_MODEL(EchoBody, RUVIA_REQUIRED_FIELD(value, ruvia::String, RUVIA_MIN(2, "short")));
+RUVIA_MODEL(EchoBody, RUVIA_REQUIRED_FIELD(value, ruvia::String, RUVIA_MIN(2, "short")));
 
 class EventProbe final : public ruvia::Controller<EventProbe> {
   public:
@@ -91,7 +91,7 @@ int main() {
             require(rejected, "duplicate or unknown envelope field accepted");
         }
         const auto duplicates = ruvia::JsonValue::parse(R"({"x":1,"x":{"nested":["comma,brace}",2]}})");
-        require(duplicates && service::utils::jsonField(*duplicates, "x")->view() == R"({"nested":["comma,brace}",2]})", "last duplicate field semantics changed");
+        require(duplicates && duplicates->get<ruvia::JsonValue>("x")->view() == R"({"nested":["comma,brace}",2]})", "last duplicate field semantics changed");
         for (const auto bad : { "{}", "[]", "{\"id\":\"1\",\"event\":\"echo.read\",\"data\":{}}" }) {
             bool rejected = false;
             try {

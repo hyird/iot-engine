@@ -46,46 +46,46 @@ inline bool validVpnNodeSelection(const ruvia::Array<ruvia::String>& values) {
     return true;
 }
 
-RUVIA_REQUEST_MODEL(VpnIdParams, RUVIA_REQUIRED_FIELD(id, ruvia::String, RUVIA_CUSTOM("VPN ID 必须是 UUID", service::common::isUuidField)));
-RUVIA_REQUEST_MODEL(VpnListQuery, RUVIA_OPTIONAL_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1), RUVIA_MIN(1, "page 必须大于 0")), RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64, RUVIA_DEFAULT(20), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")), RUVIA_OPTIONAL_FIELD(keyword, ruvia::String), RUVIA_OPTIONAL_FIELD(status, ruvia::String, RUVIA_ONE_OF("VPN 状态无效", "enabled", "disabled")));
-RUVIA_REQUEST_MODEL(VpnFilterQuery, RUVIA_OPTIONAL_FIELD(networkId, ruvia::String, RUVIA_CUSTOM("networkId 必须是 UUID", service::common::isUuidField)), RUVIA_OPTIONAL_FIELD(edgeNodeId, ruvia::String, RUVIA_CUSTOM("edgeNodeId 必须是 UUID", service::common::isUuidField)));
+RUVIA_MODEL(VpnIdParams, RUVIA_REQUIRED_FIELD(id, ruvia::String, RUVIA_CUSTOM("VPN ID 必须是 UUID", service::common::isUuidField)));
+RUVIA_MODEL(VpnListQuery, RUVIA_OPTIONAL_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1), RUVIA_MIN(1, "page 必须大于 0")), RUVIA_OPTIONAL_FIELD_NAME("pageSize", pageSize, ruvia::Int64, RUVIA_DEFAULT(20), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")), RUVIA_OPTIONAL_FIELD(keyword, ruvia::String), RUVIA_OPTIONAL_FIELD(status, ruvia::String, RUVIA_ONE_OF("VPN 状态无效", "enabled", "disabled")));
+RUVIA_MODEL(VpnFilterQuery, RUVIA_OPTIONAL_FIELD(networkId, ruvia::String, RUVIA_CUSTOM("networkId 必须是 UUID", service::common::isUuidField)), RUVIA_OPTIONAL_FIELD(edgeNodeId, ruvia::String, RUVIA_CUSTOM("edgeNodeId 必须是 UUID", service::common::isUuidField)));
 
-RUVIA_REQUEST_MODEL(VpnNetworkBody,
+RUVIA_MODEL(VpnNetworkBody,
     RUVIA_OPTIONAL_FIELD(name, ruvia::String, RUVIA_MAX(100, "name 长度超出限制")),
     RUVIA_OPTIONAL_FIELD(overlayCidr, ruvia::String, RUVIA_MAX(32, "overlayCidr 长度超出限制")),
     RUVIA_OPTIONAL_FIELD(hubEndpoint, ruvia::String, RUVIA_MAX(255, "hubEndpoint 长度超出限制")),
     RUVIA_OPTIONAL_FIELD(hubListenPort, ruvia::Int64));
-RUVIA_REQUEST_MODEL(VpnRouteBody,
+RUVIA_MODEL(VpnRouteBody,
     RUVIA_REQUIRED_FIELD(networkId, ruvia::String, RUVIA_CUSTOM("networkId 必须是 UUID", service::common::isUuidField)),
     RUVIA_REQUIRED_FIELD(edgePeerId, ruvia::String, RUVIA_CUSTOM("edgePeerId 必须是 UUID", service::common::isUuidField)),
     RUVIA_REQUIRED_FIELD(targetCidr, ruvia::String, RUVIA_MIN(1, "targetCidr 不能为空"), RUVIA_MAX(18, "targetCidr 长度超出限制")),
     RUVIA_OPTIONAL_FIELD(virtualCidr, ruvia::String, RUVIA_MAX(18, "virtualCidr 长度超出限制")));
-RUVIA_REQUEST_MODEL(VpnRoutePatchBody,
+RUVIA_MODEL(VpnRoutePatchBody,
     RUVIA_OPTIONAL_FIELD(targetCidr, ruvia::String, RUVIA_MAX(18, "targetCidr 长度超出限制")),
     RUVIA_OPTIONAL_FIELD(lanInterface, ruvia::String, RUVIA_MAX(64, "lanInterface 长度超出限制")),
     RUVIA_OPTIONAL_FIELD(mode, ruvia::String, RUVIA_MAX(32, "mode 长度超出限制")),
     RUVIA_OPTIONAL_FIELD(enabled, ruvia::Bool),
     RUVIA_OPTIONAL_FIELD(virtualCidr, ruvia::String, RUVIA_MAX(18, "virtualCidr 长度超出限制")));
-RUVIA_REQUEST_MODEL(VpnPeerBody,
+RUVIA_MODEL(VpnPeerBody,
     RUVIA_OPTIONAL_FIELD(networkId, ruvia::String, RUVIA_CUSTOM("networkId 必须是 UUID", service::common::isUuidField)),
     RUVIA_REQUIRED_FIELD(peerType, ruvia::String, RUVIA_MIN(1, "peerType 不能为空"), RUVIA_MAX(16, "peerType 长度超出限制")),
     RUVIA_REQUIRED_FIELD(name, ruvia::String, RUVIA_MIN(1, "name 不能为空"), RUVIA_MAX(100, "name 长度超出限制")),
     RUVIA_OPTIONAL_FIELD(publicKey, ruvia::String, RUVIA_MAX(64, "publicKey 长度超出限制")),
     RUVIA_OPTIONAL_FIELD(edgeNodeId, ruvia::String, RUVIA_CUSTOM("edgeNodeId 必须是 UUID", service::common::isUuidField)),
     RUVIA_OPTIONAL_FIELD(allowedRoutes, ruvia::Array<ruvia::String>, RUVIA_MAX(10000, "allowedRoutes 数量超出限制")));
-RUVIA_REQUEST_MODEL(VpnPeerKeyBody, RUVIA_REQUIRED_FIELD(publicKey, ruvia::String, RUVIA_MIN(1, "publicKey 不能为空"), RUVIA_MAX(64, "publicKey 长度超出限制")));
-RUVIA_REQUEST_MODEL(VpnEnrollmentBody,
+RUVIA_MODEL(VpnPeerKeyBody, RUVIA_REQUIRED_FIELD(publicKey, ruvia::String, RUVIA_MIN(1, "publicKey 不能为空"), RUVIA_MAX(64, "publicKey 长度超出限制")));
+RUVIA_MODEL(VpnEnrollmentBody,
     RUVIA_OPTIONAL_FIELD(networkId, ruvia::String, RUVIA_CUSTOM("networkId 必须是 UUID", service::common::isUuidField)),
     RUVIA_OPTIONAL_FIELD(expiresInSec, ruvia::Int64));
-RUVIA_REQUEST_MODEL(VpnClientEnrollmentBody,
+RUVIA_MODEL(VpnClientEnrollmentBody,
     RUVIA_REQUIRED_FIELD(token, ruvia::String, RUVIA_MIN(1, "token 不能为空"), RUVIA_MAX(128, "token 长度超出限制")),
     RUVIA_REQUIRED_FIELD(publicKey, ruvia::String, RUVIA_MIN(1, "publicKey 不能为空"), RUVIA_MAX(64, "publicKey 长度超出限制")),
     RUVIA_OPTIONAL_FIELD(name, ruvia::String, RUVIA_MAX(100, "name 长度超出限制")));
-RUVIA_REQUEST_MODEL(VpnDesktopPeerBody,
+RUVIA_MODEL(VpnDesktopPeerBody,
     RUVIA_REQUIRED_FIELD(name, ruvia::String, RUVIA_MIN(1, "name 不能为空"), RUVIA_MAX(100, "name 长度超出限制")),
     RUVIA_REQUIRED_FIELD(publicKey, ruvia::String, RUVIA_MIN(1, "publicKey 不能为空"), RUVIA_MAX(64, "publicKey 长度超出限制")),
     RUVIA_REQUIRED_FIELD(edgeNodeIds, ruvia::Array<ruvia::String>, RUVIA_MAX(64, "最多选择 64 个节点"), RUVIA_CUSTOM("Edge 节点 ID 必须为不重复的 UUID", validVpnNodeSelection)));
-RUVIA_REQUEST_MODEL(VpnDesktopSelectionBody,
+RUVIA_MODEL(VpnDesktopSelectionBody,
     RUVIA_REQUIRED_FIELD(edgeNodeIds, ruvia::Array<ruvia::String>, RUVIA_MAX(64, "最多选择 64 个节点"), RUVIA_CUSTOM("Edge 节点 ID 必须为不重复的 UUID", validVpnNodeSelection)));
 
 inline std::optional<std::string> optionalVpnText(const std::optional<ruvia::String>& value) {

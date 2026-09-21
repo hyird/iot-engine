@@ -18,7 +18,7 @@
 
 namespace service::common {
 
-RUVIA_RESPONSE_MODEL(OperationResponse,
+RUVIA_MODEL(OperationResponse,
     RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(message, ruvia::String));
 
@@ -31,7 +31,7 @@ inline constexpr std::int64_t kTokenExpiredErrorCode{11005};
 inline constexpr std::int64_t kTokenInvalidErrorCode{11006};
 inline constexpr std::int64_t kPermissionDeniedErrorCode{11007};
 
-RUVIA_RESPONSE_MODEL(ErrorResponse,
+RUVIA_MODEL(ErrorResponse,
     RUVIA_OPTIONAL_FIELD(code, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(message, ruvia::String));
 

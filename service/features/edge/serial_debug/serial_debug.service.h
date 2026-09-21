@@ -130,7 +130,7 @@ class Service final {
         if (operation != "serial-command") {
             service::common::fail(17021, "未知串口操作", 400);
         }
-        const auto command = service::utils::jsonField(*input, "command");
+        const auto command = input->get<ruvia::JsonValue>("command");
         auto request = command ? decodeRequest(command->view(), ticket.path, 1) : std::nullopt;
         if (!request) {
             service::common::fail(17021, "串口指令或参数无效", 400);

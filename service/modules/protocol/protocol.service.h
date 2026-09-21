@@ -52,17 +52,12 @@ class ProtocolConfigurationRules final {
     }
 
     static std::optional<std::string> stringValue(const ruvia::JsonValue& value) {
-        if (!value.isString()) {
-            return std::nullopt;
-        }
-        const auto wire = "{\"value\":" + std::string(value.view()) + "}";
-        const auto object = ruvia::JsonObject::parse(wire);
-        const auto decoded = object ? object->get<ruvia::String>("value") : std::nullopt;
+        const auto decoded = value.get<ruvia::String>();
         return decoded ? std::optional<std::string>(decoded->view()) : std::nullopt;
     }
 
     static std::optional<std::string> stringField(const ruvia::JsonValue& object, std::string_view field) {
-        const auto value = service::utils::jsonField(object, field);
+        const auto value = object.get<ruvia::JsonValue>(field);
         return value ? stringValue(*value) : std::nullopt;
     }
 
@@ -82,7 +77,7 @@ class ProtocolConfigurationRules final {
 
   private:
     static bool hasField(const ruvia::JsonValue& object, std::string_view field) {
-        return static_cast<bool>(service::utils::jsonField(object, field));
+        return static_cast<bool>(object.get<ruvia::JsonValue>(field));
     }
 
     static bool oneOf(std::string_view value, std::initializer_list<std::string_view> values) {
@@ -90,7 +85,7 @@ class ProtocolConfigurationRules final {
     }
 
     static bool enumFieldValid(const ruvia::JsonValue& object, std::string_view field, std::initializer_list<std::string_view> values) {
-        const auto raw = service::utils::jsonField(object, field);
+        const auto raw = object.get<ruvia::JsonValue>(field);
         if (!raw) {
             return true;
         }
@@ -102,7 +97,7 @@ class ProtocolConfigurationRules final {
     }
 
     static bool booleanFieldValid(const ruvia::JsonValue& object, std::string_view field) {
-        const auto raw = service::utils::jsonField(object, field);
+        const auto raw = object.get<ruvia::JsonValue>(field);
         return !raw || raw->isBoolean();
     }
 
@@ -333,14 +328,12 @@ class ProtocolConfigurationRules final {
     }
 
     static std::optional<std::int64_t> integerFieldValue(
-        const ruvia::JsonValue& object,
-        std::string_view field,
+        const std::optional<ruvia::JsonValue>& raw,
         bool allowString,
         std::size_t maximum,
         std::int64_t lower,
         std::int64_t upper
     ) {
-        const auto raw = service::utils::jsonField(object, field);
         if (!raw) {
             return std::nullopt;
         }
@@ -358,15 +351,29 @@ class ProtocolConfigurationRules final {
         return value;
     }
 
-    static bool integerFieldValid(const ruvia::JsonValue& object, std::string_view field, bool allowString, std::size_t maximum, std::int64_t lower, std::int64_t upper, bool required = false) {
-        if (!hasField(object, field)) {
-            return !required;
-        }
-        return integerFieldValue(object, field, allowString, maximum, lower, upper).has_value();
+    static std::optional<std::int64_t> integerFieldValue(
+        const ruvia::JsonValue& object,
+        std::string_view field,
+        bool allowString,
+        std::size_t maximum,
+        std::int64_t lower,
+        std::int64_t upper
+    ) {
+        return integerFieldValue(object.get<ruvia::JsonValue>(field), allowString, maximum, lower, upper);
     }
 
-    static bool signedIntegerFieldValid(const ruvia::JsonValue& object, std::string_view field, bool allowString, std::size_t maximum, std::int64_t lower, std::int64_t upper) {
-        const auto raw = service::utils::jsonField(object, field);
+    static bool integerFieldValid(const std::optional<ruvia::JsonValue>& raw, bool allowString, std::size_t maximum, std::int64_t lower, std::int64_t upper, bool required = false) {
+        if (!raw) {
+            return !required;
+        }
+        return integerFieldValue(raw, allowString, maximum, lower, upper).has_value();
+    }
+
+    static bool integerFieldValid(const ruvia::JsonValue& object, std::string_view field, bool allowString, std::size_t maximum, std::int64_t lower, std::int64_t upper, bool required = false) {
+        return integerFieldValid(object.get<ruvia::JsonValue>(field), allowString, maximum, lower, upper, required);
+    }
+
+    static bool signedIntegerFieldValid(const std::optional<ruvia::JsonValue>& raw, bool allowString, std::size_t maximum, std::int64_t lower, std::int64_t upper) {
         if (!raw) {
             return true;
         }
@@ -381,8 +388,11 @@ class ProtocolConfigurationRules final {
             value <= upper;
     }
 
-    static bool numberFieldValid(const ruvia::JsonValue& object, std::string_view field, bool allowString, std::string_view lower, std::string_view upper) {
-        const auto raw = service::utils::jsonField(object, field);
+    static bool signedIntegerFieldValid(const ruvia::JsonValue& object, std::string_view field, bool allowString, std::size_t maximum, std::int64_t lower, std::int64_t upper) {
+        return signedIntegerFieldValid(object.get<ruvia::JsonValue>(field), allowString, maximum, lower, upper);
+    }
+
+    static bool numberFieldValid(const std::optional<ruvia::JsonValue>& raw, bool allowString, std::string_view lower, std::string_view upper) {
         if (!raw) {
             return true;
         }
@@ -391,6 +401,10 @@ class ProtocolConfigurationRules final {
             return false;
         }
         return compareNumeric(*text, lower) >= 0 && compareNumeric(*text, upper) <= 0;
+    }
+
+    static bool numberFieldValid(const ruvia::JsonValue& object, std::string_view field, bool allowString, std::string_view lower, std::string_view upper) {
+        return numberFieldValid(object.get<ruvia::JsonValue>(field), allowString, lower, upper);
     }
 
     static bool decimalTokenValid(std::string_view value) {
@@ -437,8 +451,7 @@ class ProtocolConfigurationRules final {
         return index == value.size();
     }
 
-    static bool decimalFieldValid(const ruvia::JsonValue& object, std::string_view field) {
-        const auto raw = service::utils::jsonField(object, field);
+    static bool decimalFieldValid(const std::optional<ruvia::JsonValue>& raw) {
         if (!raw) {
             return true;
         }
@@ -450,6 +463,27 @@ class ProtocolConfigurationRules final {
         // not round down to the inclusive 1e9 limit.
         return compareNumeric(*text, "-1000000000") >= 0 &&
             compareNumeric(*text, "1000000000") <= 0;
+    }
+
+    static bool decimalFieldValid(const ruvia::JsonValue& object, std::string_view field) {
+        return decimalFieldValid(object.get<ruvia::JsonValue>(field));
+    }
+
+    template <typename T>
+    static bool modelArray(const std::optional<ruvia::JsonValue>& raw, std::optional<ruvia::Array<T>>& parsed) {
+        if (!raw) {
+            parsed.reset();
+            return true;
+        }
+        if (!raw->isArray()) {
+            return false;
+        }
+        parsed = raw->template get<ruvia::Array<T>>();
+        return parsed.has_value();
+    }
+
+    static bool enumValueValid(const std::optional<ruvia::String>& value, std::initializer_list<std::string_view> values) {
+        return !value || oneOf(value->view(), values);
     }
 
   public:
@@ -476,200 +510,226 @@ class ProtocolConfigurationRules final {
         if (protocol == "SL651") {
             if (!enumFieldValid(*config, "responseMode", { "M1", "M2", "M3", "M4" }) ||
                 (hasField(*config, "funcs") &&
-                 !service::utils::jsonField(*config, "funcs")->isArray()) ||
+                 !config->get<ruvia::JsonValue>("funcs")->isArray()) ||
                 (required && (!hasField(*config, "responseMode") || !hasField(*config, "funcs")))) {
                 service::common::fail(16004, "SL651 配置无效", 400);
             }
-            const auto funcs = service::utils::jsonField(*config, "funcs");
-            if (funcs && !service::utils::visitJsonArray(*funcs, [](const ruvia::JsonValue& function) {
-                    const auto code = stringField(function, "funcCode");
+            std::optional<ruvia::Array<Sl651Func>> funcs;
+            if (!modelArray(config->get<ruvia::JsonValue>("funcs"), funcs)) {
+                service::common::fail(16004, "SL651 配置无效", 400);
+            }
+            const auto validElement = [](const Sl651Element& element) {
+                if (!enumValueValid(element.get<"positionMode">(), { "GUIDE", "OFFSET" })) {
+                    return false;
+                }
+                const auto position = element.get<"positionMode">() ? std::string(element.get<"positionMode">()->view()) : std::string("GUIDE");
+                if (position == "OFFSET") {
+                    const auto offset = element.isPresent<"byteOffset">()
+                        ? integerFieldValue(element.get<"byteOffset">(), false, 7, 0, 8388607)
+                        : std::optional<std::int64_t>{ 0 };
+                    const auto length = integerFieldValue(element.get<"length">(), false, 7, 1, 8388608);
+                    return offset && length && *offset + *length <= 8388608 &&
+                        integerFieldValid(element.get<"digits">(), false, 1, 0, 7, true) &&
+                        enumValueValid(element.get<"encode">(), { "BCD", "HEX", "DICT", "JPEG", "TIME_YYMMDDHHMMSS" }) &&
+                        element.isPresent<"encode">();
+                }
+                if (position != "GUIDE") {
+                    return false;
+                }
+                const auto guide = element.get<"guideHex">() ? std::optional<std::string>(element.get<"guideHex">()->view()) : std::nullopt;
+                const auto encoding = element.get<"encode">() ? std::optional<std::string>(element.get<"encode">()->view()) : std::nullopt;
+                if (!guide || (guide->size() != 4 && guide->size() != 6) ||
+                    !std::all_of(guide->begin(), guide->end(), [](unsigned char ch) {
+                        return std::isxdigit(ch) != 0;
+                    }) ||
+                    !encoding || !oneOf(*encoding, { "BCD", "HEX", "DICT", "JPEG", "TIME_YYMMDDHHMMSS" }) || !integerFieldValid(element.get<"length">(), false, 7, 0, 8388608, true) || !integerFieldValid(element.get<"digits">(), false, 1, 0, 7, true)) {
+                    return false;
+                }
+                const auto lead = std::stoi(guide->substr(0, 2), nullptr, 16);
+                if ((lead == 0xFF) != (guide->size() == 6)) {
+                    return false;
+                }
+                const auto definition = std::stoi(guide->substr(guide->size() - 2), nullptr, 16);
+                const auto length = std::stoi(*scalarText(*element.get<"length">(), false));
+                const auto digits = std::stoi(*scalarText(*element.get<"digits">(), false));
+                if (lead < 0xF0 || lead == 0xFF) {
+                    return length > 0 && length == (definition >> 3) &&
+                        (*encoding != "BCD" || digits == (definition & 7));
+                }
+                if (definition != lead) {
+                    return false;
+                }
+                if (lead == 0xF0) {
+                    return length == 5;
+                }
+                if (lead == 0xF1) {
+                    return length == 6;
+                }
+                return lead == 0xF2 || lead == 0xF3 || length > 0;
+            };
+            if (funcs) {
+                for (const auto& function : *funcs) {
+                    const auto code = function.get<"funcCode">() ? std::optional<std::string>(function.get<"funcCode">()->view()) : std::nullopt;
                     if (!code || code->size() != 2 || !std::all_of(code->begin(), code->end(), [](unsigned char ch) {
                             return std::isxdigit(ch) != 0;
                         }) ||
-                        !enumFieldValid(function, "dir", { "UP", "DOWN" })) {
-                        return false;
+                        !enumValueValid(function.get<"dir">(), { "UP", "DOWN" })) {
+                        service::common::fail(16004, "SL651 引导符、长度或小数位不符合数据定义", 400);
                     }
-                    for (const auto field : { "elements", "responseElements" }) {
-                        const auto elements = service::utils::jsonField(function, field);
-                        if (!elements) {
+                    for (const auto* elements : { &function.get<"elements">(), &function.get<"responseElements">() }) {
+                        if (!*elements) {
                             continue;
                         }
-                        if (!service::utils::visitJsonArray(*elements, [](const ruvia::JsonValue& element) {
-                                if (!enumFieldValid(element, "positionMode", { "GUIDE", "OFFSET" })) {
-                                    return false;
-                                }
-                                const auto position = stringField(element, "positionMode").value_or("GUIDE");
-                                if (position == "OFFSET") {
-                                    const auto offset = hasField(element, "byteOffset")
-                                        ? integerFieldValue(element, "byteOffset", false, 7, 0, 8388607)
-                                        : std::optional<std::int64_t>{ 0 };
-                                    const auto length = integerFieldValue(element, "length", false, 7, 1, 8388608);
-                                    return offset && length && *offset + *length <= 8388608 &&
-                                        integerFieldValid(element, "digits", false, 1, 0, 7, true) &&
-                                        enumFieldValid(element, "encode", { "BCD", "HEX", "DICT", "JPEG", "TIME_YYMMDDHHMMSS" }) &&
-                                        hasField(element, "encode");
-                                }
-                                if (position != "GUIDE") {
-                                    return false;
-                                }
-                                const auto guide = stringField(element, "guideHex");
-                                const auto encoding = stringField(element, "encode");
-                                if (!guide || (guide->size() != 4 && guide->size() != 6) ||
-                                    !std::all_of(guide->begin(), guide->end(), [](unsigned char ch) {
-                                        return std::isxdigit(ch) != 0;
-                                    }) ||
-                                    !encoding || !oneOf(*encoding, { "BCD", "HEX", "DICT", "JPEG", "TIME_YYMMDDHHMMSS" }) || !integerFieldValid(element, "length", false, 7, 0, 8388608, true) || !integerFieldValid(element, "digits", false, 1, 0, 7, true)) {
-                                    return false;
-                                }
-                                const auto lead = std::stoi(guide->substr(0, 2), nullptr, 16);
-                                if ((lead == 0xFF) != (guide->size() == 6)) {
-                                    return false;
-                                }
-                                const auto definition = std::stoi(guide->substr(guide->size() - 2), nullptr, 16);
-                                const auto length = std::stoi(*scalarText(*service::utils::jsonField(element, "length"), false));
-                                const auto digits = std::stoi(*scalarText(*service::utils::jsonField(element, "digits"), false));
-                                if (lead < 0xF0 || lead == 0xFF) {
-                                    return length > 0 && length == (definition >> 3) &&
-                                        (*encoding != "BCD" || digits == (definition & 7));
-                                }
-                                if (definition != lead) {
-                                    return false;
-                                }
-                                if (lead == 0xF0) {
-                                    return length == 5;
-                                }
-                                if (lead == 0xF1) {
-                                    return length == 6;
-                                }
-                                return lead == 0xF2 || lead == 0xF3 || length > 0;
-                            })) {
-                            return false;
+                        for (const auto& element : **elements) {
+                            if (!validElement(element)) {
+                                service::common::fail(16004, "SL651 引导符、长度或小数位不符合数据定义", 400);
+                            }
                         }
                     }
-                    return true;
-                })) {
-                service::common::fail(16004, "SL651 引导符、长度或小数位不符合数据定义", 400);
+                }
             }
             return;
         }
 
         if (protocol == "MC" || protocol == "FINS" || protocol == "DLT645") {
-            const auto connection = service::utils::jsonField(*config, "connection");
-            const auto points = service::utils::jsonField(*config, "points");
-            if (!connection || !connection->isObject() || !points || !points->isArray() ||
+            const auto connectionValue = config->get<ruvia::JsonValue>("connection");
+            const auto pointsValue = config->get<ruvia::JsonValue>("points");
+            const auto connection = connectionValue ? connectionValue->get<IndustrialConnection>() : std::optional<IndustrialConnection>{};
+            std::optional<ruvia::Array<IndustrialPoint>> points;
+            if (!connectionValue || !connectionValue->isObject() || !connection ||
+                !modelArray(pointsValue, points) || !points ||
                 !integerFieldValid(*config, "readInterval", true, 5, 1, 3600) ||
                 !integerFieldValid(*config, "commandFastReadDuration", true, 5, 0, 3600) ||
                 !integerFieldValid(*config, "commandFastReadInterval", true, 5, 1, 3600)) {
                 service::common::fail(16004, "协议连接、点位或采集周期配置无效", 400);
             }
             if (protocol == "MC") {
-                if (!enumFieldValid(*connection, "frame", { "3E", "4E" }) ||
-                    !integerFieldValid(*connection, "network", false, 3, 0, 255) ||
-                    !integerFieldValid(*connection, "station", false, 3, 0, 255) ||
-                    !integerFieldValid(*connection, "moduleIo", false, 5, 0, 65535) ||
-                    !integerFieldValid(*connection, "multidrop", false, 3, 0, 255) ||
-                    !integerFieldValid(*connection, "monitoringTimer", false, 5, 1, 65535)) {
+                if (!enumValueValid(connection->get<"frame">(), { "3E", "4E" }) ||
+                    !integerFieldValid(connection->get<"network">(), false, 3, 0, 255) ||
+                    !integerFieldValid(connection->get<"station">(), false, 3, 0, 255) ||
+                    !integerFieldValid(connection->get<"moduleIo">(), false, 5, 0, 65535) ||
+                    !integerFieldValid(connection->get<"multidrop">(), false, 3, 0, 255) ||
+                    !integerFieldValid(connection->get<"monitoringTimer">(), false, 5, 1, 65535)) {
                     service::common::fail(16004, "MC/SLMP 连接参数无效", 400);
                 }
             } else if (protocol == "FINS") {
-                for (const auto field : { "destinationNetwork", "sourceNetwork", "destinationNode", "sourceNode", "destinationUnit", "sourceUnit" }) {
-                    const std::string_view name(field);
-                    const auto maximum = name.ends_with("Network") ? 127 : name.ends_with("Node") ? 254
-                                                                                                  : 255;
-                    if (!integerFieldValid(*connection, field, false, 3, 0, maximum)) {
+                const std::pair<std::string_view, std::int64_t> routes[] = {
+                    { "destinationNetwork", 127 }, { "sourceNetwork", 127 },
+                    { "destinationNode", 254 }, { "sourceNode", 254 },
+                    { "destinationUnit", 255 }, { "sourceUnit", 255 },
+                };
+                const auto validRoute = [&](std::string_view field, std::int64_t maximum) {
+                    if (field == "destinationNetwork") return integerFieldValid(connection->get<"destinationNetwork">(), false, 3, 0, maximum);
+                    if (field == "sourceNetwork") return integerFieldValid(connection->get<"sourceNetwork">(), false, 3, 0, maximum);
+                    if (field == "destinationNode") return integerFieldValid(connection->get<"destinationNode">(), false, 3, 0, maximum);
+                    if (field == "sourceNode") return integerFieldValid(connection->get<"sourceNode">(), false, 3, 0, maximum);
+                    if (field == "destinationUnit") return integerFieldValid(connection->get<"destinationUnit">(), false, 3, 0, maximum);
+                    return integerFieldValid(connection->get<"sourceUnit">(), false, 3, 0, maximum);
+                };
+                for (const auto& [field, maximum] : routes) {
+                    if (!validRoute(field, maximum)) {
                         service::common::fail(16004, "FINS 路由参数无效", 400);
                     }
                 }
             } else {
-                if (!enumFieldValid(*connection, "version", { "1997", "2007" }) ||
-                    !integerFieldValid(*connection, "wakeupBytes", false, 1, 0, 4)) {
+                if (!enumValueValid(connection->get<"version">(), { "1997", "2007" }) ||
+                    !integerFieldValid(connection->get<"wakeupBytes">(), false, 1, 0, 4)) {
                     service::common::fail(16004, "DL/T645 版本或唤醒字节数无效", 400);
                 }
-                for (const auto field : { "writePassword", "operatorCode" }) {
-                    if (!hasField(*connection, field)) {
+                for (const auto* field : { &connection->get<"writePassword">(), &connection->get<"operatorCode">() }) {
+                    if (!*field) {
                         continue;
                     }
-                    const auto text = stringField(*connection, field);
-                    if (!text || (!text->empty() && (text->size() != 8 || !std::all_of(text->begin(), text->end(), [](unsigned char c) {
+                    const auto text = std::string((*field)->view());
+                    if (!text.empty() && (text.size() != 8 || !std::all_of(text.begin(), text.end(), [](unsigned char c) {
                                                          return std::isxdigit(c) != 0;
-                                                     })))) {
+                                                     }))) {
                         service::common::fail(16004, "DL/T645 写入认证字段必须为空或 8 位十六进制", 400);
                     }
                 }
             }
             std::set<std::string> ids;
-            std::size_t count = 0;
-            if (!service::utils::visitJsonArray(*points, [&](const ruvia::JsonValue& point) {
-                    const auto id = stringField(point, "id"), name = stringField(point, "name"), type = stringField(point, "dataType");
-                    const auto unit = stringField(point, "unit");
-                    if (!point.isObject() || ++count > 256 || !id || !service::common::isUuid(*id) ||
-                        !ids.insert(*id).second || !name || name->empty() || name->size() > 100 || !type ||
-                        (unit && unit->size() > 32) ||
-                        !booleanFieldValid(point, "writable")) {
-                        return false;
-                    }
-                    if (protocol == "DLT645") {
-                        const auto identifier = stringField(point, "identifier");
-                        const auto version = stringField(*connection, "version").value_or("2007");
-                        if (!identifier || identifier->size() != (version == "1997" ? 4 : 8) ||
-                            !std::all_of(identifier->begin(), identifier->end(), [](unsigned char c) {
-                                return std::isxdigit(c) != 0;
-                            }) ||
-                            !oneOf(*type, { "BCD", "BCD_SIGNED", "HEX" }) || !integerFieldValid(point, "length", false, 3, 1, *type == "HEX" ? 200 : 8, true) || !integerFieldValid(point, "digits", false, 1, 0, 8)) {
-                            return false;
-                        }
-                        const auto writable = service::utils::jsonField(point, "writable");
-                        if (writable && writable->view() == "true") {
-                            if (stringField(*connection, "writePassword").value_or("").size() != 8 ||
-                                (version == "2007" && stringField(*connection, "operatorCode").value_or("").size() != 8)) {
-                                return false;
-                            }
-                            const auto length = integerFieldValue(point, "length", false, 3, 1, 200);
-                            if (!length || *length > (version == "2007" ? 38 : 44)) {
-                                return false;
-                            }
-                        }
-                        return true;
-                    }
-                    const auto area = stringField(point, "area");
-                    const auto bits = *type == "BOOL";
-                    if (!area || !oneOf(*type, { "BOOL", "INT16", "UINT16", "INT32", "UINT32", "FLOAT32", "INT64", "UINT64", "DOUBLE" }) ||
-                        !enumFieldValid(point, "byteOrder", { "BIG_ENDIAN", "LITTLE_ENDIAN", "BIG_ENDIAN_BYTE_SWAP", "LITTLE_ENDIAN_BYTE_SWAP" }) ||
-                        !decimalFieldValid(point, "scale") || !signedIntegerFieldValid(point, "decimals", false, 2, -1, 8)) {
-                        return false;
-                    }
-                    const auto address = integerFieldValue(point, "address", false, 8, 0, protocol == "MC" ? 16777215 : 65535);
-                    const auto width = bits ? 1 : (*type == "INT16" || *type == "UINT16") ? 1
-                        : (*type == "INT64" || *type == "UINT64" || *type == "DOUBLE")    ? 4
-                                                                                          : 2;
-                    if (!address) {
-                        return false;
-                    }
-                    if (protocol == "MC") {
-                        const bool bitArea = oneOf(*area, { "M", "X", "Y", "B", "L", "F", "V", "S", "TS", "CS" });
-                        return (bitArea || oneOf(*area, { "D", "W", "R", "ZR", "TN", "CN" })) && (!bits || bitArea) &&
-                            *address + width * (bitArea && !bits ? 16 : 1) - 1 <= 16777215;
-                    }
-                    return oneOf(*area, { "D", "CIO", "W", "H", "A" }) && *address + (bits ? 0 : width - 1) <= 65535 &&
-                        integerFieldValid(point, "bit", false, 2, 0, bits ? 15 : 0);
-                })) {
+            if (points->size() > 256) {
                 service::common::fail(16004, "协议点位配置无效，请检查地址、类型、长度、唯一标识及写入认证", 400);
+            }
+            for (const auto& point : *points) {
+                const auto id = point.get<"id">() ? std::optional<std::string>(point.get<"id">()->view()) : std::nullopt;
+                const auto name = point.get<"name">() ? std::optional<std::string>(point.get<"name">()->view()) : std::nullopt;
+                const auto type = point.get<"dataType">() ? std::optional<std::string>(point.get<"dataType">()->view()) : std::nullopt;
+                const auto unit = point.get<"unit">() ? std::optional<std::string>(point.get<"unit">()->view()) : std::nullopt;
+                if (!id || !service::common::isUuid(*id) || !ids.insert(*id).second || !name || name->empty() || name->size() > 100 || !type ||
+                    (unit && unit->size() > 32) ||
+                    (point.isPresent<"writable">() && !point.get<"writable">())) {
+                    service::common::fail(16004, "协议点位配置无效，请检查地址、类型、长度、唯一标识及写入认证", 400);
+                }
+                if (protocol == "DLT645") {
+                    const auto identifier = point.get<"identifier">() ? std::optional<std::string>(point.get<"identifier">()->view()) : std::nullopt;
+                    const auto version = connection->get<"version">() ? std::string(connection->get<"version">()->view()) : std::string("2007");
+                    if (!identifier || identifier->size() != (version == "1997" ? 4 : 8) ||
+                        !std::all_of(identifier->begin(), identifier->end(), [](unsigned char c) {
+                            return std::isxdigit(c) != 0;
+                        }) ||
+                        !oneOf(*type, { "BCD", "BCD_SIGNED", "HEX" }) || !integerFieldValid(point.get<"length">(), false, 3, 1, *type == "HEX" ? 200 : 8, true) || !integerFieldValid(point.get<"digits">(), false, 1, 0, 8)) {
+                        service::common::fail(16004, "协议点位配置无效，请检查地址、类型、长度、唯一标识及写入认证", 400);
+                    }
+                    if (point.get<"writable">() && static_cast<bool>(*point.get<"writable">())) {
+                        const auto password = connection->get<"writePassword">() ? std::string(connection->get<"writePassword">()->view()) : std::string{};
+                        const auto operatorCode = connection->get<"operatorCode">() ? std::string(connection->get<"operatorCode">()->view()) : std::string{};
+                        if (password.size() != 8 || (version == "2007" && operatorCode.size() != 8)) {
+                            service::common::fail(16004, "协议点位配置无效，请检查地址、类型、长度、唯一标识及写入认证", 400);
+                        }
+                        const auto length = integerFieldValue(point.get<"length">(), false, 3, 1, 200);
+                        if (!length || *length > (version == "2007" ? 38 : 44)) {
+                            service::common::fail(16004, "协议点位配置无效，请检查地址、类型、长度、唯一标识及写入认证", 400);
+                        }
+                    }
+                    continue;
+                }
+                const auto area = point.get<"area">() ? std::optional<std::string>(point.get<"area">()->view()) : std::nullopt;
+                const auto bits = *type == "BOOL";
+                if (!area || !oneOf(*type, { "BOOL", "INT16", "UINT16", "INT32", "UINT32", "FLOAT32", "INT64", "UINT64", "DOUBLE" }) ||
+                    !enumValueValid(point.get<"byteOrder">(), { "BIG_ENDIAN", "LITTLE_ENDIAN", "BIG_ENDIAN_BYTE_SWAP", "LITTLE_ENDIAN_BYTE_SWAP" }) ||
+                    !decimalFieldValid(point.get<"scale">()) || !signedIntegerFieldValid(point.get<"decimals">(), false, 2, -1, 8)) {
+                    service::common::fail(16004, "协议点位配置无效，请检查地址、类型、长度、唯一标识及写入认证", 400);
+                }
+                const auto address = integerFieldValue(point.get<"address">(), false, 8, 0, protocol == "MC" ? 16777215 : 65535);
+                const auto width = bits ? 1 : (*type == "INT16" || *type == "UINT16") ? 1
+                    : (*type == "INT64" || *type == "UINT64" || *type == "DOUBLE")    ? 4
+                                                                                      : 2;
+                if (!address) {
+                    service::common::fail(16004, "协议点位配置无效，请检查地址、类型、长度、唯一标识及写入认证", 400);
+                }
+                bool ok = false;
+                if (protocol == "MC") {
+                    const bool bitArea = oneOf(*area, { "M", "X", "Y", "B", "L", "F", "V", "S", "TS", "CS" });
+                    ok = (bitArea || oneOf(*area, { "D", "W", "R", "ZR", "TN", "CN" })) && (!bits || bitArea) &&
+                        *address + width * (bitArea && !bits ? 16 : 1) - 1 <= 16777215;
+                } else {
+                    ok = oneOf(*area, { "D", "CIO", "W", "H", "A" }) && *address + (bits ? 0 : width - 1) <= 65535 &&
+                        integerFieldValid(point.get<"bit">(), false, 2, 0, bits ? 15 : 0);
+                }
+                if (!ok) {
+                    service::common::fail(16004, "协议点位配置无效，请检查地址、类型、长度、唯一标识及写入认证", 400);
+                }
             }
             return;
         }
 
         if (protocol == "S7") {
-            const auto connection = service::utils::jsonField(*config, "connection");
-            const auto areas = service::utils::jsonField(*config, "areas");
+            const auto connectionValue = config->get<ruvia::JsonValue>("connection");
+            const auto areasValue = config->get<ruvia::JsonValue>("areas");
+            const auto connection = connectionValue && connectionValue->isObject() ? connectionValue->get<S7Connection>() : std::optional<S7Connection>{};
+            std::optional<ruvia::Array<S7Area>> areas;
             if (!enumFieldValid(*config, "plcModel", { "S7-200", "S7-300", "S7-400", "S7-1200", "S7-1500" }) ||
-                (connection && !connection->isObject()) || (areas && !areas->isArray()) ||
+                (connectionValue && (!connectionValue->isObject() || !connection)) ||
+                (areasValue && !modelArray(areasValue, areas)) ||
                 (required && (!hasField(*config, "plcModel") || !connection || !areas))) {
                 service::common::fail(16004, "S7 配置无效", 400);
             }
             if (connection &&
-                (!enumFieldValid(*connection, "probeMode", { "STANDARD", "COMPATIBLE", "AUTO" }) ||
-                 !numberFieldValid(*connection, "handshakeTimeout", false, "1000", "30000") ||
-                 !numberFieldValid(*connection, "directProbeTimeout", false, "1000", "30000"))) {
+                (!enumValueValid(connection->get<"probeMode">(), { "STANDARD", "COMPATIBLE", "AUTO" }) ||
+                 !numberFieldValid(connection->get<"handshakeTimeout">(), false, "1000", "30000") ||
+                 !numberFieldValid(connection->get<"directProbeTimeout">(), false, "1000", "30000"))) {
                 service::common::fail(16004, "S7 配置无效", 400);
             }
             if (hasField(*config, "pollInterval")) {
@@ -678,29 +738,27 @@ class ProtocolConfigurationRules final {
             if (!integerFieldValid(*config, "readInterval", true, 5, 1, 3600)) {
                 service::common::fail(16004, "S7 配置的 readInterval 无效", 400);
             }
-            if (areas && !service::utils::visitJsonArray(*areas, [](const ruvia::JsonValue& area) {
-                    if (!area.isObject()) {
-                        return false;
-                    }
-                    const auto id = stringField(area, "id");
-                    const auto name = stringField(area, "name");
-                    const auto areaType = stringField(area, "area");
+            if (areas) {
+                for (const auto& area : *areas) {
+                    const auto id = area.get<"id">() ? std::optional<std::string>(area.get<"id">()->view()) : std::nullopt;
+                    const auto name = area.get<"name">() ? std::optional<std::string>(area.get<"name">()->view()) : std::nullopt;
+                    const auto areaType = area.get<"area">() ? std::optional<std::string>(area.get<"area">()->view()) : std::nullopt;
                     if (!id || id->empty() || !name || name->empty() || !areaType ||
                         !oneOf(*areaType, { "DB", "V", "MK", "PE", "PA", "CT", "TM" })) {
-                        return false;
+                        service::common::fail(16004, "S7 寄存器配置无效", 400);
                     }
-                    if (!enumFieldValid(area, "dataType", { "BOOL", "INT8", "UINT8", "INT16", "UINT16", "INT32", "UINT32", "FLOAT", "LREAL", "STRING" }) ||
-                        !integerFieldValid(area, "start", false, 10, 0, 2147483647, true) ||
-                        !integerFieldValid(area, "size", false, 5, 1, 65535, true) ||
-                        !integerFieldValid(area, "startBit", false, 1, 0, 7) ||
-                        !signedIntegerFieldValid(area, "decimals", false, 2, -1, 8) ||
-                        !booleanFieldValid(area, "writable")) {
-                        return false;
+                    if (!enumValueValid(area.get<"dataType">(), { "BOOL", "INT8", "UINT8", "INT16", "UINT16", "INT32", "UINT32", "FLOAT", "LREAL", "STRING" }) ||
+                        !integerFieldValid(area.get<"start">(), false, 10, 0, 2147483647, true) ||
+                        !integerFieldValid(area.get<"size">(), false, 5, 1, 65535, true) ||
+                        !integerFieldValid(area.get<"startBit">(), false, 1, 0, 7) ||
+                        !signedIntegerFieldValid(area.get<"decimals">(), false, 2, -1, 8) ||
+                        (area.isPresent<"writable">() && !area.get<"writable">())) {
+                        service::common::fail(16004, "S7 寄存器配置无效", 400);
                     }
-                    return *areaType != "DB" ||
-                        integerFieldValid(area, "dbNumber", false, 5, 1, 65535, true);
-                })) {
-                service::common::fail(16004, "S7 寄存器配置无效", 400);
+                    if (*areaType == "DB" && !integerFieldValid(area.get<"dbNumber">(), false, 5, 1, 65535, true)) {
+                        service::common::fail(16004, "S7 寄存器配置无效", 400);
+                    }
+                }
             }
             return;
         }
@@ -708,25 +766,27 @@ class ProtocolConfigurationRules final {
         if (protocol != "Modbus") {
             return;
         }
-        const auto packet = service::utils::jsonField(*config, "packet");
-        const auto registers = service::utils::jsonField(*config, "registers");
+        const auto packetValue = config->get<ruvia::JsonValue>("packet");
+        const auto registersValue = config->get<ruvia::JsonValue>("registers");
+        const auto packet = packetValue && packetValue->isObject() ? packetValue->get<ModbusPacket>() : std::optional<ModbusPacket>{};
+        std::optional<ruvia::Array<ModbusRegister>> registers;
         if (!enumFieldValid(*config, "byteOrder", { "BIG_ENDIAN", "LITTLE_ENDIAN", "BIG_ENDIAN_BYTE_SWAP", "LITTLE_ENDIAN_BYTE_SWAP" }) ||
             (required && !hasField(*config, "byteOrder"))) {
             service::common::fail(16004, "Modbus 配置的 byteOrder 无效", 400);
         }
-        if ((registers && !registers->isArray()) || (required && !registers)) {
+        if ((registersValue && !modelArray(registersValue, registers)) || (required && !registers)) {
             service::common::fail(16004, "Modbus 配置的 registers 必须是数组", 400);
         }
-        if (packet && !packet->isObject()) {
+        if (packetValue && (!packetValue->isObject() || !packet)) {
             service::common::fail(16004, "Modbus 配置的 packet 必须是对象", 400);
         }
         if (!integerFieldValid(*config, "readInterval", true, 5, 1, 3600)) {
             service::common::fail(16004, "Modbus 配置的 readInterval 无效", 400);
         }
-        if (packet && !integerFieldValid(*packet, "mergeGap", true, 5, 0, 2000)) {
+        if (packet && !integerFieldValid(packet->get<"mergeGap">(), true, 5, 0, 2000)) {
             service::common::fail(16004, "Modbus 配置的 packet.mergeGap 无效", 400);
         }
-        if (packet && !integerFieldValid(*packet, "maxQuantity", true, 5, 1, 125)) {
+        if (packet && !integerFieldValid(packet->get<"maxQuantity">(), true, 5, 1, 125)) {
             service::common::fail(16004, "Modbus 配置的 packet.maxQuantity 无效", 400);
         }
         if (hasField(*config, "pollInterval")) {
@@ -735,48 +795,34 @@ class ProtocolConfigurationRules final {
         if (!registers) {
             return;
         }
-        if (!service::utils::visitJsonArray(*registers, [](const ruvia::JsonValue& entry) {
-                if (!entry.isObject()) {
-                    return false;
-                }
-                const auto id = stringField(entry, "id");
-                const auto name = stringField(entry, "name");
-                const auto registerType = stringField(entry, "registerType");
-                const auto dataType = stringField(entry, "dataType");
-                if (!id || id->empty() || !name || name->empty() || !registerType || !dataType ||
-                    !oneOf(*registerType, { "COIL", "DISCRETE_INPUT", "HOLDING_REGISTER", "INPUT_REGISTER" }) ||
-                    !oneOf(*dataType, { "BOOL", "INT16", "UINT16", "INT32", "UINT32", "FLOAT32", "INT64", "UINT64", "DOUBLE" })) {
-                    return false;
-                }
-                return integerFieldValid(entry, "address", false, 5, 0, 65535, true) &&
-                    integerFieldValid(entry, "quantity", false, 1, 1, 4, true);
-            })) {
-            service::common::fail(16004, "Modbus 寄存器配置无效", 400);
-        }
-        if (!service::utils::visitJsonArray(*registers, [](const ruvia::JsonValue& entry) {
-                return entry.isObject() &&
-                    enumFieldValid(entry, "byteOrder", { "BIG_ENDIAN", "LITTLE_ENDIAN", "BIG_ENDIAN_BYTE_SWAP", "LITTLE_ENDIAN_BYTE_SWAP" });
-            })) {
-            service::common::fail(16004, "Modbus 寄存器 byteOrder 无效", 400);
-        }
-        if (!service::utils::visitJsonArray(*registers, [](const ruvia::JsonValue& entry) {
-                return entry.isObject() && decimalFieldValid(entry, "scale");
-            })) {
-            service::common::fail(16004, "Modbus 寄存器 scale 无效", 400);
-        }
-        if (!service::utils::visitJsonArray(*registers, [](const ruvia::JsonValue& entry) {
-                return entry.isObject() &&
-                    signedIntegerFieldValid(entry, "decimals", true, 2, -1, 8);
-            })) {
-            service::common::fail(16004, "Modbus 寄存器 decimals 无效", 400);
-        }
-        if (!service::utils::visitJsonArray(*registers, [](const ruvia::JsonValue& entry) {
-                return entry.isObject() && booleanFieldValid(entry, "writable");
-            })) {
-            service::common::fail(16004, "Modbus 寄存器 writable 必须是布尔值", 400);
+        for (const auto& entry : *registers) {
+            const auto id = entry.get<"id">() ? std::optional<std::string>(entry.get<"id">()->view()) : std::nullopt;
+            const auto name = entry.get<"name">() ? std::optional<std::string>(entry.get<"name">()->view()) : std::nullopt;
+            const auto registerType = entry.get<"registerType">() ? std::optional<std::string>(entry.get<"registerType">()->view()) : std::nullopt;
+            const auto dataType = entry.get<"dataType">() ? std::optional<std::string>(entry.get<"dataType">()->view()) : std::nullopt;
+            if (!id || id->empty() || !name || name->empty() || !registerType || !dataType ||
+                !oneOf(*registerType, { "COIL", "DISCRETE_INPUT", "HOLDING_REGISTER", "INPUT_REGISTER" }) ||
+                !oneOf(*dataType, { "BOOL", "INT16", "UINT16", "INT32", "UINT32", "FLOAT32", "INT64", "UINT64", "DOUBLE" }) ||
+                !integerFieldValid(entry.get<"address">(), false, 5, 0, 65535, true) ||
+                !integerFieldValid(entry.get<"quantity">(), false, 1, 1, 4, true)) {
+                service::common::fail(16004, "Modbus 寄存器配置无效", 400);
+            }
+            if (!enumValueValid(entry.get<"byteOrder">(), { "BIG_ENDIAN", "LITTLE_ENDIAN", "BIG_ENDIAN_BYTE_SWAP", "LITTLE_ENDIAN_BYTE_SWAP" })) {
+                service::common::fail(16004, "Modbus 寄存器 byteOrder 无效", 400);
+            }
+            if (!decimalFieldValid(entry.get<"scale">())) {
+                service::common::fail(16004, "Modbus 寄存器 scale 无效", 400);
+            }
+            if (!signedIntegerFieldValid(entry.get<"decimals">(), true, 2, -1, 8)) {
+                service::common::fail(16004, "Modbus 寄存器 decimals 无效", 400);
+            }
+            if (entry.isPresent<"writable">() && !entry.get<"writable">()) {
+                service::common::fail(16004, "Modbus 寄存器 writable 必须是布尔值", 400);
+            }
         }
     }
 };
+
 
 class ProtocolService {
     static void validateDerivedConfig(const ruvia::JsonValue& config) {
@@ -965,8 +1011,14 @@ class ProtocolService {
             const auto previous = ruvia::JsonValue::parse(locked->template get<"config">());
             std::map<std::string, std::string> fields;
             if (!previous) throw std::runtime_error("invalid stored protocol configuration");
-            service::utils::visitJsonFields(*previous, [&](auto key, auto value) { fields[std::string(key)] = value; return true; });
-            service::utils::visitJsonFields(*body.get<"config">(), [&](auto key, auto value) { fields[std::string(key)] = value; return true; });
+            (void)previous->forEachField([&](std::string_view key, const ruvia::JsonValue& value) {
+                fields[std::string(key)] = std::string(value.view());
+                return true;
+            });
+            (void)body.get<"config">()->forEachField([&](std::string_view key, const ruvia::JsonValue& value) {
+                fields[std::string(key)] = std::string(value.view());
+                return true;
+            });
             std::string merged = "{";
             for (const auto& [key, value] : fields) {
                 if (merged.size() > 1) merged += ',';

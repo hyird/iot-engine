@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include <ruvia/web/Model.h>
+
 #include "service/common/uuid.h"
 #include "service/utils/expression.h"
 #include "service/utils/json.h"
@@ -34,84 +36,130 @@ struct DerivedPoint {
     bool visible{ true };
 };
 
+RUVIA_MODEL(DerivedPointInputConfig,
+    RUVIA_OPTIONAL_FIELD(alias, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(pointId, ruvia::String));
+
+RUVIA_MODEL(DerivedPointUnitRuleConfig,
+    RUVIA_OPTIONAL_FIELD(condition, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(unit, ruvia::String));
+
+RUVIA_MODEL(DerivedPointConfig,
+    RUVIA_OPTIONAL_FIELD(id, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(name, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(unit, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(unitMode, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(unitRules, ruvia::Array<DerivedPointUnitRuleConfig>),
+    RUVIA_OPTIONAL_FIELD(sourceAlias, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(kind, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(expression, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(valueType, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(inputs, ruvia::Array<DerivedPointInputConfig>),
+    RUVIA_OPTIONAL_FIELD(windowSeconds, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(maxAgeSeconds, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(visible, ruvia::Bool));
+
 // Shared configuration contract; no runtime state or I/O.
 inline std::vector<DerivedPoint> decodeDerivedPoints(const ruvia::JsonValue& config) {
-    const auto raw = utils::jsonField(config, "derivedPoints");
+    const auto raw = config.get<ruvia::JsonValue>("derivedPoints");
     if (!raw) {
         return {};
     }
+    if (!raw->isArray()) {
+        throw std::invalid_argument("derivedPoints 必须是数组");
+    }
     std::vector<DerivedPoint> points;
-    const auto text = [](const ruvia::JsonValue& object, std::string_view key, std::size_t maximum, bool required = true) {
-        const auto value = object.get<ruvia::String>(key);
-        if ((!value && (required || utils::jsonField(object, key))) ||
-            (value && (value->view().size() > maximum || (required && value->view().empty())))) {
+    const auto text = [](const auto& value, std::string_view key, std::size_t maximum, bool required = true) {
+        if (!value && required) {
             throw std::invalid_argument("派生点字段无效: " + std::string(key));
         }
-        return value ? std::string(value->view()) : std::string{};
+        if (!value) {
+            return std::string{};
+        }
+        if (value->view().size() > maximum || (required && value->view().empty())) {
+            throw std::invalid_argument("派生点字段无效: " + std::string(key));
+        }
+        return std::string(value->view());
     };
-    const auto integer = [](const ruvia::JsonValue& object, std::string_view key, std::int64_t fallback, std::int64_t minimum) {
-        if (!utils::jsonField(object, key)) {
+    const auto integer = [](const std::optional<ruvia::Int64>& value, bool present, std::string_view key, std::int64_t fallback, std::int64_t minimum) {
+        if (!present) {
             return fallback;
         }
-        const auto value = object.get<ruvia::Int64>(key);
         if (!value || value->value < minimum || value->value > 86400) {
             throw std::invalid_argument("派生点时间参数无效: " + std::string(key));
         }
         return value->value;
     };
     std::set<std::string> ids;
-    if (!utils::visitJsonArray(*raw, [&](const auto& item) {
+    if (!raw->forEachElement([&](const ruvia::JsonValue& item) {
             if (!item.isObject() || points.size() == 32) {
                 throw std::invalid_argument("派生点最多 32 个");
             }
+            const auto parsed = item.get<DerivedPointConfig>();
+            if (!parsed) {
+                throw std::invalid_argument("派生点字段无效");
+            }
+            if (parsed->isPresent<"unit">() && !parsed->get<"unit">()) {
+                throw std::invalid_argument("派生点字段无效: unit");
+            }
+            if (parsed->isPresent<"unitMode">() && !parsed->get<"unitMode">()) {
+                throw std::invalid_argument("派生点字段无效: unitMode");
+            }
+            if (parsed->isPresent<"expression">() && !parsed->get<"expression">()) {
+                throw std::invalid_argument("派生点字段无效: expression");
+            }
+            if (parsed->isPresent<"sourceAlias">() && !parsed->get<"sourceAlias">()) {
+                throw std::invalid_argument("派生点字段无效: sourceAlias");
+            }
+            if (parsed->isPresent<"visible">() && !parsed->get<"visible">()) {
+                throw std::invalid_argument("visible 必须是布尔值");
+            }
             DerivedPoint point;
-            point.id = text(item, "id", 36);
+            point.id = text(parsed->get<"id">(), "id", 36);
             if (!isUuid(point.id) || !ids.insert(point.id).second) {
                 throw std::invalid_argument("派生点标识无效或重复");
             }
-            point.name = text(item, "name", 100);
-            point.unit = text(item, "unit", 32, false);
-            if (utils::jsonField(item, "unitMode")) {
-                point.unitMode = text(item, "unitMode", 16);
+            point.name = text(parsed->get<"name">(), "name", 100);
+            point.unit = text(parsed->get<"unit">(), "unit", 32, false);
+            if (parsed->isPresent<"unitMode">()) {
+                point.unitMode = text(parsed->get<"unitMode">(), "unitMode", 16);
             }
             if (point.unitMode != "fixed" && point.unitMode != "conditional") {
                 throw std::invalid_argument("单位模式无效");
             }
-            point.kind = text(item, "kind", 16);
-            point.valueType = text(item, "valueType", 8);
+            point.kind = text(parsed->get<"kind">(), "kind", 16);
+            point.valueType = text(parsed->get<"valueType">(), "valueType", 8);
             if (point.valueType != "number" && point.valueType != "boolean") {
                 throw std::invalid_argument("派生点结果类型无效");
             }
             if (point.kind != "expression" && point.kind != "average" && point.kind != "minimum" && point.kind != "maximum") {
                 throw std::invalid_argument("派生点计算类型无效");
             }
-            point.expression = text(item, "expression", 512, point.kind == "expression");
-            point.windowSeconds = integer(item, "windowSeconds", 0, 1);
-            point.maxAgeSeconds = integer(item, "maxAgeSeconds", 300, 1);
-            if (const auto visible = utils::jsonField(item, "visible")) {
-                const auto value = item.template get<ruvia::Bool>("visible");
-                if (!value) {
-                    throw std::invalid_argument("visible 必须是布尔值");
-                }
-                point.visible = static_cast<bool>(*value);
+            point.expression = text(parsed->get<"expression">(), "expression", 512, point.kind == "expression");
+            point.windowSeconds = integer(parsed->get<"windowSeconds">(), parsed->isPresent<"windowSeconds">(), "windowSeconds", 0, 1);
+            point.maxAgeSeconds = integer(parsed->get<"maxAgeSeconds">(), parsed->isPresent<"maxAgeSeconds">(), "maxAgeSeconds", 300, 1);
+            if (const auto& visible = parsed->get<"visible">()) {
+                point.visible = static_cast<bool>(*visible);
             }
             if (point.kind != "expression" && (!point.windowSeconds || point.valueType != "number")) {
                 throw std::invalid_argument("窗口派生点需要时间窗口和数值结果类型");
             }
-            const auto inputs = utils::jsonField(item, "inputs");
+            const auto& inputs = parsed->get<"inputs">();
             std::set<std::string> names;
-            if (!inputs || !utils::visitJsonArray(*inputs, [&](const auto& input) {
-                    const auto alias = text(input, "alias", 32);
-                    const auto id = text(input, "pointId", 36);
-                    const utils::Expression variable(alias);
-                    if (variable.variables() != std::vector<std::string>{ alias } || !isUuid(id) || !names.insert(alias).second || point.inputs.size() == 16) {
-                        throw std::invalid_argument("派生点输入绑定无效");
-                    }
-                    point.inputs.emplace_back(alias, id);
-                    return true;
-                }) ||
-                point.inputs.empty()) {
+            if (!inputs || inputs->empty()) {
                 throw std::invalid_argument("派生点必须绑定输入点");
+            }
+            if (inputs->size() > 16) {
+                throw std::invalid_argument("派生点输入绑定无效");
+            }
+            for (const auto& input : *inputs) {
+                const auto alias = text(input.get<"alias">(), "alias", 32);
+                const auto id = text(input.get<"pointId">(), "pointId", 36);
+                const utils::Expression variable(alias);
+                if (variable.variables() != std::vector<std::string>{ alias } || !isUuid(id) || !names.insert(alias).second) {
+                    throw std::invalid_argument("派生点输入绑定无效");
+                }
+                point.inputs.emplace_back(alias, id);
             }
             if (point.kind == "expression") {
                 const utils::Expression expression(point.expression);
@@ -121,28 +169,29 @@ inline std::vector<DerivedPoint> decodeDerivedPoints(const ruvia::JsonValue& con
                     }
                 }
             } else {
-                point.sourceAlias = text(item, "sourceAlias", 32);
+                point.sourceAlias = text(parsed->get<"sourceAlias">(), "sourceAlias", 32);
                 if (!names.contains(point.sourceAlias)) {
                     throw std::invalid_argument("窗口计算的输入点未绑定");
                 }
             }
-            if (const auto rules = utils::jsonField(item, "unitRules")) {
-                if (!utils::visitJsonArray(*rules, [&](const auto& rule) {
-                        if (point.unitRules.size() == 8) {
-                            throw std::invalid_argument("单位条件最多 8 条");
-                        }
-                        auto condition = text(rule, "condition", 512);
-                        auto unit = text(rule, "unit", 32, false);
-                        const utils::Expression expression(condition);
-                        for (const auto& name : expression.variables()) {
-                            if (!names.contains(name)) {
-                                throw std::invalid_argument("单位条件包含未绑定变量: " + name);
-                            }
-                        }
-                        point.unitRules.push_back({ std::move(condition), std::move(unit) });
-                        return true;
-                    })) {
+            if (parsed->isPresent<"unitRules">()) {
+                const auto& rules = parsed->get<"unitRules">();
+                if (!rules) {
                     throw std::invalid_argument("单位条件必须是数组");
+                }
+                if (rules->size() > 8) {
+                    throw std::invalid_argument("单位条件最多 8 条");
+                }
+                for (const auto& rule : *rules) {
+                    auto condition = text(rule.get<"condition">(), "condition", 512);
+                    auto unit = text(rule.get<"unit">(), "unit", 32, false);
+                    const utils::Expression expression(condition);
+                    for (const auto& name : expression.variables()) {
+                        if (!names.contains(name)) {
+                            throw std::invalid_argument("单位条件包含未绑定变量: " + name);
+                        }
+                    }
+                    point.unitRules.push_back({ std::move(condition), std::move(unit) });
                 }
             }
             if ((point.unitMode == "conditional") != !point.unitRules.empty()) {
@@ -160,24 +209,23 @@ inline std::vector<DerivedPoint> orderDerivedPoints(const ruvia::JsonValue& conf
     auto points = decodeDerivedPoints(config);
     std::set<std::string> physical;
     const auto collect = [&](const ruvia::JsonValue& array) {
-        utils::visitJsonArray(array, [&](const auto& value) {
-            if (const auto id = value.template get<ruvia::String>("id")) {
+        (void)array.forEachElement([&](const ruvia::JsonValue& value) {
+            if (const auto id = value.get<ruvia::String>("id")) {
                 physical.emplace(id->view());
             }
             return true;
         });
     };
     for (auto name : { "registers", "areas", "points" }) {
-        if (auto array = utils::jsonField(config, name)) {
+        if (auto array = config.get<ruvia::JsonValue>(name)) {
             collect(*array);
         }
     }
-    if (const auto functions = utils::jsonField(config, "funcs")) {
-        utils::visitJsonArray(*functions, [&](const auto& function) {
-            // Only sampled upstream points can be formula inputs.
-            const auto direction = function.template get<ruvia::String>("dir");
+    if (const auto functions = config.get<ruvia::JsonValue>("funcs")) {
+        (void)functions->forEachElement([&](const ruvia::JsonValue& function) {
+            const auto direction = function.get<ruvia::String>("dir");
             if (direction && direction->view() == "UP") {
-                if (auto elements = utils::jsonField(function, "elements")) {
+                if (auto elements = function.get<ruvia::JsonValue>("elements")) {
                     collect(*elements);
                 }
             }
@@ -215,9 +263,9 @@ inline std::vector<DerivedPoint> orderDerivedPoints(const ruvia::JsonValue& conf
     for (std::size_t i = 0; i < points.size(); ++i) {
         visit(visit, i);
     }
-    if (const auto visibility = utils::jsonField(config, "pointVisibility")) {
-        if (!visibility->isObject() || !utils::visitJsonFields(*visibility, [&](std::string_view id, std::string_view raw) {
-                return isUuid(id) && (raw == "true" || raw == "false");
+    if (const auto visibility = config.get<ruvia::JsonValue>("pointVisibility")) {
+        if (!visibility->isObject() || !visibility->forEachField([&](std::string_view id, const ruvia::JsonValue& raw) {
+                return isUuid(id) && (raw.view() == "true" || raw.view() == "false");
             })) {
             throw std::invalid_argument("点位显示设置必须是标识到布尔值的映射");
         }

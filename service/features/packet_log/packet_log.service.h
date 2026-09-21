@@ -213,12 +213,12 @@ return changed and 1 or 0
         if (!parsedJson.empty()) {
             const auto decoded = ruvia::JsonValue::parse(parsedJson);
             if (!decoded) throw std::invalid_argument("invalid debug parsed JSON");
-            const auto values = service::utils::jsonField(*decoded, "values");
+            const auto values = decoded->get<ruvia::JsonValue>("values");
             if (!values || !values->isObject()) throw std::invalid_argument("invalid debug parsed values");
-            const bool valid = service::utils::visitJsonFields(*values,
-                [&](std::string_view name, std::string_view value) {
+            const bool valid = values->forEachField(
+                [&](std::string_view name, const ruvia::JsonValue& value) {
                     parsedFields.push_back("parsed_value:" + std::string(name));
-                    parsedFields.emplace_back(value);
+                    parsedFields.emplace_back(value.view());
                     return true;
                 });
             if (!valid) throw std::invalid_argument("invalid debug parsed fields");

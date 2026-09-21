@@ -567,8 +567,8 @@ class WebhookRuntime final {
         std::vector<std::pair<std::string, std::string>> result;
         const auto object = ruvia::JsonValue::parse(json);
         if (!object || !object->isObject()) return result;
-        (void)service::utils::visitJsonFields(*object,
-            [&](std::string_view name, std::string_view) {
+        (void)object->forEachField(
+            [&](std::string_view name, const ruvia::JsonValue&) {
                 const auto value = object->get<ruvia::String>(name);
                 if (value) {
                     validateWebhookHeader(name, value->view(), true);

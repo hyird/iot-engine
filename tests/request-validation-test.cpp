@@ -15,7 +15,7 @@
 
 namespace {
 static_assert(std::is_same_v<ruvia::Task<ruvia::HttpResponse>::value_type, ruvia::HttpResponse>);
-RUVIA_RESPONSE_MODEL(CreatedResponse,
+RUVIA_MODEL(CreatedResponse,
     RUVIA_REQUIRED_FIELD(created, ruvia::Bool),
     RUVIA_REQUIRED_FIELD(name, ruvia::String));
 

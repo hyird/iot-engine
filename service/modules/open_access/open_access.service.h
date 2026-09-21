@@ -697,7 +697,7 @@ class AccessService final {
                 data != latestFields.end()) {
                 if (const auto json = ruvia::JsonValue::parse(data->second)) {
                     const auto dataType = json->template get<ruvia::String>("dataType");
-                    if (const auto current = service::utils::jsonField(*json, "value")) {
+                    if (const auto current = json->template get<ruvia::JsonValue>("value")) {
                         value = service::telemetry::latest::canonicalPointJson(
                             current->view(),
                             dataType ? dataType->view() : std::string_view{}

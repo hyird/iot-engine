@@ -14,49 +14,21 @@
 #include "service/middleware/rpc.h"
 #include "service/modules/gb28181/gb28181.entity.h"
 #include "service/modules/gb28181/gb28181.types.h"
-#include "service/utils/json.h"
 
 namespace service::gb28181 {
 
 namespace detail {
 
-class RequestJson final {
-  public:
-    RequestJson() { body_.push_back('{'); }
+template <typename Context>
+rpc_wire::ControlRequest controlRequest(Context& c) {
+    return rpc_wire::ControlRequest({ .resource = c.arena() });
+}
 
-    void text(std::string_view name, std::string_view value) {
-        fieldName(name);
-        body_ += service::utils::jsonQuoted(value);
-    }
-
-    void integer(std::string_view name, std::int64_t value) {
-        fieldName(name);
-        body_ += std::to_string(value);
-    }
-
-    void number(std::string_view name, double value) {
-        fieldName(name);
-        body_ += std::to_string(value);
-    }
-
-    [[nodiscard]] std::string finish() && {
-        body_.push_back('}');
-        return std::move(body_);
-    }
-
-  private:
-    void fieldName(std::string_view name) {
-        if (!first_) {
-            body_.push_back(',');
-        }
-        first_ = false;
-        body_ += service::utils::jsonQuoted(name);
-        body_.push_back(':');
-    }
-
-    std::string body_;
-    bool first_{ true };
-};
+template <typename Context>
+std::string encodeRequest(Context& c, const rpc_wire::ControlRequest& request) {
+    const auto encoded = ruvia::toJson(request, { .resource = c.arena() });
+    return { encoded.data(), encoded.size() };
+}
 
 template <typename Response, typename Context>
 Response parseResponse(Context& c, std::string_view body) {
@@ -515,9 +487,9 @@ class Gb28181Service final {
 
     [[nodiscard]] ruvia::Task<GbDeviceDto>
     device(Context& c, std::string id) const {
-        detail::RequestJson payload;
-        payload.text("device_id", id);
-        const auto raw = co_await call(c, "device", std::move(payload).finish());
+        auto payload = detail::controlRequest(c);
+        payload.template set<"deviceId">(id);
+        const auto raw = co_await call(c, "device", detail::encodeRequest(c, payload));
         auto response = detail::parseResponse<rpc_wire::DeviceResponse>(c, raw);
         co_return detail::device(c, *response.template get<"data">());
     }
@@ -546,9 +518,9 @@ class Gb28181Service final {
 
     [[nodiscard]] ruvia::Task<GbStreamDto>
     stream(Context& c, std::string id) const {
-        detail::RequestJson payload;
-        payload.text("stream_id", id);
-        const auto raw = co_await call(c, "stream", std::move(payload).finish());
+        auto payload = detail::controlRequest(c);
+        payload.template set<"streamId">(id);
+        const auto raw = co_await call(c, "stream", detail::encodeRequest(c, payload));
         auto response = detail::parseResponse<rpc_wire::StreamResponse>(c, raw);
         co_return detail::stream(c, *response.template get<"data">());
     }
@@ -556,30 +528,30 @@ class Gb28181Service final {
     template <typename Context>
 
     ruvia::Task<void> queryCatalog(Context& c, std::string deviceId) const {
-        detail::RequestJson payload;
-        payload.text("device_id", deviceId);
-        (void)co_await call(c, "catalog", std::move(payload).finish());
+        auto payload = detail::controlRequest(c);
+        payload.template set<"deviceId">(deviceId);
+        (void)co_await call(c, "catalog", detail::encodeRequest(c, payload));
         co_return;
     }
 
     template <typename Context>
 
     ruvia::Task<void> renameDevice(Context& c, std::string deviceId, std::string name) const {
-        detail::RequestJson payload;
-        payload.text("device_id", deviceId);
-        payload.text("name", name);
-        (void)co_await call(c, "rename_device", std::move(payload).finish());
+        auto payload = detail::controlRequest(c);
+        payload.template set<"deviceId">(deviceId);
+        payload.template set<"name">(name);
+        (void)co_await call(c, "rename_device", detail::encodeRequest(c, payload));
         co_return;
     }
 
     template <typename Context>
 
     ruvia::Task<void> renameChannel(Context& c, std::string deviceId, std::string channelId, std::string name) const {
-        detail::RequestJson payload;
-        payload.text("device_id", deviceId);
-        payload.text("channel_id", channelId);
-        payload.text("name", name);
-        (void)co_await call(c, "rename_channel", std::move(payload).finish());
+        auto payload = detail::controlRequest(c);
+        payload.template set<"deviceId">(deviceId);
+        payload.template set<"channelId">(channelId);
+        payload.template set<"name">(name);
+        (void)co_await call(c, "rename_channel", detail::encodeRequest(c, payload));
         co_return;
     }
 
@@ -608,49 +580,49 @@ class Gb28181Service final {
                 service::common::fail(10003, "映射目标设备不存在", 404);
             }
         }
-        detail::RequestJson payload;
-        payload.text("device_id", deviceId);
+        auto payload = detail::controlRequest(c);
+        payload.template set<"deviceId">(deviceId);
         if (!mappedDeviceId.empty()) {
-            payload.text("mapped_device_id", mappedDeviceId);
+            payload.template set<"mappedDeviceId">(mappedDeviceId);
         }
-        (void)co_await call(c, mappedDeviceId.empty() ? "unmap" : "map", std::move(payload).finish());
+        (void)co_await call(c, mappedDeviceId.empty() ? "unmap" : "map", detail::encodeRequest(c, payload));
         co_return;
     }
 
     template <typename Context>
 
     ruvia::Task<void> queryRecords(Context& c, std::string deviceId, std::string channelId, std::string startTime, std::string endTime) const {
-        detail::RequestJson payload;
-        payload.text("device_id", deviceId);
-        payload.text("channel_id", channelId);
-        payload.text("start_time", startTime);
-        payload.text("end_time", endTime);
-        (void)co_await call(c, "records", std::move(payload).finish());
+        auto payload = detail::controlRequest(c);
+        payload.template set<"deviceId">(deviceId);
+        payload.template set<"channelId">(channelId);
+        payload.template set<"startTime">(startTime);
+        payload.template set<"endTime">(endTime);
+        (void)co_await call(c, "records", detail::encodeRequest(c, payload));
         co_return;
     }
 
     template <typename Context>
 
     ruvia::Task<void> ptz(Context& c, std::string deviceId, std::string channelId, std::string action, std::uint8_t speed) const {
-        detail::RequestJson payload;
-        payload.text("device_id", deviceId);
-        payload.text("channel_id", channelId);
-        payload.text("action", action);
-        payload.integer("speed", speed);
-        (void)co_await call(c, "ptz", std::move(payload).finish());
+        auto payload = detail::controlRequest(c);
+        payload.template set<"deviceId">(deviceId);
+        payload.template set<"channelId">(channelId);
+        payload.template set<"action">(action);
+        payload.template set<"speed">(speed);
+        (void)co_await call(c, "ptz", detail::encodeRequest(c, payload));
         co_return;
     }
 
     template <typename Context>
 
     ruvia::Task<void> ptzPosition(Context& c, std::string deviceId, std::string channelId, double pan, double tilt, double zoom) const {
-        detail::RequestJson payload;
-        payload.text("device_id", deviceId);
-        payload.text("channel_id", channelId);
-        payload.number("pan", pan);
-        payload.number("tilt", tilt);
-        payload.number("zoom", zoom);
-        (void)co_await call(c, "ptz.position", std::move(payload).finish());
+        auto payload = detail::controlRequest(c);
+        payload.template set<"deviceId">(deviceId);
+        payload.template set<"channelId">(channelId);
+        payload.template set<"pan">(pan);
+        payload.template set<"tilt">(tilt);
+        payload.template set<"zoom">(zoom);
+        (void)co_await call(c, "ptz.position", detail::encodeRequest(c, payload));
         co_return;
     }
 
@@ -658,11 +630,11 @@ class Gb28181Service final {
 
     ruvia::Task<GbPreviewStartDto>
     startPreview(Context& c, std::string deviceId, std::string channelId) const {
-        detail::RequestJson payload;
-        payload.text("device_id", deviceId);
-        payload.text("channel_id", channelId);
+        auto payload = detail::controlRequest(c);
+        payload.template set<"deviceId">(deviceId);
+        payload.template set<"channelId">(channelId);
         const auto raw =
-            co_await call(c, "preview.start", std::move(payload).finish());
+            co_await call(c, "preview.start", detail::encodeRequest(c, payload));
         auto response =
             detail::parseResponse<rpc_wire::PreviewStartResponse>(c, raw);
         co_return detail::previewStart(c, *response.template get<"data">());
@@ -672,10 +644,10 @@ class Gb28181Service final {
 
     ruvia::Task<GbPreviewStopDto>
     stopPreview(Context& c, std::string sessionId) const {
-        detail::RequestJson payload;
-        payload.text("session_id", sessionId);
+        auto payload = detail::controlRequest(c);
+        payload.template set<"sessionId">(sessionId);
         const auto raw =
-            co_await call(c, "preview.stop", std::move(payload).finish());
+            co_await call(c, "preview.stop", detail::encodeRequest(c, payload));
         auto response =
             detail::parseResponse<rpc_wire::PreviewStopResponse>(c, raw);
         co_return detail::previewStop(c, *response.template get<"data">());
@@ -684,9 +656,9 @@ class Gb28181Service final {
     template <typename Context>
 
     ruvia::Task<void> renewPreview(Context& c, std::string sessionId) const {
-        detail::RequestJson payload;
-        payload.text("session_id", sessionId);
-        (void)co_await call(c, "preview.heartbeat", std::move(payload).finish());
+        auto payload = detail::controlRequest(c);
+        payload.template set<"sessionId">(sessionId);
+        (void)co_await call(c, "preview.heartbeat", detail::encodeRequest(c, payload));
         co_return;
     }
 
@@ -694,13 +666,13 @@ class Gb28181Service final {
 
     ruvia::Task<GbPreviewStartDto>
     startPlayback(Context& c, std::string deviceId, std::string channelId, std::string startTime, std::string endTime) const {
-        detail::RequestJson payload;
-        payload.text("device_id", deviceId);
-        payload.text("channel_id", channelId);
-        payload.text("start_time", startTime);
-        payload.text("end_time", endTime);
+        auto payload = detail::controlRequest(c);
+        payload.template set<"deviceId">(deviceId);
+        payload.template set<"channelId">(channelId);
+        payload.template set<"startTime">(startTime);
+        payload.template set<"endTime">(endTime);
         const auto raw =
-            co_await call(c, "playback.start", std::move(payload).finish());
+            co_await call(c, "playback.start", detail::encodeRequest(c, payload));
         auto response =
             detail::parseResponse<rpc_wire::PreviewStartResponse>(c, raw);
         co_return detail::previewStart(c, *response.template get<"data">());
@@ -709,10 +681,10 @@ class Gb28181Service final {
     template <typename Context>
 
     ruvia::Task<bool> recording(Context& c, std::string streamId) const {
-        detail::RequestJson payload;
-        payload.text("stream_id", streamId);
+        auto payload = detail::controlRequest(c);
+        payload.template set<"streamId">(streamId);
         const auto raw =
-            co_await call(c, "recording", std::move(payload).finish());
+            co_await call(c, "recording", detail::encodeRequest(c, payload));
         auto response = detail::parseResponse<rpc_wire::ActionResponse>(c, raw);
         const auto& value = response.template get<"data">()->template get<"recording">();
         co_return value&& static_cast<bool>(*value);
@@ -721,18 +693,18 @@ class Gb28181Service final {
     template <typename Context>
 
     ruvia::Task<void> startRecording(Context& c, std::string streamId) const {
-        detail::RequestJson payload;
-        payload.text("stream_id", streamId);
-        (void)co_await call(c, "recording.start", std::move(payload).finish());
+        auto payload = detail::controlRequest(c);
+        payload.template set<"streamId">(streamId);
+        (void)co_await call(c, "recording.start", detail::encodeRequest(c, payload));
         co_return;
     }
 
     template <typename Context>
 
     ruvia::Task<void> stopRecording(Context& c, std::string streamId) const {
-        detail::RequestJson payload;
-        payload.text("stream_id", streamId);
-        (void)co_await call(c, "recording.stop", std::move(payload).finish());
+        auto payload = detail::controlRequest(c);
+        payload.template set<"streamId">(streamId);
+        (void)co_await call(c, "recording.stop", detail::encodeRequest(c, payload));
         co_return;
     }
 

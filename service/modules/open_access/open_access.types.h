@@ -51,12 +51,11 @@ inline bool isWebhookUrl(const ruvia::String& value) {
     return authority < url.size() && url[authority] != '/' && url[authority] != '?' && url[authority] != '#';
 }
 inline bool isWebhookHeaders(const ruvia::JsonObject& headers) {
-    const auto object = ruvia::JsonValue::parse(headers.view());
     constexpr std::array<std::string_view, 15> reserved{
         "host", "content-length", "connection", "x-iot-event", "x-iot-timestamp", "x-iot-delivery", "x-iot-signature", "content-type", "user-agent", "transfer-encoding", "trailer", "te", "upgrade", "expect", "proxy-connection"
     };
-    return object && service::utils::visitJsonFields(*object, [&](std::string_view key, std::string_view) {
-        const auto value = object->get<ruvia::String>(key);
+    return headers.forEachField([&](std::string_view key, const ruvia::JsonValue&) {
+        const auto value = headers.get<ruvia::String>(key);
         const bool token = !key.empty() && std::ranges::all_of(key, [](char ch) {
             return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || std::string_view("!#$%&'*+.^_`|~-").find(ch) != std::string_view::npos;
         });
@@ -80,21 +79,21 @@ inline std::vector<std::string> accessDeviceIds(const ruvia::Array<ruvia::String
     return {unique.begin(), unique.end()};
 }
 
-RUVIA_REQUEST_MODEL(CreateAccessKeyBody,
+RUVIA_MODEL(CreateAccessKeyBody,
     RUVIA_REQUIRED_FIELD(name, ruvia::String, RUVIA_CUSTOM("调用配置名称不能为空或过长", isAccessName)),
     RUVIA_OPTIONAL_FIELD(status, ruvia::String, RUVIA_DEFAULT("enabled"), RUVIA_ONE_OF("status 无效", "enabled", "disabled")),
     RUVIA_REQUIRED_FIELD(scopes, ruvia::Array<ruvia::String>, RUVIA_CUSTOM("开放权限无效", isAccessScopes)),
     RUVIA_REQUIRED_FIELD(deviceIds, ruvia::Array<ruvia::String>, RUVIA_CUSTOM("请选择有效设备", isAccessDevices)),
     RUVIA_OPTIONAL_FIELD(expiresAt, ruvia::String, RUVIA_NULLABLE, RUVIA_MAX(64, "过期时间过长")),
     RUVIA_OPTIONAL_FIELD(remark, ruvia::String, RUVIA_NULLABLE, RUVIA_MAX(200, "备注过长")));
-RUVIA_REQUEST_MODEL(UpdateAccessKeyBody,
+RUVIA_MODEL(UpdateAccessKeyBody,
     RUVIA_OPTIONAL_FIELD(name, ruvia::String, RUVIA_CUSTOM("调用配置名称不能为空或过长", isAccessName)),
     RUVIA_OPTIONAL_FIELD(status, ruvia::String, RUVIA_ONE_OF("status 无效", "enabled", "disabled")),
     RUVIA_OPTIONAL_FIELD(scopes, ruvia::Array<ruvia::String>, RUVIA_CUSTOM("开放权限无效", isAccessScopes)),
     RUVIA_OPTIONAL_FIELD(deviceIds, ruvia::Array<ruvia::String>, RUVIA_CUSTOM("请选择有效设备", isAccessDevices)),
     RUVIA_OPTIONAL_FIELD(expiresAt, ruvia::String, RUVIA_NULLABLE, RUVIA_MAX(64, "过期时间过长")),
     RUVIA_OPTIONAL_FIELD(remark, ruvia::String, RUVIA_NULLABLE, RUVIA_MAX(200, "备注过长")));
-RUVIA_REQUEST_MODEL(CreateWebhookBody,
+RUVIA_MODEL(CreateWebhookBody,
     RUVIA_REQUIRED_FIELD(accessKeyId, ruvia::String, RUVIA_CUSTOM("请选择调用配置", service::common::isUuidField)),
     RUVIA_REQUIRED_FIELD(name, ruvia::String, RUVIA_CUSTOM("Webhook 名称无效", isAccessName)),
     RUVIA_REQUIRED_FIELD(url, ruvia::String, RUVIA_CUSTOM("Webhook 地址必须是有效的 HTTP(S) URL", isWebhookUrl)),
@@ -104,7 +103,7 @@ RUVIA_REQUEST_MODEL(CreateWebhookBody,
     RUVIA_OPTIONAL_FIELD(headers, ruvia::JsonObject),
     RUVIA_OPTIONAL_FIELD(eventTypes, ruvia::Array<ruvia::String>, RUVIA_CUSTOM("Webhook 事件无效", isWebhookEvents)),
     RUVIA_OPTIONAL_FIELD(secret, ruvia::String, RUVIA_NULLABLE, RUVIA_MAX(255, "密钥过长")));
-RUVIA_REQUEST_MODEL(UpdateWebhookBody,
+RUVIA_MODEL(UpdateWebhookBody,
     RUVIA_OPTIONAL_FIELD(accessKeyId, ruvia::String, RUVIA_CUSTOM("请选择调用配置", service::common::isUuidField)),
     RUVIA_OPTIONAL_FIELD(name, ruvia::String, RUVIA_CUSTOM("Webhook 名称无效", isAccessName)),
     RUVIA_OPTIONAL_FIELD(url, ruvia::String, RUVIA_CUSTOM("Webhook 地址必须是有效的 HTTP(S) URL", isWebhookUrl)),
@@ -115,8 +114,8 @@ RUVIA_REQUEST_MODEL(UpdateWebhookBody,
     RUVIA_OPTIONAL_FIELD(eventTypes, ruvia::Array<ruvia::String>, RUVIA_CUSTOM("Webhook 事件无效", isWebhookEvents)),
     RUVIA_OPTIONAL_FIELD(secret, ruvia::String, RUVIA_NULLABLE, RUVIA_MAX(255, "密钥过长")));
 
-RUVIA_REQUEST_MODEL(AccessIdParams, RUVIA_REQUIRED_FIELD(id, ruvia::String, RUVIA_CUSTOM("ID 必须是 UUID", service::common::isUuidField)));
-RUVIA_REQUEST_MODEL(WebhookQueryParams, RUVIA_OPTIONAL_FIELD(accessKeyId, ruvia::String, RUVIA_CUSTOM("accessKeyId 必须是 UUID", service::common::isUuidField)));
-RUVIA_REQUEST_MODEL(AccessLogParams, RUVIA_OPTIONAL_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1), RUVIA_MIN(1, "page 必须大于 0")), RUVIA_OPTIONAL_FIELD(pageSize, ruvia::Int64, RUVIA_DEFAULT(20), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")), RUVIA_OPTIONAL_FIELD(accessKeyId, ruvia::String, RUVIA_CUSTOM("accessKeyId 必须是 UUID", service::common::isUuidField)), RUVIA_OPTIONAL_FIELD(webhookId, ruvia::String, RUVIA_CUSTOM("webhookId 必须是 UUID", service::common::isUuidField)), RUVIA_OPTIONAL_FIELD(deviceId, ruvia::String, RUVIA_CUSTOM("deviceId 必须是 UUID", service::common::isUuidField)), RUVIA_OPTIONAL_FIELD(direction, ruvia::String, RUVIA_MAX(128, "direction 长度超出限制")), RUVIA_OPTIONAL_FIELD(action, ruvia::String, RUVIA_MAX(128, "action 长度超出限制")), RUVIA_OPTIONAL_FIELD(status, ruvia::String, RUVIA_MAX(128, "status 长度超出限制")), RUVIA_OPTIONAL_FIELD(eventType, ruvia::String, RUVIA_MAX(128, "eventType 长度超出限制")));
+RUVIA_MODEL(AccessIdParams, RUVIA_REQUIRED_FIELD(id, ruvia::String, RUVIA_CUSTOM("ID 必须是 UUID", service::common::isUuidField)));
+RUVIA_MODEL(WebhookQueryParams, RUVIA_OPTIONAL_FIELD(accessKeyId, ruvia::String, RUVIA_CUSTOM("accessKeyId 必须是 UUID", service::common::isUuidField)));
+RUVIA_MODEL(AccessLogParams, RUVIA_OPTIONAL_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1), RUVIA_MIN(1, "page 必须大于 0")), RUVIA_OPTIONAL_FIELD(pageSize, ruvia::Int64, RUVIA_DEFAULT(20), RUVIA_MIN(1, "pageSize 必须在 1 - 100 之间"), RUVIA_MAX(100, "pageSize 必须在 1 - 100 之间")), RUVIA_OPTIONAL_FIELD(accessKeyId, ruvia::String, RUVIA_CUSTOM("accessKeyId 必须是 UUID", service::common::isUuidField)), RUVIA_OPTIONAL_FIELD(webhookId, ruvia::String, RUVIA_CUSTOM("webhookId 必须是 UUID", service::common::isUuidField)), RUVIA_OPTIONAL_FIELD(deviceId, ruvia::String, RUVIA_CUSTOM("deviceId 必须是 UUID", service::common::isUuidField)), RUVIA_OPTIONAL_FIELD(direction, ruvia::String, RUVIA_MAX(128, "direction 长度超出限制")), RUVIA_OPTIONAL_FIELD(action, ruvia::String, RUVIA_MAX(128, "action 长度超出限制")), RUVIA_OPTIONAL_FIELD(status, ruvia::String, RUVIA_MAX(128, "status 长度超出限制")), RUVIA_OPTIONAL_FIELD(eventType, ruvia::String, RUVIA_MAX(128, "eventType 长度超出限制")));
 
 } // namespace service::access

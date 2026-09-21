@@ -56,7 +56,7 @@ void requirePartialModbusUpdateValidation(std::string_view source) {
             "protocol service requires Modbus byteOrder only on create");
     require(source.find("(required && !registers)") != std::string_view::npos,
             "protocol service requires Modbus registers only on create");
-    require(source.find("if (packet && !packet->isObject())") != std::string_view::npos,
+    require(source.find("if (packetValue && (!packetValue->isObject() || !packet))") != std::string_view::npos,
             "protocol service does not validate Modbus packet objects");
 }
 
@@ -116,10 +116,10 @@ void requireQualifiedJsonArrayValidation(std::string_view source) {
     require(source.find("jsonb_array_elements") ==
                 std::string_view::npos,
             "protocol validation still runs JSON array SQL");
-    require(source.find("service::utils::visitJsonArray(*areas") !=
+    require(source.find("ruvia::Array<S7Area>") !=
                 std::string_view::npos,
             "S7 validation does not walk arrays through the JSON API");
-    require(source.find("service::utils::visitJsonArray(*registers") !=
+    require(source.find("ruvia::Array<ModbusRegister>") !=
                 std::string_view::npos,
             "Modbus validation does not walk arrays through the JSON API");
 }
@@ -157,7 +157,7 @@ int main() {
         const auto source = service + types;
         require(service.find("protocol.schema.h") == std::string::npos,
                 "protocol service depends on request schema");
-        require(types.find("RUVIA_REQUEST_MODEL(UpdateProtocolBody,") != std::string::npos,
+        require(types.find("RUVIA_MODEL(UpdateProtocolBody,") != std::string::npos,
                 "protocol update value has no request parser");
         require(service.find("ProtocolConfigurationRules::validateConfig") != std::string::npos,
                 "protocol service does not enforce persisted protocol configuration rules");

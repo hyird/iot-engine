@@ -834,10 +834,12 @@ function compactBytes(value: number) {
     if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)}MiB`;
     return `${(value / 1024 / 1024 / 1024).toFixed(1)}GiB`;
 }
-function monthlyTrafficPair(traffic: Edge.TcpTraffic | undefined) {
+function trafficPair(traffic: Edge.TcpTraffic | undefined, period: 'daily' | 'monthly') {
     const format = (bytes: string | undefined) =>
         bytes === undefined || bytes === '' ? '-' : compactBytes(Number(bytes));
-    return `${format(traffic?.monthlyUploadBytes)}|${format(traffic?.monthlyDownloadBytes)}`;
+    return period === 'daily'
+        ? `${format(traffic?.dailyUploadBytes)}|${format(traffic?.dailyDownloadBytes)}`
+        : `${format(traffic?.monthlyUploadBytes)}|${format(traffic?.monthlyDownloadBytes)}`;
 }
 function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
     const config = node.status.config;
@@ -873,14 +875,24 @@ function buildNodeCardItems(node: Edge.Node): DeviceCardItem[] {
             children: `${outbox.records ?? 0} 条 / ${formatBytes(outbox.bytes ?? 0)}`,
         },
         {
+            key: 'dailyTraffic',
+            label: '今日流量',
+            children: trafficPair(node.status.tcpTraffic, 'daily'),
+        },
+        {
             key: 'monthlyTraffic',
             label: '本月流量',
-            children: monthlyTrafficPair(node.status.tcpTraffic),
+            children: trafficPair(node.status.tcpTraffic, 'monthly'),
+        },
+        {
+            key: 'dailyVpn',
+            label: '今日 VPN',
+            children: trafficPair(node.status.vpnTraffic, 'daily'),
         },
         {
             key: 'monthlyVpn',
             label: '本月 VPN',
-            children: monthlyTrafficPair(node.status.vpnTraffic),
+            children: trafficPair(node.status.vpnTraffic, 'monthly'),
         },
         {
             key: 'vpnVirtualCidrs',
@@ -2346,11 +2358,17 @@ export function EdgeNodePage() {
                                 {detail.status.outbox.records} 条 /{' '}
                                 {formatBytes(detail.status.outbox.bytes)}
                             </Descriptions.Item>
+                            <Descriptions.Item label="今日流量">
+                                {trafficPair(detail.status.tcpTraffic, 'daily')}
+                            </Descriptions.Item>
                             <Descriptions.Item label="本月流量">
-                                {monthlyTrafficPair(detail.status.tcpTraffic)}
+                                {trafficPair(detail.status.tcpTraffic, 'monthly')}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="今日 VPN">
+                                {trafficPair(detail.status.vpnTraffic, 'daily')}
                             </Descriptions.Item>
                             <Descriptions.Item label="本月 VPN">
-                                {monthlyTrafficPair(detail.status.vpnTraffic)}
+                                {trafficPair(detail.status.vpnTraffic, 'monthly')}
                             </Descriptions.Item>
                             <Descriptions.Item label="ttyd">
                                 {detail.capability.terminal ? (
