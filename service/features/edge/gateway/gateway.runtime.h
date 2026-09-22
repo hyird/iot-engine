@@ -43,6 +43,11 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             },
             .closeHandshakeTimeout = std::chrono::seconds(5),
         },
+        .deflate = {
+            .enabled = true,
+            .compressionLevel = 9,
+            .contextTakeover = true,
+        },
     };
     RUVIA_GET_WS_OPTIONS("/connect", connect, webSocketOptions);
     RUVIA_ROUTES_END
@@ -415,7 +420,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         if (wire.empty()) {
             throw std::runtime_error("edge envelope encode failed");
         }
-        co_await socket.binary(wire);
+        co_await socket.binary(wire, { .compress = true });
     }
 
     static void enqueue(Session& session, const pb::Envelope& envelope) {
@@ -510,7 +515,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                     while (!session.outbound.empty() && replies < 64) {
                         auto wire = std::move(session.outbound.front());
                         session.outbound.pop_front();
-                        co_await socket.binary(wire);
+                        co_await socket.binary(wire, { .compress = true });
                         ++replies;
                     }
                     const auto configs =
