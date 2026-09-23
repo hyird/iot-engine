@@ -162,7 +162,7 @@ inline bool runNft(const std::vector<std::string>& arguments) {
     }
     pid_t process = -1;
     const auto spawned =
-        ::posix_spawn(&process, "/usr/bin/nft", &actions, nullptr, argv.data(), environ);
+        ::posix_spawnp(&process, "nft", &actions, nullptr, argv.data(), environ);
     (void)::posix_spawn_file_actions_destroy(&actions);
     if (spawned != 0)
         return false;

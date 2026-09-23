@@ -92,6 +92,11 @@ int main() {
     require(clientConfig.find("<client-private-key>") == std::string::npos,
             "generated client configuration has no private-key placeholder");
 
+#ifdef __linux__
+    if (std::system("command -v nft >/dev/null 2>&1") == 0)
+        require(service::vpn::firewall::runNft({"nft", "--version"}),
+                "VPN firewall cannot launch the installed nft executable");
+#endif
     std::string firewallScript;
     const auto firewallResult = service::vpn::firewall::render(
         "wg0",
