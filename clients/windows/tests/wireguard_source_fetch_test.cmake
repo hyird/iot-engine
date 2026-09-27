@@ -97,24 +97,24 @@ assert_revision("${_source}" "${_pinned_revision}")
 
 # Reproduce an incomplete restored object database: the commit exists but its tree does not.
 run_checked(git init --quiet "${_incomplete_source}")
+string(SUBSTRING "${_pinned_revision}" 0 2 _commit_object_directory)
+string(SUBSTRING "${_pinned_revision}" 2 -1 _commit_object_filename)
+set(_seed_commit_object "${_seed}/.git/objects/${_commit_object_directory}/${_commit_object_filename}")
+set(_incomplete_commit_object "${_incomplete_source}/.git/objects/${_commit_object_directory}/${_commit_object_filename}")
+if(NOT EXISTS "${_seed_commit_object}")
+  message(FATAL_ERROR "Seed commit loose object is missing: ${_seed_commit_object}")
+endif()
+file(MAKE_DIRECTORY "${_incomplete_source}/.git/objects/${_commit_object_directory}")
+file(COPY_FILE "${_seed_commit_object}" "${_incomplete_commit_object}")
+if(NOT EXISTS "${_incomplete_commit_object}")
+  message(FATAL_ERROR "Incomplete cache commit object was not copied: ${_incomplete_commit_object}")
+endif()
 execute_process(
-  COMMAND git -C "${_seed}" cat-file commit "${_pinned_revision}"
+  COMMAND git -C "${_incomplete_source}" cat-file -e "${_pinned_revision}^{commit}"
   RESULT_VARIABLE _commit_result
-  OUTPUT_VARIABLE _commit_contents
   ERROR_VARIABLE _commit_error)
 if(NOT "${_commit_result}" STREQUAL "0")
-  message(FATAL_ERROR "Cannot read fixture commit object: ${_commit_error}")
-endif()
-set(_commit_file "${TEST_BUILD_ROOT}/commit-object")
-file(WRITE "${_commit_file}" "${_commit_contents}")
-execute_process(
-  COMMAND git -C "${_incomplete_source}" hash-object -t commit -w "${_commit_file}"
-  RESULT_VARIABLE _hash_result
-  OUTPUT_VARIABLE _local_commit
-  ERROR_VARIABLE _hash_error
-  OUTPUT_STRIP_TRAILING_WHITESPACE)
-if(NOT "${_hash_result}" STREQUAL "0" OR NOT _local_commit STREQUAL "${_pinned_revision}")
-  message(FATAL_ERROR "Cannot create incomplete cached commit object: ${_hash_error}")
+  message(FATAL_ERROR "Cannot read copied fixture commit object: ${_commit_error}")
 endif()
 set(_pinned_tree_spec "${_pinned_revision}^")
 string(APPEND _pinned_tree_spec "{tree}")
