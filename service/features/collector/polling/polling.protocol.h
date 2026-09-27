@@ -109,7 +109,10 @@ class Session final : public ProtocolSession, public CommandCapabilitySession,
         if (closed_ || token == 0) return actions;
         if (pending_ && token == requestDeadline_) {
             requestDeadline_ = 0;
-            close(pending_->phase == Phase::Write ? "polling_write_result_unknown" : "polling_response_timeout", actions);
+            const auto reason = pending_->phase == Phase::Write ? "polling_write_result_unknown" :
+                pending_->phase == Phase::Readback ? "polling_readback_timeout" :
+                "polling_response_timeout";
+            close(reason, actions);
             return actions;
         }
         for (auto& state : devices_) if (token == state.pollDeadline) {

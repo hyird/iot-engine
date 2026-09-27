@@ -13,6 +13,7 @@ import {
 import { replaceEqualDeep } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
+    Alert,
     App,
     Button,
     Card,
@@ -57,6 +58,7 @@ import { FormModal } from '@/components/FormModal';
 import { PacketDebugPanel } from '@/components/PacketDebugPanel';
 import { PageContainer } from '@/components/PageContainer';
 import { usePermissions } from '@/hooks/usePermission';
+import { useAuthStore } from '@/store/authStore';
 import { formatDateTime } from '@/utils/dateTime';
 import { useEdgeConfigurationDetail, useEdgeSelectionList } from '../edge_node/edge_node.service';
 import { useLinkOptions } from '../link/link.service';
@@ -2492,6 +2494,7 @@ const DeviceGrid = memo(
 const EMPTY_COMMAND_IDS: string[] = [];
 const DevicePage = () => {
     const { modal, message } = App.useApp();
+    const token = useAuthStore((state) => state.token);
     const { has } = usePermissions();
     const canQuery = has('iot:device:query');
     const canAdd = has('iot:device:add');
@@ -2518,31 +2521,100 @@ const DevicePage = () => {
     const [submittedCommand, setSubmittedCommand] = useState<{
         ids: string[];
         complete: boolean;
-        result?: Device.CommandStatusesResult;
+        unknown?: boolean;
+        unknownMessage?: string;
+        tracking?: boolean;
     } | null>(null);
     const submitCommand = useDeviceCommand();
+    const canTrackCommandResults =
+        !!token &&
+        canQuery &&
+        !!submittedCommand &&
+        (!submittedCommand.complete || submittedCommand.tracking === true);
+    const commandIds =
+        canTrackCommandResults && submittedCommand ? submittedCommand.ids : EMPTY_COMMAND_IDS;
     const commandResults = useDeviceCommandResults(
-        submittedCommand?.ids ?? EMPTY_COMMAND_IDS,
-        !!submittedCommand && !submittedCommand.complete,
+        commandIds,
+        canTrackCommandResults,
         debugDeviceId
     );
     const commandPending = submitCommand.isPending;
     useEffect(() => {
-        if (!submittedCommand || submittedCommand.complete) return;
+        if (!submittedCommand || !token || !canQuery) return;
         if (commandResults.error) {
-            message.error(commandResults.error.message || '指令结果连接失败');
-            setSubmittedCommand(null);
+            if (submittedCommand.unknown) {
+                if (submittedCommand.tracking) {
+                    message.error(commandResults.error.message || '指令结果连接失败');
+                    setSubmittedCommand({ ...submittedCommand, tracking: false });
+                }
+            } else {
+                message.error(commandResults.error.message || '指令结果连接失败');
+                setSubmittedCommand(null);
+            }
             return;
         }
         if (!commandResults.data?.complete) return;
+        const unknownStatuses = commandResults.data.statuses.filter(
+            (status) => status.status === 'UNKNOWN'
+        );
+        if (unknownStatuses.length) {
+            if (!submittedCommand.unknown) {
+                const warning = summarizeDeviceCommandResult({
+                    ...commandResults.data,
+                    statuses: unknownStatuses,
+                });
+                setSubmittedCommand({
+                    ...submittedCommand,
+                    complete: true,
+                    unknown: true,
+                    unknownMessage: warning.message,
+                    tracking: true,
+                });
+            }
+            return;
+        }
         const summary = summarizeDeviceCommandResult(commandResults.data);
         if (summary.failed) message.error(summary.message);
         else message.success(summary.message);
         setSubmittedCommand(null);
-    }, [commandResults.data, commandResults.error, message, submittedCommand]);
+    }, [canQuery, commandResults.data, commandResults.error, message, submittedCommand, token]);
+    useEffect(() => {
+        if (!submittedCommand) return;
+        if (!token) {
+            setSubmittedCommand(null);
+            return;
+        }
+        if (canQuery) return;
+        if (submittedCommand.unknown) {
+            if (submittedCommand.tracking) {
+                setSubmittedCommand({ ...submittedCommand, tracking: false });
+            }
+            return;
+        }
+        setSubmittedCommand(null);
+    }, [canQuery, submittedCommand, token]);
+    const unknownCommandWarning = submittedCommand?.unknown ? (
+        <Alert
+            type="warning"
+            showIcon
+            closable
+            message={submittedCommand.unknownMessage}
+            description={
+                canTrackCommandResults
+                    ? '正在监听该指令的后续实时结果；请核对设备状态，勿直接重发。关闭此提示会停止跟踪。'
+                    : '实时跟踪已停止；请核对设备状态，勿直接重发。'
+            }
+            onClose={() => setSubmittedCommand(null)}
+            className="mb-3"
+        />
+    ) : null;
     const sendCommand = useCallback(
         (deviceId: string, command: Device.Command) => {
             if (commandPending) return;
+            if (submittedCommand?.unknown) {
+                message.warning('请先核对设备状态并关闭结果未知警示，再下发新指令；勿直接重发');
+                return;
+            }
             submitCommand.mutate(
                 { deviceId, data: command },
                 {
@@ -2553,7 +2625,7 @@ const DevicePage = () => {
                 }
             );
         },
-        [commandPending, submitCommand]
+        [commandPending, message, submittedCommand, submitCommand]
     );
     const [statusNow, setStatusNow] = useState(() => Date.now());
     const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -2569,6 +2641,7 @@ const DevicePage = () => {
         refetch,
     } = useDeviceList({
         debugDeviceId,
+        commandIds,
         enabled: canQuery,
         // Device metadata is stable between edits. Realtime snapshots below keep the page fresh
         // without repeatedly rebuilding and transferring the complete device list.
@@ -2580,6 +2653,7 @@ const DevicePage = () => {
         refetch: refetchRealtimeSnapshot,
     } = useDeviceRealtimeSnapshot({
         debugDeviceId,
+        commandIds,
         enabled: canQuery && !!data,
     });
     const { data: groupTree = [] } = useDeviceGroupTreeWithCount(
@@ -2587,7 +2661,8 @@ const DevicePage = () => {
             enabled: canQuery,
             refetchOnWindowFocus: false,
         },
-        debugDeviceId
+        debugDeviceId,
+        commandIds
     );
     const { data: linkOptions = [] } = useLinkOptions({
         enabled: canQuery,
@@ -2769,7 +2844,7 @@ const DevicePage = () => {
     }, []);
     const renderDeviceCards = (devices: Device.Overview[]) => (
         <DeviceGrid
-            commandIds={EMPTY_COMMAND_IDS}
+            commandIds={commandIds}
             debugDeviceId={debugDeviceId}
             onDebug={setDebugDeviceId}
             devices={devices}
@@ -2862,6 +2937,7 @@ const DevicePage = () => {
     if (!canQuery) {
         return (
             <PageContainer>
+                {unknownCommandWarning}
                 <Result
                     status="403"
                     title="无权限"
@@ -2873,6 +2949,7 @@ const DevicePage = () => {
     if (listError || realtimeError) {
         return (
             <PageContainer>
+                {unknownCommandWarning}
                 <Result
                     status="error"
                     title="设备数据加载失败"
@@ -2895,7 +2972,7 @@ const DevicePage = () => {
                     <h3 className="m-0 text-base font-medium">设备管理</h3>
                     <Space wrap>
                         <DeviceGroupPanel
-                            commandIds={EMPTY_COMMAND_IDS}
+                            commandIds={commandIds}
                             debugDeviceId={debugDeviceId}
                             selectedGroupId={selectedGroupId}
                             onSelect={setSelectedGroupId}
@@ -2937,6 +3014,7 @@ const DevicePage = () => {
                 </div>
             }
         >
+            {unknownCommandWarning}
             <div ref={scrollContainerRef} className="h-full overflow-y-auto overflow-x-hidden">
                 <Flex gap={12} className="mb-3" wrap>
                     {[

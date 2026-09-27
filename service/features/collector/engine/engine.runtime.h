@@ -310,7 +310,7 @@ class ProtocolEngine final {
             return {{.kind = ProtocolActionKind::FailCommand,
                      .connectionId = std::string(connectionId),
                      .commandId = std::move(command.id),
-                     .reason = "device_offline"}};
+                     .reason = "engine_device_offline"}};
         const auto link = links_.find(current->second.info.linkId);
         if (link == links_.end() || (!command.protocol.empty() &&
             link->second->protocol != command.protocol))

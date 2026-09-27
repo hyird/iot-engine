@@ -264,7 +264,7 @@ ruvia::Task<void> dispatch(Context& context) {
     ruvia::DbQuery overdue;
     const auto unclaimed = overdue.unary(ruvia::DbUnaryOperator::kIsNull, overdue.column(service::command::persistence::CommandAttemptEntity::columnName<"claimed_at">(), "a"));
     overdue.update(service::command::persistence::CommandOperationEntity::tableName(), "o")
-        .set(service::command::persistence::CommandOperationEntity::columnName<"status">(), overdue.caseWhen({ { unclaimed, overdue.value("REJECTED") } }, overdue.value("UNKNOWN")))
+        .set(service::command::persistence::CommandOperationEntity::columnName<"status">(), overdue.caseWhen({ { unclaimed, overdue.value(expiredDispatchState(false)) } }, overdue.value(expiredDispatchState(true))))
         .set(service::command::persistence::CommandOperationEntity::columnName<"reason">(), overdue.caseWhen({ { unclaimed, overdue.value("dispatch_deadline_expired") } }, overdue.value("result_not_confirmed")))
         .set(service::command::persistence::CommandOperationEntity::columnName<"completed_at">(), overdue.call("now")).updateFrom(service::command::persistence::CommandAttemptEntity::tableName(), "a")
         .andWhere(overdue.binary(overdue.column(service::command::persistence::CommandOperationEntity::columnName<"id">(), "o"), Op::kEqual, overdue.column(service::command::persistence::CommandAttemptEntity::columnName<"operation_id">(), "a")))
@@ -333,16 +333,26 @@ class CommandResultService final {
                                    : collectorResultState(message.get("success") == "1",
                                                           message.get("reason"));
             const auto actual = actualValuesJson(message);
+            // A late verified success may resolve UNKNOWN. An ambiguous failure or an
+            // unconfirmed rejection must never turn it into a definitive outcome.
+            const bool mayResolveUnknown = state == "SUCCEEDED" && message.get("success") == "1";
             using Op = ruvia::DbBinaryOperator;
             ruvia::DbQuery outcome;
             outcome.update(service::command::persistence::CommandOperationEntity::tableName()).set(service::command::persistence::CommandOperationEntity::columnName<"status">(), outcome.value(state)).set(service::command::persistence::CommandOperationEntity::columnName<"reason">(), outcome.value(message.get("reason")))
                 .set(service::command::persistence::CommandOperationEntity::columnName<"actual_values">(), outcome.cast(outcome.value(actual), ruvia::DbDataType::kJsonb)).set(service::command::persistence::CommandOperationEntity::columnName<"completed_at">(), outcome.call("now"))
                 .andWhere(outcome.binary(outcome.column(service::command::persistence::CommandOperationEntity::columnName<"id">()), Op::kEqual, outcome.cast(outcome.value(id), ruvia::DbDataType::kUuid)))
                 .andWhere(outcome.binary(outcome.column(service::command::persistence::CommandOperationEntity::columnName<"device_id">()), Op::kEqual, outcome.cast(outcome.value(deviceId), ruvia::DbDataType::kUuid)))
-                .andWhere(outcome.binary(outcome.binary(outcome.column(service::command::persistence::CommandOperationEntity::columnName<"status">()), Op::kIn,
-                    outcome.list({ outcome.value("DISPATCHING"), outcome.value("AWAITING_RESULT") })), Op::kOr,
-                    outcome.binary(outcome.binary(outcome.column(service::command::persistence::CommandOperationEntity::columnName<"status">()), Op::kEqual, outcome.value("UNKNOWN")), Op::kAnd,
-                        outcome.binary(outcome.value(state), Op::kNotEqual, outcome.value("UNKNOWN")))))
+                .andWhere(outcome.binary(
+                    outcome.binary(
+                        outcome.column(service::command::persistence::CommandOperationEntity::columnName<"status">()),
+                        Op::kIn, outcome.list({
+                            outcome.value(kCommandResultAcceptingStatuses[0]),
+                            outcome.value(kCommandResultAcceptingStatuses[1])})),
+                    Op::kOr, outcome.binary(
+                        outcome.binary(
+                            outcome.column(service::command::persistence::CommandOperationEntity::columnName<"status">()),
+                            Op::kEqual, outcome.value("UNKNOWN")),
+                        Op::kAnd, outcome.value(mayResolveUnknown))))
                 .returning({ outcome.cast(outcome.column(service::command::persistence::CommandOperationEntity::columnName<"id">()), ruvia::DbDataType::kText) });
             const auto updated = co_await transaction.query(outcome);
             if (!updated.empty())

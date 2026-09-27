@@ -2185,6 +2185,7 @@ class EdgeProjectionService {
              jsonKey("deviceConfig"), boolean(hello.supports_device_config()),
              jsonKey("networkConfigVersion"), integer(hello.network_config_version()),
              jsonKey("modemControl"), boolean(hello.supports_modem_control()),
+             jsonKey("commandStartBefore"), boolean(hello.supports_command_start_before()),
              jsonKey("logs"), boolean(hello.supports_logs()),
              jsonKey("terminal"), boolean(false), jsonKey("serialDebug"), boolean(false),
              jsonKey("vpn"), vpn});
@@ -3552,7 +3553,7 @@ return 1
                                         const pb::CommandResult& result) {
         if (result.command_id().size() != 16 || result.device_id().size() != 16)
             co_return;
-        if (!protocol::terminalCommandResultState(result.state()))
+        if (!protocol::persistableCommandResult(result.state(), result.write_ack_missing()))
             co_return;
         const auto commandId = protocol::uuidText(result.command_id());
         const auto deviceId = protocol::uuidText(result.device_id());
@@ -3562,12 +3563,16 @@ return 1
         const auto device = node->second.find(deviceId);
         if (device == node->second.end())
             co_return;
-        const bool success = result.state() == pb::COMMAND_STATE_SUCCEEDED;
-        const std::string state = success ? "SUCCEEDED" :
-            result.state() == pb::COMMAND_STATE_READBACK_MISMATCH ? "READBACK_MISMATCH" :
-            result.state() == pb::COMMAND_STATE_DEVICE_OFFLINE ||
-            result.state() == pb::COMMAND_STATE_REJECTED ? "REJECTED" :
-            result.state() == pb::COMMAND_STATE_FAILED ? "FAILED" : "UNKNOWN";
+        const auto domainState = protocol::commandResultDomainState(
+            result.state(), result.write_ack_missing(), result.message());
+        const bool success = domainState == "SUCCEEDED";
+        const std::string state(domainState);
+        std::string reason = result.message();
+        if (result.write_ack_missing()) {
+            reason = "write_ack_missing";
+            if (!result.message().empty())
+                reason += ": " + result.message();
+        }
         const auto completedAtMs = message::effectiveObservedAt(
             result.completed_at_ms(), receivedAtMs);
         std::vector<message::StreamField> fields{
@@ -3580,7 +3585,7 @@ return 1
             {"attempt", "1"},
             {"success", success ? "1" : "0"},
             {"result_state", state},
-            {"reason", result.message()},
+            {"reason", reason},
             {"worker_id", "0"},
             {"created_at_ms", std::to_string(message::utcNowMilliseconds())},
             {"completed_at_ms", std::to_string(completedAtMs)},

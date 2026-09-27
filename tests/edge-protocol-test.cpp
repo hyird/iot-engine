@@ -7,6 +7,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "service/features/edge/edge.protocol.h"
 #include "service/features/edge/firmware/firmware.service.h"
@@ -148,8 +149,20 @@ void testCompatibleProtocolVersionContract() {
                 decoded.session_epoch() == 42 && decoded.sequence() == 7,
             "strict protocol session binding changed identity");
     require(decoded.payload_case() == service::edge::pb::Envelope::kHeartbeatAck &&
-                decoded.heartbeat_ack().platform_time_ms() == 1234,
-            "strict protocol session binding changed payload");
+                decoded.heartbeat_ack().platform_time_ms() == 1234 &&
+                !decoded.heartbeat_ack().has_nonce() &&
+                !decoded.heartbeat_ack().has_database_time_ms(),
+            "strict protocol session binding changed legacy payload");
+    auto* sampledAck = decoded.mutable_heartbeat_ack();
+    sampledAck->set_nonce(123456789);
+    sampledAck->set_database_time_ms(1700000000123);
+    service::edge::pb::Envelope sampledDecoded;
+    require(service::edge::protocol::decode(service::edge::protocol::encode(decoded), sampledDecoded) &&
+                sampledDecoded.heartbeat_ack().has_nonce() &&
+                sampledDecoded.heartbeat_ack().nonce() == 123456789 &&
+                sampledDecoded.heartbeat_ack().has_database_time_ms() &&
+                sampledDecoded.heartbeat_ack().database_time_ms() == 1700000000123,
+            "correlated PostgreSQL time sample did not survive wire serialization");
 
     service::edge::protocol::bindSession(envelope, platform, node, 43, 8, 3);
     require(envelope.protocol_version() == 3 && envelope.session_epoch() == 43 &&
@@ -482,7 +495,73 @@ void testLegacyDebugAcquisitionIdentity() {
     require(rejected, "malformed nonempty acquisition ID was accepted as legacy");
 }
 
+void testCommandResultProjectionState() {
+    using State = service::edge::pb::CommandState;
+    const std::array lostAckResults{
+        std::pair{"FINS", State::COMMAND_STATE_DEVICE_OFFLINE},
+        std::pair{"S7", State::COMMAND_STATE_FAILED},
+        std::pair{"Modbus", State::COMMAND_STATE_FAILED},
+    };
+    for (const auto& [protocol, state] : lostAckResults) {
+        require(service::edge::protocol::commandResultDomainState(state, true, "") == "UNKNOWN",
+                protocol);
+    }
+    require(service::edge::protocol::commandResultDomainState(
+                State::COMMAND_STATE_SUCCEEDED, true, "") == "UNKNOWN",
+            "missing write acknowledgement was overridden by a success state");
+    require(service::edge::protocol::commandResultDomainState(
+                State::COMMAND_STATE_SUCCEEDED, false, "readback verified") == "SUCCEEDED",
+            "verified success was misclassified just because its message mentions readback");
+    require(service::edge::protocol::commandResultDomainState(
+                State::COMMAND_STATE_DEVICE_OFFLINE, false,
+                "write acknowledged; readback failed or unavailable") == "UNKNOWN",
+            "acknowledged write with offline readback was marked never executed");
+    for (const auto reason : {"fins_readback_timeout", "s7_readback_timeout",
+                              "modbus_readback_timeout"}) {
+        require(service::edge::protocol::commandResultDomainState(
+                    State::COMMAND_STATE_FAILED, false, reason) == "UNKNOWN",
+                "failed readback was misrepresented as a confirmed non-execution");
+    }
+    require(service::edge::protocol::commandResultDomainState(
+                State::COMMAND_STATE_FAILED, false, "s7_readback_mismatch") ==
+                "READBACK_MISMATCH",
+            "explicit readback mismatch lost its distinct result state");
+
+    service::edge::pb::CommandResult legacyOffline;
+    legacyOffline.set_state(State::COMMAND_STATE_DEVICE_OFFLINE);
+    require(!legacyOffline.write_ack_missing() &&
+                service::edge::protocol::commandResultDomainState(
+                    legacyOffline.state(), legacyOffline.write_ack_missing(), "") == "REJECTED",
+            "legacy result without the new flag changed its existing state mapping");
+    legacyOffline.set_state(State::COMMAND_STATE_FAILED);
+    require(service::edge::protocol::commandResultDomainState(
+                legacyOffline.state(), legacyOffline.write_ack_missing(), "") == "FAILED",
+            "legacy failed result without the new flag changed its existing state mapping");
+
+    auto envelope = service::edge::protocol::outbound(
+        "00000000-0000-7000-8000-000000000010", 123456789,
+        service::edge::protocol::kDefaultPlatformId,
+        "00000000-0000-7000-8000-000000000011");
+    auto* result = envelope.mutable_command_result();
+    result->set_command_id(std::string(16, '\x01'));
+    result->set_device_id(std::string(16, '\x02'));
+    result->set_state(State::COMMAND_STATE_DEVICE_OFFLINE);
+    result->set_write_ack_missing(true);
+    service::edge::pb::Envelope decoded;
+    require(service::edge::protocol::decode(service::edge::protocol::encode(envelope), decoded) &&
+                decoded.command_result().write_ack_missing() &&
+                service::edge::protocol::commandResultDomainState(
+                    decoded.command_result().state(), decoded.command_result().write_ack_missing(),
+                    decoded.command_result().message()) == "UNKNOWN",
+            "write acknowledgement ambiguity did not survive Edge protobuf serialization");
+}
+
 void testCommandResultRequiresTerminalState() {
+    require(!service::edge::protocol::persistableCommandResult(
+                service::edge::pb::COMMAND_STATE_RUNNING, false) &&
+                service::edge::protocol::persistableCommandResult(
+                    service::edge::pb::COMMAND_STATE_RUNNING, true),
+            "missing write acknowledgement was discarded with a non-terminal firmware state");
     require(!service::edge::protocol::terminalCommandResultState(
                 service::edge::pb::COMMAND_STATE_UNSPECIFIED) &&
                 !service::edge::protocol::terminalCommandResultState(
@@ -533,6 +612,7 @@ int main() {
     testFirmwareRequestDefersVersionToNodeHello();
     testFirmwareChunkSource();
     testLegacyDebugAcquisitionIdentity();
+    testCommandResultProjectionState();
     testCommandResultRequiresTerminalState();
     std::cout << "edge protocol tests passed\n";
 }

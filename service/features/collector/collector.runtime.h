@@ -32,6 +32,7 @@
 #include "service/features/packet_log/packet_log.transport.h"
 #include "service/common/message.h"
 #include "service/features/collector/collector.service.h"
+#include "service/features/command/command.types.h"
 #include "service/features/telemetry/derived/derived.service.h"
 #include "service/features/collector/engine/engine.runtime.h"
 #include "service/features/collector/modbus/modbus.protocol.h"
@@ -1736,7 +1737,8 @@ class CollectorWorker final {
                 commandIds.push_back(commandId);
             }
         }
-        const auto failureReason = reason.empty() ? std::string_view("device_offline") : reason;
+        const auto failureReason = reason.empty()
+            ? std::string_view("connection_closed_result_unknown") : reason;
         for (const auto& commandId : commandIds) {
             co_await finishCommand(commandId, false, failureReason);
         }
@@ -1865,30 +1867,8 @@ class CollectorWorker final {
         pendingCommands_.erase(std::string(commandId));
     }
 
-    [[nodiscard]] static bool retryableFailure(std::string_view reason) {
-        static constexpr std::array<std::string_view, 10> permanentMarkers{
-            "invalid",
-            "required",
-            "not_supported",
-            "mismatch",
-            "conflict",
-            "queue_full",
-            "busy",
-            "negative_ack",
-            "protocol_route_mismatch",
-            "stale_session_epoch"
-        };
-        const auto contains = [reason](std::string_view marker) {
-            return reason.find(marker) != std::string_view::npos;
-        };
-        if (std::any_of(permanentMarkers.begin(), permanentMarkers.end(), contains)) {
-            return false;
-        }
-        return contains("timeout") || contains("temporarily_unavailable") || contains("redis");
-    }
-
     ruvia::Task<bool> retryCommand(std::string_view stream, std::string_view entryId, message::ProtocolTask task, std::string_view reason) {
-        if (retryableFailure(reason) && task.attempt < task.maxAttempts) {
+        if (service::command::retryableFailure(reason) && task.attempt < task.maxAttempts) {
             ++task.attempt;
             const auto retryReason = "attempt=" + std::to_string(task.attempt) + " reason=" +
                 std::string(reason);

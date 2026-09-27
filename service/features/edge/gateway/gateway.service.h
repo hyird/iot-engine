@@ -9,6 +9,7 @@
 #include <charconv>
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -76,11 +77,39 @@ class GatewayService final {
 
 
     template <typename Context>
-    static ruvia::Task<bool> claimCommand(Context& context,
-                                          std::string_view operationId,
-                                          std::string_view nodeId) {
+    static ruvia::Task<std::int64_t> databaseTimeMilliseconds(Context& context) {
+        ruvia::DbQuery sample(context.pool());
+        const auto epochMilliseconds = sample.cast(
+            sample.call("floor", {sample.binary(
+                sample.extract(ruvia::DbDatePart::kEpoch, sample.call("clock_timestamp")),
+                ruvia::DbBinaryOperator::kMultiply, sample.value(std::int64_t{1000}))}),
+            ruvia::DbDataType::kBigInt);
+        sample.select(sample.cast(epochMilliseconds, ruvia::DbDataType::kText));
+        const auto rows = co_await context.db().query(sample);
+        if (rows.empty())
+            throw std::runtime_error("PostgreSQL clock sample is unavailable");
+        const auto sampledValue = rows.front()[0].value();
+        if (!sampledValue)
+            throw std::runtime_error("PostgreSQL clock sample is unavailable");
+        const auto value = *sampledValue;
+        std::int64_t milliseconds{};
+        const auto parsed = std::from_chars(value.data(), value.data() + value.size(), milliseconds);
+        if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size())
+            throw std::runtime_error("PostgreSQL clock sample is invalid");
+        co_return milliseconds;
+    }
+
+    template <typename Context>
+    static ruvia::Task<std::optional<std::int64_t>> claimCommand(
+        Context& context, std::string_view operationId, std::string_view nodeId) {
         ruvia::DbQuery claim(context.pool());
         using Binary = ruvia::DbBinaryOperator;
+        const auto deadlineMs = claim.cast(
+            claim.call("floor", {claim.binary(
+                claim.extract(ruvia::DbDatePart::kEpoch,
+                    claim.column(service::edge::gateway::persistence::CommandAttemptEntity::columnName<"deadline">(), "a")),
+                Binary::kMultiply, claim.value(1000))}),
+            ruvia::DbDataType::kBigInt);
         claim.update(service::edge::gateway::persistence::CommandAttemptEntity::tableName(), "a")
             .set(service::edge::gateway::persistence::CommandAttemptEntity::columnName<"sent_at">(), claim.call("now"))
             .updateFrom(service::edge::gateway::persistence::CommandOperationEntity::tableName(), "o")
@@ -96,9 +125,35 @@ class GatewayService final {
                 claim.call("now")))
             .andWhere(claim.binary(claim.column(service::edge::gateway::persistence::CommandOperationEntity::columnName<"status">(), "o"), Binary::kIn,
                 claim.list({claim.value("DISPATCHING"), claim.value("AWAITING_RESULT")})))
-            .returning({claim.column(service::edge::gateway::persistence::CommandAttemptEntity::columnName<"operation_id">(), "a")});
+            .returning({claim.cast(claim.column(service::edge::gateway::persistence::CommandAttemptEntity::columnName<"operation_id">(), "a"), ruvia::DbDataType::kText), deadlineMs});
         const auto claimed = co_await context.db().query(claim);
-        co_return !claimed.empty();
+        if (claimed.empty())
+            co_return std::nullopt;
+        // sent_at is already committed. A bad returned value must never reopen the attempt;
+        // the command deadline sweep will conservatively transition it to UNKNOWN.
+        const auto value = claimed.front()[1].value();
+        if (!value)
+            throw std::runtime_error("claimed command attempt has no persisted deadline");
+        std::int64_t milliseconds{};
+        const auto parsed = std::from_chars(value->data(), value->data() + value->size(), milliseconds);
+        if (parsed.ec != std::errc{} || parsed.ptr != value->data() + value->size())
+            throw std::runtime_error("claimed command attempt deadline is invalid");
+        co_return milliseconds;
+    }
+
+    static void applyCommandDeadline(pb::CommandRequest& request,
+                                     bool supportsCommandStartBefore,
+                                     std::optional<std::int64_t> deadlineMs) {
+        if (!supportsCommandStartBefore) {
+            if (request.has_start_before_ms())
+                throw std::invalid_argument("command start deadline was not negotiated");
+            return;
+        }
+        if (request.has_start_before_ms())
+            throw std::invalid_argument("command start deadline must come from its persisted attempt");
+        if (!deadlineMs)
+            throw std::invalid_argument("negotiated command start deadline is unavailable");
+        request.set_start_before_ms(*deadlineMs);
     }
 
     template <typename Context>

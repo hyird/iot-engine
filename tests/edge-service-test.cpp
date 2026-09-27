@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include "service/features/edge/gateway/gateway.entity.h"
+#include "service/features/edge/gateway/gateway.service.h"
 #include "service/modules/edge_node/edge_node.service.h"
 
 namespace {
@@ -59,6 +60,45 @@ int main() {
         const auto pending = service::edge::gateway::EnrollmentRecord::decode("node-1|pending");
         if (!pending || pending->status != "pending") {
             throw std::runtime_error("gateway enrollment record changed pending status");
+        }
+        service::edge::pb::CommandRequest capableCommand;
+        capableCommand.set_timeout_ms(5000);
+        constexpr std::int64_t persistedDeadlineMs = 1780000000123;
+        service::edge::gateway::GatewayService::applyCommandDeadline(
+            capableCommand, true, persistedDeadlineMs);
+        if (!capableCommand.has_start_before_ms() ||
+            capableCommand.start_before_ms() != persistedDeadlineMs ||
+            capableCommand.timeout_ms() != 5000) {
+            throw std::runtime_error("negotiated command deadline did not preserve the persisted millisecond value");
+        }
+        service::edge::pb::CommandRequest legacyCommand;
+        legacyCommand.set_timeout_ms(5000);
+        service::edge::gateway::GatewayService::applyCommandDeadline(
+            legacyCommand, false, persistedDeadlineMs);
+        if (legacyCommand.has_start_before_ms() || legacyCommand.timeout_ms() != 5000) {
+            throw std::runtime_error("legacy command wire behavior changed");
+        }
+        bool rejectedUnnegotiatedField = false;
+        legacyCommand.set_start_before_ms(persistedDeadlineMs);
+        try {
+            service::edge::gateway::GatewayService::applyCommandDeadline(
+                legacyCommand, false, persistedDeadlineMs);
+        } catch (const std::invalid_argument&) {
+            rejectedUnnegotiatedField = true;
+        }
+        if (!rejectedUnnegotiatedField) {
+            throw std::runtime_error("legacy session accepted an unnegotiated command deadline field");
+        }
+        bool rejectedMissingDeadline = false;
+        try {
+            service::edge::pb::CommandRequest invalidCommand;
+            service::edge::gateway::GatewayService::applyCommandDeadline(
+                invalidCommand, true, std::nullopt);
+        } catch (const std::invalid_argument&) {
+            rejectedMissingDeadline = true;
+        }
+        if (!rejectedMissingDeadline) {
+            throw std::runtime_error("negotiated command deadline silently proceeded without its database value");
         }
         const auto serviceSource = edgeSource("service/modules/edge_node/edge_node.service.h");
         requireMissing(serviceSource, "R\"sql", "edge service still embeds raw SQL");
@@ -163,6 +203,10 @@ int main() {
         requireContains(projectorRuntimeSource, "projector_stream::stream(index, service::runtime::instanceId())", "edge projector does not preserve the accepting Worker");
         requireContains(projectorServiceSource, "jsonKey(\"firmwareUpdate\"), boolean(hello.supports_firmware_update())", "edge projector does not retain legacy firmware capability");
         requireContains(projectorServiceSource, "jsonKey(\"firmwareStream\"), boolean(hello.supports_firmware_stream())", "edge projector does not record WS firmware capability separately");
+        requireContains(projectorServiceSource, "protocol::persistableCommandResult(result.state(), result.write_ack_missing())", "edge command result drops missing-write-ACK outcomes before persistence");
+        requireContains(projectorServiceSource, "protocol::commandResultDomainState(", "edge command results ignore write acknowledgement ambiguity");
+        requireContains(projectorServiceSource, "result.write_ack_missing()", "edge command projection does not persist the missing-write-ACK result");
+        requireContains(projectorServiceSource, "reason = \"write_ack_missing\"", "edge API reason omits the missing-write-ACK context");
         requireContains(projectorServiceSource, "query.nullIf(config::detail::jsonText(query, excludedMobile, \"apn\")", "edge hello projection clears the last known mobile APN");
         requireContains(projectorServiceSource, "query.nullIf(config::detail::jsonText(query, excludedMobile, \"operator\")", "edge hello projection clears the last known mobile operator");
         requireContains(projectorServiceSource, "query.nullIf(text(heartbeat.apn()), query.value(std::string_view{}))", "edge heartbeat projection clears the last known mobile APN");

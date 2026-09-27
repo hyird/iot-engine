@@ -164,6 +164,39 @@ void testFinsSession() {
     actions = receive(*session, response);
     require(action(actions, ProtocolActionKind::PublishParsed).parsed.valuesJson.find("4660") != std::string::npos,
         "FINS session did not publish words");
+    auto* commands = dynamic_cast<CommandCapabilitySession*>(session.get());
+    actions = commands->execute({.id = "fins-write-lost-ack", .deviceId = "device",
+                                 .elements = {{"point", "12"}}});
+    const auto writeDeadline = action(actions, ProtocolActionKind::ScheduleDeadline).deadlineToken;
+    auto* deadlines = dynamic_cast<DeadlineCapabilitySession*>(session.get());
+    actions = deadlines->deadline(writeDeadline);
+    const auto& lostAck = action(actions, ProtocolActionKind::FailCommand);
+    require(lostAck.reason == "polling_write_result_unknown",
+            "FINS write timeout was not retained as an unknown, non-retryable outcome");
+
+    auto readbackConfig = snapshot("FINS");
+    auto readbackSession = fins::SessionFactory{}.createSession(
+        readbackConfig->links[0], "connection", "target", readbackConfig);
+    (void)readbackSession->connected();
+    actions = receive(*readbackSession, handshake);
+    const auto initialRead = action(actions, ProtocolActionKind::Send).bytes;
+    auto initialResponse = response;
+    initialResponse[25] = initialRead[25];
+    (void)receive(*readbackSession, initialResponse);
+    auto* readbackCommands = dynamic_cast<CommandCapabilitySession*>(readbackSession.get());
+    actions = readbackCommands->execute({.id = "fins-write-readback-timeout", .deviceId = "device",
+                                         .elements = {{"point", "12"}}});
+    const auto writeRequest = action(actions, ProtocolActionKind::Send).bytes;
+    const std::vector<std::uint8_t> writeAck{
+        'F','I','N','S',0,0,0,22,0,0,0,2,0,0,0,0,
+        0xc0,0,2,0,10,0,0,20,0,writeRequest[25],1,2,0,0};
+    actions = receive(*readbackSession, writeAck);
+    auto* readbackDeadlines = dynamic_cast<DeadlineCapabilitySession*>(readbackSession.get());
+    const auto readbackToken = action(actions, ProtocolActionKind::ScheduleDeadline).deadlineToken;
+    actions = readbackDeadlines->deadline(readbackToken);
+    const auto& readbackFailure = action(actions, ProtocolActionKind::FailCommand);
+    require(readbackFailure.reason == "polling_readback_timeout",
+            "FINS readback failure after a write response was rejected or retried");
 }
 
 void testDlt645Session() {

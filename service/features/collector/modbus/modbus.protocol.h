@@ -353,14 +353,15 @@ class Session final : public ProtocolSession,
         }
         auto failed = std::move(*inflight_);
         inflight_.reset();
+        const auto failureReason = failed.writeAckMissing
+            ? "write_ack_missing:modbus_readback_timeout"
+            : failed.phase == Phase::Readback ? "modbus_readback_timeout" : "modbus_response_timeout";
         std::vector<ProtocolAction> actions{{.kind = ProtocolActionKind::FailCommand,
                                              .connectionId = connectionId_,
                                              .deviceId = failed.device->id,
                                              .deviceCode = failed.device->code,
                                              .commandId = failed.command.id,
-                                             .reason = failed.phase == Phase::Readback
-                                                           ? "modbus_readback_timeout"
-                                                           : "modbus_response_timeout"}};
+                                             .reason = failureReason}};
         finishCompletedOperation(failed.command, *failed.device, actions);
         return actions;
     }
@@ -877,14 +878,17 @@ class Session final : public ProtocolSession,
                                    .deviceId = device.id,
                                    .deviceCode = device.code,
                                    .commandId = failed.command.id,
-                                   .reason = "modbus_readback_mismatch"});
+                                   .reason = failed.writeAckMissing
+                                       ? "write_ack_missing:modbus_readback_mismatch"
+                                       : "modbus_readback_mismatch"});
                 finishCompletedOperation(failed.command, *failed.device, actions);
                 return actions;
             }
         }
         auto completed = std::move(*inflight_);
         inflight_.reset();
-        actions.push_back({.kind = ProtocolActionKind::CompleteCommand,
+        actions.push_back({.kind = completed.writeAckMissing ? ProtocolActionKind::FailCommand
+                                                               : ProtocolActionKind::CompleteCommand,
                            .connectionId = connectionId_,
                            .deviceId = device.id,
                            .deviceCode = device.code,

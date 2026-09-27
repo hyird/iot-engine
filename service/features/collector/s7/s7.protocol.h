@@ -511,9 +511,10 @@ class Session final : public ProtocolSession,
         // Complete through the common path so ISO-DR is sent and the next operation handshakes.
         auto failed = std::move(*inflight_);
         inflight_.reset();
-        std::vector<ProtocolAction> actions{failAction(failed, failed.phase == Phase::Readback
-                                                                    ? "s7_readback_timeout"
-                                                                    : "s7_response_timeout")};
+        const auto failureReason = failed.writeAckMissing
+            ? "write_ack_missing:s7_readback_timeout"
+            : failed.phase == Phase::Readback ? "s7_readback_timeout" : "s7_response_timeout";
+        std::vector<ProtocolAction> actions{failAction(failed, failureReason)};
         finishCompletedOperation(failed.command, actions);
         return actions;
     }
@@ -1048,7 +1049,8 @@ class Session final : public ProtocolSession,
             if (!valid || actual != inflight_->desiredBool) {
                 auto failed = std::move(*inflight_);
                 inflight_.reset();
-                actions.push_back(failAction(failed, "s7_readback_mismatch"));
+                actions.push_back(failAction(failed, failed.writeAckMissing
+                    ? "write_ack_missing:s7_readback_mismatch" : "s7_readback_mismatch"));
                 finishCompletedOperation(failed.command, actions);
                 return actions;
             }
@@ -1060,14 +1062,16 @@ class Session final : public ProtocolSession,
             if (combined != inflight_->command.expectedReadbackData) {
                 auto failed = std::move(*inflight_);
                 inflight_.reset();
-                actions.push_back(failAction(failed, "s7_readback_mismatch"));
+                actions.push_back(failAction(failed, failed.writeAckMissing
+                    ? "write_ack_missing:s7_readback_mismatch" : "s7_readback_mismatch"));
                 finishCompletedOperation(failed.command, actions);
                 return actions;
             }
         }
         auto completed = std::move(*inflight_);
         inflight_.reset();
-        actions.push_back({.kind = ProtocolActionKind::CompleteCommand,
+        actions.push_back({.kind = completed.writeAckMissing ? ProtocolActionKind::FailCommand
+                                                               : ProtocolActionKind::CompleteCommand,
                            .connectionId = connectionId_,
                            .deviceId = completed.device->id,
                            .deviceCode = completed.device->code,

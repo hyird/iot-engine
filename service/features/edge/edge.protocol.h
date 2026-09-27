@@ -217,6 +217,49 @@ inline constexpr bool terminalCommandResultState(pb::CommandState state) noexcep
            state == pb::COMMAND_STATE_REJECTED || state == pb::COMMAND_STATE_FAILED;
 }
 
+inline constexpr bool persistableCommandResult(pb::CommandState state,
+                                                bool writeAckMissing) noexcept {
+    return writeAckMissing || terminalCommandResultState(state);
+}
+
+inline bool containsCaseInsensitive(std::string_view text, std::string_view needle) noexcept {
+    if (needle.empty())
+        return true;
+    for (std::size_t start = 0; start + needle.size() <= text.size(); ++start) {
+        bool matches = true;
+        for (std::size_t offset = 0; offset < needle.size(); ++offset) {
+            if (std::tolower(static_cast<unsigned char>(text[start + offset])) !=
+                std::tolower(static_cast<unsigned char>(needle[offset]))) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches)
+            return true;
+    }
+    return false;
+}
+
+inline std::string_view commandResultDomainState(pb::CommandState state,
+                                                  bool writeAckMissing,
+                                                  std::string_view message) noexcept {
+    if (writeAckMissing)
+        return "UNKNOWN";
+    if (state == pb::COMMAND_STATE_READBACK_MISMATCH ||
+        (containsCaseInsensitive(message, "readback") &&
+         containsCaseInsensitive(message, "mismatch")))
+        return "READBACK_MISMATCH";
+    if (state == pb::COMMAND_STATE_SUCCEEDED)
+        return "SUCCEEDED";
+    if (containsCaseInsensitive(message, "readback"))
+        return "UNKNOWN";
+    if (state == pb::COMMAND_STATE_DEVICE_OFFLINE || state == pb::COMMAND_STATE_REJECTED)
+        return "REJECTED";
+    if (state == pb::COMMAND_STATE_FAILED)
+        return "FAILED";
+    return "UNKNOWN";
+}
+
 using service::message::edge::authKey;
 
 inline bool validImei(std::string_view imei) {

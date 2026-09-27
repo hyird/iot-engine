@@ -78,6 +78,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         bool firmwareSourceLoaded{};
         bool capabilitySeen{};
         bool sparseHeartbeat{};
+        bool supportsCommandStartBefore{};
         std::chrono::steady_clock::time_point lastInbound{ std::chrono::steady_clock::now() };
     };
 
@@ -122,6 +123,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         }
         const std::string imei(input.hello().imei());
         const bool sparseHeartbeat = input.hello().supports_sparse_heartbeat();
+        const bool supportsCommandStartBefore = input.hello().supports_command_start_before();
         const auto enrollment = co_await gateway::GatewayService::loadEnrollment(c, imei);
         std::string nodeId = enrollment.nodeId;
         std::string status = enrollment.status;
@@ -139,6 +141,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 if (!message->binary() || !protocol::decode(message->payload(), input) ||
                     input.protocol_version() != session.protocolVersion ||
                     input.payload_case() != pb::Envelope::kHeartbeat ||
+                    (supportsCommandStartBefore &&
+                        (!input.heartbeat().has_nonce() || input.heartbeat().nonce() == 0)) ||
                     !input.node_id().empty() || input.session_epoch() != 0 ||
                     input.sequence() <= session.inboundSequence ||
                     input.platform_id() !=
@@ -160,7 +164,27 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 }
 
                 auto heartbeat = makeEnvelope(c, session);
-                heartbeat.mutable_heartbeat_ack()->set_platform_time_ms(service::message::utcNowMilliseconds());
+                auto* heartbeatAck = heartbeat.mutable_heartbeat_ack();
+                heartbeatAck->set_platform_time_ms(service::message::utcNowMilliseconds());
+                if (input.heartbeat().has_nonce()) {
+                    heartbeatAck->set_nonce(input.heartbeat().nonce());
+                }
+                if (supportsCommandStartBefore) {
+                    bool sampleAvailable = false;
+                    try {
+                        heartbeatAck->set_database_time_ms(
+                            co_await gateway::GatewayService::databaseTimeMilliseconds(c));
+                        sampleAvailable = true;
+                    } catch (const std::exception&) {
+                    }
+                    if (!sampleAvailable) {
+                        co_await socket.close(ruvia::WebSocketCloseOptions{
+                            .code = 1011,
+                            .reason = "database time sample unavailable",
+                        });
+                        co_return;
+                    }
+                }
                 co_await send(socket, heartbeat);
             }
             if (status != "approved") {
@@ -175,6 +199,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         }
 
         session.sparseHeartbeat = sparseHeartbeat;
+        session.supportsCommandStartBefore = supportsCommandStartBefore;
         if (!co_await session_state::claim(
                 c.redis(),
                 session.nodeId,
@@ -218,6 +243,25 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         helloAck->set_heartbeat_interval_sec(300);
         helloAck->set_max_message_size(static_cast<std::uint32_t>(protocol::kMaxMessageSize));
         helloAck->set_platform_time_ms(service::message::utcNowMilliseconds());
+        if (supportsCommandStartBefore) {
+            bool sampleAvailable = false;
+            try {
+                helloAck->set_database_time_ms(
+                    co_await gateway::GatewayService::databaseTimeMilliseconds(c));
+                sampleAvailable = true;
+            } catch (const std::exception&) {
+            }
+            if (!sampleAvailable) {
+                (void)co_await session_state::release(
+                    c.redis(), session.nodeId, session.epoch, session.protocolVersion,
+                    session.workerIndex);
+                co_await socket.close(ruvia::WebSocketCloseOptions{
+                    .code = 1011,
+                    .reason = "database time sample unavailable",
+                });
+                co_return;
+            }
+        }
         co_await send(socket, ack);
         std::exception_ptr sessionFailure;
         // Egress must not wait for the node to speak first. This worker's own
@@ -347,12 +391,17 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
     }
 
     static bool validInbound(const pb::Envelope& input, const Session& session) {
-        return input.protocol_version() == session.protocolVersion &&
-            input.node_id().size() == 16 &&
-            input.platform_id().size() == 16 && input.session_epoch() == session.epoch &&
-            input.sequence() > session.inboundSequence &&
-            input.node_id() == protocol::bytes(session.nodeBytes.data(), 16) &&
-            input.platform_id() == protocol::bytes(session.platformBytes.data(), 16);
+        if (input.protocol_version() != session.protocolVersion ||
+            input.node_id().size() != 16 || input.platform_id().size() != 16 ||
+            input.session_epoch() != session.epoch ||
+            input.sequence() <= session.inboundSequence ||
+            input.node_id() != protocol::bytes(session.nodeBytes.data(), 16) ||
+            input.platform_id() != protocol::bytes(session.platformBytes.data(), 16)) {
+            return false;
+        }
+        return !session.supportsCommandStartBefore ||
+            input.payload_case() != pb::Envelope::kHeartbeat ||
+            (input.heartbeat().has_nonce() && input.heartbeat().nonce() != 0);
     }
 
     static bool shouldProject(const pb::Envelope& input) {
@@ -421,6 +470,19 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             throw std::runtime_error("edge envelope encode failed");
         }
         co_await socket.binary(wire, { .compress = true });
+    }
+
+    static ruvia::Task<void> sendSessionEnvelope(
+        ruvia::Context& c, ruvia::WebSocket& socket, Session& session, pb::Envelope& envelope) {
+        if (envelope.has_heartbeat_ack() && session.supportsCommandStartBefore &&
+            envelope.heartbeat_ack().has_nonce()) {
+            if (envelope.heartbeat_ack().nonce() == 0) {
+                throw std::runtime_error("correlated heartbeat nonce is invalid");
+            }
+            envelope.mutable_heartbeat_ack()->set_database_time_ms(
+                co_await gateway::GatewayService::databaseTimeMilliseconds(c));
+        }
+        co_await send(socket, envelope);
     }
 
     static void enqueue(Session& session, const pb::Envelope& envelope) {
@@ -515,7 +577,11 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                     while (!session.outbound.empty() && replies < 64) {
                         auto wire = std::move(session.outbound.front());
                         session.outbound.pop_front();
-                        co_await socket.binary(wire, { .compress = true });
+                        pb::Envelope envelope;
+                        if (!protocol::decode(wire, envelope)) {
+                            throw std::runtime_error("edge envelope decode failed");
+                        }
+                        co_await sendSessionEnvelope(c, socket, session, envelope);
                         ++replies;
                     }
                     const auto configs =
@@ -575,9 +641,12 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
             const auto id = protocol::uuidText(envelope.command_request().command_id());
             // Claim physical transmission once, including across reconnects. Other Edge tasks
             // retain their existing retry contract; device control cannot safely be replayed.
-            if (!co_await gateway::GatewayService::claimCommand(c, id, session.nodeId)) {
+            const auto deadlineMs = co_await gateway::GatewayService::claimCommand(c, id, session.nodeId);
+            if (!deadlineMs) {
                 co_return false;
             }
+            gateway::GatewayService::applyCommandDeadline(
+                *envelope.mutable_command_request(), session.supportsCommandStartBefore, deadlineMs);
         }
         protocol::bindSession(
             envelope,
@@ -589,7 +658,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         );
         std::exception_ptr failure;
         try {
-            co_await send(socket, envelope);
+            co_await sendSessionEnvelope(c, socket, session, envelope);
         } catch (...) {
             failure = std::current_exception();
         }
@@ -638,6 +707,9 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 auto reply = makeEnvelope(c, session);
                 auto* heartbeatAck = reply.mutable_heartbeat_ack();
                 heartbeatAck->set_platform_time_ms(service::message::utcNowMilliseconds());
+                if (input.heartbeat().has_nonce()) {
+                    heartbeatAck->set_nonce(input.heartbeat().nonce());
+                }
                 heartbeatAck->set_request_capability_report(!session.capabilitySeen);
                 heartbeatAck->set_request_device_status(false);
                 // The ingress stream accepted this heartbeat before handle() is called.

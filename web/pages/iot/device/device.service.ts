@@ -132,14 +132,20 @@ export function summarizeDeviceCommandResult(result: Device.CommandStatusesResul
     const failed = result.statuses.find((state) =>
         ['FAILED', 'REJECTED', 'UNKNOWN', 'READBACK_MISMATCH'].includes(state.status)
     );
-    if (failed)
-        return {
-            failed: true,
-            message:
-                failed.status === 'UNKNOWN'
-                    ? '指令结果未知，请核对设备状态，勿直接重发'
-                    : failed.reason || '设备执行指令失败',
-        };
+    if (failed) {
+        const reason = failed.reason?.toLowerCase() ?? '';
+        const message =
+            failed.status === 'UNKNOWN'
+                ? reason.includes('write_ack_missing')
+                    ? '未收到写入应答，指令可能已执行；请核对设备状态，勿直接重发'
+                    : reason.includes('readback')
+                      ? '回读未能确认最终设备状态，请核对设备状态，勿直接重发'
+                      : '指令结果未知，请核对设备状态，勿直接重发'
+                : failed.status === 'READBACK_MISMATCH'
+                  ? '回读值与目标不一致，请核对设备状态'
+                  : failed.reason || '设备执行指令失败';
+        return { failed: true, message };
+    }
     const actualValues = result.statuses.flatMap((status) => status.actual_values ?? []);
     return {
         failed: false,
