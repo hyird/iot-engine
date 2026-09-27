@@ -73,6 +73,10 @@ add_test(NAME vpn-common COMMAND vpn_common_tests)
 add_executable(vpn_gui_tests tests/gui_controller_tests.cpp)
 target_link_libraries(vpn_gui_tests PRIVATE vpn_common)
 add_test(NAME vpn-gui COMMAND vpn_gui_tests)
+add_test(
+  NAME wireguard-source-fetch
+  COMMAND "${CMAKE_COMMAND}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wireguard_source_fetch_test.cmake")
 
 add_executable(vpn_platform_http_probe tests/platform_http_probe.cpp)
 target_link_libraries(vpn_platform_http_probe PRIVATE vpn_service_runtime)
@@ -89,6 +93,7 @@ add_custom_command(
     "-P" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/BuildWireGuard.cmake"
   DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/BuildWireGuard.cmake"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchPinnedGit.cmake"
     "${CMAKE_CURRENT_SOURCE_DIR}/wireguard.lock.json"
   VERBATIM)
 add_custom_target(windows-wireguard DEPENDS ${_wireguard_files})

@@ -4,6 +4,8 @@ if(NOT WIN32)
   message(FATAL_ERROR "WireGuard native packaging requires Windows.")
 endif()
 
+include("${CMAKE_CURRENT_LIST_DIR}/FetchPinnedGit.cmake")
+
 if(NOT DEFINED BUILD_ROOT OR NOT DEFINED SOURCE_ROOT OR NOT DEFINED LOCK_FILE)
   message(FATAL_ERROR "BUILD_ROOT, SOURCE_ROOT and LOCK_FILE are required.")
 endif()
@@ -118,28 +120,7 @@ set(_build_root "${BUILD_ROOT}/windows-vpn-native")
 set(_source "${_build_root}/source")
 file(MAKE_DIRECTORY "${_build_root}")
 
-if(NOT EXISTS "${_source}/.git")
-  run_checked(git clone --no-checkout "${_repository}" "${_source}")
-else()
-  execute_process(
-    COMMAND git -C "${_source}" status --porcelain --untracked-files=no
-    RESULT_VARIABLE _status_result
-    OUTPUT_VARIABLE _dirty
-    ERROR_VARIABLE _status_error
-    OUTPUT_STRIP_TRAILING_WHITESPACE)
-  if(NOT _status_result EQUAL 0 OR _dirty)
-    message(FATAL_ERROR "WireGuard source checkout contains local edits: ${_dirty}${_status_error}")
-  endif()
-endif()
-run_checked(git -C "${_source}" checkout --detach "${_revision}")
-execute_process(
-  COMMAND git -C "${_source}" rev-parse HEAD
-  RESULT_VARIABLE _revision_result
-  OUTPUT_VARIABLE _actual_revision
-  OUTPUT_STRIP_TRAILING_WHITESPACE)
-if(NOT _revision_result EQUAL 0 OR NOT _actual_revision STREQUAL "${_revision}")
-  message(FATAL_ERROR "Wrong WireGuard source revision: ${_actual_revision}")
-endif()
+fetch_pinned_git_source("${_source}" "${_repository}" "${_revision}")
 
 download_pinned(_go_archive go "${_go_url}" "${_go_hash}")
 download_pinned(_mingw_archive mingw "${_mingw_url}" "${_mingw_hash}")

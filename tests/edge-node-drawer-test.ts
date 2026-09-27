@@ -17,10 +17,6 @@ const service = readFileSync(
     new URL('../web/pages/iot/edge_node/edge_node.service.ts', import.meta.url),
     'utf8'
 );
-const groupPanel = readFileSync(
-    new URL('../web/pages/iot/edge_node/index.tsx', import.meta.url),
-    'utf8'
-);
 const edgeProjector = readFileSync(
     new URL('../service/features/edge/edge.service.h', import.meta.url),
     'utf8'
@@ -43,6 +39,15 @@ const drawerStart = source.indexOf('<Drawer', cardStart);
 const drawerEnd = source.indexOf('<FormModal', drawerStart);
 const card = source.slice(cardStart, drawerStart);
 const drawer = source.slice(drawerStart, drawerEnd);
+const groupPanelStart = source.indexOf('export function EdgeNodeGroupPanel(');
+const groupPanelEnd = source.indexOf('\nconst statusLabels:', groupPanelStart);
+const groupPanel = source.slice(groupPanelStart, groupPanelEnd);
+const cardItemsStart = source.indexOf('function buildNodeCardItems(');
+const cardItemsEnd = source.indexOf('\nexport function SerialDebugModal', cardItemsStart);
+const cardItems = source.slice(cardItemsStart, cardItemsEnd);
+const vpnPanelStart = source.indexOf('export function EdgeVpnPanel(');
+const vpnPanelEnd = source.indexOf('\ntype NetworkDraftItem', vpnPanelStart);
+const vpnPanel = source.slice(vpnPanelStart, vpnPanelEnd);
 
 test('edge cards only navigate to the detail drawer', () => {
     expect(cardStart).toBeGreaterThan(-1);
@@ -96,15 +101,39 @@ test('VPN follows mobile status and firmware history stays in its own tab', () =
 });
 
 test('edge nodes use hierarchical groups without repeating the group inside cards', () => {
+    expect(groupPanelStart).toBeGreaterThan(-1);
+    expect(groupPanelEnd).toBeGreaterThan(groupPanelStart);
+    expect(cardItemsStart).toBeGreaterThan(-1);
+    expect(cardItemsEnd).toBeGreaterThan(cardItemsStart);
     expect(source).toContain('<EdgeNodeGroupPanel');
     expect(source).toContain('设置分组');
-    expect(source).toContain("label: 'VPN 虚拟网段'");
-    expect(source).not.toContain("{ key: 'group', label: '分组'");
     expect(groupPanel).toContain('全部节点');
     expect(groupPanel).toContain('未分组');
+    expect(groupPanel).toContain('children: item.children?.length ? convert(item.children) : undefined');
     expect(groupPanel).toContain('新增子分组');
+    expect(cardItems).toContain("label: 'VPN 网段'");
+    expect(cardItems).toContain('node.vpnVirtualCidrs?.length');
+    expect(cardItems).not.toContain("{ key: 'group', label: '分组'");
     expect(client).toContain("request.get<Edge.GroupItem[]>('/v1/edge/groups', { signal })");
     expect(client).toContain('request.put<void>(`${edgePath(id)}/group`');
+});
+
+test('edge VPN route editing uses the current label and permission gates', () => {
+    expect(vpnPanelStart).toBeGreaterThan(-1);
+    expect(vpnPanelEnd).toBeGreaterThan(vpnPanelStart);
+    expect(vpnPanel).toContain('label="虚拟 LAN 网段"');
+    expect(vpnPanel).toContain('name="virtualCidr"');
+    expect(vpnPanel).toContain('这里只允许修改虚拟网段网络号。');
+    expect(vpnPanel).toContain('真实 LAN、桥接接口、掩码和 NAT 模式由 EdgeNode');
+    expect(vpnPanel).toContain('使用相同掩码并保持全局唯一。');
+    expect(vpnPanel).toContain("const canQuery = has('iot:vpn:query')");
+    expect(vpnPanel).toContain("const canAdd = has('iot:vpn:add')");
+    expect(vpnPanel).toContain("const canEdit = has('iot:vpn:edit')");
+    expect(vpnPanel).toContain("const canRevoke = has('iot:vpn:revoke')");
+    expect(vpnPanel).toContain('if (!canQuery) {');
+    expect(vpnPanel).toContain('{!peer && canAdd && (');
+    expect(vpnPanel).toContain('{canEdit && (');
+    expect(vpnPanel).toContain('{canRevoke && peer.status !== \'revoked\' && (');
 });
 
 test('edge bridge routes commit before configuration is queued', () => {
