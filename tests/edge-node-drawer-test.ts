@@ -109,7 +109,9 @@ test('edge nodes use hierarchical groups without repeating the group inside card
     expect(source).toContain('设置分组');
     expect(groupPanel).toContain('全部节点');
     expect(groupPanel).toContain('未分组');
-    expect(groupPanel).toContain('children: item.children?.length ? convert(item.children) : undefined');
+    expect(groupPanel).toContain(
+        'children: item.children?.length ? convert(item.children) : undefined'
+    );
     expect(groupPanel).toContain('新增子分组');
     expect(cardItems).toContain("label: 'VPN 网段'");
     expect(cardItems).toContain('node.vpnVirtualCidrs?.length');
@@ -123,7 +125,7 @@ test('edge VPN route editing uses the current label and permission gates', () =>
     expect(vpnPanelEnd).toBeGreaterThan(vpnPanelStart);
     expect(vpnPanel).toContain('label="虚拟 LAN 网段"');
     expect(vpnPanel).toContain('name="virtualCidr"');
-    expect(vpnPanel).toContain('这里只允许修改虚拟网段网络号。');
+    expect(vpnPanel).toContain('只允许修改虚拟网段网络号');
     expect(vpnPanel).toContain('真实 LAN、桥接接口、掩码和 NAT 模式由 EdgeNode');
     expect(vpnPanel).toContain('使用相同掩码并保持全局唯一。');
     expect(vpnPanel).toContain("const canQuery = has('iot:vpn:query')");
@@ -133,7 +135,7 @@ test('edge VPN route editing uses the current label and permission gates', () =>
     expect(vpnPanel).toContain('if (!canQuery) {');
     expect(vpnPanel).toContain('{!peer && canAdd && (');
     expect(vpnPanel).toContain('{canEdit && (');
-    expect(vpnPanel).toContain('{canRevoke && peer.status !== \'revoked\' && (');
+    expect(vpnPanel).toContain("{canRevoke && peer.status !== 'revoked' && (");
 });
 
 test('edge bridge routes commit before configuration is queued', () => {
@@ -146,17 +148,27 @@ test('edge bridge routes commit before configuration is queued', () => {
 });
 
 test('Windows VPN configurations contain only active virtual LAN routes', () => {
-    expect(vpnDomain).toContain('routes.column(service::vpn::entities::VpnRouteEntity::columnName<"enabled">(), "r")');
-    expect(vpnDomain).toContain('routes.column(service::vpn::entities::VpnRouteEntity::columnName<"status">(), "r")');
+    expect(vpnDomain).toContain(
+        'routes.column(service::vpn::entities::VpnRouteEntity::columnName<"enabled">(), "r")'
+    );
+    expect(vpnDomain).toContain(
+        'routes.column(service::vpn::entities::VpnRouteEntity::columnName<"status">(), "r")'
+    );
     expect(vpnDomain).toContain('routes.value("active")');
     expect(vpnDomain).toContain('VPN 当前没有可用虚拟网段');
     expect(vpnDomain).not.toContain('address += "/32"');
 });
 
 test('Hub firewall still isolates Windows clients from unauthorized Edge tunnels', () => {
-    expect(vpnBackend).toContain('addresses.aggregate("string_agg", { addresses.column(service::vpn::persistence::VpnEffectiveEdgeAccessEntity::columnName<"edge_address">(), "access")');
-    expect(vpnBackend).toContain('.from(service::vpn::persistence::VpnEffectiveEdgeAccessEntity::tableName(), "access")');
-    expect(vpnBackend).toContain('addresses.column(service::vpn::persistence::VpnEffectiveEdgeAccessEntity::columnName<"peer_id">(), "access"), Op::kEqual, addresses.column(service::vpn::persistence::VpnPeerEntity::columnName<"id">(), "p")');
+    expect(vpnBackend).toContain(
+        'addresses.aggregate("string_agg", { addresses.column(service::vpn::persistence::VpnEffectiveEdgeAccessEntity::columnName<"edge_address">(), "access")'
+    );
+    expect(vpnBackend).toContain(
+        '.from(service::vpn::persistence::VpnEffectiveEdgeAccessEntity::tableName(), "access")'
+    );
+    expect(vpnBackend).toContain(
+        'addresses.column(service::vpn::persistence::VpnEffectiveEdgeAccessEntity::columnName<"peer_id">(), "access"), Op::kEqual, addresses.column(service::vpn::persistence::VpnPeerEntity::columnName<"id">(), "p")'
+    );
     expect(vpnBackend).toContain('peerRecord.edgeAddresses');
     expect(vpnBackend).toContain('client.edgeAddresses.push_back');
     expect(vpnFirewall).toContain('client.edgeAddresses');
@@ -165,9 +177,7 @@ test('Hub firewall still isolates Windows clients from unauthorized Edge tunnels
 
 test('drawer actions render above the detail drawer', () => {
     expect(source).toContain('const EDGE_DETAIL_DRAWER_Z_INDEX = 1000;');
-    expect(source).toContain(
-        'const EDGE_ACTION_MODAL_Z_INDEX = EDGE_DETAIL_DRAWER_Z_INDEX + 100;'
-    );
+    expect(source).toContain('const EDGE_ACTION_MODAL_Z_INDEX = EDGE_DETAIL_DRAWER_Z_INDEX + 100;');
     expect(drawer).toContain('zIndex={EDGE_DETAIL_DRAWER_Z_INDEX}');
     expect(source.match(/zIndex=\{EDGE_ACTION_MODAL_Z_INDEX\}/g)).toHaveLength(6);
     expect(source.match(/zIndex: EDGE_ACTION_MODAL_Z_INDEX/g)).toHaveLength(2);
