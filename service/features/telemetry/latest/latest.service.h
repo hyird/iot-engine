@@ -612,9 +612,9 @@ ruvia::Task<void> project(Context& context, ProjectionScope scope, const std::ve
         return query;
     };
     auto configured = configuredProtocol("Modbus", "registers", 1);
-    for (const auto protocol : {"Modbus", "S7", "SL651", "MC", "FINS", "DLT645"})
+    for (const auto protocol : {"Modbus", "S7", "SL651", "MC", "FINS", "DLT645", "MQTT"})
         configured.combine(ruvia::DbSetOperation::kUnionAll, configuredProtocol(protocol, "derivedPoints", 5));
-    for (const auto protocol : {"MC", "FINS", "DLT645"})
+    for (const auto protocol : {"MC", "FINS", "DLT645", "MQTT"})
         configured.combine(ruvia::DbSetOperation::kUnionAll, configuredProtocol(protocol, "points", 4));
     const auto s7 = configuredProtocol("S7", "areas", 2);
     const auto sl651 = configuredProtocol("SL651", "funcs", 3);

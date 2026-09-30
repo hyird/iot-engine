@@ -11,8 +11,8 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
-    App,
     Alert,
+    App,
     AutoComplete,
     Button,
     Card,
@@ -55,10 +55,17 @@ import { FormModal } from '@/components/FormModal';
 import { PageContainer } from '@/components/PageContainer';
 import { usePermissions } from '@/hooks/usePermission';
 import {
-    testProtocolExpression,
+    checkAddressConflict,
+    derivedPointSchema,
+    formatTsapValue,
+    industrialConfigSchema,
+    mqttConfigSchema,
+    parseProtocolImport,
+    validatePointExpression,
+    validateTsapValue,
+} from './protocol.schema';
+import {
     bitOnlyAreaTypes,
-    protocolPointOptions,
-    protocolDerivedPoints,
     buildConnectionConfig,
     buildGroupSections,
     buildRegisterGroupSections,
@@ -74,53 +81,50 @@ import {
     getS7DeviceTypeFormValues,
     getSl651DeviceTypeFormValues,
     inferConnectionMode,
+    loadProtocolExportData,
     normalizeAreaTypeForPlcModel,
     normalizeGroupName,
     normalizeModbusRegisters,
-    normalizeRegisterType,
     normalizePacketConfig,
+    normalizeRegisterType,
     normalizeS7DataType,
     numberOrDefault,
     plcModelOptions,
+    previewMqttPayload,
+    protocolDerivedPoints,
+    protocolPointOptions,
     reorderItemsByGroupOrder,
     reorderItemsWithinGroupOrder,
     sortSectionsByOrder,
     supportsBitAddress,
     supportsS7Decimals,
+    testProtocolExpression,
     useProtocolConfigDelete,
+    useProtocolConfigImport,
     useProtocolConfigList,
     useProtocolConfigSave,
-    useProtocolConfigImport,
-    loadProtocolExportData,
     writableAreaTypes,
 } from './protocol.service';
 import type {
     DerivedPoint,
-    DeviceTypeTimingConfig,
     DeviceTypeFormValues,
+    DeviceTypeTimingConfig,
     FormCondition,
     FormMapItem,
+    IndustrialConfig,
+    IndustrialPoint,
+    IndustrialProtocol,
     Modbus,
     DeviceTypeModalRef as ModbusDeviceTypeModalRef,
     ModbusDictConfig,
+    MqttConfig,
+    MqttPoint,
     Protocol,
     RegisterModalRef,
     S7,
     SL651,
     StoragePolicy,
-    IndustrialProtocol,
-    IndustrialConfig,
-    IndustrialPoint,
 } from './protocol.types';
-import {
-    checkAddressConflict,
-    derivedPointSchema,
-    validatePointExpression,
-    parseProtocolImport,
-    industrialConfigSchema,
-    formatTsapValue,
-    validateTsapValue,
-} from './protocol.schema';
 
 const STORAGE_POLICY_OPTIONS: {
     value: StoragePolicy;
@@ -6436,6 +6440,579 @@ function IndustrialConfigPage({ protocol }: { protocol: IndustrialProtocol }) {
 export const McConfigPage = () => <IndustrialConfigPage protocol="MC" />;
 export const FinsConfigPage = () => <IndustrialConfigPage protocol="FINS" />;
 export const Dlt645ConfigPage = () => <IndustrialConfigPage protocol="DLT645" />;
+
+export function MqttConfigPage() {
+    const { has } = usePermissions();
+    const { message } = App.useApp();
+    const canQuery = has('iot:protocol:query');
+    const canEdit = has('iot:protocol:edit');
+    const { data, isLoading, error } = useProtocolConfigList(
+        { protocol: 'MQTT' },
+        { enabled: canQuery }
+    );
+    const save = useProtocolConfigSave();
+    const remove = useProtocolConfigDelete();
+    const [selected, setSelected] = useState<string>();
+    const [editing, setEditing] = useState<Protocol.Item>();
+    const [open, setOpen] = useState(false);
+    const [form] = Form.useForm<{ name: string; enabled: boolean; config: MqttConfig }>();
+    const payloadFormat = Form.useWatch(['config', 'payloadFormat'], form) ?? 'json';
+    const codeField = Form.useWatch(['config', 'deviceCodeField'], form);
+    const identitySource =
+        Form.useWatch(['config', 'identitySource'], form) ?? (codeField ? 'payload' : 'bound');
+    const [sampleTopic, setSampleTopic] = useState('devices/D001/telemetry');
+    const [sampleCode, setSampleCode] = useState('D001');
+    const [sampleTimezone, setSampleTimezone] = useState('+08:00');
+    const [samplePayload, setSamplePayload] = useState('{"temperature":25.6}');
+    const [preview, setPreview] = useState<{
+        records: (Awaited<ReturnType<typeof previewMqttPayload>>['records'][number] & {
+            key: string;
+        })[];
+    }>();
+    const [previewError, setPreviewError] = useState('');
+    const [previewBusy, setPreviewBusy] = useState(false);
+    const previewSequence = useRef(0);
+    const active = data?.find((item) => item.id === selected) ?? data?.[0];
+    const config = active?.config as MqttConfig | undefined;
+    const activeIdentity =
+        config?.identitySource ?? (config?.deviceCodeField ? 'payload' : 'bound');
+    const viewport = useRef<HTMLDivElement>(null);
+    const [bodyHeight, setBodyHeight] = useState(240);
+    useEffect(() => {
+        if (!active?.id) return;
+        const element = viewport.current;
+        if (!element) return;
+        const observer = new ResizeObserver(([entry]) =>
+            setBodyHeight(Math.max(80, Math.floor(entry.contentRect.height) - 100))
+        );
+        observer.observe(element);
+        return () => observer.disconnect();
+    }, [active?.id]);
+    const edit = (item?: Protocol.Item) => {
+        ++previewSequence.current;
+        setPreview(undefined);
+        setPreviewError('');
+        setPreviewBusy(false);
+        setEditing(item);
+        form.resetFields();
+        form.setFieldsValue(
+            item
+                ? {
+                      name: item.name,
+                      enabled: item.enabled,
+                      config: {
+                          payloadFormat: 'json',
+                          delimiter: ',',
+                          recordDelimiter: '\n',
+                          timeFormat: 'unix_ms',
+                          identitySource: (item.config as MqttConfig).deviceCodeField
+                              ? 'payload'
+                              : 'bound',
+                          ...item.config,
+                      } as MqttConfig,
+                  }
+                : {
+                      name: '',
+                      enabled: true,
+                      config: {
+                          storagePolicy: 'report',
+                          topic: 'devices/{deviceCode}/telemetry',
+                          deviceCodeField: '',
+                          commandTopic: '',
+                          qos: 1,
+                          payloadFormat: 'json',
+                          identitySource: 'bound',
+                          topicDeviceSegment: 1,
+                          delimiter: ',',
+                          recordDelimiter: '\n',
+                          timeFormat: 'unix_ms',
+                          points: [],
+                      },
+                  }
+        );
+        setOpen(true);
+    };
+    const submit = async () => {
+        const values = await form.validateFields();
+        const checked = mqttConfigSchema.safeParse(values.config);
+        if (!checked.success) {
+            message.error(checked.error.issues[0]?.message ?? '配置无效');
+            return;
+        }
+        await save.mutateAsync({
+            id: editing?.id,
+            protocol: 'MQTT',
+            name: values.name,
+            enabled: values.enabled,
+            config: { ...editing?.config, ...checked.data },
+        });
+        setOpen(false);
+    };
+    const parseSample = async () => {
+        const sequence = ++previewSequence.current;
+        setPreviewBusy(true);
+        setPreview(undefined);
+        setPreviewError('');
+        try {
+            const config = mqttConfigSchema.parse(form.getFieldValue('config'));
+            const result = await previewMqttPayload({
+                config,
+                topic: sampleTopic,
+                payload: samplePayload,
+                deviceCode: sampleCode,
+                timezone: sampleTimezone,
+            });
+            if (sequence === previewSequence.current)
+                setPreview({
+                    records: result.records.map((record) => ({ ...record, key: generateId() })),
+                });
+        } catch (error) {
+            if (sequence === previewSequence.current)
+                setPreviewError(error instanceof Error ? error.message : '解析失败');
+        } finally {
+            if (sequence === previewSequence.current) setPreviewBusy(false);
+        }
+    };
+    const columns: ColumnsType<MqttPoint> = [
+        { title: '名称', dataIndex: 'name', width: 180 },
+        { title: '字段映射', dataIndex: 'field', width: 180 },
+        { title: '类型', dataIndex: 'dataType', width: 120 },
+        { title: '单位', dataIndex: 'unit', width: 100 },
+        {
+            title: '可写',
+            dataIndex: 'writable',
+            width: 90,
+            render: (value) => (value ? '是' : '否'),
+        },
+    ];
+    if (!canQuery) return <Result status="403" title="无权查看 MQTT 配置" />;
+    return (
+        <PageContainer
+            header={
+                <Space>
+                    <span>MQTT 3.1.1 配置</span>
+                    {has('iot:protocol:add') && (
+                        <Button type="primary" onClick={() => edit()}>
+                            新增配置
+                        </Button>
+                    )}
+                </Space>
+            }
+        >
+            {error ? (
+                <Alert type="error" message="配置加载失败" />
+            ) : (
+                <div className="flex h-full min-h-0 flex-col gap-4 md:flex-row">
+                    <div className="shrink-0 overflow-auto rounded-lg border border-gray-200 p-3 md:w-56">
+                        <Tree
+                            selectedKeys={active ? [active.id] : []}
+                            treeData={(data ?? []).map((item) => ({
+                                key: item.id,
+                                title: item.name,
+                            }))}
+                            onSelect={(keys) => setSelected(keys[0]?.toString())}
+                        />
+                    </div>
+                    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+                        {active ? (
+                            <>
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <span className="break-all">Topic：{config?.topic}</span>
+                                    <Space>
+                                        {canEdit && (
+                                            <Button onClick={() => edit(active)}>
+                                                编辑配置和点位
+                                            </Button>
+                                        )}
+                                        {has('iot:protocol:delete') && (
+                                            <Popconfirm
+                                                title="删除此配置？"
+                                                onConfirm={() => remove.mutateAsync(active.id)}
+                                            >
+                                                <Button danger>删除</Button>
+                                            </Popconfirm>
+                                        )}
+                                    </Space>
+                                </div>
+                                <Alert
+                                    type="info"
+                                    message={
+                                        activeIdentity === 'topic'
+                                            ? `从 Topic 第 ${(config?.topicDeviceSegment ?? 1) + 1} 段识别设备编码`
+                                            : activeIdentity === 'payload'
+                                              ? `共享 Topic：从负载字段 ${config?.deviceCodeField} 匹配设备编码`
+                                              : '独立 Topic：按 Topic 绑定设备，{deviceCode} 替换为设备编码'
+                                    }
+                                />
+                                <div ref={viewport} className="min-h-0 flex-1">
+                                    <Table
+                                        rowKey="id"
+                                        loading={isLoading}
+                                        columns={columns}
+                                        dataSource={config?.points ?? []}
+                                        scroll={{ x: 670, y: bodyHeight }}
+                                        pagination={{ pageSize: 20 }}
+                                    />
+                                </div>
+                            </>
+                        ) : (
+                            <Empty description={isLoading ? '正在加载' : '暂无 MQTT 配置'} />
+                        )}
+                    </div>
+                </div>
+            )}
+            <FormModal
+                open={open}
+                title={editing ? '编辑 MQTT 配置' : '新增 MQTT 配置'}
+                onCancel={() => setOpen(false)}
+                onOk={submit}
+                confirmLoading={save.isPending}
+            >
+                <Form form={form} layout="vertical">
+                    <Form.Item name="name" label="配置名称" rules={[{ required: true, max: 64 }]}>
+                        <Input />
+                    </Form.Item>
+                    <Form.Item name="enabled" label="启用" valuePropName="checked">
+                        <Switch />
+                    </Form.Item>
+                    <Form.Item
+                        name={['config', 'topic']}
+                        label="遥测 Topic"
+                        rules={[{ required: true }]}
+                        extra="支持 devices/{deviceCode}/telemetry、devices/+/telemetry 和共享 Topic；+ 匹配一层，# 匹配后续所有层。"
+                    >
+                        <Input maxLength={1024} />
+                    </Form.Item>
+                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                        <Form.Item name={['config', 'payloadFormat']} label="负载格式">
+                            <Select
+                                options={[
+                                    { value: 'json', label: 'JSON' },
+                                    { value: 'text', label: '分隔文本' },
+                                    { value: 'binary', label: '二进制' },
+                                ]}
+                                onChange={() => form.setFieldValue(['config', 'recordsPath'], '')}
+                            />
+                        </Form.Item>
+                        <Form.Item name={['config', 'identitySource']} label="设备识别方式">
+                            <Select
+                                options={[
+                                    { value: 'bound', label: '按设备绑定的独立 Topic' },
+                                    { value: 'topic', label: '从 Topic 提取设备编码' },
+                                    { value: 'payload', label: '从负载提取设备编码' },
+                                ]}
+                            />
+                        </Form.Item>
+                    </div>
+                    {identitySource === 'topic' && (
+                        <Form.Item
+                            name={['config', 'topicDeviceSegment']}
+                            label="Topic 设备编码段号"
+                            extra="从 0 开始；devices/D001/telemetry 的设备编码位于第 1 段。"
+                        >
+                            <InputNumber min={0} max={1024} className="w-full" />
+                        </Form.Item>
+                    )}
+                    {identitySource === 'payload' && (
+                        <Form.Item
+                            name={['config', 'deviceCodeField']}
+                            label="负载中的设备标识字段"
+                            extra="JSON 填写字段或路径；文本填写列号；二进制填写偏移:长度:编码:字节序。值须等于设备编码。"
+                        >
+                            <Input placeholder="deviceCode 或 /meta/deviceCode" maxLength={256} />
+                        </Form.Item>
+                    )}
+                    {payloadFormat === 'json' && (
+                        <Form.Item
+                            name={['config', 'recordsPath']}
+                            label="设备记录路径"
+                            extra="留空支持整个负载为单对象或数组；嵌套批量消息填写 /devices 或 /payload/devices。"
+                        >
+                            <Input placeholder="/devices" maxLength={256} />
+                        </Form.Item>
+                    )}
+                    {payloadFormat === 'text' && (
+                        <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                            <Form.Item name={['config', 'delimiter']} label="字段分隔符">
+                                <Input maxLength={8} placeholder="," />
+                            </Form.Item>
+                            <Form.Item name={['config', 'recordDelimiter']} label="设备记录分隔符">
+                                <Select
+                                    options={[
+                                        { value: '\n', label: '换行 LF' },
+                                        { value: '\r\n', label: '换行 CRLF' },
+                                        { value: ';', label: '分号' },
+                                        { value: '|', label: '竖线' },
+                                    ]}
+                                />
+                            </Form.Item>
+                        </div>
+                    )}
+                    {payloadFormat === 'binary' && (
+                        <Form.Item
+                            name={['config', 'recordLength']}
+                            label="每条设备记录的字节数"
+                            extra="留空或 0 表示整个负载为一条记录；填写固定长度可拆分批量消息。"
+                        >
+                            <InputNumber min={0} max={1048576} className="w-full" />
+                        </Form.Item>
+                    )}
+                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                        <Form.Item
+                            name={['config', 'timeField']}
+                            label="设备时间字段"
+                            extra="缺失时使用接收时间；字段语法与点位一致。"
+                        >
+                            <Input maxLength={256} />
+                        </Form.Item>
+                        <Form.Item name={['config', 'timeFormat']} label="时间格式">
+                            <Select
+                                options={[
+                                    { value: 'unix_ms', label: 'Unix 毫秒' },
+                                    { value: 'unix_s', label: 'Unix 秒' },
+                                    { value: 'iso8601', label: 'ISO 8601；无时区时使用设备时区' },
+                                ]}
+                            />
+                        </Form.Item>
+                    </div>
+                    <Form.Item
+                        name={['config', 'commandTopic']}
+                        label="指令 Topic"
+                        extra="可包含 {deviceCode}。共享 Topic 的指令会附加设备标识字段；完成状态表示 Broker 已确认接收。"
+                    >
+                        <Input maxLength={1024} />
+                    </Form.Item>
+                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                        <Form.Item name={['config', 'qos']} label="订阅 QoS">
+                            <Select
+                                options={[0, 1, 2].map((value) => ({
+                                    value,
+                                    label: `QoS ${value}`,
+                                }))}
+                            />
+                        </Form.Item>
+                        <Form.Item name={['config', 'storagePolicy']} label="存储策略">
+                            <Select options={STORAGE_POLICY_OPTIONS} />
+                        </Form.Item>
+                    </div>
+                    {payloadFormat === 'json' && (
+                        <Form.Item
+                            name={['config', 'commandTemplate']}
+                            label="指令 JSON 模板"
+                            extra={
+                                '留空按点位映射生成；可使用 JSON 字符串占位符 "$deviceCode" 和 "$values"，例如 {"cmd":"set","values":"$values"}。'
+                            }
+                        >
+                            <Input.TextArea rows={3} maxLength={16384} />
+                        </Form.Item>
+                    )}
+                    <Divider>点位映射</Divider>
+                    <Alert
+                        type="info"
+                        className="mb-3"
+                        message={
+                            payloadFormat === 'json'
+                                ? '字段支持 temperature 或 /metrics/temperature；数组索引示例 /values/0。'
+                                : payloadFormat === 'text'
+                                  ? '字段填写从 0 开始的列号。分隔文本按字面分隔，不使用 CSV 引号转义。'
+                                  : '字段示例 0:2:UINT:LE。编码支持 UINT、INT、FLOAT、UTF8、HEX；字节序为 BE 或 LE，默认 BE。'
+                        }
+                    />
+                    <Form.List name={['config', 'points']}>
+                        {(fields, { add, remove: removePoint }) => (
+                            <>
+                                {fields.map((field) => (
+                                    <div
+                                        key={field.key}
+                                        className="mb-3 rounded-lg border border-gray-200 p-3"
+                                    >
+                                        <Form.Item name={[field.name, 'id']} hidden>
+                                            <Input />
+                                        </Form.Item>
+                                        <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                                            <Form.Item
+                                                label="名称"
+                                                name={[field.name, 'name']}
+                                                rules={[{ required: true, max: 100 }]}
+                                            >
+                                                <Input />
+                                            </Form.Item>
+                                            <Form.Item
+                                                label="字段、列号或二进制位置"
+                                                name={[field.name, 'field']}
+                                                rules={[{ required: true, max: 256 }]}
+                                            >
+                                                <Input />
+                                            </Form.Item>
+                                            <Form.Item label="类型" name={[field.name, 'dataType']}>
+                                                <Select
+                                                    options={['DOUBLE', 'BOOL', 'STRING'].map(
+                                                        (value) => ({ value, label: value })
+                                                    )}
+                                                />
+                                            </Form.Item>
+                                            <Form.Item label="单位" name={[field.name, 'unit']}>
+                                                <Input maxLength={32} />
+                                            </Form.Item>
+                                            <Form.Item label="倍率" name={[field.name, 'scale']}>
+                                                <InputNumber className="w-full" placeholder="1" />
+                                            </Form.Item>
+                                            <Form.Item label="偏移" name={[field.name, 'offset']}>
+                                                <InputNumber className="w-full" placeholder="0" />
+                                            </Form.Item>
+                                            <Form.Item
+                                                label="可写"
+                                                name={[field.name, 'writable']}
+                                                valuePropName="checked"
+                                            >
+                                                <Switch />
+                                            </Form.Item>
+                                        </div>
+                                        <Form.List name={[field.name, 'enumValues']}>
+                                            {(values, { add: addValue, remove: removeValue }) => (
+                                                <div className="mb-3">
+                                                    {values.map((value) => (
+                                                        <div
+                                                            key={value.key}
+                                                            className="grid grid-cols-1 gap-x-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]"
+                                                        >
+                                                            <Form.Item
+                                                                name={[value.name, 'input']}
+                                                                label="枚举原值"
+                                                            >
+                                                                <Input maxLength={256} />
+                                                            </Form.Item>
+                                                            <Form.Item
+                                                                name={[value.name, 'output']}
+                                                                label="转换值"
+                                                            >
+                                                                <Input maxLength={256} />
+                                                            </Form.Item>
+                                                            <Button
+                                                                danger
+                                                                type="text"
+                                                                onClick={() =>
+                                                                    removeValue(value.name)
+                                                                }
+                                                            >
+                                                                删除映射
+                                                            </Button>
+                                                        </div>
+                                                    ))}
+                                                    <Button
+                                                        size="small"
+                                                        disabled={values.length >= 64}
+                                                        onClick={() =>
+                                                            addValue({ input: '', output: '' })
+                                                        }
+                                                    >
+                                                        添加枚举映射
+                                                    </Button>
+                                                </div>
+                                            )}
+                                        </Form.List>
+                                        <Button danger onClick={() => removePoint(field.name)}>
+                                            删除点位
+                                        </Button>
+                                    </div>
+                                ))}
+                                <Button
+                                    block
+                                    type="dashed"
+                                    disabled={fields.length >= 256}
+                                    onClick={() =>
+                                        add({
+                                            id: generateId(),
+                                            name: '',
+                                            field: '',
+                                            dataType: 'DOUBLE',
+                                            unit: '',
+                                            writable: false,
+                                        })
+                                    }
+                                >
+                                    添加点位
+                                </Button>
+                            </>
+                        )}
+                    </Form.List>
+                    <Divider>解析预览</Divider>
+                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                        <Form.Item label="示例 Topic">
+                            <Input
+                                value={sampleTopic}
+                                onChange={(event) => setSampleTopic(event.target.value)}
+                            />
+                        </Form.Item>
+                        <Form.Item
+                            label="测试设备编码"
+                            extra="负载或 Topic 识别时可留空，查看所有记录。"
+                        >
+                            <Input
+                                value={sampleCode}
+                                onChange={(event) => setSampleCode(event.target.value)}
+                            />
+                        </Form.Item>
+                    </div>
+                    <Form.Item
+                        label={payloadFormat === 'binary' ? '示例负载（HEX 字节）' : '示例负载'}
+                    >
+                        <Input.TextArea
+                            rows={4}
+                            value={samplePayload}
+                            onChange={(event) => setSamplePayload(event.target.value)}
+                        />
+                    </Form.Item>
+                    <Form.Item
+                        label="测试设备时区"
+                        extra="无时区的 ISO 时间按此值解释，格式为 ±HH:MM。"
+                    >
+                        <Input
+                            value={sampleTimezone}
+                            maxLength={6}
+                            onChange={(event) => setSampleTimezone(event.target.value)}
+                        />
+                    </Form.Item>
+                    <Button onClick={parseSample} loading={previewBusy}>
+                        预览解析结果
+                    </Button>
+                    {previewError && <Alert className="mt-3" type="error" message={previewError} />}
+                    {preview?.records.map((record) => (
+                        <Card
+                            key={record.key}
+                            size="small"
+                            className="mt-3"
+                            title={`设备 ${record.deviceCode || '未识别'} · ${record.time}`}
+                        >
+                            {record.errors.length > 0 && (
+                                <Alert
+                                    type="warning"
+                                    className="mb-2"
+                                    message={record.errors.join('；')}
+                                />
+                            )}
+                            <Table
+                                rowKey="id"
+                                size="small"
+                                pagination={false}
+                                scroll={{ x: 420 }}
+                                dataSource={record.points}
+                                columns={[
+                                    { title: '点位', dataIndex: 'name' },
+                                    { title: '值', dataIndex: 'value' },
+                                    { title: '单位', dataIndex: 'unit' },
+                                ]}
+                            />
+                        </Card>
+                    ))}
+                    {preview && preview.records.length === 0 && (
+                        <Empty description="未找到设备记录" />
+                    )}
+                </Form>
+            </FormModal>
+        </PageContainer>
+    );
+}
 
 function PointDisplayField() {
     return (

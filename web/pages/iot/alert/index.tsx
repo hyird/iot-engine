@@ -1,4 +1,3 @@
-import { LiveQueryError } from '@/components/LiveQueryError';
 import { CloseOutlined, PlusOutlined } from '@ant-design/icons';
 import type { UseMutationResult } from '@tanstack/react-query';
 import {
@@ -21,6 +20,7 @@ import {
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import { useEffect, useMemo, useState } from 'react';
 import { FormModal } from '@/components/FormModal';
+import { LiveQueryError } from '@/components/LiveQueryError';
 import { PageContainer } from '@/components/PageContainer';
 import { StatusTag } from '@/components/StatusTag';
 import { useDebounceFn } from '@/hooks/useDebounceFn';
@@ -28,7 +28,11 @@ import { usePermission } from '@/hooks/usePermission';
 import { formatDateTime } from '@/utils/dateTime';
 import { createUuid } from '@/utils/uuid';
 import { useDeviceConfigurationList } from '../device/device.service';
-import { useProtocolConfigDetail, useProtocolConfigOptions } from '../protocol/protocol.service';
+import {
+    protocolPointOptions,
+    useProtocolConfigDetail,
+    useProtocolConfigOptions,
+} from '../protocol/protocol.service';
 import type { Modbus, Protocol, S7, SL651 } from '../protocol/protocol.types';
 import {
     useAlertAcknowledge,
@@ -270,6 +274,7 @@ const PROTOCOL_TYPE_OPTIONS = [
     { label: 'SL651', value: 'SL651' },
     { label: 'Modbus', value: 'Modbus' },
     { label: 'S7', value: 'S7' },
+    { label: 'MQTT', value: 'MQTT' },
 ];
 interface AlertRuleFormValues {
     id?: string;
@@ -399,6 +404,7 @@ export function AlertRuleFormModal({
                 label: area.name,
             }));
         }
+        if (type === 'MQTT') return protocolPointOptions(protocolConfig);
         return [];
     }, [protocolConfig, selectedDevice?.protocol_type]);
     useEffect(() => {
@@ -646,6 +652,7 @@ const AlertTemplateFormModalPROTOCOL_TYPE_OPTIONS = [
     { label: 'SL651', value: 'SL651' },
     { label: 'Modbus', value: 'Modbus' },
     { label: 'S7', value: 'S7' },
+    { label: 'MQTT', value: 'MQTT' },
 ];
 export function AlertTemplateFormModal({
     open,
@@ -737,6 +744,7 @@ export function AlertTemplateFormModal({
                 label: area.name,
             }));
         }
+        if (type === 'MQTT') return protocolPointOptions(protocolConfig);
         return [];
     }, [protocolConfig, protocolType]);
     useEffect(() => {

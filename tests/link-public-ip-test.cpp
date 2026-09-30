@@ -144,7 +144,7 @@ ruvia::Task<void> verifyPublicIp(ruvia::EventLoop loop, std::uint16_t port, Orig
         require(response.status().value() == 200, "public IP handler failed");
         const auto body = co_await response.body().readAll();
         const std::string_view expected = scenario == 0 ? "203.0.113.7" : scenario == 4 ? "2001:db8::1" : "";
-        require(std::string_view(reinterpret_cast<const char*>(body.data()), body.size()) == expected, "public IP response validation failed");
+        require(std::string_view(reinterpret_cast<const char*>(body.bytes().data()), body.size()) == expected, "public IP response validation failed");
         require(origin.requests.load() == before + 1, "cached query reached upstream again");
     }
     co_await client.shutdown();

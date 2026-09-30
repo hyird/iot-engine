@@ -9,10 +9,11 @@ import * as api from './protocol.api';
 import { formatTsapValue } from './protocol.schema';
 import type {
     DerivedPoint,
-    DeviceTypeTimingConfig,
     DeviceTypeFormValues,
+    DeviceTypeTimingConfig,
     GroupSection,
     Modbus,
+    MqttPreviewRequest,
     PlcConnectionPreset,
     Protocol,
     ProtocolExportItem,
@@ -24,6 +25,8 @@ import type {
 } from './protocol.types';
 
 const MAX_PAGE_SIZE = 1000;
+
+export const previewMqttPayload = (data: MqttPreviewRequest) => api.previewMqtt(data);
 
 export function protocolPointOptions(item: Protocol.Item): { value: string; label: string }[] {
     const config = item.config;

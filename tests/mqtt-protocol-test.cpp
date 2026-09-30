@@ -1,0 +1,185 @@
+#include <iostream>
+
+#include "service/features/collector/mqtt/mqtt.protocol.h"
+
+using namespace service::collector;
+
+namespace {
+void require(bool value, const char* message) {
+    if (!value) {
+        throw std::runtime_error(message);
+    }
+}
+
+struct Fixture {
+    std::shared_ptr<RuntimeSnapshot> snapshot = std::make_shared<RuntimeSnapshot>();
+    std::unique_ptr<ProtocolSession> session;
+    unsigned packetSequence = 0;
+
+    explicit Fixture(bool shared = false) {
+        LinkDefinition link{ .id = "link", .mode = "TCP Client", .protocol = "MQTT", .status = "enabled" };
+        link.targets.push_back({ .id = "broker", .ip = "127.0.0.1", .port = 1883, .status = "enabled", .mqttConfig = R"({"clientId":"platform-test","keepAliveSeconds":60})" });
+        snapshot->links.push_back(link);
+        for (int i = 0; i < (shared ? 2 : 1); ++i) {
+            DeviceDefinition device{ .calculationConfig = R"({"topic":"devices", "deviceCodeField":"deviceCode", "commandTopic":"commands","qos":2,"points":[{"id":"temperature","name":"温度","field":"temperature","dataType":"DOUBLE"}]})",
+                                     .id = std::to_string(i),
+                                     .code = std::to_string(i),
+                                     .linkId = "link",
+                                     .targetId = "broker",
+                                     .protocol = "MQTT" };
+            if (!shared) {
+                device.calculationConfig = R"({"topic":"devices/0","commandTopic":"commands/0","qos":2,"points":[{"id":"temperature","name":"温度","field":"temperature","dataType":"DOUBLE"}]})";
+            }
+            device.elements.push_back({ .id = "temperature", .name = "温度", .dataType = "DOUBLE", .mqttField = "temperature", .writable = true });
+            snapshot->devices.push_back(std::move(device));
+        }
+        session = mqtt::Factory{}.createSession(snapshot->links.front(), "connection", "broker", snapshot);
+    }
+
+    std::vector<ProtocolAction> receive(const mqtt::Bytes& bytes) {
+        const auto id = "packet-" + std::to_string(++packetSequence);
+        return session->consume({ .messageId = id, .connectionId = "connection", .receivedAtMs = 1000, .bytes = bytes });
+    }
+
+    void start() {
+        const auto connect = session->connected();
+        require(connect.front().bytes == mqtt::Bytes({ 0x10, 25, 0, 4, 'M', 'Q', 'T', 'T', 4, 2, 0, 60, 0, 13, 'p', 'l', 'a', 't', 'f', 'o', 'r', 'm', '-', 't', 'e', 's', 't' }), "CONNECT golden frame mismatch");
+        const auto subscribe = receive({ 0x20, 2, 0, 0 });
+        require(subscribe.front().bytes.front() == 0x82, "missing SUBSCRIBE");
+        const auto suback = receive({ 0x90, 3, 0, 1, 2 });
+        require(!suback.empty() && suback.front().kind == ProtocolActionKind::CancelDeadline, "SUBACK rejected");
+    }
+};
+
+mqtt::Bytes publication(std::string_view topic, std::string_view payload, unsigned qos, std::uint16_t id = 7, bool duplicate = false) {
+    mqtt::Bytes body;
+    mqtt::text(body, topic);
+    if (qos) {
+        mqtt::word(body, id);
+    }
+    body.insert(body.end(), payload.begin(), payload.end());
+    return mqtt::packet(0x30 | (qos << 1) | (duplicate ? 8 : 0), body);
+}
+
+void testFramingAndRouting() {
+    Fixture fixture(true);
+    fixture.start();
+    const auto packet = publication("devices", R"({"deviceCode":"1","temperature":23.5})", 1);
+    std::vector<ProtocolAction> actions;
+    for (const auto byte : packet) {
+        const auto next = fixture.receive({ byte });
+        actions.insert(actions.end(), next.begin(), next.end());
+    }
+    require(actions.size() == 2 && actions.front().kind == ProtocolActionKind::PublishParsed && actions.front().deviceId == "1", "shared topic routing failed");
+    require(actions.front().parsed.valuesJson.find("23.5") != std::string::npos, "mapped value lost");
+    require(fixture.receive(publication("devices", R"({"deviceCode":"1","temperature":23.5})", 1, 7, true)).empty(), "pending QoS1 duplicate was published");
+    const auto ack = fixture.session->parsedPublished(actions.front().publicationToken);
+    require(ack.size() == 1 && ack.front().bytes == mqtt::Bytes({ 0x40, 2, 0, 7 }), "PUBACK before/after publication incorrect");
+    require(fixture.receive(publication("devices", R"({"deviceCode":"unknown","temperature":25})", 1, 8)).front().bytes == mqtt::Bytes({ 0x40, 2, 0, 8 }), "unknown device not acknowledged");
+    auto coalesced = publication("devices", R"({"deviceCode":"0","temperature":10})", 0);
+    const auto second = publication("devices", R"({"deviceCode":"1","temperature":11})", 0);
+    coalesced.insert(coalesced.end(), second.begin(), second.end());
+    require(fixture.receive(coalesced).size() == 4, "coalesced publications lost");
+}
+
+void testQos2AndCommand() {
+    Fixture fixture;
+    fixture.start();
+    const auto packet = publication("devices/0", R"({"temperature":8})", 2);
+    require(fixture.receive(packet).front().bytes == mqtt::Bytes({ 0x50, 2, 0, 7 }), "QoS2 missing PUBREC");
+    const auto released = fixture.receive({ 0x62, 2, 0, 7 });
+    require(released.front().kind == ProtocolActionKind::PublishParsed, "QoS2 publication missing");
+    require(fixture.receive({ 0x62, 2, 0, 7 }).empty(), "QoS2 duplicate release republished");
+    require(fixture.session->parsedPublished(released.front().publicationToken).front().bytes == mqtt::Bytes({ 0x70, 2, 0, 7 }), "QoS2 missing PUBCOMP");
+    require(fixture.receive({ 0x62, 2, 0, 7 }).front().bytes == mqtt::Bytes({ 0x70, 2, 0, 7 }), "completed QoS2 release not acknowledged");
+    const auto command = dynamic_cast<CommandCapabilitySession*>(fixture.session.get())->execute({ .id = "command", .deviceId = "0", .elements = { { "temperature", "12.5" } } });
+    require(command.front().bytes.front() == 0x34, "outbound QoS2 missing PUBLISH");
+    require(fixture.receive({ 0x50, 2, 0, 2 }).front().bytes == mqtt::Bytes({ 0x62, 2, 0, 2 }), "outbound QoS2 missing PUBREL");
+    const auto complete = fixture.receive({ 0x70, 2, 0, 2 });
+    require(complete.back().kind == ProtocolActionKind::CompleteCommand, "outbound QoS2 did not complete");
+}
+
+void testFailuresAndKeepAlive() {
+    Fixture fixture;
+    fixture.start();
+    const auto ping = dynamic_cast<DeadlineCapabilitySession*>(fixture.session.get())->deadline(2);
+    require(ping.front().bytes == mqtt::Bytes({ 0xc0, 0 }), "missing keep alive PINGREQ");
+    require(fixture.receive({ 0xd0, 0 }).size() == 2, "PINGRESP did not rearm keep alive");
+    require(dynamic_cast<DeadlineCapabilitySession*>(fixture.session.get())->deadline(3).back().kind == ProtocolActionKind::Close, "ping timeout did not close");
+    for (const mqtt::Bytes malformed : { mqtt::Bytes{ 0x20, 2, 0, 5 }, mqtt::Bytes{ 0x21, 2, 0, 0 }, mqtt::Bytes{ 0x20, 0xff, 0xff, 0xff, 0xff } }) {
+        Fixture rejected;
+        (void)rejected.session->connected();
+        require(rejected.receive(malformed).back().kind == ProtocolActionKind::Close, "malformed MQTT accepted");
+    }
+    require(!mqtt::validText(std::string("a\0b", 3)) && !mqtt::validText("\xed\xa0\x80"), "invalid UTF-8 accepted");
+    require(mqtt::Factory{}.packetForLogging({ mqtt::Bytes{ 0x10, 3, 'x', 'y', 'z' } }) == mqtt::Bytes({ 0x10, 0 }), "CONNECT credentials leaked");
+}
+
+void testBatchPathsAndRetries() {
+    Fixture fixture(true);
+    for (auto& device : fixture.snapshot->devices) {
+        device.calculationConfig = R"({"topic":"devices","recordsPath":"/payload/devices","deviceCodeField":"/meta/code","commandTopic":"commands","qos":2,"points":[{"id":"temperature","name":"温度","field":"/metrics/temperature","dataType":"DOUBLE"}]})";
+        device.elements.front().mqttField = "/metrics/temperature";
+    }
+    fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
+    fixture.start();
+    const auto bytes = publication("devices", R"({"payload":{"devices":[{"meta":{"code":"0"},"metrics":{"temperature":20}},{"meta":{"code":"1"},"metrics":{"temperature":21}}]}})", 1);
+    const ProtocolInput input{ .messageId = "durable-input", .receivedAtMs = 1000, .bytes = bytes };
+    const auto actions = fixture.session->consume(input);
+    require(actions.size() == 4 && actions[0].deviceId == "0" && actions[2].deviceId == "1", "nested batch route failed");
+    require(actions[0].parsed.acquisitionId != actions[2].parsed.acquisitionId, "batch records share a history identity");
+    require(fixture.session->parsedPublished(actions[0].publicationToken).empty(), "batch acknowledged before all devices were published");
+    const auto retry = fixture.session->consume(input);
+    require(retry[0].parsed.acquisitionId == actions[0].parsed.acquisitionId && retry[2].publicationToken == actions[2].publicationToken, "Redis retry advanced MQTT state");
+    const auto ack = fixture.session->parsedPublished(actions[2].publicationToken);
+    require(ack.front().bytes == mqtt::Bytes({ 0x40, 2, 0, 7 }), "batch did not acknowledge after publication");
+    require(fixture.session->parsedPublished(actions[2].publicationToken).front().bytes == ack.front().bytes, "ack publication retry lost acknowledgement");
+    const auto request = dynamic_cast<CommandCapabilitySession*>(fixture.session.get())->execute({ .id = "nested-command", .deviceId = "1", .elements = { { "temperature", "12" } } });
+    const std::string encoded(request.front().bytes.begin(), request.front().bytes.end());
+    require(encoded.find(R"({"meta":{"code":"1"},"metrics":{"temperature":12}})") != std::string::npos, "command did not encode nested paths");
+    Fixture array(true);
+    array.start();
+    require(array.receive(publication("devices", R"([{"deviceCode":"0","temperature":1},{"deviceCode":"1","temperature":2}])", 0)).size() == 4, "top-level array failed");
+    const std::string json = R"({"a/b":{"~name":[false,42]}})";
+    const auto object = ruvia::JsonValue::parse(json);
+    const auto selected = service::utils::jsonField(*object, "/a~1b/~0name/1");
+    require(selected && selected->view() == "42", "JSON Pointer escape or index failed");
+}
+
+void testTextAndBinaryCommands() {
+    for (const bool binary : { false, true }) {
+        Fixture fixture;
+        auto& device = fixture.snapshot->devices.front();
+        device.calculationConfig = binary
+            ? R"({"topic":"devices/0","identitySource":"payload","deviceCodeField":"0:4:UTF8","payloadFormat":"binary","recordLength":6,"commandTopic":"commands/0","qos":2,"points":[{"id":"temperature","name":"温度","field":"4:2:UINT:LE","dataType":"DOUBLE","scale":0.1}]})"
+            : R"({"topic":"devices/0","identitySource":"payload","deviceCodeField":"0","payloadFormat":"text","delimiter":",","recordDelimiter":";","commandTopic":"commands/0","qos":2,"points":[{"id":"temperature","name":"温度","field":"1","dataType":"DOUBLE","scale":0.1}]})";
+        device.elements.front().mqttField = binary ? "4:2:UINT:LE" : "1";
+        fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
+        fixture.start();
+        const auto payload = binary ? std::string("0\0\0\0\0\1", 6) : "0,256;unknown,100";
+        const auto actions = fixture.receive(publication("devices/0", payload, 0));
+        require(actions.size() == 2 && actions.front().kind == ProtocolActionKind::PublishParsed && actions.front().parsed.valuesJson.find("25.6") != std::string::npos, "configured text/binary report failed");
+        const auto command = dynamic_cast<CommandCapabilitySession*>(fixture.session.get())->execute({ .id = "encoded-command", .deviceId = "0", .elements = { { "temperature", "15" } } });
+        require(command.front().kind == ProtocolActionKind::Send, "configured text/binary command rejected");
+        const auto expected = binary ? std::string("0\0\0\0\x96\0", 6) : "0,150";
+        require(command.front().bytes.size() >= expected.size() && std::equal(expected.begin(), expected.end(), command.front().bytes.end() - expected.size(), [](char left, std::uint8_t right) {
+                    return static_cast<std::uint8_t>(left) == right;
+                }),
+                "text/binary command bytes or inverse scale incorrect");
+    }
+}
+} // namespace
+
+int main() {
+    try {
+        testFramingAndRouting();
+        testQos2AndCommand();
+        testFailuresAndKeepAlive();
+        testBatchPathsAndRetries();
+        testTextAndBinaryCommands();
+        std::cout << "MQTT tests passed\n";
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n';
+        return 1;
+    }
+}

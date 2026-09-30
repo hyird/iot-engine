@@ -113,6 +113,7 @@ export function IotLinkPage() {
     const [editing, setEditing] = useState<Link.Item | null>(null);
     const [form] = Form.useForm<LinkFormValues>();
     const selectedMode = Form.useWatch('mode', form) as Link.Mode | undefined;
+    const selectedProtocol = Form.useWatch('protocol', form) as Link.Protocol | undefined;
     const { modal } = App.useApp();
     const { has } = usePermissions();
     const canQuery = has('iot:link:query');
@@ -371,11 +372,19 @@ export function IotLinkPage() {
         },
     ];
     const modes = linkEnums?.modes ?? ['TCP Server', 'TCP Client'];
-    const protocols = linkEnums?.protocols ?? ['SL651', 'Modbus', 'S7', 'MC', 'FINS', 'DLT645'];
+    const protocols = linkEnums?.protocols ?? [
+        'SL651',
+        'Modbus',
+        'S7',
+        'MC',
+        'FINS',
+        'DLT645',
+        'MQTT',
+    ];
     const availableProtocols =
         selectedMode === 'TCP Client'
             ? protocols.filter((protocol) => protocol !== 'SL651')
-            : protocols;
+            : protocols.filter((protocol) => protocol !== 'MQTT');
     return (
         <PageContainer
             header={
@@ -466,6 +475,22 @@ export function IotLinkPage() {
                         <Select
                             disabled={Boolean(editing)}
                             options={availableProtocols.map((value) => ({ value, label: value }))}
+                            onChange={(protocol) => {
+                                if (protocol === 'MQTT')
+                                    form.setFieldValue(
+                                        'targets',
+                                        form
+                                            .getFieldValue('targets')
+                                            .map((target: Link.Target) => ({
+                                                ...target,
+                                                port: 1883,
+                                                mqtt: target.mqtt ?? {
+                                                    clientId: `iot-${crypto.randomUUID()}`,
+                                                    keepAliveSeconds: 60,
+                                                },
+                                            }))
+                                    );
+                            }}
                         />
                     </Form.Item>
                     {
@@ -523,7 +548,18 @@ export function IotLinkPage() {
                                                     <Button
                                                         type="dashed"
                                                         onClick={() =>
-                                                            add(createTarget(fields.length + 1))
+                                                            add({
+                                                                ...createTarget(fields.length + 1),
+                                                                ...(selectedProtocol === 'MQTT'
+                                                                    ? {
+                                                                          port: 1883,
+                                                                          mqtt: {
+                                                                              clientId: `iot-${crypto.randomUUID()}`,
+                                                                              keepAliveSeconds: 60,
+                                                                          },
+                                                                      }
+                                                                    : {}),
+                                                            })
                                                         }
                                                     >
                                                         添加目标
@@ -532,7 +568,7 @@ export function IotLinkPage() {
                                                 {fields.map((field) => (
                                                     <div
                                                         key={field.key}
-                                                        className="mb-3 grid grid-cols-[1fr_1.25fr_110px_100px_auto] items-start gap-2 rounded-lg border border-gray-200 p-3"
+                                                        className="mb-3 grid grid-cols-1 items-start gap-2 rounded-lg border border-gray-200 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)_90px_85px_auto]"
                                                     >
                                                         <Form.Item name={[field.name, 'id']} hidden>
                                                             <Input />
@@ -556,13 +592,24 @@ export function IotLinkPage() {
                                                                     message: '请输入目标IP',
                                                                 },
                                                                 {
-                                                                    pattern:
-                                                                        /^(\d{1,3}\.){3}\d{1,3}$/,
-                                                                    message: 'IPv4格式错误',
+                                                                    ...(selectedProtocol === 'MQTT'
+                                                                        ? {}
+                                                                        : {
+                                                                              pattern:
+                                                                                  /^(\d{1,3}\.){3}\d{1,3}$/,
+                                                                              message:
+                                                                                  'IPv4格式错误',
+                                                                          }),
                                                                 },
                                                             ]}
                                                         >
-                                                            <Input placeholder="192.168.1.100" />
+                                                            <Input
+                                                                placeholder={
+                                                                    selectedProtocol === 'MQTT'
+                                                                        ? 'Broker 域名或 IP'
+                                                                        : '192.168.1.100'
+                                                                }
+                                                            />
                                                         </Form.Item>
                                                         <Form.Item
                                                             name={[field.name, 'port']}
@@ -606,6 +653,61 @@ export function IotLinkPage() {
                                                         >
                                                             删除
                                                         </Button>
+                                                        {selectedProtocol === 'MQTT' && (
+                                                            <div className="col-span-full grid grid-cols-1 gap-x-3 sm:grid-cols-2">
+                                                                <Form.Item
+                                                                    label="MQTT Client ID"
+                                                                    name={[
+                                                                        field.name,
+                                                                        'mqtt',
+                                                                        'clientId',
+                                                                    ]}
+                                                                    rules={[
+                                                                        {
+                                                                            required: true,
+                                                                            message:
+                                                                                '请输入 Client ID',
+                                                                        },
+                                                                    ]}
+                                                                >
+                                                                    <Input maxLength={128} />
+                                                                </Form.Item>
+                                                                <Form.Item
+                                                                    label="保活时间（秒）"
+                                                                    name={[
+                                                                        field.name,
+                                                                        'mqtt',
+                                                                        'keepAliveSeconds',
+                                                                    ]}
+                                                                >
+                                                                    <InputNumber
+                                                                        min={1}
+                                                                        max={65535}
+                                                                        className="!w-full"
+                                                                    />
+                                                                </Form.Item>
+                                                                <Form.Item
+                                                                    label="用户名"
+                                                                    name={[
+                                                                        field.name,
+                                                                        'mqtt',
+                                                                        'username',
+                                                                    ]}
+                                                                >
+                                                                    <Input autoComplete="off" />
+                                                                </Form.Item>
+                                                                <Form.Item
+                                                                    label="密码"
+                                                                    name={[
+                                                                        field.name,
+                                                                        'mqtt',
+                                                                        'password',
+                                                                    ]}
+                                                                >
+                                                                    <Input.Password autoComplete="new-password" />
+                                                                </Form.Item>
+                                                            </div>
+                                                        )}
                                                     </div>
                                                 ))}
                                                 <Form.ErrorList errors={errors} />

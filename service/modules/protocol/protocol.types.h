@@ -101,6 +101,49 @@ RUVIA_MODEL(IndustrialPoint,
     RUVIA_OPTIONAL_FIELD(bit, ruvia::JsonValue));
 
 // 顶层 config 保留未知键、精确数字 token 和 PATCH 合并；各协议固定嵌套结构用 Model。
+RUVIA_MODEL(MqttValueMapping, RUVIA_REQUIRED_FIELD(input, ruvia::String), RUVIA_REQUIRED_FIELD(output, ruvia::String));
+RUVIA_MODEL(MqttPoint,
+    RUVIA_REQUIRED_FIELD(id, ruvia::String),
+    RUVIA_REQUIRED_FIELD(name, ruvia::String),
+    RUVIA_REQUIRED_FIELD(field, ruvia::String),
+    RUVIA_REQUIRED_FIELD(dataType, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(unit, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(writable, ruvia::Bool),
+    RUVIA_OPTIONAL_FIELD(scale, ruvia::Double),
+    RUVIA_OPTIONAL_FIELD(offset, ruvia::Double),
+    RUVIA_OPTIONAL_FIELD(enumValues, ruvia::Array<MqttValueMapping>));
+RUVIA_MODEL(MqttConfig,
+    RUVIA_OPTIONAL_FIELD(storagePolicy, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(topic, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(recordsPath, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(deviceCodeField, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(identitySource, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(topicDeviceSegment, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(payloadFormat, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(delimiter, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(recordDelimiter, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(recordLength, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(timeField, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(timeFormat, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(commandTopic, ruvia::String), RUVIA_OPTIONAL_FIELD(commandTemplate, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(qos, ruvia::Int64),
+    RUVIA_OPTIONAL_FIELD(points, ruvia::Array<MqttPoint>));
+
+RUVIA_MODEL(MqttPreviewBody,
+    RUVIA_REQUIRED_FIELD(config, MqttConfig),
+    RUVIA_REQUIRED_FIELD(topic, ruvia::String, RUVIA_MIN(1, "Topic 不能为空"), RUVIA_MAX(1024, "Topic 过长")),
+    RUVIA_REQUIRED_FIELD(payload, ruvia::String, RUVIA_MAX(2097152, "示例负载过长")),
+    RUVIA_OPTIONAL_FIELD(deviceCode, ruvia::String, RUVIA_MAX(128, "设备编码过长")),
+    RUVIA_OPTIONAL_FIELD(timezone, ruvia::String, RUVIA_MAX(6, "时区过长")));
+RUVIA_MODEL(MqttPreviewPoint,
+    RUVIA_REQUIRED_FIELD(id, ruvia::String), RUVIA_REQUIRED_FIELD(name, ruvia::String),
+    RUVIA_REQUIRED_FIELD(value, ruvia::String), RUVIA_REQUIRED_FIELD(unit, ruvia::String));
+RUVIA_MODEL(MqttPreviewRecord,
+    RUVIA_REQUIRED_FIELD(deviceCode, ruvia::String), RUVIA_REQUIRED_FIELD(time, ruvia::String),
+    RUVIA_REQUIRED_FIELD(points, ruvia::Array<MqttPreviewPoint>), RUVIA_REQUIRED_FIELD(errors, ruvia::Array<ruvia::String>));
+RUVIA_MODEL(MqttPreviewResult, RUVIA_REQUIRED_FIELD(records, ruvia::Array<MqttPreviewRecord>));
+RUVIA_MODEL(MqttPreviewResponse, RUVIA_REQUIRED_FIELD(code, ruvia::Int64), RUVIA_REQUIRED_FIELD(message, ruvia::String), RUVIA_REQUIRED_FIELD(data, MqttPreviewResult));
+
 RUVIA_MODEL(CreateProtocolBody,
     RUVIA_REQUIRED_FIELD(protocol, ruvia::String, RUVIA_MIN(1, "协议不能为空"), RUVIA_MAX(16, "协议过长")),
     RUVIA_REQUIRED_FIELD(name, ruvia::String, RUVIA_MIN(1, "配置名称不能为空"), RUVIA_MAX(64, "配置名称过长")),
@@ -117,7 +160,7 @@ RUVIA_MODEL(UpdateProtocolBody,
 RUVIA_MODEL(ProtocolListQuery,
     RUVIA_OPTIONAL_FIELD(page, ruvia::Int64, RUVIA_DEFAULT(1), RUVIA_MIN(1, "page 必须大于 0")),
     RUVIA_OPTIONAL_FIELD(pageSize, ruvia::Int64, RUVIA_DEFAULT(10), RUVIA_MIN(1, "pageSize 必须在 1 - 1000 之间"), RUVIA_MAX(1000, "pageSize 必须在 1 - 1000 之间")),
-    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String, RUVIA_ONE_OF("协议无效", "SL651", "Modbus", "S7", "MC", "FINS", "DLT645")));
+    RUVIA_OPTIONAL_FIELD(protocol, ruvia::String, RUVIA_ONE_OF("协议无效", "SL651", "Modbus", "S7", "MC", "FINS", "DLT645", "MQTT")));
 RUVIA_MODEL(ProtocolIdParams,
     RUVIA_REQUIRED_FIELD(id, ruvia::String, RUVIA_CUSTOM("id 必须是 UUID", service::common::isUuidField)));
 

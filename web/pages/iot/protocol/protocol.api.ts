@@ -6,7 +6,13 @@ import {
     protocolTypeSchema,
     protocolUpdateSchema,
 } from './protocol.schema';
-import type { ExpressionTestRequest, ExpressionTestResult, Protocol } from './protocol.types';
+import type {
+    ExpressionTestRequest,
+    ExpressionTestResult,
+    MqttPreviewRequest,
+    MqttPreviewResult,
+    Protocol,
+} from './protocol.types';
 
 export const getList = (params?: Protocol.Query, config?: RequestConfig) =>
     request.get<PaginatedResult<Protocol.Item>>('/v1/protocol/configs', {
@@ -34,3 +40,6 @@ export const testExpression = (data: ExpressionTestRequest) =>
     request.post<ExpressionTestResult>('/v1/protocol/configs/test-expression', data, {
         _silent: true,
     });
+
+export const previewMqtt = (data: MqttPreviewRequest) =>
+    request.post<MqttPreviewResult>('/v1/protocol/configs/preview-mqtt', data, { _silent: true });

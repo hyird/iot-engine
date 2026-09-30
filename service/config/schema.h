@@ -1,4 +1,5 @@
 #pragma once
+#include "service/config/mqtt.h"
 
 #include <algorithm>
 #include <vector>
@@ -1878,6 +1879,25 @@ CREATE TRIGGER live_edge_dtu AFTER INSERT OR UPDATE OR DELETE ON edge_dtu
 FOR EACH ROW EXECUTE FUNCTION publish_edge_dtu_change();
 END $schema$;
 )sql"}),
+    [] {
+        ruvia::DbSchema schema({.driver=ruvia::DbDriver::kPostgreSql});
+        ruvia::DbQuery q;
+        for (const auto table : {"link", "protocol_config", "device_data"}) {
+            const auto name = std::string(table) + "_protocol_check";
+            schema.dropConstraint(table, name);
+            schema.addConstraint(table, {.name=name, .kind=ruvia::DbConstraintKind::kCheck,
+                .check=q.binary(q.column("protocol"), ruvia::DbBinaryOperator::kIn,
+                    q.list({q.value("SL651"), q.value("Modbus"), q.value("S7"),
+                        q.value("MC"), q.value("FINS"), q.value("DLT645"), q.value("MQTT")}))});
+        }
+        auto statements = schema.compile("0052_mqtt_client");
+        std::string sql = "DO $mqtt$ BEGIN\n";
+        for (const auto& statement : statements)
+            sql += "EXECUTE $ddl$" + std::string(statement.sql()) + "$ddl$;\n";
+        sql += "EXECUTE $ddl$ALTER TABLE link ADD CONSTRAINT link_mqtt_client_check CHECK (protocol <> 'MQTT' OR (execution = 'collector' AND endpoint->>'mode' = 'TCP Client') IS TRUE)$ddl$;\n";
+        sql += "EXECUTE $ddl$" + std::string(kMqttDeviceAddressMigration) + "$ddl$;\nEND $mqtt$;";
+        return ruvia::DbMigration({.id="0052_mqtt_client", .sql=std::move(sql)});
+    }(),
     };
     // Only audited original digests may transition to their equivalent ORM definitions.
     // This transaction runs before normal checksum validation; all other drift still fails.

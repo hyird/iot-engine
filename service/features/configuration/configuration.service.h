@@ -5,6 +5,7 @@
 #include <memory>
 
 #include "service/features/configuration/configuration.entity.h"
+#include "service/features/collector/mqtt/mqtt.types.h"
 
 // 数据库配置读取与 Collector 配置投影编排。
 
@@ -188,7 +189,8 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
     targetQuery.select({ targetQuery.cast(targetQuery.column(service::configuration::persistence::LinkEntity::columnName<"id">(), "l"), Type::kText),
             targetText("id"), targetText("name"), targetText("ip"),
             targetQuery.coalesce({ targetQuery.nullIf(targetText("port"), targetQuery.value("")), targetQuery.value("0") }),
-            targetQuery.coalesce({ targetText("status"), targetQuery.value("enabled") }) })
+            targetQuery.coalesce({ targetText("status"), targetQuery.value("enabled") }),
+            targetQuery.coalesce({targetText("mqtt"), targetQuery.value("{}")}) })
         .from(service::configuration::persistence::LinkEntity::tableName(), "l")
         .joinFunction(ruvia::DbJoinType::kCross, targetQuery.call("jsonb_array_elements", {
             targetQuery.coalesce({ targetQuery.binary(targetQuery.column(service::configuration::persistence::LinkEntity::columnName<"endpoint">(), "l"), Op::kJsonGet, targetQuery.value("targets")),
@@ -210,6 +212,7 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
         target.ip = cell(row, 3);
         target.port = detail::cellPort(row, 4);
         target.status = cell(row, 5);
+        target.mqttConfig = cell(row, 6);
         snapshot.links[link->second].targets.push_back(std::move(target));
     }
 
@@ -378,9 +381,9 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
         return query;
     };
     auto configured = configuredProtocol("Modbus", "registers", 1);
-    for (const auto protocol : {"Modbus", "S7", "SL651", "MC", "FINS", "DLT645"})
+    for (const auto protocol : {"Modbus", "S7", "SL651", "MC", "FINS", "DLT645", "MQTT"})
         configured.combine(ruvia::DbSetOperation::kUnionAll, configuredProtocol(protocol, "derivedPoints", 5));
-    for (const auto protocol : {"MC", "FINS", "DLT645"})
+    for (const auto protocol : {"MC", "FINS", "DLT645", "MQTT"})
         configured.combine(ruvia::DbSetOperation::kUnionAll, configuredProtocol(protocol, "points", 4));
     const auto s7Configured = configuredProtocol("S7", "areas", 2);
     const auto sl651Configured = configuredProtocol("SL651", "funcs", 3);
@@ -499,6 +502,23 @@ template <typename Database> ruvia::Task<RuntimeSnapshot> loadRuntimeSnapshot(Da
             element.guideHex = cell(row, 12); element.length = cellInt(row, 13); element.digits = cellInt(row, 14);
             if (element.dataType == "HEX") element.encoding = "HEX";
             device->elements.push_back(std::move(element));
+        }
+    }
+
+    for (auto& device : snapshot.devices) {
+        if (device.protocol != "MQTT") continue;
+        const auto config = ruvia::fromJson<service::collector::mqtt::Config>(device.calculationConfig);
+        if (!config) throw std::invalid_argument("invalid MQTT configuration projection");
+        for (const auto& point : config->get<"points">()) {
+            ElementDefinition element;
+            element.configKey = "element:" + std::string(point.get<"id">().view());
+            element.id = point.get<"id">().view(); element.name = point.get<"name">().view();
+            element.dataType = point.get<"dataType">().view(); element.mqttField = point.get<"field">().view();
+            const auto& unit = point.get<"unit">();
+            element.unit = unit ? std::string(unit->view()) : "";
+            element.writable = point.get<"writable">().value_or(ruvia::Bool{false}).value;
+            element.size = 65535;
+            device.elements.push_back(std::move(element));
         }
     }
 

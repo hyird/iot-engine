@@ -41,6 +41,7 @@
 #include "service/features/collector/mc/mc.protocol.h"
 #include "service/features/collector/fins/fins.protocol.h"
 #include "service/features/collector/dlt645/dlt645.protocol.h"
+#include "service/features/collector/mqtt/mqtt.protocol.h"
 #include "service/features/collector/sl651/sl651.protocol.h"
 #include "service/features/collector/tcp/tcp.transport.h"
 #include "service/features/messaging/messaging.transport.h"
@@ -208,6 +209,7 @@ class CollectorWorker final {
         result.add(std::make_unique<mc::SessionFactory>());
         result.add(std::make_unique<fins::SessionFactory>());
         result.add(std::make_unique<dlt645::SessionFactory>());
+        result.add(std::make_unique<mqtt::Factory>());
         result.add(std::make_unique<sl651::SessionFactory>());
         return result;
     }

@@ -32,6 +32,7 @@
 #include "service/modules/system/role/role.entity.h"
 #include "service/modules/system/user/user.entity.h"
 #include "service/utils/json.h"
+#include "service/utils/payload.h"
 #include "service/common/derived_point.h"
 
 namespace service::protocol {
@@ -64,7 +65,7 @@ class ProtocolConfigurationRules final {
   public:
     static void validateProtocol(std::string_view protocol) {
         if (protocol != "SL651" && protocol != "Modbus" && protocol != "S7" &&
-            protocol != "MC" && protocol != "FINS" && protocol != "DLT645") {
+            protocol != "MC" && protocol != "FINS" && protocol != "DLT645" && protocol != "MQTT") {
             service::common::fail(16003, "不支持的协议类型", 400);
         }
     }
@@ -507,6 +508,92 @@ class ProtocolConfigurationRules final {
             service::common::fail(16004, "配置的 storagePolicy 不能为空", 400);
         }
 
+        if (protocol == "MQTT") {
+            const auto typed = ruvia::fromJson<MqttConfig>(config->view());
+            if (!typed) service::common::fail(16004, "MQTT 配置字段类型无效", 400);
+            const auto topicValid = [](std::string_view topic, bool filter = false) {
+                if (topic.empty() || topic.size() > 1024 || topic.find('\0') != std::string_view::npos) return false;
+                const auto levels = service::utils::splitPayload(topic, "/");
+                for (std::size_t i = 0; i < levels.size(); ++i) {
+                    if (levels[i].find_first_of("+#") == std::string_view::npos) continue;
+                    if (!filter || (levels[i] != "+" && (levels[i] != "#" || i + 1 != levels.size()))) return false;
+                }
+                return true;
+            };
+            const auto& topic = typed->get<"topic">();
+            if ((required && !topic) || (topic && !topicValid(topic->view(), true)))
+                service::common::fail(16004, "MQTT Topic 过滤器无效", 400);
+            const auto& commandTopic = typed->get<"commandTopic">();
+            if (commandTopic && !commandTopic->view().empty() && !topicValid(commandTopic->view()))
+                service::common::fail(16004, "MQTT 指令 Topic 无效", 400);
+            const auto& codeField = typed->get<"deviceCodeField">();
+            const auto& recordsPath = typed->get<"recordsPath">();
+            const auto format = typed->get<"payloadFormat">() ? typed->get<"payloadFormat">()->view() : std::string_view("json");
+            const auto identity = typed->get<"identitySource">() ? typed->get<"identitySource">()->view() : (codeField && !codeField->view().empty() ? std::string_view("payload") : std::string_view("bound"));
+            if (!oneOf(format, {"json", "text", "binary"}) || !oneOf(identity, {"bound", "payload", "topic"})) service::common::fail(16004, "MQTT 负载格式或设备识别方式无效", 400);
+            if (const auto& commandTemplate = typed->get<"commandTemplate">(); commandTemplate && !commandTemplate->view().empty()) {
+                if (format != "json" || commandTemplate->view().size() > 16384) service::common::fail(16004, "指令模板仅用于 JSON，最多 16384 字节", 400);
+                try { (void)service::utils::expandJsonTemplate(commandTemplate->view(), {{"$values", "{}"}, {"$deviceCode", "\"D001\""}}); }
+                catch (const std::invalid_argument& error) { service::common::fail(16004, error.what(), 400); }
+            }
+            if (identity == "payload" && (!codeField || codeField->view().empty())) service::common::fail(16004, "负载识别需要设备标识字段", 400);
+            if (identity == "bound" && topic && topic->view().find_first_of("+#") != std::string_view::npos) service::common::fail(16004, "通配 Topic 需要从 Topic 或负载识别设备", 400);
+            const auto segment = typed->get<"topicDeviceSegment">().value_or(ruvia::Int64{1}).value;
+            if (segment < 0 || segment > 1024) service::common::fail(16004, "Topic 设备标识段号无效", 400);
+            const auto recordLength = typed->get<"recordLength">().value_or(ruvia::Int64{0}).value;
+            if (recordLength < 0 || recordLength > 1048576) service::common::fail(16004, "二进制记录长度无效", 400);
+            for (const auto* delimiter : {&typed->get<"delimiter">(), &typed->get<"recordDelimiter">()})
+                if (*delimiter && ((*delimiter)->view().empty() || (*delimiter)->view().size() > 8)) service::common::fail(16004, "分隔符长度须为 1 到 8 字节", 400);
+            const auto validateSelector = [&](std::string_view selector) {
+                if (selector.size() > 256) throw std::invalid_argument("字段路径过长");
+                if (format == "json") (void)service::utils::jsonFieldSegments(selector);
+                else if (format == "text") { if (service::utils::payloadIndex(selector) > 4096) throw std::invalid_argument("文本列号超出范围"); }
+                else {
+                    const service::utils::BinaryPayloadField field(selector);
+                    if (recordLength && field.offset + field.length > static_cast<std::size_t>(recordLength)) throw std::invalid_argument("二进制字段超出记录长度");
+                }
+            };
+            try {
+                if (identity == "payload") validateSelector(codeField->view());
+                if (recordsPath && !recordsPath->view().empty()) {
+                    if (format != "json" || recordsPath->view().size() > 256) throw std::invalid_argument("记录路径仅用于 JSON");
+                    (void)service::utils::jsonFieldSegments(recordsPath->view());
+                }
+                if (const auto& timeField = typed->get<"timeField">(); timeField && !timeField->view().empty()) validateSelector(timeField->view());
+            } catch (const std::invalid_argument& error) { service::common::fail(16004, error.what(), 400); }
+            if (const auto& timeFormat = typed->get<"timeFormat">(); timeFormat && !oneOf(timeFormat->view(), {"unix_ms", "unix_s", "iso8601"})) service::common::fail(16004, "时间格式无效", 400);
+            const auto qos = typed->get<"qos">().value_or(ruvia::Int64{1}).value;
+            if (qos < 0 || qos > 2) service::common::fail(16004, "MQTT QoS 必须是 0、1 或 2", 400);
+            const auto& points = typed->get<"points">();
+            if ((required && !points) || (points && points->size() > 256)) service::common::fail(16004, "MQTT 点位配置无效", 400);
+            std::set<std::string> ids, fields;
+            if (points) for (const auto& point : *points) {
+                const auto name = point.get<"name">().view(), field = point.get<"field">().view();
+                if (!service::common::isUuidField(point.get<"id">()) || !ids.emplace(point.get<"id">().view()).second ||
+                    name.empty() || name.size() > 100 || field.empty() || field.size() > 256 ||
+                    !fields.emplace(field).second || (codeField && codeField->view() == field) ||
+                    !oneOf(point.get<"dataType">().view(), {"BOOL", "STRING", "DOUBLE"}))
+                    service::common::fail(16004, "MQTT 点位名称、标识、JSON 字段或类型无效", 400);
+                try { validateSelector(field); }
+                catch (const std::invalid_argument& error) { service::common::fail(16004, error.what(), 400); }
+                const auto scale = point.get<"scale">().value_or(ruvia::Double{1}).value, offset = point.get<"offset">().value_or(ruvia::Double{0}).value;
+                if (!std::isfinite(scale) || !std::isfinite(offset) || (!scale && point.get<"writable">().value_or(ruvia::Bool{false}).value)) service::common::fail(16004, "倍率、偏移无效；可写点位倍率不能为零", 400);
+                if (const auto& enums = point.get<"enumValues">(); enums) {
+                    if (enums->size() > 64) service::common::fail(16004, "最多 64 条枚举映射", 400);
+                    std::set<std::string> inputs, outputs;
+                    for (const auto& value : *enums) {
+                        const auto input = value.get<"input">().view(), output = value.get<"output">().view();
+                        const auto converted = service::utils::convertPayloadValue(service::utils::PayloadScalar{std::string(output)}, point.get<"dataType">().view());
+                        if (input.size() > 256 || output.size() > 256 || !inputs.emplace(input).second || !converted || !outputs.emplace(service::utils::payloadScalarJson(*converted)).second) service::common::fail(16004, "枚举原值、转换值须唯一且符合点位类型", 400);
+                    }
+                }
+                if (point.get<"unit">() && point.get<"unit">()->view().size() > 32)
+                    service::common::fail(16004, "MQTT 点位单位过长", 400);
+                if (required && point.get<"writable">().value_or(ruvia::Bool{false}).value &&
+                    (!commandTopic || commandTopic->view().empty())) service::common::fail(16004, "可写 MQTT 点位需要指令 Topic", 400);
+            }
+            return;
+        }
         if (protocol == "SL651") {
             if (!enumFieldValid(*config, "responseMode", { "M1", "M2", "M3", "M4" }) ||
                 (hasField(*config, "funcs") &&
@@ -873,6 +960,86 @@ class ProtocolService {
         }
     }
 
+    static MqttPreviewResult previewMqtt(const MqttPreviewBody& body) {
+        try {
+            const auto& config = body.get<"config">();
+            const auto rawConfig = ruvia::toJson(config);
+            const auto parsedConfig = ruvia::JsonValue::parse(std::string_view(rawConfig));
+            ProtocolConfigurationRules::validateConfig(parsedConfig, "MQTT", true);
+            const auto topic = body.get<"topic">().view();
+            if (topic.empty() || topic.find_first_of("+#") != std::string_view::npos || topic.find('\0') != std::string_view::npos)
+                throw std::invalid_argument("示例 Topic 须为不含通配符的具体 Topic");
+            const auto option = [](const auto& value, std::string fallback) { return value ? std::string(value->view()) : fallback; };
+            const auto format = option(config.get<"payloadFormat">(), "json");
+            const auto codeField = option(config.get<"deviceCodeField">(), "");
+            const auto identity = option(config.get<"identitySource">(), codeField.empty() ? "bound" : "payload");
+            const auto deviceCode = option(body.get<"deviceCode">(), "");
+            auto filter = std::string(config.get<"topic">()->view());
+            constexpr std::string_view marker = "{deviceCode}";
+            for (auto i = filter.find(marker); i != std::string::npos; i = filter.find(marker, i + deviceCode.size())) filter.replace(i, marker.size(), deviceCode);
+            const auto levels = utils::splitPayload(body.get<"topic">().view(), "/"), pattern = utils::splitPayload(filter, "/");
+            bool matched = !(body.get<"topic">().view().starts_with('$') && !filter.starts_with('$'));
+            std::size_t index = 0;
+            for (; matched && index < pattern.size(); ++index) {
+                if (pattern[index] == "#") break;
+                matched = index < levels.size() && (pattern[index] == "+" || pattern[index] == levels[index]);
+            }
+            if (!matched || (index == pattern.size() && index != levels.size())) throw std::invalid_argument("示例 Topic 未匹配订阅配置");
+            auto payload = std::string(body.get<"payload">().view());
+            if (format == "binary") {
+                std::string hex;
+                for (const unsigned char ch : payload) if (!std::isspace(ch)) hex += static_cast<char>(ch);
+                if (hex.size() % 2) throw std::invalid_argument("二进制示例须为完整的 HEX 字节");
+                payload.clear();
+                for (std::size_t i = 0; i < hex.size(); i += 2) {
+                    unsigned value = 0; const auto parsed = std::from_chars(hex.data() + i, hex.data() + i + 2, value, 16);
+                    if (parsed.ec != std::errc{} || parsed.ptr != hex.data() + i + 2) throw std::invalid_argument("二进制示例 HEX 无效");
+                    payload += static_cast<char>(value);
+                }
+            }
+            if (payload.size() > 1048576) throw std::invalid_argument("示例负载超过 1 MiB");
+            const auto records = utils::payloadRecords(payload, format, option(config.get<"recordsPath">(), ""), option(config.get<"recordDelimiter">(), "\n"), static_cast<std::size_t>(config.get<"recordLength">().value_or(ruvia::Int64{0}).value));
+            MqttPreviewResult result;
+            ruvia::Array<MqttPreviewRecord> output;
+            const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            for (const auto& input : records) {
+                utils::PayloadRecord record(input, format, option(config.get<"delimiter">(), ","));
+                MqttPreviewRecord row; ruvia::Array<ruvia::String> errors; ruvia::Array<MqttPreviewPoint> points;
+                auto code = deviceCode;
+                if (identity == "payload") {
+                    const auto value = record.field(codeField); code = value ? utils::payloadScalarText(*value) : "";
+                } else if (identity == "topic") {
+                    const auto segment = static_cast<std::size_t>(config.get<"topicDeviceSegment">().value_or(ruvia::Int64{1}).value);
+                    code = segment < levels.size() ? std::string(levels[segment]) : "";
+                }
+                if (code.empty()) errors.push_back(ruvia::String("未提取到设备编码"));
+                else if (!deviceCode.empty() && code != deviceCode) errors.push_back(ruvia::String("设备编码与测试设备不匹配，实际接入将跳过此记录"));
+                auto occurredAt = now;
+                const auto timeField = option(config.get<"timeField">(), "");
+                if (!timeField.empty()) if (const auto time = record.field(timeField)) {
+                    const auto timestamp = utils::payloadTimestamp(*time, option(config.get<"timeFormat">(), "unix_ms"), option(body.get<"timezone">(), "+08:00"));
+                    if (timestamp) occurredAt = *timestamp; else errors.push_back(ruvia::String("设备时间无效，实际接入将跳过此记录"));
+                }
+                for (const auto& point : *config.get<"points">()) {
+                    auto inputValue = record.field(point.get<"field">().view());
+                    if (inputValue) if (const auto& enums = point.get<"enumValues">(); enums && !enums->empty()) {
+                        const auto key = utils::payloadScalarText(*inputValue); bool found = false;
+                        for (const auto& value : *enums) if (value.get<"input">().view() == key) { inputValue = utils::PayloadScalar{std::string(value.get<"output">().view())}; found = true; break; }
+                        if (!found) inputValue.reset();
+                    }
+                    const auto value = inputValue ? utils::convertPayloadValue(*inputValue, point.get<"dataType">().view(), point.get<"scale">().value_or(ruvia::Double{1}).value, point.get<"offset">().value_or(ruvia::Double{0}).value) : std::nullopt;
+                    if (!value) { errors.push_back(ruvia::String(std::string(point.get<"name">().view()) + "：字段缺失或类型转换失败")); continue; }
+                    MqttPreviewPoint preview;
+                    preview.set<"id">(point.get<"id">().view()).set<"name">(point.get<"name">().view()).set<"value">(utils::payloadScalarText(*value)).set<"unit">(option(point.get<"unit">(), ""));
+                    points.push_back(std::move(preview));
+                }
+                row.set<"deviceCode">(code).set<"time">(common::utcTimestampFromMilliseconds(occurredAt)).set<"points">(std::move(points)).set<"errors">(std::move(errors));
+                output.push_back(std::move(row));
+            }
+            result.set<"records">(std::move(output)); return result;
+        } catch (const std::invalid_argument& error) { common::fail(16004, error.what(), 400); }
+    }
+
     static ProtocolService& instance() {
         static thread_local ProtocolService service;
         return service;
@@ -1026,6 +1193,7 @@ class ProtocolService {
             }
             merged += '}';
             const auto mergedConfig = ruvia::JsonValue::parse(merged);
+            if (protocol == "MQTT") ProtocolConfigurationRules::validateConfig(mergedConfig, protocol, true);
             validateDerivedConfig(*mergedConfig);
             if (!service::common::orderDerivedPoints(*mergedConfig).empty()) co_await requireDerivedSupport(transaction, c.pool(), id);
         }

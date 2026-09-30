@@ -1,7 +1,172 @@
-import type { Modbus } from './protocol.types';
 import { z } from 'zod';
+import type { Modbus } from './protocol.types';
 export const protocolIdSchema = z.uuid({ error: 'id 必须是 UUID' });
-export const protocolTypeSchema = z.enum(['SL651', 'Modbus', 'S7', 'MC', 'FINS', 'DLT645']);
+export const protocolTypeSchema = z.enum(['SL651', 'Modbus', 'S7', 'MC', 'FINS', 'DLT645', 'MQTT']);
+
+const mqttTopicSchema = z
+    .string()
+    .min(1)
+    .max(1024)
+    .refine(
+        (value) =>
+            !value.includes('\0') &&
+            value
+                .split('/')
+                .every(
+                    (level, index, levels) =>
+                        !/[+#]/.test(level) ||
+                        level === '+' ||
+                        (level === '#' && index === levels.length - 1)
+                ),
+        'Topic 通配符须独占一层，# 只能位于最后一层'
+    );
+const mqttCommandTopicSchema = mqttTopicSchema.refine(
+    (value) => !/[+#]/.test(value),
+    '指令 Topic 不允许通配符'
+);
+const mqttPathSchema = z
+    .string()
+    .max(256)
+    .refine(
+        (value) =>
+            !value.startsWith('/') || (!/~(?![01])/.test(value) && value.split('/').length <= 33),
+        'JSON Pointer 转义无效或超过 32 层'
+    );
+export const mqttConfigSchema = z
+    .object({
+        storagePolicy: z.enum(['report', 'change']),
+        topic: mqttTopicSchema,
+        recordsPath: mqttPathSchema.optional(),
+        deviceCodeField: mqttPathSchema.optional(),
+        identitySource: z.enum(['bound', 'payload', 'topic']).optional(),
+        topicDeviceSegment: z.number().int().min(0).max(1024).optional(),
+        payloadFormat: z.enum(['json', 'text', 'binary']).optional(),
+        delimiter: z.string().min(1).max(8).optional(),
+        recordDelimiter: z.string().min(1).max(8).optional(),
+        recordLength: z.number().int().min(0).max(1048576).optional(),
+        timeField: mqttPathSchema.optional(),
+        timeFormat: z.enum(['unix_ms', 'unix_s', 'iso8601']).optional(),
+        commandTopic: z.union([z.literal(''), mqttCommandTopicSchema]).optional(),
+        commandTemplate: z.string().max(16384).optional(),
+        qos: z.union([z.literal(0), z.literal(1), z.literal(2)]),
+        points: z
+            .array(
+                z.object({
+                    id: z.uuid(),
+                    name: z.string().trim().min(1).max(100),
+                    field: mqttPathSchema.refine(
+                        (value) => value.length > 0,
+                        '请输入 JSON 字段或路径'
+                    ),
+                    dataType: z.enum(['BOOL', 'STRING', 'DOUBLE']),
+                    unit: z.string().max(32).optional(),
+                    writable: z.boolean().optional(),
+                    scale: z.number().optional(),
+                    offset: z.number().optional(),
+                    enumValues: z
+                        .array(
+                            z.object({ input: z.string().max(256), output: z.string().max(256) })
+                        )
+                        .max(64)
+                        .optional(),
+                })
+            )
+            .max(256),
+    })
+    .superRefine((config, context) => {
+        const format = config.payloadFormat ?? 'json';
+        const identity = config.identitySource ?? (config.deviceCodeField ? 'payload' : 'bound');
+        const issue = (path: (string | number)[], message: string) =>
+            context.addIssue({ code: 'custom', path, message });
+        const selector = (value: string, path: (string | number)[]) => {
+            if (format === 'text' && (!/^(0|[1-9]\d*)$/.test(value) || Number(value) > 4096))
+                issue(path, '文本字段填写从 0 开始的列号，最多 4096');
+            if (format === 'binary') {
+                const match =
+                    /^(0|[1-9]\d*):(1|[1-9]\d*):(UINT|INT|FLOAT|UTF8|HEX)(?::(LE|BE))?$/.exec(
+                        value
+                    );
+                if (!match) {
+                    issue(path, '格式：偏移:长度:编码:字节序，例如 0:2:UINT:LE');
+                    return;
+                }
+                const offset = Number(match[1]),
+                    length = Number(match[2]),
+                    encoding = match[3];
+                if (
+                    offset + length > 1048576 ||
+                    (config.recordLength && offset + length > config.recordLength) ||
+                    ((encoding === 'UINT' || encoding === 'INT') && ![1, 2, 4].includes(length)) ||
+                    (encoding === 'FLOAT' && ![4, 8].includes(length))
+                )
+                    issue(path, '二进制字段长度无效或超出记录边界');
+            }
+        };
+        if (identity === 'payload') {
+            if (!config.deviceCodeField) issue(['deviceCodeField'], '请输入设备标识字段');
+            else selector(config.deviceCodeField, ['deviceCodeField']);
+        }
+        if (identity === 'bound' && /[+#]/.test(config.topic))
+            issue(['identitySource'], '通配 Topic 需要从 Topic 或负载识别设备');
+        if (format !== 'json' && config.recordsPath) issue(['recordsPath'], '记录路径仅用于 JSON');
+        if (config.timeField) selector(config.timeField, ['timeField']);
+        const ids = new Set<string>();
+        const fields = new Set<string>();
+        if (config.commandTemplate) {
+            if (format !== 'json') issue(['commandTemplate'], '指令模板仅用于 JSON');
+            try {
+                JSON.parse(config.commandTemplate);
+            } catch {
+                issue(['commandTemplate'], '指令模板须为有效 JSON');
+            }
+        }
+        config.points.forEach((point, index) => {
+            const inputs = new Set<string>(),
+                outputs = new Set<string>();
+            point.enumValues?.forEach((value, valueIndex) => {
+                const output =
+                    point.dataType === 'DOUBLE'
+                        ? value.output !== '' && Number.isFinite(Number(value.output))
+                            ? String(Number(value.output))
+                            : undefined
+                        : point.dataType === 'BOOL'
+                          ? ['true', '1'].includes(value.output)
+                              ? 'true'
+                              : ['false', '0'].includes(value.output)
+                                ? 'false'
+                                : undefined
+                          : value.output;
+                if (inputs.has(value.input) || output === undefined || outputs.has(output))
+                    issue(
+                        ['points', index, 'enumValues', valueIndex],
+                        '枚举原值、转换值须唯一且符合点位类型'
+                    );
+                inputs.add(value.input);
+                if (output !== undefined) outputs.add(output);
+            });
+            selector(point.field, ['points', index, 'field']);
+            if (point.writable && point.scale === 0)
+                issue(['points', index, 'scale'], '可写点位倍率不能为零');
+            if (
+                ids.has(point.id) ||
+                fields.has(point.field) ||
+                point.field === config.deviceCodeField
+            )
+                context.addIssue({
+                    code: 'custom',
+                    path: ['points', index],
+                    message: '点位标识和字段必须唯一，不能占用设备标识字段',
+                });
+            if (point.writable && !config.commandTopic)
+                context.addIssue({
+                    code: 'custom',
+                    path: ['commandTopic'],
+                    message: '可写点位需要指令 Topic',
+                });
+            ids.add(point.id);
+            fields.add(point.field);
+        });
+    });
 
 // 与服务端 Expression 使用相同语法和复杂度上限；仅解析，不执行用户输入。
 export function validatePointExpression(text: string, aliases: readonly string[]): void {
@@ -458,6 +623,17 @@ export const protocolCreateSchema = baseSchema
     .extend({ protocol: protocolTypeSchema })
     .superRefine((value, context) => {
         const config = value.config;
+        if (value.protocol === 'MQTT') {
+            const result = mqttConfigSchema.safeParse(config);
+            if (!result.success)
+                for (const issue of result.error.issues)
+                    context.addIssue({
+                        code: 'custom',
+                        path: ['config', ...issue.path],
+                        message: issue.message,
+                    });
+            return;
+        }
         if (value.protocol === 'MC' || value.protocol === 'FINS' || value.protocol === 'DLT645') {
             const result = industrialConfigSchema(value.protocol).safeParse(config);
             if (!result.success)

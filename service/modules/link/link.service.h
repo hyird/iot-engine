@@ -2,6 +2,7 @@
 #include <ruvia/web/Validation.h>
 #include <system_error>
 #include <asio/ip/address_v4.hpp>
+#include <asio/ip/address.hpp>
 
 #include <memory>
 #include <algorithm>
@@ -33,6 +34,7 @@
 #include "service/modules/system/role/role.entity.h"
 #include "service/modules/system/user/user.entity.h"
 #include "service/utils/number.h"
+#include "service/utils/payload.h"
 #include "service/utils/debug_idle.h"
 #include "service/utils/redis.h"
 
@@ -137,6 +139,7 @@ class LinkService {
         protocols.emplace("MC", modelOptions);
         protocols.emplace("FINS", modelOptions);
         protocols.emplace("DLT645", modelOptions);
+        protocols.emplace("MQTT", modelOptions);
         ruvia::BoxedArray<ruvia::String> statuses(modelOptions);
         statuses.emplace("enabled", modelOptions);
         statuses.emplace("disabled", modelOptions);
@@ -158,7 +161,7 @@ class LinkService {
             auto response = co_await c.httpClient("link-public-ip").send({ .headers = headers });
             if (response.status().value() == 200) {
                 const auto body = co_await response.body().readAll(64U * 1024U);
-                const auto resolved = parsePublicIp(std::string_view(reinterpret_cast<const char*>(body.data()), body.size()));
+                const auto resolved = parsePublicIp(std::string_view(reinterpret_cast<const char*>(body.bytes().data()), body.size()));
                 if (!resolved.empty()) {
                     cachedPublicIp_ = resolved;
                     publicIpCachedAt_ = std::chrono::steady_clock::now();
@@ -676,12 +679,14 @@ return result
         if (mode != "TCP Server" && mode != "TCP Client") {
             service::common::fail(15003, "链路模式无效", 400);
         }
-        if (protocol != "SL651" && protocol != "Modbus" && protocol != "S7" && protocol != "MC" && protocol != "FINS" && protocol != "DLT645") {
+        if (protocol != "SL651" && protocol != "Modbus" && protocol != "S7" && protocol != "MC" && protocol != "FINS" && protocol != "DLT645" && protocol != "MQTT") {
             service::common::fail(15003, "协议无效", 400);
         }
         if (protocol == "SL651" && mode != "TCP Server") {
             service::common::fail(15003, "SL651 只支持 TCP Server 模式", 400);
         }
+        if (protocol == "MQTT" && mode != "TCP Client")
+            service::common::fail(15003, "MQTT Client 只支持 TCP Client 模式", 400);
         if (mode == "TCP Server") {
             if (ip != "0.0.0.0") {
                 service::common::fail(15003, "TCP Server 监听 IP 必须是 0.0.0.0", 400);
@@ -703,6 +708,12 @@ return result
         std::set<std::string> ids;
         std::set<std::string> endpoints;
         for (const auto& target : targets) {
+            const auto& mqtt = target.template get<"mqtt">();
+            if (protocol == "MQTT" && (!mqtt || mqtt->template get<"clientId">().view().empty()))
+                service::common::fail(15003, "MQTT 目标必须配置 Client ID", 400);
+            if (mqtt && mqtt->template get<"password">() && !mqtt->template get<"password">()->view().empty() &&
+                (!mqtt->template get<"username">() || mqtt->template get<"username">()->view().empty()))
+                service::common::fail(15003, "MQTT 密码需要同时配置用户名", 400);
             const auto id = std::string(target.template get<"id">().view());
             const auto name = std::string(target.template get<"name">().view());
             const auto targetIp = std::string(target.template get<"ip">().view());
@@ -713,7 +724,20 @@ return result
             if (targetStatus != "enabled" && targetStatus != "disabled") {
                 service::common::fail(15003, "目标状态无效", 400);
             }
-            if (name.empty() || !isIpv4(targetIp) || targetPort < 1 || targetPort > 65535) {
+            const auto brokerHost = [&] {
+                std::error_code error;
+                (void)asio::ip::make_address(targetIp, error);
+                if (!error) return true;
+                std::string_view host = targetIp;
+                if (host.ends_with('.')) host.remove_suffix(1);
+                if (host.empty() || host.size() > 253) return false;
+                for (const auto label : service::utils::splitPayload(host, ".")) {
+                    if (label.empty() || label.size() > 63 || label.front() == '-' || label.back() == '-') return false;
+                    for (const unsigned char ch : label) if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-')) return false;
+                }
+                return true;
+            };
+            if (name.empty() || !(protocol == "MQTT" ? brokerHost() : isIpv4(targetIp)) || targetPort < 1 || targetPort > 65535) {
                 service::common::fail(15003, "目标地址配置无效", 400);
             }
             if (!ids.emplace(id).second) {
@@ -925,7 +949,7 @@ return result
             { jsonValue(query, "endpoint", "targets"),
               query.cast(query.value("[]"), ruvia::DbDataType::kJsonb) }
         );
-        query.select({ jsonText(query, "target", "id", "value"), jsonText(query, "target", "name", "value"), jsonText(query, "target", "ip", "value"), jsonText(query, "target", "port", "value"), jsonText(query, "target", "status", "value") })
+        query.select({ jsonText(query, "target", "id", "value"), jsonText(query, "target", "name", "value"), jsonText(query, "target", "ip", "value"), jsonText(query, "target", "port", "value"), jsonText(query, "target", "status", "value"), jsonText(query, "target", "mqtt", "value") })
             .from(LinkEntity::tableName(), "link")
             .joinFunction(ruvia::DbJoinType::kCross, query.call("jsonb_array_elements", { targets }), {}, "value", { .lateral = true, .withOrdinality = true, .columns = { { .name = "target" }, { .name = "position" } } })
             .where(query.binary(query.column("id", "link"), ruvia::DbBinaryOperator::kEqual, query.value(id)))
@@ -947,6 +971,10 @@ return result
                 targetRuntime.set<"lastActivityAt">(
                     service::common::utcTimestampFromMilliseconds(lastActivityAt)
                 );
+            }
+            if (const auto json = row[5].value(); json && !json->empty()) {
+                auto mqtt = ruvia::fromJson<MqttConnectionBody>(*json);
+                if (mqtt) target.set<"mqtt">(std::move(*mqtt));
             }
             target.set<"id">(targetId)
                 .template set<"name">(row[1].value().value_or(std::string_view{}))
@@ -1126,6 +1154,11 @@ return result
             result += ",\"status\":";
             const auto& status = target.template get<"status">();
             appendJsonString(result, status ? status->view() : "enabled");
+            if (const auto& mqtt = target.template get<"mqtt">()) {
+                result += ",\"mqtt\":";
+                const auto json = ruvia::toJson(*mqtt);
+                result.append(json.data(), json.size());
+            }
             result.push_back('}');
         }
         result.push_back(']');

@@ -410,6 +410,7 @@ class TcpTransport final {
         struct Attempt final {
             std::string token;
             std::shared_ptr<asio::ip::tcp::socket> socket;
+            std::shared_ptr<asio::ip::tcp::resolver> resolver;
             bool claimPending = true;
             bool claimResponseReceived = false;
             bool leaseHeld = false;
@@ -472,7 +473,7 @@ class TcpTransport final {
             owner.publish(link.id, failed ? "reconnecting" : "connecting");
             std::error_code addressError;
             const auto address = asio::ip::make_address(target.ip, addressError);
-            if (addressError) {
+            if (addressError && link.protocol != "MQTT") {
                 fail(addressError);
                 return;
             }
@@ -534,11 +535,11 @@ class TcpTransport final {
             currentAttempt->socket = std::make_shared<asio::ip::tcp::socket>(owner.ioContext_);
             std::error_code addressError;
             const auto address = asio::ip::make_address(target.ip, addressError);
-            if (addressError) {
+            if (addressError && link.protocol != "MQTT") {
                 fail(currentAttempt, addressError);
                 return;
             }
-            currentAttempt->socket->async_connect({ address, target.port }, [self = shared_from_this(), currentAttempt](const std::error_code& connectError) {
+            const auto connected = [self = shared_from_this(), currentAttempt](const std::error_code& connectError) {
                 if (self->attempt != currentAttempt || self->connectionId != currentAttempt->token) {
                     self->closeSocket(currentAttempt);
                     if (currentAttempt->leaseHeld) {
@@ -563,7 +564,17 @@ class TcpTransport final {
                 currentAttempt->socket.reset();
                 self->owner.addConnection(self->link, self->target.id, currentAttempt->token, self->endpoint(), std::move(socket));
                 self->owner.publish(self->link.id, "connected");
-            });
+            };
+            if (!addressError) {
+                currentAttempt->socket->async_connect({address, target.port}, connected);
+            } else {
+                currentAttempt->resolver = std::make_shared<asio::ip::tcp::resolver>(owner.ioContext_);
+                currentAttempt->resolver->async_resolve(target.ip, std::to_string(target.port), [self = shared_from_this(), currentAttempt, connected](const std::error_code& error, asio::ip::tcp::resolver::results_type endpoints) {
+                    if (self->attempt != currentAttempt || self->stopped || currentAttempt->cancelled) return;
+                    if (error) { self->fail(currentAttempt, error); return; }
+                    asio::async_connect(*currentAttempt->socket, endpoints, [connected](const std::error_code& error, const auto&) { connected(error); });
+                });
+            }
         }
 
         void fail(const std::error_code& error) {
@@ -615,6 +626,7 @@ class TcpTransport final {
 
       private:
         static void closeSocket(const std::shared_ptr<Attempt>& currentAttempt) noexcept {
+            if (currentAttempt && currentAttempt->resolver) currentAttempt->resolver->cancel();
             if (!currentAttempt || !currentAttempt->socket) {
                 return;
             }

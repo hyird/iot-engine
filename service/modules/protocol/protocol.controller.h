@@ -24,6 +24,7 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
     RUVIA_GET("/:id", detail, service::middleware::PermissionMiddleware<"iot:protocol:query">, ruvia::PathModel<ProtocolIdParams>);
     RUVIA_POST("/", create, service::middleware::PermissionMiddleware<"iot:protocol:add">, service::middleware::ValidationErrorCodeMiddleware<16002, "enabled", 16004>, ruvia::JsonBody<CreateProtocolBody>);
     RUVIA_POST("/test-expression", testExpression, service::middleware::PermissionMiddleware<"iot:protocol:query">, ruvia::JsonBody<ExpressionTestBody>);
+    RUVIA_POST("/preview-mqtt", previewMqtt, service::middleware::PermissionMiddleware<"iot:protocol:query">, ruvia::JsonBody<MqttPreviewBody>);
     RUVIA_PUT("/:id", update, service::middleware::PermissionMiddleware<"iot:protocol:edit">, ruvia::PathModel<ProtocolIdParams>, service::middleware::ValidationErrorCodeMiddleware<16002, "enabled", 16004>, ruvia::JsonBody<UpdateProtocolBody>);
     RUVIA_DELETE("/:id", remove, service::middleware::PermissionMiddleware<"iot:protocol:delete">, ruvia::PathModel<ProtocolIdParams>);
     RUVIA_ROUTES_END
@@ -66,6 +67,11 @@ class ProtocolController final : public ruvia::Controller<ProtocolController> {
     ruvia::Task<ruvia::HttpResponse> testExpression(ruvia::Context& c) {
         const auto result = ProtocolService::testExpression(c.req().validated<ExpressionTestBody>());
         co_return c.json(service::common::ok<ExpressionTestResponse>(c, result));
+    }
+
+    ruvia::Task<ruvia::HttpResponse> previewMqtt(ruvia::Context& c) {
+        const auto result = ProtocolService::previewMqtt(c.req().validated<MqttPreviewBody>());
+        co_return c.json(service::common::ok<MqttPreviewResponse>(c, result));
     }
 
     ruvia::Task<ruvia::HttpResponse> create(ruvia::Context& c) {

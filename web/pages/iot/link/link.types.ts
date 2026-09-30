@@ -1,7 +1,7 @@
 import type { PageParams } from '@/types/pagination';
 
 type LinkMode = 'TCP Server' | 'TCP Client';
-type LinkProtocol = 'SL651' | 'Modbus' | 'S7' | 'MC' | 'FINS' | 'DLT645';
+type LinkProtocol = 'SL651' | 'Modbus' | 'S7' | 'MC' | 'FINS' | 'DLT645' | 'MQTT';
 type LinkStatus = 'enabled' | 'disabled';
 type ConnectionStatus =
     | 'stopped'
@@ -18,6 +18,7 @@ interface LinkTarget {
     port: number;
     status: LinkStatus;
     runtime?: RuntimeStatus;
+    mqtt?: { clientId: string; username?: string; password?: string; keepAliveSeconds?: number };
 }
 interface RuntimeStatus {
     state?: ConnectionStatus;

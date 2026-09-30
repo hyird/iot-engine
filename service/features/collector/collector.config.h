@@ -51,8 +51,14 @@ inline constexpr ProtocolDefinition kDlt645Protocol{
     CommandLayout::WritableElements, CommandTransport::Raw,
     ResponseTracking::EverySend, PacketAttribution::Connection};
 
+inline constexpr ProtocolDefinition kMqttProtocol{
+    "MQTT", ProtocolCapability::TcpClient | ProtocolCapability::Heartbeat |
+        ProtocolCapability::Commands | ProtocolCapability::UnsolicitedReports,
+    CommandLayout::WritableElements, CommandTransport::Raw,
+    ResponseTracking::CommandsOnly, PacketAttribution::ParsedFrame};
+
 inline constexpr std::array kProtocolDefinitions{kModbusProtocol, kS7Protocol, kSl651Protocol,
-    kMcProtocol, kFinsProtocol, kDlt645Protocol};
+    kMcProtocol, kFinsProtocol, kDlt645Protocol, kMqttProtocol};
 
 [[nodiscard]] inline const ProtocolDefinition& protocolDefinition(std::string_view name) {
     for (const auto& definition : kProtocolDefinitions)

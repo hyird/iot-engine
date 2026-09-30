@@ -100,6 +100,7 @@ inline std::string signature(const RuntimeSnapshot& snapshot) {
             text(target.ip);
             number(target.port);
             text(target.status);
+            text(target.mqttConfig);
         }
     }
     number(snapshot.devices.size());
@@ -148,6 +149,7 @@ inline std::string signature(const RuntimeSnapshot& snapshot) {
             text(element.dataType);
             text(element.byteOrder);
             text(element.registerType);
+            text(element.mqttField);
             integer(element.address);
             integer(element.quantity);
             number(std::bit_cast<std::uint64_t>(element.scale));
@@ -470,6 +472,7 @@ inline ElementDefinition element(const std::vector<message::StreamField>& fields
     result.dataType = field(fields, "data_type");
     result.byteOrder = field(fields, "byte_order");
     result.registerType = field(fields, "register_type");
+    result.mqttField = field(fields, "mqtt_field");
     result.address = integer(fields, "address");
     result.quantity = integer(fields, "quantity");
     result.scale = decimal(fields, "scale", 1);
@@ -593,7 +596,7 @@ ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
         const auto targetsKey = linkKey(version, link.id) + ":targets";
         for (const auto& target : link.targets) {
             detail::appendId(commands, version, targetsKey, target.id);
-            detail::appendHash(commands, version, targetKey(version, link.id, target.id), { { "id", target.id }, { "name", target.name }, { "ip", target.ip }, { "port", std::to_string(target.port) }, { "status", target.status } });
+            detail::appendHash(commands, version, targetKey(version, link.id, target.id), { { "id", target.id }, { "name", target.name }, { "ip", target.ip }, { "port", std::to_string(target.port) }, { "status", target.status }, { "mqtt_config", target.mqttConfig } });
         }
         if (commands.size() >= pipelineSize) {
             co_await detail::flush(redis, commands);
@@ -646,7 +649,7 @@ ruvia::Task<std::string> project(const Redis& redis, const RuntimeSnapshot& snap
         for (const auto& element : device.elements) {
             const auto& configKey = element.configKey.empty() ? element.id : element.configKey;
             detail::appendId(commands, version, elementsKey, configKey);
-            detail::appendHash(commands, version, elementKey(version, device.id, configKey), { { "config_key", configKey }, { "id", element.id }, { "name", element.name }, { "unit", element.unit }, { "data_type", element.dataType }, { "byte_order", element.byteOrder }, { "register_type", element.registerType }, { "address", std::to_string(element.address) }, { "quantity", std::to_string(element.quantity) }, { "scale", std::to_string(element.scale) }, { "decimals", std::to_string(element.decimals) }, { "writable", element.writable ? "1" : "0" }, { "area", element.area }, { "db_number", std::to_string(element.dbNumber) }, { "start", std::to_string(element.start) }, { "start_bit", std::to_string(element.startBit) }, { "size", std::to_string(element.size) }, { "function_code", element.functionCode }, { "direction", element.direction }, { "guide_hex", element.guideHex }, { "position_mode", element.positionMode }, { "byte_offset", std::to_string(element.byteOffset) }, { "encoding", element.encoding }, { "length", std::to_string(element.length) }, { "digits", std::to_string(element.digits) }, { "response_element", element.responseElement ? "1" : "0" } });
+            detail::appendHash(commands, version, elementKey(version, device.id, configKey), { { "config_key", configKey }, { "id", element.id }, { "name", element.name }, { "unit", element.unit }, { "data_type", element.dataType }, { "byte_order", element.byteOrder }, { "register_type", element.registerType }, { "mqtt_field", element.mqttField }, { "address", std::to_string(element.address) }, { "quantity", std::to_string(element.quantity) }, { "scale", std::to_string(element.scale) }, { "decimals", std::to_string(element.decimals) }, { "writable", element.writable ? "1" : "0" }, { "area", element.area }, { "db_number", std::to_string(element.dbNumber) }, { "start", std::to_string(element.start) }, { "start_bit", std::to_string(element.startBit) }, { "size", std::to_string(element.size) }, { "function_code", element.functionCode }, { "direction", element.direction }, { "guide_hex", element.guideHex }, { "position_mode", element.positionMode }, { "byte_offset", std::to_string(element.byteOffset) }, { "encoding", element.encoding }, { "length", std::to_string(element.length) }, { "digits", std::to_string(element.digits) }, { "response_element", element.responseElement ? "1" : "0" } });
             if (commands.size() >= pipelineSize) {
                 co_await detail::flush(redis, commands);
             }
@@ -722,6 +725,8 @@ ruvia::Task<RuntimeSnapshot> load(const Redis& redis, std::string version) {
             target.ip = detail::field(targetFields, "ip");
             target.port = static_cast<std::uint16_t>(detail::integer(targetFields, "port"));
             target.status = detail::field(targetFields, "status");
+            const auto mqttConfig = detail::field(targetFields, "mqtt_config");
+            target.mqttConfig = mqttConfig.empty() ? "{}" : std::string(mqttConfig);
             link.targets.push_back(std::move(target));
         }
         snapshot.links.push_back(std::move(link));

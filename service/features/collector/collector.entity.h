@@ -21,6 +21,7 @@ struct LinkTargetDefinition {
     std::string ip;
     std::uint16_t port = 0;
     std::string status;
+    std::string mqttConfig = "{}";
     bool operator==(const LinkTargetDefinition&) const = default;
 };
 
@@ -45,6 +46,7 @@ struct ElementDefinition {
     std::string dataType;
     std::string byteOrder;
     std::string registerType;
+    std::string mqttField;
     std::int64_t address = 0;
     std::int64_t quantity = 0;
     double scale = 1.0;

@@ -3,7 +3,52 @@ import type { PageParams } from '@/types/pagination';
  * 协议配置类型定义
  */
 /** 协议类型 */
-export type ProtocolType = 'SL651' | 'Modbus' | 'S7' | 'MC' | 'FINS' | 'DLT645';
+export type ProtocolType = 'SL651' | 'Modbus' | 'S7' | 'MC' | 'FINS' | 'DLT645' | 'MQTT';
+
+export interface MqttPoint {
+    id: string;
+    name: string;
+    field: string;
+    dataType: 'BOOL' | 'STRING' | 'DOUBLE';
+    unit?: string;
+    writable?: boolean;
+    scale?: number;
+    offset?: number;
+    enumValues?: { input: string; output: string }[];
+}
+export interface MqttConfig {
+    storagePolicy: 'report' | 'change';
+    topic: string;
+    recordsPath?: string;
+    deviceCodeField?: string;
+    identitySource?: 'bound' | 'payload' | 'topic';
+    topicDeviceSegment?: number;
+    payloadFormat?: 'json' | 'text' | 'binary';
+    delimiter?: string;
+    recordDelimiter?: string;
+    recordLength?: number;
+    timeField?: string;
+    timeFormat?: 'unix_ms' | 'unix_s' | 'iso8601';
+    commandTopic?: string;
+    commandTemplate?: string;
+    qos: 0 | 1 | 2;
+    points: MqttPoint[];
+}
+export interface MqttPreviewRequest {
+    config: MqttConfig;
+    topic: string;
+    payload: string;
+    deviceCode?: string;
+    timezone?: string;
+}
+export interface MqttPreviewResult {
+    records: {
+        deviceCode: string;
+        time: string;
+        points: { id: string; name: string; value: string; unit: string }[];
+        errors: string[];
+    }[];
+}
 export type IndustrialProtocol = 'MC' | 'FINS' | 'DLT645';
 export interface IndustrialPoint {
     id: string;
@@ -299,7 +344,13 @@ export interface ProtocolConfigItem {
     protocol: ProtocolType;
     name: string;
     enabled: boolean;
-    config: SL651Config | ModbusConfig | S7Config | IndustrialConfig | Record<string, unknown>;
+    config:
+        | SL651Config
+        | ModbusConfig
+        | S7Config
+        | IndustrialConfig
+        | MqttConfig
+        | Record<string, unknown>;
     remark?: string;
     created_at?: string;
     updated_at?: string;
@@ -318,14 +369,26 @@ export interface CreateProtocolConfigDto {
     protocol: ProtocolType;
     name: string;
     enabled?: boolean;
-    config: SL651Config | ModbusConfig | S7Config | IndustrialConfig | Record<string, unknown>;
+    config:
+        | SL651Config
+        | ModbusConfig
+        | S7Config
+        | IndustrialConfig
+        | MqttConfig
+        | Record<string, unknown>;
     remark?: string;
 }
 /** 更新协议配置 DTO */
 export interface UpdateProtocolConfigDto {
     name?: string;
     enabled?: boolean;
-    config?: SL651Config | ModbusConfig | S7Config | IndustrialConfig | Record<string, unknown>;
+    config?:
+        | SL651Config
+        | ModbusConfig
+        | S7Config
+        | IndustrialConfig
+        | MqttConfig
+        | Record<string, unknown>;
     remark?: string;
 }
 /** 协议配置命名空间 */
