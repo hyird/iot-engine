@@ -136,9 +136,10 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-19 g++-14 ninja-build nasm curl zip unzip tar xz-utils
+          sudo apt-get install -y clang-19 clang-tools-19 g++-14 ninja-build nasm curl zip unzip tar xz-utils
           clang-19 --version
           clang++-19 --version
+          clang-scan-deps-19 --version
           printf '#include <expected>\nint main() { std::expected<int, int> value{42}; return *value == 42 ? 0 : 1; }\n' > /tmp/iot-cxx23.cpp
           clang++-19 -std=c++23 /tmp/iot-cxx23.cpp -o /tmp/iot-cxx23
           /tmp/iot-cxx23
@@ -171,11 +172,21 @@ jobs:
           "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
 
       - name: Configure
+        id: configure
         run: |
           cmake -S . -B build/ci -G Ninja \
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
             -DCMAKE_COMPILE_WARNING_AS_ERROR=ON \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Upload configure diagnostics
+        if: ${{ !cancelled() && steps.configure.conclusion == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cmake-configure-${{ runner.os }}-${{ github.sha }}
+          path: build/ci/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Save vcpkg binary cache
         if: ${{ !cancelled() && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
@@ -282,11 +293,21 @@ jobs:
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
 
       - name: Configure
+        id: configure
         shell: pwsh
         run: |
           cmake -S . -B build/ci `
             -DCMAKE_COMPILE_WARNING_AS_ERROR=ON `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+
+      - name: Upload configure diagnostics
+        if: ${{ !cancelled() && steps.configure.conclusion == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cmake-configure-${{ runner.os }}-${{ github.sha }}
+          path: build/ci/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Save vcpkg binary cache
         if: ${{ success() && !cancelled() && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
