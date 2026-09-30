@@ -14,11 +14,6 @@
 #include "service/modules/link/link.types.h"
 
 namespace {
-constexpr std::string_view kWebhookHeaderDiagnosticRequest = R"({"accessKeyId":"00000000-0000-7000-8000-000000000001","name":"sink","url":"https://example.test/hook","headers":{"X-Example":"ok"}})";
-template <typename Body>
-void printWebhookHeaderFailure(std::string_view route, const Body& body, const ruvia::JsonObject& headers,
-    std::string_view rawRequest, std::pmr::memory_resource* resource);
-
 RUVIA_MODEL(PresenceBody,
     RUVIA_REQUIRED_FIELD(requiredText, ruvia::String, RUVIA_NULLABLE),
     RUVIA_OPTIONAL_FIELD(enabled, ruvia::Bool, RUVIA_DEFAULT(true)),
@@ -87,22 +82,14 @@ class ModelMigrationRoutes final : public ruvia::Controller<ModelMigrationRoutes
         if (body.get<"timeoutSeconds">()->value != 5 || body.get<"skipTlsVerify">()->value) throw std::runtime_error("webhook defaults changed");
         const auto& headers = body.get<"headers">();
         const bool validHeaders = !headers || service::access::isWebhookHeaders(*headers);
-        if (!validHeaders) {
-            const auto validatedRequest = c.req().validatedJson<service::access::CreateWebhookBody>();
-            printWebhookHeaderFailure("POST", body, *headers, validatedRequest.raw(), c.arena());
-            service::common::fail(19002, "非法 Header", 400);
-        }
+        if (!validHeaders) service::common::fail(19002, "非法 Header", 400);
         co_return c.text("accepted");
     }
     ruvia::Task<ruvia::HttpResponse> updateWebhook(ruvia::Context& c) {
         const auto& body = c.req().validated<service::access::UpdateWebhookBody>();
         const auto& headers = body.get<"headers">();
         const bool validHeaders = !headers || service::access::isWebhookHeaders(*headers);
-        if (!validHeaders) {
-            const auto validatedRequest = c.req().validatedJson<service::access::UpdateWebhookBody>();
-            printWebhookHeaderFailure("PUT", body, *headers, validatedRequest.raw(), c.arena());
-            service::common::fail(19002, "非法 Header", 400);
-        }
+        if (!validHeaders) service::common::fail(19002, "非法 Header", 400);
         co_return c.text("accepted");
     }
     ruvia::Task<ruvia::HttpResponse> vpn(ruvia::Context& c) {
@@ -148,111 +135,6 @@ void testAlert(ruvia::TestApp& app) {
     expect(app, ruvia::TestRequest::post("/model-migration/template").json(R"({"name":"alarm","conditions":[{"type":"offline"}]})"), 200);
     for (const auto invalid : {"{}", R"({"ids":[]})", R"({"ids":["bad"]})", R"({"ids":[1]})"}) expect(app, ruvia::TestRequest::post("/model-migration/batch").json(invalid), 400);
 }
-std::string hexBytes(std::string_view bytes) {
-    constexpr char digits[] = "0123456789abcdef";
-    std::string result;
-    for (const char byte : bytes) {
-        if (!result.empty()) result.push_back(' ');
-        const auto value = static_cast<unsigned char>(byte);
-        result.push_back(digits[value >> 4]);
-        result.push_back(digits[value & 0x0f]);
-    }
-    return result;
-}
-bool isDiagnosticHeaderToken(std::string_view key) {
-    return !key.empty() && std::ranges::all_of(key, [](char ch) {
-        return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || std::string_view("!#$%&'*+.^_`|~-").find(ch) != std::string_view::npos;
-    });
-}
-bool isDiagnosticReservedHeader(std::string_view key) {
-    constexpr std::array<std::string_view, 15> reserved{
-        "host", "content-length", "connection", "x-iot-event", "x-iot-timestamp", "x-iot-delivery", "x-iot-signature", "content-type", "user-agent", "transfer-encoding", "trailer", "te", "upgrade", "expect", "proxy-connection"
-    };
-    std::string lower(key);
-    for (auto& ch : lower) if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch + ('a' - 'A'));
-    return std::ranges::find(reserved, lower) != reserved.end();
-}
-// Called synchronously by webhook handlers only for this exact, non-sensitive test request.
-template <typename Body>
-void printWebhookHeaderFailure(std::string_view route, const Body& body, const ruvia::JsonObject& headers,
-    std::string_view rawRequest, std::pmr::memory_resource* resource) {
-    if (rawRequest != kWebhookHeaderDiagnosticRequest) return;
-
-    constexpr std::string_view expectedHeaders = R"({"X-Example":"ok"})";
-    const auto headersView = headers.view();
-    std::size_t callbackCount = 0;
-    std::string callbackKey;
-    std::string callbackValueJson;
-    std::string callbackStringValue;
-    std::string headerLookupValue;
-    bool callbackStringPresent = false;
-    bool headerLookupPresent = false;
-    bool valuesEquivalent = false;
-    bool keyTokenValid = false;
-    bool keyReserved = false;
-    bool callbackNewlineCheckAvailable = false;
-    bool callbackValueHasNewline = false;
-    const bool fieldsCompleted = headers.forEachField([&](std::string_view key, const ruvia::JsonValue& value) {
-        ++callbackCount;
-        if (callbackCount == 1) {
-            callbackKey.assign(key);
-            callbackValueJson.assign(value.view());
-            keyTokenValid = isDiagnosticHeaderToken(key);
-            keyReserved = isDiagnosticReservedHeader(key);
-            const auto callbackString = value.get<ruvia::String>();
-            const auto headerLookup = headers.get<ruvia::String>(key);
-            callbackStringPresent = callbackString.has_value();
-            headerLookupPresent = headerLookup.has_value();
-            if (callbackString) {
-                callbackStringValue.assign(callbackString->view());
-                callbackNewlineCheckAvailable = true;
-                callbackValueHasNewline = callbackString->view().find_first_of("\r\n") != std::string_view::npos;
-            }
-            if (headerLookup) headerLookupValue.assign(headerLookup->view());
-            valuesEquivalent = callbackStringPresent == headerLookupPresent &&
-                (!callbackStringPresent || callbackString->view() == headerLookup->view());
-        }
-        return true;
-    });
-
-    bool reparsedRoot = false;
-    bool reparsedHeaders = false;
-    bool reparsedHeadersValid = false;
-    if (const auto root = ruvia::JsonValue::parse(rawRequest, {.resource = resource})) {
-        reparsedRoot = true;
-        if (const auto parsedHeaders = root->get<ruvia::JsonObject>("headers")) {
-            reparsedHeaders = true;
-            reparsedHeadersValid = service::access::isWebhookHeaders(*parsedHeaders);
-        }
-    }
-
-    std::cerr << "model-migration webhook header failure in " << route << " /model-migration/webhook (fixed test payload only)\n"
-              << "validated raw request=" << rawRequest << '\n'
-              << "validated model isWebhookHeaders=false; body.headers: present=" << (body.template isPresent<"headers">() ? "yes" : "no")
-              << " null=" << (body.template isNull<"headers">() ? "yes" : "no")
-              << " optional=" << (body.template get<"headers">().has_value() ? "engaged" : "empty")
-              << " view_bytes=" << headersView.size() << " expected_bytes=" << expectedHeaders.size()
-              << " view_matches_expected=" << (headersView == expectedHeaders ? "yes" : "no")
-              << " view_hex=" << hexBytes(headersView) << '\n'
-              << "validated object inspection: forEachField_return=" << (fieldsCompleted ? "true" : "false")
-              << " callbacks=" << callbackCount;
-    if (callbackCount != 0) {
-        std::cerr << " first_key_copy=" << callbackKey << " key_hex=" << hexBytes(callbackKey)
-                  << " token_valid=" << (keyTokenValid ? "yes" : "no")
-                  << " reserved=" << (keyReserved ? "yes" : "no")
-                  << " value_json_copy=" << callbackValueJson
-                  << " callback_get<String>=" << (callbackStringPresent ? "present" : "absent")
-                  << " callback_string_copy_hex=" << hexBytes(callbackStringValue)
-                  << " headers_get<String>(key)=" << (headerLookupPresent ? "present" : "absent")
-                  << " lookup_string_copy_hex=" << hexBytes(headerLookupValue)
-                  << " values_equivalent=" << (valuesEquivalent ? "yes" : "no")
-                  << " callback_value_has_cr_or_lf=" << (callbackNewlineCheckAvailable ? (callbackValueHasNewline ? "yes" : "no") : "unavailable");
-    }
-    std::cerr << '\n'
-              << "reparse on handler arena: root_parsed=" << (reparsedRoot ? "yes" : "no")
-              << " headers_found=" << (reparsedHeaders ? "yes" : "no")
-              << " isWebhookHeaders=" << (reparsedHeaders ? (reparsedHeadersValid ? "true" : "false") : "unavailable") << '\n';
-}
 void testAccess(ruvia::TestApp& app) {
     const std::string key = R"({"name":"integration","scopes":["device:realtime"],"deviceIds":["00000000-0000-7000-8000-000000000001"]})";
     expect(app, ruvia::TestRequest::post("/model-migration/key").json(key), 200);
@@ -266,11 +148,34 @@ void testAccess(ruvia::TestApp& app) {
     const int noHeadersStatus = noHeadersResponse.status().value();
     if (noHeadersStatus != 200) throw std::runtime_error("webhook without headers: expected status=200; actual status=" + std::to_string(noHeadersStatus) + " body=" + std::string(noHeadersResponse.body()));
     const std::string webhookWithHeaders = "{" + fields + R"(,"headers":{"X-Example":"ok"}})";
-    const auto headersResponse = app.request(ruvia::TestRequest::post("/model-migration/webhook").json(webhookWithHeaders));
-    if (headersResponse.status().value() != 200) {
-        throw std::runtime_error("webhook with valid test headers: expected status=200; actual status=" + std::to_string(headersResponse.status().value()) + " body=" + std::string(headersResponse.body()));
+    expect(app, ruvia::TestRequest::post("/model-migration/webhook").json(webhookWithHeaders), 200, "accepted");
+    expect(app, ruvia::TestRequest::put("/model-migration/webhook").json(R"({"headers":{"X-Example":"ok"}})"), 200, "accepted");
+    for (const auto headers : {
+        R"({})",
+        R"({"X-One":"1","X-Two":"2"})",
+        R"({"X-\u0045xample":"line\tvalue"})",
+        R"({"X-Test":"ok","X-Test":"again"})"
+    }) {
+        expect(app, ruvia::TestRequest::post("/model-migration/webhook").json("{" + fields + ",\"headers\":" + headers + "}"), 200, "accepted");
+        expect(app, ruvia::TestRequest::put("/model-migration/webhook").json("{\"headers\":" + std::string(headers) + "}"), 200, "accepted");
     }
-    for (const auto invalid : {R"({"url":"file:///tmp/x"})", R"({"url":"https://user@example.test"})", R"({"headers":{"Host":"attacker"}})", R"({"headers":{"X-Test":"x\r\ny"}})", R"({"headers":{"X-Test":3}})", R"({"headers":{"bad name":"x"}})", R"({"timeoutSeconds":31})", R"({"skipTlsVerify":"false"})", R"({"eventTypes":[]})", R"({"eventTypes":["bogus"]})"}) expect(app, ruvia::TestRequest::put("/model-migration/webhook").json(invalid), 400);
+    for (const auto invalidHeaders : {
+        R"({"Host":"attacker"})",
+        R"({"X-IoT-Event":"custom"})",
+        R"({"Ho\u0073t":"attacker"})",
+        R"({"X-Test":"x\r\ny"})",
+        R"({"X-Test":3})",
+        R"({"bad name":"x"})",
+        R"({"X-Test":3,"X-Test":"ok"})",
+        R"({"X-Test":"ok","X-Test":3})"
+    }) {
+        expect(app, ruvia::TestRequest::post("/model-migration/webhook").json("{" + fields + ",\"headers\":" + invalidHeaders + "}"), 400);
+        expect(app, ruvia::TestRequest::put("/model-migration/webhook").json("{\"headers\":" + std::string(invalidHeaders) + "}"), 400);
+    }
+    for (const auto invalid : {
+        R"({"url":"file:///tmp/x"})", R"({"url":"https://user@example.test"})",
+        R"({"timeoutSeconds":31})", R"({"skipTlsVerify":"false"})", R"({"eventTypes":[]})", R"({"eventTypes":["bogus"]})"
+    }) expect(app, ruvia::TestRequest::put("/model-migration/webhook").json(invalid), 400);
 }
 void testLink(ruvia::TestApp& app) {
     expect(app, ruvia::TestRequest::post("/model-migration/link").json("{}"), 400, "10001");

@@ -54,14 +54,16 @@ inline bool isWebhookHeaders(const ruvia::JsonObject& headers) {
     constexpr std::array<std::string_view, 15> reserved{
         "host", "content-length", "connection", "x-iot-event", "x-iot-timestamp", "x-iot-delivery", "x-iot-signature", "content-type", "user-agent", "transfer-encoding", "trailer", "te", "upgrade", "expect", "proxy-connection"
     };
-    return headers.forEachField([&](std::string_view key, const ruvia::JsonValue&) {
-        const auto value = headers.get<ruvia::String>(key);
+    return headers.forEachField([&](std::string_view key, const ruvia::JsonValue& fieldValue) {
         const bool token = !key.empty() && std::ranges::all_of(key, [](char ch) {
             return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || std::string_view("!#$%&'*+.^_`|~-").find(ch) != std::string_view::npos;
         });
+        if (!token) return false;
         std::string lower(key);
         for (auto& ch : lower) if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch + ('a' - 'A'));
-        return token && value && value->view().find_first_of("\r\n") == std::string_view::npos && std::ranges::find(reserved, lower) == reserved.end();
+        if (std::ranges::find(reserved, lower) != reserved.end()) return false;
+        const auto value = fieldValue.get<ruvia::String>();
+        return value && value->view().find_first_of("\r\n") == std::string_view::npos;
     });
 }
 inline std::optional<std::string> trimAccessText(const std::optional<ruvia::String>& value) {
