@@ -1,6 +1,7 @@
 #pragma once
 
 #include "service/features/observability/observability.service.h"
+#include "service/features/telemetry/derived/derived.service.h"
 
 #include <algorithm>
 #include <atomic>
@@ -509,6 +510,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
             const auto currentToken = projector_stream::ownerToken(index, service::runtime::instanceId());
             recoveryLeases_.clear();
             lostRecoveryLeases_.clear();
+            acquisitionConfigurations_.clear();
             leaseLost_.store(false);
             failed_.store(false);
 
@@ -859,6 +861,7 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
 
                         std::vector<service::message::StreamMessage> telemetry;
                         std::vector<persistence::TelemetryUploadRecord> completedUploads;
+                        std::map<std::string, std::string> rawCalculations;
                         telemetry.reserve(batch.messages.size());
                         for (const auto& message : batch.messages) {
                             if (leaseLost_.load()) {
@@ -869,6 +872,13 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
                             if (metadataEvent) {
                                 const auto nodeId = message.get("node_id");
                                 if (!nodeId.empty()) {
+                                    acquisitionConfigurations_.erase(std::string(nodeId));
+                                    for (auto it = derivedExpiry_.begin(); it != derivedExpiry_.end();) {
+                                        if (it->second.nodeId == nodeId) {
+                                            it->second.stop->requestStop();
+                                            it = derivedExpiry_.erase(it);
+                                        } else ++it;
+                                    }
                                     auto snapshot = co_await metadata::loadNodeFromDatabase(
                                         context,
                                         nodeId
@@ -892,12 +902,23 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
                                     message.get("wire"),
                                     message.get("received_at_ms"),
                                     telemetry,
-                                    completedUploads
+                                    completedUploads,
+                                    rawCalculations
                                 );
                             }
                         }
                         if (leaseLost_.load()) {
                             break;
+                        }
+                        for (auto it = telemetry.begin(); it != telemetry.end();) {
+                            auto parsed = service::message::parsedFrom(*it);
+                            const auto calculation = rawCalculations.find(parsed.messageId);
+                            if (calculation == rawCalculations.end()) { ++it; continue; }
+                            const auto result = co_await service::telemetry::derived::DerivedService::append(
+                                redis, calculation->second, parsed, false, true);
+                            scheduleDerivedExpiry(context, parsed, calculation->second, result.nextDeadline);
+                            if (result.published) it = telemetry.erase(it);
+                            else ++it;
                         }
                         co_await service::telemetry::TelemetryService::ingest(
                             context,
@@ -949,6 +970,8 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
             }
         }
 
+        for (const auto& [id, expiry] : derivedExpiry_) expiry.stop->requestStop();
+        derivedExpiry_.clear();
         if (heartbeatStarted && leaseScope_) {
             leaseScope_->requestStop();
             try {
@@ -981,6 +1004,48 @@ class EdgeProjectionRuntime final : private EdgeProjectionService {
         }
     }
 
+    void scheduleDerivedExpiry(ruvia::WebWorkerContext& context, service::message::ParsedDeviceMessage parsed,
+                               std::string config, std::optional<std::int64_t> deadline) {
+        const auto id = parsed.deviceId;
+        if (const auto old = derivedExpiry_.find(id); old != derivedExpiry_.end()) {
+            old->second.stop->requestStop();
+            derivedExpiry_.erase(old);
+        }
+        if (!deadline || !running_.load() || leaseLost_.load()) return;
+        auto stop = std::make_shared<ruvia::StopSource>();
+        derivedExpiry_[id] = {parsed.connectionId, stop};
+        leaseScope_->spawn(expireDerived(context, std::move(parsed), std::move(config), *deadline, stop));
+    }
+
+    ruvia::Task<void> expireDerived(ruvia::WebWorkerContext& context, service::message::ParsedDeviceMessage parsed,
+                                  std::string config, std::int64_t deadline, std::shared_ptr<ruvia::StopSource> stop) {
+        const auto token = ruvia::combineStopTokens(
+            ruvia::combineStopTokens(context.stopToken(), leaseScope_->stopToken()), stop->token());
+        (void)co_await ruvia::sleepFor(context.worker(), std::chrono::milliseconds(
+            (std::max)(std::int64_t{1}, deadline - service::message::utcNowMilliseconds())), token);
+        if (token.stopRequested() || !running_.load() || leaseLost_.load()) co_return;
+        derivedExpiry_.erase(parsed.deviceId);
+        parsed.messageId = derivedUuid_.next();
+        parsed.acquisitionId = parsed.causationId = parsed.messageId;
+        parsed.source = "derived";
+        parsed.rawPayloads.clear(); parsed.rawPacketIds.clear();
+        parsed.observedAtMs = parsed.occurredAtMs = service::message::utcNowMilliseconds();
+        parsed.valuesJson = "{\"values\":{}}";
+        try {
+            const auto result = co_await service::telemetry::derived::DerivedService::append(context.redis(), config, parsed, true);
+            scheduleDerivedExpiry(context, std::move(parsed), std::move(config), result.nextDeadline);
+        } catch (const std::exception& error) {
+            std::cerr << "edge derived expiry failed: " << error.what() << '\n';
+            scheduleDerivedExpiry(context, std::move(parsed), std::move(config), service::message::utcNowMilliseconds() + 1000);
+        }
+    }
+
+    struct DerivedExpiry final {
+        std::string nodeId;
+        std::shared_ptr<ruvia::StopSource> stop;
+    };
+    std::map<std::string, DerivedExpiry> derivedExpiry_;
+    service::common::UuidV7Generator derivedUuid_;
     ruvia::WebWorkerHandle worker_;
     std::shared_future<void> stopped_;
     std::unique_ptr<ruvia::TaskScope> leaseScope_;

@@ -3366,7 +3366,117 @@ void testTcpCloseDuringPendingWrite() {
     io.stop();
 }
 
+void testEdgeRawAcquisitionContract() {
+    using Raw = service::edge::acquisition::RawAcquisition;
+    namespace pb = service::edge::pb;
+    collector::DeviceDefinition device;
+    device.id = "device"; device.code = "000000000001"; device.linkId = "link";
+    device.protocol = "Modbus"; device.modbusMode = "TCP"; device.slaveId = 1;
+    device.elements.push_back({.id="point", .name="Value", .dataType="UINT16",
+        .byteOrder="BIG_ENDIAN", .registerType="HOLDING_REGISTER", .address=100, .quantity=1,
+        .scale=1, .decimals=-1, .area="D", .size=2});
+    pb::TelemetryRecord record;
+    record.set_record_id(std::string(16, 1)); record.set_device_id(std::string(16, 2));
+    record.set_observed_at_ms(1789582200000); record.set_protocol(pb::PROTOCOL_MODBUS);
+    const auto append = [&](std::span<const std::uint8_t> request, std::span<const std::uint8_t> response) {
+        record.add_raw_requests(request.data(), request.size());
+        record.add_raw_payloads(response.data(), response.size());
+    };
+    const auto check = [&](std::string_view value) {
+        const auto decoded = Raw::decode(record, device);
+        require(decoded.valuesJson.find("\"value\":" + std::string(value)) != std::string::npos,
+                "edge request address/config did not decode the business response");
+    };
+    const auto reject = [&] {
+        bool rejected = false;
+        try { (void)Raw::decode(record, device); } catch (const std::exception&) { rejected = true; }
+        require(rejected, "edge accepted an abnormal or mismatched business exchange");
+    };
+    append(std::array<std::uint8_t,12>{0,7,0,0,0,6,1,3,0,100,0,1},
+           std::array<std::uint8_t,11>{0,7,0,0,0,5,1,3,2,0x12,0x34});
+    check("4660"); (*record.mutable_raw_payloads(0))[1] = 8; reject();
+    record.clear_raw_requests(); record.clear_raw_payloads(); device.modbusMode = "RTU";
+    auto request = withModbusCrc({1,3,0,100,0,1}); auto response = withModbusCrc({1,3,2,0x12,0x34});
+    append(request, response); check("4660"); response.back() ^= 1;
+    record.set_raw_payloads(0, response.data(), response.size()); reject();
+    record.clear_raw_requests(); record.clear_raw_payloads();
+    device.protocol = "S7"; record.set_protocol(pb::PROTOCOL_S7);
+    device.elements[0].area="DB"; device.elements[0].dbNumber=1; device.elements[0].start=0;
+    request=s7ReadRequest(12); request[24]=2; response=s7ReadResponse(12);
+    append(request,response); check("4660");
+    device.elements[0].scale=0.1; device.elements[0].decimals=1; check("466.0");
+    device.elements[0].scale=1.0; device.elements[0].decimals=-1;
+    (*record.mutable_raw_payloads(0))[12]=13; reject();
+    const auto checkS7Number = [&](std::string_view type, std::vector<std::uint8_t> bytes,
+                                   double scale, std::int64_t decimals, std::string_view expected) {
+        record.clear_raw_requests(); record.clear_raw_payloads();
+        device.elements[0].dataType=type; device.elements[0].size=bytes.size();
+        device.elements[0].scale=scale; device.elements[0].decimals=decimals;
+        request=s7ReadRequest(12); request[24]=static_cast<std::uint8_t>(bytes.size());
+        response=s7ReadResponse(12); response.resize(25); response.insert(response.end(),bytes.begin(),bytes.end());
+        response[3]=static_cast<std::uint8_t>(response.size());
+        response[16]=static_cast<std::uint8_t>(4+bytes.size()); response[24]=static_cast<std::uint8_t>(bytes.size()*8);
+        append(request,response); check(expected);
+    };
+    checkS7Number("REAL",{0x40,0x20,0,0},2.0,1,"5.0");
+    checkS7Number("LREAL",{0x40,4,0,0,0,0,0,0},2.0,1,"5.0");
+    checkS7Number("UINT64",{0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff},0.1,1,"18446744073709551615");
+    device.elements[0].scale=1.0; device.elements[0].decimals=-1;
+    record.clear_raw_requests(); record.clear_raw_payloads();
+    device.elements[0].dataType="BOOL"; device.elements[0].startBit=5; device.elements[0].size=1;
+    request=s7ReadRequest(14); request[22]=1; request[30]=5;
+    response=s7ReadResponse(14); response.pop_back(); response[3]=26; response[16]=5;
+    response[22]=3; response[24]=1; response[25]=1;
+    append(request,response); check("1");
+    record.clear_raw_requests(); record.clear_raw_payloads();
+    device.elements[0].dataType="UINT16"; device.elements[0].size=2; device.elements[0].startBit=0;
+    device.protocol="MC"; device.elements[0].area="D"; device.elements[0].byteOrder="LITTLE_ENDIAN";
+    record.set_protocol(pb::PROTOCOL_MC);
+    for (bool four : {false, true}) {
+        collector::mc::Connection connection;
+        connection.frame = four ? collector::mc::FrameFormat::Binary4E : collector::mc::FrameFormat::Binary3E;
+        request=collector::mc::FrameCodec::read(connection, {.deviceCode=0xa8,.number=100,.count=1}, 7);
+        response={0xd0,0,0,0xff,0xff,3,0,4,0,0,0,0x34,0x12};
+        if (four) { response[0]=0xd4; response.insert(response.begin()+2,{7,0,0,0}); }
+        append(request,response); check("4660"); (*record.mutable_raw_payloads(0))[four ? 13 : 9]=1; reject();
+        record.clear_raw_requests(); record.clear_raw_payloads();
+    }
+    device.protocol="FINS"; device.elements[0].byteOrder="BIG_ENDIAN"; record.set_protocol(pb::PROTOCOL_FINS);
+    collector::fins::Connection fins{.destinationNode=20,.sourceNode=10};
+    request=collector::fins::FrameCodec::read(fins,{.memoryArea=0x82,.word=100,.count=1},7);
+    response={'F','I','N','S',0,0,0,24,0,0,0,2,0,0,0,0,0xc0,0,2,0,10,0,0,20,0,7,1,1,0,0,0x12,0x34};
+    append(request,response); check("4660"); (*record.mutable_raw_payloads(0))[25]=8; reject();
+    record.clear_raw_requests(); record.clear_raw_payloads();
+    device.protocol="DLT645"; record.set_protocol(pb::PROTOCOL_DLT645);
+    device.elements[0].dataType="BCD"; device.elements[0].length=4; device.elements[0].digits=2;
+    for (bool legacy : {false,true}) {
+        device.dlt645Connection.version = legacy ? collector::dlt645::Version::V1997 : collector::dlt645::Version::V2007;
+        device.elements[0].guideHex=legacy?"9010":"00000000";
+        const auto di=collector::dlt645::FrameCodec::identifier(device.elements[0].guideHex,device.dlt645Connection.version);
+        auto data=di; data.insert(data.end(),{0x78,0x56});
+        request=collector::dlt645::FrameCodec::read(device.dlt645Connection,device.code,device.elements[0].guideHex);
+        response=collector::dlt645::FrameCodec::frame(device.code,legacy?0xa1:0xb1,data); append(request,response);
+        data=di; data.insert(data.end(),{0x34,0x12,1});
+        request=collector::dlt645::FrameCodec::read(device.dlt645Connection,device.code,device.elements[0].guideHex,1);
+        response=collector::dlt645::FrameCodec::frame(device.code,legacy?0x82:0x92,data); append(request,response);
+        check("123456.78"); record.mutable_raw_requests()->RemoveLast(); reject();
+        record.clear_raw_requests(); record.clear_raw_payloads();
+    }
+    device.protocol="SL651"; device.code="0001000102"; device.sl651ResponseMode="M2";
+    device.elements.clear();
+    device.elements.push_back({.id="point",.name="Water",.functionCode="32",.guideHex="3923",.encoding="BCD",.length=4,.digits=3});
+    record.set_protocol(pb::PROTOCOL_SL651); record.set_function_code("32");
+    response=collector::sl651::detail::hexBytes("7E7E010001000102FFFA320031020076260917021000F1F1000100010249F0F02609170210392300001521371B000654272B0000001458FFB02800000000190330CE");
+    append({},response); check("\"00001.521\""); (*record.mutable_raw_payloads(0)).back() ^= 1; reject();
+    record.clear_raw_requests(); record.clear_raw_payloads();
+    request={0x7e,0x7e,0,1,0,1,2,1,0xff,0xfa,0x32,0x80,8,2,0,0,0x26,9,0x17,2,0x10,0,5};
+    const auto queryCrc=crc16(request);
+    request.push_back(static_cast<std::uint8_t>(queryCrc>>8)); request.push_back(static_cast<std::uint8_t>(queryCrc));
+    append(request,response); check("\"00001.521\"");
+}
+
 void testEdgeParsedMessageContract() {
+    namespace pb = service::edge::pb;
     service::message::ParsedDeviceMessage parsed;
     parsed.messageId = "019f91c9-4087-7e6c-88c0-c431b0dc15d8";
     parsed.acquisitionId = parsed.messageId;
@@ -3438,6 +3548,32 @@ void testEdgeParsedMessageContract() {
                                             parsed.occurredAtMs, batch, projected);
     require(service::message::parsedFrom(projected.front()).rawPacketIds == legacyRecord.rawPacketIds,
             "legacy telemetry replay changed original frame identities");
+    pb::TelemetryBatch rawBatch;
+    auto& rawRecord = *rawBatch.add_records();
+    rawRecord = *record;
+    rawRecord.clear_raw_payloads(); rawRecord.clear_raw_packet_ids();
+    auto read = s7ReadRequest(22); read[24] = 2;
+    const auto reply = s7ReadResponse(22);
+    rawRecord.add_raw_requests(read.data(), read.size());
+    rawRecord.add_raw_payloads(reply.data(), reply.size());
+    rawRecord.add_raw_packet_ids(std::string(16, 9));
+    std::vector<pb::ConfigItem> configuration(2);
+    auto* configured = configuration[0].mutable_device();
+    configured->set_device_id(record->device_id()); configured->set_protocol(pb::PROTOCOL_S7);
+    std::uint8_t linkBytes[16]{};
+    require(service::edge::protocol::uuidBytes(parsed.linkId, linkBytes), "invalid raw link fixture");
+    configured->set_endpoint_id(linkBytes, 16);
+    auto* area = configuration[1].mutable_s7_area();
+    area->set_device_id(record->device_id()); area->set_element_id("word");
+    area->set_area("DB"); area->set_db_number(1); area->set_size(2); area->set_data_type("UINT16");
+    area->set_scale(1.0); area->set_decimals(-1);
+    projected.clear();
+    EdgeResponseProjection::collectTelemetry(catalog, parsed.connectionId, parsed.occurredAtMs, rawBatch, projected, configuration);
+    const auto rawProjected = service::message::parsedFrom(projected.front());
+    require(rawProjected.rawPayloads == std::vector<std::vector<std::uint8_t>>{read, reply} &&
+        rawProjected.rawPacketIds.size() == 2 && rawProjected.rawPacketIds[0] == rawProjected.rawPacketIds[1] + ":request" &&
+        rawProjected.valuesJson.find("4660") != std::string::npos,
+        "platform projection did not retain paired original requests and responses");
     record->mutable_raw_payloads()->RemoveLast();
     record->add_raw_packet_ids(std::string(16, '\x05'));
     std::vector<service::edge::pb::TelemetryRecord> parts(3, *record);
@@ -3617,6 +3753,7 @@ int main() {
             testAlertScheduleSkipsInvalidStoredDuration);
         run("command value decimal parsing", testCommandValueDecimalParsing);
         run("edge parsed message contract", testEdgeParsedMessageContract);
+        run("edge raw acquisition six protocols", testEdgeRawAcquisitionContract);
         run("atomic pending command dispatch", testAtomicPendingCommandDispatch);
         run("packet log", testPacketLog);
         std::cout << "collector protocol tests passed\n";

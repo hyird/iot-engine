@@ -304,6 +304,22 @@ class Session final : public ProtocolSession,
         }
     }
 
+    // 恢复已完成业务交换的请求上下文，用于平台离线解码，不产生发送动作。
+    void restoreAcquisitionRequest(std::span<const std::uint8_t> bytes, std::string id) {
+        const auto request = parseFrame(std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
+        if (!request || request->upstream || request->ending != 0x05 || request->body.size() < 8)
+            throw std::invalid_argument("invalid SL651 acquisition request");
+        ProtocolCommand command;
+        command.deviceCode = request->deviceCode;
+        const auto* device = findDevice(command);
+        if (!device || ((device->sl651ResponseMode == "M3") != request->multiPacket))
+            throw std::invalid_argument("SL651 acquisition request device mismatch");
+        boundDeviceIds_.insert(device->id);
+        stationHeaders_[request->deviceCode] = *request;
+        pendingCommands_[request->deviceCode] = PendingCommand{.id=std::move(id),
+            .deviceCode=request->deviceCode, .functionCode=request->functionCode};
+    }
+
     [[nodiscard]] std::vector<ProtocolAction> consume(const ProtocolInput& input) override {
         std::vector<ProtocolAction> actions;
         std::vector<std::uint8_t> bytes(input.bytes.begin(), input.bytes.end());

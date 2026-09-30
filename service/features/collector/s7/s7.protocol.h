@@ -1,6 +1,7 @@
 #pragma once
 
 #include "service/features/collector/scheduling/scheduling.protocol.h"
+#include "service/features/collector/register_value/register_value.protocol.h"
 
 #include <algorithm>
 #include <array>
@@ -252,6 +253,37 @@ class Session final : public ProtocolSession,
                       public CommandCapabilitySession,
                       public DeadlineCapabilitySession {
   public:
+    // 使用业务请求中的地址与引用号解析响应，无须重放 COTP/Setup 握手。
+    static std::string decodeRead(const DeviceDefinition& device,
+                                  std::span<const std::uint8_t> requestWire,
+                                  std::span<const std::uint8_t> responseWire) {
+        const auto request = requestDescriptor(requestWire);
+        if (!request || request->functionCode != kReadFunction || request->items.empty() ||
+            detail::be16(requestWire, 2) != requestWire.size() ||
+            requestWire.size() != 17U + detail::be16(requestWire, 13) ||
+            detail::be16(requestWire, 15) != 0 ||
+            !validS7Frame(responseWire) || responseWire.size() < 21 ||
+            responseWire[8] != 3 || detail::be16(responseWire, 2) != responseWire.size() ||
+            detail::be16(responseWire, 11) != request->pduReference ||
+            responseWire[17] != 0 || responseWire[18] != 0 ||
+            detail::be16(responseWire, 13) != 2 || responseWire[19] != kReadFunction ||
+            responseWire[20] != request->items.size() ||
+            responseWire.size() != 21U + detail::be16(responseWire, 15))
+            throw std::invalid_argument("invalid S7 acquisition exchange");
+        const auto payloads = readResponsePayloads(responseWire, 19, 2);
+        if (!payloads || payloads->size() != request->items.size())
+            throw std::invalid_argument("invalid S7 acquisition data");
+        for (std::size_t index = 0; index < payloads->size(); ++index) {
+            const auto& item = request->items[index];
+            const auto width = item.wordLength == 1 ? (item.amount + 7U) / 8U
+                : item.amount * ((item.wordLength == 0x1c || item.wordLength == 0x1d) ? 2U : 1U);
+            if (item.amount == 0 || (item.wordLength != 1 && item.wordLength != 2 &&
+                item.wordLength != 0x1c && item.wordLength != 0x1d) || (*payloads)[index].size() != width)
+                throw std::invalid_argument("S7 acquisition length mismatch");
+        }
+        return valuesJson(device, *payloads, *request, true);
+    }
+
     Session(LinkDefinition link, std::string connectionId, std::string targetId,
             std::shared_ptr<const RuntimeSnapshot> snapshot,
             std::vector<const DeviceDefinition*> devices)
@@ -1579,7 +1611,7 @@ class Session final : public ProtocolSession,
     [[nodiscard]] static std::string
     valuesJson(const DeviceDefinition& device,
                const std::vector<std::vector<std::uint8_t>>& payloads,
-               const RequestDescriptor& request) {
+               const RequestDescriptor& request, bool edgeValues = false) {
         std::ostringstream json;
         json << "{\"function_code\":\"READ_VAR\",\"values\":{";
         bool first = true;
@@ -1589,19 +1621,38 @@ class Session final : public ProtocolSession,
             const auto& payload = payloads[itemIndex];
             for (const auto& element : device.elements) {
                 const auto timerOrCounter = element.area == "TM" || element.area == "CT";
+                const bool bitAccess = item.wordLength == 1;
                 const auto elementAddress =
-                    static_cast<std::uint32_t>(timerOrCounter ? element.start : element.start * 8);
+                    static_cast<std::uint32_t>(timerOrCounter ? element.start : element.start * 8 +
+                        (bitAccess ? element.startBit : 0));
                 if (!matchesArea(element, item) || elementAddress < item.bitAddress)
+                    continue;
+                if (bitAccess && (element.dataType != "BOOL" || elementAddress - item.bitAddress >= item.amount))
                     continue;
                 const auto byteOffset =
                     timerOrCounter ? static_cast<std::size_t>(elementAddress - item.bitAddress) * 2
                                    : static_cast<std::size_t>(elementAddress - item.bitAddress) / 8;
-                const auto width =
+                const auto width = bitAccess ? 1U :
                     static_cast<std::size_t>(std::max<std::int64_t>(1, element.size));
                 if (byteOffset + width > payload.size())
                     continue;
-                const auto value = detail::decodeJson(
-                    std::span<const std::uint8_t>(payload).subspan(byteOffset, width), element);
+                auto interpretation = element;
+                if (bitAccess) interpretation.startBit = (elementAddress - item.bitAddress) % 8;
+                const auto bytes = std::span<const std::uint8_t>(payload).subspan(byteOffset, width);
+                auto value = detail::decodeJson(bytes, interpretation);
+                if (edgeValues && width >= 2 && interpretation.dataType != "BOOL" &&
+                    interpretation.dataType != "STRING" && interpretation.dataType != "BYTE" &&
+                    interpretation.dataType != "UINT8" && interpretation.dataType != "INT8") {
+                    if (interpretation.dataType == "REAL") interpretation.dataType = "FLOAT32";
+                    if (interpretation.dataType == "LREAL") interpretation.dataType = "DOUBLE";
+                    interpretation.byteOrder = "BIG_ENDIAN";
+                    // 固件的 64 位整数保持原始精度，其余数值应用测点倍率与小数位。
+                    if (interpretation.dataType == "INT64" || interpretation.dataType == "UINT64") {
+                        interpretation.scale = 1.0;
+                        interpretation.decimals = -1;
+                    }
+                    value = register_value::numericJson(bytes, interpretation);
+                }
                 if (!value)
                     continue;
                 if (!first)

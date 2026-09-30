@@ -70,6 +70,37 @@ class Session final : public ProtocolSession,
                       public CommandCapabilitySession,
                       public DeadlineCapabilitySession {
   public:
+    // 解码已完成的业务交换，不创建连接、调度或握手状态。
+    static std::string decodeRead(const DeviceDefinition& device,
+                                  std::span<const std::uint8_t> requestWire,
+                                  std::span<const std::uint8_t> responseWire) {
+        const bool tcp = device.modbusMode == "TCP";
+        const auto request = requestDescriptor(requestWire, tcp);
+        if (!request || requestWire.size() != (tcp ? 12U : 8U) ||
+            request->unitId != device.slaveId || request->functionCode < 1 ||
+            request->functionCode > 4 || request->quantity == 0 ||
+            request->quantity > (request->functionCode <= 2 ? 2000 : 125) ||
+            static_cast<std::uint32_t>(request->startAddress) + request->quantity > 65536)
+            throw std::invalid_argument("invalid Modbus acquisition request");
+        const auto offset = tcp ? 6U : 0U;
+        const auto count = request->functionCode <= 2
+            ? (request->quantity + 7U) / 8U : request->quantity * 2U;
+        if (responseWire.size() != offset + 3U + count + (tcp ? 0U : 2U) ||
+            responseWire[offset] != request->unitId ||
+            responseWire[offset + 1] != request->functionCode ||
+            responseWire[offset + 2] != count ||
+            (tcp && (responseWire[2] != 0 || responseWire[3] != 0 ||
+                detail::readBe16(responseWire, 0) != request->transactionId ||
+                detail::readBe16(responseWire, 4) != responseWire.size() - 6)) ||
+            (!tcp && !detail::validRtu(responseWire)))
+            throw std::invalid_argument("invalid Modbus acquisition response");
+        ResponseFrame frame;
+        frame.functionCode = request->functionCode;
+        frame.data.assign(responseWire.begin() + offset + 2,
+                          responseWire.end() - (tcp ? 0 : 2));
+        return valuesJson(device, frame, *request);
+    }
+
     Session(LinkDefinition link, std::string connectionId, std::string targetId,
             std::shared_ptr<const RuntimeSnapshot> snapshot,
             std::vector<const DeviceDefinition*> devices)
@@ -1067,7 +1098,8 @@ class Session final : public ProtocolSession,
                 (frame.functionCode == 4 && element.registerType == "INPUT_REGISTER");
             if (!sameType)
                 continue;
-            if (element.address < request.startAddress)
+            if (element.address < request.startAddress ||
+                element.address >= static_cast<std::int64_t>(request.startAddress) + request.quantity)
                 continue;
             std::optional<std::string> numeric;
             if (frame.functionCode <= 2) {

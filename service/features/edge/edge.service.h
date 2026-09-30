@@ -9,6 +9,7 @@
 
 #include "service/features/edge/edge.entity.h"
 #include "service/features/edge/edge.types.h"
+#include "service/features/edge/acquisition/acquisition.protocol.h"
 #include <map>
 
 #include <charconv>
@@ -1420,7 +1421,7 @@ class ConfigService final {
     static ruvia::Task<std::optional<Snapshot>> buildSnapshot(Context& c,
                                                                std::string_view nodeId,
                                                                std::uint64_t revision) {
-        auto items = co_await buildItems(c, nodeId);
+        auto items = co_await loadItems(c, nodeId);
         std::set<std::string> requiredProtocols;
         for (const auto& item : items) {
             if (!item.has_device()) continue;
@@ -1516,9 +1517,11 @@ class ConfigService final {
             config::detail::rejectBuildQuery(message, nodeId, revision));
     }
 
+  public:
     template <typename Context>
     static ruvia::Task<std::vector<pb::ConfigItem>>
-    buildItems(Context& c, std::string_view nodeId) {
+    loadItems(Context& c, std::string_view nodeId,
+              std::map<std::string, std::string>* calculations = nullptr) {
         std::vector<pb::ConfigItem> items;
         ruvia::DbQuery dtu;
         dtu.select(dtu.column(persistence::EdgeDtuEntity::columnName<"wire_hex">()))
@@ -1549,6 +1552,9 @@ class ConfigService final {
         }
         const auto devices =
             co_await c.db().query(config::detail::buildItemsQuery(nodeId));
+        if (calculations) for (const auto& row : devices)
+            (*calculations)[std::string(row[0].value().value_or(""))] =
+                std::string(row[54].value().value_or("{}"));
         ruvia::DbQuery capability;
         capability.select(config::detail::jsonText(capability, capability.column(persistence::EdgeNodeEntity::columnName<"capability">()), "derivedPoints"))
             .from(persistence::EdgeNodeEntity::tableName()).where(capability.binary(capability.column(persistence::EdgeNodeEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual,
@@ -1564,6 +1570,7 @@ class ConfigService final {
         co_return items;
     }
 
+  private:
     template <typename Rows>
     static void appendConfiguredDevices(std::vector<pb::ConfigItem>& items, const Rows& devices, bool derivedSupported) {
         std::set<std::string> endpoints;
@@ -1851,6 +1858,12 @@ inline bool validVpnPublicKey(std::string_view value) noexcept {
 
 class EdgeProjectionService {
   protected:
+    struct AcquisitionConfiguration final {
+        std::vector<pb::ConfigItem> items;
+        std::map<std::string, std::string> calculations;
+    };
+    std::map<std::string, AcquisitionConfiguration> acquisitionConfigurations_;
+
     template <typename Transaction>
     static ruvia::Task<bool> claimFirmwareCleanup(Transaction& transaction) {
         ruvia::DbQuery lock;
@@ -1977,7 +1990,8 @@ class EdgeProjectionService {
         std::string_view wire,
         std::string_view receivedAtText,
         std::vector<service::message::StreamMessage>& telemetry,
-        std::vector<persistence::TelemetryUploadRecord>& completedUploads) {
+        std::vector<persistence::TelemetryUploadRecord>& completedUploads,
+        std::map<std::string, std::string>& rawCalculations) {
         pb::Envelope envelope;
         if (!protocol::decode(wire, envelope))
             co_return;
@@ -2072,7 +2086,23 @@ class EdgeProjectionService {
                                                  protocol::uuidText(record.report_id())});
                 }
             }
-            collectTelemetry(catalog, nodeId, receivedAtMs, assembled, telemetry);
+            if (std::any_of(assembled.records().begin(), assembled.records().end(),
+                           [](const auto& record) { return record.raw_requests_size() != 0; }) &&
+                !acquisitionConfigurations_.contains(nodeId)) {
+                AcquisitionConfiguration configuration;
+                configuration.items = co_await ConfigService::loadItems(context, nodeId, &configuration.calculations);
+                acquisitionConfigurations_.emplace(nodeId, std::move(configuration));
+            }
+            const auto configuration = acquisitionConfigurations_.find(nodeId);
+            const std::vector<pb::ConfigItem> emptyItems;
+            collectTelemetry(catalog, nodeId, receivedAtMs, assembled, telemetry,
+                configuration == acquisitionConfigurations_.end() ? emptyItems : configuration->second.items);
+            for (const auto& record : assembled.records())
+                if (record.raw_requests_size() && configuration != acquisitionConfigurations_.end()) {
+                    const auto calculation = configuration->second.calculations.find(protocol::uuidText(record.device_id()));
+                    if (calculation != configuration->second.calculations.end())
+                        rawCalculations[protocol::uuidText(record.record_id())] = calculation->second;
+                }
             break;
         }
         case pb::Envelope::kCommandResult:
@@ -3386,6 +3416,7 @@ return parts
         result.set_record_id(result.report_id());
         result.clear_values();
         result.clear_raw_payloads();
+        result.clear_raw_requests();
         result.clear_raw_packet_ids();
         std::set<std::string> elements;
         std::size_t rawBytes = 0;
@@ -3409,6 +3440,16 @@ return parts
                     result.raw_payloads_size() >= 4095)
                     throw std::runtime_error("invalid telemetry original frame array");
                 result.add_raw_payloads(raw);
+            }
+            if ((parts.front().raw_requests_size() != 0) != (part.raw_requests_size() != 0) ||
+                (part.raw_requests_size() != 0 &&
+                    (part.raw_requests_size() != part.raw_payloads_size() || part.values_size() != 0)))
+                throw std::runtime_error("inconsistent telemetry business exchange parts");
+            for (const auto& request : part.raw_requests()) {
+                rawBytes += request.size();
+                if (request.size() > 4096 || rawBytes > 147456)
+                    throw std::runtime_error("invalid telemetry business request");
+                result.add_raw_requests(request);
             }
             if (part.raw_packet_ids_size() != 0 && part.raw_packet_ids_size() != part.raw_payloads_size())
                 throw std::runtime_error("original packet ID count mismatch");
@@ -3442,6 +3483,7 @@ return parts
         metadata.clear_record_id();
         metadata.clear_values();
         metadata.clear_raw_payloads();
+        metadata.clear_raw_requests();
         metadata.clear_raw_packet_ids();
         metadata.clear_part_index();
         const auto signature = metadata.SerializeAsString();
@@ -3490,7 +3532,8 @@ return 1
     static void collectTelemetry(const metadata::Catalog& catalog,
                           std::string_view nodeId, std::int64_t receivedAtMs,
                           const pb::TelemetryBatch& batch,
-                          std::vector<service::message::StreamMessage>& messages) {
+                          std::vector<service::message::StreamMessage>& messages,
+                          const std::vector<pb::ConfigItem>& parsingItems = {}) {
         const auto node = catalog.find(std::string(nodeId));
         if (node == catalog.end())
             return;
@@ -3522,24 +3565,33 @@ return 1
             parsed.storagePolicy = device->second.storagePolicy;
             parsed.onlineWindowMs = device->second.onlineWindowMs;
             parsed.source = record.derived_update() ? "derived" : "edge";
-            parsed.valuesJson = protocol::TelemetryValues::telemetryJson(record);
-            if (!record.raw_payloads().empty()) {
-                for (const auto& raw : record.raw_payloads())
-                    parsed.rawPayloads.emplace_back(raw.begin(), raw.end());
-            }
+            if (record.raw_requests_size() != 0) {
+                const auto configured = acquisition::RawAcquisition::device(parsingItems, record.device_id());
+                if (configured.linkId != device->second.linkId ||
+                    (record.endpoint_id().size() == 16 && protocol::uuidText(record.endpoint_id()) != configured.linkId))
+                    throw std::runtime_error("edge acquisition endpoint mismatch");
+                const auto decoded = acquisition::RawAcquisition::decode(record, configured);
+                parsed.valuesJson = decoded.valuesJson;
+                parsed.observedAtMs = decoded.observedAtMs;
+            } else parsed.valuesJson = protocol::TelemetryValues::telemetryJson(record);
             if (record.raw_packet_ids_size() != 0 &&
-                static_cast<std::size_t>(record.raw_packet_ids_size()) != parsed.rawPayloads.size())
+                record.raw_packet_ids_size() != record.raw_payloads_size())
                 throw std::runtime_error("original packet ID count mismatch");
-            for (const auto& id : record.raw_packet_ids()) {
-                if (id.size() != 16) throw std::runtime_error("invalid original packet ID");
-                parsed.rawPacketIds.push_back(std::string(nodeId) + ":" + protocol::uuidText(id));
-            }
-            // Older firmware has original frames but no per-frame IDs. Derive
-            // replay-stable history identities; do not correlate them to debug packets.
-            if (record.raw_packet_ids_size() == 0) {
-                for (std::size_t index = 0; index < parsed.rawPayloads.size(); ++index)
-                    parsed.rawPacketIds.push_back(std::string(nodeId) + ":legacy-history:" +
-                        parsed.messageId + ":" + std::to_string(index));
+            for (int index = 0; index < record.raw_payloads_size(); ++index) {
+                std::string packetId;
+                if (record.raw_packet_ids_size()) {
+                    const auto& id = record.raw_packet_ids(index);
+                    if (id.size() != 16) throw std::runtime_error("invalid original packet ID");
+                    packetId = std::string(nodeId) + ':' + protocol::uuidText(id);
+                } else packetId = std::string(nodeId) + ":legacy-history:" + parsed.messageId + ':' + std::to_string(index);
+                if (record.raw_requests_size() && !record.raw_requests(index).empty()) {
+                    const auto& request = record.raw_requests(index);
+                    parsed.rawPayloads.emplace_back(request.begin(), request.end());
+                    parsed.rawPacketIds.push_back(packetId + ":request");
+                }
+                const auto& response = record.raw_payloads(index);
+                parsed.rawPayloads.emplace_back(response.begin(), response.end());
+                parsed.rawPacketIds.push_back(std::move(packetId));
             }
             service::message::StreamMessage streamMessage;
             streamMessage.fields = message::parsedFields(parsed);

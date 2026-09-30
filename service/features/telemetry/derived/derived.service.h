@@ -15,7 +15,7 @@ struct Result {
 class DerivedService final {
   public:
     template <class Redis>
-    static ruvia::Task<Result> append(const Redis& redis, std::string_view configWire, message::ParsedDeviceMessage& message, bool expiration = false) {
+    static ruvia::Task<Result> append(const Redis& redis, std::string_view configWire, message::ParsedDeviceMessage& message, bool expiration = false, bool deduplicate = false) {
         const auto config = ruvia::JsonValue::parse(configWire);
         if (!config) {
             co_return Result{};
@@ -93,6 +93,7 @@ class DerivedService final {
             // sample twice; downstream receipts deduplicate its immutable ID.
             static constexpr std::string_view cas = R"lua(
 local current=redis.call('GET',KEYS[1]) or ''
+if #KEYS>3 and redis.call('EXISTS',KEYS[4])==1 then return 2 end
 if current~=ARGV[1] then return 0 end
 for i=2,3 do
  local kind=redis.call('TYPE',KEYS[i]).ok
@@ -105,11 +106,14 @@ if ARGV[3]=='1' then
  redis.call('XADD',KEYS[3],'MAXLEN','~','100000','*','task','telemetry')
 end
 redis.call('SET',KEYS[1],ARGV[2],'EX',172800)
+if #KEYS>3 then redis.call('SET',KEYS[4],'1','EX',604800) end
 return 1
 )lua";
             const auto stream = message::parsedStream();
             const auto wake = message::workerWakeStream(std::nullopt, service::runtime::instanceId());
-            const std::string_view keys[]{ key, stream, wake };
+            const auto receipt = "iot:derived:receipt:" + message.messageId;
+            std::vector<std::string_view> keys{ key, stream, wake };
+            if (deduplicate) keys.push_back(receipt);
             std::vector<std::string> store{ before, after, !expiration || !outputs.empty() ? "1" : "0" };
             for (const auto& field : message::parsedFields(candidate)) {
                 store.push_back(field.name);
@@ -123,6 +127,8 @@ return 1
             if (reply.integer() == 0) {
                 continue;
             }
+            if (reply.integer() == 2)
+                co_return Result{calculation.nextDeadline(StateRecord::decode(before), message.occurredAtMs), false, true};
             message = std::move(candidate);
             co_return Result{ calculation.nextDeadline(state, message.occurredAtMs), !outputs.empty(), true };
         }

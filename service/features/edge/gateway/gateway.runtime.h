@@ -243,6 +243,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         );
         helloAck->set_session_epoch(session.epoch);
         helloAck->set_negotiated_protocol_version(session.protocolVersion);
+        helloAck->set_raw_telemetry(input.hello().supports_raw_telemetry());
         // The wire field name is retained for deployed firmware.
         helloAck->set_heartbeat_interval_sec(statusReporting ? 900 : 300);
         helloAck->set_max_message_size(static_cast<std::uint32_t>(protocol::kMaxMessageSize));
