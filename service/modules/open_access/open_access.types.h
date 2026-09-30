@@ -51,10 +51,11 @@ inline bool isWebhookUrl(const ruvia::String& value) {
     return authority < url.size() && url[authority] != '/' && url[authority] != '?' && url[authority] != '#';
 }
 inline bool isWebhookHeaders(const ruvia::JsonObject& headers) {
-    constexpr std::array<std::string_view, 15> reserved{
+    // 静态常量配合无捕获回调，避免 MSVC Release 对局部 constexpr 表的引用捕获误编译。
+    static constexpr std::array<std::string_view, 15> reserved{
         "host", "content-length", "connection", "x-iot-event", "x-iot-timestamp", "x-iot-delivery", "x-iot-signature", "content-type", "user-agent", "transfer-encoding", "trailer", "te", "upgrade", "expect", "proxy-connection"
     };
-    return headers.forEachField([&](std::string_view key, const ruvia::JsonValue& fieldValue) {
+    return headers.forEachField([](std::string_view key, const ruvia::JsonValue& fieldValue) {
         const bool token = !key.empty() && std::ranges::all_of(key, [](char ch) {
             return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || std::string_view("!#$%&'*+.^_`|~-").find(ch) != std::string_view::npos;
         });

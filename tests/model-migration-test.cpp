@@ -153,11 +153,27 @@ void testAccess(ruvia::TestApp& app) {
     for (const auto headers : {
         R"({})",
         R"({"X-One":"1","X-Two":"2"})",
+        R"({"X-!#$%&'*+.^_`|~":"ok"})",
+        R"({"X-Long":"a value longer than the small string buffer"})",
+        R"({"X-Empty":""})",
         R"({"X-\u0045xample":"line\tvalue"})",
         R"({"X-Test":"ok","X-Test":"again"})"
     }) {
         expect(app, ruvia::TestRequest::post("/model-migration/webhook").json("{" + fields + ",\"headers\":" + headers + "}"), 200, "accepted");
         expect(app, ruvia::TestRequest::put("/model-migration/webhook").json("{\"headers\":" + std::string(headers) + "}"), 200, "accepted");
+    }
+    for (const auto name : {
+        "host", "content-length", "connection", "x-iot-event", "x-iot-timestamp",
+        "x-iot-delivery", "x-iot-signature", "content-type", "user-agent",
+        "transfer-encoding", "trailer", "te", "upgrade", "expect", "proxy-connection"
+    }) {
+        std::string headerName(name);
+        for (int casing = 0; casing < 2; ++casing) {
+            const std::string headers = "{\"" + headerName + "\":\"custom\"}";
+            expect(app, ruvia::TestRequest::post("/model-migration/webhook").json("{" + fields + ",\"headers\":" + headers + "}"), 400);
+            expect(app, ruvia::TestRequest::put("/model-migration/webhook").json("{\"headers\":" + headers + "}"), 400);
+            for (auto& ch : headerName) if (ch >= 'a' && ch <= 'z') ch = static_cast<char>(ch - ('a' - 'A'));
+        }
     }
     for (const auto invalidHeaders : {
         R"({"Host":"attacker"})",
@@ -166,6 +182,12 @@ void testAccess(ruvia::TestApp& app) {
         R"({"X-Test":"x\r\ny"})",
         R"({"X-Test":3})",
         R"({"bad name":"x"})",
+        R"({"":"x"})",
+        R"({"X-Test:":"x"})",
+        R"({"X-\u0009Test":"x"})",
+        R"({"X-\u00e9":"x"})",
+        R"({"X-Test":null})",
+        R"({"X-Test":{}})",
         R"({"X-Test":3,"X-Test":"ok"})",
         R"({"X-Test":"ok","X-Test":3})"
     }) {
