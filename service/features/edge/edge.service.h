@@ -1255,14 +1255,15 @@ class ConfigService final {
         co_return revision;
     }
 
-    ruvia::Task<bool> requeueIfStale(ruvia::Context& c, std::string_view nodeId,
+    template <typename Context>
+    ruvia::Task<bool> requeueIfStale(Context& c, std::string_view nodeId,
                                      std::uint64_t activeRevision) {
         const auto desired =
             co_await c.db().query(config::detail::requeueDesiredQuery(nodeId));
         if (desired.empty())
             co_return false;
         const auto revision = unsignedInteger(desired.front()[0].value().value_or(std::string_view{}));
-        if (revision == 0 || revision == activeRevision ||
+        if (revision == 0 || revision <= activeRevision ||
             desired.front()[1].value().value_or(std::string_view{}) == "rejected")
             co_return false;
 
@@ -2332,6 +2333,10 @@ class EdgeProjectionService {
         const auto value = nodeId + "|" + enrollmentStatus;
         co_await context.redis().set(key, value);
         if (enrollmentStatus == "approved") {
+            // The Hello projects deviceConfig before reconciliation. A missing
+            // Redis queue must not defer a stale revision until the 900s heartbeat.
+            (void)co_await configService().requeueIfStale(
+                context, nodeId, hello.last_applied_config_version());
             ruvia::DbQuery target;
             target
                 .select({target.alias(target.column(service::edge::persistence::EdgeTaskEntity::columnName<"id">(), "task"), "task_id"),

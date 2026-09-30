@@ -166,6 +166,8 @@ ZLM_SRT_PORT=0
     }
     & $bunPath run (Join-Path $repository 'tests/rpc-integration.ts')
     if ($LASTEXITCODE -ne 0) { throw "RPC integration tests failed; logs retained at $fixture" }
+    & $bunPath run (Join-Path $repository 'tests/edge-config-reconnect-integration.ts')
+    if ($LASTEXITCODE -ne 0) { throw "Edge reconnect configuration tests failed; logs retained at $fixture" }
     & $bunPath run (Join-Path $repository 'tests/edge-recovery-integration.ts')
     if ($LASTEXITCODE -ne 0) { throw "Edge Redis recovery tests failed; logs retained at $fixture" }
     # This final test intentionally expires an owner and expects readiness to fail.
