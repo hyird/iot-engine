@@ -248,14 +248,28 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
+      - name: Read Windows runner image version
+        id: windows-image
+        shell: pwsh
+        run: |
+          $imageOS = $env:ImageOS
+          $imageVersion = $env:ImageVersion
+          if ([string]::IsNullOrWhiteSpace($imageOS) -or $imageOS -notmatch '^[A-Za-z0-9._-]+$') {
+              throw 'ImageOS is empty or contains unsupported characters'
+          }
+          if ([string]::IsNullOrWhiteSpace($imageVersion) -or $imageVersion -notmatch '^[A-Za-z0-9._-]+$') {
+              throw 'ImageVersion is empty or contains unsupported characters'
+          }
+          "version=$imageOS-$imageVersion" >> $env:GITHUB_OUTPUT
+
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**', 'triplets/**', 'CMakeLists.txt') }}
+          key: vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ steps.windows-image.outputs.version }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**', 'triplets/**', 'CMakeLists.txt') }}
           restore-keys: |
-            vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ env.VCPKG_COMMIT }}-
+            vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ steps.windows-image.outputs.version }}-${{ env.VCPKG_COMMIT }}-
 
       - name: Bootstrap vcpkg
         shell: pwsh
@@ -275,7 +289,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
 
       - name: Save vcpkg binary cache
-        if: ${{ !cancelled() && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
+        if: ${{ success() && !cancelled() && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
