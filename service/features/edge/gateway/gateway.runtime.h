@@ -78,6 +78,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         bool firmwareSourceLoaded{};
         bool capabilitySeen{};
         bool sparseHeartbeat{};
+        bool statusReporting{};
         bool supportsCommandStartBefore{};
         std::chrono::steady_clock::time_point lastInbound{ std::chrono::steady_clock::now() };
     };
@@ -123,6 +124,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         }
         const std::string imei(input.hello().imei());
         const bool sparseHeartbeat = input.hello().supports_sparse_heartbeat();
+        const bool statusReporting = input.hello().supports_status_reporting();
         const bool supportsCommandStartBefore = input.hello().supports_command_start_before();
         const auto enrollment = co_await gateway::GatewayService::loadEnrollment(c, imei);
         std::string nodeId = enrollment.nodeId;
@@ -199,6 +201,7 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         }
 
         session.sparseHeartbeat = sparseHeartbeat;
+        session.statusReporting = statusReporting;
         session.supportsCommandStartBefore = supportsCommandStartBefore;
         if (!co_await session_state::claim(
                 c.redis(),
@@ -240,7 +243,8 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
         );
         helloAck->set_session_epoch(session.epoch);
         helloAck->set_negotiated_protocol_version(session.protocolVersion);
-        helloAck->set_heartbeat_interval_sec(300);
+        // The wire field name is retained for deployed firmware.
+        helloAck->set_heartbeat_interval_sec(statusReporting ? 900 : 300);
         helloAck->set_max_message_size(static_cast<std::uint32_t>(protocol::kMaxMessageSize));
         helloAck->set_platform_time_ms(service::message::utcNowMilliseconds());
         if (supportsCommandStartBefore) {
@@ -527,9 +531,9 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
     }
 
     static ruvia::Task<void> maintainSession(std::shared_ptr<LiveSession> live) {
-        // 仅真实入站消息续租。旧固件看门狗可能小于 300 秒，必须显式声明
-        // 能力后才启用稀疏心跳；不以协议版本或软件版本字符串猜测。
-        const auto probeInterval = live->session->sparseHeartbeat
+        // 旧固件按真实应用消息维护时序；新固件明确声明状态上报能力后，
+        // 由原生 WS 探活维护连接，本任务只续租 Worker 的路由记录。
+        const auto probeInterval = (live->session->statusReporting || live->session->sparseHeartbeat)
             ? std::chrono::seconds(300) : std::chrono::seconds(20);
         const auto idleTimeout = live->session->sparseHeartbeat
             ? std::chrono::seconds(900) : std::chrono::seconds(60);
@@ -538,6 +542,18 @@ class GatewayController final : public ruvia::Controller<GatewayController> {
                 (void)co_await ruvia::sleepFor(live->context->worker(), probeInterval, live->scope->stopToken());
                 if (!live->active || live->scope->stopRequested()) {
                     break;
+                }
+                if (live->session->statusReporting) {
+                    // Native WebSocket Ping/Pong owns transport liveness. Refresh
+                    // this Worker's routing lease without sending application traffic.
+                    if (!co_await session_state::refresh(
+                            live->context->redis(), live->session->nodeId,
+                            live->session->epoch, live->session->protocolVersion,
+                            live->session->workerIndex)) {
+                        live->socket->abort();
+                        break;
+                    }
+                    continue;
                 }
                 const auto idle = std::chrono::steady_clock::now() - live->session->lastInbound;
                 if (idle >= idleTimeout) {

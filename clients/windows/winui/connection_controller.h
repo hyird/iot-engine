@@ -30,6 +30,7 @@ public:
     ConnectionController(const ConnectionController&) = delete;
     ConnectionController& operator=(const ConnectionController&) = delete;
     bool loggedIn = false, busy = false, connected = false, serviceRepairNeeded = false;
+    bool vpnEnabled = false;
     std::string username, message;
     Json status = {{"state","LoggedOut"}};
     std::set<std::string> selected, applied;
@@ -49,11 +50,10 @@ public:
     }
     void request(std::string command, Json data = Json::object()) {
         if (busy) return;
-        // Bound automatic retries even if the upstream device request fails.
-        if (command == "devices") nextDevices_ = clock_() + std::chrono::seconds(10);
-        if (command == "apply") {
+        if (command == "apply" || command == "connect") {
             if (selected.size() > 64) { message = "单个客户端最多选择 64 台设备。"; return; }
             data["edgeNodeIds"] = selected;
+            if (command == "apply") data["vpnEnabled"] = vpnEnabled;
         }
         data["command"] = command;
         if (synchronous_) {
@@ -83,7 +83,7 @@ public:
         }
         if (!automatic || busy) return;
         const auto now = clock_();
-        if (loggedIn && (loadDevices_ || now >= nextDevices_)) { loadDevices_ = false; request("devices"); }
+        if (loggedIn && loadDevices_) { loadDevices_ = false; request("devices"); }
         else if (loggedIn && now >= nextStatus_) { nextStatus_ = now + std::chrono::seconds(5); request("status"); }
     }
 private:
@@ -93,13 +93,14 @@ private:
         const bool accountChanged = !user.empty() && !username.empty() && user != username;
         if (!user.empty()) username = user;
         if (requiresLogin(snapshot)) {
-            loggedIn = connected = false; selected.clear(); applied.clear(); devices.clear(); loadDevices_ = false; return;
+            loggedIn = connected = vpnEnabled = false; selected.clear(); applied.clear(); devices.clear(); loadDevices_ = false; return;
         }
         const bool wasLoggedIn = loggedIn; loggedIn = true;
         const auto next = selection(snapshot.value("edgeNodeIds",Json::array()));
         if (reset || accountChanged || !wasLoggedIn || (!preserveSelection && selected == applied)) selected = next;
         if (reset || accountChanged) { devices.clear(); loadDevices_ = true; }
         applied = next; connected = snapshot.value("tunnelRunning",text(snapshot,"state") == "Connected");
+        vpnEnabled = snapshot.value("vpnEnabled", connected || text(snapshot,"state") == "Connecting" || text(snapshot,"state") == "Retrying");
         if (!wasLoggedIn) loadDevices_ = true;
     }
     void loadDevices(const Json& snapshot) {
@@ -134,6 +135,6 @@ private:
     Clock clock_;
     std::jthread worker_; std::future<Json> pending_; std::string pendingCommand_;
     std::uint64_t selectionRevision_ = 0, pendingSelectionRevision_ = 0;
-    std::chrono::steady_clock::time_point nextStatus_{}, nextDevices_{};
+    std::chrono::steady_clock::time_point nextStatus_{};
 };
 }

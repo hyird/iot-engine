@@ -85,7 +85,7 @@ const wchar_t* layout=LR"XAML(
  <Grid x:Name="DevicesPanel" Grid.Row="1" Visibility="Collapsed" RowSpacing="16">
   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
   <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Padding="20,16"><StackPanel Orientation="Horizontal" Spacing="28"><TextBlock x:Name="NetworkState" Text="已登录" Style="{ThemeResource BodyStrongTextBlockStyle}"/><TextBlock x:Name="Address"/><TextBlock x:Name="SyncTime" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/></StackPanel></Border>
-  <Grid Grid.Row="1" ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="Search" PlaceholderText="搜索设备名称或 IMEI"/><Button x:Name="Refresh" Grid.Column="1" Content="刷新"/><Button x:Name="Sync" Grid.Column="2" Content="同步配置"/><Button x:Name="Connect" Grid.Column="3" Content="连接网络"/></Grid>
+  <Grid Grid.Row="1" ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="Search" PlaceholderText="搜索设备名称或 IMEI"/><Button x:Name="Refresh" Grid.Column="1" Content="刷新"/><Button x:Name="Sync" Grid.Column="2" Content="同步配置"/><ToggleSwitch x:Name="VpnEnabled" Grid.Column="3" Header="VPN" OnContent="已开启" OffContent="已关闭"/></Grid>
   <InfoBar x:Name="DeviceMessage" Grid.Row="2" IsOpen="False" IsClosable="False" Severity="Warning"/>
   <Border Grid.Row="3" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8"><Grid><ListView x:Name="DeviceList" SelectionMode="None" Padding="8"/><TextBlock x:Name="Empty" Text="正在读取设备…" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/></Grid></Border>
   <Grid Grid.Row="4"><StackPanel Spacing="4"><TextBlock x:Name="Selection" Text="已选择 0 台"/><TextBlock x:Name="Hint" Text="关闭窗口后，连接继续运行" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/></StackPanel><Button x:Name="Apply" Content="应用选择" HorizontalAlignment="Right" VerticalAlignment="Center" Style="{ThemeResource AccentButtonStyle}"/></Grid>
@@ -115,13 +115,18 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
         peer.GetPattern(Microsoft::UI::Xaml::Automation::Peers::PatternInterface::Invoke)
             .as<Microsoft::UI::Xaml::Automation::Provider::IInvokeProvider>().Invoke();
     }
+    Json fixtureState={{"state","Connected"},{"username","demo"},{"assignedIpv4","100.96.0.8"},{"vpnEnabled",true},{"tunnelRunning",true},{"edgeNodeIds",Json::array({"11111111-1111-4111-8111-111111111111"})}};
     Json fixture(const Json& request) {
         const auto command=request.value("command","");
-        Json state={{"state","Connected"},{"username","demo"},{"assignedIpv4","100.96.0.8"},{"tunnelRunning",true},{"edgeNodeIds",Json::array({"11111111-1111-4111-8111-111111111111"})}};
-        if(command=="logout") state={{"state","LoggedOut"}};
-        if(command=="apply") state["edgeNodeIds"]=request.at("edgeNodeIds");
-        if(command=="disconnect") { state["state"]="Disconnected"; state["tunnelRunning"]=false; }
-        return {{"success",true},{"status",state},{"devices",Json::array({
+        if(command=="logout") fixtureState={{"state","LoggedOut"},{"vpnEnabled",false}};
+        if(command=="apply"||command=="connect") {
+            fixtureState["edgeNodeIds"]=request.at("edgeNodeIds");
+            fixtureState["vpnEnabled"]=command=="connect"||request.value("vpnEnabled",true);
+            fixtureState["tunnelRunning"]=fixtureState["vpnEnabled"];
+            fixtureState["state"]=fixtureState["vpnEnabled"].get<bool>()?"Connected":"Disconnected";
+        }
+        if(command=="disconnect") { fixtureState["state"]="Disconnected"; fixtureState["tunnelRunning"]=false; fixtureState["vpnEnabled"]=false; }
+        return {{"success",true},{"status",fixtureState},{"devices",Json::array({
             {{"id","11111111-1111-4111-8111-111111111111"},{"name","东区泵站"},{"imei","867530900001001"},{"online",true},{"virtualCidrs",{"172.24.1.0/24"}},{"assignedIpv4","100.96.0.2"}},
             {{"id","22222222-2222-4222-8222-222222222222"},{"name","西区闸门"},{"imei","867530900001002"},{"online",false},{"virtualCidrs",{"172.24.2.0/24"}},{"assignedIpv4","100.96.0.5"}}
         })}};
@@ -165,7 +170,7 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
             control<Button>(L"Logout").Click([this](auto const&,auto const&) { confirmLogout(); });
             for(auto [name,command]:{std::pair{L"Refresh","devices"},{L"Sync","sync"},{L"Apply","apply"}})
                 control<Button>(name).Click([this,command](auto const&,auto const&) { model->request(command); render(); });
-            control<Button>(L"Connect").Click([this](auto const&,auto const&) { model->request(model->connected?"disconnect":"connect"); render(); });
+            control<ToggleSwitch>(L"VpnEnabled").Toggled([this](auto const&,auto const&) { if(!updating) { model->request(control<ToggleSwitch>(L"VpnEnabled").IsOn()?"connect":"disconnect"); render(); } });
             control<TextBox>(L"Search").TextChanged([this](auto const&,auto const&) { rendered.clear(); render(); });
             control<CheckBox>(L"Remember").Unchecked([this](auto const&,auto const&) { if(!startupOptions.test) { try { iotvpn::gui::Credentials().clear(); } catch(...) { model->message="无法清除已保存的账号，请重试。"; } } });
             if(!startupOptions.test) {
@@ -239,14 +244,14 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
         control<Grid>(L"DevicesPanel").Visibility(logged?Visibility::Visible:Visibility::Collapsed);
         control<StackPanel>(L"Account").Visibility(logged?Visibility::Visible:Visibility::Collapsed);
         control<TextBlock>(L"AccountName").Text(to_hstring(model->username));
-        for(const auto name:{L"Login",L"Logout",L"Refresh",L"Sync",L"Connect",L"Apply",L"RepairService"}) control<Button>(name).IsEnabled(!model->busy&&!repairing);
+        for(const auto name:{L"Login",L"Logout",L"Refresh",L"Sync",L"Apply",L"RepairService"}) control<Button>(name).IsEnabled(!model->busy&&!repairing);
         control<Button>(L"RepairService").Visibility(model->serviceRepairNeeded?Visibility::Visible:Visibility::Collapsed);
         control<Button>(L"RepairService").Content(box_value(repairing?L"正在修复…":L"修复服务"));
         control<TextBox>(L"Username").IsEnabled(!model->busy&&!repairing); control<PasswordBox>(L"Password").IsEnabled(!model->busy&&!repairing); control<CheckBox>(L"Remember").IsEnabled(!model->busy&&!repairing);
         control<Button>(L"Apply").IsEnabled(!model->busy&&!repairing&&model->selected.size()<=64);
         control<Button>(L"Login").Content(box_value(model->busy?L"正在登录…":L"登录"));
         for(const auto name:{L"LoginMessage",L"DeviceMessage"}) { auto bar=control<InfoBar>(name); bar.Message(to_hstring(model->message)); bar.IsOpen(!model->message.empty()); }
-        control<Button>(L"Connect").Content(box_value(model->connected?L"断开网络":L"连接网络"));
+        control<ToggleSwitch>(L"VpnEnabled").IsEnabled(!model->busy&&!repairing&&(model->vpnEnabled||(!model->selected.empty()&&model->selected.size()<=64))); control<ToggleSwitch>(L"VpnEnabled").IsOn(model->vpnEnabled);
         const auto state=iotvpn::gui::text(model->status,"state");
         const std::map<std::string,std::wstring> labels{{"Connected",L"已连接"},{"Disconnected",L"已断开"},{"Authenticated",L"已登录"},{"Connecting",L"连接中"},{"Retrying",L"正在重试"},{"Revoked",L"授权已撤销"},{"Error",L"连接异常"}};
         control<TextBlock>(L"NetworkState").Text(labels.contains(state)?hstring(labels.at(state)):to_hstring(state));
@@ -254,7 +259,7 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
         control<TextBlock>(L"Address").Text(to_hstring("本机地址  "+(assignedAddress.empty()?std::string("尚未分配"):assignedAddress)));
         control<TextBlock>(L"SyncTime").Text(to_hstring("同步  "+localTimestamp(model->status)));
         control<TextBlock>(L"Selection").Text(to_hstring("已选择 "+std::to_string(model->selected.size())+" 台"+(model->changed()?" · 待应用":"")));
-        control<TextBlock>(L"Hint").Text(model->busy||repairing?L"正在处理…":L"关闭窗口后，连接继续运行");
+        control<TextBlock>(L"Hint").Text(model->busy||repairing?L"正在处理…":model->vpnEnabled?L"关闭窗口后，VPN 继续运行":L"VPN 已关闭，所选设备和虚拟网段保留");
         auto query=to_string(control<TextBox>(L"Search").Text()); const auto devices=model->filtered(query);
         std::string signature=query; for(const auto& d:devices) signature+=d.id+d.name+d.imei+d.subnet+d.address+(d.online?"1":"0")+(model->selected.contains(d.id)?"1":"0");
         if(signature!=rendered) {
@@ -298,6 +303,13 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
             if(model->devices.size()!=2) throw std::runtime_error("WinUI login and device load failed");
             co_await resume_after(std::chrono::milliseconds(300)); co_await ui;
             co_await capture(L"devices.png");
+            control<ToggleSwitch>(L"VpnEnabled").IsOn(false);
+            if(model->vpnEnabled||model->selected.size()!=1) throw std::runtime_error("VPN off lost the saved selection");
+            model->request("apply"); render();
+            if(model->vpnEnabled||fixtureState.value("tunnelRunning",true)) throw std::runtime_error("Saving while off started VPN");
+            co_await capture(L"vpn-off.png");
+            control<ToggleSwitch>(L"VpnEnabled").IsOn(true);
+            if(!model->vpnEnabled||!fixtureState.value("tunnelRunning",false)) throw std::runtime_error("VPN on did not connect");
             auto first=control<ListView>(L"DeviceList").Items().GetAt(0).as<CheckBox>(); first.IsChecked(false);
             if(!model->selected.empty()) throw std::runtime_error("WinUI checkbox selection failed");
             model->request("apply"); render();
@@ -320,7 +332,7 @@ struct App : ApplicationT<App,Markup::IXamlMetadataProvider> {
             window.AppWindow().Resize({820,640});
             co_await resume_after(std::chrono::milliseconds(300)); co_await ui;
             co_await capture(L"login-compact.png");
-            if(!startupOptions.report.empty()) std::ofstream(startupOptions.report)<<"PASS C++ WinUI 3 Fluent controls, login, devices, selection, apply, search, cancelled logout and confirmed logout\n";
+            if(!startupOptions.report.empty()) std::ofstream(startupOptions.report)<<"PASS C++ WinUI 3 Fluent controls, login, VPN toggle with saved selection, devices, apply, search, cancelled logout and confirmed logout\n";
             window.Close();
         } catch(hresult_error const& error) { fail(to_string(error.message())); }
         catch(std::exception const& error) { fail(error.what()); }

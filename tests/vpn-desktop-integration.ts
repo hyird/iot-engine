@@ -72,6 +72,37 @@ async function openStream(path: string, bearer = token, expectedCode = 0) {
 const publicKey = () => randomBytes(32).toString('base64');
 const enroll = (key: string, ids: unknown, bearer = token) => request('POST', '/v1/vpn/desktop/peers', { name: 'Integration Windows', publicKey: key, edgeNodeIds: ids }, bearer);
 const patch = (peer: string, ids: unknown, bearer = token) => request('PATCH', `/v1/vpn/desktop/peers/${peer}`, {edgeNodeIds:ids}, bearer);
+function wireField(tag:number,value:number|bigint|Buffer|string) {
+    const integer=(input:number|bigint)=>{let n=BigInt(input);const result:number[]=[];do{let b=Number(n&127n);n>>=7n;if(n)b|=128;result.push(b);}while(n);return Buffer.from(result);};
+    if(typeof value==='number'||typeof value==='bigint') return Buffer.concat([integer(tag*8),integer(value)]);
+    const data=typeof value==='string'?Buffer.from(value):value;
+    return Buffer.concat([integer(tag*8+2),integer(data.length),data]);
+}
+function wireFields(data:Buffer) {
+    const result=new Map<number,bigint|Buffer>();let position=0;
+    const integer=()=>{let n=0n,shift=0n;for(;;){const b=data[position++];assert(b!==undefined);n|=BigInt(b&127)<<shift;if(!(b&128))return n;shift+=7n;}};
+    while(position<data.length){const tag=Number(integer());if((tag&7)===0)result.set(tag>>3,integer());else{assert.equal(tag&7,2);const size=Number(integer());result.set(tag>>3,data.subarray(position,position+size));position+=size;}}
+    return result;
+}
+async function connectEdge() {
+    const id=(value:string)=>Buffer.from(value.replaceAll('-',''),'hex');
+    const socket=new WebSocket(api.replace('http:','ws:')+'/edge/v1/connect');socket.binaryType='arraybuffer';
+    releases.push(()=>socket.close());let epoch=0n,sequence=1n;
+    const envelope=(tag:number,payload:Buffer)=>Buffer.concat([wireField(1,6),wireField(2,id(randomUUID())),wireField(3,id(edgeA)),wireField(4,id(platform)),wireField(5,epoch),wireField(6,Date.now()),wireField(8,sequence++),wireField(tag,payload)]);
+    await new Promise<void>((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error('Edge Hello timed out')),10000);
+        socket.onopen=()=>socket.send(envelope(20,Buffer.concat([wireField(1,'900000000000001'),wireField(2,'fixture'),wireField(35,1),wireField(37,1)])));
+        socket.onerror=()=>{clearTimeout(timer);reject(new Error('Edge connection failed'));};
+        socket.onmessage=event=>{
+            const incoming=wireFields(Buffer.from(event.data as ArrayBuffer));
+            if(incoming.has(21)){epoch=incoming.get(5) as bigint;clearTimeout(timer);resolve();}
+            if(incoming.has(84)){
+                const request=wireFields(incoming.get(84) as Buffer);
+                socket.send(envelope(85,Buffer.concat([wireField(1,request.get(1) as Buffer),wireField(2,request.get(2) as bigint),wireField(3,1)])));
+            }
+        };
+    });
+}
 try {
     const [location] = await db`SELECT current_setting('data_directory') AS path`;
     assert.equal(resolve(location.path).toLowerCase(), resolve(fixture, 'postgres').toLowerCase(), 'requires the disposable VPN fixture cluster');
@@ -87,8 +118,8 @@ try {
         await db`INSERT INTO sys_user_role(id,user_id,role_id) VALUES (${randomUUID()},${account},${role})`;
     await db`UPDATE vpn_network SET hub_public_key=${publicKey()},hub_endpoint='127.0.0.1',hub_listen_port=51820,status='enabled' WHERE id=${network}`;
     for (const [edge,name,address] of [[edgeA,'Edge A','100.96.0.20'],[edgeB,'Edge B','100.96.0.21']]) {
-        await db`INSERT INTO edge_node(id,platform_id,imei,name,model,enrollment_status,approved_by,approved_at) VALUES
-            (${edge},${platform},${edge === edgeA ? '900000000000001' : '900000000000002'},${name},'test','approved',${admin},NOW())`;
+        await db`INSERT INTO edge_node(id,platform_id,imei,name,model,enrollment_status,approved_by,approved_at,capability) VALUES
+            (${edge},${platform},${edge === edgeA ? '900000000000001' : '900000000000002'},${name},'test','approved',${admin},NOW(),'{"vpn":{"supportsVpn":true}}'::jsonb)`;
         await db`INSERT INTO vpn_peer(id,network_id,peer_type,edge_node_id,name,public_key,assigned_ipv4,status) VALUES
             (${edge},${network},'edge',${edge},${name},${publicKey()},${address}::inet,'active')`;
     }
@@ -105,7 +136,7 @@ try {
     check(await request('GET','/v1/vpn/peers?edgeNodeId=invalid'),10001);
     check(await request('GET','/v1/vpn/networks?pageSize=101'),10001);
     check(await request('GET','/v1/vpn/desktop/peers/invalid/config'),10001);
-    check(await request('POST','/v1/vpn/desktop/peers',[]),21001);
+    check(await request('POST','/v1/vpn/desktop/peers',[]),10002);
     check(await request('POST','/v1/vpn/networks',{}),11007);
     console.log('PASS ordinary HTTP snapshots, typed query/path validation and write permissions');
     for (const path of ['/v1/vpn/networks', `/v1/vpn/networks/${network}`, `/v1/vpn/peers?edgeNodeId=${edgeA}`, `/v1/vpn/routes?edgeNodeId=${edgeA}`, '/v1/vpn/sessions']) {
@@ -130,6 +161,7 @@ try {
     await presenceStream.next(x=>x.data?.find((d:any)=>d.id===edgeA)?.online===false);
     presenceStream.close();
     console.log('PASS desktop online follows live Edge session, independent of stale or fresh telemetry timestamp');
+    await connectEdge();
     assert.equal((await db`SELECT vpn_desktop_user_authorized(${user}::uuid) AS allowed`)[0].allowed, true);
     await db`INSERT INTO vpn_peer(id,network_id,peer_type,user_id,name,public_key,assigned_ipv4,status,client_managed)
         VALUES (${randomUUID()},${network},'windows',${user},'Previously revoked client',${publicKey()},'100.96.0.2'::inet,'revoked',TRUE)`;
@@ -137,6 +169,49 @@ try {
     assert.equal(first.assignedIpv4,'100.96.0.2','historical revoked rows must no longer reserve an address');
     assert.deepEqual(first.edgeNodeIds, [edgeA]); assert.deepEqual(first.allowedRoutes.sort(), ['100.96.0.20/32','172.31.10.0/24']);
     assert.equal('privateKey' in first, false); assert.equal(first.publicKey, key);
+    async function requestedState(enabled: boolean) {
+        for(let attempt=0;attempt<650;++attempt) {
+            const rows=await db`SELECT request->>'enabled' AS enabled,status FROM edge_task WHERE task_type='vpn' AND request->>'peerId'=${edgeA} ORDER BY created_at DESC,id DESC LIMIT 1`;
+            if(rows[0]?.enabled===String(enabled)&&rows[0]?.status==='succeeded') return;
+            await Bun.sleep(100);
+        }
+        assert.fail(`node demand did not become ${enabled}`);
+    }
+    await requestedState(false);
+    assert.equal((await db`SELECT virtual_cidr::text AS cidr FROM vpn_route WHERE id=${routeA}`)[0].cidr,'172.31.10.0/24');
+    assert.equal((await db`SELECT status FROM vpn_route WHERE id=${routeA}`)[0].status,'active','a successful tunnel stop must retain allocated route availability');
+    assert.deepEqual(check(await request('GET','/v1/vpn/desktop/devices')).find((d:any)=>d.id===edgeA).virtualCidrs,['172.31.10.0/24']);
+    const demandA=await openStream(`/v1/vpn/desktop/peers/${peer}/config/events`); await demandA.next();
+    await requestedState(true);
+    const demandB=await openStream(`/v1/vpn/desktop/peers/${peer}/config/events`); await demandB.next();
+    demandA.close();
+    for(let attempt=0;attempt<200&&Number(await presence.send('ZCARD',[`iot:vpn:desktop:sessions:${peer}`]))!==1;++attempt)
+        await Bun.sleep(100);
+    await requestedState(true);
+    assert.equal(Number(await presence.send('ZCARD',[`iot:vpn:desktop:sessions:${peer}`])),1,'closing one connection preserves another');
+    demandB.close(); await requestedState(false);
+    const demandC=await openStream(`/v1/vpn/desktop/peers/${peer}/config/events`); await demandC.next();
+    await requestedState(true);
+    check(await patch(peer,[])); await requestedState(false);
+    check(await patch(peer,[edgeA])); await requestedState(true);
+    demandC.close(); await requestedState(false);
+    assert.equal((await db`SELECT host(assigned_ipv4) AS address FROM vpn_peer WHERE id=${edgeA}`)[0].address,'100.96.0.20');
+    assert.equal((await db`SELECT virtual_cidr::text AS cidr FROM vpn_route WHERE id=${routeA}`)[0].cidr,'172.31.10.0/24');
+    console.log('PASS saved capability and preallocated mappings stay off, live selection enables VPN, last client closes it without reallocating');
+    const sharedClient=check(await enroll(publicKey(),[edgeA]));
+    const sharedA=await openStream(`/v1/vpn/desktop/peers/${peer}/config/events`); await sharedA.next();
+    const sharedB=await openStream(`/v1/vpn/desktop/peers/${sharedClient.peerId}/config/events`); await sharedB.next();
+    await requestedState(true);
+    const tasksBefore=Number((await db`SELECT count(*) AS count FROM edge_task WHERE task_type='vpn' AND request->>'peerId'=${edgeA}`)[0].count);
+    await Bun.sleep(16000);
+    assert.equal(Number((await db`SELECT count(*) AS count FROM edge_task WHERE task_type='vpn' AND request->>'peerId'=${edgeA}`)[0].count),tasksBefore,'lease renewal must not resend a VPN configuration');
+    sharedA.close();
+    for(let attempt=0;attempt<200&&Number(await presence.send('ZCARD',[`iot:vpn:desktop:sessions:${peer}`]))!==0;++attempt)
+        await Bun.sleep(100);
+    await requestedState(true);
+    check(await request('DELETE',`/v1/vpn/desktop/peers/${sharedClient.peerId}`));
+    await requestedState(false); sharedB.close();
+    console.log('PASS two distinct clients share one enabled node; renewal sends no duplicate task and only the last user stops VPN');
     const retryKey = publicKey(); const retries = await Promise.all([enroll(retryKey,[edgeA]),enroll(retryKey,[edgeA])]);
     assert.equal(check(retries[0]).peerId,check(retries[1]).peerId);
     const allocated = await Promise.all([enroll(publicKey(),[edgeA]),enroll(publicKey(),[edgeB])]);

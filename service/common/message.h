@@ -33,6 +33,11 @@ inline std::string eventTopic(std::string_view nodeId, std::string_view sessionI
 
 namespace service::message::vpn {
 
+inline constexpr std::int64_t kDesktopSessionLeaseMs{45000};
+inline std::string desktopSessionKey(std::string_view peerId) {
+    return "iot:vpn:desktop:sessions:" + std::string(peerId);
+}
+
 // Shared VPN address contract. It contains only immutable values and pure mapping logic.
 using service::utils::network::Ipv4Cidr;
 

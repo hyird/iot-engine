@@ -47,7 +47,7 @@ bool isPlatformOrigin(std::string_view url) {
 Json VpnServiceStatus::toJson() const {
     return {{"state", state}, {"serverUrl", PlatformUrl}, {"username", username}, {"peerId", peerId},
         {"assignedIpv4", assignedIpv4}, {"edgeNodeIds", edgeNodeIds}, {"allowedRoutes", allowedRoutes},
-        {"lastSyncAt", lastSyncAt.empty() ? Json(nullptr) : Json(lastSyncAt)}, {"error", error}, {"tunnelRunning", tunnelRunning}};
+        {"lastSyncAt", lastSyncAt.empty() ? Json(nullptr) : Json(lastSyncAt)}, {"error", error}, {"tunnelRunning", tunnelRunning}, {"vpnEnabled", vpnEnabled}};
 }
 VpnConnectionService::VpnConnectionService(std::shared_ptr<IClientStateStore> store, std::shared_ptr<IPlatformVpnApi> api, std::unique_ptr<WireGuardTunnel> tunnel)
     : store_(std::move(store)), api_(std::move(api)), tunnel_(std::move(tunnel)) {
@@ -72,6 +72,7 @@ void VpnConnectionService::setStatus(std::string name, std::string error, bool s
     auto current = status(); current.state = std::move(name); current.error = std::move(error);
     current.username = value(state_.value("session", Json::object()), "username"); current.peerId = value(state_, "peerId");
     current.edgeNodeIds = strings(state_, "edgeNodeIds");
+    current.vpnEnabled = flag(state_, "connectRequested");
     const auto config = state_.value("lastConfig", Json::object());
     current.assignedIpv4 = value(config, "assignedIpv4");
     current.allowedRoutes = current.state == "Connected" ? strings(config, "allowedRoutes") : std::vector<std::string>{};
@@ -314,6 +315,13 @@ void VpnConnectionService::applyLocked(const Json& request, std::stop_token stop
         selected.insert(canonicalId(id.get<std::string>()));
     }
     const std::vector<std::string> ids(selected.begin(), selected.end());
+    if (request.contains("vpnEnabled") && !request["vpnEnabled"].is_boolean())
+        throw std::invalid_argument("VPN 开关状态无效。");
+    if (!request.value("vpnEnabled", true)) {
+        state_["edgeNodeIds"] = ids;
+        (void)disconnectLocked(stop);
+        return;
+    }
     retryPendingRevocations(stop);
     const auto currentOwner = value(state_["session"], "userId");
     if (state_.contains("pendingRevocations") && state_["pendingRevocations"].is_array()) {
@@ -422,7 +430,9 @@ Json VpnConnectionService::executeCommand(const Json& request, std::stop_token s
             // A reconnect must settle every locally retained revoke before it
             // can read the old configuration or allocate a new peer.
             retryPendingRevocations(stop);
-            if (command == "connect" && value(state_, "peerId").empty()) {
+            if (command == "connect" && request.contains("edgeNodeIds")) {
+                applyLocked({{"edgeNodeIds", request.at("edgeNodeIds")}, {"vpnEnabled", true}}, stop);
+            } else if (command == "connect" && value(state_, "peerId").empty()) {
                 const auto selected = strings(state_, "edgeNodeIds");
                 if (selected.empty()) throw std::invalid_argument("请先选择设备并应用。");
                 applyLocked({{"edgeNodeIds", selected}}, stop);

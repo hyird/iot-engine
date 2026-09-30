@@ -4,8 +4,17 @@
 #include <memory_resource>
 #include <string>
 #include <ruvia/web/db/DbEntity.h>
+#include "service/common/message.h"
 
 namespace service::vpn::entities {
+
+// Connection leases are sorted-set resources, not business records. Redis ORM
+// entities do not express per-member expiry; map the key here and mutate atomically.
+struct DesktopSessionSet final {
+    static std::string key(std::string_view peerId) {
+        return service::message::vpn::desktopSessionKey(peerId);
+    }
+};
 
 RUVIA_DB_ENTITY(EdgeNodeEntity, "edge_node",
     RUVIA_DB_COLUMN(id, std::pmr::string,

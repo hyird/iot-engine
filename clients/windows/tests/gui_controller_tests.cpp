@@ -228,7 +228,7 @@ void testServiceRepairNeeded() {
     require(!recovered.serviceRepairNeeded, "successful status did not clear repair");
 }
 
-void testAutomaticDeviceRefresh() {
+void testDeviceRefreshOnRequest() {
     auto now=std::chrono::steady_clock::time_point{};
     int deviceCalls=0; bool online=false, fail=false;
     ConnectionController controller([&](const Json& request,std::stop_token) {
@@ -247,17 +247,40 @@ void testAutomaticDeviceRefresh() {
     online=true; now+=5s; controller.tick();
     require(deviceCalls==1,"device polling ran too early");
     now+=5s; controller.tick();
-    require(deviceCalls==2 && controller.devices[0].online,"online transition required manual refresh");
-    require(controller.selected==std::set<std::string>{"a","b"},"automatic refresh overwrote pending selection");
+    require(deviceCalls==1,"idle GUI performed a periodic platform device query");
+    controller.request("devices");
+    require(deviceCalls==2 && controller.devices[0].online,"manual refresh did not update online state");
+    require(controller.selected==std::set<std::string>{"a","b"},"manual refresh overwrote pending selection");
     require(controller.filtered("Device B").size()==1,"refresh broke active filtering");
-    fail=true; now+=10s; controller.tick();
+    fail=true; controller.request("devices");
     require(deviceCalls==3 && controller.devices[0].online,"failed refresh fabricated offline devices");
     for(int i=0;i<20;++i) controller.tick();
     require(deviceCalls==3,"failed refresh caused a tight retry loop");
     fail=false; online=false; now+=10s; controller.tick();
+    require(deviceCalls==3,"failed refresh caused periodic business retries");
+    controller.request("devices");
     require(deviceCalls==4 && !controller.devices[0].online,"offline transition was not refreshed");
     controller.request("logout"); now+=20s; controller.tick();
     require(deviceCalls==4,"device polling continued after logout");
+}
+
+void testVpnIntentAndSavedSelection() {
+    bool enabled=false;
+    ConnectionController controller([&](const Json& request,std::stop_token) {
+        const auto command=request.value("command","");
+        if(command=="apply") require(!request.value("vpnEnabled",true),"saving while off enabled VPN");
+        if(command=="connect") enabled=true;
+        auto snapshot=status(enabled?"Retrying":"Disconnected","alice",{"a"});
+        snapshot["tunnelRunning"]=false; snapshot["vpnEnabled"]=enabled;
+        if(request.contains("edgeNodeIds")) snapshot["edgeNodeIds"]=request["edgeNodeIds"];
+        return success({{"status",snapshot}});
+    },true);
+    controller.request("status");
+    require(!controller.vpnEnabled && controller.selected==std::set<std::string>{"a"},"off status lost selection");
+    controller.choose("b",true); controller.request("apply");
+    require(!controller.vpnEnabled && controller.applied==std::set<std::string>{"a","b"},"off apply lost selection");
+    controller.request("connect");
+    require(controller.vpnEnabled && !controller.connected && controller.selected==std::set<std::string>{"a","b"},"retry status confused VPN intent with running tunnel");
 }
 
 } // namespace
@@ -270,7 +293,8 @@ int main() {
         {"logout and auth failure", testLogoutAndAuthFailures}, {"cross-account clear", testCrossAccountClear},
         {"async exceptions", testAsyncExceptions}, {"destructor cancellation", testDestructorCancelsBlockedTransport},
         {"service repair needed", testServiceRepairNeeded},
-        {"automatic device refresh", testAutomaticDeviceRefresh},
+        {"device refresh on request", testDeviceRefreshOnRequest},
+        {"VPN intent and saved selection", testVpnIntentAndSavedSelection},
     };
     int passed = 0;
     for (const auto& [name, test] : tests) {

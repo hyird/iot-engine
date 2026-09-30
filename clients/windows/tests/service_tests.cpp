@@ -176,6 +176,16 @@ int main(int argc, char** argv) {
         require(fixture.api->lastPeer.empty() && fixture.api->lastApply["publicKey"] == Key && !fixture.api->lastApply.contains("privateKey"), "POST body leaks key or uses existing peer");
         require(fixture.tunnel->keys == 1 && fixture.tunnel->on, "local keys and connection missing");
     });
+    test("VPN off saves selection without enrollment and connect uses current selection", [] {
+        Fixture fixture(initialState(false));
+        require(fixture.connectionService->executeCommand({{"command", "apply"}, {"edgeNodeIds", {Edge}}, {"vpnEnabled", false}}).value("success", false), "saving disconnected selection failed");
+        require(fixture.tunnel->keys == 0 && !fixture.tunnel->on && fixture.api->lastApply.empty(), "disabled VPN enrolled or started a tunnel");
+        require(fixture.store->state["edgeNodeIds"] == Json::array({Edge}) && !fixture.connectionService->status().vpnEnabled, "disconnected selection or switch lost");
+        require(fixture.connectionService->executeCommand({{"command", "connect"}, {"edgeNodeIds", {Edge}}}).value("success", false), "VPN enable failed");
+        require(fixture.tunnel->on && fixture.connectionService->status().vpnEnabled, "VPN enable did not start tunnel");
+        require(fixture.command("disconnect").value("success", false), "VPN disable failed");
+        require(!fixture.tunnel->on && !fixture.connectionService->status().vpnEnabled && fixture.store->state["edgeNodeIds"] == Json::array({Edge}), "VPN disable lost selection or retained tunnel");
+    });
     test("existing selection uses peer and empty selection stops", [] {
         Fixture fixture;
         require(fixture.connectionService->executeCommand({{"command", "apply"}, {"edgeNodeIds", {Edge}}}).value("success", false), "selection failed");

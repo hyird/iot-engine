@@ -1,12 +1,21 @@
 #pragma once
 #include <ruvia/web/db/DbEntity.h>
 #include <ruvia/web/redis/RedisEntity.h>
+#include "service/common/message.h"
 namespace service::vpn {
 RUVIA_REDIS_ENTITY(ReconciliationSchedule, "iot_vpn_reconciliation",
     RUVIA_REDIS_COLUMN(id, ruvia::String, ruvia::RedisColumnOptions{.primaryKey = true}));
 }
 
 namespace service::vpn::persistence {
+
+// Read the connection resource owned by the desktop API through its Redis contract.
+// Per-member sorted-set expiry cannot be represented by a Redis ORM entity.
+struct DesktopSessionSet final {
+    static std::string key(std::string_view peerId) {
+        return service::message::vpn::desktopSessionKey(peerId);
+    }
+};
 
 RUVIA_DB_ENTITY(EdgeNodeEntity, "edge_node",
     RUVIA_DB_COLUMN(id, std::pmr::string,

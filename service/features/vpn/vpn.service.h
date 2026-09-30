@@ -79,6 +79,41 @@ using service::utils::network::parseIpv4;
 
 class VpnRuntimeService final {
   public:
+    template <typename Context>
+    static ruvia::Task<std::unordered_set<std::string>> desktopDemand(Context& context) {
+        using Op = ruvia::DbBinaryOperator;
+        ruvia::DbQuery selections;
+        selections.select({
+                selections.cast(selections.column(persistence::VpnEffectiveEdgeAccessEntity::columnName<"edge_peer_id">(), "access"), ruvia::DbDataType::kText),
+                selections.cast(selections.column(persistence::VpnEffectiveEdgeAccessEntity::columnName<"peer_id">(), "access"), ruvia::DbDataType::kText)})
+            .from(persistence::VpnEffectiveEdgeAccessEntity::tableName(), "access")
+            .join(ruvia::DbJoinType::kInner, persistence::VpnPeerEntity::tableName(),
+                selections.binary(selections.column(persistence::VpnPeerEntity::columnName<"id">(), "peer"), Op::kEqual,
+                    selections.column(persistence::VpnEffectiveEdgeAccessEntity::columnName<"peer_id">(), "access")), "peer")
+            .andWhere(selections.column(persistence::VpnPeerEntity::columnName<"client_managed">(), "peer"))
+            .andWhere(selections.binary(selections.column(persistence::VpnPeerEntity::columnName<"peer_type">(), "peer"), Op::kEqual, selections.value("windows")));
+        const auto rows = co_await context.db().query(selections);
+        std::unordered_set<std::string> activeClients, inactiveClients, demand;
+        for (const auto& row : rows) {
+            const std::string edgePeerId(row[0].value().value_or(""));
+            const std::string clientPeerId(row[1].value().value_or(""));
+            if (!activeClients.contains(clientPeerId) && !inactiveClients.contains(clientPeerId)) {
+                const auto key = persistence::DesktopSessionSet::key(clientPeerId);
+                const std::string_view keys[]{key};
+                const auto reply = co_await context.redis().eval(R"lua(
+local time=redis.call('TIME')
+local now=time[1]*1000+math.floor(time[2]/1000)
+return redis.call('ZCOUNT',KEYS[1],'('..now,'+inf')
+)lua", keys, std::span<const std::string_view>{});
+                if (reply.kind() != ruvia::RedisValue::Kind::kInteger)
+                    service::message::redis::throwValue("desktop VPN demand", reply);
+                (reply.integer() > 0 ? activeClients : inactiveClients).insert(clientPeerId);
+            }
+            if (activeClients.contains(clientPeerId)) demand.insert(edgePeerId);
+        }
+        co_return demand;
+    }
+
     template <typename Transaction>
     static ruvia::Task<bool> acquireReconciliation(Transaction& transaction,
         std::pmr::memory_resource* resource, bool background) {
@@ -396,6 +431,13 @@ ruvia::Task<void> queueEdgeConfig(Context& c, std::string_view peerId,
                                   std::string_view actorId = {},
                                   std::string_view platformId = {}) {
     using Op = ruvia::DbBinaryOperator;
+    // Capability reports and desktop demand changes may arrive on different
+    // Workers. Serialize revisions without sharing their connections or state.
+    auto configuration = co_await c.db("vpn-edge-config").beginTransaction();
+    ruvia::DbQuery lock;
+    lock.select(lock.call("pg_advisory_xact_lock", {
+        lock.call("hashtextextended", {lock.cast(lock.value(peerId), ruvia::DbDataType::kText), lock.value(std::int64_t{5282804697543808072})})}));
+    (void)co_await configuration.query(lock);
     ruvia::DbQuery peer;
     const auto capability = peer.call("lower", { peer.coalesce({ peer.binary(
         peer.binary(peer.column(service::vpn::persistence::EdgeNodeEntity::columnName<"capability">(), "e"), Op::kJsonGet, peer.value("vpn")),
@@ -412,7 +454,7 @@ ruvia::Task<void> queueEdgeConfig(Context& c, std::string_view peerId,
         .andWhere(peer.binary(peer.column(service::vpn::persistence::EdgeNodeEntity::columnName<"enrollment_status">(), "e"), Op::kEqual, peer.value("approved")))
         .andWhere(peer.binary(capability, Op::kIn, peer.list({ peer.value("true"), peer.value("t"), peer.value("1") })))
         .limit(1);
-    const auto rows = co_await c.db().query(peer);
+    const auto rows = co_await configuration.query(peer);
     if (rows.empty())
         co_return;
 
@@ -423,7 +465,7 @@ ruvia::Task<void> queueEdgeConfig(Context& c, std::string_view peerId,
         .from(service::vpn::persistence::VpnRouteEntity::tableName())
         .andWhere(routes.binary(routes.column(service::vpn::persistence::VpnRouteEntity::columnName<"edge_peer_id">()), Op::kEqual, routes.cast(routes.value(peerId), ruvia::DbDataType::kUuid)))
         .addOrderBy(routes.column(service::vpn::persistence::VpnRouteEntity::columnName<"virtual_cidr">())).limit(16);
-    const auto routeRows = co_await c.db().query(routes);
+    const auto routeRows = co_await configuration.query(routes);
     const auto requestId = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
     std::uint8_t requestBytes[16]{};
     if (!service::edge::protocol::uuidBytes(requestId, requestBytes))
@@ -445,7 +487,8 @@ ruvia::Task<void> queueEdgeConfig(Context& c, std::string_view peerId,
     request->set_config_version(static_cast<std::uint64_t>(nextVersion));
     const auto revoked = detail::edgeConfigRowValue(rows.front(), 5) == "revoked";
     const auto networkDisabled = detail::edgeConfigRowValue(rows.front(), 10) != "enabled";
-    request->set_enabled(!revoked && !networkDisabled);
+    const auto demand = co_await VpnRuntimeService::desktopDemand(c);
+    request->set_enabled(!revoked && !networkDisabled && demand.contains(std::string(peerId)));
     request->set_hub_public_key(detail::edgeConfigRowValue(rows.front(), 6));
     request->set_hub_endpoint(detail::edgeConfigRowValue(rows.front(), 7));
     const auto portText = detail::edgeConfigRowValue(rows.front(), 8);
@@ -493,12 +536,42 @@ ruvia::Task<void> queueEdgeConfig(Context& c, std::string_view peerId,
                 task.cast(task.value("configVersion"), ruvia::DbDataType::kText), task.cast(task.value(nextVersion), ruvia::DbDataType::kBigInt),
                 task.cast(task.value("enabled"), ruvia::DbDataType::kText), task.cast(task.value(request->enabled()), ruvia::DbDataType::kBoolean) }),
             task.cast(task.value(createdBy), ruvia::DbDataType::kUuid) });
-    (void)co_await c.db().execute(task);
-    co_await service::edge::dispatch::enqueue(c.redis(), nodeId, wire);
+    (void)co_await configuration.execute(task);
     ruvia::DbQuery revision;
     revision.update(service::vpn::persistence::VpnPeerEntity::tableName()).set(service::vpn::persistence::VpnPeerEntity::columnName<"config_revision">(), revision.value(nextVersion)).set(service::vpn::persistence::VpnPeerEntity::columnName<"updated_at">(), revision.call("now"))
         .andWhere(revision.binary(revision.column(service::vpn::persistence::VpnPeerEntity::columnName<"id">()), Op::kEqual, revision.cast(revision.value(peerId), ruvia::DbDataType::kUuid)));
-    (void)co_await c.db().execute(revision);
+    (void)co_await configuration.execute(revision);
+    co_await configuration.commit();
+    co_await service::edge::dispatch::enqueue(c.redis(), nodeId, wire);
+}
+
+// The existing reconciliation job also services expired desktop resources.
+// Compare the last requested state so an idle job never sends duplicate configs.
+template <typename Context>
+ruvia::Task<void> synchronizeEdgeDemand(Context& context) {
+    using Op = ruvia::DbBinaryOperator;
+    const auto demand = co_await VpnRuntimeService::desktopDemand(context);
+    ruvia::DbQuery latest;
+    latest.select(latest.binary(latest.column(persistence::EdgeTaskEntity::columnName<"request">(), "task"), Op::kJsonGetText, latest.value("enabled")))
+        .from(persistence::EdgeTaskEntity::tableName(), "task")
+        .andWhere(latest.binary(latest.column(persistence::EdgeTaskEntity::columnName<"task_type">(), "task"), Op::kEqual, latest.value("vpn")))
+        .andWhere(latest.binary(latest.binary(latest.column(persistence::EdgeTaskEntity::columnName<"request">(), "task"), Op::kJsonGetText, latest.value("peerId")), Op::kEqual,
+            latest.cast(latest.column(persistence::VpnPeerEntity::columnName<"id">(), "peer"), ruvia::DbDataType::kText)))
+        .addOrderBy(latest.column(persistence::EdgeTaskEntity::columnName<"created_at">(), "task"), ruvia::DbOrderDirection::kDesc)
+        .addOrderBy(latest.column(persistence::EdgeTaskEntity::columnName<"id">(), "task"), ruvia::DbOrderDirection::kDesc)
+        .limit(1);
+    ruvia::DbQuery peers;
+    peers.select(peers.cast(peers.column(persistence::VpnPeerEntity::columnName<"id">(), "peer"), ruvia::DbDataType::kText))
+        .addSelect(peers.subquery(latest))
+        .from(persistence::VpnPeerEntity::tableName(), "peer")
+        .andWhere(peers.binary(peers.column(persistence::VpnPeerEntity::columnName<"peer_type">(), "peer"), Op::kEqual, peers.value("edge")));
+    const auto rows = co_await context.db().query(peers);
+    for (const auto& row : rows) {
+        const std::string peerId(row[0].value().value_or(""));
+        const auto previous = row[1].value().value_or("");
+        const auto desired = demand.contains(peerId) ? "true" : "false";
+        if (previous != desired) co_await queueEdgeConfig(context, peerId);
+    }
 }
 
 } // namespace service::vpn
@@ -728,6 +801,7 @@ class VpnHubService final {
         // Otherwise an older snapshot could install a revoked key after its
         // address has already been returned to a newly enrolled client.
         co_await VpnRuntimeService::lockAddressAllocation(ownership, context.pool());
+        co_await synchronizeEdgeDemand(context);
         auto result = co_await reconcileLocal(context, fallback);
         if (result.configured) {
             ReconciliationSchedule schedule(context.pool());

@@ -11,6 +11,7 @@ struct VpnServiceStatus {
     std::string state = "LoggedOut", username, peerId, assignedIpv4, error, lastSyncAt;
     std::vector<std::string> edgeNodeIds, allowedRoutes;
     bool tunnelRunning = false;
+    bool vpnEnabled = false;
     Json toJson() const;
 };
 class VpnConnectionService {

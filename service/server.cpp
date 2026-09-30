@@ -631,6 +631,10 @@ void configureServer(
         .alias = "vpn-coordination",
         .config = components.database,
     });
+    app.database(ruvia::DbRegistrationConfig{
+        .alias = "vpn-edge-config",
+        .config = components.database,
+    });
     app.useWorkerState<ruvia::WebWorkerHandle>()
         .useWorkerState<service::ServiceWorkerTopology>([count = components.workers.size()] {
             return service::ServiceWorkerTopology{count};

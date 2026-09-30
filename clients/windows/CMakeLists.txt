@@ -112,6 +112,7 @@ add_custom_command(
     "${CMAKE_CURRENT_SOURCE_DIR}/winui/iot-egine.vcxproj"
     "${CMAKE_CURRENT_SOURCE_DIR}/winui/app.manifest"
     "${CMAKE_CURRENT_SOURCE_DIR}/winui/main.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/winui/connection_controller.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/common/text.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/common/text.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/common/files.cpp"

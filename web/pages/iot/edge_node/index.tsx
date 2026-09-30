@@ -560,10 +560,11 @@ export function EdgeVpnPanel({ node, scope }: { node: Edge.Node; scope: Edge.Eve
             />
             <Flex justify="space-between" align="center" gap={12} wrap>
                 <div>
-                    <div className="font-medium text-slate-800">节点 VPN · iot-server</div>
+                    <div className="font-medium text-slate-800">节点 VPN 能力 · iot-server</div>
                     <div className="mt-1 text-xs text-slate-500">
                         使用 iot-server 的 WireGuard Server。真实 LAN、桥接接口和掩码由节点上报；
-                        这里只允许修改虚拟网段网络号。
+                        开启能力后预先分配节点地址和虚拟网段；客户端开启 VPN
+                        并选中该节点时才启动隧道， 最后一个客户端停止使用后关闭隧道并保留分配结果。
                     </div>
                 </div>
                 <Space wrap>
@@ -588,7 +589,7 @@ export function EdgeVpnPanel({ node, scope }: { node: Edge.Node; scope: Edge.Eve
                                 })
                             }
                         >
-                            启用节点 VPN
+                            开启 VPN 能力
                         </Button>
                     )}
                 </Space>
@@ -610,8 +611,11 @@ export function EdgeVpnPanel({ node, scope }: { node: Edge.Node; scope: Edge.Eve
                         <Descriptions.Item label="节点地址">
                             {peer?.assignedIpv4 ?? '-'}
                         </Descriptions.Item>
-                        <Descriptions.Item label="Peer 状态">
-                            {peer ? vpnStatusTag(peer.status) : <Tag>未加入</Tag>}
+                        <Descriptions.Item label="VPN 能力">
+                            {peer ? <Tag color="green">已开启</Tag> : <Tag>未开启</Tag>}
+                        </Descriptions.Item>
+                        <Descriptions.Item label="Peer 配置状态">
+                            {peer ? vpnStatusTag(peer.status) : '-'}
                         </Descriptions.Item>
                         <Descriptions.Item label="Agent / WireGuard" span={2}>
                             {node.capability.vpn?.agentVersion || '-'} /{' '}
@@ -638,12 +642,12 @@ export function EdgeVpnPanel({ node, scope }: { node: Edge.Node; scope: Edge.Eve
                             )}
                             {canRevoke && peer.status !== 'revoked' && (
                                 <Popconfirm
-                                    title="确认撤销当前节点的 VPN Peer 吗？"
-                                    description="撤销后节点将不能继续访问 VPN 网络。"
+                                    title="确认关闭当前节点的 VPN 能力吗？"
+                                    description="关闭后客户端无法使用该节点，当前 Peer 和地址分配将被撤销。"
                                     onConfirm={() => peerRevoke.mutate(peer.id)}
                                 >
                                     <Button danger loading={peerRevoke.isPending}>
-                                        撤销 Peer
+                                        关闭 VPN 能力
                                     </Button>
                                 </Popconfirm>
                             )}
@@ -659,7 +663,7 @@ export function EdgeVpnPanel({ node, scope }: { node: Edge.Node; scope: Edge.Eve
                         pagination={false}
                         columns={routeColumns}
                         dataSource={peer ? data.routes : []}
-                        locale={{ emptyText: peer ? '暂无路由映射' : '请先将节点加入 VPN 网络' }}
+                        locale={{ emptyText: peer ? '暂无路由映射' : '请先开启节点 VPN 能力' }}
                         scroll={{ x: 'max-content' }}
                     />
                 </>

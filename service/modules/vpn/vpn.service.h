@@ -1301,6 +1301,52 @@ class VpnService final {
     template <typename Context>
     ruvia::Task<void> desktopDeletePeer(Context& c, std::string_view id);
 
+    template <typename Context>
+    ruvia::Task<std::string> openDesktopSession(Context& c, std::string_view peerId) {
+        // Ownership, selections and current authorization must be valid before
+        // the connection can create demand. A saved Peer alone creates none.
+        (void)co_await desktopPeerConfig(c, peerId);
+        const auto connectionId = c.template workerState<std::unique_ptr<service::common::UuidV7Generator>>()->next();
+        co_await renewDesktopSession(c, peerId, connectionId);
+        std::exception_ptr failure;
+        try { co_await reconcileHub(c); } catch (...) { failure = std::current_exception(); }
+        if (failure) {
+            co_await closeDesktopSession(c, peerId, connectionId);
+            std::rethrow_exception(failure);
+        }
+        co_return connectionId;
+    }
+
+    template <typename Context>
+    ruvia::Task<void> renewDesktopSession(Context& c, std::string_view peerId, std::string_view connectionId) {
+        const auto key = entities::DesktopSessionSet::key(peerId);
+        const auto duration = std::to_string(service::message::vpn::kDesktopSessionLeaseMs);
+        const std::string_view keys[]{key};
+        const std::string_view arguments[]{connectionId, duration};
+        const auto reply = co_await c.redis().eval(R"lua(
+local time=redis.call('TIME')
+local now=time[1]*1000+math.floor(time[2]/1000)
+redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',now)
+redis.call('ZADD',KEYS[1],now+tonumber(ARGV[2]),ARGV[1])
+redis.call('PEXPIRE',KEYS[1],ARGV[2])
+return 1
+)lua", keys, arguments);
+        if (reply.kind() != ruvia::RedisValue::Kind::kInteger || reply.integer() != 1)
+            service::message::redis::throwValue("renew desktop VPN session", reply);
+    }
+
+    template <typename Context>
+    ruvia::Task<void> closeDesktopSession(Context& c, std::string_view peerId, std::string_view connectionId) {
+        const auto key = entities::DesktopSessionSet::key(peerId);
+        const std::string_view keys[]{key};
+        const std::string_view arguments[]{connectionId};
+        // A late close removes only its own connection, including after reconnect.
+        const auto reply = co_await c.redis().eval("return redis.call('ZREM',KEYS[1],ARGV[1])", keys, arguments);
+        if (reply.kind() != ruvia::RedisValue::Kind::kInteger)
+            service::message::redis::throwValue("close desktop VPN session", reply);
+        co_await reconcileHub(c);
+    }
+
   private:
 };
 

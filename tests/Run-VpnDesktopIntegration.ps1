@@ -3,6 +3,8 @@ param(
     [string]$PostgresBin = 'C:/Program Files/PostgreSQL/18/bin',
     [string]$RedisExe = 'C:/Redis/redis-server.exe',
     [string]$Bun = 'bun',
+    [string]$Backend = '',
+    [switch]$IncludeEdgeLiveness,
     [ValidateSet('Debug', 'Release')][string]$Configuration = 'Release'
 )
 $ErrorActionPreference = 'Stop'
@@ -10,7 +12,8 @@ $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $build = Join-Path $repository 'build'
 $fixture = Join-Path $build ('vpn-desktop-fixture-' + [Guid]::NewGuid().ToString('N'))
 $data = Join-Path $fixture 'postgres'
-$backend = Join-Path $build "$Configuration/iot-engine.exe"
+if (!$Backend) { $Backend = Join-Path $build "$Configuration/iot-engine.exe" }
+$backend = [IO.Path]::GetFullPath($Backend)
 foreach ($file in @($backend, $RedisExe, (Join-Path $PostgresBin 'initdb.exe'), (Join-Path $PostgresBin 'pg_ctl.exe'))) {
     if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing test dependency: $file" }
 }
@@ -83,6 +86,22 @@ EDGE_PLATFORM_ID=00000000-0000-7000-8000-000000000001
     if (!$ready) { throw "Test API did not start; inspect logs in $fixture" }
     & $Bun run (Join-Path $PSScriptRoot 'vpn-desktop-integration.ts')
     if ($LASTEXITCODE -ne 0) { throw "VPN integration tests failed; logs retained at $fixture" }
+    if ($IncludeEdgeLiveness) {
+        $oldDatabaseUrl = $env:ARCHITECTURE_DATABASE_URL
+        $oldRedisUrl = $env:ARCHITECTURE_REDIS_URL
+        $oldApiBase = $env:TEST_BASE_URL
+        try {
+            $env:ARCHITECTURE_DATABASE_URL = 'postgres://architecture_test@127.0.0.1:55449/iot_architecture'
+            $env:ARCHITECTURE_REDIS_URL = 'redis://127.0.0.1:56449'
+            $env:TEST_BASE_URL = 'http://127.0.0.1:55112'
+            & $Bun run (Join-Path $PSScriptRoot 'edge-liveness-integration.ts')
+            if ($LASTEXITCODE -ne 0) { throw "Edge liveness integration failed; logs retained at $fixture" }
+        } finally {
+            $env:ARCHITECTURE_DATABASE_URL = $oldDatabaseUrl
+            $env:ARCHITECTURE_REDIS_URL = $oldRedisUrl
+            $env:TEST_BASE_URL = $oldApiBase
+        }
+    }
 } finally {
     Stop-OwnedProcess $apiProcess (Join-Path $fixture 'iot-engine.exe')
     Stop-OwnedProcess $redisProcess $RedisExe

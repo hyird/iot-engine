@@ -2992,9 +2992,9 @@ class EdgeProjectionService {
         const auto enabled = update.coalesce({
             update.cast(update.column("enabled", "task"), ruvia::DbDataType::kBoolean),
             update.cast(update.value(true), ruvia::DbDataType::kBoolean)});
-        const auto activeRoute = update.binary(
-            enabled, ruvia::DbBinaryOperator::kAnd,
-            update.column(service::edge::persistence::VpnRouteEntity::columnName<"enabled">(), "route"));
+        // An on-demand stop changes tunnel runtime only. Preallocated mappings
+        // remain available to desktop discovery and the next enabled client.
+        const auto activeRoute = update.column(service::edge::persistence::VpnRouteEntity::columnName<"enabled">(), "route");
         const auto routeStatus = update.caseWhen(
             {{activeRoute,
               update.cast(update.value(std::string_view{"active"}),
@@ -3031,7 +3031,8 @@ class EdgeProjectionService {
                 update.cast(update.column("peer_id", "task"), ruvia::DbDataType::kUuid)))
             .andWhere(update.binary(update.subquery(peer),
                                     ruvia::DbBinaryOperator::kEqual,
-                                    update.column("config_version", "task")));
+                                    update.column("config_version", "task")))
+            .andWhere(enabled);
         (void)co_await context.db().execute(update);
     }
 

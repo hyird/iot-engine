@@ -1,5 +1,6 @@
 #pragma once
 #include <ruvia/web/Controller.h>
+#include <ruvia/core/TaskScope.h>
 
 #include "service/common/http.h"
 #include "service/middleware/auth.h"
@@ -186,12 +187,52 @@ class VpnController final : public ruvia::Controller<VpnController> {
         co_return c.body(std::string_view(payload));
     }
     ruvia::Task<void> desktopPeerConfigEvents(ruvia::Context& c) {
-        co_await service::live::serveSnapshots(c, "vpn", service::middleware::requireAuth(c).userId, [&c](service::middleware::RequestContext& request) -> ruvia::Task<std::string> {
+        const auto userId = service::middleware::requireAuth(c).userId;
+        const std::string peerId(c.req().validated<VpnIdParams>().get<"id">().view());
+        if (c.req().header("Accept").value_or("").find("text/event-stream") == std::string_view::npos) {
+            service::common::fail(10002, "此接口需要 text/event-stream", 406);
+        }
+        service::middleware::RequestContext request(c, userId);
+        co_await service::auth::AuthService::requirePermission(request, userId, "iot:vpn:enroll");
+        co_await service::auth::AuthService::requirePermission(request, userId, "iot:edge:query");
+        const auto connectionId = co_await vpnService().openDesktopSession(request, peerId);
+        ruvia::TaskScope leases(c.worker(), ruvia::TaskScopeOptions{.resource = c.pool()});
+        std::exception_ptr failure;
+        std::exception_ptr leaseFailure;
+        auto renewLease = [&]() -> ruvia::Task<void> {
+            try {
+                while (!leases.stopRequested() && !c.stopToken().stopRequested()) {
+                    (void)co_await ruvia::sleepFor(c.worker(), std::chrono::seconds(15), leases.stopToken());
+                    if (leases.stopRequested() || c.stopToken().stopRequested()) break;
+                    service::middleware::RequestContext renewal(c, userId, leases.stopToken());
+                    // Redis resource maintenance only: no business query or edge traffic.
+                    co_await vpnService().renewDesktopSession(renewal, peerId, connectionId);
+                }
+            } catch (...) { leaseFailure = std::current_exception(); }
+        };
+        leases.spawn(renewLease());
+        std::vector<service::live::SnapshotChannel> channels;
+        channels.push_back({"snapshot", "vpn", [&c, &peerId](service::middleware::RequestContext& request) -> ruvia::Task<std::string> {
             co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:vpn:query");
             co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:vpn:enroll");
             co_await service::auth::AuthService::requirePermission(request, request.userId, "iot:edge:query");
-            co_return service::live::data(c, co_await vpnService().desktopPeerConfig(request, c.req().validated<VpnIdParams>().get<"id">().view()));
-        }, [&c] { (void)service::middleware::requireAuth(c); });
+            co_return service::live::data(c, co_await vpnService().desktopPeerConfig(request, peerId));
+        }});
+        try {
+            co_await service::live::serveSnapshotChannels(c, userId, std::move(channels), [&] {
+                if (leaseFailure) std::rethrow_exception(leaseFailure);
+                (void)service::middleware::requireAuth(c);
+            });
+        } catch (...) { failure = std::current_exception(); }
+        leases.requestStop();
+        co_await leases.join();
+        // Cleanup must survive cancellation of the HTTP connection. Expiry is
+        // the fallback if Redis or the API process itself is unavailable.
+        try {
+            service::middleware::RequestContext cleanup(c, userId, {});
+            co_await vpnService().closeDesktopSession(cleanup, peerId, connectionId);
+        } catch (...) { if (!failure) failure = std::current_exception(); }
+        if (failure) std::rethrow_exception(failure);
     }
     ruvia::Task<ruvia::HttpResponse> desktopDeletePeer(ruvia::Context& c) {
         service::middleware::RequestContext request(c, service::middleware::requireAuth(c).userId);
