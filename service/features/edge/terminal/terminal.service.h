@@ -172,7 +172,7 @@ return 1
                 } else if (frame.has_close()) {
                     events += "{\"kind\":\"close\",\"reason\":" + service::utils::jsonQuoted(frame.close().reason()) + "}";
                 } else if (frame.has_data()) {
-                    events += "{\"kind\":\"data\",\"content\":" + service::utils::jsonQuoted(service::utils::encodeBase64(frame.data().data())) + ",\"sequence\":" + std::to_string(frame.data().sequence()) + "}";
+                    events += "{\"kind\":\"data\",\"content\":" + service::utils::jsonQuoted(service::utils::encode_base64(frame.data().data())) + ",\"sequence\":" + std::to_string(frame.data().sequence()) + "}";
                 } else {
                     service::common::fail(17018, "终端输出类型无效", 502);
                 }
@@ -196,14 +196,19 @@ return 1
         }
         auto command = envelope();
         if (operation == "terminal-write") {
-            const auto content = service::utils::decodeBase64(text("content"), 4096);
+            std::string content;
+            try {
+                content = service::utils::decode_base64(text("content"), 4096);
+            } catch (const service::utils::base64_decode_error&) {
+                service::common::fail(17018, "终端输入无效", 400);
+            }
             const auto sequence = input->get<ruvia::Int64>("sequence");
-            if (!content || !sequence || sequence->value < 0 || sequence->value > 9007199254740991LL || (state->protocolVersion >= 5 && sequence->value == 0)) {
+            if (!sequence || sequence->value < 0 || sequence->value > 9007199254740991LL || (state->protocolVersion >= 5 && sequence->value == 0)) {
                 service::common::fail(17018, "终端输入无效", 400);
             }
             auto* data = command.mutable_terminal_data();
             data->set_terminal_id(terminalBytes);
-            data->set_data(*content);
+            data->set_data(content);
             if (state->protocolVersion >= 5) {
                 data->set_sequence(static_cast<std::uint64_t>(sequence->value));
             }

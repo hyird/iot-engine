@@ -324,6 +324,10 @@ if(MSVC)
 endif()
 
 enable_testing()
+iot_engine_add_test(base64
+    SOURCES tests/base64-test.cpp
+    LIBRARIES OpenSSL::Crypto)
+
 iot_engine_add_test(derived-point LARGE
     SOURCES tests/derived-point-test.cpp
     LIBRARIES ruvia::web)

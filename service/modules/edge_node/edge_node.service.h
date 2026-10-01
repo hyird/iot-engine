@@ -1012,21 +1012,23 @@ class EdgeService {
 
     template <typename Context>
     ruvia::Task<void> writeTerminal(Context& c, std::string_view nodeId, std::string_view sessionId, std::string_view connectionId, unsigned protocolVersion, std::uint64_t& sequence, std::string_view encoded) {
-        const auto bytes = service::utils::decodeBase64(encoded, 16384);
-        if (!bytes) {
+        std::string bytes;
+        try {
+            bytes = service::utils::decode_base64(encoded, 16384);
+        } catch (const service::utils::base64_decode_error&) {
             service::common::fail(17018, "终端输入编码无效", 400);
         }
         const auto notification = service::live::bus().subscribe(c.worker(), service::edge::terminal_state::terminalAckTopic(nodeId, sessionId));
-        for (std::size_t offset = 0; offset < bytes->size(); offset += 4096) {
+        for (std::size_t offset = 0; offset < bytes.size(); offset += 4096) {
             if (c.stopToken().stopRequested()) {
                 service::common::fail(17018, "终端输入已取消", 409);
             }
-            const auto part = std::string_view(*bytes).substr(offset, std::min<std::size_t>(4096, bytes->size() - offset));
+            const auto part = std::string_view(bytes).substr(offset, std::min<std::size_t>(4096, bytes.size() - offset));
             const auto next = protocolVersion >= 5 ? ++sequence : 0;
             if (next > 9007199254740991ULL) {
                 service::common::fail(17018, "终端输入序号已耗尽", 409);
             }
-            (void)co_await terminalOperation(c, nodeId, sessionId, connectionId, "terminal-write", ",\"content\":" + service::utils::jsonQuoted(service::utils::encodeBase64(part)) + ",\"sequence\":" + std::to_string(next));
+            (void)co_await terminalOperation(c, nodeId, sessionId, connectionId, "terminal-write", ",\"content\":" + service::utils::jsonQuoted(service::utils::encode_base64(part)) + ",\"sequence\":" + std::to_string(next));
             if (protocolVersion < 5) {
                 continue;
             }
