@@ -2,12 +2,21 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useEffect } from 'react';
 import { HttpRequestError } from '@/lib/http';
-import { useAuthStore } from '@/store/authStore';
-import { fetchCurrentUser, observeCurrentUser, logout, refreshToken } from './login.api';
+import { useAuthStore } from '@/store/auth_store';
+import { fetchCurrentUser, login, observeCurrentUser, logout, refreshToken } from './login.api';
 
 const loginKeys = {
     currentUser: ['auth', 'currentUser'] as const,
 };
+
+export function useLogin() {
+    const setAuth = useAuthStore((state) => state.setAuth);
+    return useMutation({
+        mutationFn: login,
+        onSuccess: ({ token, refresh_token, user }) => setAuth(token, refresh_token, user),
+    });
+}
+
 export function useCurrentUser() {
     const token = useAuthStore((s) => s.token);
     const user = useAuthStore((s) => s.user);
@@ -81,5 +90,3 @@ export function refreshAccessToken(): Promise<boolean> {
         });
     return pendingRefresh;
 }
-
-export { login } from './login.api';

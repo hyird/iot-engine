@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { parseProtocolImport } from '../web/pages/iot/protocol/protocol.schema';
+import { parseProtocolImport } from '../web/pages/protocol/protocol.schema';
 
 const item = {
     name: '导入协议', protocol: 'SL651',

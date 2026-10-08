@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { dtuAsciiPacketSchema, dtuChannelSchema } from '../web/pages/iot/edge_node/edge_node.schema';
+import { dtuAsciiPacketSchema, dtuChannelSchema } from '../web/pages/edge_node/edge_node.schema';
 
 const config = {
     channelId: '00000000-0000-4000-8000-000000000001', name: 'DTU', enabled: true,

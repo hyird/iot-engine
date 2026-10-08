@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
     logLevelSchema,
     logsQuerySchema,
-} from '../web/pages/iot/edge_node/edge_node.schema';
+} from '../web/pages/edge_node/edge_node.schema';
 
 describe('节点日志级别', () => {
     test('支持静默设置并保留旧级别', () => {

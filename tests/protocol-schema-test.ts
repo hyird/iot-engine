@@ -5,12 +5,12 @@ import {
     getModbusDeviceTypeFormValues,
     getS7DeviceTypeFormValues,
     numberOrDefault,
-} from '../web/pages/iot/protocol/protocol.service';
+} from '../web/pages/protocol/protocol.service';
 import {
     derivedPointSchema,
     protocolCreateSchema,
     validatePointExpression,
-} from '../web/pages/iot/protocol/protocol.schema';
+} from '../web/pages/protocol/protocol.schema';
 
 test('读取上报缺省为五分钟，显式间隔与命令快速读取保持不变', () => {
     expect(defaultConfig().readInterval).toBe(300);

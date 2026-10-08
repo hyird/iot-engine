@@ -5,15 +5,15 @@ import {
     SafetyCertificateOutlined,
     UserOutlined,
 } from '@ant-design/icons';
-import { useMutation } from '@tanstack/react-query';
 import { Button, Form, Input, theme } from 'antd';
 import { useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { APP_NAME, getAppTitle } from '@/config/app';
-import { useAuthStore } from '@/store/authStore';
+import { DEFAULT_MANAGEMENT_PATH } from '@/routes/navigation';
+import { useAuthStore } from '@/store/auth_store';
 import { validateForm } from '@/utils/validation';
 import { loginSchema } from './login.schema';
-import { login } from './login.service';
+import { useLogin } from './login.service';
 import type { Auth } from './login.types';
 
 /**
@@ -29,17 +29,13 @@ function LoginPage() {
     const [form] = Form.useForm<Auth.LoginRequest>();
     const navigate = useNavigate();
     const location = useLocation();
-    const { token, setAuth } = useAuthStore();
+    const token = useAuthStore((state) => state.token);
     const { token: themeToken } = theme.useToken();
-    const mutation = useMutation({
-        mutationFn: login,
-        onSuccess: (data) => {
-            setAuth(data.token, data.refresh_token, data.user);
-        },
-    });
+    const mutation = useLogin();
     useEffect(() => {
         if (token && !mutation.isPending) {
-            const from = (location.state as LocationState)?.from?.pathname || '/home';
+            const from =
+                (location.state as LocationState)?.from?.pathname || DEFAULT_MANAGEMENT_PATH;
             navigate(from, { replace: true });
         }
     }, [token, mutation.isPending, location.state, navigate]);

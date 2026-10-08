@@ -1,5 +1,5 @@
 import request, { type RequestConfig } from '@/lib/http';
-import { createSharedSseSnapshotStream } from '@/lib/snapshot-request';
+import { createSharedSseSnapshotStream } from '@/lib/snapshot_request';
 import { loginSchema, refreshTokenSchema } from './login.schema';
 import type { Auth } from './login.types';
 

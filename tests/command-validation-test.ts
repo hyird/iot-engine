@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { validateValue } from '../web/pages/iot/device/index';
+import { validateValue } from '../web/pages/device/index';
 
 describe('device command validation', () => {
     test('rejects negative BCD values because the wire format has no sign', () => {

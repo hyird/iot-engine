@@ -1,5 +1,5 @@
 import { afterAll, afterEach, expect, spyOn, test } from 'bun:test';
-import { edgeDebugConnection } from '../web/pages/iot/edge_node/edge_node.api';
+import { edgeDebugConnection } from '../web/pages/edge_node/edge_node.api';
 import {
     acknowledgeTerminalOutput,
     closeTerminal,
@@ -7,7 +7,7 @@ import {
     openTerminal,
     resizeTerminal,
     writeTerminal,
-} from '../web/pages/iot/edge_node/edge_node.api';
+} from '../web/pages/edge_node/edge_node.api';
 
 const node = '00000000-0000-7000-8000-000000000001';
 const sessionId = '00000000-0000-7000-8000-000000000002';

@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
-import { EdgeDebugConnection } from '../web/pages/iot/edge_node/edge_node.api';
-import { DebugSubscriptions } from '../web/pages/iot/edge_node/edge_node.api';
-import { SnapshotStream } from '../web/lib/snapshot-stream';
+import { EdgeDebugConnection } from '../web/pages/edge_node/edge_node.api';
+import { DebugSubscriptions } from '../web/pages/edge_node/edge_node.api';
+import { SnapshotStream } from '../web/lib/snapshot_stream';
 
 test('explicit refresh waits for a new snapshot, coalesces readers and ignores retired replies', async () => {
     const { channel, sockets } = fixture();

@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import DeviceCard from '../web/components/DeviceCard';
+import DeviceCard from '../web/components/device_card';
 
 test('grouped device cards preserve configured element names', () => {
     const markup = renderToStaticMarkup(

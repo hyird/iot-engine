@@ -1,6 +1,6 @@
 import { afterAll, afterEach, expect, test, spyOn } from 'bun:test';
 import request from '../web/lib/http';
-import { upgradeFirmware } from '../web/pages/iot/edge_node/edge_node.service';
+import { upgradeFirmware } from '../web/pages/edge_node/edge_node.service';
 const send=spyOn(request,'post');
 afterEach(()=>send.mockReset());afterAll(()=>send.mockRestore());
 const node='00000000-0000-7000-8000-000000000001';

@@ -7,11 +7,13 @@ const walk = (dir: string): string[] => readdirSync(dir).flatMap(name => {
     const file = join(dir, name);
     return statSync(file).isDirectory() ? walk(file) : [file];
 });
-const sources = walk(join(root, 'web')).filter(file => /\.tsx?$/.test(file));
+const webFiles = walk(join(root, 'web'));
+const sources = webFiles.filter(file => /\.[tj]sx?$/.test(file));
 const paths = new Set(sources);
 const repoPath = (file: string) => relative(root, file).replaceAll('\\', '/');
 const owner = (file: string) => file.includes('/pages/') ? dirname(file) : undefined;
 const edges = new Map<string, string[]>();
+const unresolved: string[] = [];
 for (const file of sources) {
     const imports: string[] = [];
     const content = readFileSync(file, 'utf8');
@@ -19,18 +21,22 @@ for (const file of sources) {
         const spec = match[1];
         if (!spec.startsWith('.') && !spec.startsWith('@/')) continue;
         const base = spec.startsWith('@/') ? resolve(root, 'web', spec.slice(2)) : resolve(dirname(file), spec);
-        const target = [base, `${base}.ts`, `${base}.tsx`, join(base, 'index.ts'), join(base, 'index.tsx')].find(p => paths.has(p));
+        const target = [base, `${base}.ts`, `${base}.tsx`, `${base}.js`, join(base, 'index.ts'), join(base, 'index.tsx')].find(p => paths.has(p));
         if (target) imports.push(target);
+        else if (!webFiles.includes(base)) unresolved.push(`${repoPath(file)} -> ${spec}`);
     }
     edges.set(file, imports);
 }
 
 test('page modules use only their role files and have no private subdirectories', () => {
     const violations: string[] = [];
-    const modules = new Set(sources.filter(f => /\/(?:index\.tsx|[^/]+\.service\.ts)$/.test(repoPath(f)) && repoPath(f).startsWith('web/pages/')).map(dirname));
-    for (const dir of modules) {
-        const name = dir.replaceAll('\\', '/').split('/').at(-1)!;
-        for (const file of walk(dir)) {
+    const pages = join(root, 'web/pages');
+    for (const name of readdirSync(pages)) {
+        const dir = join(pages, name);
+        if (!statSync(dir).isDirectory()) { violations.push(repoPath(dir)); continue; }
+        const moduleFiles = walk(dir);
+        if (!moduleFiles.includes(join(dir, 'index.tsx'))) violations.push(`${repoPath(dir)}: missing index.tsx`);
+        for (const file of moduleFiles) {
             const local = relative(dir, file).replaceAll('\\', '/');
             if (!/^[a-z][a-z0-9_]*$/.test(name) || !['index.tsx', ...['types', 'schema', 'api', 'service'].map(role => `${name}.${role}.ts`)].includes(local)) violations.push(repoPath(file));
         }
@@ -38,10 +44,21 @@ test('page modules use only their role files and have no private subdirectories'
     expect(violations).toEqual([]);
 });
 
+test('owned frontend source paths use snake_case names', () => {
+    const violations = sources.filter(file => !repoPath(file).startsWith('web/generated/')).filter(file =>
+        repoPath(file).split('/').some(part => !/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$/.test(part))
+    ).map(repoPath);
+    expect(violations).toEqual([]);
+});
+
+test('local source imports resolve after module moves', () => {
+    expect(unresolved).toEqual([]);
+});
+
 test('shared frontend infrastructure never imports page implementations', () => {
     const violations: string[] = [];
     for (const [file, imports] of edges) {
-        if (!/^web\/(components|store|hooks|utils|lib|types)\//.test(repoPath(file))) continue;
+        if (!/^web\/(components|store|hooks|utils|lib|types|providers|config)\//.test(repoPath(file))) continue;
         for (const target of imports) if (repoPath(target).startsWith('web/pages/')) violations.push(`${repoPath(file)} -> ${repoPath(target)}`);
     }
     expect(violations).toEqual([]);
@@ -82,5 +99,47 @@ test('page views obtain network connections through their services', () => {
         repoPath(file).startsWith('web/pages/') && file.endsWith('.tsx') &&
         /(?:\bnew\s+(?:WebSocket|EventSource)\s*\(|\bfetch\s*\()/.test(readFileSync(file, 'utf8'))
     ).map(repoPath);
+    expect(violations).toEqual([]);
+});
+
+test('page views do not own query caching or import transport infrastructure', () => {
+    const violations: string[] = [];
+    for (const [file, imports] of edges) {
+        if (!repoPath(file).startsWith('web/pages/') || !file.endsWith('/index.tsx') && !file.endsWith('\\index.tsx')) continue;
+        const source = readFileSync(file, 'utf8');
+        if (/\b(?:useQuery|useInfiniteQuery|useMutation|useQueryClient|useSnapshotQuery)\s*\(/.test(source)) violations.push(repoPath(file));
+        for (const target of imports) {
+            if (/^web\/lib\/(?:http|sse|snapshot_request|snapshot_stream|sse_subscriptions|terminal_channel)\./.test(repoPath(target))) violations.push(`${repoPath(file)} -> ${repoPath(target)}`);
+        }
+    }
+    expect(violations).toEqual([]);
+});
+
+test('module types and schemas are pure and API clients do not own UI or query caching', () => {
+    const violations: string[] = [];
+    for (const [file, imports] of edges) {
+        const path = repoPath(file);
+        if (!path.startsWith('web/pages/')) continue;
+        const source = readFileSync(file, 'utf8');
+        if (/\.(types|schema)\.ts$/.test(path)) {
+            for (const target of imports) {
+                if (!/^web\/(?:utils|types)\//.test(repoPath(target)) && !target.endsWith('.types.ts')) violations.push(`${path} -> ${repoPath(target)}`);
+            }
+            if (/from\s+['"](?:react|antd|@tanstack\/react-query)|\b(?:fetch|useEffect|useQuery)\s*\(|\bnew\s+(?:WebSocket|EventSource)\s*\(/.test(source)) violations.push(path);
+        }
+        if (path.endsWith('.api.ts')) {
+            for (const target of imports) {
+                if (/^web\/(?:components|layouts|hooks|providers|routes)\//.test(repoPath(target)) || /(?:\.service\.ts|\.tsx)$/.test(target)) violations.push(`${path} -> ${repoPath(target)}`);
+            }
+            if (/from\s+['"](?:react|antd|@tanstack\/react-query|react-router-dom)/.test(source)) violations.push(path);
+        }
+    }
+    expect(violations).toEqual([]);
+});
+
+test('business query polling stays disabled globally and in individual queries', () => {
+    const provider = readFileSync(join(root, 'web/providers/tan_stack_query_provider.tsx'), 'utf8');
+    expect(provider).toMatch(/refetchInterval:\s*false/);
+    const violations = sources.filter(file => [...readFileSync(file, 'utf8').matchAll(/\brefetchInterval\s*:\s*([^,\n}]+)/g)].some(match => match[1].trim() !== 'false')).map(repoPath);
     expect(violations).toEqual([]);
 });

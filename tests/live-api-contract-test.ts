@@ -45,7 +45,7 @@ test('frontend allows ordinary GET but disables scheduled refetch and universal 
         expect(source).not.toContain('/v1/channel');
         expect(source).not.toContain('requestEvent(');
     }
-    const api = await readFile('web/pages/iot/device/device.api.ts', 'utf8');
+    const api = await readFile('web/pages/device/device.api.ts', 'utf8');
     expect(api).toMatch(/request\.get[<(]/);
     expect(api).toContain('createSseSnapshotStream');
 });

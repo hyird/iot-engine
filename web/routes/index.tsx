@@ -1,41 +1,60 @@
-const Dlt645ConfigPage = lazy(() =>
-    import('@/pages/iot/protocol').then((module) => ({ default: module.Dlt645ConfigPage }))
-);
-const MqttConfigPage = lazy(() =>
-    import('@/pages/iot/protocol').then((module) => ({ default: module.MqttConfigPage }))
-);
-const FinsConfigPage = lazy(() =>
-    import('@/pages/iot/protocol').then((module) => ({ default: module.FinsConfigPage }))
-);
-const McConfigPage = lazy(() =>
-    import('@/pages/iot/protocol').then((module) => ({ default: module.McConfigPage }))
-);
-
 import { Button, Result, Spin } from 'antd';
-import { lazy, Suspense } from 'react';
+import { lazy, type ReactElement, Suspense } from 'react';
 import { createHashRouter, Navigate, Outlet, RouterProvider, useLocation } from 'react-router-dom';
-import { useAuthStore } from '@/store/authStore';
+import { useAuthStore } from '@/store/auth_store';
+import { DEFAULT_MANAGEMENT_PATH, managementPages, type ManagementPageId } from './navigation';
 
 const LoginPage = lazy(() => import('@/pages/login'));
-const AdminLayout = lazy(() => import('@/layouts/AdminLayout'));
-const RolePage = lazy(() => import('@/pages/system/role'));
-const DeptPage = lazy(() => import('@/pages/system/dept'));
-const UserPage = lazy(() => import('@/pages/system/user'));
-const LinkPage = lazy(() => import('@/pages/iot/link'));
+const AdminLayout = lazy(() => import('@/layouts/admin_layout'));
+const RolePage = lazy(() => import('@/pages/role'));
+const DeptPage = lazy(() => import('@/pages/dept'));
+const UserPage = lazy(() => import('@/pages/user'));
+const LinkPage = lazy(() => import('@/pages/link'));
 const ModbusConfigPage = lazy(() =>
-    import('@/pages/iot/protocol').then((module) => ({ default: module.ModbusConfigPage }))
+    import('@/pages/protocol').then((module) => ({ default: module.ModbusConfigPage }))
 );
 const SL651ConfigPage = lazy(() =>
-    import('@/pages/iot/protocol').then((module) => ({ default: module.SL651ConfigPage }))
+    import('@/pages/protocol').then((module) => ({ default: module.SL651ConfigPage }))
 );
 const S7ConfigPage = lazy(() =>
-    import('@/pages/iot/protocol').then((module) => ({ default: module.S7ConfigPage }))
+    import('@/pages/protocol').then((module) => ({ default: module.S7ConfigPage }))
 );
-const DevicePage = lazy(() => import('@/pages/iot/device'));
-const AccessPage = lazy(() => import('@/pages/iot/open_access'));
-const EdgeNodePage = lazy(() => import('@/pages/iot/edge_node'));
-const AlertPage = lazy(() => import('@/pages/iot/alert'));
-const Gb28181Page = lazy(() => import('@/pages/iot/gb28181'));
+const Dlt645ConfigPage = lazy(() =>
+    import('@/pages/protocol').then((module) => ({ default: module.Dlt645ConfigPage }))
+);
+const MqttConfigPage = lazy(() =>
+    import('@/pages/protocol').then((module) => ({ default: module.MqttConfigPage }))
+);
+const FinsConfigPage = lazy(() =>
+    import('@/pages/protocol').then((module) => ({ default: module.FinsConfigPage }))
+);
+const McConfigPage = lazy(() =>
+    import('@/pages/protocol').then((module) => ({ default: module.McConfigPage }))
+);
+const DevicePage = lazy(() => import('@/pages/device'));
+const AccessPage = lazy(() => import('@/pages/open_access'));
+const EdgeNodePage = lazy(() => import('@/pages/edge_node'));
+const AlertPage = lazy(() => import('@/pages/alert'));
+const Gb28181Page = lazy(() => import('@/pages/gb28181'));
+
+const pageElements = {
+    link: <LinkPage />,
+    edge_node: <EdgeNodePage />,
+    sl651: <SL651ConfigPage />,
+    modbus: <ModbusConfigPage />,
+    s7: <S7ConfigPage />,
+    dlt645: <Dlt645ConfigPage />,
+    fins: <FinsConfigPage />,
+    mqtt: <MqttConfigPage />,
+    mc: <McConfigPage />,
+    device: <DevicePage />,
+    alert: <AlertPage />,
+    gb28181: <Gb28181Page />,
+    open_access: <AccessPage />,
+    role: <RolePage />,
+    dept: <DeptPage />,
+    user: <UserPage />,
+} satisfies Record<ManagementPageId, ReactElement>;
 
 const routeErrorElement = (
     <div className="flex h-screen items-center justify-center p-6">
@@ -75,23 +94,11 @@ const router = createHashRouter([
                 path: '/',
                 element: <AdminLayout />,
                 children: [
-                    { index: true, element: <Navigate to="/system/role" replace /> },
-                    { path: 'system/role', element: <RolePage /> },
-                    { path: 'system/dept', element: <DeptPage /> },
-                    { path: 'system/user', element: <UserPage /> },
-                    { path: 'iot/link', element: <LinkPage /> },
-                    { path: 'iot/modbus', element: <ModbusConfigPage /> },
-                    { path: 'iot/sl651', element: <SL651ConfigPage /> },
-                    { path: 'iot/s7', element: <S7ConfigPage /> },
-                    { path: 'iot/dlt645', element: <Dlt645ConfigPage /> },
-                    { path: 'iot/fins', element: <FinsConfigPage /> },
-                    { path: 'iot/mc', element: <McConfigPage /> },
-                    { path: 'iot/mqtt', element: <MqttConfigPage /> },
-                    { path: 'device', element: <DevicePage /> },
-                    { path: 'iot/open-access', element: <AccessPage /> },
-                    { path: 'iot/edge', element: <EdgeNodePage /> },
-                    { path: 'iot/alert', element: <AlertPage /> },
-                    { path: 'iot/gb28181', element: <Gb28181Page /> },
+                    { index: true, element: <Navigate to={DEFAULT_MANAGEMENT_PATH} replace /> },
+                    ...managementPages.map((page) => ({
+                        path: page.path.slice(1),
+                        element: pageElements[page.id],
+                    })),
                 ],
             },
         ],

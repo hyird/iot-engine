@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { formatTsapValue, validateTsapValue } from '../web/pages/iot/protocol/protocol.schema';
+import { formatTsapValue, validateTsapValue } from '../web/pages/protocol/protocol.schema';
 
 test('TSAP form and connection formatting share normalization', async () => {
     for (const [input, expected] of [['a', '000A'], ['0x4d57', '4D57'], ['01:00', '0100'], ['0_2-0.0', '0200'], [' 1 ', '0001']]) {

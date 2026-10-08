@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { mobileOperatorName } from '../web/pages/iot/edge_node/edge_node.service';
+import { mobileOperatorName } from '../web/pages/edge_node/edge_node.service';
 
 test('maps China PLMN codes to short Chinese operator names', () => {
     expect(mobileOperatorName('46011')).toBe('中国电信');

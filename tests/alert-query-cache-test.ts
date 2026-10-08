@@ -4,8 +4,8 @@ import { App } from 'antd';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import request from '../web/lib/http';
-import { getRecords, getStats } from '../web/pages/iot/alert/alert.api';
-import { useAuthStore } from '../web/store/authStore';
+import { getRecords, getStats } from '../web/pages/alert/alert.api';
+import { useAuthStore } from '../web/store/auth_store';
 import {
     alertKeys,
     useAlertAcknowledge,
@@ -13,7 +13,7 @@ import {
     useAlertRuleSave,
     useAlertTemplateLoader,
     useAlertTemplateSave,
-} from '../web/pages/iot/alert/alert.service';
+} from '../web/pages/alert/alert.service';
 
 const clients: QueryClient[] = [];
 const disposals: Array<() => void> = [];

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { normalizeReportedNetwork, physicalNetworkInterfaces } from '../web/pages/iot/edge_node/edge_node.service';
-import { type Edge } from '../web/pages/iot/edge_node/edge_node.types';
+import { normalizeReportedNetwork, physicalNetworkInterfaces } from '../web/pages/edge_node/edge_node.service';
+import { type Edge } from '../web/pages/edge_node/edge_node.types';
 
 const interfaces: Edge.NetworkInterface[] = [
     {

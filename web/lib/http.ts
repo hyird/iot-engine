@@ -1,5 +1,5 @@
-import { getMessageInstance } from '@/providers/MessageContextBridge';
-import { useAuthStore } from '@/store/authStore';
+import { getMessageInstance } from '@/providers/message_context_bridge';
+import { useAuthStore } from '@/store/auth_store';
 
 export interface RequestConfig {
     params?: Record<string, unknown>;

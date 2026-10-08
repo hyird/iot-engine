@@ -1,9 +1,9 @@
-import { getEdgeInventory, observeEdgeDetail, getLogs, getEdgeVpnState } from '../web/pages/iot/edge_node/edge_node.api';
-import { getDeviceList, getDeviceRealtimeSnapshot, getDeviceGroupsWithCount, getDeviceCommandStatuses, getDebugPackets as getDevicePackets } from '../web/pages/iot/device/device.api';
+import { getEdgeInventory, observeEdgeDetail, getLogs, getEdgeVpnState } from '../web/pages/edge_node/edge_node.api';
+import { getDeviceList, getDeviceRealtimeSnapshot, getDeviceGroupsWithCount, getDeviceCommandStatuses, getDebugPackets as getDevicePackets } from '../web/pages/device/device.api';
 import { expect, spyOn, test } from 'bun:test';
-import { SseSubscriptions } from '../web/lib/sse-subscriptions';
-import { getList as getLinks, getDebugPackets } from '../web/pages/iot/link/link.api';
-import { useAuthStore } from '../web/store/authStore';
+import { SseSubscriptions } from '../web/lib/sse_subscriptions';
+import { getList as getLinks, getDebugPackets } from '../web/pages/link/link.api';
+import { useAuthStore } from '../web/store/auth_store';
 
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 function connection() {
@@ -540,7 +540,7 @@ test('edge page shares inventory, detail, logs and VPN with isolated named event
 
 
 test('video status reads use HTTP while device changes keep one SSE', async () => {
-    const { getHealth, getRecording, getDevices } = await import('../web/pages/iot/gb28181/gb28181.api');
+    const { getHealth, getRecording, getDevices } = await import('../web/pages/gb28181/gb28181.api');
     const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
     Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: {
         getItem: () => null, setItem: () => {}, removeItem: () => {},

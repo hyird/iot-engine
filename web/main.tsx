@@ -2,13 +2,13 @@ import { StyleProvider } from '@ant-design/cssinjs';
 import { App, ConfigProvider } from 'antd';
 import zhCN from 'antd/es/locale/zh_CN';
 import ReactDOM from 'react-dom/client';
-import { ErrorBoundary } from './components/ErrorBoundary';
+import { ErrorBoundary } from './components/error_boundary';
 import { APP_NAME } from './config/app';
 import { configureSessionRefresh } from './lib/http';
 import { refreshAccessToken } from './pages/login/login.service';
-import { configureEdgeDebugConnection } from './pages/iot/edge_node/edge_node.service';
-import { MessageContextBridge } from './providers/MessageContextBridge';
-import { TanStackQueryProvider } from './providers/TanStackQueryProvider';
+import { configureEdgeDebugConnection } from './pages/edge_node/edge_node.service';
+import { MessageContextBridge } from './providers/message_context_bridge';
+import { TanStackQueryProvider } from './providers/tan_stack_query_provider';
 import { AppRoutes } from './routes';
 import './styles/index.css';
 

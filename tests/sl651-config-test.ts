@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { protocolCreateSchema, protocolUpdateSchema } from '../web/pages/iot/protocol/protocol.schema';
+import { protocolCreateSchema, protocolUpdateSchema } from '../web/pages/protocol/protocol.schema';
 
 const config = (guideHex: string, length: number, digits: number) => ({
     responseMode: 'M3', storagePolicy: 'report',

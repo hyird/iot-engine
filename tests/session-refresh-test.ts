@@ -1,7 +1,7 @@
 import { afterAll, afterEach, expect, test, spyOn } from 'bun:test';
 import request, { HttpRequestError } from '../web/lib/http';
 import { refreshAccessToken } from '../web/pages/login/login.service';
-import { useAuthStore } from '../web/store/authStore';
+import { useAuthStore } from '../web/store/auth_store';
 
 const storage = new Map<string, string>();
 const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');

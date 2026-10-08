@@ -3,9 +3,9 @@ import {
     compileMqttTemplate,
     mqttConfigSchema,
     mqttTemplateDraft,
-} from '../web/pages/iot/protocol/protocol.schema';
-import type { MqttTemplateDraft } from '../web/pages/iot/protocol/protocol.types';
-import { saveLinkSchema } from '../web/pages/iot/link/link.schema';
+} from '../web/pages/protocol/protocol.schema';
+import type { MqttTemplateDraft } from '../web/pages/protocol/protocol.types';
+import { saveLinkSchema } from '../web/pages/link/link.schema';
 
 const point = {
     id: '00000000-0000-7000-8000-000000000001',

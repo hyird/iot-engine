@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
-import { EdgeDebugConnection } from '../web/pages/iot/edge_node/edge_node.api';
-import { DebugSubscriptions } from '../web/pages/iot/edge_node/edge_node.api';
+import { EdgeDebugConnection } from '../web/pages/edge_node/edge_node.api';
+import { DebugSubscriptions } from '../web/pages/edge_node/edge_node.api';
 
 class Socket {
     readyState = 0;

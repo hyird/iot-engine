@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
-import { serialPayloadHex } from '../web/pages/iot/edge_node/edge_node.service';
-import { serialSettingsSchema } from '../web/pages/iot/edge_node/edge_node.schema';
+import { serialPayloadHex } from '../web/pages/edge_node/edge_node.service';
+import { serialSettingsSchema } from '../web/pages/edge_node/edge_node.schema';
 
 test('serial HEX preserves binary bytes and ignores only whitespace', () => {
     expect(serialPayloadHex('00 ff\n0a 80', 'hex')).toBe('00FF0A80');
