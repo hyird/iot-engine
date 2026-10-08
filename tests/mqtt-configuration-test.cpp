@@ -1,4 +1,5 @@
 #include <iostream>
+#include <utility>
 
 #include "service/modules/protocol/protocol.service.h"
 
@@ -130,6 +131,32 @@ void testTemplates() {
         require(rejected, "invalid template accepted by module");
     }
 }
+
+void testTemplateValueSemantics() {
+    using Template = service::utils::JsonValueTemplate;
+    const auto compile = [] {
+        const std::string input = R"({"z":{"items":[{"target":"$point:温度","optional":"$optional"},[true,null,{}]]},"a":[],"escaped\"key":"$deviceCode"})";
+        return Template(input, { "$point:温度", "$optional", "$deviceCode" }, { "$optional" });
+    };
+    const Template::Values values{ { "$point:温度", "12.5" }, { "$deviceCode", R"("D001")" } };
+    constexpr std::string_view expected = R"({"z":{"items":[{"target":12.5},[true,null,{}]]},"a":[],"escaped\"key":"D001"})";
+    const auto verify = [&](const Template& value) {
+        require(value.render(values) == expected, "template ownership, member order, or nested rendering changed");
+        require(value.references() == Template::Tokens({ "$point:温度", "$optional", "$deviceCode" }), "template references lost after copy or move");
+    };
+
+    auto original = compile();
+    verify(original);
+    auto copied = original;
+    verify(copied);
+    auto moved = std::move(original);
+    verify(moved);
+    original = copied;
+    verify(original);
+    original = std::move(moved);
+    verify(original);
+    verify(copied);
+}
 } // namespace
 
 int main() {
@@ -137,6 +164,7 @@ int main() {
         testFormatsAndTime();
         testRejectedConfiguration();
         testTemplates();
+        testTemplateValueSemantics();
         std::cout << "MQTT configuration tests passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

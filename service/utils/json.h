@@ -174,12 +174,19 @@ class JsonValueTemplate final {
     }
 
   private:
+    struct ObjectMember;
+
     struct Node {
         enum class Kind { Scalar, Object, Array, Token } kind = Kind::Scalar;
         std::string value;
         bool sparse = false;
-        std::vector<std::pair<std::string, Node>> members;
+        std::vector<ObjectMember> members;
         std::vector<Node> elements;
+    };
+
+    struct ObjectMember {
+        std::string key;
+        Node value;
     };
 
     Node parse(const ruvia::JsonValue& raw, const Tokens& allowed, const Tokens& sparse, bool unique, unsigned depth, unsigned maxDepth) {
