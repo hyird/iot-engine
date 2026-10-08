@@ -31,15 +31,24 @@ export interface MqttConfig {
     timeFormat?: 'unix_ms' | 'unix_s' | 'iso8601';
     commandTopic?: string;
     commandTemplate?: string;
+    commands?: MqttCommandMessage[];
     reportTemplate?: string;
     qos: 0 | 1 | 2;
     points: MqttPoint[];
+}
+export interface MqttCommandMessage {
+    id: string;
+    name: string;
+    topic: string;
+    template: string;
+    requiredPointIds: string[];
 }
 export interface MqttTemplateDraft {
     topic: string;
     reportTemplate: string;
     commandTopic?: string;
     commandTemplate?: string;
+    commands?: MqttCommandMessage[];
     qos: 0 | 1 | 2;
     storagePolicy: 'report' | 'change';
     timeFormat?: 'unix_ms' | 'unix_s' | 'iso8601';

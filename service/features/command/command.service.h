@@ -441,7 +441,8 @@ public:
             requested.push_back({std::string(pair[0].view()), std::string(pair[1].view())});
         }
         auto transaction = co_await context.db("control").beginTransaction();
-        const auto prepared = co_await compileDevice(context, id, std::move(requested), transaction);
+        const std::string mqttMessageId = request->get<"mqttMessageId">() ? std::string(request->get<"mqttMessageId">()->view()) : "";
+        const auto prepared = co_await compileDevice(context, id, std::move(requested), transaction, mqttMessageId);
         co_await transaction.commit();
         co_return encode(prepared);
     }
@@ -487,7 +488,7 @@ private:
     }
     static ruvia::Task<Prepared> compileDevice(ruvia::WebWorkerContext& context,
                   std::string_view deviceId, std::vector<service::collector::CommandElementValue> requested,
-                  ruvia::DbTransaction& transaction) {
+                  ruvia::DbTransaction& transaction, std::string_view mqttMessageId) {
 
         // 调用方在命令事务中持有设备共享锁，准备事务只读取，避免跨连接重复加锁。
 
@@ -531,6 +532,7 @@ private:
             .andWhere(routeQuery.column(service::command::persistence::DeviceModelEntity::columnName<"enabled">(), "p")).limit(1);
         const auto edge = co_await transaction.query(routeQuery);
         if (!edge.empty() && !edge.front()[0].value().value_or(std::string_view{}).empty()) {
+            if (!mqttMessageId.empty()) service::common::fail(18010, "MQTT 消息选择不适用于边缘协议", 400);
             if (edge.front()[4].value().value_or(std::string_view{}) != "t")
                 service::common::fail(18013, "边缘节点设备配置尚未生效", 409);
             co_return co_await enqueueEdgeDevice(context, deviceId, std::move(requested),
@@ -554,7 +556,7 @@ private:
         if (device == snapshot.devices.end())
             service::common::fail(18011, "设备、链路或协议配置未启用", 409);
         try {
-            (void)service::collector::command::resolve(*device, requested);
+            (void)service::collector::command::resolve(*device, requested, mqttMessageId);
         } catch (const std::invalid_argument& error) {
             service::common::fail(18010, error.what(), 400);
         }
@@ -579,6 +581,7 @@ private:
             task.transport = definition.commandTransport == service::collector::CommandTransport::DeviceConfigured
                 ? device->modbusMode : "RAW";
             task.kind = "command";
+            task.mqttMessageId = mqttMessageId;
             task.linkId = device->linkId;
             task.deviceId = device->id;
             task.deviceCode = device->code;

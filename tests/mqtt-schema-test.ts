@@ -1,11 +1,14 @@
 import { expect, test } from 'bun:test';
 import {
     compileMqttTemplate,
+    formatMqttTemplate,
+    mqttCommandPoints,
     mqttConfigSchema,
     mqttTemplateDraft,
 } from '../web/pages/protocol/protocol.schema';
 import type { MqttTemplateDraft } from '../web/pages/protocol/protocol.types';
 import { saveLinkSchema } from '../web/pages/link/link.schema';
+import { deviceCommandSchema } from '../web/pages/device/device.schema';
 
 const point = {
     id: '00000000-0000-7000-8000-000000000001',
@@ -21,6 +24,66 @@ const config = {
     qos: 1 as const,
     points: [point],
 };
+
+test('MQTT properties can be shared by multiple control messages or used only for control', () => {
+    const enabled = { ...point, id: crypto.randomUUID(), name: '开关', field: '', dataType: 'BOOL' as const };
+    const commands = [
+        { id: crypto.randomUUID(), name: '设置温度', topic: 'devices/{deviceCode}/set', template: '{"temperature":"$point:温度","enabled":"$point:开关"}', requiredPointIds: [point.id] },
+        { id: crypto.randomUUID(), name: '切换开关', topic: 'devices/{deviceCode}/switch', template: '{"switch":"$point:开关"}', requiredPointIds: [enabled.id] },
+    ];
+    const compiled = compileMqttTemplate(templateDraft({ points: [point, enabled], commands }));
+    expect(compiled.commands).toEqual(commands);
+    expect(compiled.points.map((point) => [point.name, point.field, point.writable])).toEqual([
+        ['温度', '/metrics/temperature', true], ['开关', '', true],
+    ]);
+    const draft = mqttTemplateDraft(compiled);
+    expect(compileMqttTemplate(draft)).toEqual(compiled);
+    expect(draft.commands?.[0].requiredPointIds).not.toBe(compiled.commands?.[0].requiredPointIds);
+    expect(mqttCommandPoints(commands[1].template, compiled.points).map((point) => point.id)).toEqual([enabled.id]);
+    const controlOnly = compileMqttTemplate(templateDraft({ points: [enabled], reportTemplate: '{}', commands: [commands[1]] }));
+    expect(controlOnly.points[0].field).toBe('');
+    expect(deviceCommandSchema.parse({ mqttMessageId: commands[1].id, elements: [{ elementId: enabled.id, value: '0' }] }).mqttMessageId).toBe(commands[1].id);
+    expect(deviceCommandSchema.safeParse({ mqttMessageId: 'invalid', elements: [{ elementId: enabled.id, value: '0' }] }).success).toBe(false);
+});
+
+test('MQTT control message names, IDs, membership and required flags are validated independently', () => {
+    const command = { id: crypto.randomUUID(), name: '设置', topic: 'commands/{deviceCode}', template: '{"value":"$point:温度"}', requiredPointIds: [point.id] };
+    const draft = templateDraft({ commands: [command] });
+    for (const commands of [
+        [command, { ...command, name: '重复标识' }],
+        [command, { ...command, id: crypto.randomUUID() }],
+        [{ ...command, requiredPointIds: [crypto.randomUUID()] }],
+        [{ ...command, requiredPointIds: [point.id, point.id] }],
+        [{ ...command, template: '{"value":"$point:未知属性"}' }],
+        [{ ...command, template: '{}' }],
+        [{ ...command, topic: 'commands/+' }],
+    ]) expect(() => compileMqttTemplate({ ...draft, commands })).toThrow();
+    expect(() => compileMqttTemplate({ ...draft, commandTopic: 'legacy', commandTemplate: '{"value":"$point:温度"}' })).toThrow('同时使用');
+    expect(compileMqttTemplate({ ...draft, commands: [{ ...command, requiredPointIds: [] }] }).commands?.[0].requiredPointIds).toEqual([]);
+});
+
+test('MQTT Topic and array references require a value without forcing unrelated properties', () => {
+    const channel = { ...point, id: crypto.randomUUID(), name: '通道', field: '', dataType: 'STRING' as const };
+    const command = { id: crypto.randomUUID(), name: '通道设置', topic: 'devices/{deviceCode}/{point:通道}', template: '{"value":"$point:温度"}', requiredPointIds: [channel.id] };
+    const draft = templateDraft({ points: [point, channel], commands: [command] });
+    expect(compileMqttTemplate(draft).points.every((point) => point.writable)).toBe(true);
+    expect(() => compileMqttTemplate({ ...draft, commands: [{ ...command, requiredPointIds: [] }] })).toThrow('Topic 或数组');
+    expect(() => compileMqttTemplate({ ...draft, commands: [{ ...command, topic: 'commands/{point:未知}' }] })).toThrow('未定义');
+    expect(() => compileMqttTemplate({ ...draft, commands: [{ ...command, topic: 'commands/prefix{point:通道}' }] })).toThrow('独占一层');
+    expect(() => compileMqttTemplate({ ...draft, commands: [{ ...command, template: '{"array":["$point:温度"]}' }] })).toThrow('Topic 或数组');
+    expect(compileMqttTemplate({ ...draft, commands: [{ ...command, template: '{"array":["$point:温度"]}', requiredPointIds: [point.id, channel.id] }] }).commands).toHaveLength(1);
+});
+
+test('MQTT formatting preserves exact JSON tokens and refuses invalid or duplicate keys', () => {
+    const original = '{"big":9007199254740993123456789,"decimal":1.2300e+12,"text":"\\u4e2d,[]:{}","values":[{},[],true,null,"$point:温度"]}';
+    const formatted = formatMqttTemplate(original);
+    expect(formatted).toContain('\n    "big": 9007199254740993123456789,');
+    expect(formatted).toContain('1.2300e+12');
+    expect(formatted).toContain('"\\u4e2d,[]:{}"');
+    expect(JSON.parse(formatted)).toEqual(JSON.parse(original));
+    expect(formatMqttTemplate(formatted)).toBe(formatted);
+    for (const invalid of ['{invalid}', '{"a":1,"a":2}', '{"a":1,"\\u0061":2}', '[]']) expect(() => formatMqttTemplate(invalid)).toThrow();
+});
 
 test('MQTT templates support wildcard topic identity and nested JSON batches', () => {
     expect(mqttConfigSchema.safeParse(config).success).toBe(true);
@@ -174,7 +237,7 @@ test('MQTT template compilation escapes paths, preserves constants and supports 
     expect(mqttTemplateDraft(compiled).reportTemplate).toBe(reportTemplate);
 });
 
-test('MQTT generated points have UUIDs and preserve moved or renamed point metadata', () => {
+test('MQTT properties retain their IDs and metadata when message bindings move or names change explicitly', () => {
     const metadata = {
         ...point,
         unit: '℃',
@@ -189,20 +252,15 @@ test('MQTT generated points have UUIDs and preserve moved or renamed point metad
     expect(moved.points[0]).toEqual({ ...metadata, field: '/other/value', writable: false });
     const renamed = compileMqttTemplate(templateDraft({
         reportTemplate: '{"metrics":{"temperature":"$point:室温"}}',
-        points: [metadata],
+        points: [{ ...metadata, name: '室温' }],
     }));
     expect(renamed.points[0]).toEqual({ ...metadata, name: '室温', writable: false });
-    const generated = compileMqttTemplate(templateDraft({
-        reportTemplate: '{"fresh":"$point:新点位"}',
-        points: [],
-    }));
-    expect(generated.points[0].id).toMatch(
-        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-    );
-    expect(generated.points[0].dataType).toBe('DOUBLE');
+    expect(() => compileMqttTemplate(templateDraft({
+        reportTemplate: '{"fresh":"$point:新点位"}', points: [],
+    }))).toThrow('请先定义属性');
 });
 
-test('MQTT compilation reserves name matches before falling back to fields', () => {
+test('MQTT message editing never invents properties or transfers another property identity', () => {
     const second = {
         ...point,
         id: '00000000-0000-7000-8000-000000000002',
@@ -210,11 +268,14 @@ test('MQTT compilation reserves name matches before falling back to fields', () 
         field: '/humidity',
         dataType: 'STRING' as const,
     };
-    const compiled = compileMqttTemplate(templateDraft({
+    expect(() => compileMqttTemplate(templateDraft({
         reportTemplate: '{"humidity":"$point:新名称","moved":"$point:湿度"}',
         points: [point, second],
+    }))).toThrow('请先定义属性：新名称');
+    const compiled = compileMqttTemplate(templateDraft({
+        reportTemplate: '{"moved":"$point:湿度"}', points: [point, second],
     }));
-    expect(compiled.points[0].id).not.toBe(second.id);
+    expect(compiled.points[0]).toEqual({ ...point, field: '', writable: false });
     expect(compiled.points[1]).toEqual({ ...second, field: '/moved', writable: false });
 });
 
@@ -229,7 +290,6 @@ test('MQTT report placeholders and duplicate JSON keys cannot silently lose mapp
         '{"a":"$point: 温度"}',
         '{"a":"$point:温度","a":1}',
         '{"a":"$point:温度","\\u0061":1}',
-        '{"literal":42}',
     ]) {
         expect(() => compileMqttTemplate(templateDraft({ reportTemplate }))).toThrow('reportTemplate');
     }

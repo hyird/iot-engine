@@ -103,6 +103,7 @@ const commandElementSchema = z.object({
 export const deviceCommandSchema = z
     .object({
         idempotency_key: z.uuid().optional(),
+        mqttMessageId: z.uuid().optional(),
         elements: z
             .array(commandElementSchema)
             .min(1, '请至少选择一个下发要素')

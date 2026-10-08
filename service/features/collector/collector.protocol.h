@@ -16,6 +16,9 @@
 #include "service/common/message.h"
 #include "service/features/collector/collector.types.h"
 #include "service/features/collector/collector.config.h"
+#include "service/features/collector/mqtt/mqtt.types.h"
+#include "service/utils/json.h"
+#include "service/utils/payload.h"
 
 namespace service::collector {
 
@@ -342,7 +345,10 @@ inline void validateValue(const ElementDefinition& element, std::string_view val
 }
 
 inline ResolvedCommand resolve(const DeviceDefinition& device,
-                               std::span<const CommandElementValue> requested) {
+                               std::span<const CommandElementValue> requested,
+                               std::string_view mqttMessageId = {}) {
+    if (device.protocol != "MQTT" && !mqttMessageId.empty())
+        throw std::invalid_argument("command_invalid: MQTT message selection requires MQTT");
     const auto& definition = protocolDefinition(device.protocol);
     if (requested.empty() || requested.size() > 256)
         throw std::invalid_argument("command_invalid: element count must be between 1 and 256");
@@ -381,6 +387,41 @@ inline ResolvedCommand resolve(const DeviceDefinition& device,
         if (required == 0 || required != result.elements.size())
             throw std::invalid_argument(
                 "command_invalid: SL651 command requires every element in the function");
+    }
+    if (device.protocol == "MQTT") {
+        const auto config = ruvia::fromJson<mqtt::Config>(device.calculationConfig);
+        if (!config) throw std::invalid_argument("command_invalid: MQTT configuration is invalid");
+        const auto& commands = config->get<"commands">();
+        if (commands) {
+            const auto selected = std::find_if(commands->begin(), commands->end(), [&](const auto& message) {
+                return message.template get<"id">().view() == mqttMessageId;
+            });
+            if (mqttMessageId.empty() || selected == commands->end())
+                throw std::invalid_argument("command_invalid: 请选择有效的 MQTT 控制消息");
+            service::utils::JsonValueTemplate::Tokens allowed{"$deviceCode"};
+            for (const auto& point : config->get<"points">()) allowed.emplace("$point:" + std::string(point.get<"name">().view()));
+            const service::utils::JsonValueTemplate message(selected->get<"templateText">().view(), allowed);
+            std::set<std::string, std::less<>> topicNames;
+            for (const auto level : service::utils::splitPayload(selected->get<"topic">().view(), "/")) {
+                if (level.starts_with("{point:") && level.ends_with('}')) topicNames.emplace(level.substr(7, level.size() - 8));
+            }
+            for (const auto& input : requested) {
+                const auto point = std::find_if(config->get<"points">().begin(), config->get<"points">().end(), [&](const auto& point) {
+                    return point.template get<"id">().view() == input.elementId;
+                });
+                if (point == config->get<"points">().end() || (!message.references("$point:" + std::string(point->get<"name">().view())) && !topicNames.contains(point->get<"name">().view())))
+                    throw std::invalid_argument("command_invalid: 控制点不属于所选消息");
+            }
+            for (const auto& required : selected->get<"requiredPointIds">()) {
+                if (!ids.contains(required.view())) throw std::invalid_argument("command_invalid: 缺少必填控制点: " + std::string(required.view()));
+            }
+            for (const auto& point : config->get<"points">()) {
+                if (topicNames.contains(point.get<"name">().view()) && !ids.contains(point.get<"id">().view()))
+                    throw std::invalid_argument("command_invalid: 缺少 Topic 属性: " + std::string(point.get<"name">().view()));
+            }
+        } else if (!mqttMessageId.empty()) {
+            throw std::invalid_argument("command_invalid: MQTT 控制消息不存在");
+        }
     }
     return result;
 }

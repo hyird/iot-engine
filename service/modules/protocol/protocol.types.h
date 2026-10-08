@@ -112,6 +112,10 @@ RUVIA_MODEL(MqttPoint,
     RUVIA_OPTIONAL_FIELD(scale, ruvia::Double),
     RUVIA_OPTIONAL_FIELD(offset, ruvia::Double),
     RUVIA_OPTIONAL_FIELD(enumValues, ruvia::Array<MqttValueMapping>));
+RUVIA_MODEL(MqttCommandMessage,
+    RUVIA_REQUIRED_FIELD(id, ruvia::String), RUVIA_REQUIRED_FIELD(name, ruvia::String),
+    RUVIA_REQUIRED_FIELD(topic, ruvia::String), RUVIA_REQUIRED_FIELD_NAME("template", templateText, ruvia::String),
+    RUVIA_REQUIRED_FIELD(requiredPointIds, ruvia::Array<ruvia::String>));
 RUVIA_MODEL(MqttConfig,
     RUVIA_OPTIONAL_FIELD(storagePolicy, ruvia::String),
     RUVIA_OPTIONAL_FIELD(topic, ruvia::String),
@@ -127,6 +131,7 @@ RUVIA_MODEL(MqttConfig,
     RUVIA_OPTIONAL_FIELD(timeFormat, ruvia::String),
     RUVIA_OPTIONAL_FIELD(reportTemplate, ruvia::String),
     RUVIA_OPTIONAL_FIELD(commandTopic, ruvia::String), RUVIA_OPTIONAL_FIELD(commandTemplate, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(commands, ruvia::Array<MqttCommandMessage>),
     RUVIA_OPTIONAL_FIELD(qos, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(points, ruvia::Array<MqttPoint>));
 

@@ -99,7 +99,7 @@ RUVIA_MODEL(DevicePacketDto, RUVIA_OPTIONAL_FIELD(mode, ruvia::String), RUVIA_OP
 
 RUVIA_MODEL(DeviceCommandElementBody, RUVIA_OPTIONAL_FIELD_NAME("elementId", elementId, ruvia::String), RUVIA_OPTIONAL_FIELD(value, ruvia::String));
 
-RUVIA_MODEL(DeviceCommandBody, RUVIA_OPTIONAL_FIELD_NAME("idempotency_key", idempotencyKey, ruvia::String), RUVIA_OPTIONAL_FIELD_NAME("deviceId", deviceId, ruvia::String), RUVIA_OPTIONAL_FIELD(elements, ruvia::Array<DeviceCommandElementBody>, RUVIA_MIN(1, "请至少选择一个下发要素"), RUVIA_MAX(256, "单次最多下发 256 个要素")));
+RUVIA_MODEL(DeviceCommandBody, RUVIA_OPTIONAL_FIELD(mqttMessageId, ruvia::String, RUVIA_CUSTOM("控制消息 ID 必须是 UUID", service::common::isUuidField)), RUVIA_OPTIONAL_FIELD_NAME("idempotency_key", idempotencyKey, ruvia::String), RUVIA_OPTIONAL_FIELD_NAME("deviceId", deviceId, ruvia::String), RUVIA_OPTIONAL_FIELD(elements, ruvia::Array<DeviceCommandElementBody>, RUVIA_MIN(1, "请至少选择一个下发要素"), RUVIA_MAX(256, "单次最多下发 256 个要素")));
 
 RUVIA_MODEL(DeviceCommandCreateDto, RUVIA_OPTIONAL_FIELD_NAME("command_ids", commandIds, ruvia::BoxedArray<ruvia::String>), RUVIA_OPTIONAL_FIELD(status, ruvia::String));
 
@@ -113,9 +113,9 @@ RUVIA_MODEL(DeviceElementDto, RUVIA_OPTIONAL_FIELD(visible, ruvia::Bool), RUVIA_
 
 RUVIA_MODEL(DeviceCommandOptionDto, RUVIA_OPTIONAL_FIELD(label, ruvia::String), RUVIA_OPTIONAL_FIELD(value, ruvia::String));
 
-RUVIA_MODEL(DeviceCommandOperationElementDto, RUVIA_OPTIONAL_FIELD_NAME("elementId", elementId, ruvia::String), RUVIA_OPTIONAL_FIELD(name, ruvia::String), RUVIA_OPTIONAL_FIELD(value, ruvia::String), RUVIA_OPTIONAL_FIELD(unit, ruvia::String), RUVIA_OPTIONAL_FIELD(options, ruvia::BoxedArray<DeviceCommandOptionDto>), RUVIA_OPTIONAL_FIELD_NAME("registerType", registerType, ruvia::String), RUVIA_OPTIONAL_FIELD_NAME("dataType", dataType, ruvia::String), RUVIA_OPTIONAL_FIELD(size, ruvia::Int64), RUVIA_OPTIONAL_FIELD(encode, ruvia::String), RUVIA_OPTIONAL_FIELD(length, ruvia::Int64), RUVIA_OPTIONAL_FIELD(digits, ruvia::Int64));
+RUVIA_MODEL(DeviceCommandOperationElementDto, RUVIA_OPTIONAL_FIELD(required, ruvia::Bool), RUVIA_OPTIONAL_FIELD_NAME("elementId", elementId, ruvia::String), RUVIA_OPTIONAL_FIELD(name, ruvia::String), RUVIA_OPTIONAL_FIELD(value, ruvia::String), RUVIA_OPTIONAL_FIELD(unit, ruvia::String), RUVIA_OPTIONAL_FIELD(options, ruvia::BoxedArray<DeviceCommandOptionDto>), RUVIA_OPTIONAL_FIELD_NAME("registerType", registerType, ruvia::String), RUVIA_OPTIONAL_FIELD_NAME("dataType", dataType, ruvia::String), RUVIA_OPTIONAL_FIELD(size, ruvia::Int64), RUVIA_OPTIONAL_FIELD(encode, ruvia::String), RUVIA_OPTIONAL_FIELD(length, ruvia::Int64), RUVIA_OPTIONAL_FIELD(digits, ruvia::Int64));
 
-RUVIA_MODEL(DeviceCommandOperationDto, RUVIA_OPTIONAL_FIELD(name, ruvia::String), RUVIA_OPTIONAL_FIELD(elements, ruvia::BoxedArray<DeviceCommandOperationElementDto>));
+RUVIA_MODEL(DeviceCommandOperationDto, RUVIA_OPTIONAL_FIELD(mqttMessageId, ruvia::String), RUVIA_OPTIONAL_FIELD(name, ruvia::String), RUVIA_OPTIONAL_FIELD(elements, ruvia::BoxedArray<DeviceCommandOperationElementDto>));
 
 RUVIA_MODEL(EdgeStatusDto, RUVIA_OPTIONAL_FIELD(state, ruvia::String), RUVIA_OPTIONAL_FIELD(reason, ruvia::String), RUVIA_OPTIONAL_FIELD_NAME("clientCount", clientCount, ruvia::Int64), RUVIA_OPTIONAL_FIELD_NAME("lastActivityAt", lastActivityAt, ruvia::String));
 

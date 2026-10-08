@@ -328,6 +328,7 @@ export interface CommandOperationElementOption {
 }
 /** 控制操作要素 */
 export interface CommandOperationElement {
+    required?: boolean;
     elementId: string;
     name: string;
     value: string;
@@ -349,6 +350,7 @@ export interface CommandOperationElement {
 }
 /** 控制操作 */
 export interface CommandOperation {
+    mqttMessageId?: string;
     name: string;
     elements: CommandOperationElement[];
 }
@@ -411,6 +413,7 @@ export interface ReplaceDeviceSharesDto {
 }
 /** 指令下发参数 */
 export interface CommandPayload {
+    mqttMessageId?: string;
     idempotency_key?: string;
     elements: Array<{
         elementId: string;

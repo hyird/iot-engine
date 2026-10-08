@@ -110,6 +110,35 @@ function parseMqttTemplate(text: string, template: string): { [key: string]: Mqt
     return value;
 }
 
+export function formatMqttTemplate(text: string): string {
+    parseMqttTemplate(text, '消息模板');
+    // 只整理 token 间的空白，不通过 JSON.stringify 重写数字或字符串。
+    const tokens = text.match(/"(?:\\.|[^"\\])*"|[{}[\],:]|[^\s{}[\],:]+/g) ?? [];
+    let depth = 0;
+    let result = '';
+    const newline = () => {
+        result += `\n${'    '.repeat(depth)}`;
+    };
+    tokens.forEach((token, index) => {
+        if (token === '{' || token === '[') {
+            result += token;
+            depth++;
+            if (tokens[index + 1] !== (token === '{' ? '}' : ']')) newline();
+        } else if (token === '}' || token === ']') {
+            depth--;
+            if (tokens[index - 1] !== (token === '}' ? '{' : '[')) newline();
+            result += token;
+        } else if (token === ',') {
+            result += ',';
+            newline();
+        } else if (token === ':') result += ': ';
+        else result += token;
+    });
+    if (new TextEncoder().encode(result).length > 16384)
+        throw new Error('格式化后模板超过 16384 UTF-8 字节，原文已保留');
+    return result;
+}
+
 function visitMqttTemplate(
     value: MqttJson,
     visit: (value: string, path: string) => void,
@@ -152,7 +181,6 @@ function mqttReportMappings(text: string) {
             mqttTemplateError('reportTemplate', path, `未知占位符：${marker}`);
         }
     });
-    if (!points.size) mqttTemplateError('reportTemplate', '', '至少需要一个 $point:<名称> 占位符');
     return { points, deviceCodeField, timeField };
 }
 
@@ -174,6 +202,34 @@ function mqttCommandReferences(text: string, names: ReadonlySet<string>, legacyV
     });
     return references;
 }
+function mqttCommandTopicReferences(topic: string, names: ReadonlySet<string>): Set<string> {
+    const references = new Set<string>();
+    for (const level of topic.split('/')) {
+        if (level === '{deviceCode}') continue;
+        if (level.startsWith('{point:') && level.endsWith('}')) {
+            const name = level.slice(7, -1);
+            if (!names.has(name)) throw new Error(`控制 Topic 引用了未定义的属性：${name}`);
+            references.add(name);
+        } else if (/[{}]/.test(level)) {
+            throw new Error('Topic 占位符须独占一层，仅支持 {deviceCode} 和 {point:属性名称}');
+        }
+    }
+    return references;
+}
+
+export function mqttCommandPoints(
+    template: string,
+    points: readonly MqttPoint[],
+    topic = ''
+): MqttPoint[] {
+    const names = mqttCommandReferences(template, new Set(points.map((point) => point.name)));
+    mqttCommandTopicReferences(topic, new Set(points.map((point) => point.name))).forEach(
+        (name) => {
+            names.add(name);
+        }
+    );
+    return points.filter((point) => names.has(point.name));
+}
 export const mqttConfigSchema = z
     .object({
         storagePolicy: z.enum(['report', 'change']),
@@ -190,6 +246,18 @@ export const mqttConfigSchema = z
         timeFormat: z.enum(['unix_ms', 'unix_s', 'iso8601']).optional(),
         commandTopic: z.union([z.literal(''), mqttCommandTopicSchema]).optional(),
         commandTemplate: z.string().max(16384).optional(),
+        commands: z
+            .array(
+                z.object({
+                    id: z.uuid(),
+                    name: z.string().trim().min(1).max(100),
+                    topic: mqttCommandTopicSchema,
+                    template: z.string().min(1).max(16384),
+                    requiredPointIds: z.array(z.uuid()).max(256),
+                })
+            )
+            .max(32)
+            .optional(),
         reportTemplate: z.string().max(16384).optional(),
         qos: z.union([z.literal(0), z.literal(1), z.literal(2)]),
         points: z
@@ -197,10 +265,7 @@ export const mqttConfigSchema = z
                 z.object({
                     id: z.uuid(),
                     name: z.string().trim().min(1).max(100),
-                    field: mqttPathSchema.refine(
-                        (value) => value.length > 0,
-                        '请输入 JSON 字段或路径'
-                    ),
+                    field: mqttPathSchema,
                     dataType: z.enum(['BOOL', 'STRING', 'DOUBLE']),
                     unit: z.string().max(32).optional(),
                     writable: z.boolean().optional(),
@@ -280,6 +345,62 @@ export const mqttConfigSchema = z
             }
         }
         const names = new Set<string>();
+        const commandIds = new Set<string>();
+        const commandNames = new Set<string>();
+        const commandPoints = new Set<string>();
+        if (config.commands !== undefined && (config.commandTopic || config.commandTemplate))
+            issue(['commands'], '控制消息列表不能与旧版单条控制配置同时使用');
+        config.commands?.forEach((command, index) => {
+            namedTemplate = true;
+            if (format !== 'json') issue(['commands', index], '多条控制消息仅用于 JSON');
+            if (commandIds.has(command.id) || commandNames.has(command.name))
+                issue(['commands', index], '控制消息标识和名称必须唯一');
+            commandIds.add(command.id);
+            commandNames.add(command.name);
+            try {
+                const referenced = mqttCommandPoints(
+                    command.template,
+                    config.points,
+                    command.topic
+                );
+                if (!referenced.length) throw new Error('控制消息至少需要一个点位占位符');
+                referenced.forEach((point) => {
+                    commandPoints.add(point.id);
+                    if (!point.writable) throw new Error(`控制消息引用不可写点位：${point.name}`);
+                });
+                if (
+                    new Set(command.requiredPointIds).size !== command.requiredPointIds.length ||
+                    command.requiredPointIds.some(
+                        (id) => !referenced.some((point) => point.id === id)
+                    )
+                )
+                    throw new Error('必填控制点必须属于当前消息且不能重复');
+                const mandatoryNames = mqttCommandTopicReferences(
+                    command.topic,
+                    new Set(config.points.map((point) => point.name))
+                );
+                const scanArray = (value: MqttJson): void => {
+                    if (Array.isArray(value)) {
+                        value.forEach((child) => {
+                            if (typeof child === 'string' && child.startsWith('$point:'))
+                                mandatoryNames.add(child.slice(7));
+                            scanArray(child);
+                        });
+                    } else if (value && typeof value === 'object')
+                        Object.values(value).forEach(scanArray);
+                };
+                scanArray(parseMqttTemplate(command.template, 'commandTemplate'));
+                referenced.forEach((point) => {
+                    if (
+                        mandatoryNames.has(point.name) &&
+                        !command.requiredPointIds.includes(point.id)
+                    )
+                        throw new Error(`Topic 或数组中的属性必须设为必填：${point.name}`);
+                });
+            } catch (error) {
+                issue(['commands', index], (error as Error).message);
+            }
+        });
         config.points.forEach((point, index) => {
             const inputs = new Set<string>(),
                 outputs = new Set<string>();
@@ -304,7 +425,9 @@ export const mqttConfigSchema = z
                 inputs.add(value.input);
                 if (output !== undefined) outputs.add(output);
             });
-            selector(point.field, ['points', index, 'field']);
+            if (point.field) selector(point.field, ['points', index, 'field']);
+            else if (format !== 'json' || config.reportTemplate === undefined)
+                issue(['points', index, 'field'], '未绑定上报的属性需要 JSON 上报模板');
             if (namedTemplate && names.has(point.name))
                 issue(['points', index, 'name'], '使用名称占位符时点位名称必须唯一');
             names.add(point.name);
@@ -312,22 +435,21 @@ export const mqttConfigSchema = z
                 issue(['points', index, 'scale'], '可写点位倍率不能为零');
             if (
                 ids.has(point.id) ||
-                fields.has(point.field) ||
-                point.field === config.deviceCodeField
+                (point.field && (fields.has(point.field) || point.field === config.deviceCodeField))
             )
                 context.addIssue({
                     code: 'custom',
                     path: ['points', index],
                     message: '点位标识和字段必须唯一，不能占用设备标识字段',
                 });
-            if (point.writable && !config.commandTopic)
+            if (point.writable && !config.commandTopic && !commandPoints.has(point.id))
                 context.addIssue({
                     code: 'custom',
                     path: ['commandTopic'],
                     message: '可写点位需要指令 Topic',
                 });
             ids.add(point.id);
-            fields.add(point.field);
+            if (point.field) fields.add(point.field);
         });
     });
 
@@ -340,6 +462,10 @@ function mqttCanonicalField(field: string): string {
 
 export function compileMqttTemplate(draft: MqttTemplateDraft): MqttConfig {
     const report = mqttReportMappings(draft.reportTemplate);
+    const attributeNames = new Set(draft.points.map((point) => point.name));
+    for (const name of report.points.keys()) {
+        if (!attributeNames.has(name)) throw new Error(`reportTemplate: 请先定义属性：${name}`);
+    }
     const levels = draft.topic.split('/');
     const markers = levels.filter((level) => level === '{deviceCode}').length;
     if (
@@ -356,8 +482,13 @@ export function compileMqttTemplate(draft: MqttTemplateDraft): MqttConfig {
     if (!!commandTopic !== !!commandTemplate)
         throw new Error('commandTopic/commandTemplate: 指令 Topic 和指令模板须同时填写或同时清空');
     const references = commandTemplate
-        ? mqttCommandReferences(commandTemplate, new Set(report.points.keys()))
+        ? mqttCommandReferences(commandTemplate, attributeNames)
         : new Set<string>();
+    draft.commands?.forEach((command) => {
+        mqttCommandPoints(command.template, draft.points, command.topic).forEach((point) => {
+            references.add(point.name);
+        });
+    });
     if (commandTopic) {
         const commandMarkers = commandTopic.split('/').filter((level) => level === '{deviceCode}');
         if (
@@ -369,44 +500,20 @@ export function compileMqttTemplate(draft: MqttTemplateDraft): MqttConfig {
             throw new Error('commandTopic: {deviceCode} 须独占一层且只能出现一次');
     }
     const byName = new Map<string, MqttPoint>();
-    const byField = new Map<string, MqttPoint>();
     draft.points.forEach((point, index) => {
         if (byName.has(point.name))
             throw new Error(`points/${index}/name: 点位名称必须唯一：${point.name}`);
-        const field = mqttCanonicalField(point.field);
-        if (byField.has(field))
-            throw new Error(`points/${index}/field: 点位字段必须唯一：${point.field}`);
         byName.set(point.name, point);
-        byField.set(field, point);
     });
-    // Reserve name matches first so a moved point cannot steal another point's identity.
-    const used = new Set<MqttPoint>();
-    const retained = new Map<string, MqttPoint>();
-    report.points.forEach((_field, name) => {
-        const point = byName.get(name);
-        if (point) {
-            retained.set(name, point);
-            used.add(point);
-        }
-    });
-    const points = Array.from(report.points, ([name, field]) => {
-        let point = retained.get(name);
-        if (!point) {
-            const previous = byField.get(field);
-            if (previous && !used.has(previous)) {
-                point = previous;
-                used.add(previous);
-            }
-        }
-        return {
-            ...point,
-            id: point?.id || crypto.randomUUID(),
-            name,
-            field,
-            dataType: point?.dataType ?? 'DOUBLE',
-            writable: references.has(name),
-        } satisfies MqttPoint;
-    });
+    if (!draft.points.length) throw new Error('请先定义至少一个属性');
+    const points = draft.points.map(
+        (point) =>
+            ({
+                ...point,
+                field: report.points.get(point.name) ?? '',
+                writable: references.has(point.name),
+            }) satisfies MqttPoint
+    );
     const result = mqttConfigSchema.safeParse({
         topic: draft.topic,
         storagePolicy: draft.storagePolicy,
@@ -420,6 +527,7 @@ export function compileMqttTemplate(draft: MqttTemplateDraft): MqttConfig {
         ...(draft.timeFormat ? { timeFormat: draft.timeFormat } : {}),
         commandTopic: commandTopic ?? '',
         commandTemplate: commandTemplate ?? '',
+        ...(draft.commands !== undefined ? { commands: draft.commands } : {}),
         reportTemplate: draft.reportTemplate,
         points,
     });
@@ -476,7 +584,7 @@ export function mqttTemplateDraft(config: MqttConfig): MqttTemplateDraft {
         if (config.deviceCodeField) insert(config.deviceCodeField, '$deviceCode');
         if (config.timeField) insert(config.timeField, '$time');
         config.points.forEach((point) => {
-            insert(point.field, `$point:${point.name}`);
+            if (point.field) insert(point.field, `$point:${point.name}`);
         });
         reportTemplate = JSON.stringify(root, null, 2);
     }
@@ -488,6 +596,14 @@ export function mqttTemplateDraft(config: MqttConfig): MqttTemplateDraft {
         ...(config.timeFormat ? { timeFormat: config.timeFormat } : {}),
         ...(config.commandTopic ? { commandTopic: config.commandTopic } : {}),
         ...(config.commandTemplate ? { commandTemplate: config.commandTemplate } : {}),
+        ...(config.commands !== undefined
+            ? {
+                  commands: config.commands.map((command) => ({
+                      ...command,
+                      requiredPointIds: [...command.requiredPointIds],
+                  })),
+              }
+            : {}),
         points: config.points.map((point) => ({
             ...point,
             ...(point.enumValues
@@ -516,7 +632,7 @@ export function mqttTemplateDraft(config: MqttConfig): MqttTemplateDraft {
             return (
                 !next ||
                 next.name !== point.name ||
-                next.field !== mqttCanonicalField(point.field) ||
+                next.field !== (point.field ? mqttCanonicalField(point.field) : '') ||
                 !!next.writable !== !!point.writable
             );
         })

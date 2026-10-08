@@ -257,6 +257,46 @@ void testNamedTemplates() {
         require(rejected, "invalid named template accepted by runtime");
     }
 }
+void testMultipleMessagesAndRequiredPoints() {
+    Fixture fixture;
+    auto& device = fixture.snapshot->devices.front();
+    device.calculationConfig = R"({"topic":"devices/0","qos":2,"reportTemplate":"{\"temperature\":\"$point:温度\"}","commands":[{"id":"set","name":"设置","topic":"devices/{deviceCode}/settings/{point:通道}","template":"{\"action\":\"set\",\"values\":{\"temperature\":\"$point:温度\",\"enabled\":\"$point:开关\"}}","requiredPointIds":["temperature","channel"]},{"id":"switch","name":"切换","topic":"devices/{deviceCode}/switch","template":"{\"switch\":\"$point:开关\"}","requiredPointIds":["enabled"]}],"points":[{"id":"temperature","name":"温度","field":"temperature","dataType":"DOUBLE","writable":true,"scale":2,"offset":1},{"id":"enabled","name":"开关","field":"","dataType":"BOOL","writable":true},{"id":"channel","name":"通道","field":"","dataType":"STRING","writable":true}]})";
+    device.elements = {
+        {.id="temperature", .name="温度", .dataType="DOUBLE", .mqttField="temperature", .writable=true},
+        {.id="enabled", .name="开关", .dataType="BOOL", .writable=true},
+        {.id="channel", .name="通道", .dataType="STRING", .size=256, .writable=true},
+    };
+    fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
+    fixture.start();
+    const auto selected = fixture.execute({.id="set-1", .deviceId="0", .elements={{"temperature","15"},{"channel","zone-a"}}, .mqttMessageId="set"});
+    require(publishedPayload(selected) == R"({"action":"set","values":{"temperature":7}})", "optional property was filled or required value not converted");
+    const std::string wire(selected.front().bytes.begin(), selected.front().bytes.end());
+    require(wire.find("devices/0/settings/zone-a") != std::string::npos, "selected command Topic was not rendered from properties");
+    require(publishedPayload(fixture.execute({.id="switch-1", .deviceId="0", .elements={{"enabled","0"}}, .mqttMessageId="switch"})) == R"({"switch":false})", "other message payload was used or false value omitted");
+    require(publishedPayload(fixture.execute({.id="set-2", .deviceId="0", .elements={{"temperature","1"},{"enabled","0"},{"channel","zone-b"}}, .mqttMessageId="set"})) == R"({"action":"set","values":{"temperature":0,"enabled":false}})", "zero or false optional control value was lost");
+    for (const auto& command : std::vector<ProtocolCommand>{
+        {.id="missing-choice", .deviceId="0", .elements={{"temperature","15"},{"channel","zone-a"}}},
+        {.id="unknown-choice", .deviceId="0", .elements={{"enabled","1"}}, .mqttMessageId="unknown"},
+        {.id="missing-required", .deviceId="0", .elements={{"enabled","1"},{"channel","zone-a"}}, .mqttMessageId="set"},
+        {.id="missing-topic", .deviceId="0", .elements={{"temperature","15"}}, .mqttMessageId="set"},
+        {.id="wrong-membership", .deviceId="0", .elements={{"temperature","15"},{"enabled","1"}}, .mqttMessageId="switch"},
+        {.id="blank-required", .deviceId="0", .elements={{"temperature"," "},{"channel","zone-a"}}, .mqttMessageId="set"},
+        {.id="topic-injection", .deviceId="0", .elements={{"temperature","15"},{"channel","zone/#"}}, .mqttMessageId="set"},
+    }) requireCommandFailure(fixture.execute(command));
+    // 准备阶段也必须拒绝缺少必填值，不能仅依靠实际发送阶段。
+    bool rejected = false;
+    try { (void)command::resolve(device, std::vector<CommandElementValue>{{"enabled","1"}}, "set"); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    require(rejected, "command preparation did not enforce required points");
+    service::message::ProtocolTask task;
+    task.messageId="command"; task.groupKey="device:0"; task.protocol="MQTT"; task.transport="RAW";
+    task.kind="command"; task.linkId="link"; task.deviceId="0"; task.createdAtMs=1;
+    task.elements={{"enabled","0"}}; task.mqttMessageId="switch";
+    service::message::StreamMessage envelope;
+    envelope.fields=service::message::protocolTaskFields(task);
+    const auto restored=service::message::protocolTaskFrom(envelope);
+    require(restored.mqttMessageId=="switch" && restored.elements==task.elements, "Redis command contract lost message selection");
+}
 } // namespace
 
 int main() {
@@ -267,6 +307,7 @@ int main() {
         testBatchPathsAndRetries();
         testTextAndBinaryCommands();
         testNamedTemplates();
+        testMultipleMessagesAndRequiredPoints();
         std::cout << "MQTT tests passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

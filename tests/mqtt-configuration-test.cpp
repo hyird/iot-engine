@@ -118,7 +118,6 @@ void testTemplates() {
         configuration("\"reportTemplate\":" + service::utils::jsonQuoted(R"({"a":"$point:温度","b":"$deviceCode","c":"$deviceCode"})") + ",", ""),
         configuration("\"reportTemplate\":" + service::utils::jsonQuoted(R"({"a":"$point:温度","b":"$time","c":"$time"})") + ",", ""),
         configuration("\"reportTemplate\":" + service::utils::jsonQuoted(deep) + ",", ""),
-        configuration("\"reportTemplate\":" + service::utils::jsonQuoted("{}") + ",", ""),
         configuration("\"reportTemplate\":" + service::utils::jsonQuoted("[]") + ",", "")
     };
     auto duplicateName = configuration("", "");
@@ -129,6 +128,50 @@ void testTemplates() {
         try { (void)preview(config, "devices", R"({"temperature":8})", "D001"); }
         catch (const std::exception&) { rejected = true; }
         require(rejected, "invalid template accepted by module");
+    }
+}
+
+void testMultipleControlMessages() {
+    const auto command = [](std::string_view id, std::string_view name, std::string_view topic,
+                            std::string_view payload, std::string_view required) {
+        return "{\"id\":" + service::utils::jsonQuoted(id) + ",\"name\":" + service::utils::jsonQuoted(name) +
+            ",\"topic\":" + service::utils::jsonQuoted(topic) + ",\"template\":" + service::utils::jsonQuoted(payload) +
+            ",\"requiredPointIds\":" + std::string(required) + "}";
+    };
+    constexpr std::string_view firstId = "00000000-0000-7000-8000-000000000010";
+    constexpr std::string_view secondId = "00000000-0000-7000-8000-000000000011";
+    const auto required = "[" + service::utils::jsonQuoted(kPoint) + "]";
+    const auto first = command(firstId, "设置温度", "commands/{deviceCode}", R"({"set":"$point:温度"})", required);
+    const auto second = command(secondId, "温度校准", "calibrate/{deviceCode}", R"({"calibrate":"$point:温度"})", "[]");
+    const auto valid = configuration("\"commands\":[" + first + "," + second + "],", R"(,"writable":true)");
+    const auto parsed = ruvia::fromJson<service::protocol::MqttConfig>(valid);
+    require(parsed && parsed->get<"commands">() && parsed->get<"commands">()->size() == 2, "multiple command configuration lost");
+    const auto encoded = ruvia::toJson(*parsed);
+    require(encoded.find("requiredPointIds") != std::string::npos && encoded.find("templateText") == std::string::npos, "command wire field names changed");
+    const auto previewed = preview(valid, "devices", R"({"temperature":8})", "D001");
+    require(previewed.get<"records">()[0].get<"points">().size() == 1, "multiple commands changed reports");
+    const auto onlyControl = configuration("\"reportTemplate\":\"{}\",\"commands\":[" + first + "],", R"(,"writable":true)", "");
+    const auto report = preview(onlyControl, "devices", "{}", "D001");
+    require(report.get<"records">()[0].get<"points">().empty() && report.get<"records">()[0].get<"errors">().empty(), "control-only attribute was parsed as a report field");
+    const auto topic = command(firstId, "Topic", "commands/{point:温度}", "{}", required);
+    (void)preview(configuration("\"commands\":[" + topic + "],", R"(,"writable":true)"), "devices", "{}", "D001");
+    const std::vector<std::string> invalidLists{
+        first + "," + first,
+        first + "," + command(secondId, "设置温度", "commands", R"({"set":"$point:温度"})", "[]"),
+        command(firstId, "设置", "commands", R"({"set":"$point:温度"})", "[\"missing\"]"),
+        command(firstId, "设置", "commands", R"({"set":"$point:温度"})", "[" + service::utils::jsonQuoted(kPoint) + "," + service::utils::jsonQuoted(kPoint) + "]"),
+        command(firstId, "设置", "commands/+", R"({"set":"$point:温度"})", required),
+        command(firstId, "设置", "commands", R"({"set":"$point:不存在"})", "[]"),
+        command(firstId, "设置", "commands", R"({"set":["$point:温度"]})", "[]"),
+        command(firstId, "设置", "commands/{point:温度}", "{}", "[]"),
+        command(firstId, "设置", "commands/prefix{deviceCode}", R"({"set":"$point:温度"})", required),
+        command(firstId, "设置", "commands", R"({"set":"$values"})", required),
+    };
+    for (const auto& list : invalidLists) {
+        bool rejected = false;
+        try { (void)preview(configuration("\"commands\":[" + list + "],", R"(,"writable":true)"), "devices", "{}", "D001"); }
+        catch (const std::exception&) { rejected = true; }
+        require(rejected, "invalid control message accepted");
     }
 }
 
@@ -164,6 +207,7 @@ int main() {
         testFormatsAndTime();
         testRejectedConfiguration();
         testTemplates();
+        testMultipleControlMessages();
         testTemplateValueSemantics();
         std::cout << "MQTT configuration tests passed\n";
     } catch (const std::exception& error) {

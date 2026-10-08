@@ -524,6 +524,10 @@ class ProtocolConfigurationRules final {
             if ((required && !topic) || (topic && !topicValid(topic->view(), true)))
                 service::common::fail(16004, "MQTT Topic 过滤器无效", 400);
             const auto& commandTopic = typed->get<"commandTopic">();
+            const auto& commands = typed->get<"commands">();
+            if (commands && (commands->size() > 32 || (commandTopic && !commandTopic->view().empty()) ||
+                (typed->get<"commandTemplate">() && !typed->get<"commandTemplate">()->view().empty())))
+                service::common::fail(16004, "控制消息最多 32 条，且不能与旧版单条控制配置同时使用", 400);
             if (commandTopic && !commandTopic->view().empty() && !topicValid(commandTopic->view()))
                 service::common::fail(16004, "MQTT 指令 Topic 无效", 400);
             const auto& codeField = typed->get<"deviceCodeField">();
@@ -566,13 +570,14 @@ class ProtocolConfigurationRules final {
             if (points) for (const auto& point : *points) {
                 const auto name = point.get<"name">().view(), field = point.get<"field">().view();
                 if (!service::common::isUuidField(point.get<"id">()) || !ids.emplace(point.get<"id">().view()).second ||
-                    name.empty() || name.size() > 100 || field.empty() || field.size() > 256 ||
-                    !fields.emplace(field).second || (codeField && codeField->view() == field) ||
+                    name.empty() || name.size() > 100 || field.size() > 256 ||
+                    (field.empty() && (format != "json" || !typed->get<"reportTemplate">())) ||
+                    (!field.empty() && (!fields.emplace(field).second || (codeField && codeField->view() == field))) ||
                     !oneOf(point.get<"dataType">().view(), {"BOOL", "STRING", "DOUBLE"}))
                     service::common::fail(16004, "MQTT 点位名称、标识、JSON 字段或类型无效", 400);
                 if (!templatePoints.emplace(std::string(name), point.get<"writable">().value_or(ruvia::Bool{false}).value).second)
                     service::common::fail(16004, "MQTT 点位名称重复", 400);
-                try { validateSelector(field); }
+                try { if (!field.empty()) validateSelector(field); }
                 catch (const std::invalid_argument& error) { service::common::fail(16004, error.what(), 400); }
                 const auto scale = point.get<"scale">().value_or(ruvia::Double{1}).value, offset = point.get<"offset">().value_or(ruvia::Double{0}).value;
                 if (!std::isfinite(scale) || !std::isfinite(offset) || (!scale && point.get<"writable">().value_or(ruvia::Bool{false}).value)) service::common::fail(16004, "倍率、偏移无效；可写点位倍率不能为零", 400);
@@ -588,25 +593,71 @@ class ProtocolConfigurationRules final {
                 if (point.get<"unit">() && point.get<"unit">()->view().size() > 32)
                     service::common::fail(16004, "MQTT 点位单位过长", 400);
                 if (required && point.get<"writable">().value_or(ruvia::Bool{false}).value &&
-                    (!commandTopic || commandTopic->view().empty())) service::common::fail(16004, "可写 MQTT 点位需要指令 Topic", 400);
+                    !commands && (!commandTopic || commandTopic->view().empty())) service::common::fail(16004, "可写 MQTT 点位需要指令 Topic", 400);
             }
             try {
-                const auto validateTemplate = [&](std::string_view input, bool report = false) {
+                const auto validateTemplate = [&](std::string_view input, bool report = false, bool legacyValues = true) {
                     service::utils::JsonValueTemplate::Tokens allowed{ "$deviceCode", report ? "$time" : "$values" }, sparse;
+                    if (!report && !legacyValues) allowed.erase("$values");
                     for (const auto& [name, writable] : templatePoints) {
                         const auto token = "$point:" + name;
                         allowed.insert(token);
                         sparse.insert(token);
                     }
                     const service::utils::JsonValueTemplate parsed(input, allowed, sparse, report);
-                    bool hasPoint = false;
                     for (const auto& [name, writable] : templatePoints) {
                         if (!parsed.references("$point:" + name)) continue;
-                        hasPoint = true;
                         if (!report && !writable) throw std::invalid_argument("指令模板引用不可写点位: " + name);
                     }
-                    if (report && !hasPoint) throw std::invalid_argument("上报模板至少需要一个点位占位符");
+                    return parsed;
                 };
+                if (commands) {
+                    if (format != "json") throw std::invalid_argument("多条控制消息仅用于 JSON");
+                    std::set<std::string, std::less<>> messageIds, messageNames, writableIds;
+                    for (const auto& message : *commands) {
+                        const auto name = message.get<"name">().view();
+                        if (!common::isUuidField(message.get<"id">()) || !messageIds.emplace(message.get<"id">().view()).second ||
+                            name.empty() || name.size() > 100 || !messageNames.emplace(name).second || !topicValid(message.get<"topic">().view()))
+                            throw std::invalid_argument("控制消息名称、标识或 Topic 无效或重复");
+                        const auto parsed = validateTemplate(message.get<"templateText">().view(), false, false);
+                        std::set<std::string, std::less<>> referenced, topicNames, requiredIds;
+                        for (const auto level : utils::splitPayload(message.get<"topic">().view(), "/")) {
+                            if (level == "{deviceCode}") continue;
+                            if (level.starts_with("{point:") && level.ends_with('}')) {
+                                const auto pointName = level.substr(7, level.size() - 8);
+                                const auto point = templatePoints.find(pointName);
+                                if (point == templatePoints.end() || !point->second) throw std::invalid_argument("控制 Topic 引用了未知或不可写属性");
+                                topicNames.emplace(pointName);
+                            } else if (level.find_first_of("{}") != std::string_view::npos) {
+                                throw std::invalid_argument("控制 Topic 占位符须独占一层");
+                            }
+                        }
+                        if (points) for (const auto& point : *points) {
+                            if (parsed.references("$point:" + std::string(point.get<"name">().view())) || topicNames.contains(point.get<"name">().view()))
+                                referenced.emplace(point.get<"id">().view());
+                        }
+                        if (referenced.empty()) throw std::invalid_argument("控制消息至少需要引用一个属性");
+                        utils::JsonValueTemplate::Values requiredValues{{"$deviceCode", "\"device\""}};
+                        for (const auto& id : message.get<"requiredPointIds">()) {
+                            if (!referenced.contains(id.view()) || !requiredIds.emplace(id.view()).second)
+                                throw std::invalid_argument("必填控制点必须属于当前消息且不能重复");
+                            if (points) for (const auto& point : *points) {
+                                if (point.get<"id">().view() == id.view()) requiredValues.emplace("$point:" + std::string(point.get<"name">().view()), "null");
+                            }
+                        }
+                        if (points) for (const auto& point : *points) {
+                            if (topicNames.contains(point.get<"name">().view()) && !requiredIds.contains(point.get<"id">().view()))
+                                throw std::invalid_argument("控制 Topic 中的属性必须设为必填");
+                        }
+                        // 数组不能省略下标；对象字段可以省略，且不补造值。
+                        (void)parsed.render(requiredValues);
+                        writableIds.insert(referenced.begin(), referenced.end());
+                    }
+                    if (points) for (const auto& point : *points) {
+                        if (point.get<"writable">().value_or(ruvia::Bool{false}).value != writableIds.contains(point.get<"id">().view()))
+                            throw std::invalid_argument("属性可写状态与控制消息引用不一致");
+                    }
+                }
                 if (const auto& value = typed->get<"commandTemplate">(); value && !value->view().empty()) {
                     if (format != "json") throw std::invalid_argument("指令模板仅用于 JSON");
                     validateTemplate(value->view());
@@ -1045,6 +1096,7 @@ class ProtocolService {
                     if (timestamp) occurredAt = *timestamp; else errors.push_back(ruvia::String("设备时间无效，实际接入将跳过此记录"));
                 }
                 for (const auto& point : *config.get<"points">()) {
+                    if (point.get<"field">().view().empty()) continue;
                     auto inputValue = record.field(point.get<"field">().view());
                     if (inputValue) if (const auto& enums = point.get<"enumValues">(); enums && !enums->empty()) {
                         const auto key = utils::payloadScalarText(*inputValue); bool found = false;

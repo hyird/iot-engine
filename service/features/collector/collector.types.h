@@ -124,6 +124,7 @@ struct ProtocolCommand {
     std::vector<std::uint8_t> expectedReadbackData;
     std::string expectedValue;
     std::vector<CommandElementValue> elements;
+    std::string mqttMessageId;
     bool highPriority = true;
     bool expectsResponse = true;
     std::chrono::milliseconds timeout{3000};

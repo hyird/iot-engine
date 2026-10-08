@@ -90,6 +90,7 @@ import {
 import type { Device, DeviceGroup, EdgeConnection, EdgeStatus } from './device.types';
 
 interface CommandElement {
+    required?: boolean;
     _key: string;
     elementId: string;
     name: string;
@@ -193,6 +194,7 @@ export const validateValue = (element: CommandElement): string | null => {
 const CommandPopover = ({ device, func, onClose, pending, onSubmit }: CommandPopoverProps) => {
     const { message } = App.useApp();
     const isSl651CompleteCommand = device.protocol_type === 'SL651';
+    const isMqttCommand = device.protocol_type === 'MQTT';
     const [elements, setElements] = useState<CommandElement[]>(() =>
         (func.elements || []).map((element) => ({
             ...element,
@@ -211,7 +213,11 @@ const CommandPopover = ({ device, func, onClose, pending, onSubmit }: CommandPop
         return false;
     }, [device, message]);
     const handleSend = useCallback(() => {
-        const selected = elements.filter((element) => selectedKeys.includes(element._key));
+        const selected = elements.filter((element) =>
+            isMqttCommand
+                ? element.required || element.value.trim().length > 0
+                : selectedKeys.includes(element._key)
+        );
         if (!selected.length) {
             message.warning('请至少选择一个要素');
             return;
@@ -226,15 +232,26 @@ const CommandPopover = ({ device, func, onClose, pending, onSubmit }: CommandPop
         if (!checkOnline()) return;
         if (pending) return;
         onSubmit(device.id, {
+            ...(func.mqttMessageId ? { mqttMessageId: func.mqttMessageId } : {}),
             elements: selected.map((element) => ({
                 elementId: element.elementId,
                 value: element.value.trim(),
             })),
         });
-    }, [checkOnline, pending, onSubmit, device.id, elements, message, selectedKeys]);
+    }, [
+        checkOnline,
+        pending,
+        onSubmit,
+        device.id,
+        elements,
+        message,
+        selectedKeys,
+        isMqttCommand,
+        func.mqttMessageId,
+    ]);
     const handlePresetClick = useCallback(
         (element: CommandElement, value: string) => {
-            if (isSl651CompleteCommand) {
+            if (isSl651CompleteCommand || isMqttCommand) {
                 setElements((current) =>
                     current.map((item) => (item._key === element._key ? { ...item, value } : item))
                 );
@@ -245,7 +262,7 @@ const CommandPopover = ({ device, func, onClose, pending, onSubmit }: CommandPop
             if (pending) return;
             onSubmit(device.id, { elements: [{ elementId: element.elementId, value }] });
         },
-        [checkOnline, pending, onSubmit, device.id, elements, isSl651CompleteCommand]
+        [checkOnline, pending, onSubmit, device.id, elements, isSl651CompleteCommand, isMqttCommand]
     );
     if (!elements.length) return <div className="p-3">暂无可下发要素</div>;
     return (
@@ -266,26 +283,45 @@ const CommandPopover = ({ device, func, onClose, pending, onSubmit }: CommandPop
                             className={`mb-2 pb-2 ${hasOptions ? 'border-b border-gray-100' : ''}`}
                         >
                             <Flex align="center" className={hasOptions ? 'mb-1.5' : ''}>
-                                <Checkbox
-                                    checked={checked}
-                                    disabled={isSl651CompleteCommand}
-                                    onChange={(event) =>
-                                        setSelectedKeys((current) =>
-                                            event.target.checked
-                                                ? [...current, element._key]
-                                                : current.filter((key) => key !== element._key)
-                                        )
-                                    }
-                                />
+                                {!isMqttCommand && (
+                                    <Checkbox
+                                        checked={checked}
+                                        disabled={isSl651CompleteCommand}
+                                        onChange={(event) =>
+                                            setSelectedKeys((current) =>
+                                                event.target.checked
+                                                    ? [...current, element._key]
+                                                    : current.filter((key) => key !== element._key)
+                                            )
+                                        }
+                                    />
+                                )}
                                 <span className="mx-1.5 flex-1">
                                     {element.name}
+                                    {isMqttCommand && (
+                                        <span
+                                            className={
+                                                element.required
+                                                    ? 'ml-1 text-red-500'
+                                                    : 'ml-1 text-gray-400'
+                                            }
+                                        >
+                                            {element.required ? '必填' : '选填'}
+                                        </span>
+                                    )}
                                     {element.unit ? `（${element.unit}）` : ''}
                                 </span>
                                 <Input
                                     size="small"
                                     className="!w-[120px]"
                                     value={element.value}
-                                    placeholder={hasOptions ? '或手动输入' : ''}
+                                    placeholder={
+                                        isMqttCommand && !element.required
+                                            ? '留空不发送'
+                                            : hasOptions
+                                              ? '或手动输入'
+                                              : ''
+                                    }
                                     onChange={(event) =>
                                         setElements((current) =>
                                             current.map((item) =>
@@ -326,7 +362,7 @@ const CommandPopover = ({ device, func, onClose, pending, onSubmit }: CommandPop
                     size="small"
                     type="primary"
                     loading={pending}
-                    disabled={!selectedKeys.length}
+                    disabled={!isMqttCommand && !selectedKeys.length}
                     onClick={handleSend}
                 >
                     下发
@@ -2250,6 +2286,7 @@ const DeviceGridItem = memo(
                                 content={
                                     isCommandPopoverOpen && commandFunc && activeCommandDevice ? (
                                         <CommandPopover
+                                            key={commandFunc.mqttMessageId ?? commandFunc.name}
                                             pending={commandPending}
                                             onSubmit={onSubmitCommand}
                                             device={activeCommandDevice}

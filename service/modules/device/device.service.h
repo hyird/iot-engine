@@ -31,6 +31,7 @@
 #include "service/modules/device/device.entity.h"
 #include "service/modules/device/device.types.h"
 #include "service/modules/edge_node/edge_node.service.h"
+#include "service/modules/protocol/protocol.types.h"
 #include "service/modules/system/auth/auth.service.h"
 #include "service/modules/system/outbox/outbox.service.h"
 #include "service/utils/debug_idle.h"
@@ -2017,6 +2018,50 @@ return result
                 operationDto.template set<"elements">(std::move(elementDtos));
             }
             item->second->template set<"commandOperations">(std::move(operationDtos));
+        }
+        ruvia::DbQuery mqttQuery(c.pool());
+        mqttQuery.select({mqttQuery.column(service::device::entities::DeviceEntity::columnName<"id">(), "d"),
+                         mqttQuery.column(service::device::entities::DeviceModelEntity::columnName<"config">(), "p")})
+            .from(service::device::entities::DeviceEntity::tableName(), "d")
+            .join(ruvia::DbJoinType::kInner, service::device::entities::DeviceModelEntity::tableName(),
+                andAll(mqttQuery,
+                    mqttQuery.binary(mqttQuery.column(service::device::entities::DeviceModelEntity::columnName<"device_id">(), "p"), ruvia::DbBinaryOperator::kEqual, mqttQuery.column(service::device::entities::DeviceEntity::columnName<"id">(), "d")),
+                    mqttQuery.binary(mqttQuery.column(service::device::entities::DeviceModelEntity::columnName<"protocol">(), "p"), ruvia::DbBinaryOperator::kEqual, mqttQuery.value("MQTT"))), "p");
+        addDeviceFilters(mqttQuery);
+        const auto mqttRows = co_await c.db().query(mqttQuery);
+        for (const auto& row : mqttRows) {
+            const auto item = items.find(std::string(row[0].value().value_or(std::string_view{})));
+            if (item == items.end()) continue;
+            const auto config = ruvia::fromJson<service::protocol::MqttConfig>(row[1].value().value_or(std::string_view{}));
+            if (!config || !config->get<"commands">() || !config->get<"points">()) continue;
+            ruvia::BoxedArray<DeviceCommandOperationDto> operations(ruvia::ModelOptions{.resource = c.arena()});
+            service::utils::JsonValueTemplate::Tokens allowed{"$deviceCode"};
+            for (const auto& point : *config->get<"points">()) allowed.emplace("$point:" + std::string(point.get<"name">().view()));
+            for (const auto& command : *config->get<"commands">()) {
+                const service::utils::JsonValueTemplate message(command.get<"templateText">().view(), allowed);
+                std::set<std::string, std::less<>> topicNames, requiredIds;
+                for (const auto level : service::utils::splitPayload(command.get<"topic">().view(), "/"))
+                    if (level.starts_with("{point:") && level.ends_with('}')) topicNames.emplace(level.substr(7, level.size() - 8));
+                for (const auto& id : command.get<"requiredPointIds">()) requiredIds.emplace(id.view());
+                auto& operation = operations.emplace(ruvia::ModelOptions{.resource = c.arena()});
+                operation.template set<"name">(command.get<"name">().view()).template set<"mqttMessageId">(command.get<"id">().view());
+                ruvia::BoxedArray<DeviceCommandOperationElementDto> elements(ruvia::ModelOptions{.resource = c.arena()});
+                for (const auto& point : *config->get<"points">()) {
+                    if (!message.references("$point:" + std::string(point.get<"name">().view())) && !topicNames.contains(point.get<"name">().view())) continue;
+                    auto& element = elements.emplace(ruvia::ModelOptions{.resource = c.arena()});
+                    element.template set<"elementId">(point.get<"id">().view()).template set<"name">(point.get<"name">().view())
+                        .template set<"value">("").template set<"dataType">(point.get<"dataType">().view())
+                        .template set<"required">(requiredIds.contains(point.get<"id">().view()));
+                    if (point.get<"unit">()) element.template set<"unit">(point.get<"unit">()->view());
+                    if (point.get<"dataType">().view() == "BOOL") {
+                        ruvia::BoxedArray<DeviceCommandOptionDto> options(ruvia::ModelOptions{.resource = c.arena()});
+                        for (const auto value : {"1", "0"}) options.emplace(ruvia::ModelOptions{.resource = c.arena()}).template set<"label">(value).template set<"value">(value);
+                        element.template set<"options">(std::move(options));
+                    }
+                }
+                operation.template set<"elements">(std::move(elements));
+            }
+            item->second->template set<"commandOperations">(std::move(operations));
         }
     }
 

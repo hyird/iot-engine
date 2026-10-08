@@ -236,6 +236,7 @@ struct ProtocolTask {
     std::string expectedReadbackData;
     std::string expectedValue;
     std::vector<std::pair<std::string, std::string>> elements;
+    std::string mqttMessageId;
     bool expectsResponse = true;
     std::int64_t responseTimeoutMs = 3000;
     std::int64_t createdAtMs = 0;
@@ -616,6 +617,7 @@ inline std::vector<StreamField> protocolTaskFields(const ProtocolTask& task) {
                                     {"attempt", std::to_string(task.attempt)},
                                     {"max_attempts", std::to_string(task.maxAttempts)},
                                     {"session_epoch", std::to_string(task.sessionEpoch)}};
+    if (!task.mqttMessageId.empty()) fields.push_back({"mqtt_message_id", task.mqttMessageId});
     fields.reserve(fields.size() + task.elements.size());
     for (const auto& [elementId, value] : task.elements)
         fields.push_back({"element:" + elementId, value});
@@ -660,6 +662,7 @@ inline ProtocolTask protocolTaskFrom(const StreamMessage& message) {
     task.readbackPayload = std::string(message.get("readback_payload_hex"));
     task.expectedReadbackData = std::string(message.get("expected_readback_hex"));
     task.expectedValue = std::string(message.get("expected_value"));
+    task.mqttMessageId = std::string(message.get("mqtt_message_id"));
     for (const auto& current : message.fields) {
         if (!current.name.starts_with("element:"))
             continue;

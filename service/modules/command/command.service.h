@@ -131,6 +131,11 @@ class CommandService final {
             service::common::fail(18010, "idempotency_key 必须是 UUID", 400);
         }
         const std::string key(keyField->view());
+        const auto& mqttMessage = body.template get<"mqttMessageId">();
+        if (mqttMessage && !service::common::isUuid(mqttMessage->view()))
+            service::common::fail(18010, "控制消息 ID 必须是 UUID", 400);
+        const std::string mqttSelection = mqttMessage
+            ? ",\"mqttMessageId\":" + service::utils::jsonQuoted(mqttMessage->view()) : "";
         const auto elements = normalize(body);
         std::string payload = "[";
         for (const auto& [elementId, value] : elements) {
@@ -141,6 +146,8 @@ class CommandService final {
                 service::utils::jsonQuoted(value) + "]";
         }
         payload += ']';
+        const auto requestPayload = mqttMessage
+            ? "{\"elements\":" + payload + mqttSelection + "}" : payload;
         auto transaction = co_await context.db().beginTransaction();
         const std::string lockKey = submittedBy + ":" + key;
         ruvia::DbQuery advisory(context.pool());
@@ -159,7 +166,7 @@ class CommandService final {
         const auto priorPayload = priorQuery.binary(
             priorQuery.column(service::command::entities::CommandRequestEntity::columnName<"payload">()),
             ruvia::DbBinaryOperator::kEqual,
-            priorQuery.cast(priorQuery.value(payload), ruvia::DbDataType::kJsonb)
+            priorQuery.cast(priorQuery.value(requestPayload), ruvia::DbDataType::kJsonb)
         );
         priorQuery
             .select({ priorQuery.cast(priorQuery.column(service::command::entities::CommandRequestEntity::columnName<"id">()), ruvia::DbDataType::kText), priorQuery.binary(priorDevice, ruvia::DbBinaryOperator::kAnd, priorPayload) })
@@ -201,7 +208,7 @@ class CommandService final {
         ruvia::DbQuery requestQuery(context.pool());
         requestQuery
             .insertInto(service::command::entities::CommandRequestEntity::tableName(), { "id", "actor", "idempotency_key", "device_id", "payload" })
-            .values({ requestQuery.cast(requestQuery.value(requestId), ruvia::DbDataType::kUuid), requestQuery.value(submittedBy), requestQuery.cast(requestQuery.value(key), ruvia::DbDataType::kUuid), requestQuery.cast(requestQuery.value(deviceId), ruvia::DbDataType::kUuid), requestQuery.cast(requestQuery.value(payload), ruvia::DbDataType::kJsonb) });
+            .values({ requestQuery.cast(requestQuery.value(requestId), ruvia::DbDataType::kUuid), requestQuery.value(submittedBy), requestQuery.cast(requestQuery.value(key), ruvia::DbDataType::kUuid), requestQuery.cast(requestQuery.value(deviceId), ruvia::DbDataType::kUuid), requestQuery.cast(requestQuery.value(requestPayload), ruvia::DbDataType::kJsonb) });
         (void)co_await transaction.execute(requestQuery);
 
         ruvia::DbQuery deviceLock(context.pool());
@@ -211,7 +218,7 @@ class CommandService final {
             .where(deviceLock.binary(deviceLock.column(service::command::entities::DeviceEntity::columnName<"id">()), ruvia::DbBinaryOperator::kEqual, deviceLock.cast(deviceLock.value(deviceId), ruvia::DbDataType::kUuid)))
             .lock({ .mode = ruvia::DbRowLock::kShare });
         (void)co_await transaction.query(deviceLock);
-        const auto prepared = co_await service::rpc::call(context, "command", "prepare", "{\"deviceId\":" + service::utils::jsonQuoted(deviceId) + ",\"elements\":" + payload + "}");
+        const auto prepared = co_await service::rpc::call(context, "command", "prepare", "{\"deviceId\":" + service::utils::jsonQuoted(deviceId) + mqttSelection + ",\"elements\":" + payload + "}");
         auto result = co_await appendPrepared(context, transaction, requestId, deviceId, submittedBy, prepared);
         co_await transaction.commit();
         co_return result;

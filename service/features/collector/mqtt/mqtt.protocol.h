@@ -193,29 +193,56 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                     }
                 }
             }
-            const auto compileTemplate = [&](std::string_view input, bool report = false) {
+            const auto compileTemplate = [&](std::string_view input, bool report = false, const std::set<std::string, std::less<>>& required = {}, bool legacyValues = true) {
                 service::utils::JsonValueTemplate::Tokens allowed{ "$deviceCode", report ? "$time" : "$values" }, sparse;
+                if (!report && !legacyValues) allowed.erase("$values");
                 for (const auto& [name, writable] : templatePoints) {
                     const auto token = "$point:" + name;
                     allowed.insert(token);
-                    sparse.insert(token);
+                    if (!required.contains(token)) sparse.insert(token);
                 }
                 service::utils::JsonValueTemplate result(input, allowed, sparse, report);
-                bool hasPoint = false;
                 for (const auto& [name, writable] : templatePoints) {
                     if (!result.references("$point:" + name)) continue;
-                    hasPoint = true;
                     if (!report && !writable) throw std::invalid_argument("指令模板引用不可写点位: " + name);
                 }
-                if (report && !hasPoint) throw std::invalid_argument("上报模板至少需要一个点位占位符");
                 return result;
             };
             if (const auto& value = config.get<"commandTemplate">(); value && !value->view().empty()) {
                 if (subscription.format != "json") throw std::invalid_argument("指令模板仅用于 JSON");
                 subscription.commandTemplate = compileTemplate(value->view());
-                for (auto& point : subscription.points) {
-                    auto token = "$point:" + point.name;
-                    if (subscription.commandTemplate->references(token)) point.commandToken = std::move(token);
+            }
+            if (const auto& commands = config.get<"commands">(); commands) {
+                if (subscription.format != "json" || commands->size() > 32 || !subscription.commandTopic.empty() || subscription.commandTemplate)
+                    throw std::invalid_argument("MQTT 控制消息配置冲突或格式无效");
+                for (const auto& message : *commands) {
+                    std::set<std::string, std::less<>> required, topicTokens;
+                    for (const auto& id : message.get<"requiredPointIds">()) {
+                        const auto point = std::find_if(subscription.points.begin(), subscription.points.end(), [&](const auto& point) { return point.id == id.view(); });
+                        if (point == subscription.points.end() || !required.emplace("$point:" + point->name).second)
+                            throw std::invalid_argument("必填控制点未知或重复");
+                    }
+                    const auto topic = std::string(message.get<"topic">().view());
+                    (void)deviceTopic(topic, device->code);
+                    for (const auto level : service::utils::splitPayload(topic, "/")) {
+                        if (level == "{deviceCode}") continue;
+                        if (level.starts_with("{point:") && level.ends_with('}')) {
+                            const auto token = "$point:" + std::string(level.substr(7, level.size() - 8));
+                            if (!required.contains(token)) throw std::invalid_argument("Topic 属性必须设为必填");
+                            topicTokens.emplace(token);
+                        } else if (level.find_first_of("{}") != std::string_view::npos) {
+                            throw std::invalid_argument("Topic 占位符须独占一层");
+                        }
+                    }
+                    auto compiled = compileTemplate(message.get<"templateText">().view(), false, required, false);
+                    service::utils::JsonValueTemplate::Values requiredValues{{"$deviceCode", "\"device\""}};
+                    for (const auto& token : required) {
+                        if (!compiled.references(token) && !topicTokens.contains(token)) throw std::invalid_argument("必填控制点不属于当前消息");
+                        requiredValues.emplace(token, "null");
+                    }
+                    (void)compiled.render(requiredValues);
+                    if (!subscription.commands.emplace(std::string(message.get<"id">().view()), CompiledCommand{topic, std::move(compiled), std::move(topicTokens)}).second)
+                        throw std::invalid_argument("控制消息标识重复");
                 }
             }
             if (const auto& value = config.get<"reportTemplate">(); value) {
@@ -354,17 +381,25 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
         const auto subscription = std::find_if(subscriptions_.begin(), subscriptions_.end(), [&](const auto& item) {
             return item.device->id == request.deviceId;
         });
-        if (subscription == subscriptions_.end() || subscription->commandTopic.empty()) {
+        if (subscription == subscriptions_.end() || (subscription->commandTopic.empty() && subscription->commands.empty())) {
             return fail("mqtt_command_topic_missing");
         }
         if (outbound_.size() >= kMaxInflight) {
             return fail("mqtt_inflight_limit");
         }
         try {
-            const auto elements = command::resolve(*subscription->device, request.elements);
+            const auto elements = command::resolve(*subscription->device, request.elements, request.mqttMessageId);
+            const CompiledCommand* selected = nullptr;
+            if (!request.mqttMessageId.empty()) {
+                const auto found = subscription->commands.find(request.mqttMessageId);
+                if (found == subscription->commands.end()) throw std::invalid_argument("command_invalid: 控制消息不存在");
+                selected = &found->second;
+            }
+            const auto* commandTemplate = selected ? &selected->payload : (subscription->commandTemplate ? &*subscription->commandTemplate : nullptr);
             PayloadObject payloadObject;
             service::utils::JsonValueTemplate::Values namedValues;
-            const bool fieldPayload = !subscription->commandTemplate || subscription->commandTemplate->references("$values");
+            std::map<std::string, std::string, std::less<>> topicValues;
+            const bool fieldPayload = !commandTemplate || commandTemplate->references("$values");
             std::map<std::size_t, std::string> columns;
             std::string payload;
             std::vector<bool> occupied;
@@ -418,12 +453,18 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                         throw std::invalid_argument("指令值没有对应的枚举原值");
                     }
                 }
-                const auto& token = mapping->commandToken;
-                if (subscription->commandTemplate && !subscription->commandTemplate->references("$values") && !subscription->commandTemplate->references(token)) {
+                const auto token = "$point:" + mapping->name;
+                if (commandTemplate && !commandTemplate->references("$values") && !commandTemplate->references(token) && !(selected && selected->topicTokens.contains(token))) {
                     throw std::invalid_argument("请求点位未出现在指令模板中: " + mapping->name);
                 }
-                if (subscription->commandTemplate && subscription->commandTemplate->references(token)) {
+                if (commandTemplate && commandTemplate->references(token)) {
                     namedValues.emplace(token, service::utils::payloadScalarJson(*value));
+                }
+                if (selected && selected->topicTokens.contains(token)) {
+                    auto textValue = service::utils::payloadScalarText(*value);
+                    if (textValue.empty() || !validText(textValue) || textValue.find_first_of("/+#") != std::string::npos)
+                        throw std::invalid_argument("command_invalid: Topic 属性值必须是非空且不含 /、+、# 的单层值");
+                    topicValues.emplace(token, std::move(textValue));
                 }
                 if (fieldPayload) assign(point.mqttField, *value);
             }
@@ -431,10 +472,10 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                 assign(subscription->deviceCodeField, service::utils::PayloadScalar{ subscription->device->code });
             }
             if (subscription->format == "json") {
-                if (subscription->commandTemplate) {
-                    if (subscription->commandTemplate->references("$values")) namedValues.emplace("$values", payloadObject.json(true));
-                    if (subscription->commandTemplate->references("$deviceCode")) namedValues.emplace("$deviceCode", service::utils::jsonQuoted(subscription->device->code));
-                    payload = subscription->commandTemplate->render(namedValues);
+                if (commandTemplate) {
+                    if (commandTemplate->references("$values")) namedValues.emplace("$values", payloadObject.json(true));
+                    if (commandTemplate->references("$deviceCode")) namedValues.emplace("$deviceCode", service::utils::jsonQuoted(subscription->device->code));
+                    payload = commandTemplate->render(namedValues);
                 } else {
                     payload = payloadObject.json(true);
                 }
@@ -458,7 +499,19 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
             }
             const auto id = nextId();
             Bytes body;
-            text(body, subscription->commandTopic);
+            std::string topic = subscription->commandTopic;
+            if (selected) {
+                bool first = true;
+                for (const auto level : service::utils::splitPayload(selected->topic, "/")) {
+                    if (!first) topic += '/';
+                    first = false;
+                    if (level == "{deviceCode}") topic += subscription->device->code;
+                    else if (level.starts_with("{point:") && level.ends_with('}')) topic += topicValues.at("$point:" + std::string(level.substr(7, level.size() - 8)));
+                    else topic += level;
+                }
+                if (topic.size() > 1024) throw std::invalid_argument("command_invalid: 控制 Topic 超过 1024 字节");
+            }
+            text(body, topic);
             word(body, id);
             body.insert(body.end(), payload.begin(), payload.end());
             const auto qos = std::max<std::uint8_t>(1, subscription->qos);
@@ -566,7 +619,12 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
         std::string id, name, field, type, unit;
         double scale = 1, offset = 0;
         std::vector<std::pair<std::string, std::string>> enums;
-        std::string commandToken;
+    };
+
+    struct CompiledCommand {
+        std::string topic;
+        service::utils::JsonValueTemplate payload;
+        std::set<std::string, std::less<>> topicTokens;
     };
 
     struct Subscription {
@@ -576,6 +634,7 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
         std::vector<Mapping> points;
         std::string identitySource, format, delimiter, recordDelimiter, timeField, timeFormat;
         std::optional<service::utils::JsonValueTemplate> commandTemplate;
+        std::map<std::string, CompiledCommand, std::less<>> commands;
         std::size_t topicSegment = 1, recordLength = 0;
     };
 
@@ -807,6 +866,7 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
         }
         std::string values = "{";
         for (const auto& point : item.points) {
+            if (point.field.empty()) continue;
             auto input = record.field(point.field);
             if (input && !point.enums.empty()) {
                 const auto key = service::utils::payloadScalarText(*input);

@@ -9,6 +9,7 @@ namespace service::command {
 
 RUVIA_MODEL(PrepareCommandBody,
     RUVIA_REQUIRED_FIELD(deviceId, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(mqttMessageId, ruvia::String),
     RUVIA_REQUIRED_FIELD(elements, ruvia::Array<ruvia::Array<ruvia::String>>));
 
 inline constexpr std::array<std::string_view, 2> kCommandResultAcceptingStatuses{

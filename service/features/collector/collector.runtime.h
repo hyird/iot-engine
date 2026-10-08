@@ -723,6 +723,7 @@ class CollectorWorker final {
                             }
                             return elements;
                         }(),
+                    .mqttMessageId = task.mqttMessageId,
                     .highPriority = high,
                     .expectsResponse = task.expectsResponse,
                     .timeout = std::chrono::milliseconds(
